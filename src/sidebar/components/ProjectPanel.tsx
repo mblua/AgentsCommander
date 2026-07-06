@@ -24,6 +24,20 @@ import {
   replicaVolatileStore,
 } from "../stores/replica-volatile";
 import { normalizeProjectPathForCompare } from "../stores/project-refresh";
+import {
+  projectCollapseStore,
+  projectPanelCollapseKey,
+  PROJECT_PANEL_COLLAPSE_KEY_SEP,
+} from "../stores/project-collapse";
+// #810 - PROJECT_PANEL_COLLAPSE_KEY_SEP, ProjectPanelCollapseSection, and
+// projectPanelCollapseKey moved to the project-collapse store (canonical
+// home). Re-exported here so any external importer that previously read them
+// from ProjectPanel keeps compiling.
+export {
+  PROJECT_PANEL_COLLAPSE_KEY_SEP,
+  projectPanelCollapseKey,
+  type ProjectPanelCollapseSection,
+} from "../stores/project-collapse";
 import { sessionsStore } from "../stores/sessions";
 import { bridgesStore } from "../stores/bridges";
 import { settingsStore } from "../../shared/stores/settings";
@@ -172,29 +186,6 @@ function deriveScopeContextFromSession(
 }
 
 const CONTEXT_MENU_VIEWPORT_MARGIN = 8;
-const PROJECT_PANEL_COLLAPSE_KEY_SEP = "\u0000";
-
-type ProjectPanelCollapseSection =
-  | "project"
-  | "selected-workgroup"
-  | "workgroups"
-  | "workgroup"
-  | "loops"
-  | "agents"
-  | "teams"
-  | "team";
-
-function projectPanelCollapseKey(
-  projectPath: string,
-  section: ProjectPanelCollapseSection,
-  id = ""
-): string {
-  return [
-    normalizeProjectPathForCompare(projectPath),
-    section,
-    id,
-  ].join(PROJECT_PANEL_COLLAPSE_KEY_SEP);
-}
 
 function workgroupCollapseId(wg: AcWorkgroup, rowContext: string): string {
   return [
@@ -398,6 +389,58 @@ const ProjectPanel: Component = () => {
       [key]: !(prev[key] ?? defaultCollapsed),
     }));
   };
+
+  // #810 - project-level collapse lives in projectCollapseStore so the rail
+  // can drive auto-focus (collapse others, expand owner, scroll owner into
+  // view). Sub-section keys stay in the local collapsedByKey signal above.
+  const isProjectPanelCollapsed = (projectPath: string) =>
+    projectCollapseStore.isProjectCollapsed(projectPath);
+  const toggleProjectPanelCollapsed = (projectPath: string) =>
+    projectCollapseStore.toggleProjectCollapsed(projectPath);
+
+  // #810 (grinch F1) - ref-Map of rendered .project-header elements keyed by
+  // the NORMALIZED project path. Lives in the stable ProjectPanel scope (not
+  // per-row) so it is not disposed mid-focus. A row's ref callback writes its
+  // header here on mount and clears it on cleanup. Replaces the original
+  // CSS-attribute-selector approach, which silently no-oped on Windows
+  // backslash paths because CSS string tokens consume `\` as an escape char.
+  const projectHeaderEls = new Map<string, HTMLElement>();
+  const registerProjectHeader = (projectPath: string, el: HTMLElement | null) => {
+    const key = normalizeProjectPathForCompare(projectPath);
+    if (el) {
+      projectHeaderEls.set(key, el);
+    } else {
+      // Only delete if the registered entry is still the same el; a stale
+      // ref from a disposed row may have already been overwritten by the
+      // new row's mount.
+      if (projectHeaderEls.get(key) === el) {
+        projectHeaderEls.delete(key);
+      }
+    }
+  };
+
+  // #810 - one-shot focus: scroll the owner project header into view when
+  // the rail requests it. block:"nearest" so an already-visible owner does
+  // not jump. The target from the store is already NORMALIZED; the ref-Map
+  // is keyed on the same normalized form, so map.get(target) resolves
+  // without any CSS selector. Grinch F6: capture target before deferring to
+  // the microtask and only consume the focus if the live signal still
+  // equals the captured value, so two fast clicks (A then B) cannot have
+  // microtask-A clear B's pending target.
+  createEffect(() => {
+    const target = projectCollapseStore.focusTarget();
+    if (!target) return;
+    // Defer to next microtask so the expand (setProjectCollapsed false)
+    // applied by the rail onClick has propagated and the header/body are
+    // mounted before we scroll.
+    queueMicrotask(() => {
+      const live = projectCollapseStore.focusTarget();
+      if (live !== target) return;
+      const el = projectHeaderEls.get(target);
+      el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      projectCollapseStore.consumeProjectFocus();
+    });
+  });
 
   // #537: post-assign "Restart now?" prompt. Hoisted to the stable ProjectPanel
   // scope (NOT inside the projects <For>) so a background replica-list refresh,
@@ -1588,7 +1631,12 @@ const ProjectPanel: Component = () => {
 
         const hasTeams = () => proj.teams.length > 0;
         const projectAutomationId = () => automationIdPart(proj.path);
-        const projectCollapsedKey = projectPanelCollapseKey(proj.path, "project");
+        // #810 - the "project" section key moved to the project-collapse store.
+        // Sub-section keys below still use the local collapsedByKey signal.
+        // Clear the ref-Map entry for this row when the <For> disposes it
+        // (background discovery refresh re-creates rows; registerProjectHeader
+        // null-branch is a no-op if a newer row already overwrote the key).
+        onCleanup(() => registerProjectHeader(proj.path, null));
         const selectedWorkgroupCollapsedKey = projectPanelCollapseKey(proj.path, "selected-workgroup");
         const workgroupsCollapsedKey = projectPanelCollapseKey(proj.path, "workgroups");
         const loopsCollapsedKey = projectPanelCollapseKey(proj.path, "loops");
@@ -2275,10 +2323,18 @@ const ProjectPanel: Component = () => {
             <button
               class="project-header"
               title={proj.path}
-              onClick={() => togglePanelCollapsed(projectCollapsedKey)}
+              ref={(el) => {
+                // #810 (grinch F1) - register this header element in the
+                // stable-scope ref-Map so the focus effect can scroll it
+                // into view by normalized path key. CSS attribute selector
+                // approach was dropped: backslashes in Windows paths break
+                // the CSS string-token parser.
+                registerProjectHeader(proj.path, el);
+              }}
+              onClick={() => toggleProjectPanelCollapsed(proj.path)}
               onContextMenu={handleProjectContextMenu}
             >
-              <span class="ac-discovery-chevron" classList={{ collapsed: isPanelCollapsed(projectCollapsedKey) }}>
+              <span class="ac-discovery-chevron" classList={{ collapsed: isProjectPanelCollapsed(proj.path) }}>
                 &#x25BE;
               </span>
               <span class="project-title">Project: {proj.folderName}</span>
@@ -2397,7 +2453,7 @@ const ProjectPanel: Component = () => {
                 background refresh that re-creates the row no longer disposes an
                 open modal. See the hoisted render blocks below. */}
 
-            <Show when={!isPanelCollapsed(projectCollapsedKey)}>
+            <Show when={!isProjectPanelCollapsed(proj.path)}>
               <div class="project-content">
                 {/* Coordinator Quick-Access — shown by styles that enable it via CSS */}
                 {(() => {

@@ -14,6 +14,7 @@ import { projectStore } from "../../sidebar/stores/project";
 import { sessionsStore } from "../../sidebar/stores/sessions";
 import { bridgesStore } from "../../sidebar/stores/bridges";
 import { workgroupGroupsStore } from "../../sidebar/stores/workgroup-groups";
+import { projectCollapseStore } from "../../sidebar/stores/project-collapse";
 import { codingAgentsStore } from "../../sidebar/stores/coding-agents";
 import { terminalStore } from "../../terminal/stores/terminal";
 import { __resetHomeStoreForTests } from "../../main/stores/home";
@@ -234,6 +235,7 @@ export function resetUiStoresForTests(): void {
   sessionsStore.setCoordSortByActivity(false);
   sessionsStore.clearDetached();
   workgroupGroupsStore.resetForTests();
+  projectCollapseStore.resetForTests();
   codingAgentsStore.resetForTests();
   bridgesStore.setBridges([]);
   terminalStore.setActiveSession(null, "", "", null, "", null, false);
