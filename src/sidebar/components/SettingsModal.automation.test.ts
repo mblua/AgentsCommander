@@ -143,6 +143,7 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     coordinatorIdleBadgeRedMinutes: 60,
     coordinatorAutoCloseEnabled: true,
     coordinatorAutoCloseMinutes: 60,
+    coordinatorAutoCloseSkipTelegramAssigned: false,
     coordinatorCascadeCloseEnabled: true,
     npmUpdateNotificationsEnabled: true,
     autoSelfClearEnabled: true,
@@ -1210,6 +1211,50 @@ describe("SettingsModal automation hooks", () => {
 
     const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
     expect(saved?.coordinatorCascadeCloseEnabled).toBe(false);
+
+    dispose();
+  });
+
+  it("round-trips coordinatorAutoCloseSkipTelegramAssigned through the General auto-close checkbox (#817)", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    const autoCloseEnabled = byTestId<HTMLInputElement>(
+      "settings.general.coordinatorAutoCloseEnabled",
+    );
+    const checkbox = byTestId<HTMLInputElement>(
+      "settings.general.coordinatorAutoCloseSkipTelegramAssigned",
+    );
+    expect(checkbox.closest("label")?.textContent).toContain(
+      "Skip Telegram-assigned sessions during auto-close",
+    );
+    expect(checkbox.checked).toBe(false);
+    expect(checkbox.disabled).toBe(false);
+
+    autoCloseEnabled.checked = false;
+    autoCloseEnabled.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+    expect(checkbox.disabled).toBe(true);
+
+    autoCloseEnabled.checked = true;
+    autoCloseEnabled.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+    expect(checkbox.disabled).toBe(false);
+
+    checkbox.checked = true;
+    checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.coordinatorAutoCloseSkipTelegramAssigned).toBe(true);
 
     dispose();
   });

@@ -51,12 +51,13 @@ If only a non-coordinator member is reaped while the coordinator survives (the c
 
 ## Settings
 
-All four keys live in `settings.json` (see the [settings reference](../reference/settings.md#session-auto-close)). Defaults shown.
+These keys live in `settings.json` (see the [settings reference](../reference/settings.md#session-auto-close)). Defaults shown.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `coordinatorAutoCloseEnabled` | bool | `true` | Master switch. When false, AC never auto-closes a team (the badge still shows). |
 | `coordinatorAutoCloseMinutes` | number | `60` | Idle minutes before a team is closed. `0` also disables auto-close. |
+| `coordinatorAutoCloseSkipTelegramAssigned` | bool | `false` | When true, auto-close skips sessions with Telegram assigned. Other sessions keep following the normal auto-close rules. |
 | `coordinatorIdleBadgeYellowMinutes` | number | `30` | Idle minutes at which the badge turns yellow. |
 | `coordinatorIdleBadgeRedMinutes` | number | `60` | Idle minutes at which the badge turns red. |
 
@@ -81,6 +82,18 @@ or:
 ```
 
 Either one stops every close. The idle badge keeps counting, so you still see idle time at a glance.
+
+### Keeping Telegram-assigned sessions alive
+
+Set:
+
+```json
+{
+  "coordinatorAutoCloseSkipTelegramAssigned": true
+}
+```
+
+When enabled, auto-close skips only sessions with Telegram assigned. Non-Telegram sessions in the same team still follow the configured timeout. A Telegram-protected member may remain as an orphan after a non-Telegram coordinator is auto-closed, while the setting stays enabled and Telegram remains assigned.
 
 ## How idle is measured
 
@@ -124,6 +137,6 @@ The frontend computes `Nm` from that timestamp. The clocks themselves persist pe
 
 ## See also
 
-- [Settings reference](../reference/settings.md#session-auto-close) - the four auto-close keys
+- [Settings reference](../reference/settings.md#session-auto-close) - session auto-close keys
 - [Concepts: Session](../concepts.md#session) - session status dots and lifecycle
 - [Glossary](../glossary.md) - session auto-close, idle badge

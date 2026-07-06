@@ -418,6 +418,9 @@ export interface AppSettings {
    *  fully silent for `coordinatorAutoCloseMinutes` is terminated. */
   coordinatorAutoCloseEnabled: boolean;
   coordinatorAutoCloseMinutes: number;
+  /** #817 When true, background auto-close skips sessions with a Telegram
+   *  assignment. Default false preserves legacy behavior. */
+  coordinatorAutoCloseSkipTelegramAssigned: boolean;
   /** #588 When true, manually closing a coordinator also closes its team. */
   coordinatorCascadeCloseEnabled: boolean;
   /** #609 Check npm on startup (<=1x/24h) and notify when a newer published

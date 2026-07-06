@@ -984,6 +984,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             onChange={(e) =>
               updateField("coordinatorAutoCloseEnabled", e.currentTarget.checked)
             }
+            data-ac-testid="settings.general.coordinatorAutoCloseEnabled"
           />
           <span>Auto-close idle teams (terminate sessions to free resources)</span>
         </label>
@@ -1005,6 +1006,22 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             data-ac-testid="settings.general.coordinatorAutoCloseMinutes"
             data-ac-role="spinbutton"
           />
+        </label>
+        <label class="settings-checkbox-field">
+          <input
+            type="checkbox"
+            class="settings-checkbox"
+            checked={settings.data!.coordinatorAutoCloseSkipTelegramAssigned}
+            disabled={!settings.data!.coordinatorAutoCloseEnabled}
+            onChange={(e) =>
+              updateField(
+                "coordinatorAutoCloseSkipTelegramAssigned",
+                e.currentTarget.checked,
+              )
+            }
+            data-ac-testid="settings.general.coordinatorAutoCloseSkipTelegramAssigned"
+          />
+          <span>Skip Telegram-assigned sessions during auto-close</span>
         </label>
         <div class="settings-hint">
           The idle badge shows minutes since your last message to a coordinator

@@ -154,6 +154,20 @@ fn team_is_closeable(established: bool, anchor_secs: i64, now_secs: i64, timeout
     established && anchor_secs != i64::MIN && (now_secs - anchor_secs) > timeout_secs
 }
 
+fn session_is_telegram_protected(skip_telegram_assigned: bool, has_telegram: bool) -> bool {
+    skip_telegram_assigned && has_telegram
+}
+
+fn should_close_member(
+    telegram_protected: bool,
+    established: bool,
+    anchor_secs: i64,
+    now_secs: i64,
+    timeout_secs: i64,
+) -> bool {
+    !telegram_protected && team_is_closeable(established, anchor_secs, now_secs, timeout_secs)
+}
+
 /// (#589) Should a successful destroy stamp its team's coordinator row
 /// AUTO-CLOSED? True IFF the destroyed session IS that team's coordinator
 /// (`coord_id_of_team == Some(destroyed_id)`). A reaped sibling member while the
@@ -167,11 +181,12 @@ fn destroyed_is_team_coordinator(destroyed_id: Uuid, coord_id_of_team: Option<Uu
 
 async fn tick(app: &AppHandle, last_emitted: &mut HashMap<String, i64>) {
     let settings = app.state::<SettingsState>();
-    let (enabled, timeout_min) = {
+    let (enabled, timeout_min, skip_telegram_assigned) = {
         let s = settings.read().await;
         (
             s.coordinator_auto_close_enabled,
             s.coordinator_auto_close_minutes,
+            s.coordinator_auto_close_skip_telegram_assigned,
         )
     };
     // NOTE: the enabled/timeout gate moved DOWN: steps 1-2 (advance + badge
@@ -194,6 +209,19 @@ async fn tick(app: &AppHandle, last_emitted: &mut HashMap<String, i64>) {
             .filter(|(id, _)| pm.has_session(*id))
             .collect()
     };
+    let telegram_protected: HashSet<Uuid> = if skip_telegram_assigned {
+        let mgr = { session_mgr.read().await.clone() };
+        let mut out = HashSet::new();
+        for (id, _) in &members {
+            if mgr.session_has_telegram_bot(*id).await {
+                out.insert(*id);
+            }
+        }
+        out
+    } else {
+        HashSet::new()
+    };
+
     // KILL filter: teams with any member alive past WAKE_GRACE (kill-eligible).
     let established_teams: HashSet<String> = members
         .iter()
@@ -278,13 +306,18 @@ async fn tick(app: &AppHandle, last_emitted: &mut HashMap<String, i64>) {
     let to_close: Vec<Uuid> = members
         .iter()
         .filter(|(id, team)| {
+            let is_telegram_protected = session_is_telegram_protected(
+                skip_telegram_assigned,
+                telegram_protected.contains(id),
+            );
             let anchor = resolve_member_anchor(
                 coord_refs.get(team),
                 &snap,
                 idle.silence_age(*id),
                 now_secs,
             );
-            team_is_closeable(
+            should_close_member(
+                is_telegram_protected,
                 established_teams.contains(team),
                 anchor,
                 now_secs,
@@ -322,6 +355,16 @@ async fn tick(app: &AppHandle, last_emitted: &mut HashMap<String, i64>) {
                 &id.to_string()[..8]
             );
             continue;
+        }
+        if skip_telegram_assigned {
+            let mgr = { session_mgr.read().await.clone() };
+            if session_is_telegram_protected(true, mgr.session_has_telegram_bot(id).await) {
+                log::info!(
+                    "[auto-close] {} has Telegram assigned; skipped",
+                    &id.to_string()[..8]
+                );
+                continue;
+            }
         }
         if let Err(e) = crate::commands::session::destroy_session_inner(app, id).await {
             log::warn!("[auto-close] destroy {} failed: {}", &id.to_string()[..8], e);
@@ -616,6 +659,36 @@ mod tests {
             !team_is_closeable(true, i64::MIN, now, 3600),
             "a team with no anchor (i64::MIN) is never closeable"
         );
+    }
+
+    #[test]
+    fn telegram_protection_is_opt_in() {
+        assert!(!session_is_telegram_protected(false, true));
+        assert!(!session_is_telegram_protected(false, false));
+    }
+
+    #[test]
+    fn telegram_protection_skips_only_assigned_sessions_when_enabled() {
+        assert!(session_is_telegram_protected(true, true));
+        assert!(!session_is_telegram_protected(true, false));
+    }
+
+    #[test]
+    fn protected_member_not_selected_when_established_and_idle_past_timeout() {
+        let now = ts(10_000).timestamp();
+        let timeout = 3600;
+        let anchor = team_idle_since_secs(Some(ts(10_000 - 3700)), None);
+
+        assert!(!should_close_member(true, true, anchor, now, timeout));
+    }
+
+    #[test]
+    fn unprotected_member_selected_when_established_and_idle_past_timeout() {
+        let now = ts(10_000).timestamp();
+        let timeout = 3600;
+        let anchor = team_idle_since_secs(Some(ts(10_000 - 3700)), None);
+
+        assert!(should_close_member(false, true, anchor, now, timeout));
     }
 
     // ---- orphan_anchor_secs (#582 orphan fallback anchor) ----
