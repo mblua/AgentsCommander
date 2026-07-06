@@ -7,7 +7,35 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::config::placeholders::AC_PLACEHOLDER_TOKENS;
+use crate::pty::backend::SessionBackendKind;
 use crate::telegram::types::TelegramBotConfig;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentBackendConfig {
+    #[serde(default)]
+    pub kind: SessionBackendKind,
+}
+
+impl Default for AgentBackendConfig {
+    fn default() -> Self {
+        Self {
+            kind: SessionBackendKind::LocalProcess,
+        }
+    }
+}
+
+impl AgentBackendConfig {
+    fn is_default(&self) -> bool {
+        self.kind == SessionBackendKind::LocalProcess
+    }
+}
+
+impl From<&AgentBackendConfig> for SessionBackendKind {
+    fn from(config: &AgentBackendConfig) -> Self {
+        config.kind
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,6 +61,10 @@ pub struct AgentConfig {
     /// means no seeding. Serialized as `configSeed`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_seed: Option<ConfigSeedConfig>,
+    /// Backend used for future non-local session transports. Omitted/default
+    /// keeps today's local-process behavior.
+    #[serde(default, skip_serializing_if = "AgentBackendConfig::is_default")]
+    pub backend: AgentBackendConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2094,6 +2126,7 @@ mod tests {
                     isolated_home: false,
                     instructions_filename: None,
                     config_seed: None,
+                    backend: Default::default(),
                 })
                 .collect(),
             ..AppSettings::default()
@@ -2175,6 +2208,7 @@ mod tests {
                 enabled: true,
                 dest: ".claude".to_string(),
             }),
+            backend: Default::default(),
         };
         let json = serde_json::to_string(&agent).unwrap();
         assert!(json.contains("\"configSeed\""), "{json}");
@@ -2190,6 +2224,22 @@ mod tests {
             serde_json::from_str(r##"{"id":"x","label":"X","command":"claude","color":"#000"}"##)
                 .unwrap();
         assert!(back.config_seed.is_none());
+    }
+
+    #[test]
+    fn agent_backend_config_defaults_to_local_process_and_omits_default() {
+        use super::AgentConfig;
+
+        let agent: AgentConfig =
+            serde_json::from_str(r##"{"id":"x","label":"X","command":"codex","color":"#000"}"##)
+                .unwrap();
+
+        assert_eq!(
+            crate::pty::backend::SessionBackendKind::from(&agent.backend),
+            crate::pty::backend::SessionBackendKind::LocalProcess
+        );
+        let json = serde_json::to_string(&agent).unwrap();
+        assert!(!json.contains("backend"), "{json}");
     }
 
     #[test]

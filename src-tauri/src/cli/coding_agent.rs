@@ -475,6 +475,7 @@ fn blank_agent() -> AgentConfig {
         isolated_home: false,
         instructions_filename: None,
         config_seed: None,
+        backend: Default::default(),
     }
 }
 
@@ -491,6 +492,7 @@ fn definition_to_agent_seed(def: &CodingAgentDefinition) -> AgentConfig {
         isolated_home: def.isolated_home,
         instructions_filename: def.instructions_filename.clone(),
         config_seed: def.config_seed.clone(),
+        backend: Default::default(),
     }
 }
 

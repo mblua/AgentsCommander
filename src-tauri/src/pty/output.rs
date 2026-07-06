@@ -49,6 +49,31 @@ struct PtyOutputPayload {
     sequence: Option<u64>,
 }
 
+#[derive(Clone)]
+pub struct PtyOutputTarget {
+    emit_pty_output: Arc<dyn Fn(PtyOutputPayload) + Send + Sync>,
+}
+
+impl PtyOutputTarget {
+    pub fn from_app_handle<R: tauri::Runtime>(app_handle: AppHandle<R>) -> Self {
+        Self {
+            emit_pty_output: Arc::new(move |payload| {
+                let _ = app_handle.emit("pty_output", payload);
+            }),
+        }
+    }
+
+    pub fn noop() -> Self {
+        Self {
+            emit_pty_output: Arc::new(|_| {}),
+        }
+    }
+
+    fn emit_pty_output(&self, payload: PtyOutputPayload) {
+        (self.emit_pty_output)(payload);
+    }
+}
+
 impl SessionIoFanout {
     pub fn new(
         output_senders: OutputSenderMap,
@@ -73,9 +98,9 @@ impl SessionIoFanout {
         self.screen_parsers.lock().unwrap().insert(id, replay);
     }
 
-    pub fn handle_output<R: tauri::Runtime>(
+    pub fn handle_output(
         &self,
-        app_handle: &AppHandle<R>,
+        output_target: &PtyOutputTarget,
         id: Uuid,
         session_id_str: &str,
         data: Vec<u8>,
@@ -133,7 +158,7 @@ impl SessionIoFanout {
             data,
             sequence,
         };
-        let _ = app_handle.emit("pty_output", payload);
+        output_target.emit_pty_output(payload);
     }
 
     pub fn record_resize(&self, id: Uuid) {

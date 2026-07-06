@@ -123,6 +123,10 @@ export interface ConfigSeedConfig {
   dest: string;
 }
 
+export interface AgentBackendConfig {
+  kind?: SessionBackendKind;
+}
+
 export interface AgentConfig {
   id: string;
   label: string;
@@ -151,6 +155,7 @@ export interface AgentConfig {
    * inactive seed is never persisted as a sentinel.
    */
   configSeed?: ConfigSeedConfig;
+  backend?: AgentBackendConfig;
 }
 
 /**

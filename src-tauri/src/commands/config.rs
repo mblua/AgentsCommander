@@ -1462,6 +1462,7 @@ mod tests {
                 isolated_home: false,
                 instructions_filename: None,
                 config_seed: None,
+                backend: Default::default(),
             }],
             ..AppSettings::default()
         }
