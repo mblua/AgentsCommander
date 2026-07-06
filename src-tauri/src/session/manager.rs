@@ -10,6 +10,7 @@ use super::session::{
 };
 use crate::config::settings::WindowGeometry;
 use crate::errors::AppError;
+use crate::pty::backend::SessionBackendKind;
 
 #[derive(Clone)]
 pub struct SessionManager {
@@ -47,6 +48,7 @@ impl SessionManager {
         agent_label: Option<String>,
         git_repos: Vec<SessionRepo>,
         is_coordinator: bool,
+        backend_kind: SessionBackendKind,
     ) -> Result<Session, AppError> {
         let id = Uuid::new_v4();
 
@@ -59,6 +61,7 @@ impl SessionManager {
             name,
             shell,
             shell_args,
+            backend_kind,
             effective_shell_args: None,
             created_at: chrono::Utc::now(),
             working_directory,
@@ -815,6 +818,7 @@ mod tests {
                 None,
                 Vec::new(),
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -858,6 +862,7 @@ mod tests {
                 None,
                 Vec::new(),
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -914,6 +919,7 @@ mod tests {
                 None,
                 Vec::new(),
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -957,6 +963,7 @@ mod tests {
                 None,
                 Vec::new(),
                 true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -991,6 +998,7 @@ mod tests {
                 None,
                 Vec::new(),
                 true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -1021,6 +1029,7 @@ mod tests {
                 None,
                 Vec::new(),
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -1049,6 +1058,7 @@ mod tests {
                 None,
                 Vec::new(),
                 true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -1078,6 +1088,7 @@ mod tests {
                 None,
                 Vec::new(),
                 true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -1117,6 +1128,7 @@ mod tests {
                 None,
                 Vec::new(),
                 true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -1144,6 +1156,7 @@ mod tests {
                 None,
                 Vec::new(),
                 true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -1172,6 +1185,7 @@ mod tests {
                 None,
                 Vec::new(),
                 true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -1221,6 +1235,7 @@ mod tests {
                 None,
                 Vec::new(),
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -1245,6 +1260,7 @@ mod tests {
                 None,
                 Vec::new(),
                 true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -1279,6 +1295,7 @@ mod tests {
                 None,
                 Vec::new(),
                 true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -1328,6 +1345,7 @@ mod tests {
                 None,
                 Vec::new(),
                 true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -1361,6 +1379,7 @@ mod tests {
                 None,
                 Vec::new(),
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -1401,6 +1420,7 @@ mod tests {
                 None,
                 Vec::new(),
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -1432,6 +1452,7 @@ mod tests {
                 None,
                 Vec::new(),
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -1456,6 +1477,7 @@ mod tests {
                 None,
                 Vec::new(),
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create first session");
@@ -1468,6 +1490,7 @@ mod tests {
                 None,
                 Vec::new(),
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create second session");
@@ -1498,6 +1521,7 @@ mod tests {
                 None,
                 vec![],
                 true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .unwrap();
@@ -1528,6 +1552,7 @@ mod tests {
                 None,
                 vec![],
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .unwrap();
@@ -1546,6 +1571,7 @@ mod tests {
                 None,
                 vec![],
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .unwrap();
@@ -1589,6 +1615,7 @@ mod tests {
                 Some("Architect".into()),
                 vec![],
                 true, // is_coordinator
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .unwrap();
@@ -1630,6 +1657,7 @@ mod tests {
                 None,
                 vec![],
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .unwrap();
@@ -1670,6 +1698,7 @@ mod tests {
                 None,
                 vec![],
                 true, // is_coordinator
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .unwrap();
@@ -1682,6 +1711,7 @@ mod tests {
                 None,
                 vec![],
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .unwrap();
@@ -1706,6 +1736,7 @@ mod tests {
                 None,
                 vec![],
                 true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .unwrap();
@@ -1719,6 +1750,7 @@ mod tests {
                 None,
                 vec![],
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .unwrap();
@@ -1732,6 +1764,7 @@ mod tests {
                 None,
                 vec![],
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .unwrap();
@@ -1756,6 +1789,7 @@ mod tests {
                 None,
                 vec![],
                 true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .unwrap();
@@ -1769,6 +1803,7 @@ mod tests {
                 None,
                 vec![],
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .unwrap();
@@ -1793,6 +1828,7 @@ mod tests {
                 None,
                 vec![],
                 true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .unwrap();
@@ -1806,6 +1842,7 @@ mod tests {
                 None,
                 vec![],
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .unwrap();

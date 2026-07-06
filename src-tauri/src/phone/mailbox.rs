@@ -2540,6 +2540,7 @@ impl MailboxPoller {
                     spawn_label.clone(),
                     Vec::<SessionRepo>::new(),
                     spawn_is_coordinator,
+                    crate::pty::backend::SessionBackendKind::LocalProcess,
                 )
                 .await
                 .map_err(|e| e.to_string())?;
@@ -5354,6 +5355,7 @@ mod tests {
             name: name.into(),
             shell: "claude".into(),
             shell_args: vec![],
+            backend_kind: crate::pty::backend::SessionBackendKind::LocalProcess,
             effective_shell_args: None,
             created_at: "2026-05-16T00:00:00Z".into(),
             working_directory: cwd.into(),
@@ -5600,6 +5602,7 @@ mod tests {
                 Some("Codex".into()),
                 Vec::new(),
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .unwrap();
@@ -7451,6 +7454,7 @@ mod tests {
                 None,
                 Vec::new(),
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .unwrap();
@@ -7538,6 +7542,7 @@ mod tests {
                 Some("Codex".into()),
                 Vec::new(),
                 is_coordinator,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .unwrap();
@@ -8287,6 +8292,7 @@ mod tests {
                 agent_id.map(|id| format!("Label for {}", id)),
                 Vec::new(),
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .unwrap();

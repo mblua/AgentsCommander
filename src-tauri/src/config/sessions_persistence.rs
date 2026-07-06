@@ -1702,6 +1702,7 @@ mod tests {
                 None,
                 Vec::new(),
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -1727,6 +1728,7 @@ mod tests {
                 None,
                 Vec::new(),
                 true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -1756,6 +1758,7 @@ mod tests {
                 None,
                 Vec::new(),
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -1785,6 +1788,7 @@ mod tests {
                 None,
                 Vec::new(),
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -1836,6 +1840,7 @@ mod tests {
             None,
             Vec::new(),
             false,
+            crate::pty::backend::SessionBackendKind::LocalProcess,
         )
         .await
         .expect("create_session should succeed");
@@ -1862,6 +1867,7 @@ mod tests {
                 None,
                 Vec::new(),
                 true, // coordinator
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -1916,6 +1922,7 @@ mod tests {
                 None,
                 Vec::new(),
                 true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -1954,6 +1961,7 @@ mod tests {
                 None,
                 Vec::new(),
                 true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -2006,6 +2014,7 @@ mod tests {
                 None,
                 Vec::new(),
                 true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -2039,6 +2048,7 @@ mod tests {
                 None,
                 Vec::new(),
                 true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -2090,6 +2100,7 @@ mod tests {
                 None,
                 Vec::new(),
                 true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -2142,6 +2153,7 @@ mod tests {
                 None,
                 Vec::new(),
                 true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -2181,6 +2193,7 @@ mod tests {
                 None,
                 Vec::new(),
                 true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -2238,6 +2251,7 @@ mod tests {
                 None,
                 Vec::new(),
                 true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -2291,6 +2305,7 @@ mod tests {
                 None,
                 Vec::new(),
                 true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
@@ -2330,6 +2345,7 @@ mod tests {
                 None,
                 Vec::new(),
                 true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session should succeed");
