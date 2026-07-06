@@ -2987,8 +2987,10 @@ mod tests {
 
     #[test]
     fn coordinator_auto_close_skip_telegram_assigned_round_trips() {
-        let mut s = AppSettings::default();
-        s.coordinator_auto_close_skip_telegram_assigned = true;
+        let s = AppSettings {
+            coordinator_auto_close_skip_telegram_assigned: true,
+            ..AppSettings::default()
+        };
 
         let json = serde_json::to_value(&s).expect("serialize settings");
         assert_eq!(
