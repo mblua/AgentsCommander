@@ -12,7 +12,8 @@ use crate::config::placeholders::{
 use crate::config::session_context::ManagedContextTarget;
 use crate::config::settings::{
     is_codex_home_key, is_opencode_config_dir_key, normalize_env_key_for_platform,
-    validate_expanded_codex_home_value, validate_user_env_key, AgentConfig, AppSettings,
+    validate_expanded_codex_home_value, validate_user_env_key, AgentBackendConfig, AgentConfig,
+    AppSettings,
 };
 use crate::session::profile::CodingAgentKind;
 use sha2::{Digest, Sha256};
@@ -39,6 +40,7 @@ pub struct AgentSpawnCommand {
     pub profile_content_hash: String,
     pub trusted_agent_id: String,
     pub trusted_agent_label: String,
+    pub backend: AgentBackendConfig,
     /// #598 - resolved config-folder seed (pure path math; executed at the
     /// session chokepoint, never here). `None` when the agent has no active seed
     /// or the launch root is not an AC replica/root-agent.
@@ -931,6 +933,7 @@ pub fn build_agent_spawn_command(
         profile_content_hash: profile_hash,
         trusted_agent_id: agent.id.clone(),
         trusted_agent_label: agent.label.clone(),
+        backend: agent.backend.clone(),
         seed,
     })
 }
@@ -1080,6 +1083,7 @@ mod tests {
             isolated_home: false,
             instructions_filename: None,
             config_seed: None,
+            backend: Default::default(),
         }
     }
 

@@ -2691,6 +2691,7 @@ mod tests {
                 isolated_home: false,
                 instructions_filename: None,
                 config_seed: None,
+                backend: Default::default(),
             },
             crate::config::settings::AgentConfig {
                 id: "claude".to_string(),
@@ -2701,6 +2702,7 @@ mod tests {
                 isolated_home: false,
                 instructions_filename: None,
                 config_seed: None,
+                backend: Default::default(),
             },
         ];
 

@@ -1,11 +1,14 @@
 use std::any::Any;
 use std::path::PathBuf;
 
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::errors::AppError;
-use crate::pty::output::PtyScreenSnapshot;
+use crate::pty::output::{PtyOutputTarget, PtyScreenSnapshot};
+use crate::resource_monitor::ResourceLaunchRegistration;
+use crate::session::profile::IdleTuning;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -14,8 +17,25 @@ pub enum SessionBackendKind {
     LocalProcess,
 }
 
+pub struct BackendSpawnSpec {
+    pub id: Uuid,
+    pub cmd: String,
+    pub args: Vec<String>,
+    pub cwd: String,
+    pub cols: u16,
+    pub rows: u16,
+    pub configured_env: Vec<(String, String)>,
+    pub env_remove_keys: Vec<String>,
+    pub extra_env: Vec<(String, String)>,
+    pub idle_tuning: IdleTuning,
+    pub output_target: PtyOutputTarget,
+    pub resource_registration: Option<ResourceLaunchRegistration>,
+}
+
 pub trait PtyBackend: Any + Send + Sync {
     fn as_any(&self) -> &dyn Any;
+
+    fn spawn(&self, spec: BackendSpawnSpec) -> BoxFuture<'_, Result<(), AppError>>;
 
     fn write(&self, id: Uuid, data: &[u8]) -> Result<(), AppError>;
 
