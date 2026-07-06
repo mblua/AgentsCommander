@@ -9,6 +9,7 @@ use crate::config::agent_config::{self, AgentLocalConfig};
 use crate::config::coordinator_clocks::CoordinatorClocksState;
 use crate::config::sessions_persistence::persist_current_state;
 use crate::config::settings::{AppSettings, SettingsState};
+use crate::pty::backend::SessionBackendKind;
 use crate::pty::manager::PtyManager;
 use crate::resource_monitor::{
     AgentLaunchPermit, ResourceLaunchMetadata, ResourceLaunchRegistration, ResourceLimits,
@@ -894,6 +895,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     };
 
     let mgr = session_mgr.read().await;
+    let backend_kind = SessionBackendKind::LocalProcess;
     let mut session = match mgr
         .create_session(
             shell.clone(),
@@ -903,6 +905,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
             agent_label.clone(),
             git_repos,
             is_coordinator,
+            backend_kind,
         )
         .await
     {
@@ -1281,6 +1284,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     let spawn_result = {
         pty_mgr.lock().unwrap().spawn(
             id,
+            session.backend_kind,
             &shell,
             &shell_args,
             &cwd,
@@ -3328,6 +3332,7 @@ mod tests {
             name: "s".to_string(),
             shell: "codex".to_string(),
             shell_args: Vec::new(),
+            backend_kind: crate::pty::backend::SessionBackendKind::LocalProcess,
             effective_shell_args: None,
             created_at: "2026-06-21T00:00:00Z".to_string(),
             working_directory: cwd.to_string(),
@@ -3558,6 +3563,7 @@ mod tests {
                     Some("Codex".to_string()),
                     Vec::new(),
                     false,
+                    crate::pty::backend::SessionBackendKind::LocalProcess,
                 )
                 .await
                 .expect("failed to create dormant root session");

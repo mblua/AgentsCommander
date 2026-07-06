@@ -1660,6 +1660,7 @@ mod tests {
                 Some("Codex".to_string()),
                 Vec::new(),
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .unwrap();

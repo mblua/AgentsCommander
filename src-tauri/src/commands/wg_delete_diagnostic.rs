@@ -1511,6 +1511,7 @@ mod tests {
                 None,
                 vec![],
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create inside session");
@@ -1523,6 +1524,7 @@ mod tests {
                 None,
                 vec![],
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create outside session");
@@ -1563,6 +1565,7 @@ mod tests {
                 None,
                 vec![],
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create inside session");
@@ -1600,6 +1603,7 @@ mod tests {
                 None,
                 vec![],
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create live session");
@@ -1612,6 +1616,7 @@ mod tests {
                 None,
                 vec![],
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create exited session");

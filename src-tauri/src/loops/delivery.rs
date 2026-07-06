@@ -613,6 +613,7 @@ mod tests {
                 None,
                 Vec::<SessionRepo>::new(),
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create session")

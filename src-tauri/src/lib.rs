@@ -1502,6 +1502,7 @@ pub fn run(
                                             ps.agent_label.clone(),
                                             ps.git_repos.clone(),
                                             false,
+                                            crate::pty::backend::SessionBackendKind::LocalProcess,
                                         )
                                         .await
                                     {
@@ -1606,6 +1607,7 @@ pub fn run(
                                 ps.agent_label.clone(),
                                 ps.git_repos.clone(),
                                 is_coord, // #248 — pass live is_coord so dormant coords stay coords (Z7).
+                                crate::pty::backend::SessionBackendKind::LocalProcess,
                             ).await {
                                 Ok(session) => {
                                     mgr.rename_session(session.id, ps.name.clone()).await.ok();

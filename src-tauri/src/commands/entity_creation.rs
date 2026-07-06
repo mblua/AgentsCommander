@@ -3206,6 +3206,7 @@ mod tests {
                     None,
                     Vec::new(),
                     false,
+                    crate::pty::backend::SessionBackendKind::LocalProcess,
                 )
                 .await
                 .expect("create live session");
