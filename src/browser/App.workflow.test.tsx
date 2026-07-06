@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import BrowserApp from "./App";
 import { FakeTransport } from "../shared/testing/fake-transport";
+import type { WorkgroupGroupsConfig } from "../shared/types";
 import {
   baseSettings,
   discovery,
@@ -100,6 +101,15 @@ function browserDiscovery() {
   });
 }
 
+function groupsConfig(overrides: Partial<WorkgroupGroupsConfig> = {}): WorkgroupGroupsConfig {
+  return {
+    groups: overrides.groups ?? [],
+    showAll: overrides.showAll ?? true,
+    showUngrouped: overrides.showUngrouped ?? true,
+    nonStop: overrides.nonStop ?? null,
+  };
+}
+
 function setupBrowserTransport(
   fake: FakeTransport,
   settingsOverrides: Parameters<typeof baseSettings>[0] = {}
@@ -119,7 +129,7 @@ function setupBrowserTransport(
     created: false,
   });
   fake.resolve("discover_project", browserDiscovery());
-  fake.resolve("get_project_groups", { groups: [], showAll: true, showUngrouped: true });
+  fake.resolve("get_project_groups", groupsConfig());
   fake.resolve("search_repos", []);
   fake.resolve("list_sessions", [architectSession]);
   fake.resolve("get_active_session", architectSession.id);
@@ -166,6 +176,45 @@ describe("BrowserApp workflow", () => {
       expect(fake.callsFor("list_sessions").length).toBeGreaterThan(0);
       expect(fake.callsFor("get_active_session").length).toBeGreaterThan(0);
       expect(fake.callsFor("list_detached_sessions").length).toBeGreaterThan(0);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("applies project_groups_updated events to the groups rail without reloading", async () => {
+    const fake = new FakeTransport();
+    setupBrowserTransport(fake);
+
+    const rendered = renderWithFakeTransport(() => <BrowserApp />, fake);
+    try {
+      await waitFor(() => {
+        expect(
+          rendered.root.querySelector('[data-ac-testid="workgroupGroups.button.all"]')
+        ).not.toBeNull();
+        expect(fake.callsFor("discover_project")).toHaveLength(1);
+        expect(fake.callsFor("get_project_groups")).toHaveLength(1);
+      });
+      fake.clearCalls();
+
+      fake.emitFromBackend("project_groups_updated", {
+        projectPath,
+        config: groupsConfig({
+          showUngrouped: false,
+          groups: [{ id: "live", name: "Live synced", regex: "^wg-1-dev-team$" }],
+        }),
+      });
+
+      await waitFor(() => {
+        const liveButton = rendered.root.querySelector<HTMLElement>(
+          '[data-ac-testid="workgroupGroups.button.live"]'
+        );
+        expect(liveButton).not.toBeNull();
+        expect(liveButton?.textContent).toContain("Live synced");
+        expect(liveButton?.textContent).toContain("1/1");
+      });
+
+      expect(fake.callsFor("discover_project")).toHaveLength(0);
+      expect(fake.callsFor("get_project_groups")).toHaveLength(0);
     } finally {
       rendered.cleanup();
     }
