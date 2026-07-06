@@ -4,6 +4,7 @@ use std::path::Path;
 use uuid::Uuid;
 
 use crate::config::settings::WindowGeometry;
+use crate::pty::backend::SessionBackendKind;
 use crate::session::profile::CodingAgentKind;
 
 /// Mangle a CWD path the same way Claude Code does for its project directories.
@@ -63,6 +64,8 @@ pub struct Session {
     pub name: String,
     pub shell: String,
     pub shell_args: Vec<String>,
+    #[serde(default)]
+    pub backend_kind: SessionBackendKind,
     /// Effective arg vector actually handed to portable-pty at spawn time,
     /// including dynamic provider resume injections (`--continue`,
     /// `codex resume --last`, `gemini --resume latest`). `None` until the PTY
@@ -210,6 +213,8 @@ pub struct SessionInfo {
     pub name: String,
     pub shell: String,
     pub shell_args: Vec<String>,
+    #[serde(default)]
+    pub backend_kind: SessionBackendKind,
     /// See `Session::effective_shell_args`. `None` means "not yet registered"
     /// (dormant or pre-spawn). On the wire, serializes as `null`.
     #[serde(default)]
@@ -283,6 +288,7 @@ impl From<&Session> for SessionInfo {
             name: s.name.clone(),
             shell: s.shell.clone(),
             shell_args: s.shell_args.clone(),
+            backend_kind: s.backend_kind,
             effective_shell_args: s.effective_shell_args.clone(),
             created_at: s.created_at.to_rfc3339(),
             working_directory: s.working_directory.clone(),
@@ -324,6 +330,7 @@ mod tests {
             name: "Session 1".to_string(),
             shell: "claude-mb".to_string(),
             shell_args: vec!["--dangerously-skip-permissions".to_string()],
+            backend_kind: SessionBackendKind::LocalProcess,
             effective_shell_args: effective,
             created_at: Utc::now(),
             working_directory: "C:\\tmp".to_string(),

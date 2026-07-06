@@ -245,6 +245,7 @@ mod tests {
                     branch: None,
                 }],
                 false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .expect("create_session");

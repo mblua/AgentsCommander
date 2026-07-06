@@ -12,11 +12,14 @@ export interface SessionCommunication {
   updatedAt: string;
 }
 
+export type SessionBackendKind = "localProcess";
+
 export interface Session {
   id: string;
   name: string;
   shell: string;
   shellArgs: string[];
+  backendKind?: SessionBackendKind;
   effectiveShellArgs: string[] | null;
   createdAt: string;
   workingDirectory: string;
