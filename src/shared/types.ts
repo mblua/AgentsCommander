@@ -810,6 +810,11 @@ export interface WorkgroupGroupsConfig {
   nonStop?: NonStopGroupConfig | null;
 }
 
+export interface ProjectGroupsUpdatedPayload {
+  projectPath: string;
+  config: WorkgroupGroupsConfig;
+}
+
 /** #777 frontend -> backend watchdog signal; one entry per project with an ACTIVE Non-stop group. */
 export interface NonStopReport {
   projectPath: string;

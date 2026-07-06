@@ -3,6 +3,18 @@ use std::path::Path;
 use crate::config::project_settings::{
     load_workgroup_groups, save_workgroup_groups, WorkgroupGroupsConfig,
 };
+use crate::web::broadcast::WsBroadcaster;
+use serde_json::{json, Value};
+use tauri::{AppHandle, State};
+
+pub(crate) const PROJECT_GROUPS_UPDATED_EVENT: &str = "project_groups_updated";
+
+pub(crate) fn project_groups_updated_payload(
+    project_path: &str,
+    config: &WorkgroupGroupsConfig,
+) -> Value {
+    json!({ "projectPath": project_path, "config": config })
+}
 
 pub(crate) fn get_project_groups_inner(path: &str) -> Result<WorkgroupGroupsConfig, String> {
     load_workgroup_groups(Path::new(path))
@@ -22,10 +34,20 @@ pub(crate) fn update_project_groups_inner(
 
 #[tauri::command]
 pub async fn update_project_groups(
+    app: AppHandle,
+    broadcaster: State<'_, WsBroadcaster>,
     path: String,
     config: WorkgroupGroupsConfig,
 ) -> Result<WorkgroupGroupsConfig, String> {
-    update_project_groups_inner(&path, config)
+    let result = update_project_groups_inner(&path, config)?;
+    let payload = project_groups_updated_payload(&path, &result);
+    crate::web::commands::broadcast_all(
+        &app,
+        broadcaster.inner(),
+        PROJECT_GROUPS_UPDATED_EVENT,
+        &payload,
+    );
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -69,9 +91,7 @@ mod tests {
         let path = project.path().to_string_lossy().to_string();
         let config = sample_config();
 
-        let saved = update_project_groups(path.clone(), config.clone())
-            .await
-            .expect("update groups");
+        let saved = update_project_groups_inner(&path, config.clone()).expect("update groups");
         let loaded = get_project_groups(path).await.expect("get groups");
 
         assert_eq!(saved, config);

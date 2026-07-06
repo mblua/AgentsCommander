@@ -117,6 +117,73 @@ describe("workgroupGroupsStore", () => {
     ]);
   });
 
+  it("applies external project group updates", () => {
+    workgroupGroupsStore.applyExternalUpdate(
+      projectPath,
+      config({
+        groups: [{ id: "live", name: "Live", regex: "^wg-2-" }],
+        showAll: false,
+        showUngrouped: true,
+      })
+    );
+
+    expect(workgroupGroupsStore.config(projectPath)).toMatchObject({
+      groups: [{ id: "live", name: "Live", regex: "^wg-2-" }],
+      showAll: false,
+      showUngrouped: true,
+    });
+    expect(workgroupGroupsStore.error(projectPath)).toBeNull();
+    expect(workgroupGroupsStore.loading(projectPath)).toBe(false);
+  });
+
+  it("does not let a stale initial load overwrite an external update", async () => {
+    const fake = new FakeTransport();
+    restoreTransport?.();
+    restoreTransport = __setTransportForTests(fake);
+
+    let resolveLoad!: (value: WorkgroupGroupsConfig) => void;
+    const loadPromise = new Promise<WorkgroupGroupsConfig>((resolve) => {
+      resolveLoad = resolve;
+    });
+    fake.onInvoke("get_project_groups", () => loadPromise);
+
+    const load = workgroupGroupsStore.ensureLoaded(projectPath);
+    expect(fake.callsFor("get_project_groups")).toHaveLength(1);
+
+    workgroupGroupsStore.applyExternalUpdate(
+      projectPath,
+      config({ groups: [{ id: "external", name: "External", regex: "^wg-9-" }] })
+    );
+
+    resolveLoad(config({ groups: [{ id: "stale", name: "Stale", regex: "^wg-1-" }] }));
+    await load;
+
+    expect(workgroupGroupsStore.config(projectPath).groups).toEqual([
+      { id: "external", name: "External", regex: "^wg-9-" },
+    ]);
+    expect(workgroupGroupsStore.loading(projectPath)).toBe(false);
+  });
+
+  it("keys external updates by project path", () => {
+    const otherProject = "C:\\OtherProject";
+
+    workgroupGroupsStore.applyExternalUpdate(
+      projectPath,
+      config({ groups: [{ id: "primary", name: "Primary", regex: "^wg-1-" }] })
+    );
+    workgroupGroupsStore.applyExternalUpdate(
+      otherProject,
+      config({ groups: [{ id: "other", name: "Other", regex: "^wg-2-" }] })
+    );
+
+    expect(workgroupGroupsStore.config(projectPath).groups).toEqual([
+      { id: "primary", name: "Primary", regex: "^wg-1-" },
+    ]);
+    expect(workgroupGroupsStore.config(otherProject).groups).toEqual([
+      { id: "other", name: "Other", regex: "^wg-2-" },
+    ]);
+  });
+
   it("reorders groups by final insertion index and clamps to the list bounds", () => {
     const groups = [
       { id: "a", name: "A", regex: "a" },

@@ -29,6 +29,7 @@ import {
   onCodingAgentEnvSettingsUpdated,
   onCodingAgentProfileSelectionUpdated,
   onLoopEvent,
+  onProjectGroupsUpdated,
   onNpmUpdateAvailable,
 } from "../shared/ipc";
 import { taskFirstLine } from "../shared/markdown";
@@ -39,6 +40,7 @@ import { applyWindowLayout } from "../shared/window-layout";
 import { sessionsStore } from "./stores/sessions";
 import { bridgesStore } from "./stores/bridges";
 import { projectStore } from "./stores/project";
+import { workgroupGroupsStore } from "./stores/workgroup-groups";
 import { startTeamIdleWatcher } from "./stores/team-idle-watcher";
 import { primeAudio } from "../shared/sound";
 import { settingsStore } from "../shared/stores/settings";
@@ -272,6 +274,11 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     unlisteners.push(
       await onAcProjectRefreshRequested((data) => {
         handleProjectRefreshRequested(data);
+      })
+    );
+    unlisteners.push(
+      await onProjectGroupsUpdated((data) => {
+        workgroupGroupsStore.applyExternalUpdate(data.projectPath, data.config);
       })
     );
     unlisteners.push(
