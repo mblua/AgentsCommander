@@ -161,6 +161,7 @@ export function baseSettings(overrides: Partial<AppSettings> = {}): AppSettings 
     coordinatorIdleBadgeRedMinutes: 60,
     coordinatorAutoCloseEnabled: true,
     coordinatorAutoCloseMinutes: 60,
+    coordinatorAutoCloseSkipTelegramAssigned: false,
     coordinatorCascadeCloseEnabled: true,
     npmUpdateNotificationsEnabled: true,
     autoSelfClearEnabled: true,
