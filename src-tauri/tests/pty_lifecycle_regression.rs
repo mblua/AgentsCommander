@@ -252,6 +252,7 @@ fn make_test_app(
         idle_detector,
         Arc::clone(&git_watcher),
         None,
+        Arc::clone(&session_mgr),
     )));
 
     let detached_sessions: DetachedSessionsState = Arc::new(Mutex::new(HashSet::new()));

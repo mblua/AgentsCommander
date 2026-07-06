@@ -49,6 +49,12 @@ struct PtyOutputPayload {
     sequence: Option<u64>,
 }
 
+#[cfg(test)]
+pub(crate) type PtyOutputTestEvent = (String, Vec<u8>, Option<u64>);
+
+#[cfg(test)]
+pub(crate) type PtyOutputTestSink = Arc<Mutex<Vec<PtyOutputTestEvent>>>;
+
 #[derive(Clone)]
 pub struct PtyOutputTarget {
     emit_pty_output: Arc<dyn Fn(PtyOutputPayload) + Send + Sync>,
@@ -70,7 +76,7 @@ impl PtyOutputTarget {
     }
 
     #[cfg(test)]
-    pub(crate) fn from_test_sink(sink: Arc<Mutex<Vec<(String, Vec<u8>, Option<u64>)>>>) -> Self {
+    pub(crate) fn from_test_sink(sink: PtyOutputTestSink) -> Self {
         Self {
             emit_pty_output: Arc::new(move |payload| {
                 sink.lock()
