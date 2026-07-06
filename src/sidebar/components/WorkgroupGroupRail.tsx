@@ -348,15 +348,21 @@ const ProjectRailSection: Component<{
     finishPress(event);
   };
 
+  const onWindowPointerMove = (event: PointerEvent) => {
+    movePress(event);
+  };
+
   const onWindowPointerCancel = (event: PointerEvent) => {
     cancelPress(event);
   };
 
   window.addEventListener("keydown", onKeyDown);
+  window.addEventListener("pointermove", onWindowPointerMove);
   window.addEventListener("pointerup", onWindowPointerUp);
   window.addEventListener("pointercancel", onWindowPointerCancel);
   onCleanup(() => {
     window.removeEventListener("keydown", onKeyDown);
+    window.removeEventListener("pointermove", onWindowPointerMove);
     window.removeEventListener("pointerup", onWindowPointerUp);
     window.removeEventListener("pointercancel", onWindowPointerCancel);
     clearHoldTimer();
@@ -422,17 +428,6 @@ const ProjectRailSection: Component<{
             onPointerMove={movePress}
             onPointerUp={finishPress}
             onPointerCancel={cancelPress}
-            onLostPointerCapture={(event) => {
-              const current = reorderState();
-              if (
-                !current ||
-                current.pointerId !== event.pointerId ||
-                (current.phase !== "arming" && current.phase !== "dragging")
-              ) {
-                return;
-              }
-              cancelReorder(current.phase === "dragging");
-            }}
             onClick={(event) => {
               if (button.groupId && suppressClickGroupId === button.groupId) {
                 suppressClickGroupId = null;
