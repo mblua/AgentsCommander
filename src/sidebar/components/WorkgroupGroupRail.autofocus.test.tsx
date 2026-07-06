@@ -52,16 +52,27 @@ function groupsConfig(): WorkgroupGroupsConfig {
   return { ...defaultGroupsConfig() };
 }
 
-// #810 (grinch F1) - find the .project-header button by its title ATTRIBUTE
-// value via getAttribute, NOT via a CSS attribute selector. A CSS selector
-// like `[title="C:\ProjectA"]` would parse `\P` as `P` (CSS string-token
-// escape) and fail to match the real attribute - the exact bug F1 fixed in
-// the production code. The test must NOT use the broken pattern.
+// #810 (grinch F1) - find the .project-header container by its title
+// ATTRIBUTE value via getAttribute, NOT via a CSS attribute selector. A CSS
+// selector like `[title="C:\ProjectA"]` would parse `\P` as `P` (CSS
+// string-token escape) and fail to match the real attribute - the exact bug
+// F1 fixed in the production code. The test must NOT use the broken pattern.
+// After main's restructure, .project-header is a <div> container holding a
+// <button class="project-header-main">. The ref-Map stores the .project-header
+// div (that's where the ref callback lives), so scrollIntoView is called on
+// it. The click-to-toggle target is the .project-header-main button inside.
 function findProjectHeader(root: ParentNode, projectPath: string): HTMLElement {
   const headers = Array.from(root.querySelectorAll<HTMLElement>(".project-header"));
   const header = headers.find((h) => h.getAttribute("title") === projectPath);
   if (!header) throw new Error(`project-header not found for ${projectPath}`);
   return header;
+}
+
+function findProjectHeaderButton(root: ParentNode, projectPath: string): HTMLElement {
+  const header = findProjectHeader(root, projectPath);
+  const btn = header.querySelector<HTMLElement>(".project-header-main");
+  if (!btn) throw new Error(`project-header-main button not found for ${projectPath}`);
+  return btn;
 }
 
 function headerCollapsed(header: HTMLElement): boolean {
@@ -198,8 +209,9 @@ describe("WorkgroupGroupRail autofocus (#810)", () => {
       await projectStore.createAndLoad(projectPathB);
       await waitFor(() => expect(findProjectHeader(rendered.root, projectPathA)).toBeTruthy());
 
-      // Manually collapse ProjectA first.
-      click(findProjectHeader(rendered.root, projectPathA));
+      // Manually collapse ProjectA first (click the .project-header-main
+      // button, which is the actual toggle target after main's restructure).
+      click(findProjectHeaderButton(rendered.root, projectPathA));
       await waitFor(() =>
         expect(headerCollapsed(findProjectHeader(rendered.root, projectPathA))).toBe(true)
       );

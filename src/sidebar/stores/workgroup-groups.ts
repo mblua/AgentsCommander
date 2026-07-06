@@ -138,6 +138,22 @@ function cloneConfig(config: WorkgroupGroupsConfig): WorkgroupGroupsConfig {
   };
 }
 
+export function reorderGroups(
+  groups: WorkgroupGroup[],
+  groupId: string,
+  targetIndex: number
+): WorkgroupGroup[] {
+  const sourceIndex = groups.findIndex((group) => group.id === groupId);
+  if (sourceIndex < 0) return groups;
+
+  const next = groups.slice();
+  const [moved] = next.splice(sourceIndex, 1);
+  const safeTarget = Number.isFinite(targetIndex) ? Math.round(targetIndex) : sourceIndex;
+  const clampedTarget = Math.max(0, Math.min(safeTarget, next.length));
+  next.splice(clampedTarget, 0, moved);
+  return next;
+}
+
 function defaultEntry(): ProjectGroupsEntry {
   return {
     config: defaultGroupsConfig(),
@@ -494,6 +510,15 @@ export const workgroupGroupsStore = {
       setEntries(key, { ...latest, saving: false, error: message });
       throw new Error(message);
     }
+  },
+
+  async reorderGroup(projectPath: string, groupId: string, targetIndex: number): Promise<void> {
+    const config = this.config(projectPath);
+    const groups = reorderGroups(config.groups, groupId, targetIndex);
+    const before = config.groups.map((group) => group.id).join("\0");
+    const after = groups.map((group) => group.id).join("\0");
+    if (before === after) return;
+    await this.save(projectPath, { ...config, groups });
   },
 
   async addWorkgroupToGroup(projectPath: string, groupId: string, wgName: string): Promise<void> {

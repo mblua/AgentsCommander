@@ -71,6 +71,12 @@ function isExitedStatus(status: SessionStatus): boolean {
   return typeof status === "object" && status !== null && "exited" in status;
 }
 
+export function blockContextMenu(e: Event): void {
+  // Allow native menus where users expect text Copy/Paste.
+  if (e.target instanceof Element && e.target.closest(".terminal-host, .project-filter-row")) return;
+  e.preventDefault();
+}
+
 const SidebarApp: Component<SidebarAppProps> = (props) => {
   const [showOnboarding, setShowOnboarding] = createSignal(false);
   const [loopToast, setLoopToast] = createSignal<LoopToast | null>(null);
@@ -96,14 +102,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
   const railSide = () => props.railSide ?? settingsRailSide();
   // #592 - debounce handle for the profile-drift re-list (collapses bursts).
   let profileDriftRefreshTimer: ReturnType<typeof setTimeout> | null = null;
-  const blockContextMenu = (e: Event) => {
-    // Allow the WebView2 native menu over the embedded terminal so users get
-    // Copy/Paste. Custom menus elsewhere (SessionItem, ProjectPanel, etc.)
-    // remain blocked.
-    if (e.target instanceof Element && e.target.closest(".terminal-host")) return;
-    e.preventDefault();
-  };
-
   const handleMainSidebarSideChange = (event: Event) => {
     const side = (event as CustomEvent<{ side?: MainSidebarSide }>).detail?.side;
     setSettingsRailSide(side === "left" ? "left" : "right");
