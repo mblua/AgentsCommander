@@ -37,6 +37,7 @@ futures = "0.3"
 rfd = "0.15"
 tauri-plugin-dialog = "2.6.0"
 which = "7"
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 # #714 Native screenshot capture is Windows-only for this issue. Non-Windows
 # builds compile through the `screenshot::unsupported` stub and never link these.

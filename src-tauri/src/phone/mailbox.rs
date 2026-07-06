@@ -14,6 +14,7 @@ use crate::config::sessions_persistence::RaiseHandPersistOutcome;
 use crate::config::settings::{AgentConfig, AppSettings, SettingsState};
 use crate::config::teams;
 use crate::phone::types::OutboxMessage;
+use crate::pty::backend::SessionBackendKind;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 #[cfg(test)]
@@ -35,6 +36,46 @@ fn sender_name_for_session_cwd_with_root_flag(
 fn sender_name_for_session_cwd(working_directory: &str) -> String {
     let is_root_agent = crate::config::root_agent::is_root_agent_path(working_directory);
     sender_name_for_session_cwd_with_root_flag(working_directory, is_root_agent)
+}
+
+fn inline_body_from_file_notification(body: &str) -> Result<Option<String>, String> {
+    let Some(notification_path) = crate::phone::messaging::parse_file_notification(body) else {
+        return Ok(None);
+    };
+    let filename = crate::phone::messaging::notification_filename(notification_path)
+        .ok_or_else(|| "file notification does not include a message filename".to_string())?;
+    let parent = Path::new(notification_path)
+        .parent()
+        .ok_or_else(|| "file notification does not include a parent directory".to_string())?;
+    if parent.file_name().and_then(|n| n.to_str())
+        != Some(crate::phone::messaging::MESSAGING_DIR_NAME)
+    {
+        return Err("file notification parent is not a messaging directory".to_string());
+    }
+    let abs = crate::phone::messaging::resolve_existing_message(parent, filename)
+        .map_err(|e| format!("message file not readable for container delivery: {}", e))?;
+    let bytes = std::fs::read(&abs)
+        .map_err(|e| format!("message file not readable for container delivery: {}", e))?;
+    if bytes.len() > crate::api::message_store::INLINE_BODY_MAX_BYTES {
+        return Err(format!(
+            "message file exceeds inline cap ({} bytes)",
+            crate::api::message_store::INLINE_BODY_MAX_BYTES
+        ));
+    }
+    let body = String::from_utf8(bytes)
+        .map_err(|e| format!("message file is not UTF-8 for container delivery: {}", e))?;
+    Ok(Some(body))
+}
+
+fn is_container_backend_session<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_id: Uuid,
+) -> Result<bool, String> {
+    let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+    let mgr = pty_mgr
+        .lock()
+        .map_err(|e| format!("PTY lock failed: {}", e))?;
+    Ok(mgr.backend_kind(session_id) == Some(SessionBackendKind::ContainerTransport))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2064,8 +2105,9 @@ impl MailboxPoller {
         let mut spawn_with_resume = false;
         let mut pending_exited_destroy: Option<Uuid> = None;
         let mut pending_exited_telegram_bot_id: Option<String> = None;
-        let mut pending_exited_communication: Option<crate::session::session::SessionCommunication> =
-            None;
+        let mut pending_exited_communication: Option<
+            crate::session::session::SessionCommunication,
+        > = None;
         // (#747) Set only when the deferred destroy FAILS: the orphan Exited
         // record then still holds the restored hand and must be cleared once
         // the replacement spawn succeeds (single-carrier rule, 5d).
@@ -2850,6 +2892,12 @@ impl MailboxPoller {
         // ── Standard message path ──
         // Only use response markers for non-interactive sessions
         let use_markers = msg.get_output && !interactive;
+        let body_override = if is_container_backend_session(app, session_id)? {
+            inline_body_from_file_notification(&msg.body)?
+        } else {
+            None
+        };
+        let body = body_override.as_deref().unwrap_or(&msg.body);
 
         // Interactive and marker-less paths share the minimal PTY wrap via
         // `format_pty_wrap` (single source with `PTY_WRAP_FIXED` used by the
@@ -2857,9 +2905,9 @@ impl MailboxPoller {
         // payload with response markers.
         let payload = match (use_markers, msg.request_id.as_ref()) {
             (true, Some(rid)) => {
-                crate::phone::messaging::format_pty_wrap_with_markers(&msg.from, &msg.body, rid)
+                crate::phone::messaging::format_pty_wrap_with_markers(&msg.from, body, rid)
             }
-            _ => crate::phone::messaging::format_pty_wrap(&msg.from, &msg.body),
+            _ => crate::phone::messaging::format_pty_wrap(&msg.from, body),
         };
 
         // Register response watcher only for non-interactive sessions
@@ -4269,7 +4317,8 @@ impl MailboxPoller {
                     if let Ok(new_uuid) = Uuid::parse_str(&info.id) {
                         let restored = {
                             let mgr = session_mgr.read().await;
-                            mgr.restore_communication(new_uuid, communication.clone()).await
+                            mgr.restore_communication(new_uuid, communication.clone())
+                                .await
                         };
                         if restored {
                             let _ = tauri::Emitter::emit(
@@ -5340,6 +5389,54 @@ mod tests {
     use tauri::Listener;
 
     // ── §224 D.5a — wait_for_restore_or_session unit tests ──
+
+    #[test]
+    fn container_file_notification_adapter_reads_inline_content() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let messaging = temp
+            .path()
+            .join(crate::phone::messaging::MESSAGING_DIR_NAME);
+        std::fs::create_dir_all(&messaging).unwrap();
+        let filename = "20260704-000000-wg1-a-to-wg1-b-hello.md";
+        let path = messaging.join(filename);
+        std::fs::write(&path, "inline body").unwrap();
+        let notification =
+            crate::phone::messaging::format_file_notification(&path.to_string_lossy());
+
+        let got = inline_body_from_file_notification(&notification).unwrap();
+
+        assert_eq!(got.as_deref(), Some("inline body"));
+    }
+
+    #[test]
+    fn container_file_notification_adapter_rejects_oversize_content() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let messaging = temp
+            .path()
+            .join(crate::phone::messaging::MESSAGING_DIR_NAME);
+        std::fs::create_dir_all(&messaging).unwrap();
+        let filename = "20260704-000000-wg1-a-to-wg1-b-large.md";
+        let path = messaging.join(filename);
+        std::fs::write(
+            &path,
+            vec![b'x'; crate::api::message_store::INLINE_BODY_MAX_BYTES + 1],
+        )
+        .unwrap();
+        let notification =
+            crate::phone::messaging::format_file_notification(&path.to_string_lossy());
+
+        let err = inline_body_from_file_notification(&notification).unwrap_err();
+
+        assert!(err.contains("inline cap"));
+    }
+
+    #[test]
+    fn container_file_notification_adapter_ignores_plain_body() {
+        assert_eq!(
+            inline_body_from_file_notification("plain body").unwrap(),
+            None
+        );
+    }
 
     // ── §224 D.3 — filter_sessions_by_fqn pure-predicate tests ──
 

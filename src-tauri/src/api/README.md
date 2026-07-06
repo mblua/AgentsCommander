@@ -3,8 +3,8 @@
 A local, opt-in HTTP API hosted inside the daemon (a sibling of `web/`) that
 lets a machine client (first: a Dockerized coding agent) speak the inter-agent
 control-plane over a token instead of the filesystem outbox. The filesystem
-messaging path stays fully live; this is a strangler-fig second front door into
-the SAME actuation (`deliver_wake`).
+messaging path stays fully live. API sends are stored in the durable DB queue
+and dispatched through the SAME actuation (`deliver_wake`).
 
 ## Enabling
 
@@ -41,16 +41,21 @@ failed-auth lockout throttles unauthenticated probing.
 
 ## Endpoints (`/api/v1`)
 
-- `POST /api/v1/send` - mirrors `send --mode wake --send <file>` (no `--command`).
+- `POST /api/v1/send` - durable inline send (no `--command`).
   Body (`deny_unknown_fields`; `from`/`root`/`token`/`command`/`action` rejected):
   ```json
   { "apiVersion": "1", "opId": "<uuid>", "to": "<fqn>",
-    "message": { "send": "<bare-filename-in-messaging/>" } }
+    "message": { "inline": "message text", "contentType": "text/markdown" } }
   ```
-  `inline` is reserved and rejected with 400 in v1. `opId` is the idempotency
-  key: a replay returns the prior result and never re-delivers (persisted across
-  restarts in `api-idempotency.json`). Response: `200` delivered, `422` rejected,
-  `400/401/403/429` on client/auth/routing/lockout failures.
+  Compatibility `message.send` is also accepted as a bare filename in the
+  sender's workgroup `messaging/` directory, but the daemon reads the file once
+  and stores its content inline. It never stores or injects the host path as the
+  payload. Exactly one of `message.inline` or `message.send` is required.
+  `contentType` defaults to `text/markdown`. Inline payloads are capped at 256
+  KiB. `opId` is the idempotency key, enforced by the DB on `(senderFqn, opId)`;
+  a replay returns the same queued `messageId` and never creates a second row.
+  Response: `202` queued with `{ "status": "queued", "messageId": "..." }`;
+  `400/401/403/413/429` on client/auth/routing/size/lockout failures.
 - `GET /api/v1/peers[?peer=<fqn>...]` - `list-peers-lean` for the caller's bound
   replica; `reachable` is computed from the bound identity.
 - `GET /api/v1/healthz` - unauthenticated liveness, body exactly `{"ok":true}`.
@@ -83,3 +88,9 @@ stay in v1; a breaking change introduces `/api/v2` mounted alongside. The
 Every mint/revoke and authenticated request appends `(ts, clientId, boundFqn,
 op, outcome)` to `api-audit.log` (host-only, 10 MB cap + one rotation, never
 fails closed). Secrets and hashes are never logged.
+
+The message bus database is stored plaintext at
+`config_dir()/api-message-bus.sqlite3`. It is host-only and sensitive because it
+contains queued inline message bodies. The DB uses WAL, foreign keys, a 5s busy
+timeout, schema migrations, transactional enqueue/idempotency, retry leases, and
+delivered/poisoned retention.

@@ -5,6 +5,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 type HelperResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+const INLINE_BODY_MAX_BYTES: usize = 256 * 1024;
 
 #[tokio::main]
 async fn main() {
@@ -69,17 +70,27 @@ async fn send(args: Vec<String>) -> HelperResult<()> {
         }
     }
     let to = to.ok_or("send requires --to")?;
-    if inline.is_some() {
-        return Err("API transport v1 does not support send --message; use --send".into());
+    let body = match (file, inline) {
+        (Some(_), Some(_)) => return Err("send requires exactly one of --send or --message".into()),
+        (None, None) => return Err("send requires --send or --message".into()),
+        (Some(path), None) => std::fs::read_to_string(path)?,
+        (None, Some(text)) => text,
+    };
+    if body.len() > INLINE_BODY_MAX_BYTES {
+        return Err(format!(
+            "send body exceeds inline cap ({} bytes)",
+            INLINE_BODY_MAX_BYTES
+        )
+        .into());
     }
-    let send = file.ok_or("send requires --send")?;
 
     let request = json!({
         "apiVersion": "1",
         "opId": Uuid::new_v4().to_string(),
         "to": to,
         "message": {
-            "send": send
+            "inline": body,
+            "contentType": "text/markdown"
         }
     });
     let client = reqwest::Client::new();
@@ -97,4 +108,14 @@ async fn send(args: Vec<String>) -> HelperResult<()> {
     }
     println!("{text}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inline_cap_matches_daemon_contract() {
+        assert_eq!(INLINE_BODY_MAX_BYTES, 256 * 1024);
+    }
 }
