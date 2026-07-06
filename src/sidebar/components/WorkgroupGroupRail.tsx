@@ -1,4 +1,4 @@
-import { Component, For, Show, createEffect, createMemo, createSignal } from "solid-js";
+import { Component, For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import type { AcWorkgroup, WorkgroupGroup } from "../../shared/types";
 import type { ProjectState } from "../stores/project";
 import {
@@ -36,6 +36,24 @@ interface GroupButton {
   selection: WorkgroupGroupSelection;
   workgroups: AcWorkgroup[];
   title: string;
+  reorderable: boolean;
+  groupId: string | null;
+  groupIndex: number | null;
+}
+
+const REORDER_HOLD_MS = 2000;
+const REORDER_MOVE_CANCEL_PX = 6;
+
+type ReorderPhase = "arming" | "dragging" | "saving";
+
+interface ReorderState {
+  phase: ReorderPhase;
+  pointerId: number;
+  groupId: string;
+  sourceIndex: number;
+  targetIndex: number | null;
+  startX: number;
+  startY: number;
 }
 
 function wgNumber(name: string): number {
@@ -116,6 +134,9 @@ const ProjectRailSection: Component<{
         selection: { kind: "all" },
         workgroups: props.project.workgroups,
         title: tooltipFor(props.project.workgroups),
+        reorderable: false,
+        groupId: null,
+        groupIndex: null,
       });
     }
     if (config().showUngrouped) {
@@ -126,6 +147,9 @@ const ProjectRailSection: Component<{
         selection: { kind: "ungrouped" },
         workgroups,
         title: tooltipFor(workgroups),
+        reorderable: false,
+        groupId: null,
+        groupIndex: null,
       });
     }
     // #777: the built-in Non-stop group pins directly after Ungrouped (or after
@@ -143,9 +167,12 @@ const ProjectRailSection: Component<{
         selection: { kind: "nonstop" },
         workgroups,
         title: tooltipFor(workgroups),
+        reorderable: false,
+        groupId: null,
+        groupIndex: null,
       });
     }
-    for (const group of config().groups) {
+    for (const [groupIndex, group] of config().groups.entries()) {
       const workgroups = props.project.workgroups.filter((wg) => groupMatches(group, wg));
       result.push({
         key: group.id,
@@ -153,6 +180,9 @@ const ProjectRailSection: Component<{
         selection: { kind: "group", id: group.id },
         workgroups,
         title: tooltipFor(workgroups),
+        reorderable: true,
+        groupId: group.id,
+        groupIndex,
       });
     }
     return result;
@@ -162,23 +192,256 @@ const ProjectRailSection: Component<{
     if (current.kind !== button.selection.kind) return false;
     return current.kind !== "group" || button.selection.kind !== "group" || current.id === button.selection.id;
   };
+  const [reorderState, setReorderState] = createSignal<ReorderState | null>(null);
+  let holdTimer: number | null = null;
+  let suppressClickGroupId: string | null = null;
+  let projectEl: HTMLDivElement | undefined;
+  const groupButtonEls = new Map<string, HTMLButtonElement>();
+
+  const clearHoldTimer = () => {
+    if (holdTimer !== null) {
+      window.clearTimeout(holdTimer);
+      holdTimer = null;
+    }
+  };
+
+  const cancelReorder = (suppressClick = false) => {
+    const current = reorderState();
+    clearHoldTimer();
+    if (suppressClick && current) {
+      suppressClickGroupId = current.groupId;
+    } else {
+      suppressClickGroupId = null;
+    }
+    setReorderState(null);
+  };
+
+  createEffect(() => {
+    const validIds = new Set(config().groups.map((group) => group.id));
+    for (const id of groupButtonEls.keys()) {
+      if (!validIds.has(id)) groupButtonEls.delete(id);
+    }
+  });
+
+  const targetIndexForPointer = (clientY: number, groupId: string): number | null => {
+    if (!projectEl) return null;
+    const projectRect = projectEl.getBoundingClientRect();
+    if (clientY < projectRect.top || clientY > projectRect.bottom) return null;
+
+    const candidates = Array.from(groupButtonEls.entries())
+      .filter(([id]) => id !== groupId)
+      .map(([id, el]) => ({ id, rect: el.getBoundingClientRect() }))
+      .filter(({ rect }) => rect.height > 0)
+      .sort((a, b) => a.rect.top - b.rect.top);
+
+    for (let index = 0; index < candidates.length; index++) {
+      const rect = candidates[index].rect;
+      if (clientY < rect.top + rect.height / 2) return index;
+    }
+    return candidates.length;
+  };
+
+  const startPress = (event: PointerEvent & { currentTarget: HTMLButtonElement }, button: GroupButton) => {
+    suppressClickGroupId = null;
+    if (
+      event.button !== 0 ||
+      event.isPrimary === false ||
+      !button.reorderable ||
+      !button.groupId ||
+      button.groupIndex === null
+    ) {
+      return;
+    }
+    if (workgroupGroupsStore.saving(props.project.path)) return;
+
+    try {
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    } catch {
+      // Window-level pointerup/pointercancel fallback still unwinds the gesture.
+    }
+
+    setReorderState({
+      phase: "arming",
+      pointerId: event.pointerId,
+      groupId: button.groupId,
+      sourceIndex: button.groupIndex,
+      targetIndex: button.groupIndex,
+      startX: event.clientX,
+      startY: event.clientY,
+    });
+    clearHoldTimer();
+    holdTimer = window.setTimeout(() => {
+      holdTimer = null;
+      setReorderState((current) =>
+        current?.pointerId === event.pointerId && current.groupId === button.groupId
+          ? { ...current, phase: "dragging", targetIndex: current.sourceIndex }
+          : current
+      );
+      suppressClickGroupId = button.groupId;
+    }, REORDER_HOLD_MS);
+  };
+
+  const movePress = (event: PointerEvent) => {
+    const current = reorderState();
+    if (!current || current.pointerId !== event.pointerId) return;
+
+    if (current.phase === "arming") {
+      const dx = event.clientX - current.startX;
+      const dy = event.clientY - current.startY;
+      if (Math.hypot(dx, dy) > REORDER_MOVE_CANCEL_PX) cancelReorder(false);
+      return;
+    }
+
+    if (current.phase === "dragging") {
+      const targetIndex = targetIndexForPointer(event.clientY, current.groupId);
+      setReorderState({ ...current, targetIndex });
+    }
+  };
+
+  const finishPress = (event: PointerEvent) => {
+    const current = reorderState();
+    if (!current || current.pointerId !== event.pointerId) return;
+
+    if (current.phase === "arming") {
+      cancelReorder(false);
+      return;
+    }
+    if (current.phase === "saving") return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    suppressClickGroupId = current.groupId;
+
+    const dropTargetIndex = targetIndexForPointer(event.clientY, current.groupId);
+    if (dropTargetIndex === null || dropTargetIndex === current.sourceIndex) {
+      cancelReorder(true);
+      return;
+    }
+
+    setReorderState({ ...current, phase: "saving", targetIndex: dropTargetIndex });
+    void (async () => {
+      try {
+        await workgroupGroupsStore.reorderGroup(props.project.path, current.groupId, dropTargetIndex);
+      } catch {
+        // The store already exposes the save error.
+      } finally {
+        setReorderState(null);
+      }
+    })();
+  };
+
+  const cancelPress = (event: PointerEvent) => {
+    const current = reorderState();
+    if (!current || current.pointerId !== event.pointerId || current.phase === "saving") return;
+    cancelReorder(current.phase !== "arming");
+  };
+
+  const onKeyDown = (event: KeyboardEvent) => {
+    if (event.key !== "Escape" || !reorderState()) return;
+    event.preventDefault();
+    cancelReorder(true);
+  };
+
+  const onWindowPointerUp = (event: PointerEvent) => {
+    const current = reorderState();
+    if (!current || current.pointerId !== event.pointerId) return;
+    finishPress(event);
+  };
+
+  const onWindowPointerCancel = (event: PointerEvent) => {
+    cancelPress(event);
+  };
+
+  window.addEventListener("keydown", onKeyDown);
+  window.addEventListener("pointerup", onWindowPointerUp);
+  window.addEventListener("pointercancel", onWindowPointerCancel);
+  onCleanup(() => {
+    window.removeEventListener("keydown", onKeyDown);
+    window.removeEventListener("pointerup", onWindowPointerUp);
+    window.removeEventListener("pointercancel", onWindowPointerCancel);
+    clearHoldTimer();
+    suppressClickGroupId = null;
+    groupButtonEls.clear();
+  });
+
+  const previewButtons = createMemo(() => {
+    const current = reorderState();
+    const base = buttons();
+    if (!current || current.targetIndex === null || current.phase === "arming") return base;
+
+    const systemButtons = base.filter((button) => !button.reorderable);
+    const groupButtons = base.filter((button) => button.reorderable);
+    const sourceIndex = groupButtons.findIndex((button) => button.groupId === current.groupId);
+    if (sourceIndex < 0) return base;
+
+    const nextGroups = groupButtons.slice();
+    const [moved] = nextGroups.splice(sourceIndex, 1);
+    const clampedTarget = Math.max(0, Math.min(current.targetIndex, nextGroups.length));
+    nextGroups.splice(clampedTarget, 0, moved);
+    return [...systemButtons, ...nextGroups];
+  });
 
   return (
-    <div class="workgroup-group-rail-project" data-ac-testid={`workgroupGroups.rail.${props.project.folderName}`}>
+    <div
+      ref={(el) => {
+        projectEl = el;
+      }}
+      class="workgroup-group-rail-project"
+      classList={{ "reorder-active": reorderState()?.phase === "dragging" || reorderState()?.phase === "saving" }}
+      data-ac-testid={`workgroupGroups.rail.${props.project.folderName}`}
+    >
       <Show when={props.showProjectLabel}>
         <div class="workgroup-group-rail-project-label" title={props.project.path}>
           {props.project.folderName}
         </div>
       </Show>
 
-      <For each={buttons()}>
+      <For each={previewButtons()}>
         {(button) => (
           <button
+            ref={(el) => {
+              if (button.groupId) groupButtonEls.set(button.groupId, el);
+            }}
             class="workgroup-group-rail-button"
-            classList={{ selected: selected(button) }}
+            classList={{
+              selected: selected(button),
+              reorderable: button.reorderable,
+              "reorder-arming": reorderState()?.phase === "arming" && reorderState()?.groupId === button.groupId,
+              "reorder-dragging":
+                (reorderState()?.phase === "dragging" || reorderState()?.phase === "saving") &&
+                reorderState()?.groupId === button.groupId,
+              "reorder-invalid":
+                reorderState()?.phase === "dragging" &&
+                reorderState()?.groupId === button.groupId &&
+                reorderState()?.targetIndex === null,
+            }}
             aria-pressed={selected(button)}
+            aria-grabbed={button.reorderable ? reorderState()?.groupId === button.groupId : undefined}
             title={button.title}
-            onClick={() => workgroupGroupsStore.select(props.project.path, button.selection)}
+            onPointerDown={(event) => startPress(event, button)}
+            onPointerMove={movePress}
+            onPointerUp={finishPress}
+            onPointerCancel={cancelPress}
+            onLostPointerCapture={(event) => {
+              const current = reorderState();
+              if (
+                !current ||
+                current.pointerId !== event.pointerId ||
+                (current.phase !== "arming" && current.phase !== "dragging")
+              ) {
+                return;
+              }
+              cancelReorder(current.phase === "dragging");
+            }}
+            onClick={(event) => {
+              if (button.groupId && suppressClickGroupId === button.groupId) {
+                suppressClickGroupId = null;
+                event.preventDefault();
+                event.stopPropagation();
+                return;
+              }
+              workgroupGroupsStore.select(props.project.path, button.selection);
+            }}
             data-ac-testid={`workgroupGroups.button.${button.key}`}
           >
             <span class="workgroup-group-rail-title-line">

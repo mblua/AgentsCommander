@@ -10,6 +10,7 @@ import {
   nonStopMatchesWorkgroup,
   normalizeNonStop,
   removeExactGroupToken,
+  reorderGroups,
   validateGroupsConfig,
   workgroupGroupsStore,
 } from "./workgroup-groups";
@@ -114,6 +115,50 @@ describe("workgroupGroupsStore", () => {
     expect(workgroupGroupsStore.config(projectPath).groups).toEqual([
       { id: "saved", name: "Saved", regex: "^wg-9-" },
     ]);
+  });
+
+  it("reorders groups by final insertion index and clamps to the list bounds", () => {
+    const groups = [
+      { id: "a", name: "A", regex: "a" },
+      { id: "b", name: "B", regex: "b" },
+      { id: "c", name: "C", regex: "c" },
+    ];
+
+    expect(reorderGroups(groups, "a", 2).map((group) => group.id)).toEqual(["b", "c", "a"]);
+    expect(reorderGroups(groups, "c", 0).map((group) => group.id)).toEqual(["c", "a", "b"]);
+    expect(reorderGroups(groups, "b", 99).map((group) => group.id)).toEqual(["a", "c", "b"]);
+    expect(reorderGroups(groups, "missing", 0)).toBe(groups);
+  });
+
+  it("persists a reordered group list without changing built-in group settings", async () => {
+    const fake = new FakeTransport();
+    restoreTransport?.();
+    restoreTransport = __setTransportForTests(fake);
+
+    fake.resolve(
+      "get_project_groups",
+      config({
+        showAll: false,
+        showUngrouped: true,
+        nonStop: { ...defaultNonStop(), show: true },
+        groups: [
+          { id: "a", name: "A", regex: "a" },
+          { id: "b", name: "B", regex: "b" },
+          { id: "c", name: "C", regex: "c" },
+        ],
+      })
+    );
+    fake.onInvoke("update_project_groups", (args) => args.config);
+
+    await workgroupGroupsStore.ensureLoaded(projectPath);
+    await workgroupGroupsStore.reorderGroup(projectPath, "a", 2);
+
+    expect(fake.lastCall("update_project_groups")?.args.config).toMatchObject({
+      showAll: false,
+      showUngrouped: true,
+      nonStop: { show: true },
+      groups: [{ id: "b" }, { id: "c" }, { id: "a" }],
+    });
   });
 
   it("adds an exact workgroup token to an existing generated regex", async () => {
