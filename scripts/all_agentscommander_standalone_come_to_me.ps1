@@ -92,7 +92,7 @@ Write-Host ''
 foreach ($workgroup in $workgroups) {
     $stats.WorkgroupsChecked++
 
-    $releaseDir = Join-Path $workgroup.FullName 'repo-AgentsCommander\src-tauri\target\release'
+    $releaseDir = Join-Path $workgroup.FullName 'repo-AgentsCommander\target\release'
     if (-not (Test-Path -LiteralPath $releaseDir -PathType Container)) {
         $stats.MissingReleaseDirs++
         Write-Host "SKIP no release dir: $($workgroup.Name)"

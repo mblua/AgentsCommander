@@ -15,7 +15,7 @@
 //   - package.json                             "version"
 //   - package-lock.json                        root "version" + packages[""].version
 //   - src-tauri/Cargo.toml                     [package] version
-//   - src-tauri/Cargo.lock                     internal Cargo crate entry version
+//   - Cargo.lock                               internal Cargo crate entry version
 //   - src-tauri/tauri.conf.json                "version"
 //
 // Re-running with the same X.Y.Z target is supported and intentional: it
@@ -43,7 +43,7 @@ Updates every project version location:
   - package.json
   - package-lock.json (root + packages[""])
   - src-tauri/Cargo.toml
-  - src-tauri/Cargo.lock (internal Cargo crate entry)
+  - Cargo.lock (internal Cargo crate entry)
   - src-tauri/tauri.conf.json
 
 Re-running with the same X.Y.Z target re-synchronizes drifted locations.
@@ -88,7 +88,7 @@ const PATCHES = [
     re: /(\r?\n\s*name\s*=\s*"agentscommander-new"\s*\r?\nversion\s*=\s*)"[^"]+"/,
   },
   {
-    file: 'src-tauri/Cargo.lock',
+    file: 'Cargo.lock',
     label: 'internal Cargo crate entry',
     re: /(\r?\n\s*name\s*=\s*"agentscommander-new"\s*\r?\nversion\s*=\s*)"[^"]+"/,
   },

@@ -34,7 +34,7 @@ function Convert-ToSafeName {
     $Name -replace '[^A-Za-z0-9_.-]', '_'
 }
 
-$releaseDir = Join-Path $repoRoot "src-tauri\target\release"
+$releaseDir = Join-Path $repoRoot "target\release"
 $binaries = @(
     (Join-Path $releaseDir "agentscommander.exe"),
     (Join-Path $releaseDir "agentscommander_testeable.exe")

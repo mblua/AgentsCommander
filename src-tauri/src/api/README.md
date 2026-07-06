@@ -55,12 +55,22 @@ failed-auth lockout throttles unauthenticated probing.
   replica; `reachable` is computed from the bound identity.
 - `GET /api/v1/healthz` - unauthenticated liveness, body exactly `{"ok":true}`.
 
-## Wrapper env contract (external)
+## Container runtime contract
 
-The `claude-docker.*` wrapper injects, and must NOT mount the host config dir:
+S4 starts the container through the backend Docker runtime. The daemon passes
+only scoped bridge configuration and never mounts the host config directory,
+the host `messaging/` directory, or the Docker socket.
 
 - `AGENTSCOMMANDER_API_URL=http://host.docker.internal:<apiServerPort>`
 - `AGENTSCOMMANDER_API_TOKEN=<the minted client secret>`
+- `AGENTSCOMMANDER_SESSION_ID=<uuid>`
+- `AGENTSCOMMANDER_SESSION_REGISTRATION_TOKEN=<one-time ticket>`
+- `AGENTSCOMMANDER_ROOT=<host replica root bound to the token>`
+
+Docker Desktop containers cannot reach a daemon bound only to `127.0.0.1`.
+For local container sessions, enable the API server and set `apiServerBind` to
+a Docker-reachable interface such as `0.0.0.0`, with host firewall rules limiting
+access to the local Docker/WSL subnet.
 
 ## Versioning
 
