@@ -444,6 +444,10 @@ pub struct AppSettings {
     pub coordinator_auto_close_enabled: bool,
     #[serde(default = "default_coord_auto_close_minutes")]
     pub coordinator_auto_close_minutes: u32,
+    /// #817 When true, auto-close skips sessions with a persisted Telegram bot
+    /// assignment. Default false preserves legacy auto-close behavior.
+    #[serde(default)]
+    pub coordinator_auto_close_skip_telegram_assigned: bool,
     /// #588 When true, manually closing a coordinator also closes its team
     /// agents (cascade). When false, only the coordinator closes. Default true.
     #[serde(default = "default_true")]
@@ -682,6 +686,7 @@ impl Default for AppSettings {
             coordinator_idle_badge_red_minutes: default_coord_badge_red_minutes(),
             coordinator_auto_close_enabled: true,
             coordinator_auto_close_minutes: default_coord_auto_close_minutes(),
+            coordinator_auto_close_skip_telegram_assigned: false,
             coordinator_cascade_close_enabled: true,
             npm_update_notifications_enabled: true,
             auto_self_clear_enabled: true,
@@ -2961,8 +2966,8 @@ mod tests {
     #[test]
     fn coordinator_clock_settings_default_when_keys_absent() {
         // #552: an old settings.json (no coordinator-* keys) must deserialize
-        // cleanly to the documented defaults (true / 60 / 30 / 60), no migration.
-        // Serialize a default, strip ONLY the 4 coordinator keys, deserialize back.
+        // cleanly to the documented defaults, no migration.
+        // Serialize a default, strip ONLY these coordinator keys, deserialize back.
         let mut value =
             serde_json::to_value(AppSettings::default()).expect("serialize default to value");
         let obj = value.as_object_mut().expect("settings serializes to an object");
@@ -2970,12 +2975,29 @@ mod tests {
         obj.remove("coordinatorIdleBadgeRedMinutes");
         obj.remove("coordinatorAutoCloseEnabled");
         obj.remove("coordinatorAutoCloseMinutes");
+        obj.remove("coordinatorAutoCloseSkipTelegramAssigned");
 
         let back: AppSettings = serde_json::from_value(value).expect("deserialize without keys");
         assert!(back.coordinator_auto_close_enabled);
         assert_eq!(back.coordinator_auto_close_minutes, 60);
+        assert!(!back.coordinator_auto_close_skip_telegram_assigned);
         assert_eq!(back.coordinator_idle_badge_yellow_minutes, 30);
         assert_eq!(back.coordinator_idle_badge_red_minutes, 60);
+    }
+
+    #[test]
+    fn coordinator_auto_close_skip_telegram_assigned_round_trips() {
+        let mut s = AppSettings::default();
+        s.coordinator_auto_close_skip_telegram_assigned = true;
+
+        let json = serde_json::to_value(&s).expect("serialize settings");
+        assert_eq!(
+            json.get("coordinatorAutoCloseSkipTelegramAssigned"),
+            Some(&serde_json::Value::Bool(true))
+        );
+
+        let back: AppSettings = serde_json::from_value(json).expect("deserialize settings");
+        assert!(back.coordinator_auto_close_skip_telegram_assigned);
     }
 
     #[test]

@@ -630,6 +630,15 @@ impl SessionManager {
         }
     }
 
+    /// True when the session currently has a persisted Telegram bot assignment.
+    /// Used by auto-close; does not expose the bot id.
+    pub async fn session_has_telegram_bot(&self, id: Uuid) -> bool {
+        let sessions = self.sessions.read().await;
+        sessions
+            .get(&id)
+            .is_some_and(|s| s.telegram_bot_id.is_some())
+    }
+
     /// Set `was_detached` on the session. Authoritative store for persistence under
     /// Fix A (plan §A3.2). Mutated ONLY by `detach_terminal_inner` (→true) and
     /// `attach_terminal` (→false). See plan §10 rule — the `WindowEvent::Destroyed`
@@ -1356,8 +1365,11 @@ mod tests {
             .await
             .expect("create_session should succeed");
 
+        assert!(!mgr.session_has_telegram_bot(session.id).await);
+
         mgr.set_telegram_bot_id(session.id, Some("bot-1".to_string()))
             .await;
+        assert!(mgr.session_has_telegram_bot(session.id).await);
         assert_eq!(
             mgr.get_session(session.id)
                 .await
@@ -1368,6 +1380,7 @@ mod tests {
         );
 
         mgr.set_telegram_bot_id(session.id, None).await;
+        assert!(!mgr.session_has_telegram_bot(session.id).await);
         assert!(mgr
             .get_session(session.id)
             .await
