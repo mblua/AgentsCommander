@@ -480,6 +480,29 @@ export const workgroupGroupsStore = {
     return entryFor(projectPath).saving;
   },
 
+  applyExternalUpdate(projectPath: string, config: WorkgroupGroupsConfig): void {
+    const key = keyFor(projectPath);
+    saveVersions.set(key, (saveVersions.get(key) ?? 0) + 1);
+
+    const structuralErrors = validateGroupsConfig(config, { validateRegexSyntax: false });
+    if (structuralErrors.length > 0) {
+      setConfig(projectPath, defaultGroupsConfig(), {
+        loaded: true,
+        loading: false,
+        saving: false,
+        error: structuralErrors.join(" "),
+      });
+      return;
+    }
+
+    setConfig(projectPath, config, {
+      loaded: true,
+      loading: false,
+      saving: false,
+      error: null,
+    });
+  },
+
   async save(projectPath: string, config: WorkgroupGroupsConfig): Promise<void> {
     const key = keyFor(projectPath);
     const current = ensureEntry(projectPath);

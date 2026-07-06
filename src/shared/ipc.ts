@@ -23,6 +23,7 @@ import type {
   ContextTemplateOverwriteResult,
   ContextTemplateUpdate,
   AcProjectRefreshRequestedPayload,
+  ProjectGroupsUpdatedPayload,
   LoopConfigDetails,
   LoopCreateInput,
   LoopCronPreview,
@@ -672,6 +673,15 @@ export function onAcProjectRefreshRequested(
 ): Promise<UnlistenFn> {
   return transport.listen<AcProjectRefreshRequestedPayload>(
     "ac_project_refresh_requested",
+    callback
+  );
+}
+
+export function onProjectGroupsUpdated(
+  callback: (data: ProjectGroupsUpdatedPayload) => void
+): Promise<UnlistenFn> {
+  return transport.listen<ProjectGroupsUpdatedPayload>(
+    "project_groups_updated",
     callback
   );
 }
