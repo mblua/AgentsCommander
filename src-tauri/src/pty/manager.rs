@@ -6,6 +6,8 @@ use uuid::Uuid;
 use crate::errors::AppError;
 use crate::pty::backend::{BackendSpawnSpec, PtyBackend, SessionBackendKind};
 use crate::pty::container_backend::ContainerTransportBackend;
+use crate::pty::container_tokens::ContainerApiTokenManager;
+use crate::pty::docker_runtime::DockerRuntime;
 use crate::pty::git_watcher::GitWatcher;
 use crate::pty::idle_detector::IdleDetector;
 use crate::pty::local_backend::LocalProcessBackend;
@@ -32,11 +34,13 @@ impl PtyManager {
             git_watcher,
             ws_broadcaster.clone(),
         ));
-        let container_backend = Arc::new(ContainerTransportBackend::new(
+        let container_backend = Arc::new(ContainerTransportBackend::with_runtime(
             output_senders,
             idle_detector,
             ws_broadcaster,
             session_mgr,
+            Arc::new(DockerRuntime::new()),
+            ContainerApiTokenManager::at_config_dir(),
         ));
         Self {
             routes: Arc::new(Mutex::new(HashMap::new())),
@@ -73,6 +77,19 @@ impl PtyManager {
 
     pub fn container_backend(&self) -> Arc<ContainerTransportBackend> {
         self.container_backend.clone()
+    }
+
+    pub fn start_container_pending_reaper(&self, shutdown: crate::shutdown::ShutdownSignal) {
+        self.container_backend.start_pending_reaper(shutdown);
+    }
+
+    pub fn cleanup_container_orphans_on_startup(&self) {
+        self.container_backend.cleanup_labeled_orphans_on_startup();
+    }
+
+    pub fn stop_all_started_containers_blocking(&self, budget: std::time::Duration) {
+        self.container_backend
+            .stop_all_started_containers_blocking(budget);
     }
 
     pub fn record_route(&self, id: Uuid, kind: SessionBackendKind) {
@@ -389,6 +406,7 @@ mod tests {
             idle_tuning: crate::session::profile::IdleTuning::DEFAULT,
             output_target: crate::pty::output::PtyOutputTarget::noop(),
             resource_registration: None,
+            logical_resource_slot: None,
         }
     }
 

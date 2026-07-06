@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::pty::output::{PtyOutputTarget, PtyScreenSnapshot};
-use crate::resource_monitor::ResourceLaunchRegistration;
+use crate::resource_monitor::{ResourceLaunchRegistration, ResourceLogicalAgentSlot};
 use crate::session::profile::IdleTuning;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -31,6 +31,7 @@ pub struct BackendSpawnSpec {
     pub idle_tuning: IdleTuning,
     pub output_target: PtyOutputTarget,
     pub resource_registration: Option<ResourceLaunchRegistration>,
+    pub logical_resource_slot: Option<ResourceLogicalAgentSlot>,
 }
 
 pub trait PtyBackend: Any + Send + Sync {

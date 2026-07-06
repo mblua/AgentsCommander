@@ -1,17 +1,23 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::pty::backend::{BackendSpawnSpec, PtyBackend};
+use crate::pty::container_runtime::{
+    api_url_for_container, container_image_from_env, ContainerRuntime, ContainerRuntimeHandle,
+    ContainerStartRequest, CONTAINER_STOP_TIMEOUT, DEFAULT_CONTAINER_WORKDIR,
+};
+use crate::pty::container_tokens::{ContainerApiToken, ContainerApiTokenManager};
 use crate::pty::idle_detector::IdleDetector;
 use crate::pty::output::{PtyOutputTarget, PtyScreenSnapshot, SessionIoFanout};
+use crate::resource_monitor::ResourceLogicalAgentSlot;
 use crate::session::manager::SessionManager;
 use crate::telegram::manager::OutputSenderMap;
 
@@ -89,7 +95,6 @@ pub(crate) enum HostToBridgeFrame {
     Binary(Vec<u8>),
 }
 
-#[derive(Clone)]
 struct PendingSession {
     root_key: String,
     ticket_hash: String,
@@ -98,30 +103,44 @@ struct PendingSession {
     idle_tuning: crate::session::profile::IdleTuning,
     rows: u16,
     cols: u16,
+    runtime_handle: Option<ContainerRuntimeHandle>,
+    api_client_id: Option<String>,
+    logical_resource_slot: Option<ResourceLogicalAgentSlot>,
+    attach_notify: Option<Arc<Notify>>,
 }
 
-#[derive(Clone)]
 struct AttachingSession {
     root_key: String,
     output_target: PtyOutputTarget,
     idle_tuning: crate::session::profile::IdleTuning,
     rows: u16,
     cols: u16,
+    runtime_handle: Option<ContainerRuntimeHandle>,
+    api_client_id: Option<String>,
+    logical_resource_slot: Option<ResourceLogicalAgentSlot>,
+    attach_notify: Option<Arc<Notify>>,
 }
 
-#[derive(Clone)]
 struct ActiveSession {
     output_target: PtyOutputTarget,
     sender: mpsc::Sender<HostToBridgeFrame>,
     rows: u16,
     cols: u16,
+    runtime_handle: Option<ContainerRuntimeHandle>,
+    api_client_id: Option<String>,
+    logical_resource_slot: Option<ResourceLogicalAgentSlot>,
 }
 
-#[derive(Clone)]
 enum ContainerSessionState {
     Pending(PendingSession),
     Attaching(AttachingSession),
     Active(ActiveSession),
+}
+
+struct RemovedSessionResources {
+    runtime_handle: Option<ContainerRuntimeHandle>,
+    api_client_id: Option<String>,
+    logical_resource_slot: Option<ResourceLogicalAgentSlot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,6 +159,8 @@ pub struct ContainerTransportBackend {
     session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
     route_remover: Arc<Mutex<Option<RouteRemover>>>,
     tuning: ContainerTransportTuning,
+    runtime: Option<Arc<dyn ContainerRuntime>>,
+    token_manager: Option<ContainerApiTokenManager>,
     #[cfg(test)]
     issued_tickets_for_test: Arc<Mutex<HashMap<Uuid, String>>>,
 }
@@ -173,9 +194,31 @@ impl ContainerTransportBackend {
             session_mgr,
             route_remover: Arc::new(Mutex::new(None)),
             tuning,
+            runtime: None,
+            token_manager: None,
             #[cfg(test)]
             issued_tickets_for_test: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    pub fn with_runtime(
+        output_senders: OutputSenderMap,
+        idle_detector: Arc<IdleDetector>,
+        ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
+        session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+        runtime: Arc<dyn ContainerRuntime>,
+        token_manager: Option<ContainerApiTokenManager>,
+    ) -> Self {
+        let mut backend = Self::with_tuning(
+            output_senders,
+            idle_detector,
+            ws_broadcaster,
+            session_mgr,
+            ContainerTransportTuning::default(),
+        );
+        backend.runtime = Some(runtime);
+        backend.token_manager = token_manager;
+        backend
     }
 
     pub fn tuning(&self) -> ContainerTransportTuning {
@@ -197,13 +240,14 @@ impl ContainerTransportBackend {
         let now = Instant::now();
 
         let mut sessions = self.sessions.lock().unwrap();
-        let Some(state) = sessions.get_mut(&session_id) else {
+        let Some(state) = sessions.remove(&session_id) else {
             return Err(TransportTicketError::Invalid);
         };
 
         let pending = match state {
             ContainerSessionState::Pending(pending) => pending,
-            ContainerSessionState::Attaching(_) | ContainerSessionState::Active(_) => {
+            other => {
+                sessions.insert(session_id, other);
                 return Err(TransportTicketError::Invalid);
             }
         };
@@ -212,17 +256,22 @@ impl ContainerTransportBackend {
             || pending.ticket_expires_at <= now
             || !crate::api::auth::constant_time_eq(&pending.ticket_hash, &ticket_hash)
         {
+            sessions.insert(session_id, ContainerSessionState::Pending(pending));
             return Err(TransportTicketError::Invalid);
         }
 
         let attaching = AttachingSession {
-            root_key: pending.root_key.clone(),
-            output_target: pending.output_target.clone(),
+            root_key: pending.root_key,
+            output_target: pending.output_target,
             idle_tuning: pending.idle_tuning,
             rows: pending.rows,
             cols: pending.cols,
+            runtime_handle: pending.runtime_handle,
+            api_client_id: pending.api_client_id,
+            logical_resource_slot: pending.logical_resource_slot,
+            attach_notify: pending.attach_notify,
         };
-        *state = ContainerSessionState::Attaching(attaching);
+        sessions.insert(session_id, ContainerSessionState::Attaching(attaching));
         Ok(())
     }
 
@@ -235,29 +284,47 @@ impl ContainerTransportBackend {
         let bridge_key = root_key(bridge_root);
         let attach = {
             let mut sessions = self.sessions.lock().unwrap();
-            let Some(state) = sessions.get_mut(&session_id) else {
+            let Some(state) = sessions.remove(&session_id) else {
                 return Err(TransportAttachError::Invalid);
             };
 
-            let ContainerSessionState::Attaching(attach) = state else {
-                return Err(TransportAttachError::Invalid);
+            let attach = match state {
+                ContainerSessionState::Attaching(attach) => attach,
+                other => {
+                    sessions.insert(session_id, other);
+                    return Err(TransportAttachError::Invalid);
+                }
             };
             if attach.root_key != bridge_key {
+                sessions.insert(session_id, ContainerSessionState::Attaching(attach));
                 return Err(TransportAttachError::Invalid);
             }
 
-            let attach = attach.clone();
-            *state = ContainerSessionState::Active(ActiveSession {
-                output_target: attach.output_target.clone(),
-                sender,
-                rows: attach.rows,
-                cols: attach.cols,
-            });
-            attach
+            let output_target = attach.output_target.clone();
+            let idle_tuning = attach.idle_tuning;
+            let rows = attach.rows;
+            let cols = attach.cols;
+            let attach_notify = attach.attach_notify.clone();
+            sessions.insert(
+                session_id,
+                ContainerSessionState::Active(ActiveSession {
+                    output_target,
+                    sender,
+                    rows,
+                    cols,
+                    runtime_handle: attach.runtime_handle,
+                    api_client_id: attach.api_client_id,
+                    logical_resource_slot: attach.logical_resource_slot,
+                }),
+            );
+            if let Some(notify) = attach_notify {
+                notify.notify_waiters();
+            }
+            (idle_tuning, rows, cols)
         };
 
         self.fanout
-            .register_session(session_id, attach.idle_tuning, attach.rows, attach.cols);
+            .register_session(session_id, attach.0, attach.1, attach.2);
         log::info!(
             "[container-transport] attached bridge for session {}",
             session_id
@@ -346,11 +413,12 @@ impl ContainerTransportBackend {
     }
 
     async fn close_transport(&self, session_id: Uuid, exit_code: Option<i32>) {
-        let removed = self.remove_session_state(session_id);
-        if !removed {
+        let resources = self.remove_session_state(session_id);
+        let Some(resources) = resources else {
             return;
-        }
+        };
 
+        self.cleanup_removed_resources_async(resources, "transport-close");
         self.remove_route(session_id);
         if let Some(code) = exit_code {
             let mgr = self.session_mgr.read().await;
@@ -360,11 +428,12 @@ impl ContainerTransportBackend {
     }
 
     fn close_transport_from_sync(&self, session_id: Uuid, exit_code: i32) {
-        let removed = self.remove_session_state(session_id);
-        if !removed {
+        let resources = self.remove_session_state(session_id);
+        let Some(resources) = resources else {
             return;
-        }
+        };
 
+        self.cleanup_removed_resources_async(resources, "transport-sync-close");
         self.remove_route(session_id);
         let session_mgr = self.session_mgr.clone();
         tauri::async_runtime::spawn(async move {
@@ -374,12 +443,12 @@ impl ContainerTransportBackend {
         });
     }
 
-    fn remove_session_state(&self, session_id: Uuid) -> bool {
-        let removed = self.sessions.lock().unwrap().remove(&session_id).is_some();
-        if removed {
+    fn remove_session_state(&self, session_id: Uuid) -> Option<RemovedSessionResources> {
+        let removed = self.sessions.lock().unwrap().remove(&session_id);
+        if removed.is_some() {
             self.fanout.remove_session(session_id);
         }
-        removed
+        removed.map(resources_from_state)
     }
 
     fn remove_route(&self, session_id: Uuid) {
@@ -389,27 +458,32 @@ impl ContainerTransportBackend {
         }
     }
 
-    fn create_pending_session(&self, spec: BackendSpawnSpec) -> Result<String, AppError> {
-        let BackendSpawnSpec {
-            id,
-            cwd,
-            rows,
-            cols,
-            idle_tuning,
-            output_target,
-            ..
-        } = spec;
-
+    #[allow(clippy::too_many_arguments)]
+    fn create_pending_session(
+        &self,
+        id: Uuid,
+        cwd: &str,
+        rows: u16,
+        cols: u16,
+        idle_tuning: crate::session::profile::IdleTuning,
+        output_target: PtyOutputTarget,
+        logical_resource_slot: Option<ResourceLogicalAgentSlot>,
+        attach_notify: Option<Arc<Notify>>,
+    ) -> Result<String, AppError> {
         let ticket = format!("acst-{}-{}", Uuid::new_v4(), Uuid::new_v4());
         let ticket_hash = crate::api::auth::hash_token(&ticket);
         let pending = PendingSession {
-            root_key: root_key(&cwd),
+            root_key: root_key(cwd),
             ticket_hash,
             ticket_expires_at: Instant::now() + self.tuning.ticket_ttl,
             output_target,
             idle_tuning,
             rows,
             cols,
+            runtime_handle: None,
+            api_client_id: None,
+            logical_resource_slot,
+            attach_notify,
         };
 
         let mut sessions = self.sessions.lock().unwrap();
@@ -434,6 +508,313 @@ impl ContainerTransportBackend {
         Ok(ticket)
     }
 
+    fn install_api_client_id(&self, session_id: Uuid, client_id: String) -> Result<(), AppError> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let state = sessions
+            .get_mut(&session_id)
+            .ok_or_else(|| AppError::SessionNotFound(session_id.to_string()))?;
+        match state {
+            ContainerSessionState::Pending(pending) => pending.api_client_id = Some(client_id),
+            ContainerSessionState::Attaching(attaching) => {
+                attaching.api_client_id = Some(client_id)
+            }
+            ContainerSessionState::Active(active) => active.api_client_id = Some(client_id),
+        }
+        Ok(())
+    }
+
+    fn install_runtime_handle(
+        &self,
+        session_id: Uuid,
+        handle: ContainerRuntimeHandle,
+    ) -> Result<(), AppError> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let state = sessions
+            .get_mut(&session_id)
+            .ok_or_else(|| AppError::SessionNotFound(session_id.to_string()))?;
+        match state {
+            ContainerSessionState::Pending(pending) => pending.runtime_handle = Some(handle),
+            ContainerSessionState::Attaching(attaching) => attaching.runtime_handle = Some(handle),
+            ContainerSessionState::Active(active) => active.runtime_handle = Some(handle),
+        }
+        Ok(())
+    }
+
+    async fn spawn_runtime_backed(&self, spec: BackendSpawnSpec) -> Result<(), AppError> {
+        let runtime = self
+            .runtime
+            .clone()
+            .ok_or_else(|| AppError::Other("container runtime is not configured".to_string()))?;
+        let token_manager = self.token_manager.clone().ok_or_else(|| {
+            AppError::Other("container API token manager is not configured".to_string())
+        })?;
+        let BackendSpawnSpec {
+            id,
+            cmd,
+            args,
+            cwd,
+            cols,
+            rows,
+            configured_env,
+            env_remove_keys,
+            extra_env: _,
+            idle_tuning,
+            output_target,
+            resource_registration: _,
+            logical_resource_slot,
+        } = spec;
+
+        let attach_notify = Arc::new(Notify::new());
+        let ticket = self.create_pending_session(
+            id,
+            &cwd,
+            rows,
+            cols,
+            idle_tuning,
+            output_target,
+            logical_resource_slot,
+            Some(attach_notify.clone()),
+        )?;
+
+        let token = match token_manager.mint_for_session(id, &cwd) {
+            Ok(token) => token,
+            Err(err) => {
+                if let Some(resources) = self.remove_session_state(id) {
+                    self.cleanup_removed_resources_blocking(resources);
+                }
+                return Err(err);
+            }
+        };
+        self.install_api_client_id(id, token.client_id.clone())?;
+
+        let request = match build_start_request(
+            id,
+            &cmd,
+            args,
+            &cwd,
+            rows,
+            cols,
+            configured_env,
+            env_remove_keys,
+            ticket,
+            &token,
+        ) {
+            Ok(request) => request,
+            Err(err) => {
+                if let Some(resources) = self.remove_session_state(id) {
+                    self.cleanup_removed_resources_blocking(resources);
+                }
+                return Err(err);
+            }
+        };
+        let start_runtime = runtime.clone();
+        let start_result = tokio::task::spawn_blocking(move || start_runtime.start(request)).await;
+        let handle = match start_result {
+            Ok(Ok(handle)) => handle,
+            Ok(Err(err)) => {
+                if let Some(resources) = self.remove_session_state(id) {
+                    self.cleanup_removed_resources_blocking(resources);
+                }
+                return Err(err);
+            }
+            Err(err) => {
+                if let Some(resources) = self.remove_session_state(id) {
+                    self.cleanup_removed_resources_blocking(resources);
+                }
+                return Err(AppError::Other(format!(
+                    "container runtime start task failed: {err}"
+                )));
+            }
+        };
+        if let Err(err) = self.install_runtime_handle(id, handle.clone()) {
+            let resources = RemovedSessionResources {
+                runtime_handle: Some(handle),
+                api_client_id: Some(token.client_id),
+                logical_resource_slot: None,
+            };
+            self.cleanup_removed_resources_blocking(resources);
+            return Err(err);
+        }
+
+        if self.has_session(id) {
+            return Ok(());
+        }
+        match tokio::time::timeout(self.tuning.handshake_timeout, attach_notify.notified()).await {
+            Ok(_) if self.has_session(id) => Ok(()),
+            _ => {
+                if let Some(resources) = self.remove_session_state(id) {
+                    self.cleanup_removed_resources_blocking(resources);
+                }
+                Err(AppError::PtyError(format!(
+                    "container bridge did not attach within {:?}",
+                    self.tuning.handshake_timeout
+                )))
+            }
+        }
+    }
+
+    fn cleanup_removed_resources_async(
+        &self,
+        resources: RemovedSessionResources,
+        reason: &'static str,
+    ) {
+        if let (Some(manager), Some(client_id)) =
+            (self.token_manager.clone(), resources.api_client_id.clone())
+        {
+            manager.revoke(&client_id);
+        }
+        drop(resources.logical_resource_slot);
+        if let (Some(runtime), Some(handle)) = (self.runtime.clone(), resources.runtime_handle) {
+            std::thread::spawn(move || {
+                if let Err(err) = runtime.stop(&handle, CONTAINER_STOP_TIMEOUT) {
+                    log::warn!(
+                        "[container-transport] {} stop failed for session {}: {}",
+                        reason,
+                        handle.session_id,
+                        err
+                    );
+                }
+            });
+        }
+    }
+
+    fn cleanup_removed_resources_blocking(&self, resources: RemovedSessionResources) {
+        if let (Some(manager), Some(client_id)) =
+            (self.token_manager.clone(), resources.api_client_id.clone())
+        {
+            manager.revoke(&client_id);
+        }
+        drop(resources.logical_resource_slot);
+        if let (Some(runtime), Some(handle)) = (self.runtime.clone(), resources.runtime_handle) {
+            if let Err(err) = runtime.stop(&handle, CONTAINER_STOP_TIMEOUT) {
+                log::warn!(
+                    "[container-transport] blocking stop failed for session {}: {}",
+                    handle.session_id,
+                    err
+                );
+            }
+        }
+    }
+
+    pub async fn reap_expired_pending_sessions(&self) -> usize {
+        let expired = {
+            let sessions = self.sessions.lock().unwrap();
+            let now = Instant::now();
+            sessions
+                .iter()
+                .filter_map(|(id, state)| match state {
+                    ContainerSessionState::Pending(pending) if pending.ticket_expires_at <= now => {
+                        Some(*id)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let mut reaped = 0;
+        for session_id in expired {
+            if let Some(resources) = self.remove_session_state(session_id) {
+                self.cleanup_removed_resources_async(resources, "pending-reaper");
+                self.remove_route(session_id);
+                let mgr = self.session_mgr.read().await;
+                let _ = mgr.mark_exited(session_id, TRANSPORT_LOST_EXIT_CODE).await;
+                crate::config::sessions_persistence::persist_current_state(&mgr).await;
+                reaped += 1;
+            }
+        }
+        reaped
+    }
+
+    pub fn start_pending_reaper(self: &Arc<Self>, shutdown: crate::shutdown::ShutdownSignal) {
+        let backend = Arc::clone(self);
+        tauri::async_runtime::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(5));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    _ = shutdown.token().cancelled() => break,
+                    _ = interval.tick() => {
+                        let count = backend.reap_expired_pending_sessions().await;
+                        if count > 0 {
+                            log::warn!(
+                                "[container-transport] reaped {} expired pending container session(s)",
+                                count
+                            );
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    pub fn cleanup_labeled_orphans_on_startup(&self) {
+        let Some(runtime) = self.runtime.clone() else {
+            return;
+        };
+        let token_manager = self.token_manager.clone();
+        std::thread::spawn(move || {
+            match runtime.cleanup_labeled_orphans(&HashSet::new(), CONTAINER_STOP_TIMEOUT) {
+                Ok(report) => {
+                    if !report.stopped.is_empty() {
+                        log::warn!(
+                            "[container-transport] stopped {} labeled orphan container(s) on startup",
+                            report.stopped.len()
+                        );
+                    }
+                    if !report.invalid_labels.is_empty() {
+                        log::warn!(
+                            "[container-transport] ignored {} labeled container(s) with invalid session labels",
+                            report.invalid_labels.len()
+                        );
+                    }
+                }
+                Err(err) => {
+                    log::warn!(
+                        "[container-transport] startup orphan cleanup failed: {}",
+                        err
+                    );
+                }
+            }
+
+            if let Some(manager) = token_manager {
+                match manager.revoke_all_container_clients() {
+                    Ok(count) if count > 0 => {
+                        log::warn!(
+                            "[container-transport] revoked {} container API client(s) on startup cleanup",
+                            count
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(err) => {
+                        log::warn!(
+                            "[container-transport] startup container token cleanup failed: {}",
+                            err
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    pub fn stop_all_started_containers_blocking(&self, budget: Duration) {
+        let session_ids = {
+            let sessions = self.sessions.lock().unwrap();
+            sessions.keys().copied().collect::<Vec<_>>()
+        };
+        let deadline = Instant::now() + budget;
+        for session_id in session_ids {
+            let Some(resources) = self.remove_session_state(session_id) else {
+                continue;
+            };
+            self.remove_route(session_id);
+            self.cleanup_removed_resources_blocking(resources);
+            if Instant::now() >= deadline {
+                log::warn!("[container-transport] shutdown container cleanup budget exhausted");
+                break;
+            }
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn last_issued_ticket_for_test(&self, session_id: Uuid) -> Option<String> {
         self.issued_tickets_for_test
@@ -451,8 +832,31 @@ impl PtyBackend for ContainerTransportBackend {
 
     fn spawn(&self, spec: BackendSpawnSpec) -> BoxFuture<'_, Result<(), AppError>> {
         Box::pin(async move {
-            let _ticket = self.create_pending_session(spec)?;
-            Ok(())
+            if self.runtime.is_some() {
+                self.spawn_runtime_backed(spec).await
+            } else {
+                let BackendSpawnSpec {
+                    id,
+                    cwd,
+                    rows,
+                    cols,
+                    idle_tuning,
+                    output_target,
+                    logical_resource_slot,
+                    ..
+                } = spec;
+                let _ticket = self.create_pending_session(
+                    id,
+                    &cwd,
+                    rows,
+                    cols,
+                    idle_tuning,
+                    output_target,
+                    logical_resource_slot,
+                    None,
+                )?;
+                Ok(())
+            }
         })
     }
 
@@ -495,7 +899,9 @@ impl PtyBackend for ContainerTransportBackend {
                 version: TRANSPORT_PROTOCOL_VERSION,
             },
         );
-        self.remove_session_state(id);
+        if let Some(resources) = self.remove_session_state(id) {
+            self.cleanup_removed_resources_async(resources, "kill");
+        }
         Ok(())
     }
 
@@ -537,6 +943,87 @@ pub(crate) fn parse_bridge_text_frame(text: &str) -> Result<BridgeToHostFrame, s
     serde_json::from_str(text)
 }
 
+fn resources_from_state(state: ContainerSessionState) -> RemovedSessionResources {
+    match state {
+        ContainerSessionState::Pending(pending) => RemovedSessionResources {
+            runtime_handle: pending.runtime_handle,
+            api_client_id: pending.api_client_id,
+            logical_resource_slot: pending.logical_resource_slot,
+        },
+        ContainerSessionState::Attaching(attaching) => RemovedSessionResources {
+            runtime_handle: attaching.runtime_handle,
+            api_client_id: attaching.api_client_id,
+            logical_resource_slot: attaching.logical_resource_slot,
+        },
+        ContainerSessionState::Active(active) => RemovedSessionResources {
+            runtime_handle: active.runtime_handle,
+            api_client_id: active.api_client_id,
+            logical_resource_slot: active.logical_resource_slot,
+        },
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_start_request(
+    session_id: Uuid,
+    cmd: &str,
+    args: Vec<String>,
+    cwd: &str,
+    rows: u16,
+    cols: u16,
+    configured_env: Vec<(String, String)>,
+    env_remove_keys: Vec<String>,
+    registration_ticket: String,
+    token: &ContainerApiToken,
+) -> Result<ContainerStartRequest, AppError> {
+    let settings = crate::config::settings::load_settings();
+    if !settings.api_server_enabled {
+        return Err(AppError::Other(
+            "container transport requires the control-plane API server to be enabled".to_string(),
+        ));
+    }
+    let api_url = api_url_for_container(&settings.api_server_bind, settings.api_server_port)?;
+    let child_env = sanitized_child_env(configured_env, env_remove_keys);
+    Ok(ContainerStartRequest {
+        session_id,
+        image: container_image_from_env(),
+        host_root: cwd.to_string(),
+        container_workdir: DEFAULT_CONTAINER_WORKDIR.to_string(),
+        api_url,
+        api_token: token.secret.clone(),
+        registration_ticket,
+        local_dir: crate::config::agent_local_dir_name(),
+        command: cmd.to_string(),
+        args,
+        child_env,
+        cols,
+        rows,
+    })
+}
+
+fn sanitized_child_env(
+    configured_env: Vec<(String, String)>,
+    env_remove_keys: Vec<String>,
+) -> Vec<(String, String)> {
+    configured_env
+        .into_iter()
+        .filter(|(key, _)| {
+            !env_remove_keys
+                .iter()
+                .any(|remove| remove.eq_ignore_ascii_case(key))
+        })
+        .filter(|(key, _)| !is_reserved_container_env(key))
+        .collect()
+}
+
+fn is_reserved_container_env(key: &str) -> bool {
+    key.eq_ignore_ascii_case("AGENTSCOMMANDER_TOKEN")
+        || key.eq_ignore_ascii_case("AGENTSCOMMANDER_BINARY_PATH")
+        || key.eq_ignore_ascii_case("AGENTSCOMMANDER_SESSION_REGISTRATION_TOKEN")
+        || key.eq_ignore_ascii_case("AGENTSCOMMANDER_API_TOKEN")
+        || key.eq_ignore_ascii_case("AGENTSCOMMANDER_ROOT")
+}
+
 pub(crate) fn root_key(root: &str) -> String {
     let normalized = crate::path_utils::normalize_windows_verbatim_path(root);
     let normalized = normalized.replace('\\', "/");
@@ -552,7 +1039,48 @@ pub(crate) fn root_key(root: &str) -> String {
 mod tests {
     use super::*;
     use crate::pty::backend::SessionBackendKind;
+    use crate::pty::container_runtime::ContainerCleanupReport;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct RecordingRuntime {
+        stopped: Arc<Mutex<Vec<Uuid>>>,
+    }
+
+    impl RecordingRuntime {
+        fn stopped(&self) -> Vec<Uuid> {
+            self.stopped.lock().unwrap().clone()
+        }
+    }
+
+    impl ContainerRuntime for RecordingRuntime {
+        fn start(
+            &self,
+            request: ContainerStartRequest,
+        ) -> Result<ContainerRuntimeHandle, AppError> {
+            Ok(ContainerRuntimeHandle {
+                session_id: request.session_id,
+                container_id: format!("container-{}", request.session_id),
+            })
+        }
+
+        fn stop(
+            &self,
+            handle: &ContainerRuntimeHandle,
+            _timeout: Duration,
+        ) -> Result<(), AppError> {
+            self.stopped.lock().unwrap().push(handle.session_id);
+            Ok(())
+        }
+
+        fn cleanup_labeled_orphans(
+            &self,
+            _live_sessions: &HashSet<Uuid>,
+            _timeout: Duration,
+        ) -> Result<ContainerCleanupReport, AppError> {
+            Ok(ContainerCleanupReport::default())
+        }
+    }
 
     fn backend_with_tuning(
         tuning: ContainerTransportTuning,
@@ -589,6 +1117,7 @@ mod tests {
             idle_tuning: crate::session::profile::IdleTuning::DEFAULT,
             output_target,
             resource_registration: None,
+            logical_resource_slot: None,
         }
     }
 
@@ -616,6 +1145,127 @@ mod tests {
         let (tx, rx) = mpsc::channel(8);
         backend.complete_hello(id, root, tx).expect("hello");
         rx
+    }
+
+    #[tokio::test]
+    async fn expired_pending_reaper_marks_session_exited_and_removes_route() {
+        let id_root = "C:/repo/.ac/wg-1/__agent_dev";
+        let tuning = ContainerTransportTuning {
+            ticket_ttl: Duration::from_millis(1),
+            ..ContainerTransportTuning::default()
+        };
+        let (backend, session_mgr) = backend_with_tuning(tuning);
+        let removed = Arc::new(AtomicUsize::new(0));
+        let removed_for_cb = removed.clone();
+        backend.set_route_remover(Arc::new(move |_| {
+            removed_for_cb.fetch_add(1, Ordering::SeqCst);
+        }));
+        let session = session_mgr
+            .read()
+            .await
+            .create_session(
+                "container".to_string(),
+                Vec::new(),
+                id_root.to_string(),
+                Some("agent".to_string()),
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::ContainerTransport,
+            )
+            .await
+            .expect("session");
+        backend
+            .spawn(test_spec(session.id, id_root, PtyOutputTarget::noop()))
+            .await
+            .expect("spawn pending");
+
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert_eq!(backend.reap_expired_pending_sessions().await, 1);
+
+        assert_eq!(removed.load(Ordering::SeqCst), 1);
+        let stored = session_mgr
+            .read()
+            .await
+            .get_session(session.id)
+            .await
+            .expect("stored");
+        assert!(matches!(
+            stored.status,
+            crate::session::session::SessionStatus::Exited(TRANSPORT_LOST_EXIT_CODE)
+        ));
+    }
+
+    #[test]
+    fn kill_revokes_container_token_and_stops_runtime_handle() {
+        let id = Uuid::new_v4();
+        let runtime = Arc::new(RecordingRuntime::default());
+        let dir = tempfile::TempDir::new().unwrap();
+        let token_manager =
+            ContainerApiTokenManager::new_for_path(dir.path().join("api-clients.json"));
+        let token = token_manager
+            .mint_for_session(id, "C:/repo/.ac/wg-1/__agent_dev")
+            .expect("token");
+        let (mut backend, _mgr) = backend_with_tuning(ContainerTransportTuning::default());
+        backend.runtime = Some(runtime.clone());
+        backend.token_manager = Some(token_manager.clone());
+        let (tx, _rx) = mpsc::channel(8);
+        backend.sessions.lock().unwrap().insert(
+            id,
+            ContainerSessionState::Active(ActiveSession {
+                output_target: PtyOutputTarget::noop(),
+                sender: tx,
+                rows: 30,
+                cols: 120,
+                runtime_handle: Some(ContainerRuntimeHandle {
+                    session_id: id,
+                    container_id: "container-id".to_string(),
+                }),
+                api_client_id: Some(token.client_id.clone()),
+                logical_resource_slot: None,
+            }),
+        );
+
+        backend.kill(id).expect("kill");
+
+        let registry = crate::api::auth::list(token_manager.path());
+        assert!(
+            registry
+                .clients
+                .iter()
+                .find(|client| client.client_id == token.client_id)
+                .expect("client")
+                .revoked
+        );
+        for _ in 0..20 {
+            if runtime.stopped().contains(&id) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("runtime stop was not called");
+    }
+
+    #[test]
+    fn sanitized_child_env_removes_reserved_credentials_and_removed_keys() {
+        let env = vec![
+            ("CODEX_HOME".to_string(), "/workspace/.codex".to_string()),
+            (
+                "AGENTSCOMMANDER_TOKEN".to_string(),
+                "session-token".to_string(),
+            ),
+            (
+                "AGENTSCOMMANDER_BINARY_PATH".to_string(),
+                "C:/host/ac.exe".to_string(),
+            ),
+            ("DROP_ME".to_string(), "x".to_string()),
+        ];
+        let got = sanitized_child_env(env, vec!["drop_me".to_string()]);
+
+        assert_eq!(
+            got,
+            vec![("CODEX_HOME".to_string(), "/workspace/.codex".to_string())]
+        );
     }
 
     #[tokio::test]

@@ -14,7 +14,7 @@ use crate::pty::manager::PtyManager;
 use crate::pty::output::PtyOutputTarget;
 use crate::resource_monitor::{
     AgentLaunchPermit, ResourceLaunchMetadata, ResourceLaunchRegistration, ResourceLimits,
-    ResourceMonitorState,
+    ResourceLogicalAgentSlot, ResourceMonitorState,
 };
 use crate::session::manager::SessionManager;
 use crate::session::profile::CodingAgentKind;
@@ -704,11 +704,7 @@ fn should_inject_continue(
 /// telegram claude_watcher its file identity instead of cwd+mtime heuristics).
 /// The injected id is the SPAWN id, not a stable session id: a later in-session
 /// `/clear` mints a new one.
-fn should_inject_fresh_session_id(
-    is_claude: bool,
-    skip_auto_resume: bool,
-    full_cmd: &str,
-) -> bool {
+fn should_inject_fresh_session_id(is_claude: bool, skip_auto_resume: bool, full_cmd: &str) -> bool {
     if !is_claude || !skip_auto_resume {
         return false;
     }
@@ -1210,45 +1206,57 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         .as_ref()
         .map(|spawn| spawn.env_remove_keys.clone())
         .unwrap_or_default();
-    let resource_registration = match session.backend_kind {
-        SessionBackendKind::LocalProcess => resource_permit.take().map(|permit| {
-            // #516 - human-readable WG + agent identity for the Resource Monitor row,
-            // derived from the deterministic spawn cwd (not the user-renamable
-            // session.name). Root agents carry no wg-/__agent_ segments, so label them
-            // explicitly with the bare replica dir name.
-            let (workgroup, agent) = {
-                let (wg, ag) = crate::config::teams::workgroup_and_agent_from_path(&cwd);
-                if wg.is_some() {
-                    (wg, ag)
-                } else if is_root_agent {
-                    let bare = cwd
-                        .replace('\\', "/")
-                        .rsplit('/')
-                        .find(|s| !s.is_empty())
-                        .map(|s| s.to_string());
-                    (Some("Root agent".to_string()), bare)
-                } else {
-                    (None, None)
-                }
-            };
-            // #566 - project folder name for the Resource Monitor row, derived from
-            // the same deterministic spawn cwd as the (workgroup, agent) pair above.
-            let project = crate::config::teams::project_from_path(&cwd);
-            ResourceLaunchRegistration::new(
-                resource_monitor.as_ref().clone(),
-                permit,
-                ResourceLaunchMetadata {
-                    session_id: id,
-                    name: session.name.clone(),
-                    agent_id: agent_id.clone(),
-                    agent_label: agent_label.clone(),
-                    workgroup,
-                    agent,
-                    project,
-                },
-            )
-        }),
-        SessionBackendKind::ContainerTransport => None,
+    let (resource_registration, logical_resource_slot): (
+        Option<ResourceLaunchRegistration>,
+        Option<ResourceLogicalAgentSlot>,
+    ) = match session.backend_kind {
+        SessionBackendKind::LocalProcess => resource_permit
+            .take()
+            .map(|permit| {
+                // #516 - human-readable WG + agent identity for the Resource Monitor row,
+                // derived from the deterministic spawn cwd (not the user-renamable
+                // session.name). Root agents carry no wg-/__agent_ segments, so label them
+                // explicitly with the bare replica dir name.
+                let (workgroup, agent) = {
+                    let (wg, ag) = crate::config::teams::workgroup_and_agent_from_path(&cwd);
+                    if wg.is_some() {
+                        (wg, ag)
+                    } else if is_root_agent {
+                        let bare = cwd
+                            .replace('\\', "/")
+                            .rsplit('/')
+                            .find(|s| !s.is_empty())
+                            .map(|s| s.to_string());
+                        (Some("Root agent".to_string()), bare)
+                    } else {
+                        (None, None)
+                    }
+                };
+                // #566 - project folder name for the Resource Monitor row, derived from
+                // the same deterministic spawn cwd as the (workgroup, agent) pair above.
+                let project = crate::config::teams::project_from_path(&cwd);
+                ResourceLaunchRegistration::new(
+                    resource_monitor.as_ref().clone(),
+                    permit,
+                    ResourceLaunchMetadata {
+                        session_id: id,
+                        name: session.name.clone(),
+                        agent_id: agent_id.clone(),
+                        agent_label: agent_label.clone(),
+                        workgroup,
+                        agent,
+                        project,
+                    },
+                )
+            })
+            .map(|registration| (Some(registration), None))
+            .unwrap_or((None, None)),
+        SessionBackendKind::ContainerTransport => (
+            None,
+            resource_permit
+                .take()
+                .map(|permit| resource_monitor.hold_logical_agent_slot(permit)),
+        ),
     };
 
     // #598 - seed the config folder before the PTY starts so the agent sees the
@@ -1306,6 +1314,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         idle_tuning: crate::session::profile::idle_tuning_for(agent_kind),
         output_target: PtyOutputTarget::from_app_handle(app.clone()),
         resource_registration,
+        logical_resource_slot,
     };
     let spawn_result = PtyManager::spawn(pty_mgr, session.backend_kind, spawn_spec).await;
     if let Err(e) = spawn_result {
@@ -3236,12 +3245,12 @@ mod tests {
         }
     }
 
-    fn session_test_app(
-        settings: AppSettings,
-    ) -> tauri::App<tauri::test::MockRuntime> {
+    fn session_test_app(settings: AppSettings) -> tauri::App<tauri::test::MockRuntime> {
         tauri::test::mock_builder()
             .manage(Arc::new(tokio::sync::RwLock::new(settings)))
-            .manage(Arc::new(crate::resource_monitor::ResourceMonitorState::new()))
+            .manage(Arc::new(
+                crate::resource_monitor::ResourceMonitorState::new(),
+            ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build session test app")
     }

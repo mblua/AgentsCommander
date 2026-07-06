@@ -92,6 +92,19 @@ pub struct ResourceLaunchRegistration {
     registered: bool,
 }
 
+pub struct ResourceLogicalAgentSlot {
+    monitor: ResourceMonitorState,
+    permit: Option<AgentLaunchPermit>,
+}
+
+impl Drop for ResourceLogicalAgentSlot {
+    fn drop(&mut self) {
+        if let Some(permit) = self.permit.take() {
+            self.monitor.release_unregistered_permit(permit);
+        }
+    }
+}
+
 impl Drop for ResourceLaunchRegistration {
     fn drop(&mut self) {
         if let Some(permit) = self.permit.take() {
@@ -191,6 +204,13 @@ impl ResourceMonitorState {
     pub fn release_unregistered_permit(&self, permit: AgentLaunchPermit) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.pending_permits.remove(&permit.generation);
+        }
+    }
+
+    pub fn hold_logical_agent_slot(&self, permit: AgentLaunchPermit) -> ResourceLogicalAgentSlot {
+        ResourceLogicalAgentSlot {
+            monitor: self.clone(),
+            permit: Some(permit),
         }
     }
 
@@ -840,8 +860,7 @@ impl ResourceMonitorState {
     fn reset_missing_root_strikes(&self, session_id: Uuid, root: ProcessIdentity) {
         if let Ok(mut inner) = self.inner.lock() {
             if let Some(group) = inner.groups.get_mut(&session_id) {
-                if matches!(group.state, ResourceGroupState::Running)
-                    && group.root_identity == root
+                if matches!(group.state, ResourceGroupState::Running) && group.root_identity == root
                 {
                     group.missing_root_strikes = 0;
                 }
@@ -860,9 +879,7 @@ impl ResourceMonitorState {
         let mut terminated: Vec<(Uuid, Instant)> = inner
             .groups
             .iter()
-            .filter(|(_, g)| {
-                matches!(g.state, ResourceGroupState::Terminated) && g.permit_released
-            })
+            .filter(|(_, g)| matches!(g.state, ResourceGroupState::Terminated) && g.permit_released)
             .map(|(id, g)| (*id, g.terminated_at.unwrap_or_else(Instant::now)))
             .collect();
         if terminated.len() <= MAX_TERMINATED_RETAINED {
@@ -1385,7 +1402,17 @@ mod tests {
         );
         let permit = state.try_reserve_agent_slot(limits(3)).unwrap().unwrap();
         state
-            .register_group(permit, Uuid::new_v4(), "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                Uuid::new_v4(),
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
         let snapshot = state.snapshot(limits(3));
         assert_eq!(snapshot.groups[0].process_count, 2);
@@ -1409,7 +1436,17 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(3)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
         let result = state.kill_group(id, ResourceKillReason::User).unwrap();
         assert!(!result.quarantined);
@@ -1433,7 +1470,17 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
         let result = state.kill_group(id, ResourceKillReason::User).unwrap();
         assert!(!result.quarantined);
@@ -1456,7 +1503,17 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
         let result = state.kill_group(id, ResourceKillReason::User).unwrap();
         assert!(result.quarantined);
@@ -1473,7 +1530,17 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
 
         backend.mark_gone(root);
@@ -1506,7 +1573,17 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
 
         backend.replace_tree(
@@ -1543,7 +1620,17 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
 
         let result = state.kill_group(id, ResourceKillReason::User).unwrap();
@@ -1568,7 +1655,17 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
 
         backend.replace_tree(
@@ -1611,7 +1708,17 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
 
         backend.replace_tree(
@@ -1642,7 +1749,17 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
 
         backend.replace_tree(
@@ -1674,7 +1791,17 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
 
         backend.replace_tree(
@@ -1712,7 +1839,17 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
 
         backend.replace_tree(
@@ -1749,7 +1886,17 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
 
         backend.mark_unverifiable(root.pid);
@@ -1774,7 +1921,17 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
 
         backend.mark_exit_during_terminate(root);
@@ -1795,7 +1952,17 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
         let first = state.kill_group(id, ResourceKillReason::User).unwrap();
         let second = state.kill_group(id, ResourceKillReason::Watchdog).unwrap();
@@ -1839,10 +2006,7 @@ mod tests {
     }
 
     fn missing_root_error(root: ProcessIdentity) -> Vec<String> {
-        vec![format!(
-            "root pid {} was not in process snapshot",
-            root.pid
-        )]
+        vec![format!("root pid {} was not in process snapshot", root.pid)]
     }
 
     // (a) H1 - a naturally-exited root reaps after two strikes + a confirmed-gone check.
@@ -1854,7 +2018,17 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
 
         // Live root: no strike.
@@ -1888,7 +2062,17 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
 
         // One missing-root strike.
@@ -1918,7 +2102,17 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
 
         // A failed enumeration routes through set_group_error (the Err arm), which never
@@ -1942,7 +2136,17 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
 
         // Tree reports missing-root (the creation-time-mismatch path) and the confirm
@@ -1967,7 +2171,17 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
 
         // Root stays in the identities map, so observe_identity returns Ok(Some(root)).
@@ -1988,7 +2202,17 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
 
         // Missing-root signal fires, but observe_identity returns Err (pid still exists,
@@ -2016,7 +2240,17 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
 
         let result = state.kill_group(id, ResourceKillReason::User).unwrap();
@@ -2147,7 +2381,17 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
 
         backend.replace_tree(root, Vec::new(), missing_root_error(root));
@@ -2193,7 +2437,17 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
         let result = state.kill_group(id, ResourceKillReason::User).unwrap();
         assert!(result.quarantined);
@@ -2225,7 +2479,17 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
         let result = state.kill_group(id, ResourceKillReason::User).unwrap();
         assert!(result.quarantined);
@@ -2300,7 +2564,17 @@ mod tests {
             let permit = state.try_reserve_agent_slot(limits(100)).unwrap().unwrap();
             let id = Uuid::new_v4();
             state
-                .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+                .register_group(
+                    permit,
+                    id,
+                    "agent".into(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    root,
+                )
                 .unwrap();
             let killed = state.kill_group(id, ResourceKillReason::User).unwrap();
             assert_eq!(killed.state, ResourceGroupState::Terminated);
@@ -2326,7 +2600,17 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
 
         // register seeded observed_processes with {root, child}. The child now leaves
@@ -2359,7 +2643,17 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
 
         backend.replace_tree(root, vec![observed(92, 92, None, 0)], Vec::new());
@@ -2390,7 +2684,17 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
         let snap = state.snapshot(limits(1));
         assert_eq!(snap.groups[0].process_count, 2);
@@ -2415,7 +2719,17 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
         let snap = state.snapshot(limits(1));
         assert_eq!(snap.groups[0].process_count, 2);
@@ -2448,7 +2762,17 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
             .unwrap();
         let snap = state.snapshot(limits(1));
         assert_eq!(snap.groups[0].process_count, 2);

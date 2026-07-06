@@ -412,10 +412,12 @@ pub fn run(
     let coordinator_clocks_for_exit = Arc::clone(&coordinator_clocks);
     let resource_monitor_state = Arc::new(resource_monitor::ResourceMonitorState::new());
     // #714 screenshot capture lifecycle + global-hotkey registration state.
-    let screenshot_capture_state: screenshot::ScreenshotCaptureState =
-        Arc::new(tokio::sync::Mutex::new(screenshot::ScreenshotCaptureLifecycle::Idle));
-    let screenshot_hotkey_state: screenshot::ScreenshotHotkeyState =
-        Arc::new(std::sync::Mutex::new(screenshot::ScreenshotHotkeyRuntime::default()));
+    let screenshot_capture_state: screenshot::ScreenshotCaptureState = Arc::new(
+        tokio::sync::Mutex::new(screenshot::ScreenshotCaptureLifecycle::Idle),
+    );
+    let screenshot_hotkey_state: screenshot::ScreenshotHotkeyState = Arc::new(
+        std::sync::Mutex::new(screenshot::ScreenshotHotkeyRuntime::default()),
+    );
     let settings_for_web = Arc::clone(&settings);
     let detached_sessions: DetachedSessionsState = Arc::new(Mutex::new(HashSet::new()));
     let voice_tracking: VoiceTrackingState = Arc::new(Mutex::new(VoiceTracker::new()));
@@ -565,6 +567,11 @@ pub fn run(
                         );
                     }
                 }));
+            }
+            {
+                let guard = pty_mgr.lock().unwrap();
+                guard.cleanup_container_orphans_on_startup();
+                guard.start_container_pending_reaper(shutdown_for_setup.clone());
             }
             app.manage(pty_mgr.clone());
 
@@ -2222,6 +2229,9 @@ pub fn run(
                     let (jobs_killed, jobless_sessions) = {
                         let pty_mgr = app_handle.state::<Arc<Mutex<PtyManager>>>();
                         let guard = pty_mgr.lock().unwrap_or_else(|e| e.into_inner());
+                        guard.stop_all_started_containers_blocking(std::time::Duration::from_secs(
+                            SHUTDOWN_CLEANUP_BUDGET_SECS,
+                        ));
                         guard.kill_all_jobs()
                     };
                     log::info!(

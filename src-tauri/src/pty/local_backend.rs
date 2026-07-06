@@ -189,6 +189,7 @@ impl LocalProcessBackend {
             idle_tuning,
             output_target,
             mut resource_registration,
+            logical_resource_slot: _,
         } = spec;
         let pty_system = native_pty_system();
         let spawn_cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);

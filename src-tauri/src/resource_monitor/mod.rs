@@ -4,7 +4,8 @@ pub mod watchdog;
 pub mod windows;
 
 pub use registry::{
-    AgentLaunchPermit, ProcessTreeBackend, ResourceLaunchRegistration, ResourceMonitorState,
+    AgentLaunchPermit, ProcessTreeBackend, ResourceLaunchRegistration, ResourceLogicalAgentSlot,
+    ResourceMonitorState,
 };
 pub use types::{
     ProcessIdentity, ResourceKillReason, ResourceKillRequest, ResourceKillResult,

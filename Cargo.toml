@@ -1,0 +1,4 @@
+[workspace]
+members = ["src-tauri", "crates/session-bridge"]
+default-members = ["src-tauri", "crates/session-bridge"]
+resolver = "2"
