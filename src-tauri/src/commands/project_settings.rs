@@ -4,9 +4,20 @@ use crate::config::project_settings::{
     load_workgroup_groups, save_workgroup_groups, WorkgroupGroupsConfig,
 };
 
+pub(crate) fn get_project_groups_inner(path: &str) -> Result<WorkgroupGroupsConfig, String> {
+    load_workgroup_groups(Path::new(path))
+}
+
 #[tauri::command]
 pub async fn get_project_groups(path: String) -> Result<WorkgroupGroupsConfig, String> {
-    load_workgroup_groups(Path::new(&path))
+    get_project_groups_inner(&path)
+}
+
+pub(crate) fn update_project_groups_inner(
+    path: &str,
+    config: WorkgroupGroupsConfig,
+) -> Result<WorkgroupGroupsConfig, String> {
+    save_workgroup_groups(Path::new(path), config)
 }
 
 #[tauri::command]
@@ -14,7 +25,7 @@ pub async fn update_project_groups(
     path: String,
     config: WorkgroupGroupsConfig,
 ) -> Result<WorkgroupGroupsConfig, String> {
-    save_workgroup_groups(Path::new(&path), config)
+    update_project_groups_inner(&path, config)
 }
 
 #[cfg(test)]
