@@ -16,6 +16,7 @@ const mockState = vi.hoisted(() => ({
     themeLight: true,
     specBoardEnabled: false,
   } as { soundsEnabled: boolean; themeLight: boolean; specBoardEnabled: boolean } | null,
+  isBrowser: false,
 }));
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
@@ -87,6 +88,12 @@ vi.mock("../../shared/sound", () => ({
   setSoundsEnabled: vi.fn(),
 }));
 
+vi.mock("../../shared/platform", () => ({
+  get isBrowser() {
+    return mockState.isBrowser;
+  },
+}));
+
 vi.mock("../../main/stores/home", () => ({
   homeStore: {
     visible: false,
@@ -99,6 +106,7 @@ vi.mock("./SettingsModal", () => ({
 }));
 
 import ActionBar from "./ActionBar";
+import { projectStore } from "../stores/project";
 import {
   centralViewStore,
   __resetCentralViewStoreForTests,
@@ -123,6 +131,7 @@ describe("ActionBar selected workgroup visibility toggle", () => {
     mockState.sessions.hydrated = true;
     mockState.sessions.toggleInFlight = false;
     mockState.sessions.coordSortByActivity = false;
+    mockState.isBrowser = false;
     mockState.settings = {
       soundsEnabled: true,
       themeLight: true,
@@ -204,6 +213,78 @@ describe("ActionBar selected workgroup visibility toggle", () => {
     expect(themeButton.textContent).toContain("🌙");
     expect(themeButton.textContent).not.toContain("☀");
     expect(themeButton.getAttribute("data-ac-state")).toBe("disabled");
+
+    dispose();
+  });
+
+  it("shows the browser create-project notice without invoking the folder picker flow", () => {
+    mockState.isBrowser = true;
+    const { dispose } = renderActionBar();
+    const dropdownButton = document.body.querySelector<HTMLButtonElement>(
+      '[data-ac-testid="actionBar.newOpen"]'
+    );
+    if (!dropdownButton) throw new Error("new/open dropdown button not rendered");
+
+    dropdownButton.click();
+
+    const newProjectItem = document.body.querySelector<HTMLButtonElement>(
+      '[data-ac-testid="actionBar.menu.newProject"]'
+    );
+    if (!newProjectItem) throw new Error("new project menu item not rendered");
+
+    newProjectItem.click();
+
+    expect(projectStore.pickAndCheck).not.toHaveBeenCalled();
+    const modal = document.body.querySelector<HTMLElement>(
+      '[data-ac-testid="project.browserCreateNotice.dialog"]'
+    );
+    expect(modal).not.toBeNull();
+    expect(modal?.textContent).toContain("Create a project from the desktop app");
+    expect(modal?.textContent).toContain(
+      "Creating a new project isn't available in the browser view."
+    );
+
+    const dismiss = document.body.querySelector<HTMLButtonElement>(
+      '[data-ac-testid="project.browserCreateNotice.dismiss"]'
+    );
+    if (!dismiss) throw new Error("browser create-project dismiss button not rendered");
+    dismiss.click();
+
+    expect(
+      document.body.querySelector('[data-ac-testid="project.browserCreateNotice.dialog"]')
+    ).toBeNull();
+
+    dispose();
+  });
+
+  it("keeps the desktop new-project flow unchanged", async () => {
+    vi.mocked(projectStore.pickAndCheck).mockResolvedValue({
+      picked: "C:\\Projects\\Example",
+      hasWorkspace: false,
+    });
+
+    const { dispose } = renderActionBar();
+    const dropdownButton = document.body.querySelector<HTMLButtonElement>(
+      '[data-ac-testid="actionBar.newOpen"]'
+    );
+    if (!dropdownButton) throw new Error("new/open dropdown button not rendered");
+
+    dropdownButton.click();
+
+    const newProjectItem = document.body.querySelector<HTMLButtonElement>(
+      '[data-ac-testid="actionBar.menu.newProject"]'
+    );
+    if (!newProjectItem) throw new Error("new project menu item not rendered");
+
+    newProjectItem.click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(projectStore.pickAndCheck).toHaveBeenCalledTimes(1);
+    expect(projectStore.createAndLoad).toHaveBeenCalledWith("C:\\Projects\\Example");
+    expect(
+      document.body.querySelector('[data-ac-testid="project.browserCreateNotice.dialog"]')
+    ).toBeNull();
 
     dispose();
   });
