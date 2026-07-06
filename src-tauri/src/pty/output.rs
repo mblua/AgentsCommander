@@ -309,7 +309,7 @@ pub(crate) fn scan_response_markers(session_id: Uuid, text: &str, watchers: &Res
                 }
 
                 let response_content = watcher.buffer.take().unwrap_or_default().trim().to_string();
-                write_response_file(&watcher.response_dir, rid, response_content);
+                write_response_file(&watcher.response_dir, session_id, rid, response_content);
                 watchers.remove(&key);
                 return;
             } else if let Some(ref mut buf) = watcher.buffer {
@@ -321,7 +321,7 @@ pub(crate) fn scan_response_markers(session_id: Uuid, text: &str, watchers: &Res
 
             if let Some(end_pos) = after_start.find(&end_marker) {
                 let content = after_start[..end_pos].trim().to_string();
-                write_response_file(&watcher.response_dir, rid, content);
+                write_response_file(&watcher.response_dir, session_id, rid, content);
                 watchers.remove(&key);
                 return;
             } else {
@@ -331,7 +331,12 @@ pub(crate) fn scan_response_markers(session_id: Uuid, text: &str, watchers: &Res
     }
 }
 
-fn write_response_file(response_dir: &std::path::Path, request_id: &str, content: String) {
+fn write_response_file(
+    response_dir: &std::path::Path,
+    session_id: Uuid,
+    request_id: &str,
+    content: String,
+) {
     let response_path = response_dir.join(format!("{}.json", request_id));
     if let Err(e) = std::fs::create_dir_all(response_dir) {
         log::warn!("Failed to create responses dir: {}", e);
@@ -348,7 +353,11 @@ fn write_response_file(response_dir: &std::path::Path, request_id: &str, content
             if let Err(e) = std::fs::write(&response_path, json) {
                 log::warn!("Failed to write response file: {}", e);
             } else {
-                log::info!("Captured response for request {}", request_id);
+                log::info!(
+                    "Captured response for request {} from session {}",
+                    request_id,
+                    session_id
+                );
             }
         }
         Err(e) => log::warn!("Failed to serialize response: {}", e),

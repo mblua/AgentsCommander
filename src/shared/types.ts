@@ -19,7 +19,7 @@ export interface Session {
   name: string;
   shell: string;
   shellArgs: string[];
-  backendKind: SessionBackendKind;
+  backendKind?: SessionBackendKind;
   effectiveShellArgs: string[] | null;
   createdAt: string;
   workingDirectory: string;
