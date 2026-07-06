@@ -1,4 +1,5 @@
 pub mod backend;
+pub mod container_backend;
 pub mod credentials;
 pub mod git_watcher;
 pub mod idle_detector;

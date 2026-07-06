@@ -731,6 +731,7 @@ mod tests {
             idle_detector,
             git_watcher,
             Some(broadcaster.clone()),
+            Arc::clone(&session_mgr),
         )));
         let settings = Arc::new(tokio::sync::RwLock::new(AppSettings::default()));
         let state = WsState {

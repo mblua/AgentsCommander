@@ -378,6 +378,8 @@ pub fn run(
     let session_mgr_for_git = Arc::clone(&session_mgr);
     let session_mgr_for_discovery = Arc::clone(&session_mgr);
     let session_mgr_for_web = Arc::clone(&session_mgr);
+    let session_mgr_for_pty = Arc::clone(&session_mgr);
+    let session_mgr_for_api = Arc::clone(&session_mgr);
     let session_mgr_for_exit = Arc::clone(&session_mgr);
     let output_senders_for_pty = output_senders.clone();
     let idle_detector_for_pty = Arc::clone(&idle_detector);
@@ -550,7 +552,20 @@ pub fn run(
                 idle_detector_for_pty,
                 git_watcher,
                 Some(broadcaster_for_pty),
+                session_mgr_for_pty,
             )));
+            {
+                let weak_pty_mgr = Arc::downgrade(&pty_mgr);
+                let container_backend = pty_mgr.lock().unwrap().container_backend();
+                container_backend.set_route_remover(Arc::new(move |session_id| {
+                    if let Some(pty_mgr) = weak_pty_mgr.upgrade() {
+                        pty_mgr.lock().unwrap().remove_route_if_kind(
+                            session_id,
+                            crate::pty::backend::SessionBackendKind::ContainerTransport,
+                        );
+                    }
+                }));
+            }
             app.manage(pty_mgr.clone());
 
             // #714 register the configured global screenshot hotkey. Windows-only
@@ -608,6 +623,8 @@ pub fn run(
                         bind,
                         port,
                         app.handle().clone(),
+                        session_mgr_for_api.clone(),
+                        pty_mgr.clone(),
                         shutdown_for_setup.clone(),
                     );
                     let api_handle = app.state::<ApiServerHandle>();

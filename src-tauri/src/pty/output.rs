@@ -69,6 +69,17 @@ impl PtyOutputTarget {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn from_test_sink(sink: Arc<Mutex<Vec<(String, Vec<u8>, Option<u64>)>>>) -> Self {
+        Self {
+            emit_pty_output: Arc::new(move |payload| {
+                sink.lock()
+                    .unwrap()
+                    .push((payload.session_id, payload.data, payload.sequence));
+            }),
+        }
+    }
+
     fn emit_pty_output(&self, payload: PtyOutputPayload) {
         (self.emit_pty_output)(payload);
     }

@@ -23,8 +23,10 @@ use super::error::ApiError;
 pub const SCOPE_SEND: &str = "send";
 /// The `list-peers-lean` scope (GET /api/v1/peers).
 pub const SCOPE_LIST_PEERS: &str = "list-peers-lean";
+/// The container session transport scope (GET /api/v1/session-transport).
+pub const SCOPE_SESSION_TRANSPORT: &str = "session-transport";
 /// The only scopes mintable in increment 1.
-pub const VALID_SCOPES: &[&str] = &[SCOPE_SEND, SCOPE_LIST_PEERS];
+pub const VALID_SCOPES: &[&str] = &[SCOPE_SEND, SCOPE_LIST_PEERS, SCOPE_SESSION_TRANSPORT];
 
 /// Registry file basename in `config_dir()`.
 pub const REGISTRY_FILENAME: &str = "api-clients.json";
@@ -407,7 +409,7 @@ mod tests {
             token_hash: hash.into(),
             bound_fqn: "proj:wg-1/dev".into(),
             bound_root: "C:/root".into(),
-            scopes: vec![SCOPE_SEND.into(), SCOPE_LIST_PEERS.into()],
+            scopes: vec![SCOPE_SEND.into(), SCOPE_LIST_PEERS.into(), SCOPE_SESSION_TRANSPORT.into()],
             issued_at: "2026-01-01T00:00:00Z".into(),
             expires_at: expires.map(|s| s.to_string()),
             revoked,
@@ -458,6 +460,7 @@ mod tests {
         assert!(validate_scopes(&[]).is_err());
         assert!(validate_scopes(&["send".into()]).is_ok());
         assert!(validate_scopes(&["send".into(), "list-peers-lean".into()]).is_ok());
+        assert!(validate_scopes(&["session-transport".into()]).is_ok());
         assert!(validate_scopes(&["close-session".into()]).is_err());
     }
 

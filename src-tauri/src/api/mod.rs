@@ -18,11 +18,14 @@ pub mod idempotency;
 pub mod schema;
 
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use axum::Router;
+
+use crate::pty::manager::PtyManager;
+use crate::session::manager::SessionManager;
 
 /// Hard ceiling on a buffered request body (defense in depth above the send
 /// handler's 16 KB semantic cap).
@@ -40,6 +43,10 @@ pub struct ApiState {
     /// Reach to the live daemon (SessionManager / PtyManager / SettingsState)
     /// for actuation, via `app.state::<...>()`.
     pub app_handle: tauri::AppHandle,
+    /// Live sessions, used by the container session transport.
+    pub session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+    /// PTY facade, used to reach the container transport backend.
+    pub pty_mgr: Arc<Mutex<PtyManager>>,
 }
 
 /// Build the router (state already assembled). Split out so tests can mount it
@@ -48,6 +55,7 @@ pub fn build_router(state: ApiState) -> Router {
     Router::new()
         .route("/api/v1/send", post(handlers::send::handle))
         .route("/api/v1/peers", get(handlers::list_peers::handle))
+        .route("/api/v1/session-transport", get(handlers::session_transport::handle))
         // Unauthenticated liveness; body pinned to {"ok":true} (§0.5 G9).
         .route("/api/v1/healthz", get(handlers::health))
         .layer(DefaultBodyLimit::max(MAX_BODY_LIMIT_BYTES))
@@ -63,6 +71,8 @@ pub fn start_server(
     bind: String,
     port: u16,
     app_handle: tauri::AppHandle,
+    session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: Arc<Mutex<PtyManager>>,
     shutdown: crate::shutdown::ShutdownSignal,
 ) -> tauri::async_runtime::JoinHandle<()> {
     let store = match auth::ApiClientStore::at_config_dir() {
@@ -85,6 +95,8 @@ pub fn start_server(
         ledger,
         lockout: Arc::new(auth::FailedAuthLockout::default()),
         app_handle,
+        session_mgr,
+        pty_mgr,
     };
     let router = build_router(state);
 
