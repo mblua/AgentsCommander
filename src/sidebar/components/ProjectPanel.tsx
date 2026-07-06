@@ -405,19 +405,6 @@ const ProjectPanel: Component = () => {
   // CSS-attribute-selector approach, which silently no-oped on Windows
   // backslash paths because CSS string tokens consume `\` as an escape char.
   const projectHeaderEls = new Map<string, HTMLElement>();
-  const registerProjectHeader = (projectPath: string, el: HTMLElement | null) => {
-    const key = normalizeProjectPathForCompare(projectPath);
-    if (el) {
-      projectHeaderEls.set(key, el);
-    } else {
-      // Only delete if the registered entry is still the same el; a stale
-      // ref from a disposed row may have already been overwritten by the
-      // new row's mount.
-      if (projectHeaderEls.get(key) === el) {
-        projectHeaderEls.delete(key);
-      }
-    }
-  };
 
   // #810 - one-shot focus: scroll the owner project header into view when
   // the rail requests it. block:"nearest" so an already-visible owner does
@@ -1633,10 +1620,6 @@ const ProjectPanel: Component = () => {
         const projectAutomationId = () => automationIdPart(proj.path);
         // #810 - the "project" section key moved to the project-collapse store.
         // Sub-section keys below still use the local collapsedByKey signal.
-        // Clear the ref-Map entry for this row when the <For> disposes it
-        // (background discovery refresh re-creates rows; registerProjectHeader
-        // null-branch is a no-op if a newer row already overwrote the key).
-        onCleanup(() => registerProjectHeader(proj.path, null));
         const selectedWorkgroupCollapsedKey = projectPanelCollapseKey(proj.path, "selected-workgroup");
         const workgroupsCollapsedKey = projectPanelCollapseKey(proj.path, "workgroups");
         const loopsCollapsedKey = projectPanelCollapseKey(proj.path, "loops");
@@ -2324,12 +2307,23 @@ const ProjectPanel: Component = () => {
               class="project-header"
               title={proj.path}
               ref={(el) => {
-                // #810 (grinch F1) - register this header element in the
-                // stable-scope ref-Map so the focus effect can scroll it
+                // #810 (grinch F1 + B1) - register this header element in
+                // the stable-scope ref-Map so the focus effect can scroll it
                 // into view by normalized path key. CSS attribute selector
                 // approach was dropped: backslashes in Windows paths break
-                // the CSS string-token parser.
-                registerProjectHeader(proj.path, el);
+                // the CSS string-token parser. Cleanup owns the deletion
+                // here (captures this specific el): on true project removal
+                // it frees the detached node; on a refresh re-mount the
+                // guard `get(key) === el` is false because the newer row
+                // already `set` a different element, so the fresh entry is
+                // correctly left intact.
+                const key = normalizeProjectPathForCompare(proj.path);
+                projectHeaderEls.set(key, el);
+                onCleanup(() => {
+                  if (projectHeaderEls.get(key) === el) {
+                    projectHeaderEls.delete(key);
+                  }
+                });
               }}
               onClick={() => toggleProjectPanelCollapsed(proj.path)}
               onContextMenu={handleProjectContextMenu}
