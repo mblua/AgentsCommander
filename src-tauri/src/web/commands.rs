@@ -583,6 +583,14 @@ async fn dispatch_browser_project_command(
                 require_json(args, "config")?;
             let result =
                 crate::commands::project_settings::update_project_groups_inner(&path, config)?;
+            let payload =
+                crate::commands::project_settings::project_groups_updated_payload(&path, &result);
+            broadcast_all(
+                &state.app_handle,
+                &state.broadcaster,
+                crate::commands::project_settings::PROJECT_GROUPS_UPDATED_EVENT,
+                &payload,
+            );
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
 
@@ -653,6 +661,18 @@ fn str_vec_or(args: &Value, key: &str, default: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::project_settings::{
+        get_project_groups_inner, PROJECT_GROUPS_UPDATED_EVENT,
+    };
+    use crate::config::project_settings::{WorkgroupGroup, WorkgroupGroupsConfig};
+    use crate::config::settings::AppSettings;
+    use crate::pty::git_watcher::GitWatcher;
+    use crate::pty::idle_detector::IdleDetector;
+    use crate::pty::manager::PtyManager;
+    use crate::session::manager::SessionManager;
+    use crate::web::broadcast::{WsBroadcaster, WsOutMsg};
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn browser_project_commands_route_before_unknown_fallback() {
@@ -692,5 +712,76 @@ mod tests {
         assert_eq!(route_web_command("new_project"), WebCommandRoute::Other);
         assert_eq!(route_web_command("open-project"), WebCommandRoute::Other);
         assert_eq!(route_web_command("new-project"), WebCommandRoute::Other);
+    }
+
+    #[tokio::test]
+    async fn update_project_groups_web_dispatch_broadcasts_saved_config() {
+        let app = tauri::Builder::default()
+            .any_thread()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build test app");
+        let app_handle = app.handle().clone();
+        let broadcaster = WsBroadcaster::new();
+        let mut receiver = broadcaster.subscribe();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let idle_detector = IdleDetector::new(|_| {}, |_| {});
+        let git_watcher = GitWatcher::new(Arc::clone(&session_mgr), app_handle.clone());
+        let pty_mgr = Arc::new(Mutex::new(PtyManager::new(
+            Arc::new(Mutex::new(HashMap::new())),
+            idle_detector,
+            git_watcher,
+            Some(broadcaster.clone()),
+        )));
+        let settings = Arc::new(tokio::sync::RwLock::new(AppSettings::default()));
+        let state = WsState {
+            session_mgr,
+            pty_mgr,
+            settings,
+            broadcaster: broadcaster.clone(),
+            app_handle,
+        };
+
+        let project = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(project.path().join(".ac")).expect("create .ac");
+        let path = project.path().to_string_lossy().to_string();
+        let config = WorkgroupGroupsConfig {
+            groups: vec![WorkgroupGroup {
+                id: "core".to_string(),
+                name: "Core".to_string(),
+                regex: "^wg-14$".to_string(),
+            }],
+            show_all: false,
+            show_ungrouped: true,
+            non_stop: None,
+        };
+
+        let response = dispatch(
+            &state,
+            7,
+            "update_project_groups",
+            &json!({ "path": path, "config": config.clone() }),
+        )
+        .await;
+
+        assert_eq!(response["id"], json!(7));
+        assert_eq!(
+            response["result"],
+            serde_json::to_value(&config).expect("serialize config")
+        );
+        assert_eq!(
+            get_project_groups_inner(&path).expect("load saved groups"),
+            config
+        );
+
+        let event = match receiver.try_recv().expect("broadcast event") {
+            WsOutMsg::Text(text) => serde_json::from_str::<Value>(&text).expect("parse event"),
+            other => panic!("expected text event, got {other:?}"),
+        };
+        assert_eq!(event["event"], json!(PROJECT_GROUPS_UPDATED_EVENT));
+        assert_eq!(event["payload"]["projectPath"], json!(path));
+        assert_eq!(
+            event["payload"]["config"],
+            serde_json::to_value(&config).expect("serialize config")
+        );
     }
 }
