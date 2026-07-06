@@ -1,17 +1,14 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use tauri::AppHandle;
 use uuid::Uuid;
 
 use crate::errors::AppError;
-use crate::pty::backend::{PtyBackend, SessionBackendKind};
+use crate::pty::backend::{BackendSpawnSpec, PtyBackend, SessionBackendKind};
 use crate::pty::git_watcher::GitWatcher;
 use crate::pty::idle_detector::IdleDetector;
 use crate::pty::local_backend::LocalProcessBackend;
 use crate::pty::output::PtyScreenSnapshot;
-use crate::resource_monitor::ResourceLaunchRegistration;
-use crate::session::profile::IdleTuning;
 use crate::telegram::manager::OutputSenderMap;
 
 pub struct PtyManager {
@@ -39,16 +36,16 @@ impl PtyManager {
     }
 
     #[cfg(test)]
-    fn new_for_test(local_backend: Arc<dyn PtyBackend>) -> Self {
+    pub(crate) fn new_for_test(local_backend: Arc<dyn PtyBackend>) -> Self {
         Self {
             routes: Arc::new(Mutex::new(HashMap::new())),
             local_backend,
         }
     }
 
-    pub fn backend_for_kind(&self, kind: SessionBackendKind) -> &dyn PtyBackend {
+    pub fn backend_for_kind(&self, kind: SessionBackendKind) -> Arc<dyn PtyBackend> {
         match kind {
-            SessionBackendKind::LocalProcess => self.local_backend.as_ref(),
+            SessionBackendKind::LocalProcess => self.local_backend.clone(),
         }
     }
 
@@ -72,49 +69,18 @@ impl PtyManager {
             .ok_or_else(|| AppError::SessionNotFound(id.to_string()))
     }
 
-    fn local_process_backend(&self) -> Result<&LocalProcessBackend, AppError> {
-        self.local_backend
-            .as_any()
-            .downcast_ref::<LocalProcessBackend>()
-            .ok_or_else(|| AppError::PtyError("local process backend unavailable".to_string()))
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn spawn<R: tauri::Runtime>(
-        &self,
-        id: Uuid,
+    pub async fn spawn(
+        manager: &Arc<Mutex<Self>>,
         backend_kind: SessionBackendKind,
-        cmd: &str,
-        args: &[String],
-        cwd: &str,
-        cols: u16,
-        rows: u16,
-        configured_env: &[(String, String)],
-        env_remove_keys: &[String],
-        extra_env: &[(String, String)],
-        idle_tuning: IdleTuning,
-        app_handle: AppHandle<R>,
-        resource_registration: Option<ResourceLaunchRegistration>,
+        spec: BackendSpawnSpec,
     ) -> Result<(), AppError> {
-        match backend_kind {
-            SessionBackendKind::LocalProcess => {
-                self.local_process_backend()?.spawn(
-                    id,
-                    cmd,
-                    args,
-                    cwd,
-                    cols,
-                    rows,
-                    configured_env,
-                    env_remove_keys,
-                    extra_env,
-                    idle_tuning,
-                    app_handle,
-                    resource_registration,
-                )?;
-            }
-        }
-        self.record_route(id, backend_kind);
+        let id = spec.id;
+        let backend = {
+            let manager = manager.lock().unwrap();
+            manager.backend_for_kind(backend_kind)
+        };
+        backend.spawn(spec).await?;
+        manager.lock().unwrap().record_route(id, backend_kind);
         Ok(())
     }
 
@@ -229,6 +195,16 @@ mod tests {
             self
         }
 
+        fn spawn(
+            &self,
+            spec: BackendSpawnSpec,
+        ) -> futures::future::BoxFuture<'_, Result<(), AppError>> {
+            Box::pin(async move {
+                self.live.lock().unwrap().insert(spec.id);
+                Ok(())
+            })
+        }
+
         fn write(&self, id: Uuid, data: &[u8]) -> Result<(), AppError> {
             self.calls
                 .lock()
@@ -288,6 +264,108 @@ mod tests {
         }
     }
 
+    struct DelayedSpawnBackend {
+        live: Mutex<std::collections::HashSet<Uuid>>,
+        started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        release: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    }
+
+    impl DelayedSpawnBackend {
+        fn new(
+            started: tokio::sync::oneshot::Sender<()>,
+            release: tokio::sync::oneshot::Receiver<()>,
+        ) -> Self {
+            Self {
+                live: Mutex::new(std::collections::HashSet::new()),
+                started: Mutex::new(Some(started)),
+                release: Mutex::new(Some(release)),
+            }
+        }
+    }
+
+    impl PtyBackend for DelayedSpawnBackend {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn spawn(
+            &self,
+            spec: BackendSpawnSpec,
+        ) -> futures::future::BoxFuture<'_, Result<(), AppError>> {
+            let started = self.started.lock().unwrap().take().expect("started sender");
+            let release = self
+                .release
+                .lock()
+                .unwrap()
+                .take()
+                .expect("release receiver");
+            Box::pin(async move {
+                let _ = started.send(());
+                let _ = release.await;
+                self.live.lock().unwrap().insert(spec.id);
+                Ok(())
+            })
+        }
+
+        fn write(&self, _id: Uuid, _data: &[u8]) -> Result<(), AppError> {
+            Ok(())
+        }
+
+        fn resize(&self, _id: Uuid, _cols: u16, _rows: u16) -> Result<(), AppError> {
+            Ok(())
+        }
+
+        fn kill(&self, id: Uuid) -> Result<(), AppError> {
+            self.live.lock().unwrap().remove(&id);
+            Ok(())
+        }
+
+        fn has_session(&self, id: Uuid) -> bool {
+            self.live.lock().unwrap().contains(&id)
+        }
+
+        fn get_screen_snapshot(&self, _id: Uuid) -> Option<PtyScreenSnapshot> {
+            None
+        }
+
+        fn get_pty_size(&self, _id: Uuid) -> Option<(u16, u16)> {
+            None
+        }
+
+        fn register_response_watcher(
+            &self,
+            _session_id: Uuid,
+            _request_id: String,
+            _response_dir: std::path::PathBuf,
+        ) {
+        }
+
+        fn terminate_job_for_session(&self, _id: Uuid) -> bool {
+            false
+        }
+
+        fn kill_all_jobs(&self) -> (usize, usize) {
+            (0, 0)
+        }
+    }
+
+    fn test_spawn_spec(id: Uuid) -> BackendSpawnSpec {
+        BackendSpawnSpec {
+            id,
+            cmd: "cmd".to_string(),
+            args: Vec::new(),
+            cwd: ".".to_string(),
+            cols: 80,
+            rows: 24,
+            configured_env: Vec::new(),
+            env_remove_keys: Vec::new(),
+            extra_env: Vec::new(),
+            idle_tuning: crate::session::profile::IdleTuning::DEFAULT,
+            output_target: crate::pty::output::PtyOutputTarget::noop(),
+            resource_registration: None,
+        }
+    }
+
     #[test]
     fn facade_delegates_local_route_by_session_id() {
         let id = Uuid::new_v4();
@@ -329,5 +407,38 @@ mod tests {
 
         assert!(matches!(err, AppError::SessionNotFound(_)));
         assert!(backend.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn spawn_does_not_hold_manager_mutex_while_backend_awaits() {
+        let id = Uuid::new_v4();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let backend = Arc::new(DelayedSpawnBackend::new(started_tx, release_rx));
+        let manager = Arc::new(Mutex::new(PtyManager::new_for_test(backend)));
+
+        let spawn_task = {
+            let manager = manager.clone();
+            tokio::spawn(async move {
+                PtyManager::spawn(
+                    &manager,
+                    SessionBackendKind::LocalProcess,
+                    test_spawn_spec(id),
+                )
+                .await
+            })
+        };
+
+        started_rx.await.expect("spawn started");
+        {
+            let guard = manager
+                .try_lock()
+                .expect("manager mutex should be free while backend spawn awaits");
+            assert!(!guard.has_session(id));
+        }
+
+        release_tx.send(()).expect("release spawn");
+        spawn_task.await.expect("spawn task").expect("spawn ok");
+        assert!(manager.lock().unwrap().has_session(id));
     }
 }

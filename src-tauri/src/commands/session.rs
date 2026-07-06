@@ -9,8 +9,9 @@ use crate::config::agent_config::{self, AgentLocalConfig};
 use crate::config::coordinator_clocks::CoordinatorClocksState;
 use crate::config::sessions_persistence::persist_current_state;
 use crate::config::settings::{AppSettings, SettingsState};
-use crate::pty::backend::SessionBackendKind;
+use crate::pty::backend::{BackendSpawnSpec, SessionBackendKind};
 use crate::pty::manager::PtyManager;
+use crate::pty::output::PtyOutputTarget;
 use crate::resource_monitor::{
     AgentLaunchPermit, ResourceLaunchMetadata, ResourceLaunchRegistration, ResourceLimits,
     ResourceMonitorState,
@@ -894,8 +895,12 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         None
     };
 
-    let mgr = session_mgr.read().await;
-    let backend_kind = SessionBackendKind::LocalProcess;
+    // Clone the manager handle so the outer RwLock guard drops before spawn awaits.
+    let mgr = session_mgr.read().await.clone();
+    let backend_kind = resolved_spawn
+        .as_ref()
+        .map(|spawn| SessionBackendKind::from(&spawn.backend))
+        .unwrap_or_default();
     let mut session = match mgr
         .create_session(
             shell.clone(),
@@ -1201,43 +1206,45 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         .as_ref()
         .map(|spawn| spawn.env_remove_keys.clone())
         .unwrap_or_default();
-    let resource_registration = resource_permit.take().map(|permit| {
-        // #516 - human-readable WG + agent identity for the Resource Monitor row,
-        // derived from the deterministic spawn cwd (not the user-renamable
-        // session.name). Root agents carry no wg-/__agent_ segments, so label them
-        // explicitly with the bare replica dir name.
-        let (workgroup, agent) = {
-            let (wg, ag) = crate::config::teams::workgroup_and_agent_from_path(&cwd);
-            if wg.is_some() {
-                (wg, ag)
-            } else if is_root_agent {
-                let bare = cwd
-                    .replace('\\', "/")
-                    .rsplit('/')
-                    .find(|s| !s.is_empty())
-                    .map(|s| s.to_string());
-                (Some("Root agent".to_string()), bare)
-            } else {
-                (None, None)
-            }
-        };
-        // #566 - project folder name for the Resource Monitor row, derived from
-        // the same deterministic spawn cwd as the (workgroup, agent) pair above.
-        let project = crate::config::teams::project_from_path(&cwd);
-        ResourceLaunchRegistration::new(
-            resource_monitor.as_ref().clone(),
-            permit,
-            ResourceLaunchMetadata {
-                session_id: id,
-                name: session.name.clone(),
-                agent_id: agent_id.clone(),
-                agent_label: agent_label.clone(),
-                workgroup,
-                agent,
-                project,
-            },
-        )
-    });
+    let resource_registration = match session.backend_kind {
+        SessionBackendKind::LocalProcess => resource_permit.take().map(|permit| {
+            // #516 - human-readable WG + agent identity for the Resource Monitor row,
+            // derived from the deterministic spawn cwd (not the user-renamable
+            // session.name). Root agents carry no wg-/__agent_ segments, so label them
+            // explicitly with the bare replica dir name.
+            let (workgroup, agent) = {
+                let (wg, ag) = crate::config::teams::workgroup_and_agent_from_path(&cwd);
+                if wg.is_some() {
+                    (wg, ag)
+                } else if is_root_agent {
+                    let bare = cwd
+                        .replace('\\', "/")
+                        .rsplit('/')
+                        .find(|s| !s.is_empty())
+                        .map(|s| s.to_string());
+                    (Some("Root agent".to_string()), bare)
+                } else {
+                    (None, None)
+                }
+            };
+            // #566 - project folder name for the Resource Monitor row, derived from
+            // the same deterministic spawn cwd as the (workgroup, agent) pair above.
+            let project = crate::config::teams::project_from_path(&cwd);
+            ResourceLaunchRegistration::new(
+                resource_monitor.as_ref().clone(),
+                permit,
+                ResourceLaunchMetadata {
+                    session_id: id,
+                    name: session.name.clone(),
+                    agent_id: agent_id.clone(),
+                    agent_label: agent_label.clone(),
+                    workgroup,
+                    agent,
+                    project,
+                },
+            )
+        }),
+    };
 
     // #598 - seed the config folder before the PTY starts so the agent sees the
     // templated config. Best-effort: never aborts the spawn. This is the single
@@ -1281,23 +1288,21 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         }
     }
 
-    let spawn_result = {
-        pty_mgr.lock().unwrap().spawn(
-            id,
-            session.backend_kind,
-            &shell,
-            &shell_args,
-            &cwd,
-            120,
-            30,
-            &configured_env,
-            &env_remove_keys,
-            &extra_env,
-            crate::session::profile::idle_tuning_for(agent_kind),
-            app.clone(),
-            resource_registration,
-        )
+    let spawn_spec = BackendSpawnSpec {
+        id,
+        cmd: shell.clone(),
+        args: shell_args.clone(),
+        cwd: cwd.clone(),
+        cols: 120,
+        rows: 30,
+        configured_env,
+        env_remove_keys,
+        extra_env,
+        idle_tuning: crate::session::profile::idle_tuning_for(agent_kind),
+        output_target: PtyOutputTarget::from_app_handle(app.clone()),
+        resource_registration,
     };
+    let spawn_result = PtyManager::spawn(pty_mgr, session.backend_kind, spawn_spec).await;
     if let Err(e) = spawn_result {
         let err = e.to_string();
         drop(mgr);
@@ -3087,6 +3092,8 @@ mod tests {
     use crate::session::session::{SessionInfo, SessionStatus};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+    use uuid::Uuid;
 
     #[test]
     fn count_working_members_counts_live_and_busy_only() {
@@ -3131,6 +3138,7 @@ mod tests {
                     isolated_home: false,
                     instructions_filename: None,
                     config_seed: None,
+                    backend: Default::default(),
                 },
                 AgentConfig {
                     id: "codex".to_string(),
@@ -3141,10 +3149,131 @@ mod tests {
                     isolated_home: false,
                     instructions_filename: None,
                     config_seed: None,
+                    backend: Default::default(),
                 },
             ],
             ..AppSettings::default()
         }
+    }
+
+    #[derive(Default)]
+    struct FailingSpawnBackend {
+        spawned: Mutex<Vec<Uuid>>,
+        killed: Mutex<Vec<Uuid>>,
+    }
+
+    impl FailingSpawnBackend {
+        fn spawned(&self) -> Vec<Uuid> {
+            self.spawned.lock().unwrap().clone()
+        }
+
+        fn killed(&self) -> Vec<Uuid> {
+            self.killed.lock().unwrap().clone()
+        }
+    }
+
+    impl crate::pty::backend::PtyBackend for FailingSpawnBackend {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn spawn(
+            &self,
+            spec: crate::pty::backend::BackendSpawnSpec,
+        ) -> futures::future::BoxFuture<'_, Result<(), crate::errors::AppError>> {
+            Box::pin(async move {
+                self.spawned.lock().unwrap().push(spec.id);
+                Err(crate::errors::AppError::PtyError(
+                    "synthetic spawn failure".to_string(),
+                ))
+            })
+        }
+
+        fn write(&self, _id: Uuid, _data: &[u8]) -> Result<(), crate::errors::AppError> {
+            Ok(())
+        }
+
+        fn resize(&self, _id: Uuid, _cols: u16, _rows: u16) -> Result<(), crate::errors::AppError> {
+            Ok(())
+        }
+
+        fn kill(&self, id: Uuid) -> Result<(), crate::errors::AppError> {
+            self.killed.lock().unwrap().push(id);
+            Ok(())
+        }
+
+        fn has_session(&self, _id: Uuid) -> bool {
+            false
+        }
+
+        fn get_screen_snapshot(&self, _id: Uuid) -> Option<crate::pty::output::PtyScreenSnapshot> {
+            None
+        }
+
+        fn get_pty_size(&self, _id: Uuid) -> Option<(u16, u16)> {
+            None
+        }
+
+        fn register_response_watcher(
+            &self,
+            _session_id: Uuid,
+            _request_id: String,
+            _response_dir: std::path::PathBuf,
+        ) {
+        }
+
+        fn terminate_job_for_session(&self, _id: Uuid) -> bool {
+            false
+        }
+
+        fn kill_all_jobs(&self) -> (usize, usize) {
+            (0, 0)
+        }
+    }
+
+    fn session_test_app(
+        settings: AppSettings,
+    ) -> tauri::App<tauri::test::MockRuntime> {
+        tauri::test::mock_builder()
+            .manage(Arc::new(tokio::sync::RwLock::new(settings)))
+            .manage(Arc::new(crate::resource_monitor::ResourceMonitorState::new()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build session test app")
+    }
+
+    #[tokio::test]
+    async fn create_session_inner_rolls_back_pre_created_session_on_spawn_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = session_test_app(test_settings());
+        let app_handle = app.handle().clone();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(FailingSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+
+        let err = super::create_session_inner(
+            &app_handle,
+            &session_mgr,
+            &pty_mgr,
+            "missing-ac-test-command".to_string(),
+            Vec::new(),
+            temp.path().to_string_lossy().to_string(),
+            None,
+            None,
+            None,
+            true,
+            Vec::new(),
+            true,
+            None,
+        )
+        .await
+        .expect_err("spawn should fail");
+
+        assert!(err.contains("synthetic spawn failure"), "{err}");
+        assert!(session_mgr.read().await.list_sessions().await.is_empty());
+        assert_eq!(backend.killed(), backend.spawned());
+        assert_eq!(backend.killed().len(), 1);
     }
 
     #[test]
@@ -3829,6 +3958,7 @@ mod tests {
             isolated_home: false,
             instructions_filename: None,
             config_seed: None,
+            backend: Default::default(),
         });
 
         let resolved = resolve_actual_agent(
@@ -3906,6 +4036,7 @@ mod tests {
             isolated_home: false,
             instructions_filename: None,
             config_seed: None,
+            backend: Default::default(),
         }];
 
         let resolved = resolve_agent_from_shell("codex", &[], &settings);

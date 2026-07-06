@@ -3,16 +3,13 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
-use tauri::AppHandle;
 use uuid::Uuid;
 
 use crate::errors::AppError;
-use crate::pty::backend::PtyBackend;
+use crate::pty::backend::{BackendSpawnSpec, PtyBackend};
 use crate::pty::git_watcher::GitWatcher;
 use crate::pty::idle_detector::IdleDetector;
 use crate::pty::output::{PtyScreenSnapshot, SessionIoFanout};
-use crate::resource_monitor::ResourceLaunchRegistration;
-use crate::session::profile::IdleTuning;
 use crate::telegram::manager::OutputSenderMap;
 
 struct PtyInstance {
@@ -178,24 +175,23 @@ impl LocalProcessBackend {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn spawn<R: tauri::Runtime>(
-        &self,
-        id: Uuid,
-        cmd: &str,
-        args: &[String],
-        cwd: &str,
-        cols: u16,
-        rows: u16,
-        configured_env: &[(String, String)],
-        env_remove_keys: &[String],
-        extra_env: &[(String, String)],
-        idle_tuning: IdleTuning,
-        app_handle: AppHandle<R>,
-        mut resource_registration: Option<ResourceLaunchRegistration>,
-    ) -> Result<(), AppError> {
+    fn spawn_sync(&self, spec: BackendSpawnSpec) -> Result<(), AppError> {
+        let BackendSpawnSpec {
+            id,
+            cmd,
+            args,
+            cwd,
+            cols,
+            rows,
+            configured_env,
+            env_remove_keys,
+            extra_env,
+            idle_tuning,
+            output_target,
+            mut resource_registration,
+        } = spec;
         let pty_system = native_pty_system();
-        let spawn_cwd = crate::path_utils::normalize_windows_verbatim_path(cwd);
+        let spawn_cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
 
         let size = PtySize {
             rows,
@@ -209,30 +205,30 @@ impl LocalProcessBackend {
             .map_err(|e| AppError::PtyError(e.to_string()))?;
 
         let is_direct_exe = cmd.to_lowercase().ends_with(".exe")
-            || std::path::Path::new(cmd)
+            || std::path::Path::new(&cmd)
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"));
 
         let mut command = if cfg!(windows) && !is_direct_exe {
             let mut c = CommandBuilder::new("cmd.exe");
             c.arg("/C");
-            c.arg(cmd);
-            for arg in args {
+            c.arg(&cmd);
+            for arg in &args {
                 c.arg(arg);
             }
             c
         } else {
-            let mut c = CommandBuilder::new(cmd);
-            for arg in args {
+            let mut c = CommandBuilder::new(&cmd);
+            for arg in &args {
                 c.arg(arg);
             }
             c
         };
         command.cwd(&spawn_cwd);
-        for key in env_remove_keys {
+        for key in &env_remove_keys {
             command.env_remove(key);
         }
-        for (key, value) in configured_env {
+        for (key, value) in &configured_env {
             command.env(key, value);
         }
         if !configured_env.is_empty() || !env_remove_keys.is_empty() {
@@ -243,7 +239,7 @@ impl LocalProcessBackend {
                 id
             );
         }
-        crate::pty::credentials::apply_credential_env_to_pty_command(&mut command, extra_env);
+        crate::pty::credentials::apply_credential_env_to_pty_command(&mut command, &extra_env);
         command.env("TERM", "xterm-256color");
 
         if !extra_env.is_empty() {
@@ -343,7 +339,7 @@ impl LocalProcessBackend {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        fanout.handle_output(&app_handle, id, &session_id_str, buf[..n].to_vec())
+                        fanout.handle_output(&output_target, id, &session_id_str, buf[..n].to_vec())
                     }
                     Err(_) => break,
                 }
@@ -357,6 +353,13 @@ impl LocalProcessBackend {
 impl PtyBackend for LocalProcessBackend {
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    fn spawn(
+        &self,
+        spec: BackendSpawnSpec,
+    ) -> futures::future::BoxFuture<'_, Result<(), AppError>> {
+        Box::pin(async move { self.spawn_sync(spec) })
     }
 
     fn write(&self, id: Uuid, data: &[u8]) -> Result<(), AppError> {
