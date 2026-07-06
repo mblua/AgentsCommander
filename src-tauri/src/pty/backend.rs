@@ -15,6 +15,7 @@ use crate::session::profile::IdleTuning;
 pub enum SessionBackendKind {
     #[default]
     LocalProcess,
+    ContainerTransport,
 }
 
 pub struct BackendSpawnSpec {

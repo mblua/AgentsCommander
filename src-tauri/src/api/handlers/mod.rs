@@ -2,6 +2,7 @@
 
 pub mod list_peers;
 pub mod send;
+pub mod session_transport;
 
 use std::net::IpAddr;
 

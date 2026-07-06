@@ -901,6 +901,10 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         .as_ref()
         .map(|spawn| SessionBackendKind::from(&spawn.backend))
         .unwrap_or_default();
+    if is_root_agent && backend_kind == SessionBackendKind::ContainerTransport {
+        release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+        return Err("root-agent cannot use container transport".to_string());
+    }
     let mut session = match mgr
         .create_session(
             shell.clone(),
@@ -1244,6 +1248,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
                 },
             )
         }),
+        SessionBackendKind::ContainerTransport => None,
     };
 
     // #598 - seed the config folder before the PTY starts so the agent sees the

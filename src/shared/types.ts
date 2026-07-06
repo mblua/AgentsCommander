@@ -12,7 +12,7 @@ export interface SessionCommunication {
   updatedAt: string;
 }
 
-export type SessionBackendKind = "localProcess";
+export type SessionBackendKind = "localProcess" | "containerTransport";
 
 export interface Session {
   id: string;

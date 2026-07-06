@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::pty::backend::{BackendSpawnSpec, PtyBackend, SessionBackendKind};
+use crate::pty::container_backend::ContainerTransportBackend;
 use crate::pty::git_watcher::GitWatcher;
 use crate::pty::idle_detector::IdleDetector;
 use crate::pty::local_backend::LocalProcessBackend;
@@ -14,6 +15,7 @@ use crate::telegram::manager::OutputSenderMap;
 pub struct PtyManager {
     routes: Arc<Mutex<HashMap<Uuid, SessionBackendKind>>>,
     local_backend: Arc<dyn PtyBackend>,
+    container_backend: Arc<ContainerTransportBackend>,
 }
 
 impl PtyManager {
@@ -22,31 +24,55 @@ impl PtyManager {
         idle_detector: Arc<IdleDetector>,
         git_watcher: Arc<GitWatcher>,
         ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
+        session_mgr: Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>,
     ) -> Self {
         let local_backend = Arc::new(LocalProcessBackend::new(
+            output_senders.clone(),
+            idle_detector.clone(),
+            git_watcher,
+            ws_broadcaster.clone(),
+        ));
+        let container_backend = Arc::new(ContainerTransportBackend::new(
             output_senders,
             idle_detector,
-            git_watcher,
             ws_broadcaster,
+            session_mgr,
         ));
         Self {
             routes: Arc::new(Mutex::new(HashMap::new())),
             local_backend,
+            container_backend,
         }
     }
 
     #[cfg(test)]
     pub(crate) fn new_for_test(local_backend: Arc<dyn PtyBackend>) -> Self {
+        let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
+        let idle_detector = IdleDetector::new(|_| {}, |_| {});
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(
+            crate::session::manager::SessionManager::new(),
+        ));
         Self {
             routes: Arc::new(Mutex::new(HashMap::new())),
             local_backend,
+            container_backend: Arc::new(ContainerTransportBackend::new(
+                output_senders,
+                idle_detector,
+                None,
+                session_mgr,
+            )),
         }
     }
 
     pub fn backend_for_kind(&self, kind: SessionBackendKind) -> Arc<dyn PtyBackend> {
         match kind {
             SessionBackendKind::LocalProcess => self.local_backend.clone(),
+            SessionBackendKind::ContainerTransport => self.container_backend.clone(),
         }
+    }
+
+    pub fn container_backend(&self) -> Arc<ContainerTransportBackend> {
+        self.container_backend.clone()
     }
 
     pub fn record_route(&self, id: Uuid, kind: SessionBackendKind) {
