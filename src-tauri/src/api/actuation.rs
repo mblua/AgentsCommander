@@ -193,7 +193,11 @@ pub async fn deliver_wake_via_api<R: tauri::Runtime>(
     // (4) actuate through the SAME engine the poller uses. A throwaway
     // MailboxPoller is delivery-stateless (§0.5 HIGH-1).
     match crate::phone::mailbox::MailboxPoller::new()
-        .deliver_wake(app, &msg)
+        .deliver_wake_with_origin(
+            app,
+            &msg,
+            crate::phone::mailbox::WakeDeliveryOrigin::DbQueue,
+        )
         .await
     {
         Ok(()) => Ok(DeliveryOutcome::Delivered { to: resolved_to }),

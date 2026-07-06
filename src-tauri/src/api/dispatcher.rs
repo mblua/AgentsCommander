@@ -49,14 +49,18 @@ pub fn start_dispatcher(
                         chrono::Utc::now(),
                         &config,
                         |msg| {
-                            let app = app.clone();
-                            async move {
-                                crate::phone::mailbox::MailboxPoller::new()
-                                    .deliver_wake(&app, &msg)
-                                    .await
-                            }
-                        },
-                    )
+                                let app = app.clone();
+                                async move {
+                                    crate::phone::mailbox::MailboxPoller::new()
+                                        .deliver_wake_with_origin(
+                                            &app,
+                                            &msg,
+                                            crate::phone::mailbox::WakeDeliveryOrigin::DbQueue,
+                                        )
+                                        .await
+                                }
+                            },
+                        )
                     .await
                     {
                         log::warn!("[api-dispatcher] dispatch tick failed: {}", e);
