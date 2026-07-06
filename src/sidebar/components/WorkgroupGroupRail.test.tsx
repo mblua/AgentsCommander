@@ -96,8 +96,8 @@ function scopedTarget<T extends Element>(root: ParentNode, testId: string): T {
 }
 
 function pointer(
-  el: Element,
-  type: "pointerdown" | "pointermove" | "pointerup" | "pointercancel",
+  el: Element | Window,
+  type: "pointerdown" | "pointermove" | "pointerup" | "pointercancel" | "lostpointercapture",
   init: { clientX?: number; clientY?: number; button?: number; pointerId?: number } = {}
 ): void {
   const event = new MouseEvent(type, {
@@ -480,6 +480,90 @@ describe("WorkgroupGroupRail", () => {
       vi.useRealTimers();
 
       await waitFor(() => expect(lastUpdatedGroupIds(fake)).toEqual(["rust", "ui", "docs"]));
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("continues a long-press drag through window movement after pointer capture is lost", async () => {
+    const fake = new FakeTransport();
+    fake.resolve(
+      "get_project_groups",
+      groupsConfig({
+        groups: [
+          { id: "ui", name: "UI", regex: exactGroupRegexForWorkgroup("wg-1-dev-team") },
+          { id: "rust", name: "Rust", regex: exactGroupRegexForWorkgroup("wg-2-rust-team") },
+          { id: "docs", name: "Docs", regex: exactGroupRegexForWorkgroup("wg-3-docs-team") },
+        ],
+      })
+    );
+    fake.onInvoke("update_project_groups", (args) => args.config);
+
+    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    try {
+      await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust", "docs"]));
+      const projectRail = target<HTMLElement>("workgroupGroups.rail.Project");
+      const ui = target<HTMLElement>("workgroupGroups.button.ui");
+      const rust = target<HTMLElement>("workgroupGroups.button.rust");
+      const docs = target<HTMLElement>("workgroupGroups.button.docs");
+      mockRect(projectRail, 0, 200);
+      mockRect(ui, 80);
+      mockRect(rust, 114);
+      mockRect(docs, 148);
+
+      vi.useFakeTimers();
+      pointer(docs, "pointerdown", { clientY: 158 });
+      vi.advanceTimersByTime(2000);
+      pointer(docs, "lostpointercapture", { clientY: 158 });
+      pointer(window, "pointermove", { clientY: 84 });
+      await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "docs", "ui", "rust"]));
+      pointer(window, "pointerup", { clientY: 84 });
+      vi.useRealTimers();
+
+      await waitFor(() => expect(lastUpdatedGroupIds(fake)).toEqual(["docs", "ui", "rust"]));
+      await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "docs", "ui", "rust"]));
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("persists an already-previewed reorder when pointer capture is lost before release", async () => {
+    const fake = new FakeTransport();
+    fake.resolve(
+      "get_project_groups",
+      groupsConfig({
+        groups: [
+          { id: "ui", name: "UI", regex: exactGroupRegexForWorkgroup("wg-1-dev-team") },
+          { id: "rust", name: "Rust", regex: exactGroupRegexForWorkgroup("wg-2-rust-team") },
+          { id: "docs", name: "Docs", regex: exactGroupRegexForWorkgroup("wg-3-docs-team") },
+        ],
+      })
+    );
+    fake.onInvoke("update_project_groups", (args) => args.config);
+
+    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    try {
+      await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust", "docs"]));
+      const projectRail = target<HTMLElement>("workgroupGroups.rail.Project");
+      const ui = target<HTMLElement>("workgroupGroups.button.ui");
+      const rust = target<HTMLElement>("workgroupGroups.button.rust");
+      const docs = target<HTMLElement>("workgroupGroups.button.docs");
+      mockRect(projectRail, 0, 200);
+      mockRect(ui, 80);
+      mockRect(rust, 114);
+      mockRect(docs, 148);
+
+      vi.useFakeTimers();
+      pointer(docs, "pointerdown", { clientY: 158 });
+      vi.advanceTimersByTime(2000);
+      pointer(docs, "pointermove", { clientY: 84 });
+      await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "docs", "ui", "rust"]));
+      pointer(docs, "lostpointercapture", { clientY: 84 });
+      pointer(window, "pointerup", { clientY: 84 });
+      vi.useRealTimers();
+
+      await waitFor(() => expect(lastUpdatedGroupIds(fake)).toEqual(["docs", "ui", "rust"]));
+      await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "docs", "ui", "rust"]));
     } finally {
       rendered.cleanup();
     }
