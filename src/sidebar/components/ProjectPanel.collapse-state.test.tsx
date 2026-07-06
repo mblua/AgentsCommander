@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ProjectPanel from "./ProjectPanel";
+import WorkgroupGroupRail from "./WorkgroupGroupRail";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
   click,
@@ -11,6 +12,8 @@ import {
   waitFor,
 } from "../../shared/testing/ui-harness";
 import { projectStore } from "../stores/project";
+import { defaultGroupsConfig } from "../stores/workgroup-groups";
+import { projectCollapseStore } from "../stores/project-collapse";
 import type { AcDiscoveryResult, AcLoopSummary } from "../../shared/types";
 
 const projectPath = "C:\\Project";
@@ -194,6 +197,109 @@ describe("ProjectPanel collapse state", () => {
       await projectStore.reloadProject(projectPath);
       await waitFor(() => expect(fake.callsFor("discover_project")).toHaveLength(3));
       await waitFor(() => expect(headerCollapsed(headerByName(rendered.root, "Teams"))).toBe(true));
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("preserves sub-section collapse of a project collapsed by #810 rail auto-focus", async () => {
+    // #810 cross-project case: owner A is auto-focused from the rail, other
+    // project B gets its project-level collapsed by collapseAllExceptKnown,
+    // but B's "Workgroups" sub-section collapse choice must survive (sub-
+    // sections stay in ProjectPanel's local collapsedByKey signal and are NOT
+    // touched by the rail's auto-focus). Two backslash Windows paths (grinch
+    // F4) so the focus lookup exercises the real production code path.
+    const otherProjectPath = "C:\\ProjectB";
+    let scrollIntoViewMock: ReturnType<typeof vi.fn>;
+    const scrollCalls: HTMLElement[] = [];
+
+    const fake = new FakeTransport();
+    fake.onInvoke("new_project", (args) => ({
+      path: args.path as string,
+      registered: true,
+      created: false,
+    }));
+    fake.onInvoke("discover_project", (args) => {
+      const path = args.path as string;
+      if (path === projectPath) return projectDiscovery("Stable task title");
+      if (path === otherProjectPath) {
+        // Minimal discovery for B: a single workgroup so the project renders.
+        return discovery({
+          workgroups: [
+            {
+              name: "wg-1-dev-team",
+              path: `${otherProjectPath}\\.ac\\wg-1-dev-team`,
+              task: null,
+              taskTitle: null,
+              agents: [
+                {
+                  name: "dev-webpage-ui",
+                  path: `${otherProjectPath}\\.ac\\wg-1-dev-team\\__agent_dev-webpage-ui`,
+                  repoPaths: [],
+                  isCoordinator: true,
+                },
+              ],
+            },
+          ],
+        });
+      }
+      throw new Error(`unexpected discover_project path: ${path}`);
+    });
+    fake.resolve("get_project_groups", { ...defaultGroupsConfig() });
+
+    scrollIntoViewMock = vi.fn(function (this: HTMLElement) {
+      scrollCalls.push(this);
+    });
+    Element.prototype.scrollIntoView = scrollIntoViewMock as any;
+
+    const rendered = renderWithFakeTransport(
+      () => (
+        <div class="sidebar-body">
+          <WorkgroupGroupRail projects={projectStore.projects} />
+          <div class="sidebar-scrollable">
+            <ProjectPanel />
+          </div>
+        </div>
+      ),
+      fake
+    );
+    try {
+      await projectStore.createAndLoad(projectPath);
+      await projectStore.createAndLoad(otherProjectPath);
+      await waitFor(() => {
+        expect(rendered.root.textContent).toContain("Project: Project");
+        expect(rendered.root.textContent).toContain("Project: ProjectB");
+      });
+
+      // Collapse B's "Workgroups" sub-section header before triggering auto-focus.
+      const projectBHeader = Array.from(
+        rendered.root.querySelectorAll<HTMLElement>(".project-header")
+      ).find((h) => h.getAttribute("title") === otherProjectPath);
+      if (!projectBHeader) throw new Error("ProjectB header not found");
+      const projectBPanel = projectBHeader.closest(".project-panel");
+      const workgroupsHeaderB = Array.from(
+        projectBPanel!.querySelectorAll<HTMLElement>(".ac-wg-header--collapsible")
+      ).find((h) => h.querySelector(".ac-wg-name")?.textContent?.trim() === "Workgroups");
+      if (!workgroupsHeaderB) throw new Error("Workgroups sub-header not found in ProjectB");
+      click(workgroupsHeaderB);
+      await waitFor(() =>
+        expect(workgroupsHeaderB.querySelector(".ac-discovery-chevron")?.classList.contains("collapsed")).toBe(true)
+      );
+
+      // Click a rail group button in ProjectA's section (owner).
+      const railSectionA = document.querySelector<HTMLElement>('[data-ac-testid="workgroupGroups.rail.Project"]');
+      if (!railSectionA) throw new Error("rail section for Project not found");
+      const allButton = railSectionA.querySelector<HTMLElement>('[data-ac-testid="workgroupGroups.button.all"]');
+      if (!allButton) throw new Error("All button not found in Project rail section");
+      click(allButton);
+
+      // B's project-level chevron is collapsed by auto-focus...
+      await waitFor(() => {
+        const chev = projectBHeader.querySelector(".ac-discovery-chevron");
+        expect(chev?.classList.contains("collapsed")).toBe(true);
+      });
+      // ...but B's "Workgroups" sub-section collapse choice survives.
+      expect(workgroupsHeaderB.querySelector(".ac-discovery-chevron")?.classList.contains("collapsed")).toBe(true);
     } finally {
       rendered.cleanup();
     }

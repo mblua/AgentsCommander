@@ -1,6 +1,8 @@
 import { Component, For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import type { AcWorkgroup, WorkgroupGroup } from "../../shared/types";
 import type { ProjectState } from "../stores/project";
+import { projectStore } from "../stores/project";
+import { projectCollapseStore } from "../stores/project-collapse";
 import {
   MAX_GROUP_MATCH_ID_LENGTH,
   compileGroupRegex,
@@ -436,6 +438,18 @@ const ProjectRailSection: Component<{
                 return;
               }
               workgroupGroupsStore.select(props.project.path, button.selection);
+              // #810 - auto-focus: collapse other projects, expand owner,
+              // scroll owner into view. One-shot at click time; we do NOT
+              // re-collapse projects the user re-expands afterwards manually.
+              // Grinch F2: feed the live projectStore.projects list to the
+              // explicit-list overload so collapse-others works on a fresh
+              // session where the collapse map is still empty.
+              projectCollapseStore.collapseAllExceptKnown(
+                props.project.path,
+                projectStore.projects.map((p) => p.path)
+              );
+              projectCollapseStore.setProjectCollapsed(props.project.path, false);
+              projectCollapseStore.requestProjectFocus(props.project.path);
             }}
             data-ac-testid={`workgroupGroups.button.${button.key}`}
           >
