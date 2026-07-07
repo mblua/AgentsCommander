@@ -18,7 +18,9 @@ use crate::session::manager::SessionManager;
 use crate::session::session::SessionInfo;
 use crate::web::auth::WebAccessToken;
 use crate::web::broadcast::WsBroadcaster;
-use crate::{RtkStartupModeState, RtkSweepLockState, WebServerHandle};
+use crate::{
+    ApiServerHandle, ApiServerTask, RtkStartupModeState, RtkSweepLockState, WebServerHandle,
+};
 
 const HOME_MARKDOWN_URL: &str =
     "https://raw.githubusercontent.com/mblua/AgentsCommander/main/docs/home-en.md";
@@ -26,6 +28,7 @@ const HOME_MARKDOWN_URL: &str =
 const HOME_MARKDOWN_MAX_BYTES: usize = 256 * 1024; // 256 KB
 const HOME_MARKDOWN_TIMEOUT_SECS: u64 = 5;
 const WEB_STATUS_CONNECT_TIMEOUT_MS: u64 = 500;
+const API_SERVER_STOP_TIMEOUT_MS: u64 = 5_000;
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1077,6 +1080,66 @@ pub async fn open_web_remote() -> Result<(), String> {
 
     open::that(&url).map_err(|e| format!("Failed to open browser: {}", e))?;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn start_api_server(
+    app_handle: tauri::AppHandle,
+    api_handle: State<'_, ApiServerHandle>,
+    settings: State<'_, SettingsState>,
+    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
+    pty_mgr: State<'_, Arc<std::sync::Mutex<PtyManager>>>,
+    shutdown: State<'_, crate::shutdown::ShutdownSignal>,
+) -> Result<bool, String> {
+    if api_handle.has_running()? {
+        return Ok(false);
+    }
+
+    let s = settings.read().await;
+    let bind = s.api_server_bind.clone();
+    let port = s.api_server_port;
+    drop(s);
+
+    let addr = format!("{}:{}", bind, port);
+    if is_tcp_listening(&addr).await {
+        return Ok(false);
+    }
+
+    let api_shutdown = shutdown.token().child_token();
+    let join_handle = crate::api::start_server(
+        bind,
+        port,
+        app_handle,
+        Arc::clone(&session_mgr),
+        Arc::clone(&pty_mgr),
+        api_shutdown.clone(),
+    );
+
+    if !api_handle.store_if_idle(ApiServerTask::new(join_handle, api_shutdown))? {
+        return Ok(false);
+    }
+
+    log::info!("[api-server] Started via command");
+    Ok(true)
+}
+
+#[tauri::command]
+pub async fn stop_api_server(api_handle: State<'_, ApiServerHandle>) -> Result<bool, String> {
+    let stopped = api_handle
+        .shutdown_running(Duration::from_millis(API_SERVER_STOP_TIMEOUT_MS))
+        .await?;
+    if stopped {
+        log::info!("[api-server] Stopped via command");
+    }
+    Ok(stopped)
+}
+
+#[tauri::command]
+pub async fn api_server_status(settings: State<'_, SettingsState>) -> Result<bool, String> {
+    let s = settings.read().await;
+    let addr = format!("{}:{}", s.api_server_bind, s.api_server_port);
+    drop(s);
+    Ok(is_tcp_listening(&addr).await)
 }
 
 // Tauri command: State<> injections push us over clippy's 7-arg threshold.

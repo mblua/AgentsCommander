@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::Future;
+use tokio_util::sync::CancellationToken;
 
 use crate::api::message_store::{LeasedMessage, MessageStore};
 use crate::phone::types::OutboxMessage;
@@ -32,14 +33,14 @@ impl Default for DispatcherConfig {
 pub fn start_dispatcher(
     store: Arc<MessageStore>,
     app: tauri::AppHandle,
-    shutdown: crate::shutdown::ShutdownSignal,
+    shutdown: CancellationToken,
     config: DispatcherConfig,
 ) -> tauri::async_runtime::JoinHandle<()> {
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(config.poll_interval);
         loop {
             tokio::select! {
-                _ = shutdown.token().cancelled() => {
+                _ = shutdown.cancelled() => {
                     log::info!("[api-dispatcher] shutdown signal received, stopping");
                     break;
                 }
