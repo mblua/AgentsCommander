@@ -29,6 +29,9 @@ vi.mock("../../shared/ipc", async () => {
       openWebRemote: vi.fn(() => Promise.resolve()),
       startWebServer: vi.fn(() => Promise.resolve(false)),
       stopWebServer: vi.fn(() => Promise.resolve(false)),
+      startApiServer: vi.fn(() => Promise.resolve(false)),
+      stopApiServer: vi.fn(() => Promise.resolve(false)),
+      apiServerStatus: vi.fn(() => Promise.resolve(false)),
       sweepRtkHook: vi.fn(() => Promise.resolve({ total: 0, updated: 0, errors: [] })),
     },
     TelegramAPI: {
@@ -90,6 +93,9 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     webServerEnabled: false,
     webServerPort: 8765,
     webServerBind: "127.0.0.1",
+    apiServerEnabled: false,
+    apiServerPort: 8766,
+    apiServerBind: "127.0.0.1",
     voiceToTextEnabled: false,
     voiceAutoExecute: false,
     voiceAutoExecuteDelay: 15,
@@ -229,6 +235,105 @@ describe("SettingsModal automation hooks", () => {
     expect(document.querySelector('[data-ac-testid="settings.agentRow.0.label"]')).toBeTruthy();
     expect(document.querySelector('[data-ac-testid="settings.agentPreset.codex"]')).toBeTruthy();
     expect(document.querySelector('[data-ac-testid="settings.agent.addCustom"]')).toBeTruthy();
+
+    dispose();
+  });
+
+  it("starts the API server, refreshes live status, and persists the enabled preference", async () => {
+    vi.mocked(SettingsAPI.apiServerStatus)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    vi.mocked(SettingsAPI.startApiServer).mockResolvedValueOnce(true);
+
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    const toggle = byTestId<HTMLInputElement>("settings.general.apiServerEnabled");
+    expect(toggle.checked).toBe(false);
+
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+    await settle();
+
+    expect(SettingsAPI.startApiServer).toHaveBeenCalledTimes(1);
+    expect(byTestId<HTMLInputElement>("settings.general.apiServerEnabled").checked).toBe(true);
+    expect(byTestId("settings.general.apiServerStatus").getAttribute("data-ac-state")).toBe("running");
+
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.apiServerEnabled).toBe(true);
+
+    dispose();
+  });
+
+  it("stops the API server, refreshes live status, and persists the disabled preference", async () => {
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({ apiServerEnabled: true }));
+    vi.mocked(SettingsAPI.apiServerStatus)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+    vi.mocked(SettingsAPI.stopApiServer).mockResolvedValueOnce(true);
+
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    const toggle = byTestId<HTMLInputElement>("settings.general.apiServerEnabled");
+    expect(toggle.checked).toBe(true);
+
+    toggle.checked = false;
+    toggle.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+    await settle();
+
+    expect(SettingsAPI.stopApiServer).toHaveBeenCalledTimes(1);
+    expect(byTestId<HTMLInputElement>("settings.general.apiServerEnabled").checked).toBe(false);
+    expect(byTestId("settings.general.apiServerStatus").getAttribute("data-ac-state")).toBe("stopped");
+
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.apiServerEnabled).toBe(false);
+
+    dispose();
+  });
+
+  it("surfaces API server start errors and reverts to live status", async () => {
+    vi.mocked(SettingsAPI.apiServerStatus)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(false);
+    vi.mocked(SettingsAPI.startApiServer).mockRejectedValueOnce("port unavailable");
+
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    const toggle = byTestId<HTMLInputElement>("settings.general.apiServerEnabled");
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+    await settle();
+
+    expect(byTestId<HTMLInputElement>("settings.general.apiServerEnabled").checked).toBe(false);
+    expect(document.querySelector(".modal-save-error")?.textContent).toContain(
+      "API server start failed: port unavailable",
+    );
 
     dispose();
   });

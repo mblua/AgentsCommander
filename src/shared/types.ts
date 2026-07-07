@@ -388,6 +388,9 @@ export interface AppSettings {
   webServerEnabled: boolean;
   webServerPort: number;
   webServerBind: string;
+  apiServerEnabled: boolean;
+  apiServerPort: number;
+  apiServerBind: string;
   projectPath: string | null;
   projectPaths: string[];
   sidebarStyle: string;

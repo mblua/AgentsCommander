@@ -291,6 +291,9 @@ export const SettingsAPI = {
   startWebServer: () => transport.invoke<boolean>("start_web_server"),
   stopWebServer: () => transport.invoke<boolean>("stop_web_server"),
   getWebServerStatus: () => transport.invoke<boolean>("get_web_server_status"),
+  startApiServer: () => transport.invoke<boolean>("start_api_server"),
+  stopApiServer: () => transport.invoke<boolean>("stop_api_server"),
+  apiServerStatus: () => transport.invoke<boolean>("api_server_status"),
   // Narrow setters hold the SettingsState write lock through save_settings on
   // the Rust side, eliminating the IPC-level read-modify-write race that a
   // get+update round-trip would create against a concurrent update_settings

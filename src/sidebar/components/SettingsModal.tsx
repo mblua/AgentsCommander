@@ -129,6 +129,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   });
 
   const [webServerRunning, setWebServerRunning] = createSignal(false);
+  const [apiServerRunning, setApiServerRunning] = createSignal(
+    seededSettings?.apiServerEnabled ?? false,
+  );
+  const [apiServerBusy, setApiServerBusy] = createSignal(false);
   const [saveError, setSaveError] = createSignal("");
   const [profileCellText, setProfileCellText] = createStore<Record<string, string>>({});
   const [profileCellErrors, setProfileCellErrors] = createStore<Record<string, string>>({});
@@ -149,6 +153,55 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const [rtkSweepInFlight, setRtkSweepInFlight] = createSignal(false);
 
   const s = () => settings.data;
+
+  const apiServerChecked = () =>
+    apiServerBusy() ? apiServerRunning() : settings.data?.apiServerEnabled ?? false;
+
+  const syncApiServerRunning = (running: boolean, markDirty: boolean) => {
+    setApiServerRunning(running);
+    if (!settings.data) return;
+    if (markDirty) setDraftDirty(true);
+    setSettings("data", produce((draft) => {
+      if (draft) draft.apiServerEnabled = running;
+    }));
+  };
+
+  const refreshApiServerRunning = async (markDirty: boolean): Promise<boolean> => {
+    const running = await SettingsAPI.apiServerStatus();
+    syncApiServerRunning(running, markDirty);
+    return running;
+  };
+
+  const handleApiServerToggle = async (enabled: boolean) => {
+    if (apiServerBusy()) return;
+    setSaveError("");
+    setApiServerBusy(true);
+    try {
+      if (enabled) {
+        await SettingsAPI.startApiServer();
+      } else {
+        await SettingsAPI.stopApiServer();
+      }
+      const running = await refreshApiServerRunning(true);
+      if (enabled && !running) {
+        setSaveError("API server did not report running after start.");
+      } else if (!enabled && running) {
+        setSaveError("API server is still running after stop.");
+      }
+    } catch (err: unknown) {
+      try {
+        await refreshApiServerRunning(false);
+      } catch {}
+      const action = enabled ? "start" : "stop";
+      setSaveError(
+        `API server ${action} failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    } finally {
+      setApiServerBusy(false);
+    }
+  };
 
   // ── #526 Config Screen: comparison pair (two rails side by side) + the agent
   // whose inline config editor is expanded. The LEFT rail is the primary and is
@@ -220,13 +273,17 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     // #769 — populate the backend-owned coding-agent catalog for the quick-add
     // row. Pre-seeded with the fallback, so the buttons render immediately.
     void codingAgentsStore.ensureLoaded();
-    const [loaded, wsRunning] = await Promise.all([
+    const [loaded, wsRunning, apiRunning] = await Promise.all([
       SettingsAPI.get(),
       SettingsAPI.getWebServerStatus().catch(() => false),
+      SettingsAPI.apiServerStatus().catch(() => seededSettings?.apiServerEnabled ?? false),
     ]);
     setWebServerRunning(wsRunning);
+    setApiServerRunning(apiRunning);
     if (!draftDirty()) {
-      setSettings("data", cloneSettings(loaded));
+      const nextSettings = cloneSettings(loaded);
+      if (nextSettings) nextSettings.apiServerEnabled = apiRunning;
+      setSettings("data", nextSettings);
       setInitialInjectRtk(loaded.injectRtkHook);
       // Seed the comparison pair from the loaded agents (left primary + right
       // comparison slot). Only when still unset, so a user's pick isn't clobbered.
@@ -1153,6 +1210,43 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             </span>
           </div>
         </Show>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">Control Plane API</div>
+        <label class="settings-checkbox-field">
+          <input
+            type="checkbox"
+            class="settings-checkbox"
+            checked={apiServerChecked()}
+            disabled={apiServerBusy()}
+            onChange={(e) => {
+              void handleApiServerToggle(e.currentTarget.checked);
+            }}
+            data-ac-testid="settings.general.apiServerEnabled"
+            data-ac-role="checkbox"
+            data-ac-state={
+              apiServerBusy()
+                ? "updating"
+                : apiServerChecked()
+                  ? "checked"
+                  : "unchecked"
+            }
+          />
+          <span>Enable API server</span>
+        </label>
+        <div
+          class="settings-hint"
+          data-ac-testid="settings.general.apiServerStatus"
+          data-ac-role="status"
+          data-ac-state={apiServerBusy() ? "updating" : apiServerRunning() ? "running" : "stopped"}
+        >
+          {apiServerBusy()
+            ? "Updating..."
+            : apiServerRunning()
+              ? `Running on ${settings.data!.apiServerBind}:${settings.data!.apiServerPort}`
+              : "Stopped"}
+        </div>
       </div>
 
       <div class="settings-section">
