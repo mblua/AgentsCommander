@@ -1,4 +1,4 @@
-import { Component, createSignal, Show, For, onCleanup } from "solid-js";
+import { Component, createSignal, Show, For, onCleanup, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { Session, TelegramBotConfig, RepoMatch } from "../../shared/types";
 import { SessionAPI, TelegramAPI, SettingsAPI, WindowAPI, emitOpenSettings } from "../../shared/ipc";
@@ -19,10 +19,19 @@ import { sessionDotClass } from "./session-status";
 
 const CONTEXT_MENU_VIEWPORT_MARGIN = 8;
 
+export interface SessionContextExtraAction {
+  label: string;
+  class?: string;
+  icon?: JSX.Element;
+  testId?: string;
+  onSelect: () => void;
+}
+
 const SessionItem: Component<{
   session: Session;
   isActive: boolean;
   originProject?: string;
+  extraContextAction?: SessionContextExtraAction;
 }> = (props) => {
   const [showBotMenu, setShowBotMenu] = createSignal(false);
   const [showAgentModal, setShowAgentModal] = createSignal(false);
@@ -554,6 +563,26 @@ const SessionItem: Component<{
                   </button>
                 )}
               </For>
+            </Show>
+            <Show when={props.extraContextAction}>
+              {(action) => (
+                <>
+                  <div class="context-separator" />
+                  <button
+                    class={`session-context-option ${action().class ?? ""}`}
+                    onClick={() => {
+                      setShowContextMenu(false);
+                      cleanupContextMenu();
+                      action().onSelect();
+                    }}
+                    data-ac-testid={action().testId}
+                    data-ac-role="menuitem"
+                  >
+                    {action().icon}
+                    {action().label}
+                  </button>
+                </>
+              )}
             </Show>
             <div class="context-separator" />
             <button

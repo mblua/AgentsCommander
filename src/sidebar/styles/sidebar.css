@@ -2567,6 +2567,12 @@ html.light-theme .root-agent-avatar {
   color: var(--danger, #ef4444);
 }
 
+.session-context-trash-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+}
+
 .session-context-repo-label {
   min-width: 0;
   overflow: hidden;

@@ -885,8 +885,8 @@ export const EntityAPI = {
       roleTemplateId: roleTemplateId ?? null,
     }),
 
-  deleteAgentMatrix: (projectPath: string, agentName: string) =>
-    transport.invoke<void>("delete_agent_matrix", { projectPath, agentName }),
+  deleteAgentMatrix: (projectPath: string, agentPath: string) =>
+    transport.invoke<void>("delete_agent_matrix", { projectPath, agentPath }),
 
   listAllAgents: (projectPaths: string[]) =>
     transport.invoke<{ name: string; description: string; path: string; projectName: string }[]>(
