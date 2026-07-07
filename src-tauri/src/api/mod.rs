@@ -14,7 +14,6 @@ pub mod auth;
 pub mod dispatcher;
 pub mod error;
 pub mod handlers;
-pub mod idempotency;
 pub mod identity;
 pub mod message_store;
 pub mod schema;

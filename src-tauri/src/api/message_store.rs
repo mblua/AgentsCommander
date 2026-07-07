@@ -28,6 +28,8 @@ pub enum MessageStoreError {
     Sqlite(#[from] rusqlite::Error),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+    #[error("blocking task failed: {0}")]
+    BlockingTask(String),
 }
 
 #[derive(Clone)]
@@ -248,7 +250,7 @@ impl MessageStore {
                 params![
                     STATUS_QUEUED,
                     STATUS_RETRY,
-                    now_s,
+                    &now_s,
                     STATUS_DELIVERING,
                     limit as i64
                 ],
@@ -264,8 +266,21 @@ impl MessageStore {
                 UPDATE messages
                 SET status = ?1, lease_owner = ?2, lease_until = ?3, last_error = NULL
                 WHERE message_id = ?4
+                  AND (
+                    (status IN (?5, ?6) AND next_attempt_at <= ?7)
+                    OR (status = ?8 AND lease_until IS NOT NULL AND lease_until <= ?7)
+                  )
                 "#,
-                params![STATUS_DELIVERING, lease_owner, lease_until, id],
+                params![
+                    STATUS_DELIVERING,
+                    lease_owner,
+                    &lease_until,
+                    &id,
+                    STATUS_QUEUED,
+                    STATUS_RETRY,
+                    &now_s,
+                    STATUS_DELIVERING,
+                ],
             )?;
             if changed == 0 {
                 continue;
@@ -375,6 +390,65 @@ impl MessageStore {
             params![STATUS_DELIVERED, cutoff_s, STATUS_POISONED],
         )?;
         Ok(deleted)
+    }
+
+    pub async fn enqueue_offloaded(
+        &self,
+        req: EnqueueRequest,
+    ) -> Result<EnqueueResult, MessageStoreError> {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || store.enqueue(req))
+            .await
+            .map_err(|e| MessageStoreError::BlockingTask(e.to_string()))?
+    }
+
+    pub async fn lease_due_offloaded(
+        &self,
+        now: DateTime<Utc>,
+        limit: usize,
+        lease_for: Duration,
+        lease_owner: String,
+    ) -> Result<Vec<LeasedMessage>, MessageStoreError> {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || store.lease_due(now, limit, lease_for, &lease_owner))
+            .await
+            .map_err(|e| MessageStoreError::BlockingTask(e.to_string()))?
+    }
+
+    pub async fn mark_delivered_offloaded(
+        &self,
+        message_id: String,
+        now: DateTime<Utc>,
+    ) -> Result<(), MessageStoreError> {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || store.mark_delivered(&message_id, now))
+            .await
+            .map_err(|e| MessageStoreError::BlockingTask(e.to_string()))?
+    }
+
+    pub async fn mark_delivery_failed_offloaded(
+        &self,
+        message_id: String,
+        error: String,
+        now: DateTime<Utc>,
+        max_attempts: i64,
+    ) -> Result<String, MessageStoreError> {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || {
+            store.mark_delivery_failed(&message_id, &error, now, max_attempts)
+        })
+        .await
+        .map_err(|e| MessageStoreError::BlockingTask(e.to_string()))?
+    }
+
+    pub async fn reap_terminal_before_offloaded(
+        &self,
+        cutoff: DateTime<Utc>,
+    ) -> Result<usize, MessageStoreError> {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || store.reap_terminal_before(cutoff))
+            .await
+            .map_err(|e| MessageStoreError::BlockingTask(e.to_string()))?
     }
 
     #[cfg(test)]

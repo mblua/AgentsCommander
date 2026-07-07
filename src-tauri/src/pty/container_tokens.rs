@@ -97,13 +97,30 @@ impl ContainerApiTokenManager {
     pub fn revoke_all_container_clients(&self) -> Result<usize, AppError> {
         let clients = auth::list(&self.registry_path).clients;
         let mut revoked = 0;
+        let mut errors = Vec::new();
         for client in clients {
-            if client.label.starts_with(CONTAINER_LABEL_PREFIX)
-                && !client.revoked
-                && auth::revoke(&self.registry_path, &client.client_id).map_err(AppError::Other)?
-            {
-                revoked += 1;
+            if !client.label.starts_with(CONTAINER_LABEL_PREFIX) || client.revoked {
+                continue;
             }
+            match auth::revoke(&self.registry_path, &client.client_id) {
+                Ok(true) => revoked += 1,
+                Ok(false) => {}
+                Err(err) => {
+                    log::warn!(
+                        "[container-token] failed to revoke stale container API client {}: {}",
+                        client.client_id,
+                        err
+                    );
+                    errors.push(format!("{}: {}", client.client_id, err));
+                }
+            }
+        }
+        if !errors.is_empty() {
+            return Err(AppError::Other(format!(
+                "failed to revoke {} container API client(s): {}",
+                errors.len(),
+                errors.join("; ")
+            )));
         }
         Ok(revoked)
     }

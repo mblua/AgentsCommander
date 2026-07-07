@@ -1,6 +1,8 @@
 use std::collections::HashSet;
-use std::process::Command;
-use std::time::Duration;
+use std::io::Read;
+use std::process::{Command, Stdio};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use uuid::Uuid;
 
@@ -9,6 +11,9 @@ use crate::pty::container_runtime::{
     ContainerCleanupReport, ContainerRuntime, ContainerRuntimeHandle, ContainerStartRequest,
     DEFAULT_API_HELPER_PATH, DEFAULT_BRIDGE_ENTRYPOINT, SESSION_LABEL,
 };
+
+const DOCKER_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+const DOCKER_COMMAND_POLL: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DockerCommandSpec {
@@ -146,19 +151,76 @@ impl DockerRuntime {
     }
 
     fn run_command(&self, spec: DockerCommandSpec) -> Result<String, AppError> {
-        let output = Command::new(&spec.program)
+        let mut child = Command::new(&spec.program)
             .args(&spec.args)
-            .output()
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
             .map_err(|e| AppError::PtyError(format!("container runtime command failed: {e}")))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+
+        let Some(mut stdout) = child.stdout.take() else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(AppError::PtyError(
+                "container runtime command did not expose stdout".to_string(),
+            ));
+        };
+        let Some(mut stderr) = child.stderr.take() else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(AppError::PtyError(
+                "container runtime command did not expose stderr".to_string(),
+            ));
+        };
+        let stdout_reader = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            stdout.read_to_end(&mut buf).map(|_| buf)
+        });
+        let stderr_reader = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            stderr.read_to_end(&mut buf).map(|_| buf)
+        });
+
+        let deadline = Instant::now() + DOCKER_COMMAND_TIMEOUT;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => {
+                    if Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        let _ = stdout_reader.join();
+                        let _ = stderr_reader.join();
+                        return Err(AppError::PtyError(format!(
+                            "container runtime command timed out after {:?}",
+                            DOCKER_COMMAND_TIMEOUT
+                        )));
+                    }
+                    std::thread::sleep(DOCKER_COMMAND_POLL);
+                }
+                Err(e) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = stdout_reader.join();
+                    let _ = stderr_reader.join();
+                    return Err(AppError::PtyError(format!(
+                        "container runtime command wait failed: {e}"
+                    )));
+                }
+            }
+        };
+
+        let stdout = join_command_reader(stdout_reader, "stdout")?;
+        let stderr = join_command_reader(stderr_reader, "stderr")?;
+        if !status.success() {
+            let stderr = String::from_utf8_lossy(&stderr);
             return Err(AppError::PtyError(format!(
                 "container runtime command exited {}: {}",
-                output.status,
+                status,
                 stderr.trim()
             )));
         }
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        Ok(String::from_utf8_lossy(&stdout).trim().to_string())
     }
 
     fn parse_labeled_containers(raw: &str) -> Vec<(String, String)> {
@@ -175,6 +237,24 @@ impl DockerRuntime {
             })
             .collect()
     }
+}
+
+fn join_command_reader(
+    reader: JoinHandle<std::io::Result<Vec<u8>>>,
+    stream_name: &'static str,
+) -> Result<Vec<u8>, AppError> {
+    reader
+        .join()
+        .map_err(|_| {
+            AppError::PtyError(format!(
+                "container runtime command {stream_name} reader panicked"
+            ))
+        })?
+        .map_err(|e| {
+            AppError::PtyError(format!(
+                "container runtime command {stream_name} read failed: {e}"
+            ))
+        })
 }
 
 impl ContainerRuntime for DockerRuntime {
@@ -218,6 +298,7 @@ impl ContainerRuntime for DockerRuntime {
     ) -> Result<ContainerCleanupReport, AppError> {
         let stdout = self.run_command(self.build_list_labeled_command())?;
         let mut report = ContainerCleanupReport::default();
+        let mut errors = Vec::new();
         for (container_id, label) in Self::parse_labeled_containers(&stdout) {
             let Ok(session_id) = Uuid::parse_str(&label) else {
                 report.invalid_labels.push(label);
@@ -231,8 +312,24 @@ impl ContainerRuntime for DockerRuntime {
                 session_id,
                 container_id,
             };
-            self.stop(&handle, timeout)?;
-            report.stopped.push(session_id);
+            match self.stop(&handle, timeout) {
+                Ok(()) => report.stopped.push(session_id),
+                Err(err) => {
+                    log::warn!(
+                        "[container-runtime] failed to clean orphan container for session {}: {}",
+                        session_id,
+                        err
+                    );
+                    errors.push(format!("{}: {}", session_id, err));
+                }
+            }
+        }
+        if !errors.is_empty() {
+            return Err(AppError::PtyError(format!(
+                "failed to clean {} labeled orphan container(s): {}",
+                errors.len(),
+                errors.join("; ")
+            )));
         }
         Ok(report)
     }
