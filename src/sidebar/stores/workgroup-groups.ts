@@ -1,3 +1,4 @@
+import { createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 import type { AcWorkgroup, NonStopGroupConfig, WorkgroupGroup, WorkgroupGroupsConfig } from "../../shared/types";
 import { ProjectAPI } from "../../shared/ipc";
@@ -37,6 +38,7 @@ interface ProjectGroupsEntry {
 }
 
 const [entries, setEntries] = createStore<Record<string, ProjectGroupsEntry | undefined>>({});
+const [activeProjectKey, setActiveProjectKey] = createSignal<string | null>(null);
 const inFlightLoads = new Map<string, Promise<void>>();
 const saveVersions = new Map<string, number>();
 
@@ -459,9 +461,34 @@ export const workgroupGroupsStore = {
     return entryFor(projectPath).selection;
   },
 
+  activeProjectPath(): string | null {
+    return activeProjectKey();
+  },
+
+  isActiveProject(projectPath: string): boolean {
+    return activeProjectKey() === keyFor(projectPath);
+  },
+
+  setActiveProject(projectPath: string | null): void {
+    setActiveProjectKey(projectPath === null ? null : keyFor(projectPath));
+  },
+
+  reconcileActiveProject(projectPaths: string[]): void {
+    const projectKeys = projectPaths.map(keyFor);
+    if (projectKeys.length === 0) {
+      setActiveProjectKey(null);
+      return;
+    }
+
+    const current = activeProjectKey();
+    if (current !== null && projectKeys.includes(current)) return;
+    setActiveProjectKey(projectKeys[0]);
+  },
+
   select(projectPath: string, selection: WorkgroupGroupSelection): void {
     const key = keyFor(projectPath);
     const current = ensureEntry(projectPath);
+    setActiveProjectKey(key);
     setEntries(key, {
       ...current,
       selection: normalizeSelection(selection, current.config),
@@ -669,6 +696,7 @@ export const workgroupGroupsStore = {
     for (const key of Object.keys(entries)) {
       setEntries(key, undefined);
     }
+    setActiveProjectKey(null);
     inFlightLoads.clear();
     saveVersions.clear();
   },
