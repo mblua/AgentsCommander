@@ -1458,6 +1458,106 @@ html.light-theme .root-agent-avatar {
   color: var(--sidebar-accent);
 }
 
+.settings-add-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.settings-add-btn:disabled:hover {
+  border-color: var(--sidebar-border);
+  color: var(--sidebar-fg-dim);
+}
+
+.settings-api-client-mint {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm);
+  background: var(--sidebar-hover);
+  border-radius: var(--radius-sm);
+}
+
+.settings-api-client-scopes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-xs) var(--spacing-sm);
+}
+
+.settings-api-client-scope {
+  padding: 0;
+}
+
+.settings-api-client-mint-btn {
+  align-self: flex-start;
+}
+
+.settings-api-client-error {
+  color: #f87171;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.settings-api-client-secret {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm);
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: var(--radius-sm);
+}
+
+.settings-api-client-warning {
+  color: #fbbf24;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.settings-api-client-token-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--spacing-xs);
+  align-items: center;
+}
+
+.settings-api-client-token {
+  font-family: var(--font-mono);
+  min-width: 0;
+}
+
+.settings-api-client-result-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--spacing-xs);
+  margin: 0;
+}
+
+.settings-api-client-result-grid div {
+  min-width: 0;
+}
+
+.settings-api-client-result-grid dt {
+  color: var(--sidebar-fg-dim);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.settings-api-client-result-grid dd {
+  margin: 1px 0 0 0;
+  color: var(--sidebar-fg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+html.light-theme .settings-api-client-error {
+  color: #b91c1c;
+}
+
+html.light-theme .settings-api-client-warning {
+  color: #b45309;
+}
+
 .settings-agent-actions {
   display: flex;
   gap: var(--spacing-xs);

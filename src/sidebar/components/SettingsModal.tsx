@@ -1,4 +1,4 @@
-import { Component, createSignal, createEffect, For, Index, Show, onMount, onCleanup } from "solid-js";
+import { Component, createSignal, createEffect, createMemo, For, Index, Show, onMount, onCleanup } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import { isTauri } from "../../shared/platform";
 import type {
@@ -9,6 +9,8 @@ import type {
   LogLevel,
   TelegramBotConfig,
   ProfileCellConfig,
+  ApiClientMintResponse,
+  ApiClientMintScope,
 } from "../../shared/types";
 import { SettingsAPI, TelegramAPI, ReposAPI, CodingAgentsAPI } from "../../shared/ipc";
 import { toastStore } from "../../shared/stores/toasts";
@@ -16,6 +18,7 @@ import { validateScreenshotHotkeySyntax } from "../../shared/screenshot-hotkey";
 import { settingsStore } from "../../shared/stores/settings";
 import { setSoundsEnabled } from "../../shared/sound";
 import { sessionsStore } from "../stores/sessions";
+import { projectStore } from "../stores/project";
 import { newAgentId, definitionToSeed } from "../../shared/agent-presets";
 import { codingAgentsStore } from "../stores/coding-agents";
 import { mergeSettingsForSavePreservingProjects } from "./settings-save";
@@ -67,6 +70,27 @@ const GEMINI_MODELS = [
   { id: "gemini-1.5-pro", label: "Gemini 1.5 Pro" },
 ];
 
+const API_CLIENT_SCOPE_OPTIONS: { value: ApiClientMintScope; label: string }[] = [
+  { value: "send", label: "send" },
+  { value: "list-peers-lean", label: "list-peers-lean" },
+  { value: "session-transport", label: "session-transport" },
+];
+
+const API_CLIENT_EXPIRY_OPTIONS = [
+  { value: "default", label: "24 hours (default)" },
+  { value: "7d", label: "7 days" },
+  { value: "30d", label: "30 days" },
+] as const;
+
+type ApiClientExpiryOption = (typeof API_CLIENT_EXPIRY_OPTIONS)[number]["value"];
+
+const API_CLIENT_EXPIRY_MS: Record<Exclude<ApiClientExpiryOption, "default">, number> = {
+  "7d": 7 * 24 * 60 * 60 * 1000,
+  "30d": 30 * 24 * 60 * 60 * 1000,
+};
+
+const errorMessage = (err: unknown): string =>
+  err instanceof Error ? err.message : String(err);
 
 // #526: the former "agents" + "profiles" tabs are merged into one unified
 // "Coding Agents" screen (agent list + dual comparison rails). The "profiles"
@@ -136,6 +160,19 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     seededSettings?.apiServerEnabled ?? false,
   );
   const [apiServerBusy, setApiServerBusy] = createSignal(false);
+  const [apiClientMintRoot, setApiClientMintRoot] = createSignal("");
+  const [apiClientMintScopes, setApiClientMintScopes] = createSignal<ApiClientMintScope[]>([
+    "send",
+    "list-peers-lean",
+  ]);
+  const [apiClientMintLabel, setApiClientMintLabel] = createSignal("");
+  const [apiClientMintExpiry, setApiClientMintExpiry] =
+    createSignal<ApiClientExpiryOption>("default");
+  const [apiClientMinting, setApiClientMinting] = createSignal(false);
+  const [apiClientMintError, setApiClientMintError] = createSignal("");
+  const [apiClientMintResult, setApiClientMintResult] =
+    createSignal<ApiClientMintResponse | null>(null);
+  const [apiClientSecretCopied, setApiClientSecretCopied] = createSignal(false);
   const [saveError, setSaveError] = createSignal("");
   const [profileCellText, setProfileCellText] = createStore<Record<string, string>>({});
   const [profileCellErrors, setProfileCellErrors] = createStore<Record<string, string>>({});
@@ -203,6 +240,110 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       );
     } finally {
       setApiServerBusy(false);
+    }
+  };
+
+  const apiClientRootOptions = createMemo(() => {
+    const seen = new Set<string>();
+    const options = [];
+    for (const project of projectStore.projects) {
+      for (const workgroup of project.workgroups) {
+        for (const replica of workgroup.agents) {
+          const normalized = replica.path.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
+          if (seen.has(normalized)) continue;
+          seen.add(normalized);
+          options.push({
+            path: replica.path,
+            label: `${project.folderName} / ${workgroup.name} / ${replica.name}${
+              replica.isCoordinator ? " (coordinator)" : ""
+            }`,
+          });
+        }
+      }
+    }
+    return options;
+  });
+
+  createEffect(() => {
+    const options = apiClientRootOptions();
+    const current = apiClientMintRoot();
+    if (options.length === 0) {
+      if (current !== "") setApiClientMintRoot("");
+      return;
+    }
+    if (!options.some((option) => option.path === current)) {
+      setApiClientMintRoot(options[0].path);
+    }
+  });
+
+  const clearApiClientSecret = () => {
+    setApiClientMintResult(null);
+    setApiClientSecretCopied(false);
+  };
+
+  const closeSettings = () => {
+    clearApiClientSecret();
+    props.onClose();
+  };
+
+  const updateApiClientScope = (scope: ApiClientMintScope, checked: boolean) => {
+    setApiClientMintError("");
+    setApiClientMintScopes((prev) => {
+      const raw = checked ? [...prev, scope] : prev.filter((s) => s !== scope);
+      return API_CLIENT_SCOPE_OPTIONS
+        .map((option) => option.value)
+        .filter((value) => raw.includes(value));
+    });
+  };
+
+  const selectedApiClientScopesValid = () => apiClientMintScopes().length > 0;
+
+  const selectedApiClientExpiry = (): string | null => {
+    const option = apiClientMintExpiry();
+    if (option === "default") return null;
+    return new Date(Date.now() + API_CLIENT_EXPIRY_MS[option]).toISOString();
+  };
+
+  const handleMintApiClient = async () => {
+    if (apiClientMinting()) return;
+    const root = apiClientMintRoot();
+    const scopes = apiClientMintScopes();
+    if (!root) {
+      setApiClientMintError("Load a project with at least one workgroup replica before minting.");
+      return;
+    }
+    if (scopes.length === 0) {
+      setApiClientMintError("Select at least one API client scope.");
+      return;
+    }
+
+    setApiClientMinting(true);
+    setApiClientMintError("");
+    clearApiClientSecret();
+    try {
+      const label = apiClientMintLabel().trim();
+      const result = await SettingsAPI.mintApiClient({
+        root,
+        scopes,
+        label: label.length > 0 ? label : null,
+        expires: selectedApiClientExpiry(),
+      });
+      setApiClientMintResult(result);
+    } catch (err: unknown) {
+      setApiClientMintError(errorMessage(err));
+    } finally {
+      setApiClientMinting(false);
+    }
+  };
+
+  const copyApiClientToken = async () => {
+    const token = apiClientMintResult()?.token;
+    if (!token) return;
+    try {
+      await navigator.clipboard.writeText(token);
+      setApiClientSecretCopied(true);
+    } catch (err: unknown) {
+      setApiClientMintError(`Copy failed: ${errorMessage(err)}`);
     }
   };
 
@@ -893,7 +1034,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         sessionsStore.setRepos(allRepos.filter((r) => r.agents.length > 0));
       } catch {}
       setSaving(false);
-      props.onClose();
+      closeSettings();
     } catch (err: unknown) {
       setSaveError(err instanceof Error ? err.message : String(err));
       setSaving(false);
@@ -901,11 +1042,14 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape") props.onClose();
+    if (e.key === "Escape") closeSettings();
   };
 
   document.addEventListener("keydown", handleKeyDown);
-  onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
+  onCleanup(() => {
+    clearApiClientSecret();
+    document.removeEventListener("keydown", handleKeyDown);
+  });
 
   // ── Tab renderers ──
 
@@ -1254,6 +1398,188 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             : apiServerRunning()
               ? `Running on ${settings.data!.apiServerBind}:${settings.data!.apiServerPort}`
               : "Stopped"}
+        </div>
+        <div
+          class="settings-api-client-mint"
+          data-ac-testid="settings.apiClientMint.surface"
+          data-ac-role="region"
+        >
+          <div class="settings-subsection-title">API client credential</div>
+          <label class="settings-field">
+            <span class="settings-label">Replica root</span>
+            <select
+              class="settings-input"
+              value={apiClientMintRoot()}
+              disabled={apiClientRootOptions().length === 0 || apiClientMinting()}
+              onChange={(e) => {
+                setApiClientMintError("");
+                setApiClientMintRoot(e.currentTarget.value);
+              }}
+              data-ac-testid="settings.apiClientMint.root"
+              data-ac-role="combobox"
+              data-ac-state={apiClientRootOptions().length === 0 ? "empty" : "ready"}
+            >
+              <For each={apiClientRootOptions()}>
+                {(option) => (
+                  <option value={option.path}>
+                    {option.label}
+                  </option>
+                )}
+              </For>
+            </select>
+          </label>
+          <Show when={apiClientRootOptions().length === 0}>
+            <div
+              class="settings-hint"
+              data-ac-testid="settings.apiClientMint.noRoots"
+              data-ac-role="status"
+            >
+              Load a project with workgroup replicas before minting an API client.
+            </div>
+          </Show>
+          <div class="settings-field">
+            <span class="settings-label">Scopes</span>
+            <div class="settings-api-client-scopes">
+              <For each={API_CLIENT_SCOPE_OPTIONS}>
+                {(scope) => (
+                  <label class="settings-checkbox-field settings-api-client-scope">
+                    <input
+                      type="checkbox"
+                      class="settings-checkbox"
+                      checked={apiClientMintScopes().includes(scope.value)}
+                      disabled={apiClientMinting()}
+                      onChange={(e) => updateApiClientScope(scope.value, e.currentTarget.checked)}
+                      data-ac-testid={`settings.apiClientMint.scope.${scope.value}`}
+                      data-ac-role="checkbox"
+                      data-ac-state={
+                        apiClientMintScopes().includes(scope.value) ? "checked" : "unchecked"
+                      }
+                    />
+                    <span>{scope.label}</span>
+                  </label>
+                )}
+              </For>
+            </div>
+          </div>
+          <label class="settings-field">
+            <span class="settings-label">Label</span>
+            <input
+              class="settings-input"
+              value={apiClientMintLabel()}
+              disabled={apiClientMinting()}
+              onInput={(e) => {
+                setApiClientMintError("");
+                setApiClientMintLabel(e.currentTarget.value);
+              }}
+              placeholder="optional audit label"
+              data-ac-testid="settings.apiClientMint.label"
+              data-ac-role="textbox"
+            />
+          </label>
+          <label class="settings-field">
+            <span class="settings-label">Expiry</span>
+            <select
+              class="settings-input"
+              value={apiClientMintExpiry()}
+              disabled={apiClientMinting()}
+              onChange={(e) => {
+                setApiClientMintError("");
+                setApiClientMintExpiry(e.currentTarget.value as ApiClientExpiryOption);
+              }}
+              data-ac-testid="settings.apiClientMint.expiry"
+              data-ac-role="combobox"
+            >
+              <For each={API_CLIENT_EXPIRY_OPTIONS}>
+                {(option) => <option value={option.value}>{option.label}</option>}
+              </For>
+            </select>
+          </label>
+          <button
+            class="settings-add-btn settings-api-client-mint-btn"
+            onClick={() => void handleMintApiClient()}
+            disabled={
+              apiClientMinting() ||
+              apiClientRootOptions().length === 0 ||
+              !selectedApiClientScopesValid()
+            }
+            data-ac-testid="settings.apiClientMint.submit"
+            data-ac-role="button"
+            data-ac-state={apiClientMinting() ? "minting" : "ready"}
+          >
+            {apiClientMinting() ? "Minting..." : "Mint credential"}
+          </button>
+          <Show when={apiClientMintError()}>
+            <div
+              class="settings-api-client-error"
+              role="alert"
+              data-ac-testid="settings.apiClientMint.error"
+              data-ac-role="alert"
+            >
+              {apiClientMintError()}
+            </div>
+          </Show>
+          <Show when={apiClientMintResult()}>
+            {(result) => (
+              <div
+                class="settings-api-client-secret"
+                data-ac-testid="settings.apiClientMint.result"
+                data-ac-role="surface"
+              >
+                <div
+                  class="settings-api-client-warning"
+                  data-ac-testid="settings.apiClientMint.warning"
+                  data-ac-role="status"
+                >
+                  Shown once. Store this token now; it cannot be recovered later.
+                </div>
+                <label class="settings-field">
+                  <span class="settings-label">Token</span>
+                  <div class="settings-api-client-token-row">
+                    <input
+                      class="settings-input settings-api-client-token"
+                      readOnly
+                      value={result().token}
+                      data-ac-testid="settings.apiClientMint.token"
+                      data-ac-role="textbox"
+                    />
+                    <button
+                      class="settings-add-btn"
+                      onClick={() => void copyApiClientToken()}
+                      data-ac-testid="settings.apiClientMint.copy"
+                      data-ac-role="button"
+                      data-ac-state={apiClientSecretCopied() ? "copied" : "ready"}
+                    >
+                      {apiClientSecretCopied() ? "Copied" : "Copy"}
+                    </button>
+                  </div>
+                </label>
+                <dl class="settings-api-client-result-grid">
+                  <div>
+                    <dt>Client ID</dt>
+                    <dd data-ac-testid="settings.apiClientMint.clientId">{result().clientId}</dd>
+                  </div>
+                  <div>
+                    <dt>Bound FQN</dt>
+                    <dd data-ac-testid="settings.apiClientMint.boundFqn">{result().boundFqn}</dd>
+                  </div>
+                  <div>
+                    <dt>Expires</dt>
+                    <dd data-ac-testid="settings.apiClientMint.expiresAt">
+                      {result().expiresAt ?? "No expiry"}
+                    </dd>
+                  </div>
+                </dl>
+                <button
+                  class="settings-add-btn"
+                  onClick={clearApiClientSecret}
+                  data-ac-testid="settings.apiClientMint.clear"
+                  data-ac-role="button"
+                >
+                  Clear secret
+                </button>
+              </div>
+            )}
+          </Show>
         </div>
       </div>
 
@@ -2522,7 +2848,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           </Show>
           <button
             class="modal-btn modal-btn-cancel"
-            onClick={props.onClose}
+            onClick={closeSettings}
             data-ac-testid="settings.cancel"
             data-ac-role="button"
           >
