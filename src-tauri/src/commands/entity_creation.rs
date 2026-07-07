@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -1010,81 +1011,629 @@ pub async fn create_agent_matrix(
     Ok(CreatedEntityResult { path: result_path })
 }
 
-/// Delete an agent matrix directory from a project.
-/// Removes {project_path}/.ac/_agent_{agent_name}/ entirely.
-/// Checks that no team references this agent before deleting.
+/// Delete an agent matrix identity from a project.
 #[tauri::command]
-pub async fn delete_agent_matrix(project_path: String, agent_name: String) -> Result<(), String> {
-    validate_existing_name(&agent_name, "Agent")?;
-
+pub async fn delete_agent_matrix(
+    app: AppHandle,
+    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
+    settings: State<'_, SettingsState>,
+    project_path: String,
+    agent_path: String,
+) -> Result<(), String> {
     let base = selected_workspace_dir(Path::new(&project_path))?;
+    let plan = collect_agent_delete_plan(&base, Path::new(&agent_path))?;
+    preflight_agent_delete(&plan, session_mgr.inner()).await?;
 
-    let agent_dir = base.join(format!("_agent_{}", agent_name));
-    if !agent_dir.exists() {
-        return Err(format!("Agent '{}' not found", agent_name));
+    let metadata = prepare_agent_delete_metadata(&plan, settings.inner()).await?;
+    let staged = stage_agent_delete_targets(&plan, session_mgr.inner()).await?;
+
+    if let Err(live_err) = ensure_no_live_sessions_under_target_keys(
+        &plan.target_keys,
+        &plan.agent_name,
+        session_mgr.inner(),
+    )
+    .await
+    {
+        let rollback = rollback_staged_agent_delete_targets(&staged);
+        return Err(format_agent_delete_post_stage_live_failure(
+            live_err, rollback,
+        ));
     }
 
-    // Referential integrity: check if any team references this agent.
-    // Team configs store agent refs in varying formats (relative: "../_agent_X",
-    // absolute: "C:\..._agent_X", or bare: "_agent_X"). Normalize by extracting
-    // the final path component after replacing backslashes.
-    let agent_dir_name = format!("_agent_{}", agent_name);
-    let mut referencing_teams: Vec<String> = Vec::new();
-    let entries = std::fs::read_dir(&base).map_err(|e| {
+    let persist = persist_agent_delete_metadata(&metadata, settings.inner()).await;
+    if let Err(e) = persist {
+        let restore = restore_agent_delete_metadata_snapshots(&metadata, settings.inner()).await;
+        let rollback = rollback_staged_agent_delete_targets(&staged);
+        return Err(format_agent_delete_metadata_failure(e, restore, rollback));
+    }
+
+    remove_staged_agent_delete_targets(&staged)?;
+
+    log::info!(
+        "[entity_creation] Deleted agent matrix identity '{}' at '{}' (targets={}, team_configs={})",
+        plan.agent_ref,
+        plan.origin_dir.display(),
+        plan.targets.len(),
+        metadata.team_mutations.len()
+    );
+    if metadata.settings_changed.load(Ordering::SeqCst) {
+        let _ = app.emit("coding_agent_profiles_updated", serde_json::json!({}));
+    }
+    emit_coordinator_refresh(&app, session_mgr.inner()).await;
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct AgentDeleteTarget {
+    original_path: PathBuf,
+    original_key: String,
+    label: String,
+}
+
+#[derive(Debug, Clone)]
+struct StagedAgentDeleteTarget {
+    original_path: PathBuf,
+    original_key: String,
+    staged_path: PathBuf,
+    label: String,
+}
+
+#[derive(Debug, Clone)]
+struct AgentTeamMutation {
+    team_name: String,
+    config_path: PathBuf,
+    before_json: Vec<u8>,
+    after_json: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedAgentDeleteMetadata {
+    team_mutations: Vec<AgentTeamMutation>,
+    agent_name: String,
+    settings_changed: Arc<AtomicBool>,
+}
+
+#[derive(Debug, Clone)]
+struct AgentDeletePlan {
+    agent_name: String,
+    agent_ref: String,
+    origin_dir: PathBuf,
+    target_keys: Vec<String>,
+    targets: Vec<AgentDeleteTarget>,
+    team_mutations: Vec<AgentTeamMutation>,
+}
+
+fn resolve_agent_delete_identity(
+    base: &Path,
+    agent_path: &Path,
+) -> Result<(String, String, PathBuf), String> {
+    if !agent_path.is_absolute() {
+        return Err("Agent path must be absolute".to_string());
+    }
+    let final_segment = agent_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "Agent path must end with an agent matrix directory".to_string())?;
+    let agent_name = final_segment
+        .strip_prefix("_agent_")
+        .ok_or_else(|| "Agent path must end with _agent_<name>".to_string())?;
+    validate_existing_name(agent_name, "Agent")?;
+    validate_delete_root_not_link_or_reparse(agent_path)
+        .map_err(|e| format!("Selected agent path is not deletable: {}", e))?;
+
+    let agent_ref = format!("_agent_{}", agent_name);
+    let origin_dir = base.join(&agent_ref);
+    if path_key_for_delete(agent_path) != path_key_for_delete(&origin_dir) {
+        return Err("Agent path does not match the selected project".to_string());
+    }
+    validate_delete_root_not_link_or_reparse(&origin_dir)
+        .map_err(|e| format!("Agent '{}' not found or not deletable: {}", agent_name, e))?;
+
+    Ok((agent_name.to_string(), agent_ref, origin_dir))
+}
+
+fn collect_agent_delete_plan(base: &Path, agent_path: &Path) -> Result<AgentDeletePlan, String> {
+    let (agent_name, agent_ref, origin_dir) = resolve_agent_delete_identity(base, agent_path)?;
+    let team_mutations = collect_agent_team_mutations_raw(base, &agent_name, &agent_ref)?;
+
+    let mut targets = vec![AgentDeleteTarget {
+        original_key: path_key_for_delete(&origin_dir),
+        original_path: origin_dir.clone(),
+        label: agent_ref.clone(),
+    }];
+
+    for wg_dir in list_workgroup_dirs(base) {
+        let replica = wg_dir.join(format!("__agent_{}", agent_name));
+        if replica.exists() {
+            let wg_name = wg_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("workgroup");
+            targets.push(AgentDeleteTarget {
+                original_key: path_key_for_delete(&replica),
+                original_path: replica,
+                label: format!("{}/__agent_{}", wg_name, agent_name),
+            });
+        }
+    }
+
+    targets.sort_by(|a, b| a.original_key.cmp(&b.original_key));
+    let target_keys = targets
+        .iter()
+        .map(|target| target.original_key.clone())
+        .collect();
+
+    Ok(AgentDeletePlan {
+        agent_name,
+        agent_ref,
+        origin_dir,
+        target_keys,
+        targets,
+        team_mutations,
+    })
+}
+
+fn collect_agent_team_mutations_raw(
+    base: &Path,
+    agent_name: &str,
+    agent_ref: &str,
+) -> Result<Vec<AgentTeamMutation>, String> {
+    let mut team_dirs = Vec::new();
+    let entries = std::fs::read_dir(base).map_err(|e| {
         format!(
-            "Cannot read Project AC Root directory for integrity check: {}",
+            "Cannot read Project AC Root directory for agent delete: {}",
             e
         )
     })?;
     for entry in entries {
-        let entry = entry
-            .map_err(|e| format!("Cannot read directory entry during integrity check: {}", e))?;
-        let dir_name = entry.file_name().to_string_lossy().to_string();
-        if !dir_name.starts_with("_team_") {
+        let entry = entry.map_err(|e| {
+            format!(
+                "Cannot read directory entry during agent delete scan: {}",
+                e
+            )
+        })?;
+        let path = entry.path();
+        let Some(dir_name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
+        };
+        if path.is_dir() && dir_name.starts_with("_team_") {
+            team_dirs.push(path);
         }
-        let config_path = entry.path().join("config.json");
+    }
+    team_dirs.sort();
+
+    let mut coordinator_blockers = Vec::new();
+    let mut mutations = Vec::new();
+    for team_dir in team_dirs {
+        let dir_name = team_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("_team_unknown");
+        let team_name = dir_name.strip_prefix("_team_").unwrap_or(dir_name);
+        let config_path = team_dir.join("config.json");
         if !config_path.exists() {
             continue;
         }
-        let content = std::fs::read_to_string(&config_path).map_err(|e| {
-            format!(
-                "Cannot read team config {}/config.json for integrity check: {}",
-                dir_name, e
-            )
-        })?;
-        let config: serde_json::Value = serde_json::from_str(&content)
-            .map_err(|e| format!("Cannot parse team config {}/config.json: {}", dir_name, e))?;
-        let agents = config
-            .get("agents")
-            .and_then(|a| a.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
-            .unwrap_or_default();
-        if agents.iter().any(|a| {
-            // Normalize: replace backslashes, split on '/', take the last component
-            let normalized = a.replace('\\', "/");
-            normalized
-                .rsplit('/')
-                .next()
-                .map(|last| last == agent_dir_name)
-                .unwrap_or(false)
-        }) {
-            let team_name = dir_name.strip_prefix("_team_").unwrap_or(&dir_name);
-            referencing_teams.push(team_name.to_string());
+
+        let before_json = std::fs::read(&config_path)
+            .map_err(|e| format!("Cannot read team '{}' config.json: {}", team_name, e))?;
+        let mut value: serde_json::Value = match serde_json::from_slice(&before_json) {
+            Ok(value) => value,
+            Err(e) => {
+                let raw = String::from_utf8_lossy(&before_json);
+                if raw_text_mentions_agent_token(&raw, agent_name, agent_ref) {
+                    return Err(format!(
+                        "Cannot delete agent '{}': cannot verify team '{}' references because config.json is invalid: {}",
+                        agent_name, team_name, e
+                    ));
+                }
+                log::warn!(
+                    "[entity_creation] Skipping unrelated malformed team config for '{}': {}",
+                    team_name,
+                    e
+                );
+                continue;
+            }
+        };
+
+        if value
+            .get("coordinator")
+            .and_then(|coordinator| coordinator.as_str())
+            .is_some_and(|coordinator| agent_ref_matches_target(coordinator, agent_name))
+        {
+            coordinator_blockers.push(team_name.to_string());
+        }
+
+        let mut changed = false;
+        if let Some(agents) = value
+            .get_mut("agents")
+            .and_then(|agents| agents.as_array_mut())
+        {
+            let before_len = agents.len();
+            agents.retain(|agent| match agent.as_str() {
+                Some(agent) => !agent_ref_matches_target(agent, agent_name),
+                None => true,
+            });
+            changed |= agents.len() != before_len;
+        }
+
+        if let Some(repos) = value
+            .get_mut("repos")
+            .and_then(|repos| repos.as_array_mut())
+        {
+            for repo in repos {
+                let Some(repo_obj) = repo.as_object_mut() else {
+                    continue;
+                };
+                let Some(agents) = repo_obj
+                    .get_mut("agents")
+                    .and_then(|agents| agents.as_array_mut())
+                else {
+                    continue;
+                };
+                let before_len = agents.len();
+                agents.retain(|agent| match agent.as_str() {
+                    Some(agent) => !agent_ref_matches_target(agent, agent_name),
+                    None => true,
+                });
+                changed |= agents.len() != before_len;
+            }
+        }
+
+        if changed {
+            let mut after_json = serde_json::to_vec_pretty(&value)
+                .map_err(|e| format!("Cannot serialize team '{}' config.json: {}", team_name, e))?;
+            after_json.push(b'\n');
+            mutations.push(AgentTeamMutation {
+                team_name: team_name.to_string(),
+                config_path,
+                before_json,
+                after_json,
+            });
         }
     }
-    if !referencing_teams.is_empty() {
+
+    if !coordinator_blockers.is_empty() {
+        coordinator_blockers.sort();
         return Err(format!(
-            "Cannot delete agent '{}': referenced by team(s): {}. Remove the agent from those teams first.",
+            "Cannot delete agent '{}': coordinator of team(s): {}. Reassign the coordinator first.",
             agent_name,
-            referencing_teams.join(", ")
+            coordinator_blockers.join(", ")
         ));
     }
 
-    std::fs::remove_dir_all(&agent_dir)
-        .map_err(|e| format!("Failed to delete agent directory: {}", e))?;
-    log::info!("[entity_creation] Deleted agent matrix: {}", agent_name);
+    Ok(mutations)
+}
+
+fn agent_ref_matches_target(raw_ref: &str, agent_name: &str) -> bool {
+    let bare = raw_agent_ref_bare_name(raw_ref);
+    agent_name_matches(&bare, agent_name)
+}
+
+fn raw_agent_ref_bare_name(raw_ref: &str) -> String {
+    let normalized = raw_ref.replace('\\', "/");
+    let final_segment = normalized.rsplit('/').next().unwrap_or(&normalized);
+    final_segment
+        .strip_prefix("_agent_")
+        .unwrap_or(final_segment)
+        .to_string()
+}
+
+fn raw_text_mentions_agent_token(raw: &str, agent_name: &str, agent_ref: &str) -> bool {
+    contains_whole_agent_token(raw, agent_ref) || contains_whole_agent_token(raw, agent_name)
+}
+
+fn contains_whole_agent_token(raw: &str, token: &str) -> bool {
+    if token.is_empty() {
+        return false;
+    }
+
+    #[cfg(windows)]
+    let (haystack, needle) = (raw.to_ascii_lowercase(), token.to_ascii_lowercase());
+    #[cfg(not(windows))]
+    let (haystack, needle) = (raw.to_string(), token.to_string());
+
+    let mut start = 0;
+    while let Some(offset) = haystack[start..].find(&needle) {
+        let match_start = start + offset;
+        let match_end = match_start + needle.len();
+        let before_ok = haystack[..match_start]
+            .chars()
+            .next_back()
+            .map(|c| !is_agent_token_char(c))
+            .unwrap_or(true);
+        let after_ok = haystack[match_end..]
+            .chars()
+            .next()
+            .map(|c| !is_agent_token_char(c))
+            .unwrap_or(true);
+        if before_ok && after_ok {
+            return true;
+        }
+        start = match_end;
+    }
+    false
+}
+
+fn is_agent_token_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_' || c == '-'
+}
+
+fn agent_name_matches(left: &str, right: &str) -> bool {
+    #[cfg(windows)]
+    {
+        left.eq_ignore_ascii_case(right)
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
+}
+
+async fn preflight_agent_delete(
+    plan: &AgentDeletePlan,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+) -> Result<(), String> {
+    for target in &plan.targets {
+        validate_delete_root_not_link_or_reparse(&target.original_path).map_err(|e| {
+            format!(
+                "Cannot delete agent '{}': target '{}' is not deletable: {}",
+                plan.agent_name, target.label, e
+            )
+        })?;
+    }
+    ensure_no_live_sessions_under_target_keys(&plan.target_keys, &plan.agent_name, session_mgr)
+        .await
+}
+
+async fn ensure_no_live_sessions_under_target_keys(
+    target_keys: &[String],
+    agent_name: &str,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+) -> Result<(), String> {
+    let sessions = { session_mgr.read().await.list_sessions().await };
+    let blockers: Vec<_> = sessions
+        .into_iter()
+        .filter(|session| !matches!(session.status, SessionStatus::Exited(_)))
+        .filter(|session| {
+            let working_dir = Path::new(&session.working_directory);
+            let working_key = path_key_for_delete(working_dir);
+            target_keys.iter().any(|root_key| {
+                working_key == *root_key || working_key.starts_with(&(root_key.clone() + "/"))
+            })
+        })
+        .collect();
+
+    if blockers.is_empty() {
+        return Ok(());
+    }
+
+    let details = blockers
+        .iter()
+        .map(|session| {
+            format!(
+                "  - {} at {} ({:?})",
+                session.name, session.working_directory, session.status
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Err(format!(
+        "Cannot delete agent '{}' while live sessions exist:\n{}",
+        agent_name, details
+    ))
+}
+
+async fn prepare_agent_delete_metadata(
+    plan: &AgentDeletePlan,
+    settings: &SettingsState,
+) -> Result<PreparedAgentDeleteMetadata, String> {
+    let settings_snapshot = settings.read().await;
+    let settings_changed = settings_snapshot
+        .auto_self_clear_by_agent
+        .contains_key(&plan.agent_name)
+        || settings_snapshot
+            .coding_agent_profiles
+            .default_profile_by_agent
+            .contains_key(&plan.agent_name);
+
+    Ok(PreparedAgentDeleteMetadata {
+        team_mutations: plan.team_mutations.clone(),
+        agent_name: plan.agent_name.clone(),
+        settings_changed: Arc::new(AtomicBool::new(settings_changed)),
+    })
+}
+
+async fn persist_agent_delete_metadata(
+    metadata: &PreparedAgentDeleteMetadata,
+    settings: &SettingsState,
+) -> Result<(), String> {
+    persist_agent_delete_metadata_with_saver(
+        metadata,
+        settings,
+        crate::config::settings::save_settings,
+    )
+    .await
+}
+
+async fn persist_agent_delete_metadata_with_saver<S>(
+    metadata: &PreparedAgentDeleteMetadata,
+    settings: &SettingsState,
+    save_settings_fn: S,
+) -> Result<(), String>
+where
+    S: Fn(&AppSettings) -> Result<(), String>,
+{
+    persist_agent_delete_metadata_with_writers(
+        metadata,
+        settings,
+        write_team_config_json_atomic,
+        save_settings_fn,
+    )
+    .await
+}
+
+async fn persist_agent_delete_metadata_with_writers<T, S>(
+    metadata: &PreparedAgentDeleteMetadata,
+    settings: &SettingsState,
+    mut write_team_config_fn: T,
+    save_settings_fn: S,
+) -> Result<(), String>
+where
+    T: FnMut(&Path, &[u8]) -> Result<(), String>,
+    S: Fn(&AppSettings) -> Result<(), String>,
+{
+    metadata.settings_changed.store(false, Ordering::SeqCst);
+
+    for mutation in &metadata.team_mutations {
+        if let Err(e) = write_team_config_fn(&mutation.config_path, &mutation.after_json) {
+            let restore = restore_team_config_snapshots(metadata);
+            return Err(format!(
+                "Failed to write team '{}' config during agent delete: {}{}",
+                mutation.team_name,
+                e,
+                format_restore_suffix(restore)
+            ));
+        }
+    }
+
+    let settings_result = {
+        let mut guard = settings.write().await;
+        let removed_auto = guard.auto_self_clear_by_agent.remove(&metadata.agent_name);
+        let removed_default = guard
+            .coding_agent_profiles
+            .default_profile_by_agent
+            .remove(&metadata.agent_name);
+        let changed = removed_auto.is_some() || removed_default.is_some();
+        metadata.settings_changed.store(changed, Ordering::SeqCst);
+
+        if changed {
+            let mut candidate = guard.clone();
+            if let Err(e) = crate::config::settings::validate_and_repair_settings(&mut candidate) {
+                restore_removed_settings(
+                    &mut guard,
+                    &metadata.agent_name,
+                    removed_auto,
+                    removed_default,
+                );
+                Err(format!(
+                    "Failed to validate settings after agent delete: {}",
+                    e
+                ))
+            } else if let Err(e) = save_settings_fn(&candidate) {
+                restore_removed_settings(
+                    &mut guard,
+                    &metadata.agent_name,
+                    removed_auto,
+                    removed_default,
+                );
+                Err(format!("Failed to save settings after agent delete: {}", e))
+            } else {
+                *guard = candidate;
+                Ok(())
+            }
+        } else {
+            Ok(())
+        }
+    };
+
+    if let Err(e) = settings_result {
+        let restore = restore_team_config_snapshots(metadata);
+        return Err(format!("{}{}", e, format_restore_suffix(restore)));
+    }
+
     Ok(())
+}
+
+fn restore_removed_settings(
+    settings: &mut AppSettings,
+    agent_name: &str,
+    removed_auto: Option<bool>,
+    removed_default: Option<String>,
+) {
+    if let Some(value) = removed_auto {
+        settings
+            .auto_self_clear_by_agent
+            .insert(agent_name.to_string(), value);
+    }
+    if let Some(value) = removed_default {
+        settings
+            .coding_agent_profiles
+            .default_profile_by_agent
+            .insert(agent_name.to_string(), value);
+    }
+}
+
+async fn restore_agent_delete_metadata_snapshots(
+    metadata: &PreparedAgentDeleteMetadata,
+    _settings: &SettingsState,
+) -> Result<(), String> {
+    restore_team_config_snapshots(metadata)
+}
+
+fn restore_team_config_snapshots(metadata: &PreparedAgentDeleteMetadata) -> Result<(), String> {
+    let mut errors = Vec::new();
+    for mutation in &metadata.team_mutations {
+        if let Err(e) = write_team_config_json_atomic(&mutation.config_path, &mutation.before_json)
+        {
+            errors.push(format!("{}: {}", mutation.config_path.display(), e));
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Failed to restore team config snapshot(s): {}",
+            errors.join("; ")
+        ))
+    }
+}
+
+fn format_restore_suffix(restore: Result<(), String>) -> String {
+    match restore {
+        Ok(()) => String::new(),
+        Err(e) => format!("; snapshot restore failed: {}", e),
+    }
+}
+
+fn write_team_config_json_atomic(config_path: &Path, json: &[u8]) -> Result<(), String> {
+    crate::config::local_config_io::write_file_atomic(config_path, json)
+}
+
+fn format_agent_delete_metadata_failure(
+    persist_error: String,
+    restore_result: Result<(), String>,
+    dir_rollback_result: Result<(), String>,
+) -> String {
+    match (restore_result, dir_rollback_result) {
+        (Ok(()), Ok(())) => persist_error,
+        (Err(restore), Ok(())) => format!(
+            "{}. Metadata snapshot restore also failed: {}",
+            persist_error, restore
+        ),
+        (Ok(()), Err(rollback)) => format!(
+            "{}. Directory rollback also failed: {}",
+            persist_error, rollback
+        ),
+        (Err(restore), Err(rollback)) => format!(
+            "{}. Metadata snapshot restore also failed: {}. Directory rollback also failed: {}",
+            persist_error, restore, rollback
+        ),
+    }
+}
+
+fn format_agent_delete_post_stage_live_failure(
+    live_error: String,
+    dir_rollback_result: Result<(), String>,
+) -> String {
+    match dir_rollback_result {
+        Ok(()) => live_error,
+        Err(rollback) => format!(
+            "Agent delete post-stage live-session check failed and rollback also failed. Live-session error: {}. Rollback error: {}",
+            live_error, rollback
+        ),
+    }
 }
 
 /// List all agent matrices across multiple project paths.
@@ -2129,6 +2678,200 @@ pub(crate) fn try_atomic_delete_wg_with_remove(
     }
 }
 
+#[derive(Debug)]
+enum AgentDeleteStageError {
+    Blocked {
+        target: AgentDeleteTarget,
+        raw_error: String,
+    },
+    Other(String),
+    RollbackFailed(String),
+}
+
+async fn stage_agent_delete_targets(
+    plan: &AgentDeletePlan,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+) -> Result<Vec<StagedAgentDeleteTarget>, String> {
+    match stage_agent_delete_targets_with_rename(
+        plan,
+        |from: &Path, to: &Path| std::fs::rename(from, to),
+        session_mgr,
+    ) {
+        Ok(staged) => Ok(staged),
+        Err(AgentDeleteStageError::Blocked { target, raw_error }) => {
+            log::info!(
+                "[entity_creation] delete_agent_matrix: file-in-use detected for '{}' on rename probe",
+                target.label
+            );
+            let report = crate::commands::wg_delete_diagnostic::diagnose_delete_root_blockers(
+                &target.original_path,
+                &target.label,
+                &raw_error,
+                session_mgr,
+            )
+            .await;
+            let json = serde_json::to_string(&report).map_err(|se| {
+                format!(
+                    "Failed to serialize blocker report: {}; original error: {}",
+                    se, raw_error
+                )
+            })?;
+            Err(format!("BLOCKERS:{}", json))
+        }
+        Err(AgentDeleteStageError::Other(e)) | Err(AgentDeleteStageError::RollbackFailed(e)) => {
+            Err(e)
+        }
+    }
+}
+
+fn stage_agent_delete_targets_with_rename<R>(
+    plan: &AgentDeletePlan,
+    mut rename: R,
+    _session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+) -> Result<Vec<StagedAgentDeleteTarget>, AgentDeleteStageError>
+where
+    R: FnMut(&Path, &Path) -> std::io::Result<()>,
+{
+    let mut staged = Vec::new();
+    for target in &plan.targets {
+        let parent = target.original_path.parent().ok_or_else(|| {
+            AgentDeleteStageError::Other(format!(
+                "Agent delete target '{}' has no parent",
+                target.original_path.display()
+            ))
+        })?;
+        let original_name = target
+            .original_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                AgentDeleteStageError::Other(format!(
+                    "Agent delete target '{}' has no filename",
+                    target.original_path.display()
+                ))
+            })?;
+        let staged_path = parent.join(format!(
+            ".deleting-{}-{}",
+            original_name,
+            uuid::Uuid::new_v4()
+        ));
+
+        match rename(&target.original_path, &staged_path) {
+            Ok(()) => staged.push(StagedAgentDeleteTarget {
+                original_path: target.original_path.clone(),
+                original_key: target.original_key.clone(),
+                staged_path,
+                label: target.label.clone(),
+            }),
+            Err(e) => {
+                let raw_error = e.to_string();
+                let blocked = is_rename_blocked_by_handle(&e);
+                let rollback = rollback_staged_agent_delete_targets_with_rename(&staged, rename);
+                if let Err(rollback_err) = rollback {
+                    return Err(AgentDeleteStageError::RollbackFailed(
+                        format_stage_rollback_failed(&staged, &raw_error, rollback_err),
+                    ));
+                }
+                if blocked {
+                    return Err(AgentDeleteStageError::Blocked {
+                        target: target.clone(),
+                        raw_error,
+                    });
+                }
+                return Err(AgentDeleteStageError::Other(format!(
+                    "Failed to stage agent delete target '{}': {}",
+                    target.original_path.display(),
+                    raw_error
+                )));
+            }
+        }
+    }
+    Ok(staged)
+}
+
+fn rollback_staged_agent_delete_targets(staged: &[StagedAgentDeleteTarget]) -> Result<(), String> {
+    rollback_staged_agent_delete_targets_with_rename(staged, |from: &Path, to: &Path| {
+        std::fs::rename(from, to)
+    })
+}
+
+fn rollback_staged_agent_delete_targets_with_rename<R>(
+    staged: &[StagedAgentDeleteTarget],
+    mut rename: R,
+) -> Result<(), String>
+where
+    R: FnMut(&Path, &Path) -> std::io::Result<()>,
+{
+    let mut errors = Vec::new();
+    for target in staged.iter().rev() {
+        if let Err(e) = rename(&target.staged_path, &target.original_path) {
+            errors.push(format!(
+                "{} [{}] {} -> {}: {}",
+                target.label,
+                target.original_key,
+                target.staged_path.display(),
+                target.original_path.display(),
+                e
+            ));
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Hidden cleanup dirs remain after rollback failure: {}",
+            errors.join("; ")
+        ))
+    }
+}
+
+fn remove_staged_agent_delete_targets(staged: &[StagedAgentDeleteTarget]) -> Result<(), String> {
+    let mut errors = Vec::new();
+    for target in staged {
+        if let Err(e) = std::fs::remove_dir_all(&target.staged_path) {
+            errors.push(format!(
+                "{} [{}] {}: {}",
+                target.label,
+                target.original_key,
+                target.staged_path.display(),
+                e
+            ));
+        } else {
+            log::debug!(
+                "[entity_creation] Removed staged agent delete target '{}' ({})",
+                target.label,
+                target.original_key
+            );
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Agent was removed, but hidden cleanup dir(s) remain: {}",
+            errors.join("; ")
+        ))
+    }
+}
+
+fn format_stage_rollback_failed(
+    staged: &[StagedAgentDeleteTarget],
+    original_error: &str,
+    rollback_error: String,
+) -> String {
+    let hidden_paths = staged
+        .iter()
+        .map(|target| target.staged_path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "Agent delete staging failed and rollback also failed. Hidden cleanup dirs remain: {}. Original error: {}. Rollback error: {}",
+        hidden_paths, original_error, rollback_error
+    )
+}
+
 pub(crate) fn validate_delete_root_not_link_or_reparse(path: &Path) -> Result<(), String> {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -2430,6 +3173,8 @@ mod tests {
     //! the #107 helper `parse_task_title`.
 
     use super::*;
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicUsize, Ordering as TestOrdering};
 
     #[test]
     #[cfg(windows)]
@@ -3220,6 +3965,676 @@ mod tests {
         assert!(err.contains("Cannot delete while live sessions exist"));
         assert!(err.contains("Session 1"));
         assert!(err.contains("Active"));
+    }
+
+    fn create_test_workspace() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(tmp.path().join("Project").join(".ac")).expect("create .ac");
+        tmp
+    }
+
+    fn test_base(tmp: &tempfile::TempDir) -> PathBuf {
+        tmp.path().join("Project").join(".ac")
+    }
+
+    fn create_test_agent(base: &Path, name: &str, role_display: &str) -> PathBuf {
+        let agent_dir = base.join(format!("_agent_{}", name));
+        std::fs::create_dir_all(&agent_dir).expect("create agent");
+        std::fs::write(
+            agent_dir.join("Role.md"),
+            format!("---\nname: '{}'\n---\n", role_display),
+        )
+        .expect("write role");
+        agent_dir
+    }
+
+    fn write_team_value(
+        base: &Path,
+        team_name: &str,
+        value: serde_json::Value,
+    ) -> (PathBuf, Vec<u8>) {
+        let team_dir = base.join(format!("_team_{}", team_name));
+        std::fs::create_dir_all(&team_dir).expect("create team");
+        let config_path = team_dir.join("config.json");
+        let mut bytes = serde_json::to_vec_pretty(&value).expect("serialize team");
+        bytes.push(b'\n');
+        std::fs::write(&config_path, &bytes).expect("write team config");
+        (config_path, bytes)
+    }
+
+    fn settings_state(settings: AppSettings) -> SettingsState {
+        Arc::new(tokio::sync::RwLock::new(settings))
+    }
+
+    fn profile_cell(command: &str) -> crate::config::settings::ProfileCellConfig {
+        crate::config::settings::ProfileCellConfig {
+            enabled: true,
+            command: command.to_string(),
+            env: BTreeMap::new(),
+            notes: "keep".to_string(),
+        }
+    }
+
+    fn test_manager() -> Arc<tokio::sync::RwLock<SessionManager>> {
+        Arc::new(tokio::sync::RwLock::new(SessionManager::new()))
+    }
+
+    async fn add_live_session(
+        manager: &Arc<tokio::sync::RwLock<SessionManager>>,
+        working_dir: &Path,
+    ) {
+        let guard = manager.read().await;
+        guard
+            .create_session(
+                "shell".to_string(),
+                Vec::new(),
+                working_dir.to_string_lossy().to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create live session");
+    }
+
+    async fn run_agent_delete_for_test(
+        base: &Path,
+        agent_path: &Path,
+        settings: &SettingsState,
+        manager: &Arc<tokio::sync::RwLock<SessionManager>>,
+    ) -> Result<PreparedAgentDeleteMetadata, String> {
+        let plan = collect_agent_delete_plan(base, agent_path)?;
+        preflight_agent_delete(&plan, manager).await?;
+        let metadata = prepare_agent_delete_metadata(&plan, settings).await?;
+        let staged = stage_agent_delete_targets(&plan, manager).await?;
+
+        if let Err(live_err) =
+            ensure_no_live_sessions_under_target_keys(&plan.target_keys, &plan.agent_name, manager)
+                .await
+        {
+            let rollback = rollback_staged_agent_delete_targets(&staged);
+            return Err(format_agent_delete_post_stage_live_failure(
+                live_err, rollback,
+            ));
+        }
+
+        if let Err(e) =
+            persist_agent_delete_metadata_with_saver(&metadata, settings, |_| Ok(())).await
+        {
+            let restore = restore_agent_delete_metadata_snapshots(&metadata, settings).await;
+            let rollback = rollback_staged_agent_delete_targets(&staged);
+            return Err(format_agent_delete_metadata_failure(e, restore, rollback));
+        }
+
+        remove_staged_agent_delete_targets(&staged)?;
+        Ok(metadata)
+    }
+
+    #[test]
+    fn delete_agent_plan_uses_path_slug_not_role_display_name() {
+        let tmp = create_test_workspace();
+        let base = test_base(&tmp);
+        let agent_dir = create_test_agent(&base, "dev-rust", "Displayed Rust Agent");
+
+        let plan = collect_agent_delete_plan(&base, &agent_dir).expect("collect plan");
+
+        assert_eq!(plan.agent_name, "dev-rust");
+        assert_eq!(plan.agent_ref, "_agent_dev-rust");
+        assert_eq!(plan.origin_dir, agent_dir);
+    }
+
+    #[tokio::test]
+    async fn delete_agent_unreferenced_origin_only_prunes_settings() {
+        let tmp = create_test_workspace();
+        let base = test_base(&tmp);
+        let agent_dir = create_test_agent(&base, "dev-rust", "Dev Rust");
+        let mut settings = AppSettings::default();
+        settings
+            .auto_self_clear_by_agent
+            .insert("dev-rust".to_string(), true);
+        settings
+            .coding_agent_profiles
+            .default_profile_by_agent
+            .insert("dev-rust".to_string(), "A".to_string());
+        let mut cells = BTreeMap::new();
+        cells.insert("A".to_string(), profile_cell("codex"));
+        settings
+            .coding_agent_profiles
+            .profiles_by_agent
+            .insert("dev-rust".to_string(), cells.clone());
+        let mut labels = BTreeMap::new();
+        labels.insert("A".to_string(), "Rust".to_string());
+        settings
+            .coding_agent_profiles
+            .profile_labels_by_agent
+            .insert("dev-rust".to_string(), labels.clone());
+        let settings = settings_state(settings);
+        let manager = test_manager();
+
+        let metadata = run_agent_delete_for_test(&base, &agent_dir, &settings, &manager)
+            .await
+            .expect("delete agent");
+
+        assert!(!agent_dir.exists());
+        assert!(metadata.settings_changed.load(Ordering::SeqCst));
+        let saved = settings.read().await;
+        assert!(!saved.auto_self_clear_by_agent.contains_key("dev-rust"));
+        assert!(!saved
+            .coding_agent_profiles
+            .default_profile_by_agent
+            .contains_key("dev-rust"));
+        assert_eq!(
+            saved.coding_agent_profiles.profiles_by_agent["dev-rust"],
+            cells
+        );
+        assert_eq!(
+            saved.coding_agent_profiles.profile_labels_by_agent["dev-rust"],
+            labels
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_agent_cascade_removes_team_repo_refs_and_replicas() {
+        let tmp = create_test_workspace();
+        let base = test_base(&tmp);
+        let agent_dir = create_test_agent(&base, "dev-rust", "Dev Rust");
+        create_test_agent(&base, "architect", "Architect");
+        let wg_dir = base.join("wg-1-dev-team");
+        let replica = wg_dir.join("__agent_dev-rust");
+        std::fs::create_dir_all(&replica).expect("create replica");
+        std::fs::create_dir_all(wg_dir.join("repo-service")).expect("create repo");
+        std::fs::create_dir_all(wg_dir.join("messaging")).expect("create messaging");
+        let config_path = write_team_value(
+            &base,
+            "dev-team",
+            serde_json::json!({
+                "agents": ["_agent_architect", "_agent_dev-rust", "../_agent_dev-rust"],
+                "coordinator": "_agent_architect",
+                "repos": [
+                    { "url": "https://example.test/service.git", "agents": ["_agent_dev-rust", "_agent_architect"] },
+                    { "url": "https://example.test/docs.git", "agents": ["../_agent_dev-rust"] }
+                ]
+            }),
+        )
+        .0;
+        let settings = settings_state(AppSettings::default());
+        let manager = test_manager();
+
+        run_agent_delete_for_test(&base, &agent_dir, &settings, &manager)
+            .await
+            .expect("delete agent");
+
+        assert!(!agent_dir.exists());
+        assert!(!replica.exists());
+        assert!(wg_dir.join("repo-service").is_dir());
+        assert!(wg_dir.join("messaging").is_dir());
+        let config: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&config_path).expect("read config"))
+                .expect("parse config");
+        assert_eq!(config["agents"], serde_json::json!(["_agent_architect"]));
+        assert_eq!(
+            config["repos"][0]["agents"],
+            serde_json::json!(["_agent_architect"])
+        );
+        assert_eq!(config["repos"][1]["agents"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn delete_agent_coordinator_blocks_and_touches_nothing() {
+        let tmp = create_test_workspace();
+        let base = test_base(&tmp);
+        let agent_dir = create_test_agent(&base, "dev-rust", "Dev Rust");
+        let (config_path, before) = write_team_value(
+            &base,
+            "dev-team",
+            serde_json::json!({
+                "agents": ["_agent_dev-rust"],
+                "coordinator": "../_agent_dev-rust",
+                "repos": []
+            }),
+        );
+
+        let err = collect_agent_delete_plan(&base, &agent_dir).expect_err("coordinator blocks");
+
+        assert!(err.contains("coordinator of team(s): dev-team"), "{err}");
+        assert!(agent_dir.is_dir());
+        assert_eq!(std::fs::read(&config_path).expect("read config"), before);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn delete_agent_case_mismatched_coordinator_blocks_on_windows() {
+        let tmp = create_test_workspace();
+        let base = test_base(&tmp);
+        let agent_dir = create_test_agent(&base, "DevRust", "Dev Rust");
+        write_team_value(
+            &base,
+            "dev-team",
+            serde_json::json!({
+                "agents": ["_agent_devrust"],
+                "coordinator": "_agent_devrust",
+                "repos": []
+            }),
+        );
+
+        let err = collect_agent_delete_plan(&base, &agent_dir).expect_err("coordinator blocks");
+
+        assert!(err.contains("coordinator of team(s): dev-team"), "{err}");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn delete_agent_case_mismatched_refs_are_pruned_on_windows() {
+        let tmp = create_test_workspace();
+        let base = test_base(&tmp);
+        let agent_dir = create_test_agent(&base, "DevRust", "Dev Rust");
+        let config_path = write_team_value(
+            &base,
+            "dev-team",
+            serde_json::json!({
+                "agents": ["_agent_devrust", "_agent_architect"],
+                "coordinator": "_agent_architect",
+                "repos": [{ "url": "u", "agents": ["_agent_devrust"] }]
+            }),
+        )
+        .0;
+
+        let plan = collect_agent_delete_plan(&base, &agent_dir).expect("collect plan");
+        write_team_config_json_atomic(&config_path, &plan.team_mutations[0].after_json)
+            .expect("write mutation");
+
+        let config: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&config_path).expect("read config"))
+                .expect("parse config");
+        assert_eq!(config["agents"], serde_json::json!(["_agent_architect"]));
+        assert_eq!(config["repos"][0]["agents"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn delete_agent_unrelated_stale_team_ref_does_not_block() {
+        let tmp = create_test_workspace();
+        let base = test_base(&tmp);
+        let agent_dir = create_test_agent(&base, "dev-docs", "Dev Docs");
+        write_team_value(
+            &base,
+            "dev-team",
+            serde_json::json!({
+                "agents": ["_agent_ghost", "_agent_dev-docs"],
+                "coordinator": "_agent_ghost",
+                "repos": [{ "url": "u", "agents": ["_agent_dev-docs", "_agent_ghost"] }]
+            }),
+        );
+        let settings = settings_state(AppSettings::default());
+        let manager = test_manager();
+
+        run_agent_delete_for_test(&base, &agent_dir, &settings, &manager)
+            .await
+            .expect("delete with stale unrelated ref");
+
+        assert!(!agent_dir.exists());
+    }
+
+    #[test]
+    fn delete_agent_relevant_invalid_team_config_blocks_and_touches_nothing() {
+        let tmp = create_test_workspace();
+        let base = test_base(&tmp);
+        let agent_dir = create_test_agent(&base, "dev-docs", "Dev Docs");
+        let team_dir = base.join("_team_dev-team");
+        std::fs::create_dir_all(&team_dir).expect("create team");
+        let config_path = team_dir.join("config.json");
+        let before = b"{ invalid _agent_dev-docs".to_vec();
+        std::fs::write(&config_path, &before).expect("write config");
+
+        let err =
+            collect_agent_delete_plan(&base, &agent_dir).expect_err("invalid relevant config");
+
+        assert!(err.contains("cannot verify team 'dev-team'"), "{err}");
+        assert!(agent_dir.is_dir());
+        assert_eq!(std::fs::read(&config_path).expect("read config"), before);
+    }
+
+    #[test]
+    fn delete_agent_invalid_team_config_uses_token_match_not_substring() {
+        let tmp = create_test_workspace();
+        let base = test_base(&tmp);
+        let agent_dir = create_test_agent(&base, "dev", "Dev");
+        let team_dir = base.join("_team_dev-team");
+        std::fs::create_dir_all(&team_dir).expect("create team");
+        std::fs::write(team_dir.join("config.json"), b"{ invalid developer").expect("write config");
+
+        let plan =
+            collect_agent_delete_plan(&base, &agent_dir).expect("substring should not block");
+
+        assert!(plan.team_mutations.is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_agent_live_origin_session_blocks() {
+        let tmp = create_test_workspace();
+        let base = test_base(&tmp);
+        let agent_dir = create_test_agent(&base, "dev-rust", "Dev Rust");
+        let manager = test_manager();
+        add_live_session(&manager, &agent_dir).await;
+        let plan = collect_agent_delete_plan(&base, &agent_dir).expect("collect plan");
+
+        let err = preflight_agent_delete(&plan, &manager)
+            .await
+            .expect_err("live origin blocks");
+
+        assert!(err.contains("Cannot delete agent 'dev-rust'"), "{err}");
+        assert!(err.contains("Session 1"), "{err}");
+        assert!(agent_dir.is_dir());
+    }
+
+    #[tokio::test]
+    async fn delete_agent_live_replica_session_blocks() {
+        let tmp = create_test_workspace();
+        let base = test_base(&tmp);
+        let agent_dir = create_test_agent(&base, "dev-rust", "Dev Rust");
+        let replica = base.join("wg-1-dev-team").join("__agent_dev-rust");
+        std::fs::create_dir_all(&replica).expect("create replica");
+        let manager = test_manager();
+        add_live_session(&manager, &replica).await;
+        let plan = collect_agent_delete_plan(&base, &agent_dir).expect("collect plan");
+
+        let err = preflight_agent_delete(&plan, &manager)
+            .await
+            .expect_err("live replica blocks");
+
+        assert!(err.contains("Cannot delete agent 'dev-rust'"), "{err}");
+        assert!(err.contains("Session 1"), "{err}");
+        assert!(agent_dir.is_dir());
+        assert!(replica.is_dir());
+    }
+
+    #[tokio::test]
+    async fn delete_agent_post_stage_live_session_recheck_rolls_back() {
+        let tmp = create_test_workspace();
+        let base = test_base(&tmp);
+        let agent_dir = create_test_agent(&base, "dev-rust", "Dev Rust");
+        let (config_path, before_config) = write_team_value(
+            &base,
+            "dev-team",
+            serde_json::json!({
+                "agents": ["_agent_dev-rust"],
+                "coordinator": "_agent_architect",
+                "repos": []
+            }),
+        );
+        let settings = settings_state(AppSettings::default());
+        let manager = test_manager();
+        let plan = collect_agent_delete_plan(&base, &agent_dir).expect("collect plan");
+        preflight_agent_delete(&plan, &manager)
+            .await
+            .expect("preflight");
+        let _metadata = prepare_agent_delete_metadata(&plan, &settings)
+            .await
+            .expect("metadata");
+        let staged = stage_agent_delete_targets(&plan, &manager)
+            .await
+            .expect("stage");
+        assert!(!agent_dir.exists());
+        add_live_session(&manager, &agent_dir).await;
+
+        let err = ensure_no_live_sessions_under_target_keys(
+            &plan.target_keys,
+            &plan.agent_name,
+            &manager,
+        )
+        .await
+        .expect_err("post-stage live session blocks");
+        let rollback = rollback_staged_agent_delete_targets(&staged);
+        let msg = format_agent_delete_post_stage_live_failure(err, rollback);
+
+        assert!(msg.contains("Cannot delete agent 'dev-rust'"), "{msg}");
+        assert!(agent_dir.is_dir());
+        for target in staged {
+            assert!(!target.staged_path.exists(), "staged path left behind");
+        }
+        assert_eq!(
+            std::fs::read(&config_path).expect("read config"),
+            before_config
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_agent_orphan_replica_removed() {
+        let tmp = create_test_workspace();
+        let base = test_base(&tmp);
+        let agent_dir = create_test_agent(&base, "dev-rust", "Dev Rust");
+        let replica = base.join("wg-1-dev-team").join("__agent_dev-rust");
+        std::fs::create_dir_all(&replica).expect("create orphan replica");
+        let settings = settings_state(AppSettings::default());
+        let manager = test_manager();
+
+        run_agent_delete_for_test(&base, &agent_dir, &settings, &manager)
+            .await
+            .expect("delete orphan replica");
+
+        assert!(!agent_dir.exists());
+        assert!(!replica.exists());
+    }
+
+    #[test]
+    fn delete_agent_stage_targets_rolls_back_on_second_target_failure() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let first = tmp.path().join("_agent_dev-rust");
+        let second = tmp.path().join("wg-1-dev-team").join("__agent_dev-rust");
+        std::fs::create_dir_all(&first).expect("first");
+        std::fs::create_dir_all(&second).expect("second");
+        let plan = AgentDeletePlan {
+            agent_name: "dev-rust".to_string(),
+            agent_ref: "_agent_dev-rust".to_string(),
+            origin_dir: first.clone(),
+            target_keys: Vec::new(),
+            targets: vec![
+                AgentDeleteTarget {
+                    original_path: first.clone(),
+                    original_key: path_key_for_delete(&first),
+                    label: "origin".to_string(),
+                },
+                AgentDeleteTarget {
+                    original_path: second.clone(),
+                    original_key: path_key_for_delete(&second),
+                    label: "replica".to_string(),
+                },
+            ],
+            team_mutations: Vec::new(),
+        };
+        let manager = test_manager();
+
+        let err = stage_agent_delete_targets_with_rename(
+            &plan,
+            |from: &Path, to: &Path| {
+                if from == second {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "forced",
+                    ))
+                } else {
+                    std::fs::rename(from, to)
+                }
+            },
+            &manager,
+        )
+        .expect_err("second target fails");
+
+        assert!(matches!(err, AgentDeleteStageError::Other(_)));
+        assert!(first.is_dir());
+        assert!(second.is_dir());
+    }
+
+    #[test]
+    fn delete_agent_stage_targets_rollback_failure_reports_hidden_paths() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let first = tmp.path().join("_agent_dev-rust");
+        let second = tmp.path().join("wg-1-dev-team").join("__agent_dev-rust");
+        std::fs::create_dir_all(&first).expect("first");
+        std::fs::create_dir_all(&second).expect("second");
+        let plan = AgentDeletePlan {
+            agent_name: "dev-rust".to_string(),
+            agent_ref: "_agent_dev-rust".to_string(),
+            origin_dir: first.clone(),
+            target_keys: Vec::new(),
+            targets: vec![
+                AgentDeleteTarget {
+                    original_path: first.clone(),
+                    original_key: path_key_for_delete(&first),
+                    label: "origin".to_string(),
+                },
+                AgentDeleteTarget {
+                    original_path: second.clone(),
+                    original_key: path_key_for_delete(&second),
+                    label: "replica".to_string(),
+                },
+            ],
+            team_mutations: Vec::new(),
+        };
+        let manager = test_manager();
+
+        let err = stage_agent_delete_targets_with_rename(
+            &plan,
+            |from: &Path, to: &Path| {
+                if from == second || to == first {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "forced",
+                    ))
+                } else {
+                    std::fs::rename(from, to)
+                }
+            },
+            &manager,
+        )
+        .expect_err("rollback fails");
+
+        let AgentDeleteStageError::RollbackFailed(msg) = err else {
+            panic!("expected rollback failure");
+        };
+        assert!(msg.contains("Hidden cleanup dirs remain"), "{msg}");
+        assert!(!msg.starts_with("BLOCKERS:"), "{msg}");
+        assert!(!first.exists());
+        assert!(second.is_dir());
+    }
+
+    #[tokio::test]
+    async fn delete_agent_metadata_team_write_failure_restores_configs_and_rolls_back_dirs() {
+        let tmp = create_test_workspace();
+        let base = test_base(&tmp);
+        let agent_dir = create_test_agent(&base, "dev-rust", "Dev Rust");
+        let (config_a, before_a) = write_team_value(
+            &base,
+            "alpha",
+            serde_json::json!({
+                "agents": ["_agent_dev-rust"],
+                "coordinator": "_agent_architect",
+                "repos": []
+            }),
+        );
+        let (config_b, before_b) = write_team_value(
+            &base,
+            "beta",
+            serde_json::json!({
+                "agents": ["_agent_dev-rust"],
+                "coordinator": "_agent_architect",
+                "repos": []
+            }),
+        );
+        let settings = settings_state(AppSettings::default());
+        let manager = test_manager();
+        let plan = collect_agent_delete_plan(&base, &agent_dir).expect("collect plan");
+        let metadata = prepare_agent_delete_metadata(&plan, &settings)
+            .await
+            .expect("metadata");
+        let staged = stage_agent_delete_targets(&plan, &manager)
+            .await
+            .expect("stage");
+        let writes = AtomicUsize::new(0);
+
+        let persist_err = persist_agent_delete_metadata_with_writers(
+            &metadata,
+            &settings,
+            |path, bytes| {
+                let count = writes.fetch_add(1, TestOrdering::SeqCst);
+                if count == 1 {
+                    Err("forced team write failure".to_string())
+                } else {
+                    write_team_config_json_atomic(path, bytes)
+                }
+            },
+            |_| Ok(()),
+        )
+        .await
+        .expect_err("team write failure");
+        let restore = restore_agent_delete_metadata_snapshots(&metadata, &settings).await;
+        let rollback = rollback_staged_agent_delete_targets(&staged);
+        let msg = format_agent_delete_metadata_failure(persist_err, restore, rollback);
+
+        assert!(msg.contains("forced team write failure"), "{msg}");
+        assert!(agent_dir.is_dir());
+        assert_eq!(std::fs::read(&config_a).expect("read a"), before_a);
+        assert_eq!(std::fs::read(&config_b).expect("read b"), before_b);
+    }
+
+    #[tokio::test]
+    async fn delete_agent_metadata_settings_save_failure_restores_configs_and_rolls_back_dirs() {
+        let tmp = create_test_workspace();
+        let base = test_base(&tmp);
+        let agent_dir = create_test_agent(&base, "dev-rust", "Dev Rust");
+        let (config_path, before_config) = write_team_value(
+            &base,
+            "dev-team",
+            serde_json::json!({
+                "agents": ["_agent_dev-rust"],
+                "coordinator": "_agent_architect",
+                "repos": []
+            }),
+        );
+        let mut settings = AppSettings::default();
+        settings
+            .auto_self_clear_by_agent
+            .insert("dev-rust".to_string(), false);
+        settings
+            .coding_agent_profiles
+            .default_profile_by_agent
+            .insert("dev-rust".to_string(), "A".to_string());
+        let settings = settings_state(settings);
+        let manager = test_manager();
+        let plan = collect_agent_delete_plan(&base, &agent_dir).expect("collect plan");
+        let metadata = prepare_agent_delete_metadata(&plan, &settings)
+            .await
+            .expect("metadata");
+        let staged = stage_agent_delete_targets(&plan, &manager)
+            .await
+            .expect("stage");
+
+        let persist_err = persist_agent_delete_metadata_with_saver(&metadata, &settings, |_| {
+            Err("forced settings save failure".to_string())
+        })
+        .await
+        .expect_err("settings save failure");
+        let restore = restore_agent_delete_metadata_snapshots(&metadata, &settings).await;
+        let rollback = rollback_staged_agent_delete_targets(&staged);
+        let msg = format_agent_delete_metadata_failure(persist_err, restore, rollback);
+
+        assert!(msg.contains("forced settings save failure"), "{msg}");
+        assert!(agent_dir.is_dir());
+        assert_eq!(
+            std::fs::read(&config_path).expect("read config"),
+            before_config
+        );
+        let saved = settings.read().await;
+        assert_eq!(saved.auto_self_clear_by_agent.get("dev-rust"), Some(&false));
+        assert_eq!(
+            saved
+                .coding_agent_profiles
+                .default_profile_by_agent
+                .get("dev-rust")
+                .map(String::as_str),
+            Some("A")
+        );
     }
 
     #[tokio::test]
