@@ -421,17 +421,27 @@ pub async fn set_agent_default_profile(
     agent_path: String,
     profile: String,
 ) -> Result<(), String> {
+    let payload = set_agent_default_profile_inner(settings.inner(), &agent_path, &profile).await?;
+    let _ = app.emit("coding_agent_profile_selection_updated", payload);
+    Ok(())
+}
+
+/// Persist an origin agent's default profile and return the
+/// `coding_agent_profile_selection_updated` event payload for the caller to
+/// emit (desktop) or broadcast to web clients (browser transport). Shared by
+/// the desktop command and the web dispatcher.
+pub(crate) async fn set_agent_default_profile_inner(
+    settings: &SettingsState,
+    agent_path: &str,
+    profile: &str,
+) -> Result<serde_json::Value, String> {
     let snapshot = settings.read().await.clone();
     crate::config::coding_agent_profiles::set_agent_default_profile(
         &snapshot,
-        std::path::Path::new(&agent_path),
-        &profile,
+        std::path::Path::new(agent_path),
+        profile,
     )?;
-    let _ = app.emit(
-        "coding_agent_profile_selection_updated",
-        serde_json::json!({ "agentPath": agent_path, "profile": profile, "scope": "default" }),
-    );
-    Ok(())
+    Ok(serde_json::json!({ "agentPath": agent_path, "profile": profile, "scope": "default" }))
 }
 
 #[tauri::command]
@@ -441,17 +451,29 @@ pub async fn set_instance_profile_override(
     agent_path: String,
     profile: Option<String>,
 ) -> Result<(), String> {
+    let payload =
+        set_instance_profile_override_inner(settings.inner(), &agent_path, profile.as_deref())
+            .await?;
+    let _ = app.emit("coding_agent_profile_selection_updated", payload);
+    Ok(())
+}
+
+/// Persist a replica's instance-level profile override (or clear it when
+/// `profile` is `None`) and return the `coding_agent_profile_selection_updated`
+/// event payload for the caller to emit or broadcast. Shared by the desktop
+/// command and the web dispatcher.
+pub(crate) async fn set_instance_profile_override_inner(
+    settings: &SettingsState,
+    agent_path: &str,
+    profile: Option<&str>,
+) -> Result<serde_json::Value, String> {
     let snapshot = settings.read().await.clone();
     crate::config::coding_agent_profiles::set_instance_profile_override(
         &snapshot,
-        std::path::Path::new(&agent_path),
-        profile.as_deref(),
+        std::path::Path::new(agent_path),
+        profile,
     )?;
-    let _ = app.emit(
-        "coding_agent_profile_selection_updated",
-        serde_json::json!({ "agentPath": agent_path, "profile": profile, "scope": "instance" }),
-    );
-    Ok(())
+    Ok(serde_json::json!({ "agentPath": agent_path, "profile": profile, "scope": "instance" }))
 }
 
 #[tauri::command]
@@ -461,17 +483,33 @@ pub async fn resolve_coding_agent_profile(
     agent_id: String,
     requested_profile: Option<String>,
 ) -> Result<CodingAgentProfileResolutionResult, String> {
+    resolve_coding_agent_profile_inner(
+        settings.inner(),
+        agent_path.as_deref(),
+        &agent_id,
+        requested_profile.as_deref(),
+    )
+    .await
+}
+
+/// Resolve the effective coding-agent profile for an agent/replica. Shared by
+/// the desktop command and the web dispatcher; reads settings only.
+pub(crate) async fn resolve_coding_agent_profile_inner(
+    settings: &SettingsState,
+    agent_path: Option<&str>,
+    agent_id: &str,
+    requested_profile: Option<&str>,
+) -> Result<CodingAgentProfileResolutionResult, String> {
     let snapshot = settings.read().await.clone();
     let agent_path = agent_path
-        .as_deref()
         .map(str::trim)
         .filter(|path| !path.is_empty())
         .map(std::path::PathBuf::from);
     let details = crate::config::coding_agent_profiles::resolve_profile_selection(
         &snapshot,
         agent_path.as_deref(),
-        &agent_id,
-        requested_profile.as_deref(),
+        agent_id,
+        requested_profile,
     )?;
 
     Ok(CodingAgentProfileResolutionResult {
@@ -571,6 +609,18 @@ pub async fn preview_coding_agent_profile_selection(
     settings: State<'_, SettingsState>,
     request: PreviewCodingAgentProfileSelectionRequest,
 ) -> Result<PreviewCodingAgentProfileSelectionResult, String> {
+    preview_coding_agent_profile_selection_inner(session_mgr.inner(), settings.inner(), request)
+        .await
+}
+
+/// Enumerate the replicas a broad-scope profile assignment would touch and
+/// return a fingerprint the frontend echoes back on apply. Shared by the
+/// desktop command and the web dispatcher; reads settings + sessions only.
+pub(crate) async fn preview_coding_agent_profile_selection_inner(
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    settings: &SettingsState,
+    request: PreviewCodingAgentProfileSelectionRequest,
+) -> Result<PreviewCodingAgentProfileSelectionResult, String> {
     let settings_snapshot = settings.read().await.clone();
     validate_profile_assignment_request(
         &settings_snapshot,
@@ -618,6 +668,30 @@ pub async fn apply_coding_agent_profile_selection(
     settings: State<'_, SettingsState>,
     request: ApplyCodingAgentProfileSelectionRequest,
 ) -> Result<ApplyCodingAgentProfileSelectionResult, String> {
+    let (result, payload) = apply_coding_agent_profile_selection_inner(
+        &app,
+        session_mgr.inner(),
+        pty_mgr.inner(),
+        settings.inner(),
+        request,
+    )
+    .await?;
+    let _ = app.emit("coding_agent_profile_selection_updated", payload);
+    Ok(result)
+}
+
+/// Apply a coding-agent profile assignment across the enumerated replicas
+/// (optionally restarting live sessions) and return both the result and the
+/// `coding_agent_profile_selection_updated` event payload. The caller emits the
+/// payload (desktop) or broadcasts it to web clients. Shared by the desktop
+/// command and the web dispatcher.
+pub(crate) async fn apply_coding_agent_profile_selection_inner(
+    app: &AppHandle,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: &Arc<std::sync::Mutex<PtyManager>>,
+    settings: &SettingsState,
+    request: ApplyCodingAgentProfileSelectionRequest,
+) -> Result<(ApplyCodingAgentProfileSelectionResult, serde_json::Value), String> {
     let apply_lock = broad_profile_apply_lock().lock().await;
     let settings_snapshot = settings.read().await.clone();
     validate_profile_assignment_request(
@@ -688,10 +762,10 @@ pub async fn apply_coding_agent_profile_selection(
                     continue;
                 };
                 match crate::commands::session::restart_session_inner_with_activation(
-                    &app,
-                    session_mgr.inner(),
-                    pty_mgr.inner(),
-                    settings.inner(),
+                    app,
+                    session_mgr,
+                    pty_mgr,
+                    settings,
                     uuid,
                     Some(request.coding_agent_id.clone()),
                     Some(normalized_profile.clone()),
@@ -703,7 +777,7 @@ pub async fn apply_coding_agent_profile_selection(
                     Ok(_) => restarted_session_ids.push(session_id.clone()),
                     Err(e) => {
                         let (code, destroyed_but_not_recreated) =
-                            classify_restart_failure(session_mgr.inner(), uuid).await;
+                            classify_restart_failure(session_mgr, uuid).await;
                         errors.push(ProfileAssignmentError {
                             code: code.to_string(),
                             message: e,
@@ -730,19 +804,16 @@ pub async fn apply_coding_agent_profile_selection(
         warnings: enumeration.warnings,
         errors,
     };
-    let _ = app.emit(
-        "coding_agent_profile_selection_updated",
-        serde_json::json!({
-            "scope": request.scope,
-            "codingAgentId": request.coding_agent_id,
-            "profile": normalized_profile,
-            "updatedCount": result.updated_count,
-            "restartedCount": result.restarted_count,
-            "targetFingerprint": &result.target_fingerprint,
-            "errors": &result.errors,
-        }),
-    );
-    Ok(result)
+    let payload = serde_json::json!({
+        "scope": request.scope,
+        "codingAgentId": request.coding_agent_id,
+        "profile": normalized_profile,
+        "updatedCount": result.updated_count,
+        "restartedCount": result.restarted_count,
+        "targetFingerprint": &result.target_fingerprint,
+        "errors": &result.errors,
+    });
+    Ok((result, payload))
 }
 
 struct ProfileTargetEnumeration {
