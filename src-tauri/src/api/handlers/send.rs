@@ -67,7 +67,7 @@ async fn handle_inner(
 
     let result = state
         .message_store
-        .enqueue(EnqueueRequest {
+        .enqueue_offloaded(EnqueueRequest {
             sender_fqn: from.clone(),
             target_fqn: target.clone(),
             op_id: req.op_id.clone(),
@@ -76,6 +76,7 @@ async fn handle_inner(
             source_plane: payload.source_plane,
             source_ref: payload.source_ref,
         })
+        .await
         .map_err(store_error)?;
 
     crate::api::audit::record(

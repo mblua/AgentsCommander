@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::Future;
+use tokio_util::sync::CancellationToken;
 
 use crate::api::message_store::{LeasedMessage, MessageStore};
 use crate::phone::types::OutboxMessage;
@@ -32,14 +33,14 @@ impl Default for DispatcherConfig {
 pub fn start_dispatcher(
     store: Arc<MessageStore>,
     app: tauri::AppHandle,
-    shutdown: crate::shutdown::ShutdownSignal,
+    shutdown: CancellationToken,
     config: DispatcherConfig,
 ) -> tauri::async_runtime::JoinHandle<()> {
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(config.poll_interval);
         loop {
             tokio::select! {
-                _ = shutdown.token().cancelled() => {
+                _ = shutdown.cancelled() => {
                     log::info!("[api-dispatcher] shutdown signal received, stopping");
                     break;
                 }
@@ -66,7 +67,7 @@ pub fn start_dispatcher(
                         log::warn!("[api-dispatcher] dispatch tick failed: {}", e);
                     }
                     let cutoff = chrono::Utc::now() - config.retention;
-                    if let Err(e) = store.reap_terminal_before(cutoff) {
+                    if let Err(e) = store.reap_terminal_before_offloaded(cutoff).await {
                         log::warn!("[api-dispatcher] reaper failed: {}", e);
                     }
                 }
@@ -85,7 +86,14 @@ where
     F: FnMut(OutboxMessage) -> Fut,
     Fut: Future<Output = Result<(), String>>,
 {
-    let rows = store.lease_due(now, config.batch_limit, config.lease_for, "api-dispatcher")?;
+    let rows = store
+        .lease_due_offloaded(
+            now,
+            config.batch_limit,
+            config.lease_for,
+            "api-dispatcher".to_string(),
+        )
+        .await?;
     let mut processed = 0;
     for row in rows {
         let message = build_outbox_message(&row);
@@ -98,16 +106,20 @@ where
 
         match result {
             Ok(()) => {
-                store.mark_delivered(&row.message_id, chrono::Utc::now())?;
+                store
+                    .mark_delivered_offloaded(row.message_id.clone(), chrono::Utc::now())
+                    .await?;
                 crate::api::audit::record("-", &row.sender_fqn, "send-dispatch", "delivered");
             }
             Err(reason) => {
-                let status = store.mark_delivery_failed(
-                    &row.message_id,
-                    &reason,
-                    chrono::Utc::now(),
-                    config.max_attempts,
-                )?;
+                let status = store
+                    .mark_delivery_failed_offloaded(
+                        row.message_id.clone(),
+                        reason,
+                        chrono::Utc::now(),
+                        config.max_attempts,
+                    )
+                    .await?;
                 crate::api::audit::record("-", &row.sender_fqn, "send-dispatch", &status);
             }
         }
