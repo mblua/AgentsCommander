@@ -5,6 +5,7 @@ import { isTauri } from "../../shared/platform";
 import { extractWorkgroupName, computeTrailingText } from "../../shared/path-extractors";
 import { terminalStore } from "../../terminal/stores/terminal";
 import type { MainSidebarSide } from "../../shared/types";
+import WebServerMenu from "./WebServerMenu";
 import {
   DEFAULT_MAIN_SIDEBAR_WIDTH,
   MAIN_SIDEBAR_MAX_WIDTH,
@@ -27,12 +28,23 @@ const SIDEBAR_SIDE_PRESETS: Array<{ label: string; side: MainSidebarSide }> = [
 
 const Titlebar: Component = () => {
   const [layoutOpen, setLayoutOpen] = createSignal(false);
+  const [webServerOpen, setWebServerOpen] = createSignal(false);
   const [instanceLabel, setInstanceLabel] = createSignal("");
   const [currentSide, setCurrentSide] = createSignal<MainSidebarSide>("right");
   const wgName = createMemo(() => extractWorkgroupName(terminalStore.activeWorkingDirectory));
   const trailingText = createMemo(() =>
     computeTrailingText(terminalStore.activeWorkingDirectory, terminalStore.activeSessionName),
   );
+
+  const setLayoutMenuOpen = (nextOpen: boolean) => {
+    setLayoutOpen(nextOpen);
+    if (nextOpen) setWebServerOpen(false);
+  };
+
+  const setWebServerMenuOpen = (nextOpen: boolean) => {
+    setWebServerOpen(nextOpen);
+    if (nextOpen) setLayoutOpen(false);
+  };
 
   const handleMinimize = async () => {
     if (!isTauri) return;
@@ -56,7 +68,7 @@ const Titlebar: Component = () => {
   };
 
   const applyWidthPreset = async (width: number) => {
-    setLayoutOpen(false);
+    setLayoutMenuOpen(false);
     window.dispatchEvent(new CustomEvent("main-sidebar-width-change", { detail: { width } }));
     try {
       const settings = await SettingsAPI.get();
@@ -67,7 +79,7 @@ const Titlebar: Component = () => {
   };
 
   const applySidePreset = async (side: MainSidebarSide) => {
-    setLayoutOpen(false);
+    setLayoutMenuOpen(false);
     setCurrentSide(side);
     window.dispatchEvent(new CustomEvent("main-sidebar-side-change", { detail: { side } }));
     try {
@@ -79,8 +91,12 @@ const Titlebar: Component = () => {
   };
 
   const handleClickOutside = (e: MouseEvent) => {
-    if (layoutOpen() && !(e.target as HTMLElement).closest(".layout-dropdown-wrapper")) {
+    const target = e.target as HTMLElement;
+    if (layoutOpen() && !target.closest(".layout-dropdown-wrapper")) {
       setLayoutOpen(false);
+    }
+    if (webServerOpen() && !target.closest(".webserver-menu-wrapper")) {
+      setWebServerOpen(false);
     }
   };
 
@@ -124,16 +140,23 @@ const Titlebar: Component = () => {
         </Show>
       </div>
       <div class="titlebar-controls">
+        <Show when={isTauri}>
+          <WebServerMenu
+            open={webServerOpen()}
+            onOpenChange={setWebServerMenuOpen}
+          />
+        </Show>
         <div class="layout-dropdown-wrapper">
           <button
             class={`titlebar-btn titlebar-btn-layout ${layoutOpen() ? "open" : ""}`}
-            onClick={(e) => { e.stopPropagation(); setLayoutOpen(!layoutOpen()); }}
+            onClick={(e) => { e.stopPropagation(); setLayoutMenuOpen(!layoutOpen()); }}
             title="Sidebar layout"
+            data-ac-testid="titlebar.layout.button"
           >
             &#x2637;
           </button>
           {layoutOpen() && (
-            <div class="layout-dropdown">
+            <div class="layout-dropdown" data-ac-testid="titlebar.layout.menu">
               <div class="layout-section-label">Side</div>
               <div class="layout-segmented" role="group" aria-label="Sidebar side">
                 <For each={SIDEBAR_SIDE_PRESETS}>

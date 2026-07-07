@@ -109,6 +109,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const [settings, setSettings] = createStore<{ data: AppSettings | null }>({
     data: seededSettings,
   });
+  const [modalSeed, setModalSeed] = createSignal<AppSettings | null>(
+    cloneSettings(seededSettings),
+  );
   const [draftDirty, setDraftDirty] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [testingBot, setTestingBot] = createSignal<string | null>(null);
@@ -226,7 +229,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     ]);
     setWebServerRunning(wsRunning);
     if (!draftDirty()) {
+      const loadedSeed = cloneSettings(loaded);
       setSettings("data", cloneSettings(loaded));
+      setModalSeed(loadedSeed);
       setInitialInjectRtk(loaded.injectRtkHook);
       // Seed the comparison pair from the loaded agents (left primary + right
       // comparison slot). Only when still unset, so a user's pick isn't clobbered.
@@ -784,10 +789,13 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     try {
       const nextSettings = mergeSettingsForSavePreservingProjects(
         settings.data,
-        await SettingsAPI.get()
+        await SettingsAPI.get(),
+        modalSeed()
       );
       await SettingsAPI.saveDraft(nextSettings);
       setSettings("data", nextSettings);
+      setModalSeed(cloneSettings(nextSettings));
+      setDraftDirty(false);
       // #158 — push soundsEnabled into sound.ts synchronously so the gate
       // updates before the settingsStore.refresh() roundtrip below resolves.
       // Without this, a beep emitted between this point and the next load()
