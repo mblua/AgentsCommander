@@ -31,6 +31,9 @@ const HOME_MARKDOWN_MAX_BYTES: usize = 256 * 1024; // 256 KB
 const HOME_MARKDOWN_TIMEOUT_SECS: u64 = 5;
 const WEB_STATUS_CONNECT_TIMEOUT_MS: u64 = 500;
 const API_SERVER_STOP_TIMEOUT_MS: u64 = 5_000;
+// Default mirrors container API token TTL; manual GUI mints get a longer cap.
+const MINT_API_CLIENT_DEFAULT_TTL_HOURS: i64 = 24;
+const MINT_API_CLIENT_MAX_TTL_DAYS: i64 = 30;
 const MINT_API_CLIENT_NOTE: &str =
     "Store this token now; it is shown only once. The registry keeps only a hash.";
 
@@ -1224,11 +1227,13 @@ pub async fn mint_api_client(
     label: Option<String>,
     expires: Option<String>,
 ) -> Result<MintApiClientResponse, String> {
+    let settings = load_settings();
     let path = crate::config::config_dir()
         .ok_or_else(|| "Cannot resolve the host config directory".to_string())?
         .join(auth::REGISTRY_FILENAME);
     mint_api_client_with_path(
         &path,
+        &settings,
         root,
         scopes,
         label,
@@ -1242,6 +1247,7 @@ pub async fn mint_api_client(
 #[allow(clippy::too_many_arguments)]
 fn mint_api_client_with_path(
     path: &Path,
+    settings: &AppSettings,
     root: String,
     scopes: Vec<String>,
     label: Option<String>,
@@ -1250,9 +1256,15 @@ fn mint_api_client_with_path(
     secret: String,
     issued_at: String,
 ) -> Result<MintApiClientResponse, String> {
-    let bound_fqn = crate::config::teams::agent_fqn_from_path(&root);
-    if crate::config::root_agent::is_root_agent_path(&root)
-        || crate::config::root_agent::is_root_agent_target(&bound_fqn)
+    if crate::config::root_agent::is_root_agent_path(&root) {
+        return Err(
+            "Cannot mint an API client bound to the Root Agent; root-agent is API-excluded"
+                .to_string(),
+        );
+    }
+
+    let (bound_root, bound_fqn) = validate_mint_api_client_root(&root, settings)?;
+    if crate::config::root_agent::is_root_agent_target(&bound_fqn)
         || bound_fqn == crate::config::root_agent::ROOT_AGENT_SENDER
     {
         return Err(
@@ -1267,6 +1279,7 @@ fn mint_api_client_with_path(
         .filter(|s| !s.is_empty())
         .collect();
     auth::validate_scopes(&scopes)?;
+    let expires_at = bounded_mint_api_client_expiry(expires, &issued_at)?;
 
     let out = auth::mint(
         path,
@@ -1274,11 +1287,11 @@ fn mint_api_client_with_path(
             client_id,
             secret,
             label: label.unwrap_or_default(),
-            bound_root: root.clone(),
+            bound_root: bound_root.clone(),
             bound_fqn: bound_fqn.clone(),
             scopes: scopes.clone(),
             issued_at,
-            expires_at: expires.clone(),
+            expires_at: Some(expires_at.clone()),
         },
     )?;
 
@@ -1287,11 +1300,68 @@ fn mint_api_client_with_path(
         client_id: out.client_id,
         token: out.secret,
         bound_fqn,
-        bound_root: root,
+        bound_root,
         scopes,
-        expires_at: expires,
+        expires_at: Some(expires_at),
         note: MINT_API_CLIENT_NOTE.to_string(),
     })
+}
+
+fn validate_mint_api_client_root(
+    root: &str,
+    settings: &AppSettings,
+) -> Result<(String, String), String> {
+    let canonical = crate::config::coding_agent_profiles::validate_profile_selection_agent_path(
+        settings,
+        Path::new(root),
+    )
+    .map_err(|_| format!("unknown or invalid root: {}", root))?
+    .launch_path;
+
+    let is_replica = canonical
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.starts_with("__agent_"))
+        .unwrap_or(false);
+    if !is_replica {
+        return Err(format!("unknown or invalid root: {}", root));
+    }
+
+    let bound_root = crate::path_utils::path_to_string_without_windows_verbatim_prefix(&canonical);
+    let bound_fqn = crate::config::teams::agent_fqn_from_path(&bound_root);
+    Ok((bound_root, bound_fqn))
+}
+
+fn bounded_mint_api_client_expiry(
+    expires: Option<String>,
+    issued_at: &str,
+) -> Result<String, String> {
+    let issued_at = chrono::DateTime::parse_from_rfc3339(issued_at)
+        .map_err(|e| format!("Invalid issuedAt timestamp: {}", e))?
+        .with_timezone(&chrono::Utc);
+    let max_expires_at = issued_at + chrono::Duration::days(MINT_API_CLIENT_MAX_TTL_DAYS);
+
+    let expires_at = match expires {
+        Some(raw) => {
+            let trimmed = raw.trim();
+            let parsed = chrono::DateTime::parse_from_rfc3339(trimmed)
+                .map_err(|e| format!("Invalid expires value; expected RFC3339: {}", e))?
+                .with_timezone(&chrono::Utc);
+            if parsed <= issued_at {
+                return Err("expires must be after the issuedAt timestamp".to_string());
+            }
+            if parsed > max_expires_at {
+                return Err(format!(
+                    "expires exceeds maximum API client lifetime of {} days",
+                    MINT_API_CLIENT_MAX_TTL_DAYS
+                ));
+            }
+            parsed
+        }
+        None => issued_at + chrono::Duration::hours(MINT_API_CLIENT_DEFAULT_TTL_HOURS),
+    };
+
+    Ok(expires_at.to_rfc3339())
 }
 
 // Tauri command: State<> injections push us over clippy's 7-arg threshold.
@@ -1688,7 +1758,8 @@ mod tests {
         persist_coding_agent_env_settings_update, persist_coding_agent_profiles_update,
         persist_narrow_settings_update_with_saver, persist_protected_settings_update_with_saver,
         persist_settings_draft_update_with_saver, RtkSweepError, RtkSweepResult,
-        WebServerOwnershipState, MINT_API_CLIENT_NOTE,
+        WebServerOwnershipState, MINT_API_CLIENT_DEFAULT_TTL_HOURS, MINT_API_CLIENT_MAX_TTL_DAYS,
+        MINT_API_CLIENT_NOTE,
     };
     use crate::api::auth;
     use crate::config::settings::{
@@ -1699,7 +1770,8 @@ mod tests {
     use crate::WebServerHandle;
     use std::collections::BTreeMap;
     #[cfg(windows)]
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
+    use std::path::PathBuf;
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
@@ -1757,16 +1829,61 @@ mod tests {
         Arc::new(RwLock::new(settings))
     }
 
-    #[test]
-    fn mint_api_client_command_helper_returns_token_and_stores_hash_only() {
+    struct MintApiClientFixture {
+        _temp: tempfile::TempDir,
+        path: PathBuf,
+        project: PathBuf,
+        settings: AppSettings,
+        root: String,
+        expected_fqn: String,
+    }
+
+    fn mint_api_client_fixture() -> MintApiClientFixture {
         let temp = tempfile::tempdir().expect("tempdir");
-        let path = temp.path().join(auth::REGISTRY_FILENAME);
-        let root = "C:/repos/proj-a/.ac/wg-1-devs/__agent_alice".to_string();
+        let project = temp.path().join("proj-a");
+        let workspace = project.join(".ac");
+        let matrix = workspace.join("_agent_alice");
+        let replica = workspace.join("wg-1-devs").join("__agent_alice");
+        std::fs::create_dir_all(&matrix).expect("create matrix");
+        std::fs::create_dir_all(&replica).expect("create replica");
+        std::fs::write(
+            replica.join("config.json"),
+            r#"{"identity":"../../_agent_alice"}"#,
+        )
+        .expect("write replica config");
+
+        let root_path = std::fs::canonicalize(&replica).expect("canonical replica");
+        let root = crate::path_utils::path_to_string_without_windows_verbatim_prefix(&root_path);
         let expected_fqn = crate::config::teams::agent_fqn_from_path(&root);
+        let settings = AppSettings {
+            project_paths: vec![project.to_string_lossy().to_string()],
+            ..AppSettings::default()
+        };
+
+        MintApiClientFixture {
+            path: temp.path().join(auth::REGISTRY_FILENAME),
+            _temp: temp,
+            project,
+            settings,
+            root,
+            expected_fqn,
+        }
+    }
+
+    #[test]
+    fn mint_api_client_command_helper_returns_token_and_stores_hash_only_with_default_expiry() {
+        let fixture = mint_api_client_fixture();
+        let issued_at = "2026-01-01T00:00:00Z";
+        let expected_expires_at = (chrono::DateTime::parse_from_rfc3339(issued_at)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+            + chrono::Duration::hours(MINT_API_CLIENT_DEFAULT_TTL_HOURS))
+        .to_rfc3339();
 
         let response = mint_api_client_with_path(
-            &path,
-            root.clone(),
+            &fixture.path,
+            &fixture.settings,
+            fixture.root.clone(),
             vec![
                 " send ".to_string(),
                 "".to_string(),
@@ -1776,33 +1893,91 @@ mod tests {
             None,
             "client-1".to_string(),
             "plain-secret".to_string(),
-            "2026-01-01T00:00:00Z".to_string(),
+            issued_at.to_string(),
         )
         .expect("mint succeeds");
 
         assert_eq!(response.client_id, "client-1");
         assert_eq!(response.token, "plain-secret");
-        assert_eq!(response.bound_root, root);
-        assert_eq!(response.bound_fqn, expected_fqn);
+        assert_eq!(response.bound_root, fixture.root);
+        assert_eq!(response.bound_fqn, fixture.expected_fqn);
         assert_eq!(response.scopes, vec!["send", "list-peers-lean"]);
-        assert_eq!(response.expires_at, None);
+        assert_eq!(
+            response.expires_at.as_deref(),
+            Some(expected_expires_at.as_str())
+        );
         assert_eq!(response.note, MINT_API_CLIENT_NOTE);
 
-        let raw = std::fs::read_to_string(&path).expect("read registry");
+        let raw = std::fs::read_to_string(&fixture.path).expect("read registry");
         assert!(raw.contains("client-1"));
         assert!(raw.contains("sha256:"));
         assert!(!raw.contains("plain-secret"));
 
-        let registry = auth::list(&path);
+        let registry = auth::list(&fixture.path);
         assert_eq!(registry.clients.len(), 1);
         let client = &registry.clients[0];
         assert_eq!(client.client_id, "client-1");
         assert_eq!(client.label, "gui mint");
-        assert_eq!(client.bound_fqn, expected_fqn);
+        assert_eq!(client.bound_fqn, fixture.expected_fqn);
         assert_eq!(client.bound_root, response.bound_root);
         assert_eq!(client.scopes, response.scopes);
-        assert_eq!(client.expires_at, None);
+        assert_eq!(client.expires_at, response.expires_at);
         assert_ne!(client.token_hash, "plain-secret");
+    }
+
+    #[test]
+    fn mint_api_client_rejects_unknown_root() {
+        let fixture = mint_api_client_fixture();
+        let unknown_root = fixture
+            .project
+            .join(".ac")
+            .join("wg-1-devs")
+            .join("__agent_missing");
+
+        let err = mint_api_client_with_path(
+            &fixture.path,
+            &fixture.settings,
+            unknown_root.to_string_lossy().to_string(),
+            vec!["send".to_string()],
+            None,
+            None,
+            "client-1".to_string(),
+            "plain-secret".to_string(),
+            "2026-01-01T00:00:00Z".to_string(),
+        )
+        .expect_err("unknown root should fail");
+
+        assert!(err.contains("unknown or invalid root"), "{err}");
+        assert!(!fixture.path.exists());
+    }
+
+    #[test]
+    fn mint_api_client_rejects_expiry_beyond_max() {
+        let fixture = mint_api_client_fixture();
+        let issued_at = chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let over_max =
+            (issued_at + chrono::Duration::days(MINT_API_CLIENT_MAX_TTL_DAYS + 1)).to_rfc3339();
+
+        let err = mint_api_client_with_path(
+            &fixture.path,
+            &fixture.settings,
+            fixture.root,
+            vec!["send".to_string()],
+            None,
+            Some(over_max),
+            "client-1".to_string(),
+            "plain-secret".to_string(),
+            issued_at.to_rfc3339(),
+        )
+        .expect_err("over-max expiry should fail");
+
+        assert!(
+            err.contains("expires exceeds maximum API client lifetime"),
+            "{err}"
+        );
+        assert!(!fixture.path.exists());
     }
 
     #[test]
