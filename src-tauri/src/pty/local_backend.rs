@@ -9,6 +9,8 @@ use uuid::Uuid;
 use std::path::Path;
 #[cfg(windows)]
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(windows)]
+use std::time::Duration;
 
 use crate::errors::AppError;
 use crate::pty::backend::{BackendSpawnSpec, PtyBackend};
@@ -33,6 +35,17 @@ struct GitGuardEnv {
 
 #[cfg(windows)]
 static GIT_GUARD_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(windows)]
+const GIT_GUARD_PUBLISH_RETRY_DELAYS: &[Duration] = &[
+    Duration::from_millis(25),
+    Duration::from_millis(50),
+    Duration::from_millis(100),
+    Duration::from_millis(200),
+    Duration::from_millis(400),
+    Duration::from_millis(800),
+    Duration::from_millis(1600),
+];
 
 #[cfg(windows)]
 fn resolve_real_git_path() -> Option<String> {
@@ -188,15 +201,45 @@ fn write_git_guard_file_atomic(path: &Path, content: &[u8]) -> Result<(), String
     }
     drop(file);
 
-    if let Err(e) = crate::config::root_agent::atomic_replace_existing(&temp, path) {
-        let _ = std::fs::remove_file(&temp);
+    publish_git_guard_temp_with_retry(&temp, path, content)
+}
+
+#[cfg(windows)]
+fn publish_git_guard_temp_with_retry(
+    temp: &Path,
+    path: &Path,
+    content: &[u8],
+) -> Result<(), String> {
+    for attempt in 0..=GIT_GUARD_PUBLISH_RETRY_DELAYS.len() {
         if git_guard_file_matches(path, content) {
+            let _ = std::fs::remove_file(temp);
             return Ok(());
         }
-        return Err(e);
+
+        match crate::config::root_agent::atomic_replace_existing(temp, path) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                if git_guard_file_matches(path, content) {
+                    let _ = std::fs::remove_file(temp);
+                    return Ok(());
+                }
+
+                let Some(delay) = GIT_GUARD_PUBLISH_RETRY_DELAYS.get(attempt) else {
+                    let _ = std::fs::remove_file(temp);
+                    return Err(format!(
+                        "publish {} from {} failed after {} attempts: {}",
+                        path.display(),
+                        temp.display(),
+                        attempt + 1,
+                        e
+                    ));
+                };
+                std::thread::sleep(*delay);
+            }
+        }
     }
 
-    Ok(())
+    unreachable!("retry loop always returns on final attempt")
 }
 
 #[cfg(windows)]
@@ -211,6 +254,9 @@ fn git_guard_file_matches(path: &Path, content: &[u8]) -> bool {
 mod tests {
     use super::*;
     use std::fs;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::sync::{Arc, Barrier};
+    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
 
     fn assert_no_temp_files(dir: &Path) {
         for entry in fs::read_dir(dir).expect("read temp dir") {
@@ -251,6 +297,37 @@ mod tests {
 
         write_git_guard_file_if_changed(&path, "new").expect("replace changed file");
 
+        assert_eq!(fs::read_to_string(&path).expect("read file"), "new");
+        assert_no_temp_files(dir.path());
+    }
+
+    #[test]
+    fn git_guard_writer_retries_in_use_destination_until_released() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("git.cmd");
+        fs::write(&path, "old").expect("write fixture");
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&path)
+            .expect("open destination without delete sharing");
+        let barrier = Arc::new(Barrier::new(2));
+        let writer_barrier = Arc::clone(&barrier);
+        let writer_path = path.clone();
+
+        let writer = std::thread::spawn(move || {
+            writer_barrier.wait();
+            write_git_guard_file_if_changed(&writer_path, "new")
+        });
+
+        barrier.wait();
+        std::thread::sleep(Duration::from_millis(1000));
+        drop(held);
+
+        writer
+            .join()
+            .expect("writer thread")
+            .expect("retry should publish after held handle is released");
         assert_eq!(fs::read_to_string(&path).expect("read file"), "new");
         assert_no_temp_files(dir.path());
     }
