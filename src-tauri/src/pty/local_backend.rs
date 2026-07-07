@@ -210,7 +210,13 @@ fn publish_git_guard_temp_with_retry(
     path: &Path,
     content: &[u8],
 ) -> Result<(), String> {
-    for attempt in 0..=GIT_GUARD_PUBLISH_RETRY_DELAYS.len() {
+    let attempts = GIT_GUARD_PUBLISH_RETRY_DELAYS
+        .iter()
+        .copied()
+        .map(Some)
+        .chain(std::iter::once(None));
+
+    for (attempt, delay) in attempts.enumerate() {
         if git_guard_file_matches(path, content) {
             let _ = std::fs::remove_file(temp);
             return Ok(());
@@ -224,7 +230,7 @@ fn publish_git_guard_temp_with_retry(
                     return Ok(());
                 }
 
-                let Some(delay) = GIT_GUARD_PUBLISH_RETRY_DELAYS.get(attempt) else {
+                let Some(delay) = delay else {
                     let _ = std::fs::remove_file(temp);
                     return Err(format!(
                         "publish {} from {} failed after {} attempts: {}",
@@ -234,12 +240,12 @@ fn publish_git_guard_temp_with_retry(
                         e
                     ));
                 };
-                std::thread::sleep(*delay);
+                std::thread::sleep(delay);
             }
         }
     }
 
-    unreachable!("retry loop always returns on final attempt")
+    unreachable!("retry loop includes a final no-delay attempt")
 }
 
 #[cfg(windows)]
@@ -361,6 +367,16 @@ pub struct LocalProcessBackend {
     ptys: Arc<Mutex<HashMap<Uuid, PtyInstance>>>,
     fanout: SessionIoFanout,
     git_watcher: Arc<GitWatcher>,
+}
+
+impl Clone for LocalProcessBackend {
+    fn clone(&self) -> Self {
+        Self {
+            ptys: Arc::clone(&self.ptys),
+            fanout: self.fanout.clone(),
+            git_watcher: Arc::clone(&self.git_watcher),
+        }
+    }
 }
 
 impl LocalProcessBackend {
@@ -562,7 +578,12 @@ impl PtyBackend for LocalProcessBackend {
         &self,
         spec: BackendSpawnSpec,
     ) -> futures::future::BoxFuture<'_, Result<(), AppError>> {
-        Box::pin(async move { self.spawn_sync(spec) })
+        let backend = self.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || backend.spawn_sync(spec))
+                .await
+                .map_err(|e| AppError::Other(format!("local process spawn task failed: {e}")))?
+        })
     }
 
     fn write(&self, id: Uuid, data: &[u8]) -> Result<(), AppError> {
