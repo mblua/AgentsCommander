@@ -24,6 +24,7 @@ use crate::telegram::manager::OutputSenderMap;
 pub const TRANSPORT_PROTOCOL_VERSION: u32 = 1;
 pub const MAX_TRANSPORT_FRAME_BYTES: usize = 64 * 1024;
 const TRANSPORT_LOST_EXIT_CODE: i32 = 1;
+const CLEANUP_TASK_TIMEOUT: Duration = Duration::from_secs(10);
 
 type RouteRemover = Arc<dyn Fn(Uuid) + Send + Sync>;
 
@@ -580,12 +581,20 @@ impl ContainerTransportBackend {
             Ok(token) => token,
             Err(err) => {
                 if let Some(resources) = self.remove_session_state(id) {
-                    self.cleanup_removed_resources_blocking(resources);
+                    self.cleanup_removed_resources_offloaded(resources, "mint-failure")
+                        .await;
                 }
                 return Err(err);
             }
         };
-        self.install_api_client_id(id, token.client_id.clone())?;
+        if let Err(err) = self.install_api_client_id(id, token.client_id.clone()) {
+            token_manager.revoke(&token.client_id);
+            if let Some(resources) = self.remove_session_state(id) {
+                self.cleanup_removed_resources_offloaded(resources, "install-client-failure")
+                    .await;
+            }
+            return Err(err);
+        }
 
         let request = match build_start_request(
             id,
@@ -602,7 +611,8 @@ impl ContainerTransportBackend {
             Ok(request) => request,
             Err(err) => {
                 if let Some(resources) = self.remove_session_state(id) {
-                    self.cleanup_removed_resources_blocking(resources);
+                    self.cleanup_removed_resources_offloaded(resources, "build-request-failure")
+                        .await;
                 }
                 return Err(err);
             }
@@ -613,13 +623,15 @@ impl ContainerTransportBackend {
             Ok(Ok(handle)) => handle,
             Ok(Err(err)) => {
                 if let Some(resources) = self.remove_session_state(id) {
-                    self.cleanup_removed_resources_blocking(resources);
+                    self.cleanup_removed_resources_offloaded(resources, "runtime-start-failure")
+                        .await;
                 }
                 return Err(err);
             }
             Err(err) => {
                 if let Some(resources) = self.remove_session_state(id) {
-                    self.cleanup_removed_resources_blocking(resources);
+                    self.cleanup_removed_resources_offloaded(resources, "runtime-start-panic")
+                        .await;
                 }
                 return Err(AppError::Other(format!(
                     "container runtime start task failed: {err}"
@@ -632,7 +644,8 @@ impl ContainerTransportBackend {
                 api_client_id: Some(token.client_id),
                 logical_resource_slot: None,
             };
-            self.cleanup_removed_resources_blocking(resources);
+            self.cleanup_removed_resources_offloaded(resources, "install-runtime-failure")
+                .await;
             return Err(err);
         }
 
@@ -643,7 +656,8 @@ impl ContainerTransportBackend {
             Ok(_) if self.has_session(id) => Ok(()),
             _ => {
                 if let Some(resources) = self.remove_session_state(id) {
-                    self.cleanup_removed_resources_blocking(resources);
+                    self.cleanup_removed_resources_offloaded(resources, "handshake-timeout")
+                        .await;
                 }
                 Err(AppError::PtyError(format!(
                     "container bridge did not attach within {:?}",
@@ -691,6 +705,35 @@ impl ContainerTransportBackend {
                     "[container-transport] blocking stop failed for session {}: {}",
                     handle.session_id,
                     err
+                );
+            }
+        }
+    }
+
+    async fn cleanup_removed_resources_offloaded(
+        &self,
+        resources: RemovedSessionResources,
+        reason: &'static str,
+    ) {
+        let token_manager = self.token_manager.clone();
+        let runtime = self.runtime.clone();
+        let task = tokio::task::spawn_blocking(move || {
+            cleanup_removed_resources_inner(token_manager, runtime, resources, reason)
+        });
+        match tokio::time::timeout(CLEANUP_TASK_TIMEOUT, task).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                log::warn!(
+                    "[container-transport] {} cleanup task failed: {}",
+                    reason,
+                    err
+                );
+            }
+            Err(_) => {
+                log::warn!(
+                    "[container-transport] {} cleanup exceeded {:?}; continuing",
+                    reason,
+                    CLEANUP_TASK_TIMEOUT
                 );
             }
         }
@@ -822,6 +865,28 @@ impl ContainerTransportBackend {
             .unwrap()
             .get(&session_id)
             .cloned()
+    }
+}
+
+fn cleanup_removed_resources_inner(
+    token_manager: Option<ContainerApiTokenManager>,
+    runtime: Option<Arc<dyn ContainerRuntime>>,
+    resources: RemovedSessionResources,
+    reason: &'static str,
+) {
+    if let (Some(manager), Some(client_id)) = (token_manager, resources.api_client_id.clone()) {
+        manager.revoke(&client_id);
+    }
+    drop(resources.logical_resource_slot);
+    if let (Some(runtime), Some(handle)) = (runtime, resources.runtime_handle) {
+        if let Err(err) = runtime.stop(&handle, CONTAINER_STOP_TIMEOUT) {
+            log::warn!(
+                "[container-transport] {} stop failed for session {}: {}",
+                reason,
+                handle.session_id,
+                err
+            );
+        }
     }
 }
 
