@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AcWorkgroup, Session, WorkgroupGroupsConfig } from "../../shared/types";
 import { FakeTransport } from "../../shared/testing/fake-transport";
@@ -94,6 +95,14 @@ function scopedTarget<T extends Element>(root: ParentNode, testId: string): T {
   const element = root.querySelector<T>(`[data-ac-testid="${testId}"]`);
   if (!element) throw new Error(`Missing scoped element ${testId}`);
   return element;
+}
+
+function projectRail(projectFolder: string): HTMLElement {
+  return target(`workgroupGroups.rail.${projectFolder}`);
+}
+
+function railButton(projectFolder: string, buttonKey: string): HTMLElement {
+  return scopedTarget(projectRail(projectFolder), `workgroupGroups.button.${buttonKey}`);
 }
 
 function pointer(
@@ -234,6 +243,111 @@ describe("WorkgroupGroupRail", () => {
         expect(calls[0].args.path).toBe(projectPath);
         expect(calls[0].args.path).not.toBe("C:\\OtherProject");
       });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("highlights only the active project's selected group across project rails", async () => {
+    const fake = new FakeTransport();
+    fake.onInvoke("get_project_groups", (args) =>
+      args.path === projectPath
+        ? groupsConfig()
+        : groupsConfig({ groups: [{ id: "other", name: "Other", regex: exactGroupRegexForWorkgroup("wg-9-other-team") }] })
+    );
+
+    const rendered = renderWithFakeTransport(
+      () => <WorkgroupGroupRail projects={[project(), otherProject()]} />,
+      fake
+    );
+    try {
+      await waitFor(() => {
+        expect(railButton("Project", "ui")).not.toBeNull();
+        expect(railButton("OtherProject", "other")).not.toBeNull();
+      });
+
+      const selectedButtons = () =>
+        Array.from(document.querySelectorAll<HTMLElement>(".workgroup-group-rail-button.selected"));
+      const projectAll = railButton("Project", "all");
+      const otherAll = railButton("OtherProject", "all");
+
+      await waitFor(() => {
+        expect(projectAll.classList.contains("selected")).toBe(true);
+        expect(otherAll.classList.contains("selected")).toBe(false);
+        expect(selectedButtons()).toHaveLength(1);
+      });
+
+      click(otherAll);
+
+      await waitFor(() => {
+        expect(projectAll.classList.contains("selected")).toBe(false);
+        expect(otherAll.classList.contains("selected")).toBe(true);
+        expect(selectedButtons()).toHaveLength(1);
+      });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("remembers each project's selected group and shows it when the project becomes active again", async () => {
+    const fake = new FakeTransport();
+    fake.onInvoke("get_project_groups", (args) =>
+      args.path === projectPath
+        ? groupsConfig()
+        : groupsConfig({ groups: [{ id: "other", name: "Other", regex: exactGroupRegexForWorkgroup("wg-9-other-team") }] })
+    );
+
+    const rendered = renderWithFakeTransport(
+      () => <WorkgroupGroupRail projects={[project(), otherProject()]} />,
+      fake
+    );
+    try {
+      await waitFor(() => {
+        expect(railButton("Project", "ui")).not.toBeNull();
+        expect(railButton("OtherProject", "other")).not.toBeNull();
+      });
+      const projectUi = railButton("Project", "ui");
+      const otherGroup = railButton("OtherProject", "other");
+
+      click(projectUi);
+      await waitFor(() => expect(projectUi.classList.contains("selected")).toBe(true));
+
+      click(otherGroup);
+      await waitFor(() => {
+        expect(projectUi.classList.contains("selected")).toBe(false);
+        expect(otherGroup.classList.contains("selected")).toBe(true);
+      });
+
+      workgroupGroupsStore.setActiveProject(projectPath);
+      await waitFor(() => {
+        expect(projectUi.classList.contains("selected")).toBe(true);
+        expect(otherGroup.classList.contains("selected")).toBe(false);
+      });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("reconciles the active project when the active project is removed", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_project_groups", groupsConfig());
+    const [projects, setProjects] = createSignal<ProjectState[]>([project(), otherProject()]);
+
+    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={projects()} />, fake);
+    try {
+      await waitFor(() => expect(railButton("OtherProject", "all")).not.toBeNull());
+
+      click(railButton("OtherProject", "all"));
+      await waitFor(() => expect(workgroupGroupsStore.isActiveProject("C:\\OtherProject")).toBe(true));
+
+      setProjects([project()]);
+      await waitFor(() => {
+        expect(workgroupGroupsStore.isActiveProject(projectPath)).toBe(true);
+        expect(railButton("Project", "all").classList.contains("selected")).toBe(true);
+      });
+
+      setProjects([]);
+      await waitFor(() => expect(workgroupGroupsStore.activeProjectPath()).toBe(null));
     } finally {
       rendered.cleanup();
     }

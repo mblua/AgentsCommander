@@ -192,6 +192,7 @@ const ProjectRailSection: Component<{
     return result;
   });
   const selected = (button: GroupButton) => {
+    if (!workgroupGroupsStore.isActiveProject(props.project.path)) return false;
     const current = selection();
     if (current.kind !== button.selection.kind) return false;
     return current.kind !== "group" || button.selection.kind !== "group" || current.id === button.selection.id;
@@ -597,6 +598,10 @@ const ProjectRailSection: Component<{
 };
 
 const WorkgroupGroupRail: Component<WorkgroupGroupRailProps> = (props) => {
+  createEffect(() => {
+    workgroupGroupsStore.reconcileActiveProject(props.projects.map((project) => project.path));
+  });
+
   return (
     <aside class="workgroup-group-rail" data-ac-testid="workgroupGroups.rail">
       <For each={props.projects}>
