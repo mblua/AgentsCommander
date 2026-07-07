@@ -9,6 +9,7 @@
 //! truth; the in-memory copy is a cache keyed by mtime.
 
 use std::collections::{HashMap, VecDeque};
+use std::io::ErrorKind;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -83,6 +84,20 @@ impl Default for ApiClientRegistry {
     }
 }
 
+/// Diagnostic state from loading the host API client registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryLoadProblem {
+    pub status: &'static str,
+    pub message: String,
+}
+
+/// Registry plus any fail-closed load problem operators should see.
+#[derive(Debug, Clone)]
+pub struct RegistrySnapshot {
+    pub registry: ApiClientRegistry,
+    pub problem: Option<RegistryLoadProblem>,
+}
+
 /// SHA-256 the secret, formatted `"sha256:<lowercase-hex>"`.
 pub fn hash_token(secret: &str) -> String {
     let digest = Sha256::digest(secret.as_bytes());
@@ -119,19 +134,50 @@ pub fn is_expired(client: &ApiClient, now: chrono::DateTime<chrono::Utc>) -> boo
     }
 }
 
-/// Parse a registry from raw JSON, tolerating an absent/malformed file by
+/// Load the registry, tolerating an absent/malformed/unreadable file by
 /// returning an empty registry (fail-safe: no clients => everything 401).
-fn parse_registry(path: &Path) -> ApiClientRegistry {
+fn load_registry(path: &Path) -> RegistrySnapshot {
     match std::fs::read_to_string(path) {
-        Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|e| {
-            log::warn!(
-                "[api-auth] {} is malformed ({}); treating as empty registry",
+        Ok(raw) => match serde_json::from_str(&raw) {
+            Ok(registry) => RegistrySnapshot {
+                registry,
+                problem: None,
+            },
+            Err(e) => {
+                let message = format!("{} is malformed: {}", REGISTRY_FILENAME, e);
+                log::error!(
+                    "[api-auth] {} is malformed ({}); treating as empty registry",
+                    REGISTRY_FILENAME,
+                    e
+                );
+                RegistrySnapshot {
+                    registry: ApiClientRegistry::default(),
+                    problem: Some(RegistryLoadProblem {
+                        status: "malformed",
+                        message,
+                    }),
+                }
+            }
+        },
+        Err(e) if e.kind() == ErrorKind::NotFound => RegistrySnapshot {
+            registry: ApiClientRegistry::default(),
+            problem: None,
+        },
+        Err(e) => {
+            let message = format!("{} is unreadable: {}", REGISTRY_FILENAME, e);
+            log::error!(
+                "[api-auth] {} is unreadable ({}); treating as empty registry",
                 REGISTRY_FILENAME,
                 e
             );
-            ApiClientRegistry::default()
-        }),
-        Err(_) => ApiClientRegistry::default(),
+            RegistrySnapshot {
+                registry: ApiClientRegistry::default(),
+                problem: Some(RegistryLoadProblem {
+                    status: "unreadable",
+                    message,
+                }),
+            }
+        }
     }
 }
 
@@ -139,6 +185,7 @@ struct CacheInner {
     mtime: Option<SystemTime>,
     loaded: bool,
     registry: ApiClientRegistry,
+    problem: Option<RegistryLoadProblem>,
 }
 
 /// Read-through, mtime-gated registry cache. The source of truth is the file on
@@ -158,6 +205,7 @@ impl ApiClientStore {
                 mtime: None,
                 loaded: false,
                 registry: ApiClientRegistry::default(),
+                problem: None,
             }),
         }
     }
@@ -174,31 +222,36 @@ impl ApiClientStore {
 
     /// Return the current registry, reloading from disk only if the file's
     /// mtime changed since the last load (or it was never loaded).
-    fn current(&self) -> ApiClientRegistry {
+    fn current(&self) -> Result<RegistrySnapshot, ApiError> {
         let disk_mtime = std::fs::metadata(&self.path)
             .and_then(|m| m.modified())
             .ok();
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock().map_err(|_| {
+            ApiError::Internal("API auth registry cache lock is poisoned".to_string())
+        })?;
         if !cache.loaded || cache.mtime != disk_mtime {
-            cache.registry = parse_registry(&self.path);
+            let snapshot = load_registry(&self.path);
+            cache.registry = snapshot.registry;
+            cache.problem = snapshot.problem;
             cache.mtime = disk_mtime;
             cache.loaded = true;
         }
-        cache.registry.clone()
+        Ok(RegistrySnapshot {
+            registry: cache.registry.clone(),
+            problem: cache.problem.clone(),
+        })
     }
 
     /// Look up the client owning `presented` (read-through). Returns the client
     /// only if it matches, is not revoked, and is not expired. The hash compare
     /// is constant-time per candidate.
-    pub fn authenticate(&self, presented: &str) -> Option<ApiClient> {
-        let registry = self.current();
+    pub fn authenticate(&self, presented: &str) -> Result<Option<ApiClient>, ApiError> {
+        let registry = self.current()?.registry;
         let presented_hash = hash_token(presented);
         let now = chrono::Utc::now();
-        registry.clients.into_iter().find(|c| {
-            !c.revoked
-                && constant_time_eq(&c.token_hash, &presented_hash)
-                && !is_expired(c, now)
-        })
+        Ok(registry.clients.into_iter().find(|c| {
+            !c.revoked && constant_time_eq(&c.token_hash, &presented_hash) && !is_expired(c, now)
+        }))
     }
 }
 
@@ -282,7 +335,12 @@ pub fn revoke(path: &Path, client_id: &str) -> Result<bool, String> {
 
 /// List clients (secrets/hashes are the caller's concern to redact).
 pub fn list(path: &Path) -> ApiClientRegistry {
-    parse_registry(path)
+    load_registry(path).registry
+}
+
+/// List clients with registry load diagnostics for operator-facing commands.
+pub fn list_with_status(path: &Path) -> RegistrySnapshot {
+    load_registry(path)
 }
 
 /// Atomic read-modify-write of the whole typed registry, reusing the process-
@@ -351,7 +409,9 @@ impl FailedAuthLockout {
     }
 
     fn check_at(&self, ip: IpAddr, now: Instant) -> Result<(), ApiError> {
-        let map = self.inner.lock().unwrap();
+        let map = self.inner.lock().map_err(|_| {
+            ApiError::Internal("API failed-auth lockout lock is poisoned".to_string())
+        })?;
         if let Some(state) = map.get(&ip) {
             if let Some(until) = state.locked_until {
                 if until > now {
@@ -365,12 +425,14 @@ impl FailedAuthLockout {
     }
 
     /// Record a failed auth; may transition the source into a lockout.
-    pub fn record_failure(&self, ip: IpAddr) {
-        self.record_failure_at(ip, Instant::now());
+    pub fn record_failure(&self, ip: IpAddr) -> Result<(), ApiError> {
+        self.record_failure_at(ip, Instant::now())
     }
 
-    fn record_failure_at(&self, ip: IpAddr, now: Instant) {
-        let mut map = self.inner.lock().unwrap();
+    fn record_failure_at(&self, ip: IpAddr, now: Instant) -> Result<(), ApiError> {
+        let mut map = self.inner.lock().map_err(|_| {
+            ApiError::Internal("API failed-auth lockout lock is poisoned".to_string())
+        })?;
         let state = map.entry(ip).or_insert_with(|| SourceState {
             failures: VecDeque::new(),
             locked_until: None,
@@ -388,12 +450,16 @@ impl FailedAuthLockout {
             state.locked_until = Some(now + self.lockout);
             state.failures.clear();
         }
+        Ok(())
     }
 
     /// Clear a source's failure history after a successful auth.
-    pub fn record_success(&self, ip: IpAddr) {
-        let mut map = self.inner.lock().unwrap();
+    pub fn record_success(&self, ip: IpAddr) -> Result<(), ApiError> {
+        let mut map = self.inner.lock().map_err(|_| {
+            ApiError::Internal("API failed-auth lockout lock is poisoned".to_string())
+        })?;
         map.remove(&ip);
+        Ok(())
     }
 }
 
@@ -490,8 +556,8 @@ mod tests {
 
         // A fresh store (empty cache) reads through to disk on first auth.
         let store = ApiClientStore::new(path.clone());
-        assert!(store.authenticate("the-secret").is_some());
-        assert!(store.authenticate("wrong-secret").is_none());
+        assert!(store.authenticate("the-secret").unwrap().is_some());
+        assert!(store.authenticate("wrong-secret").unwrap().is_none());
     }
 
     #[test]
@@ -513,13 +579,13 @@ mod tests {
         )
         .unwrap();
         let store = ApiClientStore::new(path.clone());
-        assert!(store.authenticate("s").is_some());
+        assert!(store.authenticate("s").unwrap().is_some());
 
         // Revoke via the (separate-process-equivalent) file write.
         assert!(revoke(&path, "client-1").unwrap());
         // Read-through picks up the change (mtime advanced).
         assert!(
-            store.authenticate("s").is_none(),
+            store.authenticate("s").unwrap().is_none(),
             "revocation must take effect on the next read-through"
         );
     }
@@ -537,8 +603,37 @@ mod tests {
         };
         std::fs::write(&path, serde_json::to_string_pretty(&reg).unwrap()).unwrap();
         let store = ApiClientStore::new(path);
-        assert!(store.authenticate("revoked-tok").is_none());
-        assert!(store.authenticate("expired-tok").is_none());
+        assert!(store.authenticate("revoked-tok").unwrap().is_none());
+        assert!(store.authenticate("expired-tok").unwrap().is_none());
+    }
+
+    #[test]
+    fn malformed_registry_snapshot_is_fail_closed_and_visible() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(REGISTRY_FILENAME);
+        std::fs::write(&path, "{ invalid").unwrap();
+
+        let snapshot = list_with_status(&path);
+
+        assert!(snapshot.registry.clients.is_empty());
+        let problem = snapshot.problem.expect("malformed registry is reported");
+        assert_eq!(problem.status, "malformed");
+        assert!(problem.message.contains(REGISTRY_FILENAME), "{:?}", problem);
+    }
+
+    #[test]
+    fn poisoned_registry_cache_returns_internal_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(REGISTRY_FILENAME);
+        let store = ApiClientStore::new(path);
+
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = store.cache.lock().unwrap();
+            panic!("poison registry cache");
+        }));
+
+        let err = store.authenticate("anything").unwrap_err();
+        assert!(matches!(err, ApiError::Internal(_)));
     }
 
     #[test]
@@ -547,10 +642,10 @@ mod tests {
         let lock = FailedAuthLockout::new(3, Duration::from_secs(10), Duration::from_secs(60));
         let t0 = Instant::now();
         assert!(lock.check_at(ip, t0).is_ok());
-        lock.record_failure_at(ip, t0);
-        lock.record_failure_at(ip, t0);
+        lock.record_failure_at(ip, t0).unwrap();
+        lock.record_failure_at(ip, t0).unwrap();
         assert!(lock.check_at(ip, t0).is_ok(), "below threshold: allowed");
-        lock.record_failure_at(ip, t0);
+        lock.record_failure_at(ip, t0).unwrap();
         assert!(
             lock.check_at(ip, t0).is_err(),
             "at threshold: source is locked"
@@ -564,14 +659,32 @@ mod tests {
         let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
         let lock = FailedAuthLockout::new(3, Duration::from_secs(10), Duration::from_secs(60));
         let t0 = Instant::now();
-        lock.record_failure_at(ip, t0);
-        lock.record_failure_at(ip, t0);
-        lock.record_success(ip);
-        lock.record_failure_at(ip, t0);
-        lock.record_failure_at(ip, t0);
+        lock.record_failure_at(ip, t0).unwrap();
+        lock.record_failure_at(ip, t0).unwrap();
+        lock.record_success(ip).unwrap();
+        lock.record_failure_at(ip, t0).unwrap();
+        lock.record_failure_at(ip, t0).unwrap();
         assert!(
             lock.check_at(ip, t0).is_ok(),
             "success reset the counter, so 2 more failures stay below threshold"
         );
+    }
+
+    #[test]
+    fn poisoned_lockout_returns_internal_error() {
+        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let lock = FailedAuthLockout::default();
+
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = lock.inner.lock().unwrap();
+            panic!("poison lockout");
+        }));
+
+        let err = lock.check(ip).unwrap_err();
+        assert!(matches!(err, ApiError::Internal(_)));
+        let err = lock.record_failure(ip).unwrap_err();
+        assert!(matches!(err, ApiError::Internal(_)));
+        let err = lock.record_success(ip).unwrap_err();
+        assert!(matches!(err, ApiError::Internal(_)));
     }
 }
