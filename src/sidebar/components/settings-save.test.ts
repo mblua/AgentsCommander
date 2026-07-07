@@ -187,3 +187,76 @@ describe("mergeSettingsForSavePreservingProjects (#598 configSeed normalization)
     expect(merged.agents[0]?.configSeed).toEqual({ enabled: true, dest: ".claude" });
   });
 });
+
+describe("mergeSettingsForSavePreservingProjects webserver seed rebasing", () => {
+  it("rebases unchanged stale modal webserver fields from fresh settings", () => {
+    const modalSeed = settings({
+      webServerEnabled: false,
+      webServerPort: 8765,
+      webServerBind: "127.0.0.1",
+      npmUpdateNotificationsEnabled: true,
+    });
+    const draft = settings({
+      webServerEnabled: false,
+      webServerPort: 8765,
+      webServerBind: "127.0.0.1",
+      npmUpdateNotificationsEnabled: false,
+    });
+    const fresh = settings({
+      webServerEnabled: true,
+      webServerPort: 9000,
+      webServerBind: "0.0.0.0",
+      npmUpdateNotificationsEnabled: true,
+    });
+
+    const merged = mergeSettingsForSavePreservingProjects(draft, fresh, modalSeed);
+
+    expect(merged.webServerEnabled).toBe(true);
+    expect(merged.webServerPort).toBe(9000);
+    expect(merged.webServerBind).toBe("0.0.0.0");
+    expect(merged.npmUpdateNotificationsEnabled).toBe(false);
+  });
+
+  it("keeps an intentional modal edit to one webserver field while rebasing unchanged fields", () => {
+    const modalSeed = settings({
+      webServerEnabled: false,
+      webServerPort: 8765,
+      webServerBind: "127.0.0.1",
+    });
+    const draft = settings({
+      webServerEnabled: true,
+      webServerPort: 8765,
+      webServerBind: "127.0.0.1",
+    });
+    const fresh = settings({
+      webServerEnabled: false,
+      webServerPort: 9000,
+      webServerBind: "0.0.0.0",
+    });
+
+    const merged = mergeSettingsForSavePreservingProjects(draft, fresh, modalSeed);
+
+    expect(merged.webServerEnabled).toBe(true);
+    expect(merged.webServerPort).toBe(9000);
+    expect(merged.webServerBind).toBe("0.0.0.0");
+  });
+
+  it("keeps two-argument behavior for backwards-compatible callers", () => {
+    const draft = settings({
+      webServerEnabled: false,
+      webServerPort: 8765,
+      webServerBind: "127.0.0.1",
+    });
+    const fresh = settings({
+      webServerEnabled: true,
+      webServerPort: 9000,
+      webServerBind: "0.0.0.0",
+    });
+
+    const merged = mergeSettingsForSavePreservingProjects(draft, fresh);
+
+    expect(merged.webServerEnabled).toBe(false);
+    expect(merged.webServerPort).toBe(8765);
+    expect(merged.webServerBind).toBe("127.0.0.1");
+  });
+});

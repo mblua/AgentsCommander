@@ -60,7 +60,8 @@ import type {
   ScreenshotCaptureFailedEvent,
   ScreenshotHotkeyStatus,
   WorkgroupGroupsConfig,
-  NonStopReport
+  NonStopReport,
+  WebServerOwnedStatus
 } from "./types";
 
 export interface SessionRepoInput {
@@ -294,6 +295,8 @@ export const SettingsAPI = {
   startApiServer: () => transport.invoke<boolean>("start_api_server"),
   stopApiServer: () => transport.invoke<boolean>("stop_api_server"),
   apiServerStatus: () => transport.invoke<boolean>("api_server_status"),
+  getWebServerOwnedStatus: () =>
+    transport.invoke<WebServerOwnedStatus>("get_web_server_owned_status"),
   // Narrow setters hold the SettingsState write lock through save_settings on
   // the Rust side, eliminating the IPC-level read-modify-write race that a
   // get+update round-trip would create against a concurrent update_settings

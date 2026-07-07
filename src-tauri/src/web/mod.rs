@@ -36,7 +36,7 @@ struct AppState {
 // Wired by a single setup() call with all shared state already in scope; an
 // args struct would just rename the same fields.
 #[allow(clippy::too_many_arguments)]
-pub fn start_server(
+pub async fn start_server(
     bind: String,
     port: u16,
     web_token: Arc<WebAccessToken>,
@@ -46,7 +46,7 @@ pub fn start_server(
     broadcaster: WsBroadcaster,
     app_handle: tauri::AppHandle,
     shutdown: crate::shutdown::ShutdownSignal,
-) -> tauri::async_runtime::JoinHandle<()> {
+) -> Result<tauri::async_runtime::JoinHandle<()>, String> {
     // Resolve dist path BEFORE moving app_handle into WsState
     let dist_path = resolve_dist_path(&app_handle);
 
@@ -91,28 +91,30 @@ pub fn start_server(
         }
     }
 
+    let addr: SocketAddr = format!("{}:{}", bind, port)
+        .parse()
+        .map_err(|e| format!("Invalid web server bind address {}:{}: {}", bind, port, e))?;
+
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|e| format!("Failed to bind web server on {}: {}", addr, e))?;
+
+    log::info!("[web-server] Listening on http://{}", addr);
+    println!("[web-server] Listening on http://{}", addr);
+
     let handle = tauri::async_runtime::spawn(async move {
-        let addr: SocketAddr = format!("{}:{}", bind, port)
-            .parse()
-            .expect("Invalid bind address");
-
-        log::info!("[web-server] Listening on http://{}", addr);
-        println!("[web-server] Listening on http://{}", addr);
-
-        let listener = tokio::net::TcpListener::bind(addr)
-            .await
-            .expect("Failed to bind web server");
-
-        axum::serve(listener, app)
+        if let Err(e) = axum::serve(listener, app)
             .with_graceful_shutdown(async move {
                 shutdown.token().cancelled().await;
                 log::info!("[web-server] Shutdown signal received, stopping");
             })
             .await
-            .expect("Web server error");
+        {
+            log::error!("[web-server] server error: {}", e);
+        }
     });
 
-    handle
+    Ok(handle)
 }
 
 /// WebSocket upgrade handler with token validation.
