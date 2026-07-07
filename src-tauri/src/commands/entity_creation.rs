@@ -1158,10 +1158,14 @@ fn collect_agent_delete_plan(base: &Path, agent_path: &Path) -> Result<AgentDele
     }
 
     targets.sort_by(|a, b| a.original_key.cmp(&b.original_key));
-    let target_keys = targets
-        .iter()
-        .map(|target| target.original_key.clone())
-        .collect();
+    let mut target_keys = Vec::new();
+    for target in &targets {
+        for key in target_keys_for_delete(&target.original_path) {
+            if !target_keys.contains(&key) {
+                target_keys.push(key);
+            }
+        }
+    }
 
     Ok(AgentDeletePlan {
         agent_name,
@@ -2932,10 +2936,24 @@ async fn ensure_no_live_sessions_under_manager(
 
 fn path_key_for_delete(path: &Path) -> String {
     let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let text = crate::path_utils::path_to_string_without_windows_verbatim_prefix(&resolved);
+    path_key_for_delete_without_canonicalize(&resolved)
+}
+
+fn path_key_for_delete_without_canonicalize(path: &Path) -> String {
+    let text = crate::path_utils::path_to_string_without_windows_verbatim_prefix(path);
     text.replace('\\', "/")
         .trim_end_matches('/')
         .to_ascii_lowercase()
+}
+
+fn target_keys_for_delete(path: &Path) -> Vec<String> {
+    let canonical_key = path_key_for_delete(path);
+    let raw_key = path_key_for_delete_without_canonicalize(path);
+    if canonical_key == raw_key {
+        vec![canonical_key]
+    } else {
+        vec![canonical_key, raw_key]
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -4352,10 +4370,14 @@ mod tests {
     #[tokio::test]
     async fn delete_agent_post_stage_live_session_recheck_rolls_back() {
         let tmp = create_test_workspace();
-        let base = test_base(&tmp);
-        let agent_dir = create_test_agent(&base, "dev-rust", "Dev Rust");
+        let real_base = test_base(&tmp);
+        let agent_dir = create_test_agent(&real_base, "dev-rust", "Dev Rust");
+        let marker = real_base.join("marker");
+        std::fs::create_dir_all(&marker).expect("create marker");
+        let base = marker.join("..");
+        let selected_agent_path = base.join("_agent_dev-rust");
         let (config_path, before_config) = write_team_value(
-            &base,
+            &real_base,
             "dev-team",
             serde_json::json!({
                 "agents": ["_agent_dev-rust"],
@@ -4365,7 +4387,7 @@ mod tests {
         );
         let settings = settings_state(AppSettings::default());
         let manager = test_manager();
-        let plan = collect_agent_delete_plan(&base, &agent_dir).expect("collect plan");
+        let plan = collect_agent_delete_plan(&base, &selected_agent_path).expect("collect plan");
         preflight_agent_delete(&plan, &manager)
             .await
             .expect("preflight");
@@ -4376,7 +4398,12 @@ mod tests {
             .await
             .expect("stage");
         assert!(!agent_dir.exists());
-        add_live_session(&manager, &agent_dir).await;
+        let post_stage_fallback_key = path_key_for_delete(&selected_agent_path);
+        assert!(
+            plan.target_keys.contains(&post_stage_fallback_key),
+            "post-stage recheck must use the pre-stage lexical target key"
+        );
+        add_live_session(&manager, &selected_agent_path).await;
 
         let err = ensure_no_live_sessions_under_target_keys(
             &plan.target_keys,
