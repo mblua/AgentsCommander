@@ -269,6 +269,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::permissions_set_readonly_false)]
     #[test]
     fn git_guard_writer_skips_unchanged_readonly_file() {
         let dir = tempfile::tempdir().expect("tempdir");
