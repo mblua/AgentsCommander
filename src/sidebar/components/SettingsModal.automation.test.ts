@@ -1290,6 +1290,48 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
+  it("preserves fresh titlebar webserver changes when saving a stale modal draft", async () => {
+    const modalSeed = settings({
+      webServerEnabled: false,
+      webServerPort: 8765,
+      webServerBind: "127.0.0.1",
+      npmUpdateNotificationsEnabled: true,
+    });
+    const freshAfterTitlebarChange = settings({
+      webServerEnabled: true,
+      webServerPort: 9000,
+      webServerBind: "127.0.0.1",
+      npmUpdateNotificationsEnabled: true,
+    });
+    vi.mocked(SettingsAPI.get)
+      .mockResolvedValueOnce(modalSeed)
+      .mockResolvedValueOnce(freshAfterTitlebarChange);
+
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    const checkbox = byTestId<HTMLInputElement>("settings.general.npmUpdateNotificationsEnabled");
+    checkbox.checked = false;
+    checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.webServerEnabled).toBe(true);
+    expect(saved?.webServerPort).toBe(9000);
+    expect(saved?.webServerBind).toBe("127.0.0.1");
+    expect(saved?.npmUpdateNotificationsEnabled).toBe(false);
+
+    dispose();
+  });
+
   it("round-trips autoSelfClearEnabled through the General auto-self-clear checkbox (#640)", async () => {
     const root = document.createElement("div");
     document.body.append(root);
