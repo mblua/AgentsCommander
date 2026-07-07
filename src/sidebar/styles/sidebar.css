@@ -3055,11 +3055,6 @@ html.light-theme .settings-hint-warning {
   }
 }
 
-.workgroup-group-rail-button.edit {
-  margin-top: 8px;
-  color: var(--sidebar-accent);
-}
-
 /* #746 — working indicator on the counter line. Reuses the session-card
    .session-item-status.running circle; inline-block so the 8px width/height
    apply in the button's pre-line text flow (never before the name, which
