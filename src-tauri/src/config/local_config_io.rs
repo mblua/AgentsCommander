@@ -77,6 +77,48 @@ where
     Ok(root)
 }
 
+pub fn write_file_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    write_file_atomic_with_publish(path, bytes, publish_temp_config)
+}
+
+fn write_file_atomic_with_publish<P>(path: &Path, bytes: &[u8], publish: P) -> Result<(), String>
+where
+    P: FnOnce(&Path, &Path) -> Result<(), String>,
+{
+    let _guard = local_config_write_lock()
+        .lock()
+        .map_err(|_| "Local config write lock is poisoned".to_string())?;
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("Local config {} has no parent directory", path.display()))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
+    let tmp_path = temp_config_path(path);
+
+    let write_result = (|| -> Result<(), String> {
+        let mut file = std::fs::File::create(&tmp_path)
+            .map_err(|e| format!("Failed to create temp config {}: {}", tmp_path.display(), e))?;
+        file.write_all(bytes)
+            .map_err(|e| format!("Failed to write temp config {}: {}", tmp_path.display(), e))?;
+        file.flush()
+            .map_err(|e| format!("Failed to flush temp config {}: {}", tmp_path.display(), e))?;
+        file.sync_all()
+            .map_err(|e| format!("Failed to sync temp config {}: {}", tmp_path.display(), e))
+    })();
+    if let Err(e) = write_result {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+
+    if let Err(e) = publish(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+
+    Ok(())
+}
+
 fn temp_config_path(path: &Path) -> PathBuf {
     let file_name = path
         .file_name()
@@ -289,7 +331,10 @@ fn publish_temp_config(tmp_path: &Path, path: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_publish_error, is_transient_publish_error, update_config_json_object};
+    use super::{
+        format_publish_error, is_transient_publish_error, update_config_json_object,
+        write_file_atomic_with_publish,
+    };
     use std::collections::HashSet;
     use std::path::{Path, PathBuf};
 
@@ -338,6 +383,27 @@ mod tests {
 
         assert!(err.contains("Failed to parse"), "{err}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ invalid");
+    }
+
+    #[test]
+    fn write_file_atomic_keeps_original_when_publish_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.json");
+        std::fs::write(&path, b"before").unwrap();
+
+        let err = write_file_atomic_with_publish(&path, b"after", |_tmp, _path| {
+            Err("forced publish failure".to_string())
+        })
+        .unwrap_err();
+
+        assert!(err.contains("forced publish failure"), "{err}");
+        assert_eq!(std::fs::read(&path).unwrap(), b"before");
+        let tmp_entries = std::fs::read_dir(temp.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect::<Vec<_>>();
+        assert!(tmp_entries.is_empty(), "temp files left behind");
     }
 
     #[test]

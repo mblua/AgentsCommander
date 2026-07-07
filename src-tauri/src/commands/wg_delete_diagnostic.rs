@@ -138,19 +138,19 @@ fn diagnostic_error(message: impl Into<String>) -> DiagnosticError {
 
 /// Top-level diagnostic. Always returns a `BlockerReport`; on non-Windows the body is empty
 /// and `diagnostic_available = false`.
-pub async fn diagnose_blockers(
-    wg_dir: &Path,
-    workgroup_name: &str,
+pub async fn diagnose_delete_root_blockers(
+    root_dir: &Path,
+    display_name: &str,
     raw_os_error: &str,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
 ) -> BlockerReport {
     log::info!(
-        "[wg_delete_diagnostic] starting blocker scan for workgroup '{}'",
-        workgroup_name
+        "[wg_delete_diagnostic] starting blocker scan for delete root '{}'",
+        display_name
     );
-    let canonical_wg = canonicalize_for_compare(wg_dir);
+    let canonical_root = canonicalize_for_compare(root_dir);
 
-    let ac_scan = scan_ac_sessions(&canonical_wg, session_mgr).await;
+    let ac_scan = scan_ac_sessions(&canonical_root, session_mgr).await;
 
     // The Windows scan is fully synchronous (FFI + file-tree walk). We expect ~1 s
     // wall-time post-failure; running it on the current Tokio worker would block
@@ -160,8 +160,8 @@ pub async fn diagnose_blockers(
     // matches the FFI-error branch.
     #[cfg(windows)]
     let external_scan = {
-        let wg_for_scan = canonical_wg.clone();
-        match tokio::task::spawn_blocking(move || scan_external_processes_windows(&wg_for_scan))
+        let root_for_scan = canonical_root.clone();
+        match tokio::task::spawn_blocking(move || scan_external_processes_windows(&root_for_scan))
             .await
         {
             Ok(scan) => scan,
@@ -185,7 +185,7 @@ pub async fn diagnose_blockers(
 
     #[cfg(not(windows))]
     let external_scan = {
-        let _ = canonical_wg;
+        let _ = canonical_root;
         ExternalProcessScan {
             processes: Vec::new(),
             restart_manager_available: false,
@@ -195,7 +195,7 @@ pub async fn diagnose_blockers(
     };
 
     let report = build_blocker_report(
-        workgroup_name,
+        display_name,
         detect_platform(),
         raw_os_error,
         ac_scan,
@@ -217,6 +217,15 @@ pub async fn diagnose_blockers(
     );
 
     report
+}
+
+pub async fn diagnose_blockers(
+    wg_dir: &Path,
+    workgroup_name: &str,
+    raw_os_error: &str,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+) -> BlockerReport {
+    diagnose_delete_root_blockers(wg_dir, workgroup_name, raw_os_error, session_mgr).await
 }
 
 fn build_blocker_report(
