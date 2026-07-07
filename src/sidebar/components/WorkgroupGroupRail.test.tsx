@@ -4,6 +4,7 @@ import type { AcWorkgroup, Session, WorkgroupGroupsConfig } from "../../shared/t
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
   click,
+  contextMenu,
   input,
   renderWithFakeTransport,
   resetUiStoresForTests,
@@ -149,6 +150,13 @@ function railDots(): string[] {
   ).map((dot) => dot.dataset.acTestid!.replace("workgroupGroups.dot.", ""));
 }
 
+async function openGroupsEditorFrom(el: Element): Promise<void> {
+  contextMenu(el);
+  await waitFor(() => expect(target("workgroupGroups.contextMenu").textContent).toContain("Edit"));
+  click(target("workgroupGroups.contextMenu.edit"));
+  await waitFor(() => expect(target("workgroupGroups.modal")).not.toBeNull());
+}
+
 /** A session that makes the given workgroup "working" (running dot class). */
 function replicaSession(wgName: string, overrides: Partial<Session> = {}): Session {
   return session({
@@ -172,6 +180,65 @@ describe("WorkgroupGroupRail", () => {
     vi.restoreAllMocks();
   });
 
+  it("opens the project-scoped groups editor from the single-project label context menu", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_project_groups", groupsConfig());
+    fake.onInvoke("update_project_groups", (args) => args.config);
+
+    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    try {
+      await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
+
+      expect(target("workgroupGroups.projectLabel.Project").textContent).toBe("Project");
+      expect(document.querySelector('[data-ac-testid="workgroupGroups.edit"]')).toBeNull();
+
+      await openGroupsEditorFrom(target("workgroupGroups.projectLabel.Project"));
+      changeCheckbox(target<HTMLInputElement>("workgroupGroups.toggle.showUngrouped"), false);
+      click(target("workgroupGroups.save"));
+
+      await waitFor(() => {
+        const call = fake.lastCall("update_project_groups");
+        expect(call?.args.path).toBe(projectPath);
+        expect(call?.args.config).toMatchObject({ showUngrouped: false });
+      });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("keeps group context-menu edits isolated to the right-clicked project", async () => {
+    const fake = new FakeTransport();
+    fake.onInvoke("get_project_groups", (args) =>
+      args.path === projectPath
+        ? groupsConfig()
+        : groupsConfig({ groups: [{ id: "other", name: "Other", regex: exactGroupRegexForWorkgroup("wg-9-other-team") }] })
+    );
+    fake.onInvoke("update_project_groups", (args) => args.config);
+
+    const rendered = renderWithFakeTransport(
+      () => <WorkgroupGroupRail projects={[project(), otherProject()]} />,
+      fake
+    );
+    try {
+      await waitFor(() => expect(target("workgroupGroups.rail.OtherProject")).not.toBeNull());
+      const sourceRail = target<HTMLElement>("workgroupGroups.rail.Project");
+      const ui = scopedTarget<HTMLElement>(sourceRail, "workgroupGroups.button.ui");
+
+      await openGroupsEditorFrom(ui);
+      changeCheckbox(target<HTMLInputElement>("workgroupGroups.toggle.showUngrouped"), false);
+      click(target("workgroupGroups.save"));
+
+      await waitFor(() => {
+        const calls = fake.callsFor("update_project_groups");
+        expect(calls).toHaveLength(1);
+        expect(calls[0].args.path).toBe(projectPath);
+        expect(calls[0].args.path).not.toBe("C:\\OtherProject");
+      });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
   it("keeps All, All plus Ungrouped, and Ungrouped-only reachable while blocking none", async () => {
     const fake = new FakeTransport();
     fake.resolve("get_project_groups", groupsConfig());
@@ -181,7 +248,7 @@ describe("WorkgroupGroupRail", () => {
     try {
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
 
-      click(target("workgroupGroups.edit"));
+      await openGroupsEditorFrom(target("workgroupGroups.button.all"));
       changeCheckbox(target<HTMLInputElement>("workgroupGroups.toggle.showUngrouped"), false);
       click(target("workgroupGroups.save"));
 
@@ -193,7 +260,7 @@ describe("WorkgroupGroupRail", () => {
       );
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ui", "rust"]));
 
-      click(target("workgroupGroups.edit"));
+      await openGroupsEditorFrom(target("workgroupGroups.button.all"));
       changeCheckbox(target<HTMLInputElement>("workgroupGroups.toggle.showUngrouped"), true);
       changeCheckbox(target<HTMLInputElement>("workgroupGroups.toggle.showAll"), false);
       click(target("workgroupGroups.save"));
@@ -206,7 +273,7 @@ describe("WorkgroupGroupRail", () => {
       );
       await waitFor(() => expect(railButtonOrder()).toEqual(["ungrouped", "ui", "rust"]));
 
-      click(target("workgroupGroups.edit"));
+      await openGroupsEditorFrom(target("workgroupGroups.button.ungrouped"));
       changeCheckbox(target<HTMLInputElement>("workgroupGroups.toggle.showUngrouped"), false);
       await waitFor(() =>
         expect(target<HTMLInputElement>("workgroupGroups.toggle.showUngrouped").checked).toBe(true)
@@ -314,7 +381,7 @@ describe("WorkgroupGroupRail", () => {
     try {
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
 
-      click(target("workgroupGroups.edit"));
+      await openGroupsEditorFrom(target("workgroupGroups.button.ui"));
       click(target("workgroupGroups.add"));
 
       let added!: HTMLInputElement;
