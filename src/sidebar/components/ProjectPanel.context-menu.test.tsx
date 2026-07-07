@@ -15,6 +15,7 @@ import {
 import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import type { AcDiscoveryResult, Session } from "../../shared/types";
+import { automationIdPart } from "./replica-repo-badges";
 
 // Issue #545: gray (never launched) and red (exited) replicas could not open a
 // right-click menu, blocking the Coding Agent selector and the clear-task broom
@@ -179,6 +180,22 @@ function findAgentRow(root: ParentNode, label: string): HTMLElement {
   );
   if (!el) throw new Error(`Agent row not found: ${label}`);
   return el;
+}
+
+function findAgentsHeader(root: ParentNode): HTMLElement {
+  const el = Array.from(root.querySelectorAll<HTMLElement>(".ac-wg-header")).find((row) =>
+    row.textContent?.includes("Agents")
+  );
+  if (!el) throw new Error("Agents header not found");
+  return el;
+}
+
+function findExactMenuButton(menu: HTMLElement, label: string): HTMLButtonElement | null {
+  return (
+    Array.from(menu.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+      (button.textContent ?? "").trim() === label
+    ) ?? null
+  );
 }
 
 describe("ProjectPanel replica context menu — gray/red (#545)", () => {
@@ -565,6 +582,228 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       expect(call).toBeDefined();
       expect(call!.args.path).toBe(originAgentPath);
     });
+  });
+
+  it("keeps the AGENTS header menu category-only", async () => {
+    await setupPanel(
+      [],
+      discovery({
+        agents: [
+          {
+            name: "dev-docs",
+            path: originAgentPath,
+            roleExists: true,
+          },
+        ],
+      }),
+      "dev-docs"
+    );
+
+    contextMenu(findAgentsHeader(rendered!.root));
+
+    await waitFor(() => {
+      const menu = replicaMenu();
+      expect(menu).not.toBeNull();
+      expect(menu!.textContent).toContain("New Agent");
+      expect(findExactMenuButton(menu!, "Delete")).toBeNull();
+      expect(menu!.textContent).not.toContain("Delete Agent");
+    });
+  });
+
+  it("shows a trash Delete action on an offline origin agent row", async () => {
+    await setupPanel(
+      [],
+      discovery({
+        agents: [
+          {
+            name: "dev-docs",
+            path: originAgentPath,
+            roleExists: true,
+          },
+        ],
+      }),
+      "dev-docs"
+    );
+
+    contextMenu(findAgentRow(rendered!.root, "dev-docs"));
+
+    await waitFor(() => {
+      const menu = replicaMenu();
+      expect(menu).not.toBeNull();
+      const action = findExactMenuButton(menu!, "Delete");
+      expect(action).not.toBeNull();
+      expect(action!.querySelector(".session-context-trash-icon")).not.toBeNull();
+      expect(action!.getAttribute("data-ac-role")).toBe("menuitem");
+      expect(action!.getAttribute("data-ac-testid")).toBe(
+        `agent.action.delete.${automationIdPart(originAgentPath)}`
+      );
+      expect(menu!.textContent).not.toContain("Delete Agent");
+    });
+  });
+
+  it("opens and cancels the offline origin agent delete modal without invoking delete", async () => {
+    const fake = await setupPanel(
+      [],
+      discovery({
+        agents: [
+          {
+            name: "dev-docs",
+            path: originAgentPath,
+            roleExists: true,
+          },
+        ],
+      }),
+      "dev-docs"
+    );
+
+    contextMenu(findAgentRow(rendered!.root, "dev-docs"));
+    await waitFor(() => expect(replicaMenu()).not.toBeNull());
+    click(findExactMenuButton(replicaMenu()!, "Delete")!);
+
+    const dialogId = `agent.delete.dialog.${automationIdPart(originAgentPath)}`;
+    const cancelId = `agent.delete.cancel.${automationIdPart(originAgentPath)}`;
+    await waitFor(() => expect(document.querySelector(`[data-ac-testid="${dialogId}"]`)).not.toBeNull());
+    expect(document.body.textContent).toContain("workgroup replicas");
+
+    click(document.querySelector(`[data-ac-testid="${cancelId}"]`)!);
+
+    await waitFor(() => expect(document.querySelector(`[data-ac-testid="${dialogId}"]`)).toBeNull());
+    expect(fake.callsFor("delete_agent_matrix")).toHaveLength(0);
+  });
+
+  it("confirms offline origin agent delete with an agentPath payload and reloads the project", async () => {
+    const fake = await setupPanel(
+      [],
+      discovery({
+        agents: [
+          {
+            name: "dev-docs",
+            path: originAgentPath,
+            roleExists: true,
+          },
+        ],
+      }),
+      "dev-docs"
+    );
+    fake.resolve("delete_agent_matrix", null);
+    const initialDiscoveryCalls = fake.callsFor("discover_project").length;
+
+    contextMenu(findAgentRow(rendered!.root, "dev-docs"));
+    await waitFor(() => expect(replicaMenu()).not.toBeNull());
+    click(findExactMenuButton(replicaMenu()!, "Delete")!);
+
+    const confirmId = `agent.delete.confirm.${automationIdPart(originAgentPath)}`;
+    await waitFor(() => expect(document.querySelector(`[data-ac-testid="${confirmId}"]`)).not.toBeNull());
+    click(document.querySelector(`[data-ac-testid="${confirmId}"]`)!);
+
+    await waitFor(() => expect(fake.callsFor("delete_agent_matrix")).toHaveLength(1));
+    expect(fake.callsFor("delete_agent_matrix")[0].args).toEqual({
+      projectPath,
+      agentPath: originAgentPath,
+    });
+    await waitFor(() => expect(fake.callsFor("discover_project").length).toBeGreaterThan(initialDiscoveryCalls));
+  });
+
+  it("surfaces parsed BLOCKERS details when offline origin agent delete is blocked", async () => {
+    const fake = await setupPanel(
+      [],
+      discovery({
+        agents: [
+          {
+            name: "dev-docs",
+            path: originAgentPath,
+            roleExists: true,
+          },
+        ],
+      }),
+      "dev-docs"
+    );
+    fake.onInvoke("delete_agent_matrix", () => {
+      throw `BLOCKERS:${JSON.stringify({
+        workgroup: "agent dev-docs",
+        platform: "windows",
+        diagnosticAvailable: true,
+        rawOsError: "sharing violation",
+        sessions: [],
+        processes: [],
+        liveSessions: [
+          {
+            sessionId: "agent-session",
+            agentName: "dev-docs",
+            cwd: originAgentPath,
+          },
+        ],
+        externalProcesses: [
+          {
+            pid: 42,
+            name: "Code.exe",
+            cwd: projectPath,
+            files: [originAgentPath],
+          },
+        ],
+      })}`;
+    });
+
+    contextMenu(findAgentRow(rendered!.root, "dev-docs"));
+    await waitFor(() => expect(replicaMenu()).not.toBeNull());
+    click(findExactMenuButton(replicaMenu()!, "Delete")!);
+
+    const confirmId = `agent.delete.confirm.${automationIdPart(originAgentPath)}`;
+    const errorId = `agent.delete.error.${automationIdPart(originAgentPath)}`;
+    await waitFor(() => expect(document.querySelector(`[data-ac-testid="${confirmId}"]`)).not.toBeNull());
+    click(document.querySelector(`[data-ac-testid="${confirmId}"]`)!);
+
+    await waitFor(() => {
+      const error = document.querySelector<HTMLElement>(`[data-ac-testid="${errorId}"]`);
+      expect(error).not.toBeNull();
+      expect(error!.textContent).toContain("Live AC sessions");
+      expect(error!.textContent).toContain("dev-docs");
+      expect(error!.textContent).toContain("External processes");
+      expect(error!.textContent).toContain("Code.exe");
+    });
+    expect((document.querySelector(`[data-ac-testid="${confirmId}"]`) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("exposes trash Delete on an active AGENTS row through SessionItem", async () => {
+    await setupPanel(
+      [
+        session({
+          id: "agent-session",
+          name: "dev-docs",
+          workingDirectory: originAgentPath,
+          status: "running",
+        }),
+      ],
+      discovery({
+        agents: [
+          {
+            name: "dev-docs",
+            path: originAgentPath,
+            roleExists: true,
+          },
+        ],
+      }),
+      "dev-docs"
+    );
+
+    contextMenu(document.querySelector('[data-ac-testid="session.agent-session"]')!);
+
+    await waitFor(() => {
+      const menu = document.querySelector<HTMLElement>('[data-ac-testid="session.agent-session.menu"]');
+      expect(menu).not.toBeNull();
+      const action = findExactMenuButton(menu!, "Delete");
+      expect(action).not.toBeNull();
+      expect(action!.querySelector(".session-context-trash-icon")).not.toBeNull();
+      expect(action!.getAttribute("data-ac-testid")).toBe(
+        `agent.action.delete.${automationIdPart(originAgentPath)}`
+      );
+    });
+
+    click(findExactMenuButton(document.querySelector<HTMLElement>('[data-ac-testid="session.agent-session.menu"]')!, "Delete")!);
+
+    await waitFor(() =>
+      expect(document.querySelector(`[data-ac-testid="agent.delete.dialog.${automationIdPart(originAgentPath)}"]`)).not.toBeNull()
+    );
   });
 
   it("opens the full menu PLUS broom on a red (exited) replica", async () => {

@@ -318,6 +318,36 @@ function MatrixFolderIcon() {
   );
 }
 
+function TrashIcon() {
+  return (
+    <svg class="session-context-trash-icon" viewBox="0 0 16 16" aria-hidden="true">
+      <path
+        fill="currentColor"
+        d="M5.25 2.5h5.5l.5 1.25h2v1.5H2.75v-1.5h2l.5-1.25Zm.75 4h1.25v5H6v-5Zm2.375 0h1.25v5h-1.25v-5Zm2.375 0H12v5h-1.25v-5ZM4.25 5.75h7.5l-.45 7.1A1.75 1.75 0 0 1 9.55 14.5h-3.1a1.75 1.75 0 0 1-1.75-1.65l-.45-7.1Z"
+      />
+    </svg>
+  );
+}
+
+function formatAgentDeleteBlockerError(report: BlockerReport): string {
+  const normalized = normalizeBlockerReport(report);
+  const liveSessions = normalized.liveSessions.map((session) =>
+    `${session.agentName} at ${session.cwd}`
+  );
+  const externalProcesses = normalized.externalProcesses.map((process) => {
+    const cwd = process.cwd ? ` at ${process.cwd}` : "";
+    const files = process.files.length > 0 ? ` using ${process.files.join(", ")}` : "";
+    return `${process.name} (PID ${process.pid})${cwd}${files}`;
+  });
+  const details: string[] = [];
+  if (liveSessions.length > 0) details.push(`Live AC sessions: ${liveSessions.join("; ")}`);
+  if (externalProcesses.length > 0) details.push(`External processes: ${externalProcesses.join("; ")}`);
+  if (details.length === 0) {
+    return `Agent delete is blocked. Raw delete error: ${normalized.rawDeleteError}`;
+  }
+  return `Agent delete is blocked. ${details.join(" ")} Close the listed sessions or processes, then try again.`;
+}
+
 function coordinatorItemKey(item: { replica: AcAgentReplica; wg: AcWorkgroup }): string {
   return `${item.wg.path}\u0000${item.replica.path}`;
 }
@@ -2815,6 +2845,13 @@ const ProjectPanel: Component = () => {
                                     <SessionItem
                                       session={s()}
                                       isActive={s().id === sessionsStore.activeId}
+                                      extraContextAction={{
+                                        label: "Delete",
+                                        class: "context-option-danger",
+                                        icon: <TrashIcon />,
+                                        testId: `agent.action.delete.${automationIdPart(agent.path)}`,
+                                        onSelect: () => setDeletingAgent({ name: agent.name, path: agent.path }),
+                                      }}
                                     />
                                   )}
                                 </Show>
@@ -2851,8 +2888,10 @@ const ProjectPanel: Component = () => {
                               if (menu) setDeletingAgent({ name: menu.agent.name, path: menu.agent.path });
                               setAgentCtxMenu(null);
                             }}
+                            data-ac-testid={`agent.action.delete.${automationIdPart(agentCtxMenu()!.agent.path)}`}
+                            data-ac-role="menuitem"
                           >
-                            Delete Agent
+                            <TrashIcon /> Delete
                           </button>
                         </div>
                       </Portal>
@@ -2883,37 +2922,61 @@ const ProjectPanel: Component = () => {
                     {deletingAgent() && (
                       <Portal>
                         <div class="modal-overlay">
-                          <div class="agent-modal" style={{ "max-width": "360px" }}>
+                          <div
+                            class="agent-modal"
+                            style={{ "max-width": "360px" }}
+                            data-ac-testid={`agent.delete.dialog.${automationIdPart(deletingAgent()!.path)}`}
+                          >
                             <div class="agent-modal-header">
                               <span class="agent-modal-title">Delete Agent</span>
                             </div>
                             <div class="new-agent-form">
                               <p style={{ margin: "0", "line-height": "1.5", opacity: 0.85 }}>
-                                Delete agent <strong>{deletingAgent()!.name.slice(deletingAgent()!.name.lastIndexOf("/") + 1)}</strong>? This will remove the agent directory and all its contents. This action cannot be undone.
+                                Delete agent <strong>{deletingAgent()!.name.slice(deletingAgent()!.name.lastIndexOf("/") + 1)}</strong>? This will remove the agent matrix, its workgroup replicas, and team assignments. This action cannot be undone.
                               </p>
                               <Show when={agentDeleteError()}>
-                                <div class="new-agent-error">{agentDeleteError()}</div>
+                                <div
+                                  class="new-agent-error"
+                                  data-ac-testid={`agent.delete.error.${automationIdPart(deletingAgent()!.path)}`}
+                                >
+                                  {agentDeleteError()}
+                                </div>
                               </Show>
                             </div>
                             <div class="new-agent-footer">
-                              <button class="new-agent-cancel-btn" onClick={closeAgentDeleteModal}>
+                              <button
+                                class="new-agent-cancel-btn"
+                                onClick={closeAgentDeleteModal}
+                                data-ac-testid={`agent.delete.cancel.${automationIdPart(deletingAgent()!.path)}`}
+                              >
                                 Cancel
                               </button>
                               <button
                                 class="new-agent-create-btn"
                                 style={{ "background": "var(--danger, #c0392b)" }}
                                 disabled={agentDeleteInProgress()}
+                                data-ac-testid={`agent.delete.confirm.${automationIdPart(deletingAgent()!.path)}`}
                                 onClick={async () => {
                                   if (agentDeleteInProgress()) return;
                                   setAgentDeleteInProgress(true);
                                   const agent = deletingAgent()!;
-                                  const shortName = agent.name.slice(agent.name.lastIndexOf("/") + 1);
                                   try {
-                                    await EntityAPI.deleteAgentMatrix(proj.path, shortName);
+                                    await EntityAPI.deleteAgentMatrix(proj.path, agent.path);
                                     await projectStore.reloadProject(proj.path);
                                   } catch (e: any) {
                                     console.error("delete_agent_matrix failed:", e);
-                                    setAgentDeleteError(typeof e === "string" ? e : e?.message ?? "Failed to delete agent");
+                                    const msg = typeof e === "string" ? e : e?.message ?? "Failed to delete agent";
+                                    if (msg.startsWith("BLOCKERS:")) {
+                                      try {
+                                        const report = JSON.parse(msg.slice("BLOCKERS:".length)) as BlockerReport;
+                                        setAgentDeleteError(formatAgentDeleteBlockerError(report));
+                                      } catch (parseErr) {
+                                        console.error("Failed to parse BLOCKERS: payload for agent delete:", parseErr);
+                                        setAgentDeleteError("Agent is locked, but the blocker report could not be parsed. Try again.");
+                                      }
+                                    } else {
+                                      setAgentDeleteError(msg);
+                                    }
                                     setAgentDeleteInProgress(false);
                                     return;
                                   }

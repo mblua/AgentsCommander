@@ -2816,6 +2816,12 @@ html.light-theme .settings-api-client-warning {
   color: var(--danger, #ef4444);
 }
 
+.session-context-trash-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+}
+
 .session-context-repo-label {
   min-width: 0;
   overflow: hidden;
@@ -3147,11 +3153,6 @@ html.light-theme .settings-hint-warning {
   to {
     transform: scaleX(1);
   }
-}
-
-.workgroup-group-rail-button.edit {
-  margin-top: 8px;
-  color: var(--sidebar-accent);
 }
 
 /* #746 — working indicator on the counter line. Reuses the session-card

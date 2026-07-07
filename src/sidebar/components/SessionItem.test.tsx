@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import SessionItem from "./SessionItem";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
@@ -383,6 +383,57 @@ describe("SessionItem coordinator repo folder menu (#708)", () => {
       expect(repoMenuItems("coord-empty")).toHaveLength(0);
     } finally {
       noRepoCoordinator.cleanup();
+    }
+  });
+
+  it("renders the optional extra context action only when provided", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("open_in_explorer", null);
+    const onSelect = vi.fn();
+
+    const withExtra = renderWithFakeTransport(
+      () => (
+        <SessionItem
+          session={session({ id: "with-extra" })}
+          isActive={false}
+          extraContextAction={{
+            label: "Delete",
+            class: "context-option-danger",
+            icon: <span class="session-context-trash-icon" />,
+            testId: "session.extra.delete",
+            onSelect,
+          }}
+        />
+      ),
+      fake,
+    );
+    try {
+      contextMenu(withExtra.root.querySelector('[data-ac-testid="session.with-extra"]')!);
+      await waitFor(() => expect(document.querySelector('[data-ac-testid="session.with-extra.menu"]')).not.toBeNull());
+      const action = document.querySelector<HTMLButtonElement>('[data-ac-testid="session.extra.delete"]');
+      expect(action).not.toBeNull();
+      expect(action!.textContent?.trim()).toBe("Delete");
+
+      click(action!);
+
+      expect(onSelect).toHaveBeenCalledTimes(1);
+      expect(document.querySelector('[data-ac-testid="session.with-extra.menu"]')).toBeNull();
+    } finally {
+      withExtra.cleanup();
+      document.body.replaceChildren();
+    }
+
+    const withoutExtra = renderWithFakeTransport(
+      () => <SessionItem session={session({ id: "without-extra" })} isActive={false} />,
+      fake,
+    );
+    try {
+      contextMenu(withoutExtra.root.querySelector('[data-ac-testid="session.without-extra"]')!);
+      await waitFor(() => expect(document.querySelector('[data-ac-testid="session.without-extra.menu"]')).not.toBeNull());
+      expect(document.querySelector('[data-ac-testid="session.extra.delete"]')).toBeNull();
+      expect(document.querySelector('[data-ac-testid="session.without-extra.menu"]')?.textContent).not.toContain("Delete");
+    } finally {
+      withoutExtra.cleanup();
     }
   });
 
