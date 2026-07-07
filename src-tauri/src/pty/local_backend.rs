@@ -5,6 +5,13 @@ use std::sync::{Arc, Mutex};
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use uuid::Uuid;
 
+#[cfg(windows)]
+use std::path::Path;
+#[cfg(windows)]
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(windows)]
+use std::time::Duration;
+
 use crate::errors::AppError;
 use crate::pty::backend::{BackendSpawnSpec, PtyBackend};
 use crate::pty::git_watcher::GitWatcher;
@@ -25,6 +32,20 @@ struct GitGuardEnv {
     pathext: String,
     real_git: String,
 }
+
+#[cfg(windows)]
+static GIT_GUARD_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(windows)]
+const GIT_GUARD_PUBLISH_RETRY_DELAYS: &[Duration] = &[
+    Duration::from_millis(25),
+    Duration::from_millis(50),
+    Duration::from_millis(100),
+    Duration::from_millis(200),
+    Duration::from_millis(400),
+    Duration::from_millis(800),
+    Duration::from_millis(1600),
+];
 
 #[cfg(windows)]
 fn resolve_real_git_path() -> Option<String> {
@@ -124,12 +145,193 @@ if (-not (Test-AllowedGitTarget $target)) {
 exit $LASTEXITCODE
 "#;
 
-    std::fs::write(&cmd_path, cmd_content)
+    write_git_guard_file_if_changed(&cmd_path, cmd_content)
         .map_err(|e| AppError::Other(format!("Failed to write git.cmd guard: {}", e)))?;
-    std::fs::write(&ps1_path, ps1_content)
+    write_git_guard_file_if_changed(&ps1_path, ps1_content)
         .map_err(|e| AppError::Other(format!("Failed to write git-guard.ps1: {}", e)))?;
 
     Ok(guard_dir)
+}
+
+#[cfg(windows)]
+fn write_git_guard_file_if_changed(path: &Path, content: &str) -> Result<(), String> {
+    let desired = content.as_bytes();
+    match std::fs::read(path) {
+        Ok(existing) if existing == desired => return Ok(()),
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("read existing {}: {}", path.display(), e)),
+    }
+
+    write_git_guard_file_atomic(path, desired)
+}
+
+#[cfg(windows)]
+fn write_git_guard_file_atomic(path: &Path, content: &[u8]) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("target {} has no parent", path.display()))?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("git-guard");
+    let counter = GIT_GUARD_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp = parent.join(format!(".{name}.{}.{counter}.tmp", std::process::id()));
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)
+        .map_err(|e| format!("create temp {}: {}", temp.display(), e))?;
+
+    if let Err(e) = file.write_all(content) {
+        drop(file);
+        let _ = std::fs::remove_file(&temp);
+        return Err(format!("write temp {}: {}", temp.display(), e));
+    }
+    if let Err(e) = file.flush() {
+        drop(file);
+        let _ = std::fs::remove_file(&temp);
+        return Err(format!("flush temp {}: {}", temp.display(), e));
+    }
+    if let Err(e) = file.sync_all() {
+        drop(file);
+        let _ = std::fs::remove_file(&temp);
+        return Err(format!("sync temp {}: {}", temp.display(), e));
+    }
+    drop(file);
+
+    publish_git_guard_temp_with_retry(&temp, path, content)
+}
+
+#[cfg(windows)]
+fn publish_git_guard_temp_with_retry(
+    temp: &Path,
+    path: &Path,
+    content: &[u8],
+) -> Result<(), String> {
+    for attempt in 0..=GIT_GUARD_PUBLISH_RETRY_DELAYS.len() {
+        if git_guard_file_matches(path, content) {
+            let _ = std::fs::remove_file(temp);
+            return Ok(());
+        }
+
+        match crate::config::root_agent::atomic_replace_existing(temp, path) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                if git_guard_file_matches(path, content) {
+                    let _ = std::fs::remove_file(temp);
+                    return Ok(());
+                }
+
+                let Some(delay) = GIT_GUARD_PUBLISH_RETRY_DELAYS.get(attempt) else {
+                    let _ = std::fs::remove_file(temp);
+                    return Err(format!(
+                        "publish {} from {} failed after {} attempts: {}",
+                        path.display(),
+                        temp.display(),
+                        attempt + 1,
+                        e
+                    ));
+                };
+                std::thread::sleep(*delay);
+            }
+        }
+    }
+
+    unreachable!("retry loop always returns on final attempt")
+}
+
+#[cfg(windows)]
+fn git_guard_file_matches(path: &Path, content: &[u8]) -> bool {
+    match std::fs::read(path) {
+        Ok(existing) => existing == content,
+        Err(_) => false,
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::sync::{Arc, Barrier};
+    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+
+    fn assert_no_temp_files(dir: &Path) {
+        for entry in fs::read_dir(dir).expect("read temp dir") {
+            let name = entry
+                .expect("dir entry")
+                .file_name()
+                .to_string_lossy()
+                .to_string();
+            assert!(!name.ends_with(".tmp"), "unexpected temp file: {name}");
+        }
+    }
+
+    #[allow(clippy::permissions_set_readonly_false)]
+    #[test]
+    fn git_guard_writer_skips_unchanged_readonly_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("git-guard.ps1");
+        fs::write(&path, "same").expect("write fixture");
+        let mut permissions = fs::metadata(&path).expect("metadata").permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&path, permissions).expect("set readonly");
+
+        let result = write_git_guard_file_if_changed(&path, "same");
+
+        let mut permissions = fs::metadata(&path).expect("metadata").permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(&path, permissions).expect("clear readonly");
+
+        result.expect("unchanged readonly file should be skipped");
+        assert_eq!(fs::read_to_string(&path).expect("read file"), "same");
+        assert_no_temp_files(dir.path());
+    }
+
+    #[test]
+    fn git_guard_writer_replaces_changed_file_without_temp_leftover() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("git.cmd");
+        fs::write(&path, "old").expect("write fixture");
+
+        write_git_guard_file_if_changed(&path, "new").expect("replace changed file");
+
+        assert_eq!(fs::read_to_string(&path).expect("read file"), "new");
+        assert_no_temp_files(dir.path());
+    }
+
+    #[test]
+    fn git_guard_writer_retries_in_use_destination_until_released() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("git.cmd");
+        fs::write(&path, "old").expect("write fixture");
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&path)
+            .expect("open destination without delete sharing");
+        let barrier = Arc::new(Barrier::new(2));
+        let writer_barrier = Arc::clone(&barrier);
+        let writer_path = path.clone();
+
+        let writer = std::thread::spawn(move || {
+            writer_barrier.wait();
+            write_git_guard_file_if_changed(&writer_path, "new")
+        });
+
+        barrier.wait();
+        std::thread::sleep(Duration::from_millis(1000));
+        drop(held);
+
+        writer
+            .join()
+            .expect("writer thread")
+            .expect("retry should publish after held handle is released");
+        assert_eq!(fs::read_to_string(&path).expect("read file"), "new");
+        assert_no_temp_files(dir.path());
+    }
 }
 
 #[cfg(windows)]

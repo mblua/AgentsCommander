@@ -41,20 +41,50 @@ use web::broadcast::WsBroadcaster;
 /// Tracks which sessions are currently detached into their own windows.
 pub type DetachedSessionsState = Arc<Mutex<HashSet<uuid::Uuid>>>;
 
+struct OwnedWebServer {
+    bind: String,
+    port: u16,
+    handle: tauri::async_runtime::JoinHandle<()>,
+}
+
 #[derive(Default)]
 pub struct WebServerHandle {
-    inner: Arc<Mutex<Option<tauri::async_runtime::JoinHandle<()>>>>,
+    inner: Arc<Mutex<Option<OwnedWebServer>>>,
 }
 
 impl WebServerHandle {
-    /// Handle to the running web server task, allowing stop control.
-    pub fn store(&self, handle: tauri::async_runtime::JoinHandle<()>) {
-        *self.inner.lock().unwrap() = Some(handle);
+    pub fn store_owned(
+        &self,
+        bind: String,
+        port: u16,
+        handle: tauri::async_runtime::JoinHandle<()>,
+    ) {
+        let mut slot = self.inner.lock().unwrap();
+        if let Some(existing) = slot.take() {
+            existing.handle.abort();
+        }
+        *slot = Some(OwnedWebServer { bind, port, handle });
+    }
+
+    pub fn is_owned_running(&self, bind: &str, port: u16) -> bool {
+        let mut slot = self.inner.lock().unwrap();
+        if slot
+            .as_ref()
+            .map(|owned| owned.handle.inner().is_finished())
+            .unwrap_or(false)
+        {
+            *slot = None;
+            return false;
+        }
+
+        slot.as_ref()
+            .map(|owned| owned.bind == bind && owned.port == port)
+            .unwrap_or(false)
     }
 
     pub fn abort_running(&self) -> bool {
-        if let Some(handle) = self.inner.lock().unwrap().take() {
-            handle.abort();
+        if let Some(owned) = self.inner.lock().unwrap().take() {
+            owned.handle.abort();
             true
         } else {
             false
@@ -670,10 +700,9 @@ pub fn run(
                 if web_settings.web_server_enabled {
                     let bind = web_settings.web_server_bind.clone();
                     let port = web_settings.web_server_port;
-                    println!("[web-token] Remote URL: http://{}:{}/?window=main&remoteToken={}", bind, port, web_access_token.value());
 
-                    let join_handle = web::start_server(
-                        bind,
+                    match tauri::async_runtime::block_on(web::start_server(
+                        bind.clone(),
                         port,
                         web_token_for_server,
                         session_mgr_for_web,
@@ -682,10 +711,21 @@ pub fn run(
                         broadcaster_for_web,
                         app.handle().clone(),
                         shutdown_for_setup.clone(),
-                    );
-
-                    let ws_handle = app.state::<WebServerHandle>();
-                    ws_handle.store(join_handle);
+                    )) {
+                        Ok(join_handle) => {
+                            println!(
+                                "[web-token] Remote URL: http://{}:{}/?window=main&remoteToken={}",
+                                bind,
+                                port,
+                                web_access_token.value()
+                            );
+                            let ws_handle = app.state::<WebServerHandle>();
+                            ws_handle.store_owned(bind, port, join_handle);
+                        }
+                        Err(err) => {
+                            log::warn!("[web-server] startup failed: {}", err);
+                        }
+                    }
                 }
             }
 
@@ -2160,6 +2200,7 @@ pub fn run(
             commands::config::start_web_server,
             commands::config::stop_web_server,
             commands::config::get_web_server_status,
+            commands::config::get_web_server_owned_status,
             commands::config::get_instance_label,
             commands::config::fetch_home_markdown,
             commands::agent_creator::pick_folder,
@@ -2430,6 +2471,47 @@ mod tests {
             .manage(ApiServerHandle::default())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("web and api server handles must be distinct managed types");
+    }
+
+    #[tokio::test]
+    async fn web_server_handle_reports_owned_bind_and_port() {
+        let handle = WebServerHandle::default();
+        let task = tauri::async_runtime::spawn(async {
+            std::future::pending::<()>().await;
+        });
+
+        handle.store_owned("127.0.0.1".to_string(), 8765, task);
+
+        assert!(handle.is_owned_running("127.0.0.1", 8765));
+        assert!(!handle.is_owned_running("0.0.0.0", 8765));
+        assert!(!handle.is_owned_running("127.0.0.1", 8766));
+
+        assert!(handle.abort_running());
+    }
+
+    #[tokio::test]
+    async fn web_server_handle_clears_finished_task() {
+        let handle = WebServerHandle::default();
+        let task = tauri::async_runtime::spawn(async {});
+
+        handle.store_owned("127.0.0.1".to_string(), 8765, task);
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        assert!(!handle.is_owned_running("127.0.0.1", 8765));
+        assert!(!handle.abort_running());
+    }
+
+    #[tokio::test]
+    async fn web_server_handle_abort_clears_owned_status() {
+        let handle = WebServerHandle::default();
+        let task = tauri::async_runtime::spawn(async {
+            std::future::pending::<()>().await;
+        });
+
+        handle.store_owned("127.0.0.1".to_string(), 8765, task);
+
+        assert!(handle.abort_running());
+        assert!(!handle.is_owned_running("127.0.0.1", 8765));
     }
 
     #[tokio::test]

@@ -1057,12 +1057,71 @@ fn profile_assignment_fingerprint(
     format!("{:016x}", hasher.finish())
 }
 
-#[tauri::command]
-pub async fn open_web_remote() -> Result<(), String> {
-    let settings = load_settings();
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WebServerOwnershipState {
+    OwnedRunning,
+    ExternalListening,
+    Stopped,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebServerOwnedStatus {
+    pub listening: bool,
+    pub owned: bool,
+    pub external_listening: bool,
+    pub open_allowed: bool,
+    pub bind: String,
+    pub port: u16,
+    pub state: WebServerOwnershipState,
+}
+
+fn ensure_web_remote_open_allowed(
+    settings: &AppSettings,
+    ws_handle: &WebServerHandle,
+) -> Result<(), String> {
     if !settings.web_server_enabled {
         return Err("Web server is not enabled".into());
     }
+
+    if !ws_handle.is_owned_running(&settings.web_server_bind, settings.web_server_port) {
+        return Err("Web server is not owned by this app process".into());
+    }
+
+    Ok(())
+}
+
+fn build_web_server_owned_status(
+    bind: String,
+    port: u16,
+    owned: bool,
+    listening: bool,
+) -> WebServerOwnedStatus {
+    let external_listening = listening && !owned;
+    let state = if owned {
+        WebServerOwnershipState::OwnedRunning
+    } else if external_listening {
+        WebServerOwnershipState::ExternalListening
+    } else {
+        WebServerOwnershipState::Stopped
+    };
+
+    WebServerOwnedStatus {
+        listening,
+        owned,
+        external_listening,
+        open_allowed: owned,
+        bind,
+        port,
+        state,
+    }
+}
+
+#[tauri::command]
+pub async fn open_web_remote(ws_handle: State<'_, WebServerHandle>) -> Result<(), String> {
+    let settings = load_settings();
+    ensure_web_remote_open_allowed(&settings, &ws_handle)?;
 
     let token_path = crate::config::config_dir()
         .ok_or("No config dir")?
@@ -1160,14 +1219,17 @@ pub async fn start_web_server(
     let port = s.web_server_port;
     drop(s);
 
-    // Check if already listening
-    let addr = format!("{}:{}", bind, port);
-    if is_tcp_listening(&addr).await {
-        return Ok(false); // already running
+    if ws_handle.is_owned_running(&bind, port) {
+        return Ok(true);
     }
 
-    let join_handle = crate::web::start_server(
-        bind,
+    let addr = format!("{}:{}", bind, port);
+    if is_tcp_listening(&addr).await {
+        return Ok(false);
+    }
+
+    let start_result = crate::web::start_server(
+        bind.clone(),
         port,
         Arc::clone(&web_token),
         Arc::clone(&session_mgr),
@@ -1176,11 +1238,20 @@ pub async fn start_web_server(
         (*broadcaster).clone(),
         app_handle,
         shutdown.inner().clone(),
-    );
+    )
+    .await;
 
-    ws_handle.store(join_handle);
-    log::info!("[web-server] Started via command");
-    Ok(true)
+    match start_result {
+        Ok(join_handle) => {
+            ws_handle.store_owned(bind, port, join_handle);
+            log::info!("[web-server] Started via command");
+            Ok(true)
+        }
+        Err(err) => {
+            log::warn!("[web-server] start failed: {}", err);
+            Ok(false)
+        }
+    }
 }
 
 #[tauri::command]
@@ -1199,6 +1270,27 @@ pub async fn get_web_server_status(settings: State<'_, SettingsState>) -> Result
     let addr = format!("{}:{}", s.web_server_bind, s.web_server_port);
     drop(s);
     Ok(is_tcp_listening(&addr).await)
+}
+
+#[tauri::command]
+pub async fn get_web_server_owned_status(
+    ws_handle: State<'_, WebServerHandle>,
+    settings: State<'_, SettingsState>,
+) -> Result<WebServerOwnedStatus, String> {
+    let s = settings.read().await;
+    let bind = s.web_server_bind.clone();
+    let port = s.web_server_port;
+    drop(s);
+
+    let owned = ws_handle.is_owned_running(&bind, port);
+    let addr = format!("{}:{}", bind, port);
+    let listening = if owned {
+        true
+    } else {
+        is_tcp_listening(&addr).await
+    };
+
+    Ok(build_web_server_owned_status(bind, port, owned, listening))
 }
 
 async fn is_tcp_listening(addr: &str) -> bool {
@@ -1499,15 +1591,18 @@ mod tests {
     #[cfg(windows)]
     use super::{build_profile_assignment_target, canonical_compare_key};
     use super::{
+        build_web_server_owned_status, ensure_web_remote_open_allowed,
         persist_coding_agent_env_settings_update, persist_coding_agent_profiles_update,
         persist_narrow_settings_update_with_saver, persist_protected_settings_update_with_saver,
         persist_settings_draft_update_with_saver, RtkSweepError, RtkSweepResult,
+        WebServerOwnershipState,
     };
     use crate::config::settings::{
         AgentConfig, AppSettings, CodingAgentEnv, CodingAgentEnvSource, ProfileCellConfig,
         SettingsState,
     };
     use crate::session::manager::SessionManager;
+    use crate::WebServerHandle;
     use std::collections::BTreeMap;
     #[cfg(windows)]
     use std::path::{Path, PathBuf};
@@ -1566,6 +1661,75 @@ mod tests {
 
     fn state_for(settings: AppSettings) -> SettingsState {
         Arc::new(RwLock::new(settings))
+    }
+
+    #[test]
+    fn web_server_owned_status_maps_owned_running() {
+        let status = build_web_server_owned_status("127.0.0.1".to_string(), 8765, true, true);
+
+        assert!(status.listening);
+        assert!(status.owned);
+        assert!(!status.external_listening);
+        assert!(status.open_allowed);
+        assert_eq!(status.bind, "127.0.0.1");
+        assert_eq!(status.port, 8765);
+        assert_eq!(status.state, WebServerOwnershipState::OwnedRunning);
+    }
+
+    #[test]
+    fn web_server_owned_status_maps_external_listener() {
+        let status = build_web_server_owned_status("127.0.0.1".to_string(), 8765, false, true);
+
+        assert!(status.listening);
+        assert!(!status.owned);
+        assert!(status.external_listening);
+        assert!(!status.open_allowed);
+        assert_eq!(status.state, WebServerOwnershipState::ExternalListening);
+    }
+
+    #[test]
+    fn web_server_owned_status_maps_stopped() {
+        let status = build_web_server_owned_status("127.0.0.1".to_string(), 8765, false, false);
+
+        assert!(!status.listening);
+        assert!(!status.owned);
+        assert!(!status.external_listening);
+        assert!(!status.open_allowed);
+        assert_eq!(status.state, WebServerOwnershipState::Stopped);
+    }
+
+    #[test]
+    fn ensure_web_remote_open_allowed_rejects_enabled_settings_without_owned_handle() {
+        let settings = AppSettings {
+            web_server_enabled: true,
+            web_server_bind: "127.0.0.1".to_string(),
+            web_server_port: 8765,
+            ..AppSettings::default()
+        };
+        let handle = WebServerHandle::default();
+
+        let err = ensure_web_remote_open_allowed(&settings, &handle).unwrap_err();
+
+        assert_eq!(err, "Web server is not owned by this app process");
+    }
+
+    #[tokio::test]
+    async fn ensure_web_remote_open_allowed_accepts_owned_running_handle() {
+        let settings = AppSettings {
+            web_server_enabled: true,
+            web_server_bind: "127.0.0.1".to_string(),
+            web_server_port: 8765,
+            ..AppSettings::default()
+        };
+        let handle = WebServerHandle::default();
+        let task = tauri::async_runtime::spawn(async {
+            std::future::pending::<()>().await;
+        });
+
+        handle.store_owned("127.0.0.1".to_string(), 8765, task);
+
+        assert!(ensure_web_remote_open_allowed(&settings, &handle).is_ok());
+        assert!(handle.abort_running());
     }
 
     fn profile_assignment_request(
