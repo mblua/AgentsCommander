@@ -1,4 +1,5 @@
 import { Component, For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
+import { Portal } from "solid-js/web";
 import type { AcWorkgroup, WorkgroupGroup } from "../../shared/types";
 import type { ProjectState } from "../stores/project";
 import { projectStore } from "../stores/project";
@@ -45,6 +46,7 @@ interface GroupButton {
 
 const REORDER_HOLD_MS = 2000;
 const REORDER_MOVE_CANCEL_PX = 6;
+const CONTEXT_MENU_VIEWPORT_MARGIN = 8;
 
 type ReorderPhase = "arming" | "dragging" | "saving";
 
@@ -195,9 +197,13 @@ const ProjectRailSection: Component<{
     return current.kind !== "group" || button.selection.kind !== "group" || current.id === button.selection.id;
   };
   const [reorderState, setReorderState] = createSignal<ReorderState | null>(null);
+  const [showContextMenu, setShowContextMenu] = createSignal(false);
+  const [contextMenuPos, setContextMenuPos] = createSignal({ x: 0, y: 0 });
   let holdTimer: number | null = null;
   let suppressClickGroupId: string | null = null;
   let projectEl: HTMLDivElement | undefined;
+  let contextMenuEl: HTMLDivElement | undefined;
+  let dismissContextMenu: ((ev?: Event) => void) | null = null;
   const groupButtonEls = new Map<string, HTMLButtonElement>();
 
   const clearHoldTimer = () => {
@@ -216,6 +222,58 @@ const ProjectRailSection: Component<{
       suppressClickGroupId = null;
     }
     setReorderState(null);
+  };
+
+  const cleanupContextMenu = () => {
+    if (!dismissContextMenu) return;
+    window.removeEventListener("click", dismissContextMenu);
+    window.removeEventListener("contextmenu", dismissContextMenu);
+    window.removeEventListener("keydown", dismissContextMenu as EventListener);
+    dismissContextMenu = null;
+  };
+
+  const positionContextMenu = (x: number, y: number) => {
+    if (!contextMenuEl) return;
+    const { width, height } = contextMenuEl.getBoundingClientRect();
+    const maxX = Math.max(
+      CONTEXT_MENU_VIEWPORT_MARGIN,
+      window.innerWidth - width - CONTEXT_MENU_VIEWPORT_MARGIN
+    );
+    const maxY = Math.max(
+      CONTEXT_MENU_VIEWPORT_MARGIN,
+      window.innerHeight - height - CONTEXT_MENU_VIEWPORT_MARGIN
+    );
+    setContextMenuPos({
+      x: Math.min(Math.max(CONTEXT_MENU_VIEWPORT_MARGIN, x), maxX),
+      y: Math.min(Math.max(CONTEXT_MENU_VIEWPORT_MARGIN, y), maxY),
+    });
+  };
+
+  const openContextMenu = (event: MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    cancelReorder(true);
+    cleanupContextMenu();
+    setContextMenuPos({ x: event.clientX, y: event.clientY });
+    setShowContextMenu(true);
+    const dismiss = (ev?: Event) => {
+      if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
+      setShowContextMenu(false);
+      cleanupContextMenu();
+    };
+    dismissContextMenu = dismiss;
+    setTimeout(() => {
+      positionContextMenu(event.clientX, event.clientY);
+      window.addEventListener("click", dismiss);
+      window.addEventListener("contextmenu", dismiss);
+      window.addEventListener("keydown", dismiss as EventListener);
+    });
+  };
+
+  const openEditorFromContextMenu = () => {
+    setShowContextMenu(false);
+    cleanupContextMenu();
+    setEditing(true);
   };
 
   createEffect(() => {
@@ -368,6 +426,7 @@ const ProjectRailSection: Component<{
     window.removeEventListener("pointerup", onWindowPointerUp);
     window.removeEventListener("pointercancel", onWindowPointerCancel);
     clearHoldTimer();
+    cleanupContextMenu();
     suppressClickGroupId = null;
     groupButtonEls.clear();
   });
@@ -399,7 +458,12 @@ const ProjectRailSection: Component<{
       data-ac-testid={`workgroupGroups.rail.${props.project.folderName}`}
     >
       <Show when={props.showProjectLabel}>
-        <div class="workgroup-group-rail-project-label" title={props.project.path}>
+        <div
+          class="workgroup-group-rail-project-label"
+          title={props.project.path}
+          onContextMenu={openContextMenu}
+          data-ac-testid={`workgroupGroups.projectLabel.${props.project.folderName}`}
+        >
           {props.project.folderName}
         </div>
       </Show>
@@ -430,6 +494,7 @@ const ProjectRailSection: Component<{
             onPointerMove={movePress}
             onPointerUp={finishPress}
             onPointerCancel={cancelPress}
+            onContextMenu={openContextMenu}
             onClick={(event) => {
               if (button.groupId && suppressClickGroupId === button.groupId) {
                 suppressClickGroupId = null;
@@ -498,13 +563,27 @@ const ProjectRailSection: Component<{
         )}
       </Show>
 
-      <button
-        class="workgroup-group-rail-button edit"
-        onClick={() => setEditing(true)}
-        data-ac-testid="workgroupGroups.edit"
-      >
-        Edit
-      </button>
+      <Show when={showContextMenu()}>
+        <Portal>
+          <div
+            ref={contextMenuEl}
+            class="session-context-menu"
+            style={{ left: `${contextMenuPos().x}px`, top: `${contextMenuPos().y}px` }}
+            onClick={(event) => event.stopPropagation()}
+            data-ac-testid="workgroupGroups.contextMenu"
+            data-ac-role="menu"
+          >
+            <button
+              class="session-context-option"
+              onClick={openEditorFromContextMenu}
+              data-ac-testid="workgroupGroups.contextMenu.edit"
+              data-ac-role="menuitem"
+            >
+              Edit
+            </button>
+          </div>
+        </Portal>
+      </Show>
 
       <Show when={editing()}>
         <WorkgroupGroupsModal
@@ -518,13 +597,11 @@ const ProjectRailSection: Component<{
 };
 
 const WorkgroupGroupRail: Component<WorkgroupGroupRailProps> = (props) => {
-  const showProjectLabels = () => props.projects.length > 1;
-
   return (
     <aside class="workgroup-group-rail" data-ac-testid="workgroupGroups.rail">
       <For each={props.projects}>
         {(project) => (
-          <ProjectRailSection project={project} showProjectLabel={showProjectLabels()} />
+          <ProjectRailSection project={project} showProjectLabel={true} />
         )}
       </For>
     </aside>
