@@ -8,6 +8,13 @@
   background: var(--terminal-bg, #0a0a0f);
 }
 
+/* #840 — sidebar on the right (default). row-reverse flips the fixed DOM order
+   (sidebar | divider | terminal) so the sidebar renders against the right edge
+   and the terminal fills the left, without reordering the markup. */
+.browser-layout.browser-sidebar-right {
+  flex-direction: row-reverse;
+}
+
 /* Prevent text selection while dragging the divider */
 .browser-dragging {
   user-select: none;
@@ -66,6 +73,44 @@
   height: 100%;
   min-width: 0;
   overflow: hidden;
+  /* #840 — positioning context for the sidebar-side toggle. */
+  position: relative;
+}
+
+/* #840 — compact control to move the sidebar left/right in the web view
+   (no desktop titlebar here to host the existing preset). Pinned to the
+   terminal pane's top-right corner so it never overlaps the sidebar ActionBar,
+   which spans the sidebar's full top edge. */
+.browser-side-toggle {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-muted, rgba(255, 255, 255, 0.55));
+  opacity: 0.55;
+  cursor: pointer;
+  transition: opacity 150ms ease-out, background 150ms ease-out, color 150ms ease-out;
+}
+
+.browser-side-toggle:hover {
+  opacity: 1;
+  background: rgba(0, 212, 255, 0.15);
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
+}
+
+.browser-side-toggle:focus-visible {
+  opacity: 1;
+  outline: 1px solid rgba(0, 212, 255, 0.6);
+  outline-offset: 1px;
 }
 
 /* Override standalone heights — in browser layout they must fill their pane, not 100vh */
@@ -115,7 +160,12 @@
 
 /* Mobile: stack vertically with horizontal divider */
 @media (max-width: 600px) {
-  .browser-layout {
+  /* #840 — the side preference is a horizontal concept; on narrow screens both
+     sides collapse to the same vertical stack (sidebar on top). Listing the
+     higher-specificity right-side selector here keeps row-reverse from leaking
+     into the stacked layout. */
+  .browser-layout,
+  .browser-layout.browser-sidebar-right {
     flex-direction: column;
   }
 

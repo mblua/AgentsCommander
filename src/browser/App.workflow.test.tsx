@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import BrowserApp from "./App";
 import { FakeTransport } from "../shared/testing/fake-transport";
 import type { WorkgroupGroupsConfig } from "../shared/types";
@@ -136,10 +136,43 @@ function setupBrowserTransport(
   fake.resolve("list_detached_sessions", []);
   fake.resolve("telegram_list_bridges", []);
   fake.resolve("pty_resize", undefined);
+  fake.resolve("update_settings", undefined);
 }
 
 describe("BrowserApp workflow", () => {
   let cleanupDom: (() => void) | null = null;
+
+  // jsdom's WebSocket is backed by the `ws` package, which throws
+  // "ws does not work in the browser" when constructed. BrowserApp's real
+  // WsTransport is created lazily (ipc.ts) and an async task can outlive a
+  // test's cleanup — after the FakeTransport override is restored — and
+  // construct it, surfacing that throw as an unhandled rejection that fails the
+  // run even though every assertion passes. Stub WebSocket with an inert no-op
+  // for the whole file so those stragglers can't crash it. File-scoped (vitest
+  // isolates per file), so no restore is needed.
+  beforeAll(() => {
+    class NoopWebSocket {
+      static readonly CONNECTING = 0;
+      static readonly OPEN = 1;
+      static readonly CLOSING = 2;
+      static readonly CLOSED = 3;
+      url: string;
+      binaryType = "blob";
+      readyState = 0;
+      onopen: ((ev?: unknown) => void) | null = null;
+      onmessage: ((ev?: unknown) => void) | null = null;
+      onclose: ((ev?: unknown) => void) | null = null;
+      onerror: ((ev?: unknown) => void) | null = null;
+      constructor(url = "") {
+        this.url = url;
+      }
+      send(): void {}
+      close(): void {}
+      addEventListener(): void {}
+      removeEventListener(): void {}
+    }
+    globalThis.WebSocket = NoopWebSocket as unknown as typeof WebSocket;
+  });
 
   beforeEach(() => {
     cleanupDom = installBrowserDomStubs();
@@ -164,7 +197,11 @@ describe("BrowserApp workflow", () => {
         expect(rendered.root.querySelector(".browser-layout")).not.toBeNull();
         expect(rendered.root.querySelector(".browser-sidebar")).not.toBeNull();
         expect(rendered.root.querySelector(".browser-terminal")).not.toBeNull();
-        expect(rendered.root.querySelector(".sidebar-body")?.getAttribute("data-rail-side")).toBe("left");
+        // #840 — web defaults to the sidebar on the right (mirrors desktop).
+        expect(rendered.root.querySelector(".sidebar-body")?.getAttribute("data-rail-side")).toBe("right");
+        expect(
+          rendered.root.querySelector(".browser-layout")?.classList.contains("browser-sidebar-right")
+        ).toBe(true);
         expect(rendered.root.querySelector(".workgroup-group-rail")).not.toBeNull();
         expect(rendered.root.textContent).toContain("wg-1-dev-team");
         expect(rendered.root.textContent).toContain("architect");
@@ -220,39 +257,105 @@ describe("BrowserApp workflow", () => {
     }
   });
 
-  it("updates sidebar width when the browser divider is dragged", async () => {
+  it("updates sidebar width when the divider is dragged (left sidebar)", async () => {
     const fake = new FakeTransport();
-    setupBrowserTransport(fake);
+    setupBrowserTransport(fake, { mainSidebarSide: "left" });
 
     const rendered = renderWithFakeTransport(() => <BrowserApp />, fake);
     try {
+      // Wait until the persisted "left" side has been applied — the divider
+      // captures the side at mousedown, so dragging before it loads would use
+      // the default ("right").
       await waitFor(() =>
-        expect(rendered.root.querySelector(".browser-divider")).not.toBeNull()
+        expect(
+          rendered.root.querySelector(".sidebar-body")?.getAttribute("data-rail-side")
+        ).toBe("left")
       );
-      await waitFor(() => {
-        expect(fake.callsFor("telegram_list_bridges").length).toBeGreaterThan(0);
-        expect(fake.callsFor("get_active_session").length).toBeGreaterThan(0);
-      });
 
       const sidebar = rendered.root.querySelector(".browser-sidebar") as HTMLElement;
       const divider = rendered.root.querySelector(".browser-divider") as HTMLElement;
       expect(sidebar.style.width).toBe("300px");
 
-      divider.dispatchEvent(
-        new MouseEvent("mousedown", { bubbles: true, cancelable: true })
-      );
+      divider.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
       document.dispatchEvent(
-        new MouseEvent("mousemove", {
-          bubbles: true,
-          cancelable: true,
-          clientX: 480,
-        })
+        new MouseEvent("mousemove", { bubbles: true, cancelable: true, clientX: 480 })
       );
-      document.dispatchEvent(
-        new MouseEvent("mouseup", { bubbles: true, cancelable: true })
+      document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+
+      // Left sidebar grows directly with clientX.
+      expect(sidebar.style.width).toBe("480px");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("updates sidebar width with mirrored math when the divider is dragged (right sidebar)", async () => {
+    const fake = new FakeTransport();
+    setupBrowserTransport(fake); // default: right
+
+    const rendered = renderWithFakeTransport(() => <BrowserApp />, fake);
+    try {
+      await waitFor(() =>
+        expect(
+          rendered.root.querySelector(".browser-layout")?.classList.contains("browser-sidebar-right")
+        ).toBe(true)
       );
 
-      expect(sidebar.style.width).toBe("480px");
+      const sidebar = rendered.root.querySelector(".browser-sidebar") as HTMLElement;
+      const divider = rendered.root.querySelector(".browser-divider") as HTMLElement;
+      expect(sidebar.style.width).toBe("300px");
+
+      divider.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+      document.dispatchEvent(
+        new MouseEvent("mousemove", { bubbles: true, cancelable: true, clientX: 480 })
+      );
+      document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+
+      // Right sidebar grows as the pointer moves toward it: innerWidth - clientX.
+      const expected = window.innerWidth - 480;
+      expect(sidebar.style.width).toBe(`${expected}px`);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("toggles the sidebar side from the web control and persists mainSidebarSide", async () => {
+    const fake = new FakeTransport();
+    setupBrowserTransport(fake); // default: right
+
+    const rendered = renderWithFakeTransport(() => <BrowserApp />, fake);
+    try {
+      // Starts on the right by default.
+      await waitFor(() =>
+        expect(
+          rendered.root.querySelector(".browser-layout")?.classList.contains("browser-sidebar-right")
+        ).toBe(true)
+      );
+
+      const toggle = rendered.root.querySelector<HTMLButtonElement>(
+        '[data-ac-testid="browser.sidebarSideToggle"]'
+      );
+      expect(toggle).not.toBeNull();
+
+      fake.clearCalls();
+      toggle!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+      // Layout + inner rail flip to the left.
+      await waitFor(() => {
+        expect(
+          rendered.root.querySelector(".browser-layout")?.classList.contains("browser-sidebar-right")
+        ).toBe(false);
+        expect(
+          rendered.root.querySelector(".sidebar-body")?.getAttribute("data-rail-side")
+        ).toBe("left");
+      });
+
+      // The new side is written through to the shared mainSidebarSide setting.
+      await waitFor(() => expect(fake.callsFor("update_settings").length).toBeGreaterThan(0));
+      const persisted = fake.lastCall("update_settings")?.args as
+        | { newSettings?: { mainSidebarSide?: string } }
+        | undefined;
+      expect(persisted?.newSettings?.mainSidebarSide).toBe("left");
     } finally {
       rendered.cleanup();
     }
