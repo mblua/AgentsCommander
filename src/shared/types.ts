@@ -370,6 +370,25 @@ export interface WebServerOwnedStatus {
   state: WebServerOwnershipState;
 }
 
+export type ApiClientMintScope = "send" | "list-peers-lean" | "session-transport";
+
+export interface ApiClientMintRequest {
+  root: string;
+  scopes: ApiClientMintScope[];
+  label?: string | null;
+  expires?: string | null;
+}
+
+export interface ApiClientMintResponse {
+  clientId: string;
+  token: string;
+  boundFqn: string;
+  boundRoot: string;
+  scopes: string[];
+  expiresAt: string | null;
+  note: string;
+}
+
 export interface AppSettings {
   defaultShell: string;
   defaultShellArgs: string[];
