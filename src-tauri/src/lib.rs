@@ -2197,6 +2197,7 @@ pub fn run(
             commands::config::start_api_server,
             commands::config::stop_api_server,
             commands::config::api_server_status,
+            commands::config::mint_api_client,
             commands::config::start_web_server,
             commands::config::stop_web_server,
             commands::config::get_web_server_status,
