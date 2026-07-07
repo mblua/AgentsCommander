@@ -203,9 +203,26 @@ fn list(a: ListArgs) -> i32 {
         Ok(p) => p,
         Err(code) => return code,
     };
-    let registry = auth::list(&path);
-    // Redact the hash: list shows identity + scope + status, never the digest.
-    let redacted: Vec<serde_json::Value> = registry
+    let snapshot = auth::list_with_status(&path);
+    let output = list_output(&snapshot);
+    match serde_json::to_string_pretty(&output) {
+        Ok(json) => {
+            crate::cli_println!("{}", json);
+            if snapshot.problem.is_some() {
+                1
+            } else {
+                0
+            }
+        }
+        Err(e) => {
+            eprintln!("Error: failed to serialize client list: {}", e);
+            1
+        }
+    }
+}
+
+fn redacted_clients(registry: &auth::ApiClientRegistry) -> Vec<serde_json::Value> {
+    registry
         .clients
         .iter()
         .map(|c| {
@@ -220,16 +237,19 @@ fn list(a: ListArgs) -> i32 {
                 "revoked": c.revoked,
             })
         })
-        .collect();
-    match serde_json::to_string_pretty(&redacted) {
-        Ok(json) => {
-            crate::cli_println!("{}", json);
-            0
-        }
-        Err(e) => {
-            eprintln!("Error: failed to serialize client list: {}", e);
-            1
-        }
+        .collect()
+}
+
+fn list_output(snapshot: &auth::RegistrySnapshot) -> serde_json::Value {
+    let clients = redacted_clients(&snapshot.registry);
+    if let Some(problem) = &snapshot.problem {
+        serde_json::json!({
+            "registryStatus": problem.status,
+            "error": problem.message,
+            "clients": clients,
+        })
+    } else {
+        serde_json::Value::Array(clients)
     }
 }
 
@@ -284,5 +304,22 @@ mod tests {
             })) => assert_eq!(a.client_id, "abc"),
             _ => panic!("expected api-client revoke"),
         }
+    }
+
+    #[test]
+    fn list_output_surfaces_malformed_registry_status() {
+        let snapshot = auth::RegistrySnapshot {
+            registry: auth::ApiClientRegistry::default(),
+            problem: Some(auth::RegistryLoadProblem {
+                status: "malformed",
+                message: "api-clients.json is malformed: expected value".to_string(),
+            }),
+        };
+
+        let output = list_output(&snapshot);
+
+        assert_eq!(output["registryStatus"], "malformed");
+        assert!(output["error"].as_str().unwrap().contains("malformed"));
+        assert_eq!(output["clients"].as_array().unwrap().len(), 0);
     }
 }

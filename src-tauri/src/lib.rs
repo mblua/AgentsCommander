@@ -33,6 +33,7 @@ use session::manager::SessionManager;
 use shutdown::ShutdownSignal;
 use tauri::Manager;
 use telegram::manager::{OutputSenderMap, TelegramBridgeManager, TelegramBridgeState};
+use tokio_util::sync::CancellationToken;
 use voice::tracker::{VoiceTracker, VoiceTrackingState};
 use web::auth::WebAccessToken;
 use web::broadcast::WsBroadcaster;
@@ -63,13 +64,84 @@ impl WebServerHandle {
 
 #[derive(Default)]
 pub struct ApiServerHandle {
-    inner: Arc<Mutex<Option<tauri::async_runtime::JoinHandle<()>>>>,
+    inner: Arc<Mutex<Option<ApiServerTask>>>,
+}
+
+pub struct ApiServerTask {
+    join: tauri::async_runtime::JoinHandle<()>,
+    shutdown: CancellationToken,
+}
+
+impl ApiServerTask {
+    pub fn new(join: tauri::async_runtime::JoinHandle<()>, shutdown: CancellationToken) -> Self {
+        Self { join, shutdown }
+    }
 }
 
 impl ApiServerHandle {
     /// #791 - handle to the running control-plane API server task.
-    pub fn store(&self, handle: tauri::async_runtime::JoinHandle<()>) {
-        *self.inner.lock().unwrap() = Some(handle);
+    pub fn store_if_idle(&self, task: ApiServerTask) -> Result<bool, String> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "API server handle lock is poisoned".to_string())?;
+        if inner
+            .as_ref()
+            .is_some_and(|stored| !stored.join.inner().is_finished())
+        {
+            task.shutdown.cancel();
+            task.join.abort();
+            return Ok(false);
+        }
+        *inner = Some(task);
+        Ok(true)
+    }
+
+    pub fn has_running(&self) -> Result<bool, String> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "API server handle lock is poisoned".to_string())?;
+        if inner
+            .as_ref()
+            .is_some_and(|stored| !stored.join.inner().is_finished())
+        {
+            return Ok(true);
+        }
+        *inner = None;
+        Ok(false)
+    }
+
+    pub async fn shutdown_running(&self, timeout: std::time::Duration) -> Result<bool, String> {
+        let task = {
+            let mut inner = self
+                .inner
+                .lock()
+                .map_err(|_| "API server handle lock is poisoned".to_string())?;
+            match inner.as_ref() {
+                Some(stored) if stored.join.inner().is_finished() => {
+                    *inner = None;
+                    return Ok(false);
+                }
+                Some(_) => inner.take(),
+                None => return Ok(false),
+            }
+        };
+        let Some(task) = task else {
+            return Ok(false);
+        };
+
+        task.shutdown.cancel();
+        let mut join = task.join;
+        match tokio::time::timeout(timeout, &mut join).await {
+            Ok(Ok(())) => Ok(true),
+            Ok(Err(err)) => Err(format!("API server task failed during shutdown: {}", err)),
+            Err(_) => {
+                join.abort();
+                let _ = join.await;
+                Ok(true)
+            }
+        }
     }
 }
 
@@ -626,16 +698,21 @@ pub fn run(
                 if api_settings.api_server_enabled {
                     let bind = api_settings.api_server_bind.clone();
                     let port = api_settings.api_server_port;
+                    let api_shutdown = shutdown_for_setup.token().child_token();
                     let join_handle = api::start_server(
                         bind,
                         port,
                         app.handle().clone(),
                         session_mgr_for_api.clone(),
                         pty_mgr.clone(),
-                        shutdown_for_setup.clone(),
+                        api_shutdown.clone(),
                     );
                     let api_handle = app.state::<ApiServerHandle>();
-                    api_handle.store(join_handle);
+                    if let Err(e) =
+                        api_handle.store_if_idle(ApiServerTask::new(join_handle, api_shutdown))
+                    {
+                        log::error!("[api-server] failed to store server handle: {}", e);
+                    }
                 }
             }
 
@@ -2077,6 +2154,9 @@ pub fn run(
             commands::config::save_debug_logs,
             commands::config::drain_error_logs,
             commands::config::open_web_remote,
+            commands::config::start_api_server,
+            commands::config::stop_api_server,
+            commands::config::api_server_status,
             commands::config::start_web_server,
             commands::config::stop_web_server,
             commands::config::get_web_server_status,
@@ -2318,10 +2398,12 @@ mod tests {
     use super::{
         resolve_is_coord_for_restore, should_auto_create_root_agent_on_first_restore,
         should_wake_on_restore, should_wake_root_agent_on_restore, skip_auto_resume_for_restore,
-        ApiServerHandle, WebServerHandle,
+        ApiServerHandle, ApiServerTask, WebServerHandle,
     };
     use crate::config::settings::{AgentConfig, AppSettings};
     use crate::session::session::SessionStatus;
+    use std::time::Duration;
+    use tokio_util::sync::CancellationToken;
 
     fn settings_with_agent() -> AppSettings {
         AppSettings {
@@ -2348,6 +2430,56 @@ mod tests {
             .manage(ApiServerHandle::default())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("web and api server handles must be distinct managed types");
+    }
+
+    #[tokio::test]
+    async fn api_server_handle_shutdown_cancels_running_task() {
+        let handle = ApiServerHandle::default();
+        let shutdown = CancellationToken::new();
+        let task_shutdown = shutdown.clone();
+        let join = tauri::async_runtime::spawn(async move {
+            task_shutdown.cancelled().await;
+        });
+
+        assert!(handle
+            .store_if_idle(ApiServerTask::new(join, shutdown))
+            .unwrap());
+        assert!(handle.has_running().unwrap());
+        assert!(handle
+            .shutdown_running(Duration::from_secs(1))
+            .await
+            .unwrap());
+        assert!(!handle.has_running().unwrap());
+    }
+
+    #[tokio::test]
+    async fn api_server_handle_rejects_duplicate_running_task() {
+        let handle = ApiServerHandle::default();
+        let first_shutdown = CancellationToken::new();
+        let first_task_shutdown = first_shutdown.clone();
+        let first_join = tauri::async_runtime::spawn(async move {
+            first_task_shutdown.cancelled().await;
+        });
+        assert!(handle
+            .store_if_idle(ApiServerTask::new(first_join, first_shutdown))
+            .unwrap());
+
+        let second_shutdown = CancellationToken::new();
+        let second_observer = second_shutdown.clone();
+        let second_task_shutdown = second_shutdown.clone();
+        let second_join = tauri::async_runtime::spawn(async move {
+            second_task_shutdown.cancelled().await;
+        });
+        assert!(!handle
+            .store_if_idle(ApiServerTask::new(second_join, second_shutdown))
+            .unwrap());
+        assert!(second_observer.is_cancelled());
+        assert!(handle.has_running().unwrap());
+
+        assert!(handle
+            .shutdown_running(Duration::from_secs(1))
+            .await
+            .unwrap());
     }
 
     #[test]

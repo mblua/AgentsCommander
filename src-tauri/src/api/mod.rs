@@ -20,10 +20,12 @@ pub mod schema;
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use axum::Router;
+use tokio_util::sync::CancellationToken;
 
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
@@ -77,7 +79,7 @@ pub fn start_server(
     app_handle: tauri::AppHandle,
     session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
     pty_mgr: Arc<Mutex<PtyManager>>,
-    shutdown: crate::shutdown::ShutdownSignal,
+    shutdown: CancellationToken,
 ) -> tauri::async_runtime::JoinHandle<()> {
     let store = match auth::ApiClientStore::at_config_dir() {
         Some(s) => Arc::new(s),
@@ -118,7 +120,8 @@ pub fn start_server(
             Ok(a) => a,
             Err(e) => {
                 log::error!("[api-server] invalid bind address {}:{}: {}", bind, port, e);
-                dispatcher_handle.abort();
+                shutdown.cancel();
+                wait_for_dispatcher(dispatcher_handle, "invalid-bind").await;
                 return;
             }
         };
@@ -142,7 +145,8 @@ pub fn start_server(
                     addr,
                     e
                 );
-                dispatcher_handle.abort();
+                shutdown.cancel();
+                wait_for_dispatcher(dispatcher_handle, "bind-failure").await;
                 return;
             }
         };
@@ -151,14 +155,43 @@ pub fn start_server(
         println!("[api-server] listening on http://{}", addr);
 
         let service = router.into_make_service_with_connect_info::<SocketAddr>();
+        let server_shutdown = shutdown.clone();
         if let Err(e) = axum::serve(listener, service)
             .with_graceful_shutdown(async move {
-                shutdown.token().cancelled().await;
+                server_shutdown.cancelled().await;
                 log::info!("[api-server] shutdown signal received, stopping");
             })
             .await
         {
             log::error!("[api-server] server error: {}", e);
         }
+        shutdown.cancel();
+        wait_for_dispatcher(dispatcher_handle, "server-stop").await;
     })
+}
+
+const DISPATCHER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+
+async fn wait_for_dispatcher(
+    mut dispatcher_handle: tauri::async_runtime::JoinHandle<()>,
+    reason: &'static str,
+) {
+    match tokio::time::timeout(DISPATCHER_SHUTDOWN_TIMEOUT, &mut dispatcher_handle).await {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => {
+            log::warn!(
+                "[api-server] dispatcher task failed during {} shutdown: {}",
+                reason,
+                err
+            );
+        }
+        Err(_) => {
+            log::warn!(
+                "[api-server] dispatcher did not stop within {:?} during {}; aborting",
+                DISPATCHER_SHUTDOWN_TIMEOUT,
+                reason
+            );
+            dispatcher_handle.abort();
+        }
+    }
 }
