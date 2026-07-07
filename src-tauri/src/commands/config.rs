@@ -5,7 +5,9 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
+use uuid::Uuid;
 
+use crate::api::auth;
 use crate::config::claude_settings::{ensure_rtk_pretool_hook, enumerate_managed_agent_dirs};
 use crate::config::settings::{
     load_settings, merge_protected_coding_agent_settings, save_settings,
@@ -29,6 +31,8 @@ const HOME_MARKDOWN_MAX_BYTES: usize = 256 * 1024; // 256 KB
 const HOME_MARKDOWN_TIMEOUT_SECS: u64 = 5;
 const WEB_STATUS_CONNECT_TIMEOUT_MS: u64 = 500;
 const API_SERVER_STOP_TIMEOUT_MS: u64 = 5_000;
+const MINT_API_CLIENT_NOTE: &str =
+    "Store this token now; it is shown only once. The registry keeps only a hash.";
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,6 +61,18 @@ pub struct CodingAgentProfileResolutionResult {
     pub origin_default_profile: Option<String>,
     pub agent_default_profile: Option<String>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MintApiClientResponse {
+    pub client_id: String,
+    pub token: String,
+    pub bound_fqn: String,
+    pub bound_root: String,
+    pub scopes: Vec<String>,
+    pub expires_at: Option<String>,
+    pub note: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1201,6 +1217,83 @@ pub async fn api_server_status(settings: State<'_, SettingsState>) -> Result<boo
     Ok(is_tcp_listening(&addr).await)
 }
 
+#[tauri::command]
+pub async fn mint_api_client(
+    root: String,
+    scopes: Vec<String>,
+    label: Option<String>,
+    expires: Option<String>,
+) -> Result<MintApiClientResponse, String> {
+    let path = crate::config::config_dir()
+        .ok_or_else(|| "Cannot resolve the host config directory".to_string())?
+        .join(auth::REGISTRY_FILENAME);
+    mint_api_client_with_path(
+        &path,
+        root,
+        scopes,
+        label,
+        expires,
+        Uuid::new_v4().to_string(),
+        Uuid::new_v4().to_string(),
+        chrono::Utc::now().to_rfc3339(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mint_api_client_with_path(
+    path: &Path,
+    root: String,
+    scopes: Vec<String>,
+    label: Option<String>,
+    expires: Option<String>,
+    client_id: String,
+    secret: String,
+    issued_at: String,
+) -> Result<MintApiClientResponse, String> {
+    let bound_fqn = crate::config::teams::agent_fqn_from_path(&root);
+    if crate::config::root_agent::is_root_agent_path(&root)
+        || crate::config::root_agent::is_root_agent_target(&bound_fqn)
+        || bound_fqn == crate::config::root_agent::ROOT_AGENT_SENDER
+    {
+        return Err(
+            "Cannot mint an API client bound to the Root Agent; root-agent is API-excluded"
+                .to_string(),
+        );
+    }
+
+    let scopes: Vec<String> = scopes
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    auth::validate_scopes(&scopes)?;
+
+    let out = auth::mint(
+        path,
+        auth::MintRequest {
+            client_id,
+            secret,
+            label: label.unwrap_or_default(),
+            bound_root: root.clone(),
+            bound_fqn: bound_fqn.clone(),
+            scopes: scopes.clone(),
+            issued_at,
+            expires_at: expires.clone(),
+        },
+    )?;
+
+    crate::api::audit::record(&out.client_id, &bound_fqn, "mint", "ok");
+    Ok(MintApiClientResponse {
+        client_id: out.client_id,
+        token: out.secret,
+        bound_fqn,
+        bound_root: root,
+        scopes,
+        expires_at: expires,
+        note: MINT_API_CLIENT_NOTE.to_string(),
+    })
+}
+
 // Tauri command: State<> injections push us over clippy's 7-arg threshold.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
@@ -1591,12 +1684,13 @@ mod tests {
     #[cfg(windows)]
     use super::{build_profile_assignment_target, canonical_compare_key};
     use super::{
-        build_web_server_owned_status, ensure_web_remote_open_allowed,
+        build_web_server_owned_status, ensure_web_remote_open_allowed, mint_api_client_with_path,
         persist_coding_agent_env_settings_update, persist_coding_agent_profiles_update,
         persist_narrow_settings_update_with_saver, persist_protected_settings_update_with_saver,
         persist_settings_draft_update_with_saver, RtkSweepError, RtkSweepResult,
-        WebServerOwnershipState,
+        WebServerOwnershipState, MINT_API_CLIENT_NOTE,
     };
+    use crate::api::auth;
     use crate::config::settings::{
         AgentConfig, AppSettings, CodingAgentEnv, CodingAgentEnvSource, ProfileCellConfig,
         SettingsState,
@@ -1661,6 +1755,54 @@ mod tests {
 
     fn state_for(settings: AppSettings) -> SettingsState {
         Arc::new(RwLock::new(settings))
+    }
+
+    #[test]
+    fn mint_api_client_command_helper_returns_token_and_stores_hash_only() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(auth::REGISTRY_FILENAME);
+        let root = "C:/repos/proj-a/.ac/wg-1-devs/__agent_alice".to_string();
+        let expected_fqn = crate::config::teams::agent_fqn_from_path(&root);
+
+        let response = mint_api_client_with_path(
+            &path,
+            root.clone(),
+            vec![
+                " send ".to_string(),
+                "".to_string(),
+                "list-peers-lean".to_string(),
+            ],
+            Some("gui mint".to_string()),
+            None,
+            "client-1".to_string(),
+            "plain-secret".to_string(),
+            "2026-01-01T00:00:00Z".to_string(),
+        )
+        .expect("mint succeeds");
+
+        assert_eq!(response.client_id, "client-1");
+        assert_eq!(response.token, "plain-secret");
+        assert_eq!(response.bound_root, root);
+        assert_eq!(response.bound_fqn, expected_fqn);
+        assert_eq!(response.scopes, vec!["send", "list-peers-lean"]);
+        assert_eq!(response.expires_at, None);
+        assert_eq!(response.note, MINT_API_CLIENT_NOTE);
+
+        let raw = std::fs::read_to_string(&path).expect("read registry");
+        assert!(raw.contains("client-1"));
+        assert!(raw.contains("sha256:"));
+        assert!(!raw.contains("plain-secret"));
+
+        let registry = auth::list(&path);
+        assert_eq!(registry.clients.len(), 1);
+        let client = &registry.clients[0];
+        assert_eq!(client.client_id, "client-1");
+        assert_eq!(client.label, "gui mint");
+        assert_eq!(client.bound_fqn, expected_fqn);
+        assert_eq!(client.bound_root, response.bound_root);
+        assert_eq!(client.scopes, response.scopes);
+        assert_eq!(client.expires_at, None);
+        assert_ne!(client.token_hash, "plain-secret");
     }
 
     #[test]
