@@ -128,7 +128,9 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
 
   const stopAndWaitForStopped = async (): Promise<boolean> => {
     await SettingsAPI.stopWebServer();
-    const observed = await waitForOwnedStatus((nextStatus) => !nextStatus.owned);
+    const observed = await waitForOwnedStatus((nextStatus) =>
+      !nextStatus.owned && !nextStatus.listening
+    );
     if (observed && !observed.listening && !observed.owned) return true;
 
     setError("Port is still in use");

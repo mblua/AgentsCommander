@@ -351,7 +351,7 @@ describe("Titlebar webserver menu", () => {
     await mounted.modules.waitFor(() => {
       expect(byTestId("titlebar.webserver.error").textContent).toContain("Port is still in use");
       expect(byTestId<HTMLButtonElement>("titlebar.webserver.open").disabled).toBe(true);
-    });
+    }, 2500);
     mounted.modules.click(byTestId("titlebar.webserver.open"));
     expect(mounted.fake.callsFor("open_web_remote")).toHaveLength(0);
   });
@@ -519,5 +519,29 @@ describe("Titlebar webserver menu", () => {
     await mounted.modules.waitFor(() => {
       expect(mounted.fake.callsFor("start_web_server")).toHaveLength(1);
     });
+  });
+
+  it("waits through transient external-listening status before restarting", async () => {
+    const mounted = await mountTitlebar({
+      settings: { webServerEnabled: true },
+      status: ownedStatus(),
+      stopWebServer: (control) => {
+        control.queueStatus(externalStatus(), stoppedStatus());
+        return true;
+      },
+      startWebServer: (control) => {
+        control.setStatus(ownedStatus());
+        return true;
+      },
+    });
+
+    await openWebServerMenu(mounted);
+    mounted.modules.click(byTestId("titlebar.webserver.restart"));
+
+    await mounted.modules.waitFor(() => {
+      expect(mounted.fake.callsFor("start_web_server")).toHaveLength(1);
+      expect(byTestId("titlebar.webserver.menu").textContent).toContain("Running");
+    });
+    expect(maybeByTestId("titlebar.webserver.error")).toBeNull();
   });
 });
