@@ -15,6 +15,7 @@ import {
 import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import type { AcDiscoveryResult, Session } from "../../shared/types";
+import { toastStore } from "../../shared/stores/toasts";
 import { automationIdPart } from "./replica-repo-badges";
 
 // Issue #545: gray (never launched) and red (exited) replicas could not open a
@@ -702,6 +703,87 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       agentPath: originAgentPath,
     });
     await waitFor(() => expect(fake.callsFor("discover_project").length).toBeGreaterThan(initialDiscoveryCalls));
+  });
+
+  it("refreshes and shows a cleanup note when offline origin agent delete partially succeeds", async () => {
+    const fake = await setupPanel(
+      [],
+      discovery({
+        agents: [
+          {
+            name: "dev-docs",
+            path: originAgentPath,
+            roleExists: true,
+          },
+        ],
+      }),
+      "dev-docs"
+    );
+    fake.onInvoke("delete_agent_matrix", () => {
+      throw new Error(
+        `Agent was removed, but hidden cleanup dir(s) remain: ${originAgentPath}\\.ac-delete-cleanup`
+      );
+    });
+    const initialDiscoveryCalls = fake.callsFor("discover_project").length;
+
+    contextMenu(findAgentRow(rendered!.root, "dev-docs"));
+    await waitFor(() => expect(replicaMenu()).not.toBeNull());
+    click(findExactMenuButton(replicaMenu()!, "Delete")!);
+
+    const dialogId = `agent.delete.dialog.${automationIdPart(originAgentPath)}`;
+    const confirmId = `agent.delete.confirm.${automationIdPart(originAgentPath)}`;
+    await waitFor(() => expect(document.querySelector(`[data-ac-testid="${confirmId}"]`)).not.toBeNull());
+    click(document.querySelector(`[data-ac-testid="${confirmId}"]`)!);
+
+    await waitFor(() => expect(fake.callsFor("delete_agent_matrix")).toHaveLength(1));
+    await waitFor(() => expect(fake.callsFor("discover_project").length).toBeGreaterThan(initialDiscoveryCalls));
+    await waitFor(() => {
+      const toast = toastStore.items.find(
+        (item) => item.kind === "info" && item.message.includes("Agent was removed")
+      );
+      expect(toast).toBeTruthy();
+      expect(toast!.message).toContain("hidden cleanup folder remains");
+      expect(toast!.message).toContain(".ac-delete-cleanup");
+    });
+    await waitFor(() => expect(document.querySelector(`[data-ac-testid="${dialogId}"]`)).toBeNull());
+  });
+
+  it("keeps the modal error path and skips refresh when offline origin agent delete fails normally", async () => {
+    const fake = await setupPanel(
+      [],
+      discovery({
+        agents: [
+          {
+            name: "dev-docs",
+            path: originAgentPath,
+            roleExists: true,
+          },
+        ],
+      }),
+      "dev-docs"
+    );
+    fake.onInvoke("delete_agent_matrix", () => {
+      throw new Error("Agent has a live session. Stop it before deleting.");
+    });
+    const initialDiscoveryCalls = fake.callsFor("discover_project").length;
+
+    contextMenu(findAgentRow(rendered!.root, "dev-docs"));
+    await waitFor(() => expect(replicaMenu()).not.toBeNull());
+    click(findExactMenuButton(replicaMenu()!, "Delete")!);
+
+    const confirmId = `agent.delete.confirm.${automationIdPart(originAgentPath)}`;
+    const errorId = `agent.delete.error.${automationIdPart(originAgentPath)}`;
+    await waitFor(() => expect(document.querySelector(`[data-ac-testid="${confirmId}"]`)).not.toBeNull());
+    click(document.querySelector(`[data-ac-testid="${confirmId}"]`)!);
+
+    await waitFor(() => {
+      const error = document.querySelector<HTMLElement>(`[data-ac-testid="${errorId}"]`);
+      expect(error).not.toBeNull();
+      expect(error!.textContent).toContain("Agent has a live session");
+    });
+    expect(fake.callsFor("discover_project")).toHaveLength(initialDiscoveryCalls);
+    expect(toastStore.items.some((item) => item.message.includes("Agent was removed"))).toBe(false);
+    expect((document.querySelector(`[data-ac-testid="${confirmId}"]`) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("surfaces parsed BLOCKERS details when offline origin agent delete is blocked", async () => {

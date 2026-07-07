@@ -329,6 +329,16 @@ function TrashIcon() {
   );
 }
 
+const AGENT_DELETE_PARTIAL_REMOVAL_PREFIX =
+  "Agent was removed, but hidden cleanup dir(s) remain:";
+
+function formatAgentDeletePartialRemovalWarning(message: string): string {
+  const details = message.slice(AGENT_DELETE_PARTIAL_REMOVAL_PREFIX.length).trim();
+  return details
+    ? `Agent was removed. A hidden cleanup folder remains on disk: ${details}`
+    : "Agent was removed. A hidden cleanup folder remains on disk.";
+}
+
 function formatAgentDeleteBlockerError(report: BlockerReport): string {
   const normalized = normalizeBlockerReport(report);
   const liveSessions = normalized.liveSessions.map((session) =>
@@ -2966,6 +2976,12 @@ const ProjectPanel: Component = () => {
                                   } catch (e: any) {
                                     console.error("delete_agent_matrix failed:", e);
                                     const msg = typeof e === "string" ? e : e?.message ?? "Failed to delete agent";
+                                    if (msg.startsWith(AGENT_DELETE_PARTIAL_REMOVAL_PREFIX)) {
+                                      toastStore.info(formatAgentDeletePartialRemovalWarning(msg), { durationMs: null });
+                                      closeAgentDeleteModal();
+                                      await projectStore.reloadProject(proj.path);
+                                      return;
+                                    }
                                     if (msg.startsWith("BLOCKERS:")) {
                                       try {
                                         const report = JSON.parse(msg.slice("BLOCKERS:".length)) as BlockerReport;
