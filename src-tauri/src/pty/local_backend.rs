@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
@@ -8,7 +9,7 @@ use uuid::Uuid;
 #[cfg(windows)]
 use std::path::Path;
 #[cfg(windows)]
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 #[cfg(windows)]
 use std::time::Duration;
 
@@ -569,6 +570,68 @@ impl LocalProcessBackend {
     }
 }
 
+type BlockingSpawnCleanup = dyn Fn(Uuid) + Send + Sync + 'static;
+
+struct BlockingSpawnCancelGuard {
+    id: Uuid,
+    cancelled: Arc<AtomicBool>,
+    cleanup: Arc<BlockingSpawnCleanup>,
+    disarmed: bool,
+}
+
+impl BlockingSpawnCancelGuard {
+    fn disarm(&mut self) {
+        self.disarmed = true;
+    }
+}
+
+impl Drop for BlockingSpawnCancelGuard {
+    fn drop(&mut self) {
+        if self.disarmed {
+            return;
+        }
+
+        self.cancelled.store(true, Ordering::SeqCst);
+        (self.cleanup)(self.id);
+    }
+}
+
+fn spawn_blocking_cancel_safe<F, C>(
+    id: Uuid,
+    work: F,
+    cleanup: C,
+    join_error_context: &'static str,
+) -> futures::future::BoxFuture<'static, Result<(), AppError>>
+where
+    F: FnOnce() -> Result<(), AppError> + Send + 'static,
+    C: Fn(Uuid) + Send + Sync + 'static,
+{
+    Box::pin(async move {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cleanup: Arc<BlockingSpawnCleanup> = Arc::new(cleanup);
+        let worker_cancelled = Arc::clone(&cancelled);
+        let worker_cleanup = Arc::clone(&cleanup);
+        let mut guard = BlockingSpawnCancelGuard {
+            id,
+            cancelled: Arc::clone(&cancelled),
+            cleanup: Arc::clone(&cleanup),
+            disarmed: false,
+        };
+        let handle = tokio::task::spawn_blocking(move || {
+            let result = work();
+            if worker_cancelled.load(Ordering::SeqCst) && result.is_ok() {
+                (worker_cleanup)(id);
+            }
+            result
+        });
+        let result = handle
+            .await
+            .map_err(|e| AppError::Other(format!("{join_error_context}: {e}")))?;
+        guard.disarm();
+        result
+    })
+}
+
 impl PtyBackend for LocalProcessBackend {
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -578,12 +641,19 @@ impl PtyBackend for LocalProcessBackend {
         &self,
         spec: BackendSpawnSpec,
     ) -> futures::future::BoxFuture<'_, Result<(), AppError>> {
-        let backend = self.clone();
-        Box::pin(async move {
-            tokio::task::spawn_blocking(move || backend.spawn_sync(spec))
-                .await
-                .map_err(|e| AppError::Other(format!("local process spawn task failed: {e}")))?
-        })
+        let id = spec.id;
+        let spawn_backend = self.clone();
+        let cleanup_backend = self.clone();
+        spawn_blocking_cancel_safe(
+            id,
+            move || spawn_backend.spawn_sync(spec),
+            move |id| {
+                if let Err(err) = cleanup_backend.kill(id) {
+                    log::warn!("[pty] Failed to clean up cancelled local spawn {id}: {err}");
+                }
+            },
+            "local process spawn task failed",
+        )
     }
 
     fn write(&self, id: Uuid, data: &[u8]) -> Result<(), AppError> {
@@ -759,4 +829,70 @@ fn reap_child_in_background(
             );
         }
     });
+}
+
+#[cfg(test)]
+mod cancel_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
+    use std::time::Duration as StdDuration;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_blocking_spawn_cleans_up_after_worker_finishes() {
+        let id = Uuid::new_v4();
+        let registered = Arc::new(AtomicBool::new(false));
+        let cleanup_count = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let (cleanup_tx, cleanup_rx) = mpsc::channel();
+
+        let registered_for_work = Arc::clone(&registered);
+        let work = move || {
+            started_tx.send(()).expect("send started");
+            release_rx.recv().expect("wait for release");
+            registered_for_work.store(true, Ordering::SeqCst);
+            done_tx.send(()).expect("send done");
+            Ok(())
+        };
+
+        let registered_for_cleanup = Arc::clone(&registered);
+        let cleanup_count_for_cleanup = Arc::clone(&cleanup_count);
+        let expected_id = id;
+        let cleanup = move |cleanup_id| {
+            assert_eq!(cleanup_id, expected_id);
+            registered_for_cleanup.store(false, Ordering::SeqCst);
+            cleanup_count_for_cleanup.fetch_add(1, Ordering::SeqCst);
+            let _ = cleanup_tx.send(());
+        };
+
+        let task = tokio::spawn(spawn_blocking_cancel_safe(
+            id,
+            work,
+            cleanup,
+            "test spawn failed",
+        ));
+        started_rx
+            .recv_timeout(StdDuration::from_secs(2))
+            .expect("blocking worker should start");
+
+        task.abort();
+        cleanup_rx
+            .recv_timeout(StdDuration::from_secs(2))
+            .expect("dropping waiter should request cleanup");
+        release_tx.send(()).expect("release worker");
+        done_rx
+            .recv_timeout(StdDuration::from_secs(2))
+            .expect("blocking worker should finish work");
+        cleanup_rx
+            .recv_timeout(StdDuration::from_secs(2))
+            .expect("cancelled worker should clean up registered state");
+
+        assert!(
+            !registered.load(Ordering::SeqCst),
+            "registered state should be cleaned up after cancellation"
+        );
+        assert_eq!(cleanup_count.load(Ordering::SeqCst), 2);
+    }
 }
