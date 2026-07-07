@@ -47,7 +47,7 @@ pub fn authenticate(
     let token = match bearer_token(headers) {
         Some(t) => t,
         None => {
-            state.lockout.record_failure(ip);
+            state.lockout.record_failure(ip)?;
             crate::api::audit::record("-", "-", scope, "missing_token");
             return Err(ApiError::Unauthorized(
                 "missing or malformed Authorization: Bearer header".to_string(),
@@ -56,18 +56,22 @@ pub fn authenticate(
     };
 
     let client = match state.store.authenticate(&token) {
-        Some(c) => c,
-        None => {
-            state.lockout.record_failure(ip);
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            state.lockout.record_failure(ip)?;
             crate::api::audit::record("-", "-", scope, "invalid_token");
             return Err(ApiError::Unauthorized(
                 "invalid, revoked, or expired token".to_string(),
             ));
         }
+        Err(e) => {
+            crate::api::audit::record("-", "-", scope, "auth_internal_error");
+            return Err(e);
+        }
     };
 
     // A valid token proves this source is not a brute-forcer: clear its history.
-    state.lockout.record_success(ip);
+    state.lockout.record_success(ip)?;
 
     if !client.has_scope(scope) {
         crate::api::audit::record(&client.client_id, &client.bound_fqn, scope, "forbidden_scope");

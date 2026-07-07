@@ -42,10 +42,26 @@ function normalizeAgentConfigSeed(agent: AgentConfig): AgentConfig {
 
 export function mergeSettingsForSavePreservingProjects(
   draft: AppSettings,
-  fresh: AppSettings
+  fresh: AppSettings,
+  modalSeed: AppSettings | null = null
 ): AppSettings {
+  const webServerFields = modalSeed
+    ? {
+        webServerEnabled: Object.is(draft.webServerEnabled, modalSeed.webServerEnabled)
+          ? fresh.webServerEnabled
+          : draft.webServerEnabled,
+        webServerPort: Object.is(draft.webServerPort, modalSeed.webServerPort)
+          ? fresh.webServerPort
+          : draft.webServerPort,
+        webServerBind: Object.is(draft.webServerBind, modalSeed.webServerBind)
+          ? fresh.webServerBind
+          : draft.webServerBind,
+      }
+    : {};
+
   return {
     ...draft,
+    ...webServerFields,
     agents: draft.agents
       .map(normalizeAgentInstructionsFilename)
       .map(normalizeAgentConfigSeed),

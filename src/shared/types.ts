@@ -355,6 +355,21 @@ export type MainSidebarSide = "left" | "right";
  *  `console-capture.ts` / `ipc.ts` / `SettingsModal.tsx`. */
 export type LogLevel = "error" | "warn" | "info" | "debug" | "trace";
 
+export type WebServerOwnershipState =
+  | "ownedRunning"
+  | "externalListening"
+  | "stopped";
+
+export interface WebServerOwnedStatus {
+  listening: boolean;
+  owned: boolean;
+  externalListening: boolean;
+  openAllowed: boolean;
+  bind: string;
+  port: number;
+  state: WebServerOwnershipState;
+}
+
 export interface AppSettings {
   defaultShell: string;
   defaultShellArgs: string[];
@@ -388,6 +403,9 @@ export interface AppSettings {
   webServerEnabled: boolean;
   webServerPort: number;
   webServerBind: string;
+  apiServerEnabled: boolean;
+  apiServerPort: number;
+  apiServerBind: string;
   projectPath: string | null;
   projectPaths: string[];
   sidebarStyle: string;
