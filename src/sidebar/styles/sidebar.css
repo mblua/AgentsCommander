@@ -117,6 +117,51 @@ html, body, #root {
   background: var(--titlebar-btn-hover);
 }
 
+.titlebar-zoom-stepper {
+  display: flex;
+  align-items: center;
+  height: 32px;
+  margin: 0 2px;
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-zoom-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  color: var(--titlebar-fg);
+  cursor: pointer;
+  font-size: 13px;
+  transition: background var(--transition-fast), color var(--transition-fast), opacity var(--transition-fast);
+}
+
+.titlebar-zoom-btn:hover:not(:disabled) {
+  background: rgba(0, 212, 255, 0.15);
+  color: var(--sidebar-accent);
+}
+
+.titlebar-zoom-btn:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+.titlebar-zoom-value {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 32px;
+  color: var(--titlebar-fg);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+  user-select: none;
+}
+
 .titlebar-btn-close:hover {
   background: var(--titlebar-btn-close-hover);
   color: white;

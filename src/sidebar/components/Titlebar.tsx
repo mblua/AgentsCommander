@@ -6,6 +6,7 @@ import { extractWorkgroupName, computeTrailingText } from "../../shared/path-ext
 import { terminalStore } from "../../terminal/stores/terminal";
 import type { MainSidebarSide } from "../../shared/types";
 import WebServerMenu from "./WebServerMenu";
+import ZoomStepper from "./ZoomStepper";
 import {
   DEFAULT_MAIN_SIDEBAR_WIDTH,
   MAIN_SIDEBAR_MAX_WIDTH,
@@ -146,6 +147,7 @@ const Titlebar: Component = () => {
             onOpenChange={setWebServerMenuOpen}
           />
         </Show>
+        <ZoomStepper />
         <div class="layout-dropdown-wrapper">
           <button
             class={`titlebar-btn titlebar-btn-layout ${layoutOpen() ? "open" : ""}`}

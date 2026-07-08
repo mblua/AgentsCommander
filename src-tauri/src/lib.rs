@@ -1279,7 +1279,7 @@ pub fn run(
             .expect("Failed to set main window icon")
             .min_inner_size(800.0, 500.0)
             .decorations(false)
-            .zoom_hotkeys_enabled(true)
+            .zoom_hotkeys_enabled(false)
             .inner_size(main_geo.width, main_geo.height)
             .position(main_geo.x, main_geo.y)
             .build()?;
