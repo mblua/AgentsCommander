@@ -40,6 +40,25 @@ function normalizeAgentConfigSeed(agent: AgentConfig): AgentConfig {
   return rest;
 }
 
+/**
+ * #868 - normalize the optional runtime backend. The editor preserves a hidden
+ * image in the live draft while toggling Container <-> Local, but Local must
+ * persist exactly like the historical default: no `backend` object at all.
+ */
+function normalizeAgentBackend(agent: AgentConfig): AgentConfig {
+  const kind = agent.backend?.kind ?? "localProcess";
+  if (kind === "localProcess") {
+    const { backend: _drop, ...rest } = agent;
+    return rest;
+  }
+
+  const image = agent.backend?.image?.trim();
+  return {
+    ...agent,
+    backend: image ? { kind, image } : { kind },
+  };
+}
+
 export function mergeSettingsForSavePreservingProjects(
   draft: AppSettings,
   fresh: AppSettings,
@@ -64,7 +83,8 @@ export function mergeSettingsForSavePreservingProjects(
     ...webServerFields,
     agents: draft.agents
       .map(normalizeAgentInstructionsFilename)
-      .map(normalizeAgentConfigSeed),
+      .map(normalizeAgentConfigSeed)
+      .map(normalizeAgentBackend),
     projectPaths: fresh.projectPaths ?? [],
     projectPath: fresh.projectPath ?? null,
   };

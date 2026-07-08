@@ -62,6 +62,13 @@ pub fn container_image_from_env() -> String {
         .unwrap_or_else(|| DEFAULT_CONTAINER_IMAGE.to_string())
 }
 
+pub fn resolve_container_image(per_agent: Option<&str>) -> String {
+    match per_agent.map(str::trim).filter(|image| !image.is_empty()) {
+        Some(image) => image.to_string(),
+        None => container_image_from_env(),
+    }
+}
+
 pub fn api_url_for_container(bind: &str, port: u16) -> Result<String, AppError> {
     let bind = bind.trim();
     if bind.is_empty() {
@@ -86,6 +93,23 @@ pub fn api_url_for_container(bind: &str, port: u16) -> Result<String, AppError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_container_image_env(value: Option<&str>, test: impl FnOnce()) {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let previous = std::env::var_os("AGENTSCOMMANDER_CONTAINER_IMAGE");
+        match value {
+            Some(value) => std::env::set_var("AGENTSCOMMANDER_CONTAINER_IMAGE", value),
+            None => std::env::remove_var("AGENTSCOMMANDER_CONTAINER_IMAGE"),
+        }
+        test();
+        match previous {
+            Some(value) => std::env::set_var("AGENTSCOMMANDER_CONTAINER_IMAGE", value),
+            None => std::env::remove_var("AGENTSCOMMANDER_CONTAINER_IMAGE"),
+        }
+    }
 
     #[test]
     fn api_url_rejects_loopback_and_maps_wildcard_to_docker_host() {
@@ -98,5 +122,25 @@ mod tests {
             api_url_for_container("192.168.1.10", 8765).unwrap(),
             "http://192.168.1.10:8765"
         );
+    }
+
+    #[test]
+    fn resolve_container_image_uses_per_agent_env_then_default() {
+        with_container_image_env(Some("env/image:latest"), || {
+            assert_eq!(
+                resolve_container_image(Some(" per-agent/image:latest ")),
+                "per-agent/image:latest"
+            );
+            assert_eq!(resolve_container_image(Some("  ")), "env/image:latest");
+            assert_eq!(resolve_container_image(None), "env/image:latest");
+        });
+
+        with_container_image_env(Some("  "), || {
+            assert_eq!(resolve_container_image(None), DEFAULT_CONTAINER_IMAGE);
+        });
+
+        with_container_image_env(None, || {
+            assert_eq!(resolve_container_image(None), DEFAULT_CONTAINER_IMAGE);
+        });
     }
 }

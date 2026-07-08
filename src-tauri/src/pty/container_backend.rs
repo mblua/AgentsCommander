@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::errors::AppError;
 use crate::pty::backend::{BackendSpawnSpec, PtyBackend};
 use crate::pty::container_runtime::{
-    api_url_for_container, container_image_from_env, ContainerRuntime, ContainerRuntimeHandle,
+    api_url_for_container, resolve_container_image, ContainerRuntime, ContainerRuntimeHandle,
     ContainerStartRequest, CONTAINER_STOP_TIMEOUT, DEFAULT_CONTAINER_WORKDIR,
 };
 use crate::pty::container_tokens::{ContainerApiToken, ContainerApiTokenManager};
@@ -556,6 +556,7 @@ impl ContainerTransportBackend {
             cwd,
             cols,
             rows,
+            container_image,
             configured_env,
             env_remove_keys,
             extra_env: _,
@@ -605,6 +606,7 @@ impl ContainerTransportBackend {
             cols,
             configured_env,
             env_remove_keys,
+            container_image,
             ticket,
             &token,
         ) {
@@ -1038,10 +1040,42 @@ fn build_start_request(
     cols: u16,
     configured_env: Vec<(String, String)>,
     env_remove_keys: Vec<String>,
+    container_image: Option<String>,
     registration_ticket: String,
     token: &ContainerApiToken,
 ) -> Result<ContainerStartRequest, AppError> {
     let settings = crate::config::settings::load_settings();
+    build_start_request_with_settings(
+        session_id,
+        cmd,
+        args,
+        cwd,
+        rows,
+        cols,
+        configured_env,
+        env_remove_keys,
+        container_image,
+        registration_ticket,
+        token,
+        &settings,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_start_request_with_settings(
+    session_id: Uuid,
+    cmd: &str,
+    args: Vec<String>,
+    cwd: &str,
+    rows: u16,
+    cols: u16,
+    configured_env: Vec<(String, String)>,
+    env_remove_keys: Vec<String>,
+    container_image: Option<String>,
+    registration_ticket: String,
+    token: &ContainerApiToken,
+    settings: &crate::config::settings::AppSettings,
+) -> Result<ContainerStartRequest, AppError> {
     if !settings.api_server_enabled {
         return Err(AppError::Other(
             "container transport requires the control-plane API server to be enabled".to_string(),
@@ -1051,7 +1085,7 @@ fn build_start_request(
     let child_env = sanitized_child_env(configured_env, env_remove_keys);
     Ok(ContainerStartRequest {
         session_id,
-        image: container_image_from_env(),
+        image: resolve_container_image(container_image.as_deref()),
         host_root: cwd.to_string(),
         container_workdir: DEFAULT_CONTAINER_WORKDIR.to_string(),
         api_url,
@@ -1176,6 +1210,7 @@ mod tests {
             cwd: root.to_string(),
             cols: 120,
             rows: 30,
+            container_image: None,
             configured_env: Vec::new(),
             env_remove_keys: Vec::new(),
             extra_env: Vec::new(),
@@ -1331,6 +1366,44 @@ mod tests {
             got,
             vec![("CODEX_HOME".to_string(), "/workspace/.codex".to_string())]
         );
+    }
+
+    fn api_enabled_settings() -> crate::config::settings::AppSettings {
+        crate::config::settings::AppSettings {
+            api_server_enabled: true,
+            api_server_bind: "0.0.0.0".to_string(),
+            api_server_port: 8765,
+            ..crate::config::settings::AppSettings::default()
+        }
+    }
+
+    fn token() -> ContainerApiToken {
+        ContainerApiToken {
+            client_id: "client".to_string(),
+            secret: "secret".to_string(),
+        }
+    }
+
+    #[test]
+    fn build_start_request_honors_container_image_override() {
+        let id = Uuid::new_v4();
+        let request = build_start_request_with_settings(
+            id,
+            "claude",
+            Vec::new(),
+            "C:/repo/.ac/wg-1/__agent_dev",
+            30,
+            120,
+            Vec::new(),
+            Vec::new(),
+            Some(" agentscommander/ac-claude:latest ".to_string()),
+            "ticket".to_string(),
+            &token(),
+            &api_enabled_settings(),
+        )
+        .unwrap();
+
+        assert_eq!(request.image, "agentscommander/ac-claude:latest");
     }
 
     #[tokio::test]

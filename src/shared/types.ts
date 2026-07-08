@@ -125,6 +125,8 @@ export interface ConfigSeedConfig {
 
 export interface AgentBackendConfig {
   kind?: SessionBackendKind;
+  /** #868 - per-agent Docker image override; empty/undefined falls back to env then default. */
+  image?: string;
 }
 
 export interface AgentConfig {

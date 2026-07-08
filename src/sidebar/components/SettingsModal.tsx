@@ -11,6 +11,7 @@ import type {
   ProfileCellConfig,
   ApiClientMintResponse,
   ApiClientMintScope,
+  SessionBackendKind,
 } from "../../shared/types";
 import { SettingsAPI, TelegramAPI, ReposAPI, CodingAgentsAPI } from "../../shared/ipc";
 import { toastStore } from "../../shared/stores/toasts";
@@ -113,6 +114,7 @@ const resolveSettingsSection = (s: string | undefined): SettingsTab =>
       : "general";
 
 const BYTES_PER_GIB = 1024 ** 3;
+const DEFAULT_CONTAINER_IMAGE = "agentscommander/session-bridge:latest";
 
 const bytesToGiBInput = (bytes: number): string => {
   const value = bytes / BYTES_PER_GIB;
@@ -121,6 +123,16 @@ const bytesToGiBInput = (bytes: number): string => {
 
 const giBInputToBytes = (value: string): number =>
   Math.round(Number(value) * BYTES_PER_GIB);
+
+const isContainerLoopbackBind = (bind: string | undefined): boolean => {
+  const normalized = (bind ?? "").trim().toLowerCase();
+  return (
+    normalized === "" ||
+    normalized === "127.0.0.1" ||
+    normalized === "localhost" ||
+    normalized === "::1"
+  );
+};
 
 const cloneSettings = (value: AppSettings | null): AppSettings | null => {
   if (!value) return null;
@@ -480,6 +492,26 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     setSettings("data", "agents", index, "configSeed", {
       enabled: current?.enabled ?? true,
       dest,
+    });
+  };
+
+  const setAgentBackendKind = (index: number, kind: SessionBackendKind) => {
+    if (!settings.data) return;
+    setDraftDirty(true);
+    const current = settings.data.agents[index]?.backend;
+    setSettings("data", "agents", index, "backend", {
+      kind,
+      image: current?.image,
+    });
+  };
+
+  const setAgentBackendImage = (index: number, image: string) => {
+    if (!settings.data) return;
+    setDraftDirty(true);
+    const current = settings.data.agents[index]?.backend;
+    setSettings("data", "agents", index, "backend", {
+      kind: current?.kind ?? "containerTransport",
+      image,
     });
   };
 
@@ -1791,6 +1823,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     const i = () => index();
     const expanded = () => activeAgentId() === agent.id;
     const pill = () => railPillFor(agent.id);
+    const agentBackendKind = () => agent.backend?.kind ?? "localProcess";
+    const containerBindWarning = () => isContainerLoopbackBind(settings.data?.apiServerBind);
     return (
       <div
         class="settings-agent-row"
@@ -1909,6 +1943,61 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 data-ac-role="textbox"
               />
             </label>
+            <label class="settings-field">
+              <span class="settings-label">Runtime</span>
+              <select
+                class="settings-input"
+                value={agentBackendKind()}
+                onChange={(e) =>
+                  setAgentBackendKind(i(), e.currentTarget.value as SessionBackendKind)
+                }
+                data-ac-testid={`settings.agentRow.${i()}.runtimeKind`}
+                data-ac-role="combobox"
+                data-ac-state={agentBackendKind()}
+              >
+                <option value="localProcess">Local (default)</option>
+                <option value="containerTransport">Container (Docker)</option>
+              </select>
+            </label>
+            <Show when={agentBackendKind() === "containerTransport"}>
+              <label class="settings-field">
+                <span class="settings-label">Docker image</span>
+                <input
+                  class="settings-input"
+                  value={agent.backend?.image ?? ""}
+                  onInput={(e) => setAgentBackendImage(i(), e.currentTarget.value)}
+                  placeholder={DEFAULT_CONTAINER_IMAGE}
+                  data-ac-testid={`settings.agentRow.${i()}.containerImage`}
+                  data-ac-role="textbox"
+                />
+              </label>
+              <div
+                class="settings-hint"
+                data-ac-testid={`settings.agentRow.${i()}.containerHint.image`}
+              >
+                Leave blank to use the host default. Resolution: this field, then
+                AGENTSCOMMANDER_CONTAINER_IMAGE, then {DEFAULT_CONTAINER_IMAGE}.
+              </div>
+              <Show when={!apiServerChecked()}>
+                <div
+                  class="settings-hint settings-hint-warning"
+                  data-ac-testid={`settings.agentRow.${i()}.containerWarning.apiServer`}
+                  data-ac-role="status"
+                >
+                  Container runtime needs the control-plane API server enabled.
+                </div>
+              </Show>
+              <Show when={containerBindWarning()}>
+                <div
+                  class="settings-hint settings-hint-warning"
+                  data-ac-testid={`settings.agentRow.${i()}.containerWarning.bind`}
+                  data-ac-role="status"
+                >
+                  Docker cannot reach a loopback API bind; set a Docker-reachable bind
+                  such as 0.0.0.0 with firewall rules.
+                </div>
+              </Show>
+            </Show>
             <label class="settings-field">
               <span class="settings-label">Instructions file</span>
               <input

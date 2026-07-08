@@ -1308,6 +1308,9 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         cwd: cwd.clone(),
         cols: 120,
         rows: 30,
+        container_image: resolved_spawn
+            .as_ref()
+            .and_then(|spawn| spawn.backend.image.clone()),
         configured_env,
         env_remove_keys,
         extra_env,

@@ -402,6 +402,7 @@ impl LocalProcessBackend {
             cwd,
             cols,
             rows,
+            container_image: _,
             configured_env,
             env_remove_keys,
             extra_env,

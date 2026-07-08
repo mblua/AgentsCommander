@@ -25,6 +25,7 @@ pub struct BackendSpawnSpec {
     pub cwd: String,
     pub cols: u16,
     pub rows: u16,
+    pub container_image: Option<String>,
     pub configured_env: Vec<(String, String)>,
     pub env_remove_keys: Vec<String>,
     pub extra_env: Vec<(String, String)>,

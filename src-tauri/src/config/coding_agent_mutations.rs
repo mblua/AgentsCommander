@@ -26,8 +26,10 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::config::settings::{
-    validate_and_repair_settings, AgentConfig, AppSettings, CodingAgentEnv, ConfigSeedConfig,
+    normalize_container_image_input, validate_and_repair_settings, AgentConfig, AppSettings,
+    CodingAgentEnv, ConfigSeedConfig,
 };
+use crate::pty::backend::SessionBackendKind;
 
 /// Subdirectory of the config dir holding pending coding-agent mutation requests.
 pub const CODING_AGENT_REQUESTS_DIR: &str = "coding-agent-requests";
@@ -78,6 +80,16 @@ pub struct AgentPatch {
     pub config_seed_enabled: Option<bool>,
     #[serde(default)]
     pub clear_config_seed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend_kind: Option<SessionBackendKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_image: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub clear_container_image: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Result of a successful `apply_coding_agent_op`. `op` is `"add"|"update"|"remove"`.
@@ -222,6 +234,7 @@ pub fn apply_coding_agent_op(
             warn_on_duplicate_label(settings, agent.label.trim(), None);
             let mut new_agent = agent.clone();
             new_agent.label = new_agent.label.trim().to_string();
+            ensure_backend_consistent(&mut new_agent)?;
             settings.agents.push(new_agent.clone());
             CodingAgentOpOutcome {
                 op: "add",
@@ -310,6 +323,33 @@ fn apply_patch(agent: &mut AgentConfig, patch: &AgentPatch) -> Result<(), String
         }
         ensure_seed_consistent(&Some(seed.clone()))?;
         agent.config_seed = Some(seed);
+    }
+    if let Some(kind) = patch.backend_kind {
+        agent.backend.kind = kind;
+    }
+    if patch.clear_container_image {
+        agent.backend.image = None;
+    } else if let Some(image) = &patch.container_image {
+        agent.backend.image = Some(normalize_container_image_input(image, "container image")?);
+    }
+    ensure_backend_consistent(agent)?;
+    Ok(())
+}
+
+fn ensure_backend_consistent(agent: &mut AgentConfig) -> Result<(), String> {
+    if let Some(image) = agent.backend.image.take() {
+        let trimmed = image.trim();
+        if trimmed.is_empty() {
+            agent.backend.image = None;
+        } else {
+            agent.backend.image = Some(normalize_container_image_input(
+                trimmed,
+                &format!("Agent \"{}\" container image", agent.label),
+            )?);
+        }
+    }
+    if agent.backend.kind == SessionBackendKind::LocalProcess {
+        agent.backend.image = None;
     }
     Ok(())
 }
@@ -528,6 +568,7 @@ fn write_reject(results_dir: &Path, request_id: &str, error: String) {
 mod tests {
     use super::*;
     use crate::config::settings::CodingAgentEnvSource;
+    use crate::pty::backend::SessionBackendKind;
 
     fn agent(id: &str, label: &str, command: &str) -> AgentConfig {
         AgentConfig {
@@ -677,6 +718,38 @@ mod tests {
     }
 
     #[test]
+    fn add_normalizes_backend_image() {
+        let mut s = AppSettings::default();
+        let mut a = agent("container", "Container", "claude");
+        a.backend.kind = SessionBackendKind::ContainerTransport;
+        a.backend.image = Some(" image:tag ".to_string());
+
+        apply_coding_agent_op(&mut s, &add(a)).unwrap();
+
+        assert_eq!(
+            s.agents[0].backend.kind,
+            SessionBackendKind::ContainerTransport
+        );
+        assert_eq!(s.agents[0].backend.image.as_deref(), Some("image:tag"));
+    }
+
+    #[test]
+    fn add_clears_local_backend_image_and_rejects_leading_dash() {
+        let mut local_settings = AppSettings::default();
+        let mut local = agent("local", "Local", "claude");
+        local.backend.image = Some(" image:tag ".to_string());
+        apply_coding_agent_op(&mut local_settings, &add(local)).unwrap();
+        assert!(local_settings.agents[0].backend.image.is_none());
+
+        let mut bad_settings = AppSettings::default();
+        let mut bad = agent("bad", "Bad", "claude");
+        bad.backend.kind = SessionBackendKind::ContainerTransport;
+        bad.backend.image = Some("--privileged".to_string());
+        let err = apply_coding_agent_op(&mut bad_settings, &add(bad)).unwrap_err();
+        assert!(err.contains("must not start with"), "{err}");
+    }
+
+    #[test]
     fn add_accepts_catalog_seeded_non_hex_color() {
         // §14.4 R6 carve-out: the op layer NEVER validates color (only the
         // explicit `--color` CLI flag does, in cmd_add). A catalog-seeded agent
@@ -802,6 +875,82 @@ mod tests {
         .unwrap();
         assert!(s.agents[0].instructions_filename.is_none());
         assert!(s.agents[0].config_seed.is_none());
+    }
+
+    #[test]
+    fn update_sets_and_clears_container_image() {
+        let mut s = AppSettings::default();
+        apply_coding_agent_op(&mut s, &add(agent("claude", "Claude", "claude"))).unwrap();
+
+        let patch = AgentPatch {
+            backend_kind: Some(SessionBackendKind::ContainerTransport),
+            container_image: Some(" image:tag ".into()),
+            ..Default::default()
+        };
+        apply_coding_agent_op(
+            &mut s,
+            &CodingAgentOp::Update {
+                id: "claude".into(),
+                patch,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            s.agents[0].backend.kind,
+            SessionBackendKind::ContainerTransport
+        );
+        assert_eq!(s.agents[0].backend.image.as_deref(), Some("image:tag"));
+
+        let clear = AgentPatch {
+            clear_container_image: true,
+            ..Default::default()
+        };
+        apply_coding_agent_op(
+            &mut s,
+            &CodingAgentOp::Update {
+                id: "claude".into(),
+                patch: clear,
+            },
+        )
+        .unwrap();
+        assert!(s.agents[0].backend.image.is_none());
+
+        let local = AgentPatch {
+            backend_kind: Some(SessionBackendKind::LocalProcess),
+            container_image: Some("remembered:tag".into()),
+            ..Default::default()
+        };
+        apply_coding_agent_op(
+            &mut s,
+            &CodingAgentOp::Update {
+                id: "claude".into(),
+                patch: local,
+            },
+        )
+        .unwrap();
+        assert_eq!(s.agents[0].backend.kind, SessionBackendKind::LocalProcess);
+        assert!(s.agents[0].backend.image.is_none());
+    }
+
+    #[test]
+    fn update_rejects_leading_dash_container_image() {
+        let mut s = AppSettings::default();
+        apply_coding_agent_op(&mut s, &add(agent("claude", "Claude", "claude"))).unwrap();
+
+        let patch = AgentPatch {
+            backend_kind: Some(SessionBackendKind::ContainerTransport),
+            container_image: Some("--volume=/:/host".into()),
+            ..Default::default()
+        };
+        let err = apply_coding_agent_op(
+            &mut s,
+            &CodingAgentOp::Update {
+                id: "claude".into(),
+                patch,
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("must not start with"), "{err}");
     }
 
     // ---- remove (orphan-preserve) ------------------------------------------
@@ -975,6 +1124,43 @@ mod tests {
         assert!(read_coding_agent_result(&results, "r1").unwrap().ok);
         assert!(!path.exists());
         assert!(!processing_path_for(&path).exists());
+    }
+
+    #[test]
+    fn handler_applies_backend_image_patch_from_request_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let requests = dir.path().join(CODING_AGENT_REQUESTS_DIR);
+        let results = requests.join(RESULTS_SUBDIR);
+        let mut settings = AppSettings::default();
+        apply_coding_agent_op(&mut settings, &add(agent("claude", "Claude", "claude"))).unwrap();
+        let patch = AgentPatch {
+            backend_kind: Some(SessionBackendKind::ContainerTransport),
+            container_image: Some(" image:tag ".into()),
+            ..Default::default()
+        };
+        let path = write_request_file(
+            &requests,
+            "patch",
+            100,
+            CodingAgentOp::Update {
+                id: "claude".into(),
+                patch,
+            },
+        );
+
+        let disp =
+            process_coding_agent_request(&path, &results, 200, &mut settings, &mut noop_save());
+
+        assert!(matches!(disp, RequestDisposition::Applied { .. }));
+        assert_eq!(
+            settings.agents[0].backend.kind,
+            SessionBackendKind::ContainerTransport
+        );
+        assert_eq!(
+            settings.agents[0].backend.image.as_deref(),
+            Some("image:tag")
+        );
+        assert!(read_coding_agent_result(&results, "patch").unwrap().ok);
     }
 
     #[test]

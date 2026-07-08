@@ -15,12 +15,17 @@ use crate::telegram::types::TelegramBotConfig;
 pub struct AgentBackendConfig {
     #[serde(default)]
     pub kind: SessionBackendKind,
+    /// #868 - optional per-agent Docker image override for container runtime.
+    /// None falls back to AGENTSCOMMANDER_CONTAINER_IMAGE, then DEFAULT_CONTAINER_IMAGE.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 impl Default for AgentBackendConfig {
     fn default() -> Self {
         Self {
             kind: SessionBackendKind::LocalProcess,
+            image: None,
         }
     }
 }
@@ -1317,7 +1322,50 @@ pub(crate) fn validate_env_rows(rows: &[CodingAgentEnv], context: &str) -> Resul
     Ok(())
 }
 
+pub fn normalize_container_image_input(value: &str, context: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{context} must not be empty"));
+    }
+    if trimmed.starts_with('-') {
+        return Err(format!("{context} must not start with '-'"));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn normalize_agent_backend_config(
+    backend: &mut AgentBackendConfig,
+    context: &str,
+) -> Result<(), String> {
+    if backend.kind == SessionBackendKind::LocalProcess {
+        backend.image = None;
+        return Ok(());
+    }
+
+    let Some(raw_image) = backend.image.take() else {
+        return Ok(());
+    };
+    let trimmed = raw_image.trim();
+    if trimmed.is_empty() {
+        backend.image = None;
+        return Ok(());
+    }
+    backend.image = Some(normalize_container_image_input(trimmed, context)?);
+    Ok(())
+}
+
+fn normalize_agent_backend_configs(settings: &mut AppSettings) -> Result<(), String> {
+    for agent in &mut settings.agents {
+        normalize_agent_backend_config(
+            &mut agent.backend,
+            &format!("Agent \"{}\" container image", agent.label),
+        )?;
+    }
+    Ok(())
+}
+
 pub fn validate_and_repair_settings(settings: &mut AppSettings) -> Result<(), String> {
+    normalize_agent_backend_configs(settings)?;
     repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
     validate_agent_commands(settings)?;
     validate_screenshot_hotkey(&settings.screenshot_capture_hotkey)?;
@@ -2245,6 +2293,63 @@ mod tests {
         );
         let json = serde_json::to_string(&agent).unwrap();
         assert!(!json.contains("backend"), "{json}");
+
+        let mut local_with_image = agent;
+        local_with_image.backend.image = Some("hand-edited:latest".to_string());
+        let json = serde_json::to_string(&local_with_image).unwrap();
+        assert!(!json.contains("backend"), "{json}");
+    }
+
+    #[test]
+    fn agent_backend_config_serializes_container_image() {
+        use super::AgentConfig;
+
+        let mut settings = settings_with_agents(&[("Claude", "claude")]);
+        settings.agents[0].backend.kind =
+            crate::pty::backend::SessionBackendKind::ContainerTransport;
+        settings.agents[0].backend.image = Some("agentscommander/ac-claude:latest".to_string());
+        super::validate_and_repair_settings(&mut settings).unwrap();
+
+        let json = serde_json::to_string(&settings.agents[0]).unwrap();
+        assert!(json.contains("\"backend\""), "{json}");
+        assert!(json.contains("\"kind\":\"containerTransport\""), "{json}");
+        assert!(
+            json.contains("\"image\":\"agentscommander/ac-claude:latest\""),
+            "{json}"
+        );
+        let back: AgentConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.backend.image.as_deref(),
+            Some("agentscommander/ac-claude:latest")
+        );
+    }
+
+    #[test]
+    fn validate_and_repair_normalizes_backend_image_edges() {
+        let mut blank_container = settings_with_agents(&[("Claude", "claude")]);
+        blank_container.agents[0].backend.kind =
+            crate::pty::backend::SessionBackendKind::ContainerTransport;
+        blank_container.agents[0].backend.image = Some("   ".to_string());
+        super::validate_and_repair_settings(&mut blank_container).unwrap();
+        assert!(blank_container.agents[0].backend.image.is_none());
+
+        let mut local_with_image = settings_with_agents(&[("Codex", "codex")]);
+        local_with_image.agents[0].backend.image = Some(" custom:latest ".to_string());
+        super::validate_and_repair_settings(&mut local_with_image).unwrap();
+        assert!(local_with_image.agents[0].backend.image.is_none());
+        let json = serde_json::to_string(&local_with_image.agents[0]).unwrap();
+        assert!(!json.contains("backend"), "{json}");
+    }
+
+    #[test]
+    fn validate_and_repair_rejects_leading_dash_container_image() {
+        let mut settings = settings_with_agents(&[("Claude", "claude")]);
+        settings.agents[0].backend.kind =
+            crate::pty::backend::SessionBackendKind::ContainerTransport;
+        settings.agents[0].backend.image = Some(" --privileged".to_string());
+
+        let err = super::validate_and_repair_settings(&mut settings).unwrap_err();
+        assert!(err.contains("must not start with"), "{err}");
     }
 
     #[test]
