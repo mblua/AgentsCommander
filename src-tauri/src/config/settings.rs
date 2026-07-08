@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashSet};
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -1369,7 +1370,34 @@ pub fn validate_and_repair_settings(settings: &mut AppSettings) -> Result<(), St
     repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
     validate_agent_commands(settings)?;
     validate_screenshot_hotkey(&settings.screenshot_capture_hotkey)?;
+    validate_api_server_settings(settings)?;
     validate_resource_settings(settings)
+}
+
+pub(crate) fn parse_api_server_socket_addr(
+    bind: &str,
+    port: u16,
+) -> Result<SocketAddr, String> {
+    let bind = bind.trim();
+    if bind.is_empty() {
+        return Err("apiServerBind must not be empty".to_string());
+    }
+    if port == 0 {
+        return Err("apiServerPort must be between 1 and 65535".to_string());
+    }
+    let ip: IpAddr = bind.parse().map_err(|e| {
+        format!(
+            "apiServerBind must be an IP address such as 127.0.0.1, 0.0.0.0, ::1, or :: ({e})"
+        )
+    })?;
+    Ok(SocketAddr::new(ip, port))
+}
+
+pub fn validate_api_server_settings(settings: &mut AppSettings) -> Result<(), String> {
+    let bind = settings.api_server_bind.trim().to_string();
+    parse_api_server_socket_addr(&bind, settings.api_server_port)?;
+    settings.api_server_bind = bind;
+    Ok(())
 }
 
 /// #714 Reject a screenshot hotkey that the native parser cannot accept. Syntax
@@ -2158,10 +2186,10 @@ mod tests {
 
     use super::{
         merge_protected_coding_agent_settings, repair_coding_agent_profiles_config,
-        validate_agent_commands, validate_resource_settings, AgentConfig, AppSettings,
-        CodingAgentEnv, CodingAgentEnvSource, MainSidebarSide, ProfileCellConfig,
-        ProfileSlotConfig, ResourceWatchdogAction, TelegramNetworkPollErrorLogging,
-        TelegramPollFailureLogLevel, TelegramPollRecoveryLogLevel,
+        validate_agent_commands, validate_api_server_settings, validate_resource_settings,
+        AgentConfig, AppSettings, CodingAgentEnv, CodingAgentEnvSource, MainSidebarSide,
+        ProfileCellConfig, ProfileSlotConfig, ResourceWatchdogAction,
+        TelegramNetworkPollErrorLogging, TelegramPollFailureLogLevel, TelegramPollRecoveryLogLevel,
     };
     use std::collections::BTreeMap;
 
@@ -3280,6 +3308,45 @@ mod tests {
                 validate_resource_settings(&s).is_ok(),
                 "expected max_concurrent_agent_processes={value} to validate"
             );
+        }
+    }
+
+    #[test]
+    fn validate_api_server_settings_rejects_invalid_bind_and_port() {
+        let mut empty_bind = AppSettings {
+            api_server_bind: "   ".to_string(),
+            ..AppSettings::default()
+        };
+        assert!(validate_api_server_settings(&mut empty_bind)
+            .unwrap_err()
+            .contains("apiServerBind"));
+
+        let mut zero_port = AppSettings {
+            api_server_port: 0,
+            ..AppSettings::default()
+        };
+        assert!(validate_api_server_settings(&mut zero_port)
+            .unwrap_err()
+            .contains("apiServerPort"));
+
+        let mut hostname = AppSettings {
+            api_server_bind: "localhost".to_string(),
+            ..AppSettings::default()
+        };
+        assert!(validate_api_server_settings(&mut hostname)
+            .unwrap_err()
+            .contains("apiServerBind"));
+    }
+
+    #[test]
+    fn validate_api_server_settings_accepts_ip_binds_and_trims() {
+        for bind in ["127.0.0.1", "0.0.0.0", "::1", "::"] {
+            let mut settings = AppSettings {
+                api_server_bind: format!(" {bind} "),
+                ..AppSettings::default()
+            };
+            validate_api_server_settings(&mut settings).unwrap();
+            assert_eq!(settings.api_server_bind, bind);
         }
     }
 

@@ -17,7 +17,8 @@ Off by default. Set in settings:
 - `apiServerPort` - profile-aware default (`profile::api_server_port`), distinct
   from the web port so dev/prod builds do not collide.
 
-A bind/port change requires a daemon restart (or a future stop/start command).
+A bind/port change can be applied by saving settings, stopping the API server,
+and starting it again. A full daemon restart is not required.
 
 ## Auth
 
