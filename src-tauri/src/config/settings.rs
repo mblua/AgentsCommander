@@ -32,11 +32,7 @@ impl Default for AgentBackendConfig {
 
 impl AgentBackendConfig {
     fn is_default(&self) -> bool {
-        let image_blank = self
-            .image
-            .as_deref()
-            .is_none_or(|image| image.trim().is_empty());
-        self.kind == SessionBackendKind::LocalProcess && image_blank
+        self.kind == SessionBackendKind::LocalProcess
     }
 }
 
@@ -2296,6 +2292,11 @@ mod tests {
             crate::pty::backend::SessionBackendKind::LocalProcess
         );
         let json = serde_json::to_string(&agent).unwrap();
+        assert!(!json.contains("backend"), "{json}");
+
+        let mut local_with_image = agent;
+        local_with_image.backend.image = Some("hand-edited:latest".to_string());
+        let json = serde_json::to_string(&local_with_image).unwrap();
         assert!(!json.contains("backend"), "{json}");
     }
 
