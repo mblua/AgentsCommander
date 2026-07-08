@@ -417,6 +417,88 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
+  it("shows the runtime selector and reveals container-only fields with soft warnings", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "agents" }),
+      root,
+    );
+    await settle();
+    expandAgentRow(0);
+    await settle();
+
+    const runtime = byTestId<HTMLSelectElement>("settings.agentRow.0.runtimeKind");
+    expect(runtime.value).toBe("localProcess");
+    expect(document.querySelector('[data-ac-testid="settings.agentRow.0.containerImage"]')).toBeNull();
+    expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.containerWarning.apiServer"]'),
+    ).toBeNull();
+    expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.containerWarning.bind"]'),
+    ).toBeNull();
+
+    runtime.value = "containerTransport";
+    runtime.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    const image = byTestId<HTMLInputElement>("settings.agentRow.0.containerImage");
+    expect(image.placeholder).toBe("agentscommander/session-bridge:latest");
+    expect(byTestId("settings.agentRow.0.containerWarning.apiServer").textContent).toContain(
+      "API server enabled",
+    );
+    expect(byTestId("settings.agentRow.0.containerWarning.bind").textContent).toContain(
+      "loopback API bind",
+    );
+
+    runtime.value = "localProcess";
+    runtime.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    expect(document.querySelector('[data-ac-testid="settings.agentRow.0.containerImage"]')).toBeNull();
+    expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.containerWarning.apiServer"]'),
+    ).toBeNull();
+    expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.containerWarning.bind"]'),
+    ).toBeNull();
+
+    dispose();
+  });
+
+  it("saves a container runtime image through the settings draft", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "agents" }),
+      root,
+    );
+    await settle();
+    expandAgentRow(0);
+    await settle();
+
+    const runtime = byTestId<HTMLSelectElement>("settings.agentRow.0.runtimeKind");
+    runtime.value = "containerTransport";
+    runtime.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    const image = byTestId<HTMLInputElement>("settings.agentRow.0.containerImage");
+    image.value = "  ghcr.io/ac/custom-agent:latest  ";
+    image.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.agents[0]?.backend).toEqual({
+      kind: "containerTransport",
+      image: "ghcr.io/ac/custom-agent:latest",
+    });
+
+    dispose();
+  });
+
   it("keeps an early custom agent draft when the fresh load resolves late", async () => {
     let resolveLoadedSettings: (value: AppSettings) => void = () => {};
     vi.mocked(SettingsAPI.get).mockReturnValueOnce(

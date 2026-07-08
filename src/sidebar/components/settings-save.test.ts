@@ -188,6 +188,71 @@ describe("mergeSettingsForSavePreservingProjects (#598 configSeed normalization)
   });
 });
 
+describe("mergeSettingsForSavePreservingProjects (#868 backend normalization)", () => {
+  it("drops absent, empty, and explicit Local backend objects", () => {
+    const draft = settings({
+      agents: [
+        agent({ id: "absent" }),
+        agent({ id: "empty", backend: {} }),
+        agent({ id: "local", backend: { kind: "localProcess" } }),
+      ],
+    });
+    const merged = mergeSettingsForSavePreservingProjects(draft, settings());
+
+    for (const a of merged.agents) {
+      expect("backend" in a).toBe(false);
+    }
+  });
+
+  it("keeps a container backend kind and trims the image", () => {
+    const draft = settings({
+      agents: [
+        agent({
+          backend: {
+            kind: "containerTransport",
+            image: "  agentscommander/ac-claude:latest  ",
+          },
+        }),
+      ],
+    });
+    const merged = mergeSettingsForSavePreservingProjects(draft, settings());
+
+    expect(merged.agents[0]?.backend).toEqual({
+      kind: "containerTransport",
+      image: "agentscommander/ac-claude:latest",
+    });
+  });
+
+  it("omits empty container images while preserving the container kind", () => {
+    const draft = settings({
+      agents: [
+        agent({ id: "empty", backend: { kind: "containerTransport", image: "" } }),
+        agent({ id: "spaces", backend: { kind: "containerTransport", image: "   " } }),
+      ],
+    });
+    const merged = mergeSettingsForSavePreservingProjects(draft, settings());
+
+    expect(merged.agents[0]?.backend).toEqual({ kind: "containerTransport" });
+    expect(merged.agents[1]?.backend).toEqual({ kind: "containerTransport" });
+  });
+
+  it("drops a Local backend even when the live draft has a hidden image", () => {
+    const draft = settings({
+      agents: [
+        agent({
+          backend: {
+            kind: "localProcess",
+            image: "agentscommander/ac-claude:latest",
+          },
+        }),
+      ],
+    });
+    const merged = mergeSettingsForSavePreservingProjects(draft, settings());
+
+    expect(merged.agents[0]).not.toHaveProperty("backend");
+  });
+});
+
 describe("mergeSettingsForSavePreservingProjects webserver seed rebasing", () => {
   it("rebases unchanged stale modal webserver fields from fresh settings", () => {
     const modalSeed = settings({
