@@ -371,6 +371,98 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             Ok(json!(null))
         }
 
+        // --- Coding-agent profiles (#859 web transport parity) ---
+        // Desktop registers these in the Tauri invoke_handler, but the browser
+        // websocket router did not route them, so the CODING AGENT modal hit the
+        // `Unknown command` fallback (e.g. when a closed coordinator falls
+        // through to the launch/profile path). The apply/set commands emit
+        // `coding_agent_profile_selection_updated`; we `broadcast_all` it so web
+        // clients also receive it, mirroring the `save_settings_draft` broadcast
+        // of `coding_agent_profiles_updated`.
+        "resolve_coding_agent_profile" => {
+            let agent_path = args.get("agentPath").and_then(|v| v.as_str());
+            let agent_id = require_str(args, "agentId")?;
+            let requested_profile = args.get("requestedProfile").and_then(|v| v.as_str());
+            let result = crate::commands::config::resolve_coding_agent_profile_inner(
+                &state.settings,
+                agent_path,
+                &agent_id,
+                requested_profile,
+            )
+            .await?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+
+        "set_agent_default_profile" => {
+            let agent_path = require_str(args, "agentPath")?;
+            let profile = require_str(args, "profile")?;
+            let payload = crate::commands::config::set_agent_default_profile_inner(
+                &state.settings,
+                &agent_path,
+                &profile,
+            )
+            .await?;
+            broadcast_all(
+                &state.app_handle,
+                &state.broadcaster,
+                "coding_agent_profile_selection_updated",
+                &payload,
+            );
+            Ok(json!(null))
+        }
+
+        "set_instance_profile_override" => {
+            let agent_path = require_str(args, "agentPath")?;
+            // `profile` is `string | null`; a null clears the override.
+            let profile = args.get("profile").and_then(|v| v.as_str());
+            let payload = crate::commands::config::set_instance_profile_override_inner(
+                &state.settings,
+                &agent_path,
+                profile,
+            )
+            .await?;
+            broadcast_all(
+                &state.app_handle,
+                &state.broadcaster,
+                "coding_agent_profile_selection_updated",
+                &payload,
+            );
+            Ok(json!(null))
+        }
+
+        "preview_coding_agent_profile_selection" => {
+            let request: crate::commands::config::PreviewCodingAgentProfileSelectionRequest =
+                require_json(args, "request")?;
+            let result = crate::commands::config::preview_coding_agent_profile_selection_inner(
+                &state.session_mgr,
+                &state.settings,
+                request,
+            )
+            .await?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+
+        "apply_coding_agent_profile_selection" => {
+            let request: crate::commands::config::ApplyCodingAgentProfileSelectionRequest =
+                require_json(args, "request")?;
+            let (result, payload) =
+                crate::commands::config::apply_coding_agent_profile_selection_inner(
+                    &state.app_handle,
+                    &state.session_mgr,
+                    &state.pty_mgr,
+                    &state.settings,
+                    request,
+                )
+                .await?;
+            broadcast_all(
+                &state.app_handle,
+                &state.broadcaster,
+                "coding_agent_profile_selection_updated",
+                &payload,
+            );
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+
         // --- Role templates ---
         "list_role_templates" => {
             let snapshot = state.settings.read().await.clone();
@@ -784,5 +876,172 @@ mod tests {
             event["payload"]["config"],
             serde_json::to_value(&config).expect("serialize config")
         );
+    }
+
+    /// Build a minimal `WsState` backed by `settings`, plus a broadcast receiver
+    /// for asserting web events emitted during dispatch.
+    fn ws_state_for(
+        settings: AppSettings,
+    ) -> (WsState, tokio::sync::mpsc::Receiver<WsOutMsg>) {
+        let app = tauri::Builder::default()
+            .any_thread()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build test app");
+        let app_handle = app.handle().clone();
+        let broadcaster = WsBroadcaster::new();
+        let receiver = broadcaster.subscribe();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let idle_detector = IdleDetector::new(|_| {}, |_| {});
+        let git_watcher = GitWatcher::new(Arc::clone(&session_mgr), app_handle.clone());
+        let pty_mgr = Arc::new(Mutex::new(PtyManager::new(
+            Arc::new(Mutex::new(HashMap::new())),
+            idle_detector,
+            git_watcher,
+            Some(broadcaster.clone()),
+            Arc::clone(&session_mgr),
+        )));
+        let settings = Arc::new(tokio::sync::RwLock::new(settings));
+        let state = WsState {
+            session_mgr,
+            pty_mgr,
+            settings,
+            broadcaster,
+            app_handle,
+        };
+        (state, receiver)
+    }
+
+    fn test_agent(id: &str) -> crate::config::settings::AgentConfig {
+        crate::config::settings::AgentConfig {
+            id: id.to_string(),
+            label: id.to_string(),
+            command: id.to_string(),
+            color: "#10b981".to_string(),
+            envs: Vec::new(),
+            isolated_home: false,
+            instructions_filename: None,
+            config_seed: None,
+            backend: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn coding_agent_profile_commands_route_past_unknown_command() {
+        // #859 regression: before web-router parity these five commands hit the
+        // `Unknown command` fallback. Empty args make each inner fail arg
+        // validation instead, which proves the route now exists.
+        let (state, _rx) = ws_state_for(AppSettings::default());
+        for cmd in [
+            "resolve_coding_agent_profile",
+            "preview_coding_agent_profile_selection",
+            "apply_coding_agent_profile_selection",
+            "set_agent_default_profile",
+            "set_instance_profile_override",
+        ] {
+            let response = dispatch(&state, 1, cmd, &json!({})).await;
+            let error = response
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            assert!(
+                !error.contains("Unknown command"),
+                "{cmd} should be routed, got error: {error:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_coding_agent_profile_web_dispatch_returns_resolution() {
+        let settings = AppSettings {
+            agents: vec![test_agent("codex")],
+            ..AppSettings::default()
+        };
+        let (state, _rx) = ws_state_for(settings);
+
+        let response = dispatch(
+            &state,
+            2,
+            "resolve_coding_agent_profile",
+            &json!({ "agentId": "codex", "requestedProfile": "A" }),
+        )
+        .await;
+
+        assert_eq!(response["id"], json!(2));
+        assert!(
+            response.get("error").is_none(),
+            "resolve should succeed, got {response:?}"
+        );
+        assert!(
+            response["result"]["effectiveProfile"].is_string(),
+            "expected a resolved profile, got {response:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_coding_agent_profile_selection_web_dispatch_broadcasts() {
+        // Real WG replica layout so enumeration + config write succeed under the
+        // replica scope (no confirmation fingerprint required).
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("project");
+        let workspace = project.join(".ac");
+        let matrix = workspace.join("_agent_codex");
+        let replica = workspace.join("wg-1-team").join("__agent_codex");
+        std::fs::create_dir_all(&matrix).expect("create matrix");
+        std::fs::create_dir_all(&replica).expect("create replica");
+        std::fs::write(matrix.join("Role.md"), "# Codex\n").expect("write Role.md");
+        std::fs::write(
+            replica.join("config.json"),
+            serde_json::to_string(&json!({ "identity": "../../_agent_codex" }))
+                .expect("serialize replica config"),
+        )
+        .expect("write replica config");
+
+        let settings = AppSettings {
+            agents: vec![test_agent("codex")],
+            project_paths: vec![project.to_string_lossy().to_string()],
+            ..AppSettings::default()
+        };
+        let (state, mut rx) = ws_state_for(settings);
+
+        let request = json!({
+            "targetReplicaPath": replica.to_string_lossy(),
+            "codingAgentId": "codex",
+            "profile": "B",
+            "scope": "replica",
+            "restartSessions": false,
+            "confirmedTargetFingerprint": null,
+            "typedConfirmation": null,
+        });
+
+        let response = dispatch(
+            &state,
+            3,
+            "apply_coding_agent_profile_selection",
+            &json!({ "request": request }),
+        )
+        .await;
+
+        assert_eq!(response["id"], json!(3));
+        assert!(
+            response.get("error").is_none(),
+            "apply should succeed, got {response:?}"
+        );
+        assert_eq!(response["result"]["updatedCount"], json!(1));
+        assert_eq!(response["result"]["scope"], json!("replica"));
+
+        // The web dispatcher must broadcast the selection-updated event so
+        // browser clients refresh, mirroring the save_settings_draft pattern.
+        let event = match rx.try_recv().expect("broadcast event") {
+            WsOutMsg::Text(text) => serde_json::from_str::<Value>(&text).expect("parse event"),
+            other => panic!("expected text event, got {other:?}"),
+        };
+        assert_eq!(
+            event["event"],
+            json!("coding_agent_profile_selection_updated")
+        );
+        assert_eq!(event["payload"]["scope"], json!("replica"));
+        assert_eq!(event["payload"]["codingAgentId"], json!("codex"));
+        assert_eq!(event["payload"]["profile"], json!("B"));
+        assert_eq!(event["payload"]["updatedCount"], json!(1));
     }
 }

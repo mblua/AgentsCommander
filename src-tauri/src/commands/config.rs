@@ -5,7 +5,9 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
+use uuid::Uuid;
 
+use crate::api::auth;
 use crate::config::claude_settings::{ensure_rtk_pretool_hook, enumerate_managed_agent_dirs};
 use crate::config::settings::{
     load_settings, merge_protected_coding_agent_settings, save_settings,
@@ -29,6 +31,11 @@ const HOME_MARKDOWN_MAX_BYTES: usize = 256 * 1024; // 256 KB
 const HOME_MARKDOWN_TIMEOUT_SECS: u64 = 5;
 const WEB_STATUS_CONNECT_TIMEOUT_MS: u64 = 500;
 const API_SERVER_STOP_TIMEOUT_MS: u64 = 5_000;
+// Default mirrors container API token TTL; manual GUI mints get a longer cap.
+const MINT_API_CLIENT_DEFAULT_TTL_HOURS: i64 = 24;
+const MINT_API_CLIENT_MAX_TTL_DAYS: i64 = 30;
+const MINT_API_CLIENT_NOTE: &str =
+    "Store this token now; it is shown only once. The registry keeps only a hash.";
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,6 +64,18 @@ pub struct CodingAgentProfileResolutionResult {
     pub origin_default_profile: Option<String>,
     pub agent_default_profile: Option<String>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MintApiClientResponse {
+    pub client_id: String,
+    pub token: String,
+    pub bound_fqn: String,
+    pub bound_root: String,
+    pub scopes: Vec<String>,
+    pub expires_at: Option<String>,
+    pub note: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -402,17 +421,27 @@ pub async fn set_agent_default_profile(
     agent_path: String,
     profile: String,
 ) -> Result<(), String> {
+    let payload = set_agent_default_profile_inner(settings.inner(), &agent_path, &profile).await?;
+    let _ = app.emit("coding_agent_profile_selection_updated", payload);
+    Ok(())
+}
+
+/// Persist an origin agent's default profile and return the
+/// `coding_agent_profile_selection_updated` event payload for the caller to
+/// emit (desktop) or broadcast to web clients (browser transport). Shared by
+/// the desktop command and the web dispatcher.
+pub(crate) async fn set_agent_default_profile_inner(
+    settings: &SettingsState,
+    agent_path: &str,
+    profile: &str,
+) -> Result<serde_json::Value, String> {
     let snapshot = settings.read().await.clone();
     crate::config::coding_agent_profiles::set_agent_default_profile(
         &snapshot,
-        std::path::Path::new(&agent_path),
-        &profile,
+        std::path::Path::new(agent_path),
+        profile,
     )?;
-    let _ = app.emit(
-        "coding_agent_profile_selection_updated",
-        serde_json::json!({ "agentPath": agent_path, "profile": profile, "scope": "default" }),
-    );
-    Ok(())
+    Ok(serde_json::json!({ "agentPath": agent_path, "profile": profile, "scope": "default" }))
 }
 
 #[tauri::command]
@@ -422,17 +451,29 @@ pub async fn set_instance_profile_override(
     agent_path: String,
     profile: Option<String>,
 ) -> Result<(), String> {
+    let payload =
+        set_instance_profile_override_inner(settings.inner(), &agent_path, profile.as_deref())
+            .await?;
+    let _ = app.emit("coding_agent_profile_selection_updated", payload);
+    Ok(())
+}
+
+/// Persist a replica's instance-level profile override (or clear it when
+/// `profile` is `None`) and return the `coding_agent_profile_selection_updated`
+/// event payload for the caller to emit or broadcast. Shared by the desktop
+/// command and the web dispatcher.
+pub(crate) async fn set_instance_profile_override_inner(
+    settings: &SettingsState,
+    agent_path: &str,
+    profile: Option<&str>,
+) -> Result<serde_json::Value, String> {
     let snapshot = settings.read().await.clone();
     crate::config::coding_agent_profiles::set_instance_profile_override(
         &snapshot,
-        std::path::Path::new(&agent_path),
-        profile.as_deref(),
+        std::path::Path::new(agent_path),
+        profile,
     )?;
-    let _ = app.emit(
-        "coding_agent_profile_selection_updated",
-        serde_json::json!({ "agentPath": agent_path, "profile": profile, "scope": "instance" }),
-    );
-    Ok(())
+    Ok(serde_json::json!({ "agentPath": agent_path, "profile": profile, "scope": "instance" }))
 }
 
 #[tauri::command]
@@ -442,17 +483,33 @@ pub async fn resolve_coding_agent_profile(
     agent_id: String,
     requested_profile: Option<String>,
 ) -> Result<CodingAgentProfileResolutionResult, String> {
+    resolve_coding_agent_profile_inner(
+        settings.inner(),
+        agent_path.as_deref(),
+        &agent_id,
+        requested_profile.as_deref(),
+    )
+    .await
+}
+
+/// Resolve the effective coding-agent profile for an agent/replica. Shared by
+/// the desktop command and the web dispatcher; reads settings only.
+pub(crate) async fn resolve_coding_agent_profile_inner(
+    settings: &SettingsState,
+    agent_path: Option<&str>,
+    agent_id: &str,
+    requested_profile: Option<&str>,
+) -> Result<CodingAgentProfileResolutionResult, String> {
     let snapshot = settings.read().await.clone();
     let agent_path = agent_path
-        .as_deref()
         .map(str::trim)
         .filter(|path| !path.is_empty())
         .map(std::path::PathBuf::from);
     let details = crate::config::coding_agent_profiles::resolve_profile_selection(
         &snapshot,
         agent_path.as_deref(),
-        &agent_id,
-        requested_profile.as_deref(),
+        agent_id,
+        requested_profile,
     )?;
 
     Ok(CodingAgentProfileResolutionResult {
@@ -552,6 +609,18 @@ pub async fn preview_coding_agent_profile_selection(
     settings: State<'_, SettingsState>,
     request: PreviewCodingAgentProfileSelectionRequest,
 ) -> Result<PreviewCodingAgentProfileSelectionResult, String> {
+    preview_coding_agent_profile_selection_inner(session_mgr.inner(), settings.inner(), request)
+        .await
+}
+
+/// Enumerate the replicas a broad-scope profile assignment would touch and
+/// return a fingerprint the frontend echoes back on apply. Shared by the
+/// desktop command and the web dispatcher; reads settings + sessions only.
+pub(crate) async fn preview_coding_agent_profile_selection_inner(
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    settings: &SettingsState,
+    request: PreviewCodingAgentProfileSelectionRequest,
+) -> Result<PreviewCodingAgentProfileSelectionResult, String> {
     let settings_snapshot = settings.read().await.clone();
     validate_profile_assignment_request(
         &settings_snapshot,
@@ -599,6 +668,30 @@ pub async fn apply_coding_agent_profile_selection(
     settings: State<'_, SettingsState>,
     request: ApplyCodingAgentProfileSelectionRequest,
 ) -> Result<ApplyCodingAgentProfileSelectionResult, String> {
+    let (result, payload) = apply_coding_agent_profile_selection_inner(
+        &app,
+        session_mgr.inner(),
+        pty_mgr.inner(),
+        settings.inner(),
+        request,
+    )
+    .await?;
+    let _ = app.emit("coding_agent_profile_selection_updated", payload);
+    Ok(result)
+}
+
+/// Apply a coding-agent profile assignment across the enumerated replicas
+/// (optionally restarting live sessions) and return both the result and the
+/// `coding_agent_profile_selection_updated` event payload. The caller emits the
+/// payload (desktop) or broadcasts it to web clients. Shared by the desktop
+/// command and the web dispatcher.
+pub(crate) async fn apply_coding_agent_profile_selection_inner(
+    app: &AppHandle,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: &Arc<std::sync::Mutex<PtyManager>>,
+    settings: &SettingsState,
+    request: ApplyCodingAgentProfileSelectionRequest,
+) -> Result<(ApplyCodingAgentProfileSelectionResult, serde_json::Value), String> {
     let apply_lock = broad_profile_apply_lock().lock().await;
     let settings_snapshot = settings.read().await.clone();
     validate_profile_assignment_request(
@@ -669,10 +762,10 @@ pub async fn apply_coding_agent_profile_selection(
                     continue;
                 };
                 match crate::commands::session::restart_session_inner_with_activation(
-                    &app,
-                    session_mgr.inner(),
-                    pty_mgr.inner(),
-                    settings.inner(),
+                    app,
+                    session_mgr,
+                    pty_mgr,
+                    settings,
                     uuid,
                     Some(request.coding_agent_id.clone()),
                     Some(normalized_profile.clone()),
@@ -684,7 +777,7 @@ pub async fn apply_coding_agent_profile_selection(
                     Ok(_) => restarted_session_ids.push(session_id.clone()),
                     Err(e) => {
                         let (code, destroyed_but_not_recreated) =
-                            classify_restart_failure(session_mgr.inner(), uuid).await;
+                            classify_restart_failure(session_mgr, uuid).await;
                         errors.push(ProfileAssignmentError {
                             code: code.to_string(),
                             message: e,
@@ -711,19 +804,16 @@ pub async fn apply_coding_agent_profile_selection(
         warnings: enumeration.warnings,
         errors,
     };
-    let _ = app.emit(
-        "coding_agent_profile_selection_updated",
-        serde_json::json!({
-            "scope": request.scope,
-            "codingAgentId": request.coding_agent_id,
-            "profile": normalized_profile,
-            "updatedCount": result.updated_count,
-            "restartedCount": result.restarted_count,
-            "targetFingerprint": &result.target_fingerprint,
-            "errors": &result.errors,
-        }),
-    );
-    Ok(result)
+    let payload = serde_json::json!({
+        "scope": request.scope,
+        "codingAgentId": request.coding_agent_id,
+        "profile": normalized_profile,
+        "updatedCount": result.updated_count,
+        "restartedCount": result.restarted_count,
+        "targetFingerprint": &result.target_fingerprint,
+        "errors": &result.errors,
+    });
+    Ok((result, payload))
 }
 
 struct ProfileTargetEnumeration {
@@ -1201,6 +1291,150 @@ pub async fn api_server_status(settings: State<'_, SettingsState>) -> Result<boo
     Ok(is_tcp_listening(&addr).await)
 }
 
+#[tauri::command]
+pub async fn mint_api_client(
+    root: String,
+    scopes: Vec<String>,
+    label: Option<String>,
+    expires: Option<String>,
+) -> Result<MintApiClientResponse, String> {
+    let settings = load_settings();
+    let path = crate::config::config_dir()
+        .ok_or_else(|| "Cannot resolve the host config directory".to_string())?
+        .join(auth::REGISTRY_FILENAME);
+    mint_api_client_with_path(
+        &path,
+        &settings,
+        root,
+        scopes,
+        label,
+        expires,
+        Uuid::new_v4().to_string(),
+        Uuid::new_v4().to_string(),
+        chrono::Utc::now().to_rfc3339(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mint_api_client_with_path(
+    path: &Path,
+    settings: &AppSettings,
+    root: String,
+    scopes: Vec<String>,
+    label: Option<String>,
+    expires: Option<String>,
+    client_id: String,
+    secret: String,
+    issued_at: String,
+) -> Result<MintApiClientResponse, String> {
+    if crate::config::root_agent::is_root_agent_path(&root) {
+        return Err(
+            "Cannot mint an API client bound to the Root Agent; root-agent is API-excluded"
+                .to_string(),
+        );
+    }
+
+    let (bound_root, bound_fqn) = validate_mint_api_client_root(&root, settings)?;
+    if crate::config::root_agent::is_root_agent_target(&bound_fqn)
+        || bound_fqn == crate::config::root_agent::ROOT_AGENT_SENDER
+    {
+        return Err(
+            "Cannot mint an API client bound to the Root Agent; root-agent is API-excluded"
+                .to_string(),
+        );
+    }
+
+    let scopes: Vec<String> = scopes
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    auth::validate_scopes(&scopes)?;
+    let expires_at = bounded_mint_api_client_expiry(expires, &issued_at)?;
+
+    let out = auth::mint(
+        path,
+        auth::MintRequest {
+            client_id,
+            secret,
+            label: label.unwrap_or_default(),
+            bound_root: bound_root.clone(),
+            bound_fqn: bound_fqn.clone(),
+            scopes: scopes.clone(),
+            issued_at,
+            expires_at: Some(expires_at.clone()),
+        },
+    )?;
+
+    crate::api::audit::record(&out.client_id, &bound_fqn, "mint", "ok");
+    Ok(MintApiClientResponse {
+        client_id: out.client_id,
+        token: out.secret,
+        bound_fqn,
+        bound_root,
+        scopes,
+        expires_at: Some(expires_at),
+        note: MINT_API_CLIENT_NOTE.to_string(),
+    })
+}
+
+fn validate_mint_api_client_root(
+    root: &str,
+    settings: &AppSettings,
+) -> Result<(String, String), String> {
+    let canonical = crate::config::coding_agent_profiles::validate_profile_selection_agent_path(
+        settings,
+        Path::new(root),
+    )
+    .map_err(|_| format!("unknown or invalid root: {}", root))?
+    .launch_path;
+
+    let is_replica = canonical
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.starts_with("__agent_"))
+        .unwrap_or(false);
+    if !is_replica {
+        return Err(format!("unknown or invalid root: {}", root));
+    }
+
+    let bound_root = crate::path_utils::path_to_string_without_windows_verbatim_prefix(&canonical);
+    let bound_fqn = crate::config::teams::agent_fqn_from_path(&bound_root);
+    Ok((bound_root, bound_fqn))
+}
+
+fn bounded_mint_api_client_expiry(
+    expires: Option<String>,
+    issued_at: &str,
+) -> Result<String, String> {
+    let issued_at = chrono::DateTime::parse_from_rfc3339(issued_at)
+        .map_err(|e| format!("Invalid issuedAt timestamp: {}", e))?
+        .with_timezone(&chrono::Utc);
+    let max_expires_at = issued_at + chrono::Duration::days(MINT_API_CLIENT_MAX_TTL_DAYS);
+
+    let expires_at = match expires {
+        Some(raw) => {
+            let trimmed = raw.trim();
+            let parsed = chrono::DateTime::parse_from_rfc3339(trimmed)
+                .map_err(|e| format!("Invalid expires value; expected RFC3339: {}", e))?
+                .with_timezone(&chrono::Utc);
+            if parsed <= issued_at {
+                return Err("expires must be after the issuedAt timestamp".to_string());
+            }
+            if parsed > max_expires_at {
+                return Err(format!(
+                    "expires exceeds maximum API client lifetime of {} days",
+                    MINT_API_CLIENT_MAX_TTL_DAYS
+                ));
+            }
+            parsed
+        }
+        None => issued_at + chrono::Duration::hours(MINT_API_CLIENT_DEFAULT_TTL_HOURS),
+    };
+
+    Ok(expires_at.to_rfc3339())
+}
+
 // Tauri command: State<> injections push us over clippy's 7-arg threshold.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
@@ -1591,12 +1825,14 @@ mod tests {
     #[cfg(windows)]
     use super::{build_profile_assignment_target, canonical_compare_key};
     use super::{
-        build_web_server_owned_status, ensure_web_remote_open_allowed,
+        build_web_server_owned_status, ensure_web_remote_open_allowed, mint_api_client_with_path,
         persist_coding_agent_env_settings_update, persist_coding_agent_profiles_update,
         persist_narrow_settings_update_with_saver, persist_protected_settings_update_with_saver,
         persist_settings_draft_update_with_saver, RtkSweepError, RtkSweepResult,
-        WebServerOwnershipState,
+        WebServerOwnershipState, MINT_API_CLIENT_DEFAULT_TTL_HOURS, MINT_API_CLIENT_MAX_TTL_DAYS,
+        MINT_API_CLIENT_NOTE,
     };
+    use crate::api::auth;
     use crate::config::settings::{
         AgentConfig, AppSettings, CodingAgentEnv, CodingAgentEnvSource, ProfileCellConfig,
         SettingsState,
@@ -1605,7 +1841,8 @@ mod tests {
     use crate::WebServerHandle;
     use std::collections::BTreeMap;
     #[cfg(windows)]
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
+    use std::path::PathBuf;
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
@@ -1661,6 +1898,157 @@ mod tests {
 
     fn state_for(settings: AppSettings) -> SettingsState {
         Arc::new(RwLock::new(settings))
+    }
+
+    struct MintApiClientFixture {
+        _temp: tempfile::TempDir,
+        path: PathBuf,
+        project: PathBuf,
+        settings: AppSettings,
+        root: String,
+        expected_fqn: String,
+    }
+
+    fn mint_api_client_fixture() -> MintApiClientFixture {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("proj-a");
+        let workspace = project.join(".ac");
+        let matrix = workspace.join("_agent_alice");
+        let replica = workspace.join("wg-1-devs").join("__agent_alice");
+        std::fs::create_dir_all(&matrix).expect("create matrix");
+        std::fs::create_dir_all(&replica).expect("create replica");
+        std::fs::write(
+            replica.join("config.json"),
+            r#"{"identity":"../../_agent_alice"}"#,
+        )
+        .expect("write replica config");
+
+        let root_path = std::fs::canonicalize(&replica).expect("canonical replica");
+        let root = crate::path_utils::path_to_string_without_windows_verbatim_prefix(&root_path);
+        let expected_fqn = crate::config::teams::agent_fqn_from_path(&root);
+        let settings = AppSettings {
+            project_paths: vec![project.to_string_lossy().to_string()],
+            ..AppSettings::default()
+        };
+
+        MintApiClientFixture {
+            path: temp.path().join(auth::REGISTRY_FILENAME),
+            _temp: temp,
+            project,
+            settings,
+            root,
+            expected_fqn,
+        }
+    }
+
+    #[test]
+    fn mint_api_client_command_helper_returns_token_and_stores_hash_only_with_default_expiry() {
+        let fixture = mint_api_client_fixture();
+        let issued_at = "2026-01-01T00:00:00Z";
+        let expected_expires_at = (chrono::DateTime::parse_from_rfc3339(issued_at)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+            + chrono::Duration::hours(MINT_API_CLIENT_DEFAULT_TTL_HOURS))
+        .to_rfc3339();
+
+        let response = mint_api_client_with_path(
+            &fixture.path,
+            &fixture.settings,
+            fixture.root.clone(),
+            vec![
+                " send ".to_string(),
+                "".to_string(),
+                "list-peers-lean".to_string(),
+            ],
+            Some("gui mint".to_string()),
+            None,
+            "client-1".to_string(),
+            "plain-secret".to_string(),
+            issued_at.to_string(),
+        )
+        .expect("mint succeeds");
+
+        assert_eq!(response.client_id, "client-1");
+        assert_eq!(response.token, "plain-secret");
+        assert_eq!(response.bound_root, fixture.root);
+        assert_eq!(response.bound_fqn, fixture.expected_fqn);
+        assert_eq!(response.scopes, vec!["send", "list-peers-lean"]);
+        assert_eq!(
+            response.expires_at.as_deref(),
+            Some(expected_expires_at.as_str())
+        );
+        assert_eq!(response.note, MINT_API_CLIENT_NOTE);
+
+        let raw = std::fs::read_to_string(&fixture.path).expect("read registry");
+        assert!(raw.contains("client-1"));
+        assert!(raw.contains("sha256:"));
+        assert!(!raw.contains("plain-secret"));
+
+        let registry = auth::list(&fixture.path);
+        assert_eq!(registry.clients.len(), 1);
+        let client = &registry.clients[0];
+        assert_eq!(client.client_id, "client-1");
+        assert_eq!(client.label, "gui mint");
+        assert_eq!(client.bound_fqn, fixture.expected_fqn);
+        assert_eq!(client.bound_root, response.bound_root);
+        assert_eq!(client.scopes, response.scopes);
+        assert_eq!(client.expires_at, response.expires_at);
+        assert_ne!(client.token_hash, "plain-secret");
+    }
+
+    #[test]
+    fn mint_api_client_rejects_unknown_root() {
+        let fixture = mint_api_client_fixture();
+        let unknown_root = fixture
+            .project
+            .join(".ac")
+            .join("wg-1-devs")
+            .join("__agent_missing");
+
+        let err = mint_api_client_with_path(
+            &fixture.path,
+            &fixture.settings,
+            unknown_root.to_string_lossy().to_string(),
+            vec!["send".to_string()],
+            None,
+            None,
+            "client-1".to_string(),
+            "plain-secret".to_string(),
+            "2026-01-01T00:00:00Z".to_string(),
+        )
+        .expect_err("unknown root should fail");
+
+        assert!(err.contains("unknown or invalid root"), "{err}");
+        assert!(!fixture.path.exists());
+    }
+
+    #[test]
+    fn mint_api_client_rejects_expiry_beyond_max() {
+        let fixture = mint_api_client_fixture();
+        let issued_at = chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let over_max =
+            (issued_at + chrono::Duration::days(MINT_API_CLIENT_MAX_TTL_DAYS + 1)).to_rfc3339();
+
+        let err = mint_api_client_with_path(
+            &fixture.path,
+            &fixture.settings,
+            fixture.root,
+            vec!["send".to_string()],
+            None,
+            Some(over_max),
+            "client-1".to_string(),
+            "plain-secret".to_string(),
+            issued_at.to_rfc3339(),
+        )
+        .expect_err("over-max expiry should fail");
+
+        assert!(
+            err.contains("expires exceeds maximum API client lifetime"),
+            "{err}"
+        );
+        assert!(!fixture.path.exists());
     }
 
     #[test]

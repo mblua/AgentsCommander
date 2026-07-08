@@ -61,7 +61,9 @@ import type {
   ScreenshotHotkeyStatus,
   WorkgroupGroupsConfig,
   NonStopReport,
-  WebServerOwnedStatus
+  WebServerOwnedStatus,
+  ApiClientMintRequest,
+  ApiClientMintResponse,
 } from "./types";
 
 export interface SessionRepoInput {
@@ -295,6 +297,13 @@ export const SettingsAPI = {
   startApiServer: () => transport.invoke<boolean>("start_api_server"),
   stopApiServer: () => transport.invoke<boolean>("stop_api_server"),
   apiServerStatus: () => transport.invoke<boolean>("api_server_status"),
+  mintApiClient: (request: ApiClientMintRequest) =>
+    transport.invoke<ApiClientMintResponse>("mint_api_client", {
+      root: request.root,
+      scopes: request.scopes,
+      label: request.label ?? null,
+      expires: request.expires ?? null,
+    }),
   getWebServerOwnedStatus: () =>
     transport.invoke<WebServerOwnedStatus>("get_web_server_owned_status"),
   // Narrow setters hold the SettingsState write lock through save_settings on
