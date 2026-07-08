@@ -404,6 +404,7 @@ mod tests {
             cwd: ".".to_string(),
             cols: 80,
             rows: 24,
+            container_image: None,
             configured_env: Vec::new(),
             env_remove_keys: Vec::new(),
             extra_env: Vec::new(),

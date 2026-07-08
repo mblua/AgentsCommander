@@ -98,6 +98,7 @@ impl DockerRuntime {
             ),
             "--workdir".to_string(),
             request.container_workdir.clone(),
+            "--".to_string(),
             request.image.clone(),
             DEFAULT_BRIDGE_ENTRYPOINT.to_string(),
         ];
@@ -385,9 +386,32 @@ mod tests {
         assert!(joined.contains("AGENTSCOMMANDER_BRIDGE_COMMAND=codex"));
         assert!(joined
             .contains("type=bind,source=C:/project/.ac/wg-1-team/__agent_dev,target=/workspace"));
+        let image_idx = spec
+            .args
+            .iter()
+            .position(|arg| arg == "ac-bridge:test")
+            .expect("image arg");
+        assert_eq!(spec.args[image_idx - 1], "--");
+        assert_eq!(spec.args[image_idx + 1], DEFAULT_BRIDGE_ENTRYPOINT);
         assert!(!joined.contains("docker.sock"));
         assert!(!joined.contains("messaging"));
         assert!(!joined.contains("api-clients.json"));
+    }
+
+    #[test]
+    fn run_command_terminates_options_before_image() {
+        let runtime = DockerRuntime::with_program("docker-test");
+        let mut request = request();
+        request.image = "--privileged".to_string();
+        let spec = runtime.build_run_command(&request);
+        let image_idx = spec
+            .args
+            .iter()
+            .position(|arg| arg == "--privileged")
+            .expect("image arg");
+
+        assert_eq!(spec.args[image_idx - 1], "--");
+        assert_eq!(spec.args[image_idx + 1], DEFAULT_BRIDGE_ENTRYPOINT);
     }
 
     #[test]

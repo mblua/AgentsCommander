@@ -23,7 +23,7 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 
 use crate::config::coding_agent_mutations::{
     self as ops, AgentPatch, CodingAgentOp, CodingAgentOpOutcome, CodingAgentRequest,
@@ -31,9 +31,10 @@ use crate::config::coding_agent_mutations::{
 };
 use crate::config::coding_agents_catalog::{load_catalog, CodingAgentDefinition};
 use crate::config::settings::{
-    load_settings_for_cli_strict, save_settings, validate_user_env_key, AgentConfig,
-    CodingAgentEnv, CodingAgentEnvSource, ConfigSeedConfig,
+    load_settings_for_cli_strict, normalize_container_image_input, save_settings,
+    validate_user_env_key, AgentConfig, CodingAgentEnv, CodingAgentEnvSource, ConfigSeedConfig,
 };
+use crate::pty::backend::SessionBackendKind;
 
 const DEFAULT_CONFIRM_TIMEOUT_SECS: u64 = 30;
 /// #786 R3: grace window (one poller interval + margin) after an ENOENT cancel.
@@ -81,6 +82,21 @@ pub struct ShowArgs {
     pub id: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CliBackendKind {
+    Local,
+    Container,
+}
+
+impl From<CliBackendKind> for SessionBackendKind {
+    fn from(kind: CliBackendKind) -> Self {
+        match kind {
+            CliBackendKind::Local => SessionBackendKind::LocalProcess,
+            CliBackendKind::Container => SessionBackendKind::ContainerTransport,
+        }
+    }
+}
+
 #[derive(Args)]
 pub struct AddArgs {
     /// Seed label/command/color/envs/isolatedHome (and optional instructions/seed)
@@ -114,6 +130,12 @@ pub struct AddArgs {
     /// Enable/disable the config-folder seed
     #[arg(long = "config-seed-enabled", value_name = "true|false", action = clap::ArgAction::Set)]
     pub config_seed_enabled: Option<bool>,
+    /// Runtime backend: local or container
+    #[arg(long = "backend", value_enum)]
+    pub backend: Option<CliBackendKind>,
+    /// Docker image for container runtime. Implies --backend container.
+    #[arg(long = "container-image", value_name = "IMAGE")]
+    pub container_image: Option<String>,
     /// Seconds to wait for the GUI to process the request (daemon path only)
     #[arg(long = "confirm-timeout", default_value_t = DEFAULT_CONFIRM_TIMEOUT_SECS)]
     pub confirm_timeout: u64,
@@ -152,6 +174,15 @@ pub struct UpdateArgs {
     /// Clear the config-folder seed (conflicts with the other seed flags)
     #[arg(long = "clear-config-seed")]
     pub clear_config_seed: bool,
+    /// Runtime backend: local or container
+    #[arg(long = "backend", value_enum)]
+    pub backend: Option<CliBackendKind>,
+    /// Docker image for container runtime. Implies --backend container.
+    #[arg(long = "container-image", value_name = "IMAGE")]
+    pub container_image: Option<String>,
+    /// Clear the per-agent Docker image override
+    #[arg(long = "clear-container-image")]
+    pub clear_container_image: bool,
     #[arg(long = "confirm-timeout", default_value_t = DEFAULT_CONFIRM_TIMEOUT_SECS)]
     pub confirm_timeout: u64,
 }
@@ -262,6 +293,7 @@ fn cmd_add(a: AddArgs, gui_running: bool) -> Result<(), String> {
         agent.instructions_filename = Some(name);
     }
     apply_seed_flags(&mut agent, a.config_seed_dest, a.config_seed_enabled);
+    apply_backend_flags(&mut agent, a.backend, a.container_image)?;
 
     // Custom (not from-catalog) requires label + command (mirrors Onboarding).
     if a.from_catalog.is_none()
@@ -297,6 +329,12 @@ fn cmd_update(a: UpdateArgs, gui_running: bool) -> Result<(), String> {
                 .to_string(),
         );
     }
+    if a.clear_container_image && a.container_image.is_some() {
+        return Err("--clear-container-image conflicts with --container-image".to_string());
+    }
+    if a.backend == Some(CliBackendKind::Local) && a.container_image.is_some() {
+        return Err("--backend local conflicts with --container-image".to_string());
+    }
     if let Some(color) = &a.color {
         ops::validate_agent_color(color)?;
     }
@@ -313,6 +351,8 @@ fn cmd_update(a: UpdateArgs, gui_running: bool) -> Result<(), String> {
     } else {
         Some(parse_env_flags(&a.env)?)
     };
+    let (backend_kind, container_image, clear_container_image) =
+        backend_patch_fields(a.backend, a.container_image, a.clear_container_image)?;
 
     let patch = AgentPatch {
         label: a.label.map(|l| l.trim().to_string()),
@@ -325,6 +365,9 @@ fn cmd_update(a: UpdateArgs, gui_running: bool) -> Result<(), String> {
         config_seed_dest: a.config_seed_dest,
         config_seed_enabled: a.config_seed_enabled,
         clear_config_seed: a.clear_config_seed,
+        backend_kind,
+        container_image,
+        clear_container_image,
     };
     dispatch_mutation(
         CodingAgentOp::Update { id: a.id, patch },
@@ -514,6 +557,58 @@ fn apply_seed_flags(agent: &mut AgentConfig, dest: Option<String>, enabled: Opti
     agent.config_seed = Some(seed);
 }
 
+fn apply_backend_flags(
+    agent: &mut AgentConfig,
+    backend: Option<CliBackendKind>,
+    container_image: Option<String>,
+) -> Result<(), String> {
+    if backend == Some(CliBackendKind::Local) && container_image.is_some() {
+        return Err("--backend local conflicts with --container-image".to_string());
+    }
+    if let Some(kind) = backend {
+        agent.backend.kind = kind.into();
+    }
+    if let Some(image) = container_image {
+        agent.backend.kind = SessionBackendKind::ContainerTransport;
+        agent.backend.image = Some(normalize_container_image_input(
+            &image,
+            "--container-image",
+        )?);
+    }
+    if agent.backend.kind == SessionBackendKind::LocalProcess {
+        agent.backend.image = None;
+    }
+    Ok(())
+}
+
+fn backend_patch_fields(
+    backend: Option<CliBackendKind>,
+    container_image: Option<String>,
+    clear_container_image: bool,
+) -> Result<(Option<SessionBackendKind>, Option<String>, bool), String> {
+    if clear_container_image && container_image.is_some() {
+        return Err("--clear-container-image conflicts with --container-image".to_string());
+    }
+    let mut backend_kind = backend.map(SessionBackendKind::from);
+    let mut clear_image = clear_container_image;
+    let image = if let Some(image) = container_image {
+        if backend == Some(CliBackendKind::Local) {
+            return Err("--backend local conflicts with --container-image".to_string());
+        }
+        backend_kind = Some(SessionBackendKind::ContainerTransport);
+        Some(normalize_container_image_input(
+            &image,
+            "--container-image",
+        )?)
+    } else {
+        None
+    };
+    if backend_kind == Some(SessionBackendKind::LocalProcess) {
+        clear_image = true;
+    }
+    Ok((backend_kind, image, clear_image))
+}
+
 /// Parse `--env KEY=VALUE` (C8): split on the FIRST `=`; missing `=` or an
 /// invalid key is a CLI error (surfaced here, not via a poller round-trip).
 fn parse_env_flags(raw: &[String]) -> Result<Vec<CodingAgentEnv>, String> {
@@ -556,6 +651,8 @@ mod tests {
             instructions_filename: None,
             config_seed_dest: None,
             config_seed_enabled: None,
+            backend: None,
+            container_image: None,
             confirm_timeout: 0,
         }
     }
@@ -574,6 +671,9 @@ mod tests {
             config_seed_dest: None,
             config_seed_enabled: None,
             clear_config_seed: false,
+            backend: None,
+            container_image: None,
+            clear_container_image: false,
             confirm_timeout: 0,
         }
     }
@@ -623,6 +723,64 @@ mod tests {
         a.clear_config_seed = true;
         a.config_seed_dest = Some(".claude".into());
         assert!(cmd_update(a, false).is_err());
+    }
+
+    #[test]
+    fn update_clear_container_image_conflicts() {
+        let mut a = update_args("x");
+        a.clear_container_image = true;
+        a.container_image = Some("image:tag".into());
+        assert!(cmd_update(a, false).is_err());
+    }
+
+    #[test]
+    fn backend_flags_apply_container_semantics() {
+        let mut agent = blank_agent();
+        apply_backend_flags(
+            &mut agent,
+            None,
+            Some(" agentscommander/ac-claude:latest ".into()),
+        )
+        .unwrap();
+        assert_eq!(agent.backend.kind, SessionBackendKind::ContainerTransport);
+        assert_eq!(
+            agent.backend.image.as_deref(),
+            Some("agentscommander/ac-claude:latest")
+        );
+
+        let mut local = blank_agent();
+        assert!(apply_backend_flags(
+            &mut local,
+            Some(CliBackendKind::Local),
+            Some("image:tag".into())
+        )
+        .is_err());
+
+        let mut bad = blank_agent();
+        assert!(apply_backend_flags(&mut bad, None, Some("--privileged".into())).is_err());
+        assert!(apply_backend_flags(&mut bad, None, Some("   ".into())).is_err());
+    }
+
+    #[test]
+    fn backend_patch_fields_follow_update_semantics() {
+        let (kind, image, clear) =
+            backend_patch_fields(None, Some(" image:tag ".into()), false).unwrap();
+        assert_eq!(kind, Some(SessionBackendKind::ContainerTransport));
+        assert_eq!(image.as_deref(), Some("image:tag"));
+        assert!(!clear);
+
+        let (kind, image, clear) =
+            backend_patch_fields(Some(CliBackendKind::Local), None, false).unwrap();
+        assert_eq!(kind, Some(SessionBackendKind::LocalProcess));
+        assert!(image.is_none());
+        assert!(clear);
+
+        assert!(
+            backend_patch_fields(Some(CliBackendKind::Local), Some("image:tag".into()), false)
+                .is_err()
+        );
+        assert!(backend_patch_fields(None, Some("image:tag".into()), true).is_err());
+        assert!(backend_patch_fields(None, Some("--volume=/:/host".into()), false).is_err());
     }
 
     #[test]
