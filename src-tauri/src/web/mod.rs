@@ -325,7 +325,12 @@ async fn handle_binary_message(state: &WsState, data: &[u8]) {
 
     // #552 web UI keystrokes (binary frame) are the real web input path and a
     // genuine user message: reset the badge clock + auto-close silence.
-    crate::commands::pty::note_user_message_to_session(&state.app_handle, uuid).await;
+    crate::commands::pty::note_user_message_to_session(
+        &state.app_handle,
+        uuid,
+        crate::commands::pty::UserInputSource::Web(pty_data),
+    )
+    .await;
 }
 
 fn binary_pty_write_succeeded(

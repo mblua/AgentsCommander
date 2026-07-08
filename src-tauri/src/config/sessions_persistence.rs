@@ -1314,10 +1314,10 @@ async fn raise_hand_and_persist_to_dir_result(
     Ok(RaiseHandPersistOutcome::Raised(communication))
 }
 
-/// #698 — the user-input session-state transitions cleared by
+/// #698: the user-input session-state transitions cleared by
 /// `clear_user_input_transitions_and_persist_result`, reported so the caller can
 /// decide whether to emit the raise-hand clear event.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct ClearedUserInputTransitions {
     /// `start_fresh_on_restore` flipped `true -> false` (#630/#631 re-arm).
     pub cleared_start_fresh: bool,
@@ -1325,9 +1325,10 @@ pub struct ClearedUserInputTransitions {
     pub cleared_raise_hand: bool,
 }
 
-/// #698 — clear the user-input session-state transitions (re-arm
-/// `start_fresh_on_restore`, lower any visible raise-hand) and persist the
-/// result atomically with respect to all session persistence.
+/// #698: clear the user-input session-state transitions and persist the result
+/// atomically with respect to all session persistence. `clear_fresh` gates the
+/// `start_fresh_on_restore` re-arm to substantive post-boundary submissions
+/// (#871); lowering any visible raise-hand remains unconditional.
 ///
 /// Fix for the MEDIUM grinch finding: the two field clears previously ran in two
 /// separate critical sections with an await between them, so a concurrent persist
@@ -1346,12 +1347,14 @@ pub struct ClearedUserInputTransitions {
 pub async fn clear_user_input_transitions_and_persist_result(
     mgr: &SessionManager,
     session_id: Uuid,
+    clear_fresh: bool,
 ) -> Result<ClearedUserInputTransitions, String> {
     let dir = super::config_dir();
     let project_paths = crate::config::settings::load_settings_for_cli().project_paths;
     clear_user_input_transitions_and_persist_to_dir_result(
         mgr,
         session_id,
+        clear_fresh,
         dir.as_deref(),
         Some(&project_paths),
     )
@@ -1361,16 +1364,19 @@ pub async fn clear_user_input_transitions_and_persist_result(
 async fn clear_user_input_transitions_and_persist_to_dir_result(
     mgr: &SessionManager,
     session_id: Uuid,
+    clear_fresh: bool,
     dir: Option<&Path>,
     project_paths: Option<&[String]>,
 ) -> Result<ClearedUserInputTransitions, String> {
     let _guard = sessions_save_lock().lock().await;
 
     // Mutate FIRST and unconditionally: the user typed, so the hand is lowered
-    // and the fresh intent re-armed even if we cannot persist. Both fields flip
-    // in one critical section, so no snapshot can capture a half-applied state.
-    let (cleared_start_fresh, cleared_raise_hand) =
-        mgr.clear_user_input_transitions(session_id).await;
+    // and, when gated, the fresh intent is re-armed even if we cannot persist.
+    // Both fields flip in one critical section, so no snapshot can capture a
+    // half-applied state.
+    let (cleared_start_fresh, cleared_raise_hand) = mgr
+        .clear_user_input_transitions(session_id, clear_fresh)
+        .await;
     let cleared = ClearedUserInputTransitions {
         cleared_start_fresh,
         cleared_raise_hand,
@@ -2021,10 +2027,15 @@ mod tests {
         let raise_time = chrono::DateTime::parse_from_rfc3339("2026-06-30T11:00:00+00:00")
             .unwrap()
             .with_timezone(&chrono::Utc);
-        let outcome =
-            raise_hand_and_persist_to_dir_result(&mgr_a, session_a.id, raise_time, temp.path(), None)
-                .await
-                .expect("raise+persist should succeed");
+        let outcome = raise_hand_and_persist_to_dir_result(
+            &mgr_a,
+            session_a.id,
+            raise_time,
+            temp.path(),
+            None,
+        )
+        .await
+        .expect("raise+persist should succeed");
         assert!(matches!(outcome, RaiseHandPersistOutcome::Raised(_)));
 
         let rows = load_sessions_raw_from_dir_for_test(temp.path());
@@ -2112,6 +2123,7 @@ mod tests {
         let cleared = clear_user_input_transitions_and_persist_to_dir_result(
             &mgr,
             session.id,
+            true,
             Some(temp.path()),
             None,
         )
@@ -2165,6 +2177,7 @@ mod tests {
         let result = clear_user_input_transitions_and_persist_to_dir_result(
             &mgr,
             session.id,
+            true,
             Some(&file_as_dir),
             None,
         )
@@ -2206,6 +2219,7 @@ mod tests {
         let mut fut = Box::pin(clear_user_input_transitions_and_persist_to_dir_result(
             &mgr,
             session.id,
+            true,
             Some(temp.path()),
             None,
         ));
@@ -2265,13 +2279,19 @@ mod tests {
         )
         .await
         .expect("stamp+persist should succeed");
-        assert!(stamped, "first stamp must report the false -> true transition");
+        assert!(
+            stamped,
+            "first stamp must report the false -> true transition"
+        );
 
         let saved =
             std::fs::read_to_string(temp.path().join("sessions.json")).expect("read sessions.json");
         let rows: Vec<PersistedSession> = serde_json::from_str(&saved).expect("deserialize");
         assert_eq!(rows.len(), 1);
-        assert!(rows[0].start_fresh_on_restore, "stamp must reach the snapshot");
+        assert!(
+            rows[0].start_fresh_on_restore,
+            "stamp must reach the snapshot"
+        );
 
         // Second stamp is a no-op: Ok(false), and the file is not rewritten.
         std::fs::remove_file(temp.path().join("sessions.json")).expect("remove snapshot");
@@ -2328,7 +2348,10 @@ mod tests {
             std::fs::read_to_string(temp.path().join("sessions.json")).expect("read sessions.json");
         let rows: Vec<PersistedSession> = serde_json::from_str(&saved).expect("deserialize");
         assert_eq!(rows.len(), 1);
-        assert!(!rows[0].start_fresh_on_restore, "drop must reach the snapshot");
+        assert!(
+            !rows[0].start_fresh_on_restore,
+            "drop must reach the snapshot"
+        );
     }
 
     /// (#756) Dropping an unset record is Ok(false) and does not save.
@@ -2744,10 +2767,7 @@ mod tests {
                     .to_string(),
             ],
         );
-        assert_eq!(
-            stripped,
-            vec!["/C".to_string(), "npx claude".to_string()]
-        );
+        assert_eq!(stripped, vec!["/C".to_string(), "npx claude".to_string()]);
     }
 
     #[test]

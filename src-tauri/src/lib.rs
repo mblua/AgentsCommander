@@ -605,6 +605,7 @@ pub fn run(
         .manage(Arc::new(PendingSelfClear::default()))
         .manage(screenshot_capture_state) // #714
         .manage(screenshot_hotkey_state) // #714
+        .manage(crate::pty::input_activity::new_state()) // #871 substantive-input tracker
         .setup(move |app| {
             use tauri::WebviewWindowBuilder;
             use tauri::WebviewUrl;

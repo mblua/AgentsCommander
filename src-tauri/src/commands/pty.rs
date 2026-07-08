@@ -15,6 +15,17 @@ pub struct PtyScreenSnapshotPayload {
     pub sequence: u64,
 }
 
+/// (#871) Classifies user-input notifications so fresh-intent clearing can be
+/// gated on substantive post-boundary submissions.
+pub(crate) enum UserInputSource<'a> {
+    /// xterm terminal keystrokes from the Tauri `pty_write` command.
+    Terminal(&'a [u8]),
+    /// Web UI raw keystrokes from binary frames or the web command path.
+    Web(&'a [u8]),
+    /// A complete submitted message, always substantive.
+    CompleteMessage,
+}
+
 #[tauri::command]
 pub async fn pty_write(
     app: AppHandle,
@@ -44,7 +55,7 @@ pub async fn pty_write(
 
     // #552 user input -> silence touch (+ badge reset if coordinator). Resolves
     // all state from `app`, so the same helper serves Telegram and web.
-    note_user_message_to_session(&app, uuid).await;
+    note_user_message_to_session(&app, uuid, UserInputSource::Terminal(&data)).await;
 
     Ok(())
 }
@@ -52,28 +63,37 @@ pub async fn pty_write(
 /// #552 Record a real user message to `session_id`: always reset the auto-close
 /// silence clock; if the session is a coordinator, reset its badge clock and
 /// emit `coordinator_clock_updated` (and clear any "auto-closed" marker).
-/// Resolves all state from `app`, so every user-input surface (xterm `pty_write`,
-/// Telegram inbound, web UI) can call it with just (app, uuid). Injection /
-/// auto-resume MUST NOT call this (they are not user messages).
+/// Resolves all state from `app`, so every user-input surface (xterm
+/// `pty_write`, Telegram inbound, web UI) can call it with its source tag.
+/// Injection / auto-resume MUST NOT call this (they are not user messages).
 ///
 /// Generic over the Tauri runtime so callers holding either a concrete
 /// `AppHandle` or a generic `AppHandle<R>` (e.g. the Telegram bridge) can reuse it.
 pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
     app: &AppHandle<R>,
     session_id: Uuid,
+    source: UserInputSource<'_>,
 ) {
+    let (substantive, source_class): (bool, &'static str) = match source {
+        UserInputSource::Terminal(data) => {
+            (classify_substantive(app, session_id, data), "terminal")
+        }
+        UserInputSource::Web(data) => (classify_substantive(app, session_id, data), "web"),
+        UserInputSource::CompleteMessage => (true, "message"),
+    };
+
     // (a) auto-close silence: any user message keeps the team alive.
     if let Some(idle) = app.try_state::<Arc<crate::pty::idle_detector::IdleDetector>>() {
         idle.touch_silence(session_id);
     }
 
     // (#630/#631 + #698) Apply both user-input state transitions and persist them
-    // atomically. On the FIRST real user message we re-arm the resume intent (so a
-    // restarted-fresh session stays fresh until the user actually engages) and
-    // clear any visible raise-hand communication. This is the unified user-input
-    // choke point (xterm/Telegram/web); injection and auto-resume never call it,
-    // and it runs before the coordinator-only early return below so non-
-    // coordinator members re-arm too.
+    // atomically. On the FIRST substantive post-boundary submission we re-arm the
+    // resume intent, and every user write still lowers any visible raise-hand
+    // communication. This is the unified user-input choke point
+    // (xterm/Telegram/web); injection and auto-resume never call it, and it runs
+    // before the coordinator-only early return below so non-coordinator members
+    // re-arm too when the write is substantive.
     //
     // `clear_user_input_transitions_and_persist_result` flips BOTH fields in one
     // SessionManager critical section and runs the mutation + snapshot + save
@@ -86,13 +106,15 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
         let guard = mgr.read().await;
         guard.clone()
     };
-    let cleared_raise_hand =
+    let cleared =
         match crate::config::sessions_persistence::clear_user_input_transitions_and_persist_result(
-            &manager, session_id,
+            &manager,
+            session_id,
+            substantive,
         )
         .await
         {
-            Ok(cleared) => cleared.cleared_raise_hand,
+            Ok(cleared) => cleared,
             Err(e) => {
                 log::error!(
                     "Failed to persist user-input session state transitions: {}",
@@ -101,11 +123,25 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
                 // The in-memory clear still applied; only the snapshot failed.
                 // Suppress the clear event so the live UI does not diverge from the
                 // durable file (the next persist will reconcile disk).
-                false
+                crate::config::sessions_persistence::ClearedUserInputTransitions::default()
             }
         };
 
-    if cleared_raise_hand {
+    if cleared.cleared_start_fresh {
+        log::info!(
+            "[session-state] {} fresh intent cleared: substantive {} input (#871)",
+            &session_id.to_string()[..8],
+            source_class
+        );
+    } else if !substantive {
+        log::debug!(
+            "[session-state] {} non-substantive {} write; fresh intent preserved (#871)",
+            &session_id.to_string()[..8],
+            source_class
+        );
+    }
+
+    if cleared.cleared_raise_hand {
         let _ = app.emit(
             "session_communication_changed",
             serde_json::json!({ "sessionId": session_id.to_string(), "communication": null }),
@@ -127,18 +163,21 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
     // agent_fqn_from_path returns String (teams.rs:80), not Option.
     let fqn = crate::config::teams::agent_fqn_from_path(&cwd);
     let now = chrono::Utc::now();
-    let (changed, cleared, cleared_fresh) = {
+    let (changed, cleared_auto, cleared_fresh) = {
         let mut guard = clocks.lock().unwrap_or_else(|e| e.into_inner());
         let changed = guard.note_user_message(&fqn, now);
         // #552 a real user message reopens the coordinator -> clear any
         // "auto-closed" marker (idempotent; no-op if not marked).
-        let cleared = guard.clear_auto_closed(&fqn);
-        // (#756) typed input creates a post-boundary transcript: drop the
-        // fresh-intent mirror. The record half is re-armed above via
-        // clear_user_input_transitions; without this the destroyed-record
-        // reopen would force an ENGAGED coordinator fresh.
-        let cleared_fresh = guard.clear_start_fresh(&fqn);
-        (changed, cleared, cleared_fresh)
+        let cleared_auto = guard.clear_auto_closed(&fqn);
+        // (#871/#756) Drop the fresh-intent mirror only on a substantive
+        // post-boundary submission. Non-substantive terminal writes leave it set
+        // so an app restart still restores fresh.
+        let cleared_fresh = if substantive {
+            guard.clear_start_fresh(&fqn)
+        } else {
+            false
+        };
+        (changed, cleared_auto, cleared_fresh)
     };
     if changed {
         let _ = app.emit(
@@ -146,7 +185,7 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
             serde_json::json!({ "replicaPath": cwd, "lastUserMessageAt": now.to_rfc3339() }),
         );
     }
-    if cleared {
+    if cleared_auto {
         let _ = app.emit(
             "coordinator_auto_close_changed",
             serde_json::json!({ "replicaPath": cwd, "autoClosedAt": null }),
@@ -161,6 +200,21 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
             log::warn!("[coordinator-clocks] fresh-intent clear save failed: {}", e);
         }
     }
+}
+
+/// (#871) Run the substantive-submission classifier for a raw keystroke chunk.
+/// Locks the managed tracker briefly with no await held. Fail-open to true if
+/// the tracker state is absent, preserving the historical clear contract.
+fn classify_substantive<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+    data: &[u8],
+) -> bool {
+    let Some(state) = app.try_state::<crate::pty::input_activity::SubstantiveInputState>() else {
+        return true;
+    };
+    let mut tracker = state.lock().unwrap_or_else(|e| e.into_inner());
+    tracker.feed(session_id, data)
 }
 
 /// (#756) Record an AC-driven fresh-conversation boundary for `session_id`:
@@ -186,6 +240,12 @@ pub(crate) async fn stamp_fresh_boundary_to_session<R: tauri::Runtime>(
     // a later record destroy resurrect the pre-boundary conversation: the
     // exact #756 bug.
     write_start_fresh_mirror_for_session(app, session_id, true).await;
+    if let Some(state) = app.try_state::<crate::pty::input_activity::SubstantiveInputState>() {
+        state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .reset(session_id);
+    }
     let manager = {
         let mgr = app.state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
         let guard = mgr.read().await;
@@ -197,8 +257,7 @@ pub(crate) async fn stamp_fresh_boundary_to_session<R: tauri::Runtime>(
         .get_session(session_id)
         .await
         .map(|s| {
-            s.is_root_agent
-                || crate::config::root_agent::is_root_agent_path(&s.working_directory)
+            s.is_root_agent || crate::config::root_agent::is_root_agent_path(&s.working_directory)
         })
         .unwrap_or(false);
     if !is_root {
@@ -348,4 +407,162 @@ pub fn get_screen_snapshot(
         cols: Some(snapshot.cols),
         sequence: snapshot.sequence,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    use crate::config::coordinator_clocks::{CoordinatorClocks, CoordinatorClocksState};
+    use crate::session::manager::SessionManager;
+    use crate::session::session::SessionRepo;
+
+    struct FreshIntentFixture {
+        app: tauri::App<tauri::test::MockRuntime>,
+        session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+        clocks: CoordinatorClocksState,
+        session_id: Uuid,
+        fqn: String,
+    }
+
+    fn user_input_test_app(
+        session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+        clocks: CoordinatorClocksState,
+    ) -> tauri::App<tauri::test::MockRuntime> {
+        tauri::test::mock_builder()
+            .manage(session_mgr)
+            .manage(clocks)
+            .manage(crate::pty::input_activity::new_state())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build user input test app")
+    }
+
+    async fn fresh_intent_fixture() -> FreshIntentFixture {
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let clocks = Arc::new(Mutex::new(CoordinatorClocks::default()));
+        let app = user_input_test_app(session_mgr.clone(), clocks.clone());
+        let cwd = "C:/ac-test/project/.ac/wg-871-dev-team/__agent_tech-lead".to_string();
+        let fqn = crate::config::teams::agent_fqn_from_path(&cwd);
+        let session = {
+            let mgr = session_mgr.read().await;
+            mgr.create_session(
+                "codex".to_string(),
+                Vec::new(),
+                cwd,
+                None,
+                None,
+                Vec::<SessionRepo>::new(),
+                true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create coordinator session")
+        };
+
+        {
+            let mgr = session_mgr.read().await;
+            mgr.set_start_fresh_on_restore(session.id, true).await;
+        }
+        {
+            let mut guard = clocks.lock().unwrap_or_else(|e| e.into_inner());
+            assert!(guard.mark_start_fresh(&fqn, chrono::Utc::now()));
+        }
+
+        FreshIntentFixture {
+            app,
+            session_mgr,
+            clocks,
+            session_id: session.id,
+            fqn,
+        }
+    }
+
+    async fn record_fresh(f: &FreshIntentFixture) -> bool {
+        let mgr = f.session_mgr.read().await;
+        mgr.get_session(f.session_id)
+            .await
+            .expect("session should exist")
+            .start_fresh_on_restore
+    }
+
+    fn mirror_fresh(f: &FreshIntentFixture) -> bool {
+        f.clocks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .start_fresh_at(&f.fqn)
+            .is_some()
+    }
+
+    fn inject_continue_after_restore(start_fresh_on_restore: bool) -> bool {
+        !start_fresh_on_restore
+    }
+
+    #[tokio::test]
+    async fn restart_non_substantive_terminal_writes_keep_restore_fresh() {
+        let f = fresh_intent_fixture().await;
+        for chunk in [
+            b"\x1b[I".as_slice(),
+            b"\x1b[A".as_slice(),
+            b"\x1b]11;rgb:1234/5678/9abc\x07".as_slice(),
+            b"\r".as_slice(),
+        ] {
+            note_user_message_to_session(
+                f.app.handle(),
+                f.session_id,
+                UserInputSource::Terminal(chunk),
+            )
+            .await;
+            assert!(record_fresh(&f).await);
+            assert!(mirror_fresh(&f));
+        }
+
+        assert!(!inject_continue_after_restore(record_fresh(&f).await));
+    }
+
+    #[tokio::test]
+    async fn restart_substantive_terminal_prompt_allows_resume_on_restore() {
+        let f = fresh_intent_fixture().await;
+        note_user_message_to_session(
+            f.app.handle(),
+            f.session_id,
+            UserInputSource::Terminal(b"do the thing\r"),
+        )
+        .await;
+
+        assert!(!record_fresh(&f).await);
+        assert!(!mirror_fresh(&f));
+        assert!(inject_continue_after_restore(record_fresh(&f).await));
+    }
+
+    #[tokio::test]
+    async fn restart_injected_body_allows_resume_on_restore() {
+        let f = fresh_intent_fixture().await;
+        note_post_boundary_content_to_session(f.app.handle(), f.session_id).await;
+
+        assert!(!record_fresh(&f).await);
+        assert!(!mirror_fresh(&f));
+        assert!(inject_continue_after_restore(record_fresh(&f).await));
+    }
+
+    #[tokio::test]
+    async fn ctrl_c_cancelled_terminal_line_keeps_restore_fresh() {
+        let f = fresh_intent_fixture().await;
+        for chunk in [
+            b"do the thing".as_slice(),
+            b"\x03".as_slice(),
+            b"\r".as_slice(),
+        ] {
+            note_user_message_to_session(
+                f.app.handle(),
+                f.session_id,
+                UserInputSource::Terminal(chunk),
+            )
+            .await;
+        }
+
+        assert!(record_fresh(&f).await);
+        assert!(mirror_fresh(&f));
+        assert!(!inject_continue_after_restore(record_fresh(&f).await));
+    }
 }
