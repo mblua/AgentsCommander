@@ -316,7 +316,12 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                 .map_err(|e| e.to_string())?;
 
             // #552 web UI input is a real user message (resets badge + silence).
-            crate::commands::pty::note_user_message_to_session(&state.app_handle, uuid).await;
+            crate::commands::pty::note_user_message_to_session(
+                &state.app_handle,
+                uuid,
+                crate::commands::pty::UserInputSource::Web(&data),
+            )
+            .await;
 
             Ok(json!(null))
         }
@@ -880,9 +885,7 @@ mod tests {
 
     /// Build a minimal `WsState` backed by `settings`, plus a broadcast receiver
     /// for asserting web events emitted during dispatch.
-    fn ws_state_for(
-        settings: AppSettings,
-    ) -> (WsState, tokio::sync::mpsc::Receiver<WsOutMsg>) {
+    fn ws_state_for(settings: AppSettings) -> (WsState, tokio::sync::mpsc::Receiver<WsOutMsg>) {
         let app = tauri::Builder::default()
             .any_thread()
             .build(tauri::test::mock_context(tauri::test::noop_assets()))

@@ -553,26 +553,26 @@ impl SessionManager {
         false
     }
 
-    /// #698 — clear BOTH user-input session-state transitions in a SINGLE
-    /// critical section: re-arm the durable resume intent
-    /// (`start_fresh_on_restore` true -> false, #630/#631) and lower any visible
-    /// raise-hand. Returns `(cleared_start_fresh, cleared_raise_hand)` so the
-    /// caller can persist once and emit the raise-hand clear event only when a
-    /// hand was actually lowered.
+    /// #698: clear BOTH user-input session-state transitions in a SINGLE
+    /// critical section. `clear_fresh` gates re-arming the durable resume intent
+    /// (`start_fresh_on_restore` true -> false, #871); lowering any visible
+    /// raise-hand remains unconditional. Returns
+    /// `(cleared_start_fresh, cleared_raise_hand)` so the caller can persist once
+    /// and emit the raise-hand clear event only when a hand was actually lowered.
     ///
     /// Doing both under one `sessions.write()` acquisition is the MEDIUM grinch
     /// fix: with the previous two-call shape a concurrent snapshot could observe a
     /// half-applied state (`start_fresh_on_restore` already cleared while the hand
     /// was still raised). Mutating both fields atomically removes that window.
-    pub async fn clear_user_input_transitions(&self, id: Uuid) -> (bool, bool) {
+    pub async fn clear_user_input_transitions(&self, id: Uuid, clear_fresh: bool) -> (bool, bool) {
         let mut sessions = self.sessions.write().await;
         let Some(s) = sessions.get_mut(&id) else {
             return (false, false);
         };
 
-        let cleared_start_fresh = if s.start_fresh_on_restore {
-            log::info!(
-                "[session-state] {} '{}': start_fresh_on_restore true -> false (user message, re-armed)",
+        let cleared_start_fresh = if clear_fresh && s.start_fresh_on_restore {
+            log::debug!(
+                "[session-state] {} '{}': start_fresh_on_restore true -> false (substantive user message, re-armed)",
                 &id.to_string()[..8],
                 s.name
             );
@@ -948,7 +948,10 @@ mod tests {
     #[tokio::test]
     async fn set_start_fresh_on_restore_if_unset_no_op_on_missing_session() {
         let mgr = SessionManager::new();
-        assert!(!mgr.set_start_fresh_on_restore_if_unset(Uuid::new_v4()).await);
+        assert!(
+            !mgr.set_start_fresh_on_restore_if_unset(Uuid::new_v4())
+                .await
+        );
     }
 
     #[tokio::test]
@@ -1277,12 +1280,16 @@ mod tests {
             .is_none());
 
         // Unknown id: rejected.
-        assert!(!mgr.restore_communication(Uuid::new_v4(), visible_hand).await);
+        assert!(
+            !mgr.restore_communication(Uuid::new_v4(), visible_hand)
+                .await
+        );
     }
 
     /// #698 MEDIUM fix: `clear_user_input_transitions` lowers a visible raise-hand
-    /// AND re-arms the fresh intent in ONE critical section, reporting which fields
-    /// transitioned. A second call is a no-op, and an unknown id is a no-op.
+    /// and, when gated, re-arms the fresh intent in ONE critical section,
+    /// reporting which fields transitioned. A second call is a no-op, and an
+    /// unknown id is a no-op.
     #[tokio::test]
     async fn clear_user_input_transitions_clears_both_fields_atomically() {
         let mgr = SessionManager::new();
@@ -1306,7 +1313,7 @@ mod tests {
 
         // Both transitions happen together and are reported.
         let (cleared_start_fresh, cleared_raise_hand) =
-            mgr.clear_user_input_transitions(session.id).await;
+            mgr.clear_user_input_transitions(session.id, true).await;
         assert!(cleared_start_fresh);
         assert!(cleared_raise_hand);
 
@@ -1319,18 +1326,18 @@ mod tests {
 
         // Idempotent: a second call transitions nothing.
         assert_eq!(
-            mgr.clear_user_input_transitions(session.id).await,
+            mgr.clear_user_input_transitions(session.id, true).await,
             (false, false)
         );
 
         // Unknown id is a no-op.
         assert_eq!(
-            mgr.clear_user_input_transitions(Uuid::new_v4()).await,
+            mgr.clear_user_input_transitions(Uuid::new_v4(), true).await,
             (false, false)
         );
     }
 
-    /// #698: the two transitions are independent — `clear_user_input_transitions`
+    /// #698: the two transitions are independent. `clear_user_input_transitions`
     /// reports each field's own true/false, so a session with only one set re-arms
     /// only that one.
     #[tokio::test]
@@ -1353,7 +1360,7 @@ mod tests {
         // Only the fresh intent is set -> (true, false).
         mgr.set_start_fresh_on_restore(session.id, true).await;
         assert_eq!(
-            mgr.clear_user_input_transitions(session.id).await,
+            mgr.clear_user_input_transitions(session.id, true).await,
             (true, false)
         );
 
@@ -1362,9 +1369,43 @@ mod tests {
             .await
             .expect("raise_hand should succeed");
         assert_eq!(
-            mgr.clear_user_input_transitions(session.id).await,
+            mgr.clear_user_input_transitions(session.id, true).await,
             (false, true)
         );
+    }
+
+    #[tokio::test]
+    async fn clear_user_input_transitions_preserves_fresh_when_gate_is_false() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "claude".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create_session should succeed");
+        mgr.set_start_fresh_on_restore(session.id, true).await;
+        mgr.raise_hand(session.id, chrono::Utc::now())
+            .await
+            .expect("raise_hand should succeed");
+
+        assert_eq!(
+            mgr.clear_user_input_transitions(session.id, false).await,
+            (false, true)
+        );
+
+        let stored = mgr
+            .get_session(session.id)
+            .await
+            .expect("session should still exist");
+        assert!(stored.start_fresh_on_restore);
+        assert!(stored.communication.is_none());
     }
 
     #[tokio::test]

@@ -1959,6 +1959,13 @@ async fn destroy_session_inner_with_options<R: tauri::Runtime>(
     // Persist after destruction
     persist_current_state(&mgr).await;
 
+    // (#871) Drop the substantive-input tracker entry for this uuid so the
+    // per-session map does not grow monotonically. Dormant roots keep their
+    // uuid, so the early-return branch above intentionally does not reset.
+    if let Some(state) = app.try_state::<crate::pty::input_activity::SubstantiveInputState>() {
+        state.lock().unwrap_or_else(|e| e.into_inner()).reset(uuid);
+    }
+
     let _ = app.emit("session_destroyed", serde_json::json!({ "id": id }));
 
     // Close any detached terminal window for this session.

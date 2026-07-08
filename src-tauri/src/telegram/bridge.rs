@@ -1181,7 +1181,12 @@ async fn poll_task<R: tauri::Runtime>(
                             // #552 a Telegram message is a real user message to this
                             // coordinator: reset the badge clock + auto-close silence
                             // (covers text and transcribed-voice inbound; both converge here).
-                            crate::commands::pty::note_user_message_to_session(&app, session_id).await;
+                            crate::commands::pty::note_user_message_to_session(
+                                &app,
+                                session_id,
+                                crate::commands::pty::UserInputSource::CompleteMessage,
+                            )
+                            .await;
 
                             let _ = app.emit(
                                 "telegram_incoming",
