@@ -116,7 +116,9 @@ pub fn start_server(
             shutdown.clone(),
             dispatcher::DispatcherConfig::default(),
         );
-        let addr: SocketAddr = match format!("{}:{}", bind, port).parse() {
+        let addr: SocketAddr = match crate::config::settings::parse_api_server_socket_addr(
+            &bind, port,
+        ) {
             Ok(a) => a,
             Err(e) => {
                 log::error!("[api-server] invalid bind address {}:{}: {}", bind, port, e);
