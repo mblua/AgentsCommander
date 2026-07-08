@@ -8,6 +8,10 @@ No Anthropic credential is baked into the image. Pass authentication at runtime
 through `settings.agents[].envs`; AgentsCommander forwards enabled env rows to
 the child CLI inside the container.
 
+The image runs the bridge as the non-root `node` user. It also configures Git
+with `safe.directory=*` because AgentsCommander bind-mounts host workspaces
+whose ownership often differs from UID 1000 inside Docker.
+
 Official references:
 
 - [Claude Code IAM and authentication](https://code.claude.com/docs/en/iam)
@@ -21,7 +25,7 @@ Claude Code on top of that image.
 
 ```bash
 docker build -f crates/session-bridge/Dockerfile -t agentscommander/session-bridge:latest .
-docker build -f docker/ac-claude/Dockerfile -t agentscommander/ac-claude-ready:local .
+docker build -f docker/ac-claude/Dockerfile -t agentscommander/ac-claude:latest .
 ```
 
 To reuse a different bridge image tag:
@@ -29,7 +33,7 @@ To reuse a different bridge image tag:
 ```bash
 docker build -f docker/ac-claude/Dockerfile \
   --build-arg BRIDGE_IMAGE=agentscommander/session-bridge:my-tag \
-  -t agentscommander/ac-claude-ready:local .
+  -t agentscommander/ac-claude:latest .
 ```
 
 ## Use from AgentsCommander
@@ -37,7 +41,7 @@ docker build -f docker/ac-claude/Dockerfile \
 Set `AGENTSCOMMANDER_CONTAINER_IMAGE` before launching AgentsCommander:
 
 ```powershell
-$env:AGENTSCOMMANDER_CONTAINER_IMAGE = "agentscommander/ac-claude-ready:local"
+$env:AGENTSCOMMANDER_CONTAINER_IMAGE = "agentscommander/ac-claude:latest"
 .\agentscommander.exe
 ```
 
@@ -88,19 +92,31 @@ Do not place real tokens in this repository or in the Dockerfile. Store them in
 the local AgentsCommander settings file or inject them from your shell before
 launching AgentsCommander.
 
+## Headless mode
+
+For non-interactive smoke tests or profiles, run Claude with `-p` or `--print`:
+
+```bash
+claude -p "Reply with ok"
+```
+
+Claude Code skips the workspace trust dialog in non-interactive mode. Avoid
+`--bare` when using `CLAUDE_CODE_OAUTH_TOKEN`, because bare mode does not read
+OAuth or keychain credentials.
+
 ## Verify
 
 Check the required binaries and Claude Code:
 
 ```bash
-docker run --rm --entrypoint /bin/sh agentscommander/ac-claude-ready:local \
+docker run --rm --entrypoint /bin/sh agentscommander/ac-claude:latest \
   -lc 'test -x /usr/local/bin/session-bridge && test -x /usr/local/bin/agentscommander-api-helper && claude --version'
 ```
 
 Check that no Claude credential was baked into the image:
 
 ```bash
-docker history --no-trunc agentscommander/ac-claude-ready:local | grep -Ei 'ANTHROPIC|CLAUDE_CODE_OAUTH_TOKEN|API_KEY|AUTH_TOKEN' || true
-docker run --rm --entrypoint /bin/sh agentscommander/ac-claude-ready:local \
-  -lc 'env | grep -Ei "ANTHROPIC|CLAUDE_CODE_OAUTH_TOKEN|API_KEY|AUTH_TOKEN" || true'
+docker history --no-trunc agentscommander/ac-claude:latest | grep -Ei 'ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|API_KEY=|AUTH_TOKEN=' || true
+docker run --rm --entrypoint /bin/sh agentscommander/ac-claude:latest \
+  -lc 'env | grep -Ei "ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|API_KEY=|AUTH_TOKEN=" || true'
 ```
