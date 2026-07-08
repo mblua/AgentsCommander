@@ -310,6 +310,146 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
+  it("round-trips API server bind and port and warns for non-loopback binds", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    const bind = byTestId<HTMLInputElement>("settings.general.apiServerBind");
+    const port = byTestId<HTMLInputElement>("settings.general.apiServerPort");
+    expect(bind.value).toBe("127.0.0.1");
+    expect(port.value).toBe("8766");
+    expect(
+      document.querySelector('[data-ac-testid="settings.general.apiServerBind.warning"]'),
+    ).toBeNull();
+
+    bind.value = "0.0.0.0";
+    bind.dispatchEvent(new Event("input", { bubbles: true }));
+    port.value = "9000";
+    port.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+
+    expect(byTestId("settings.general.apiServerBind.warning").textContent).toContain(
+      "firewall",
+    );
+
+    bind.value = "127.0.0.1";
+    bind.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    expect(
+      document.querySelector('[data-ac-testid="settings.general.apiServerBind.warning"]'),
+    ).toBeNull();
+
+    bind.value = "0.0.0.0";
+    bind.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.apiServerBind).toBe("0.0.0.0");
+    expect(saved?.apiServerPort).toBe(9000);
+
+    dispose();
+  });
+
+  it("blocks save for empty API bind and out-of-range API port", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    const bind = byTestId<HTMLInputElement>("settings.general.apiServerBind");
+    const port = byTestId<HTMLInputElement>("settings.general.apiServerPort");
+    const save = byTestId<HTMLButtonElement>("settings.save");
+
+    bind.value = "";
+    bind.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    expect(save.disabled).toBe(true);
+    expect(document.querySelector(".modal-save-error")?.textContent).toContain(
+      "IP/address must not be empty",
+    );
+
+    bind.value = "127.0.0.1";
+    bind.dispatchEvent(new Event("input", { bubbles: true }));
+    port.value = "70000";
+    port.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    expect(save.disabled).toBe(true);
+    expect(document.querySelector(".modal-save-error")?.textContent).toContain(
+      "port must be between 1 and 65535",
+    );
+
+    dispose();
+  });
+
+  it("saves changed API endpoint before restarting a running API server", async () => {
+    const runningSettings = settings({
+      apiServerEnabled: true,
+      apiServerBind: "127.0.0.1",
+      apiServerPort: 8766,
+    });
+    vi.mocked(SettingsAPI.get)
+      .mockResolvedValueOnce(runningSettings)
+      .mockResolvedValueOnce(runningSettings);
+    vi.mocked(SettingsAPI.apiServerStatus)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true);
+    vi.mocked(SettingsAPI.stopApiServer).mockResolvedValueOnce(true);
+    vi.mocked(SettingsAPI.startApiServer).mockResolvedValueOnce(true);
+
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    expect(byTestId("settings.general.apiServerStatus").textContent).toContain(
+      "127.0.0.1:8766",
+    );
+
+    const bind = byTestId<HTMLInputElement>("settings.general.apiServerBind");
+    bind.value = "0.0.0.0";
+    bind.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+
+    expect(byTestId("settings.general.apiServerStatus").textContent).toContain(
+      "127.0.0.1:8766",
+    );
+
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+    await settle();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.apiServerBind).toBe("0.0.0.0");
+    expect(SettingsAPI.stopApiServer).toHaveBeenCalledTimes(1);
+    expect(SettingsAPI.startApiServer).toHaveBeenCalledTimes(1);
+    expect(SettingsAPI.apiServerStatus).toHaveBeenCalledTimes(2);
+
+    const saveOrder = vi.mocked(SettingsAPI.saveDraft).mock.invocationCallOrder[0];
+    const stopOrder = vi.mocked(SettingsAPI.stopApiServer).mock.invocationCallOrder[0];
+    const startOrder = vi.mocked(SettingsAPI.startApiServer).mock.invocationCallOrder[0];
+    const restartStatusOrder = vi.mocked(SettingsAPI.apiServerStatus).mock.invocationCallOrder[1];
+    expect(saveOrder).toBeLessThan(stopOrder);
+    expect(stopOrder).toBeLessThan(startOrder);
+    expect(startOrder).toBeLessThan(restartStatusOrder);
+
+    dispose();
+  });
+
   it("surfaces API server start errors and reverts to live status", async () => {
     vi.mocked(SettingsAPI.apiServerStatus)
       .mockResolvedValueOnce(false)

@@ -77,10 +77,21 @@ export function mergeSettingsForSavePreservingProjects(
           : draft.webServerBind,
       }
     : {};
+  const apiServerFields = modalSeed
+    ? {
+        apiServerPort: Object.is(draft.apiServerPort, modalSeed.apiServerPort)
+          ? fresh.apiServerPort
+          : draft.apiServerPort,
+        apiServerBind: Object.is(draft.apiServerBind, modalSeed.apiServerBind)
+          ? fresh.apiServerBind
+          : draft.apiServerBind,
+      }
+    : {};
 
   return {
     ...draft,
     ...webServerFields,
+    ...apiServerFields,
     agents: draft.agents
       .map(normalizeAgentInstructionsFilename)
       .map(normalizeAgentConfigSeed)

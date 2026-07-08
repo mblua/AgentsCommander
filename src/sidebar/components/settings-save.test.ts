@@ -325,3 +325,49 @@ describe("mergeSettingsForSavePreservingProjects webserver seed rebasing", () =>
     expect(merged.webServerBind).toBe("127.0.0.1");
   });
 });
+
+describe("mergeSettingsForSavePreservingProjects api-server seed rebasing", () => {
+  it("rebases unchanged stale modal api-server fields from fresh settings", () => {
+    const modalSeed = settings({
+      apiServerPort: 8766,
+      apiServerBind: "127.0.0.1",
+      npmUpdateNotificationsEnabled: true,
+    });
+    const draft = settings({
+      apiServerPort: 8766,
+      apiServerBind: "127.0.0.1",
+      npmUpdateNotificationsEnabled: false,
+    });
+    const fresh = settings({
+      apiServerPort: 9876,
+      apiServerBind: "0.0.0.0",
+      npmUpdateNotificationsEnabled: true,
+    });
+
+    const merged = mergeSettingsForSavePreservingProjects(draft, fresh, modalSeed);
+
+    expect(merged.apiServerPort).toBe(9876);
+    expect(merged.apiServerBind).toBe("0.0.0.0");
+    expect(merged.npmUpdateNotificationsEnabled).toBe(false);
+  });
+
+  it("keeps intentional modal edits to api-server fields", () => {
+    const modalSeed = settings({
+      apiServerPort: 8766,
+      apiServerBind: "127.0.0.1",
+    });
+    const draft = settings({
+      apiServerPort: 9000,
+      apiServerBind: "0.0.0.0",
+    });
+    const fresh = settings({
+      apiServerPort: 9876,
+      apiServerBind: "::",
+    });
+
+    const merged = mergeSettingsForSavePreservingProjects(draft, fresh, modalSeed);
+
+    expect(merged.apiServerPort).toBe(9000);
+    expect(merged.apiServerBind).toBe("0.0.0.0");
+  });
+});

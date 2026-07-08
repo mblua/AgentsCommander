@@ -134,6 +134,14 @@ const isContainerLoopbackBind = (bind: string | undefined): boolean => {
   );
 };
 
+const apiServerEndpointChanged = (
+  next: Pick<AppSettings, "apiServerBind" | "apiServerPort">,
+  seed: Pick<AppSettings, "apiServerBind" | "apiServerPort"> | null,
+): boolean =>
+  !!seed &&
+  (next.apiServerBind !== seed.apiServerBind ||
+    next.apiServerPort !== seed.apiServerPort);
+
 const cloneSettings = (value: AppSettings | null): AppSettings | null => {
   if (!value) return null;
   if (typeof structuredClone === "function") return structuredClone(value);
@@ -208,6 +216,28 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
   const apiServerChecked = () =>
     apiServerBusy() ? apiServerRunning() : settings.data?.apiServerEnabled ?? false;
+  const apiServerBindWarning = () => {
+    const bind = settings.data?.apiServerBind?.trim();
+    return !!bind && !isContainerLoopbackBind(bind);
+  };
+  const apiServerStatusAddress = () => {
+    const source = apiServerRunning() ? (modalSeed() ?? settings.data) : settings.data;
+    return source ? `${source.apiServerBind}:${source.apiServerPort}` : "";
+  };
+
+  const saveCurrentSettingsDraft = async (): Promise<AppSettings> => {
+    if (!settings.data) throw new Error("Settings are not loaded.");
+    const nextSettings = mergeSettingsForSavePreservingProjects(
+      settings.data,
+      await SettingsAPI.get(),
+      modalSeed(),
+    );
+    await SettingsAPI.saveDraft(nextSettings);
+    setSettings("data", nextSettings);
+    setModalSeed(cloneSettings(nextSettings));
+    setDraftDirty(false);
+    return nextSettings;
+  };
 
   const syncApiServerRunning = (running: boolean, markDirty: boolean) => {
     setApiServerRunning(running);
@@ -229,6 +259,14 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     setSaveError("");
     setApiServerBusy(true);
     try {
+      if (enabled && settings.data && apiServerEndpointChanged(settings.data, modalSeed())) {
+        const validationError = currentValidationError();
+        if (validationError) {
+          setSaveError(validationError);
+          return;
+        }
+        await saveCurrentSettingsDraft();
+      }
       if (enabled) {
         await SettingsAPI.startApiServer();
       } else {
@@ -250,6 +288,31 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           err instanceof Error ? err.message : String(err)
         }`,
       );
+    } finally {
+      setApiServerBusy(false);
+    }
+  };
+
+  const restartApiServerAfterEndpointSave = async (nextSettings: AppSettings) => {
+    setApiServerBusy(true);
+    try {
+      const stopped = await SettingsAPI.stopApiServer();
+      if (!stopped) {
+        throw new Error("API server did not stop for bind/port restart.");
+      }
+      setApiServerRunning(false);
+
+      if (nextSettings.apiServerEnabled) {
+        const started = await SettingsAPI.startApiServer();
+        if (!started) {
+          throw new Error("API server did not start after bind/port change.");
+        }
+        const running = await SettingsAPI.apiServerStatus();
+        syncApiServerRunning(running, false);
+        if (!running) {
+          throw new Error("API server did not report running after bind/port restart.");
+        }
+      }
     } finally {
       setApiServerBusy(false);
     }
@@ -993,6 +1056,24 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     return null;
   };
 
+  const validateApiServerSettings = (): string | null => {
+    const data = settings.data;
+    if (!data) return null;
+
+    if (!data.apiServerBind.trim()) {
+      return "API server: IP/address must not be empty";
+    }
+    if (
+      !Number.isInteger(data.apiServerPort) ||
+      data.apiServerPort < 1 ||
+      data.apiServerPort > 65535
+    ) {
+      return "API server: port must be between 1 and 65535";
+    }
+
+    return null;
+  };
+
   // #714 Lightweight pre-check mirroring the backend MVP parser (one Ctrl/Control
   // + one alphanumeric key). Backend stays the authority for OS registration.
   const validateScreenshotHotkey = (): string | null =>
@@ -1004,6 +1085,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     validateAgents() ??
     validateResources() ??
     validateCoordinatorIdle() ??
+    validateApiServerSettings() ??
     validateScreenshotHotkey();
 
   // ── Save ──
@@ -1017,15 +1099,12 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     setSaveError("");
     setSaving(true);
     try {
-      const nextSettings = mergeSettingsForSavePreservingProjects(
-        settings.data,
-        await SettingsAPI.get(),
-        modalSeed()
-      );
-      await SettingsAPI.saveDraft(nextSettings);
-      setSettings("data", nextSettings);
-      setModalSeed(cloneSettings(nextSettings));
-      setDraftDirty(false);
+      const seedBeforeSave = modalSeed();
+      const wasApiServerRunning = apiServerRunning();
+      const nextSettings = await saveCurrentSettingsDraft();
+      if (wasApiServerRunning && apiServerEndpointChanged(nextSettings, seedBeforeSave)) {
+        await restartApiServerAfterEndpointSave(nextSettings);
+      }
       // #158 — push soundsEnabled into sound.ts synchronously so the gate
       // updates before the settingsStore.refresh() roundtrip below resolves.
       // Without this, a beep emitted between this point and the next load()
@@ -1419,6 +1498,48 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           />
           <span>Enable API server</span>
         </label>
+        <label class="settings-field">
+          <span class="settings-label">IP/address</span>
+          <input
+            class="settings-input"
+            value={settings.data!.apiServerBind}
+            onInput={(e) => updateField("apiServerBind", e.currentTarget.value)}
+            placeholder="127.0.0.1"
+            data-ac-testid="settings.general.apiServerBind"
+            data-ac-role="textbox"
+          />
+        </label>
+        <label class="settings-field">
+          <span class="settings-label">Port</span>
+          <input
+            class="settings-input settings-input-sm"
+            type="number"
+            min="1"
+            max="65535"
+            step="1"
+            value={settings.data!.apiServerPort}
+            onInput={(e) => {
+              const raw = e.currentTarget.value.trim();
+              const value = raw === "" ? 0 : Number(e.currentTarget.value);
+              updateField(
+                "apiServerPort",
+                Number.isFinite(value) ? Math.trunc(value) : 0,
+              );
+            }}
+            data-ac-testid="settings.general.apiServerPort"
+            data-ac-role="spinbutton"
+          />
+        </label>
+        <Show when={apiServerBindWarning()}>
+          <div
+            class="settings-hint settings-hint-warning"
+            data-ac-testid="settings.general.apiServerBind.warning"
+            data-ac-role="status"
+          >
+            Non-loopback binds can expose the API beyond this machine. Use firewall
+            rules; API client tokens are the trust boundary.
+          </div>
+        </Show>
         <div
           class="settings-hint"
           data-ac-testid="settings.general.apiServerStatus"
@@ -1428,7 +1549,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           {apiServerBusy()
             ? "Updating..."
             : apiServerRunning()
-              ? `Running on ${settings.data!.apiServerBind}:${settings.data!.apiServerPort}`
+              ? `Running on ${apiServerStatusAddress()}`
               : "Stopped"}
         </div>
         <div
