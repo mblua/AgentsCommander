@@ -194,7 +194,7 @@ pub(crate) async fn detach_terminal_inner(
         .map_err(|e| e.to_string())?
         .min_inner_size(400.0, 300.0)
         .decorations(false)
-        .zoom_hotkeys_enabled(true);
+        .zoom_hotkeys_enabled(false);
     if let Some(ref geo) = geometry {
         builder = builder
             .inner_size(geo.width, geo.height)
@@ -474,7 +474,7 @@ pub async fn focus_main_window(app: AppHandle) -> Result<(), String> {
     .map_err(|e| e.to_string())?
     .min_inner_size(800.0, 500.0)
     .decorations(false)
-    .zoom_hotkeys_enabled(true);
+    .zoom_hotkeys_enabled(false);
 
     if let Some(geo) = &saved.main_geometry {
         builder = builder
@@ -518,7 +518,7 @@ pub async fn open_guide_window(app: AppHandle) -> Result<(), String> {
     .inner_size(720.0, 560.0)
     .min_inner_size(480.0, 380.0)
     .decorations(false)
-    .zoom_hotkeys_enabled(true)
+    .zoom_hotkeys_enabled(false)
     .build()
     .map_err(|e| e.to_string())?;
 
