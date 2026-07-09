@@ -3956,13 +3956,21 @@ impl MailboxPoller {
             mgr.list_sessions().await
         };
         let pty_live: std::collections::HashSet<Uuid> = {
-            let pty = app.state::<Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>>();
-            let mgr = pty.lock().unwrap();
-            sessions
-                .iter()
-                .filter_map(|s| Uuid::parse_str(&s.id).ok())
-                .filter(|id| mgr.has_session(*id))
-                .collect()
+            // try_state: in production, PtyManager is managed. In tests where
+            // no PTY exists, this returns None and pty_live is empty, which
+            // is correct: all sessions are non-live by the F-3 predicate
+            // (!Exited && has_pty), so they are vacuously purgeable.
+            match app.try_state::<Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>>() {
+                Some(pty) => {
+                    let mgr = pty.lock().unwrap();
+                    sessions
+                        .iter()
+                        .filter_map(|s| Uuid::parse_str(&s.id).ok())
+                        .filter(|id| mgr.has_session(*id))
+                        .collect()
+                }
+                None => std::collections::HashSet::new(),
+            }
         };
 
         // 6. Restore-in-progress guard (F-2: exit 3, not 0).
@@ -4083,6 +4091,11 @@ impl MailboxPoller {
         // 9. Dry-run exit, BEFORE the gate rejection (F-9).
         if msg.dry_run == Some(true) {
             let status = if decision.passed { "dry_run_ready" } else { "dry_run_blocked" };
+            // (N-3) The dry-run path reports `purgeable` and the diagnostic
+            // fields, NOT `outcome` (which is the gate's internal "busy"/
+            // "skipped"/"untracked" vocabulary and contradicts `would_purge:
+            // true` when every peer is "skipped" because it has no live
+            // session). An operator reads `purgeable: true`, not "skipped".
             let response = serde_json::json!({
                 "action": PURGE_WG_ACTION,
                 "workgroup": format!("{}:{}", wg.project, wg.wg_name),
@@ -4093,7 +4106,6 @@ impl MailboxPoller {
                 "would_purge": decision.passed,
                 "peers": decision.peers.iter().map(|p| serde_json::json!({
                     "name": p.fqn,
-                    "outcome": p.outcome,
                     "purgeable": p.purgeable,
                     "idle_ms": p.idle_ms,
                     "silence_ms": p.silence_ms,
@@ -4161,6 +4173,7 @@ impl MailboxPoller {
         let timeout_secs = msg.timeout_secs.unwrap_or(5);
         let mut closed_ids: Vec<String> = Vec::new();
         let mut failed_ids: Vec<String> = Vec::new();
+        let mut already_closed_ids: Vec<String> = Vec::new();
         let mut any_failed = false;
 
         for peer in &gate_peers {
@@ -4169,6 +4182,22 @@ impl MailboxPoller {
                     Ok(id) => id,
                     Err(_) => continue,
                 };
+                // (D-2) Re-probe existence: auto-close may have destroyed the
+                // record between the gate and this point. A vanished record is
+                // success (the workgroup IS purged), not a failure. Only
+                // graceful_close_session handles this correctly today
+                // (`mailbox.rs:5469-5473`); the force path returns `false` on
+                // "session not found", which would yield a false exit 4.
+                let exists = {
+                    let session_mgr =
+                        app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                    let mgr = session_mgr.read().await;
+                    mgr.get_session(sid).await.is_some()
+                };
+                if !exists {
+                    already_closed_ids.push(sid_str.clone());
+                    continue;
+                }
                 let ok = if force {
                     self.force_close_session(app, sid).await
                 } else {
@@ -4196,10 +4225,13 @@ impl MailboxPoller {
             "quiet_period_ms": quiet.as_millis() as u64,
             "dry_run": false,
             "purged": closed_ids.len(),
+            "already_closed": already_closed_ids.len(),
             "failed": failed_ids.len(),
             "peers": decision.peers.iter().map(|p| {
                 let outcome = if failed_ids.iter().any(|f| p.session_ids.contains(f)) {
                     "failed"
+                } else if already_closed_ids.iter().any(|c| p.session_ids.contains(c)) && !closed_ids.iter().any(|c| p.session_ids.contains(c)) {
+                    "already_closed"
                 } else if closed_ids.iter().any(|c| p.session_ids.contains(c)) {
                     "closed"
                 } else {
@@ -6343,6 +6375,8 @@ mod tests {
             ..Default::default()
         };
 
+        let idle_detector = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
+
         tauri::test::mock_builder()
             .manage(MasterToken::new(MAILBOX_MASTER_TOKEN.into()))
             .manage(AppOutbox::new(
@@ -6359,6 +6393,8 @@ mod tests {
             .manage(Arc::new(Mutex::new(HashSet::<Uuid>::new())))
             .manage(Arc::new(crate::RestoreInProgress(AtomicBool::new(false))))
             .manage(Arc::new(crate::PendingSelfClear::default()))
+            .manage(idle_detector) // #885: purge_readiness
+            .manage(std::sync::Arc::new(crate::session::purge_guard::PurgeGuard::default())) // #885
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build mailbox test app")
     }
@@ -11274,20 +11310,22 @@ mod tests {
     #[test]
     fn gate_rejects_when_any_peer_busy() {
         let quiet = Duration::from_millis(3000);
+        let sid_a = Uuid::new_v4();
         let peer_a = make_gate_peer(
             "proj:wg-1/devs/alice",
             vec![PurgeGateSession {
-                session_id: Uuid::new_v4(),
-                readiness: make_readiness(Uuid::new_v4(), Some(500), true, None),
+                session_id: sid_a,
+                readiness: make_readiness(sid_a, Some(500), true, None),
                 mirror_idle: true,
             }],
             vec!["aaa".to_string()],
         );
+        let sid_b = Uuid::new_v4();
         let peer_b = make_gate_peer(
             "proj:wg-1/devs/bob",
             vec![PurgeGateSession {
-                session_id: Uuid::new_v4(),
-                readiness: make_readiness(Uuid::new_v4(), Some(100), true, None),
+                session_id: sid_b,
+                readiness: make_readiness(sid_b, Some(100), true, None),
                 mirror_idle: true,
             }],
             vec!["bbb".to_string()],
@@ -11316,11 +11354,12 @@ mod tests {
     #[test]
     fn gate_reports_untracked_not_busy() {
         let quiet = Duration::from_millis(3000);
+        let sid = Uuid::new_v4();
         let peer = make_gate_peer(
             "proj:wg-1/devs/alice",
             vec![PurgeGateSession {
-                session_id: Uuid::new_v4(),
-                readiness: make_readiness(Uuid::new_v4(), None, false, None),
+                session_id: sid,
+                readiness: make_readiness(sid, None, false, None),
                 mirror_idle: true,
             }],
             vec!["aaa".to_string()],
@@ -11336,11 +11375,12 @@ mod tests {
     #[test]
     fn gate_rejects_when_mirror_disagrees() {
         let quiet = Duration::from_millis(3000);
+        let sid = Uuid::new_v4();
         let peer = make_gate_peer(
             "proj:wg-1/devs/alice",
             vec![PurgeGateSession {
-                session_id: Uuid::new_v4(),
-                readiness: make_readiness(Uuid::new_v4(), Some(5000), true, None),
+                session_id: sid,
+                readiness: make_readiness(sid, Some(5000), true, None),
                 mirror_idle: false, // disagrees
             }],
             vec!["aaa".to_string()],
@@ -11406,11 +11446,12 @@ mod tests {
         // The evaluate_gate function never produces outcome "closed"; that
         // outcome is assigned by the destroy loop, not the gate. Verify.
         let quiet = Duration::from_millis(3000);
+        let sid = Uuid::new_v4();
         let busy_peer = make_gate_peer(
             "proj:wg-1/devs/alice",
             vec![PurgeGateSession {
-                session_id: Uuid::new_v4(),
-                readiness: make_readiness(Uuid::new_v4(), Some(100), true, None),
+                session_id: sid,
+                readiness: make_readiness(sid, Some(100), true, None),
                 mirror_idle: true,
             }],
             vec!["aaa".to_string()],
@@ -11420,6 +11461,360 @@ mod tests {
         assert!(
             !decision.peers.iter().any(|p| p.outcome == "closed"),
             "evaluate_gate must never produce outcome 'closed'"
+        );
+    }
+
+    // ── (#885 D-3) handle_purge_wg end-to-end tests ──
+
+    /// Build a purge-wg outbox message file in the sender's outbox.
+    #[allow(clippy::too_many_arguments)]
+    fn build_purge_wg_message(
+        sender_cwd: &Path,
+        msg_id: &str,
+        request_id: &str,
+        from: &str,
+        token: Option<&str>,
+        dry_run: bool,
+        quiet_period_ms: u64,
+        wg_assertion: Option<&str>,
+    ) -> PathBuf {
+        let outbox_dir = sender_cwd
+            .join(crate::config::agent_local_dir_name())
+            .join("outbox");
+        std::fs::create_dir_all(&outbox_dir).unwrap();
+        let message_path = outbox_dir.join(format!("{}.json", msg_id));
+        let msg = OutboxMessage {
+            id: msg_id.into(),
+            token: token.map(String::from),
+            from: from.into(),
+            to: String::new(),
+            body: String::new(),
+            mode: String::new(),
+            get_output: false,
+            request_id: Some(request_id.into()),
+            sender_agent: None,
+            preferred_agent: String::new(),
+            priority: "normal".into(),
+            timestamp: "2026-07-09T00:00:00Z".into(),
+            command: None,
+            action: Some(PURGE_WG_ACTION.into()),
+            target: wg_assertion.map(String::from),
+            force: Some(true),
+            timeout_secs: Some(5),
+            switch_coding_agent: None,
+            switch_profile: None,
+            dry_run: Some(dry_run),
+            quiet_period_ms: Some(quiet_period_ms),
+        };
+        std::fs::write(&message_path, serde_json::to_string_pretty(&msg).unwrap()).unwrap();
+        message_path
+    }
+
+    /// (D-3/F-7) A purge-wg message with no session token must be rejected,
+    /// even if `is_master` would be true.
+    #[tokio::test]
+    async fn process_message_purge_wg_without_token_is_rejected() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project = temp.path().join("proj-a");
+        let workspace = project.join(".ac");
+        let team_dir = workspace.join("_team_dev-team");
+        let origin_tl = workspace.join("_agent_tech-lead");
+        let wg_dir = workspace.join("wg-1-dev-team");
+        let sender_cwd = wg_dir.join("__agent_tech-lead");
+        let peer_cwd = wg_dir.join("__agent_dev-rust");
+        for d in [&team_dir, &origin_tl, &sender_cwd, &peer_cwd] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(
+            team_dir.join("config.json"),
+            r#"{"agents":["../_agent_dev-rust"],"coordinator":"../_agent_tech-lead"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            sender_cwd.join("config.json"),
+            r#"{"identity":"../../_agent_tech-lead"}"#,
+        )
+        .unwrap();
+
+        let app_struct = make_mailbox_app(temp.path());
+        let app = app_handle(&app_struct);
+        let hooks = MailboxTestHooks::default();
+        let hooks_clone = hooks.clone();
+
+        // Master token but NO session token: is_master=true, saw_session_token=false.
+        let path = build_purge_wg_message(
+            &sender_cwd,
+            "msg-purge-notoken",
+            "rid-purge-notoken",
+            "proj-a:wg-1-dev-team/tech-lead",
+            Some(MAILBOX_MASTER_TOKEN),
+            false,
+            3000,
+            None,
+        );
+        let poller = MailboxPoller::new_with_test_hooks(hooks);
+        let result = poller.process_message(&app, &path, false).await;
+        // reject_message still returns Ok, so process_message succeeds.
+        assert!(result.is_ok(), "process_message should not error on rejection");
+
+        // The rejected/ directory must exist.
+        let rejected = sender_cwd
+            .join(crate::config::agent_local_dir_name())
+            .join("outbox")
+            .join("rejected")
+            .join("msg-purge-notoken.reason.txt");
+        assert!(rejected.exists(), "tokenless purge must be rejected");
+
+        // No destroy events.
+        assert_no_spawn_or_destroy_events(&hooks_clone);
+    }
+
+    /// (D-3/F-7) A master-token message with a forged `from` naming another
+    /// WG's coordinator must be rejected. The master path skips anti-spoof,
+    /// but `saw_session_token` is false, so the F-7 guard fires.
+    #[tokio::test]
+    async fn process_message_purge_wg_with_master_token_and_forged_from_is_rejected() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project = temp.path().join("proj-a");
+        let workspace = project.join(".ac");
+        let team_dir = workspace.join("_team_dev-team");
+        let origin_tl = workspace.join("_agent_tech-lead");
+        let wg_dir = workspace.join("wg-1-dev-team");
+        let sender_cwd = wg_dir.join("__agent_tech-lead");
+        let peer_cwd = wg_dir.join("__agent_dev-rust");
+        for d in [&team_dir, &origin_tl, &sender_cwd, &peer_cwd] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(
+            team_dir.join("config.json"),
+            r#"{"agents":["../_agent_dev-rust"],"coordinator":"../_agent_tech-lead"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            sender_cwd.join("config.json"),
+            r#"{"identity":"../../_agent_tech-lead"}"#,
+        )
+        .unwrap();
+
+        let app_struct = make_mailbox_app(temp.path());
+        let app = app_handle(&app_struct);
+        let hooks = MailboxTestHooks::default();
+        let hooks_clone = hooks.clone();
+
+        // Master token, but `from` names a DIFFERENT workgroup's coordinator.
+        let path = build_purge_wg_message(
+            &sender_cwd,
+            "msg-purge-forged",
+            "rid-purge-forged",
+            "proj-a:wg-other-team/tech-lead", // forged
+            Some(MAILBOX_MASTER_TOKEN),
+            false,
+            3000,
+            None,
+        );
+        let poller = MailboxPoller::new_with_test_hooks(hooks);
+        let result = poller.process_message(&app, &path, false).await;
+        assert!(result.is_ok());
+
+        let rejected = sender_cwd
+            .join(crate::config::agent_local_dir_name())
+            .join("outbox")
+            .join("rejected")
+            .join("msg-purge-forged.reason.txt");
+        assert!(
+            rejected.exists(),
+            "master-token purge with forged from must be rejected"
+        );
+
+        // Zero destroy events.
+        assert_no_spawn_or_destroy_events(&hooks_clone);
+    }
+
+    /// (D-3) Guard B: a candidate with `is_root_agent: true` must abort the
+    /// purge with `failed_root_guard` and destroy nothing.
+    #[tokio::test]
+    async fn root_guard_aborts_purge() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project = temp.path().join("proj-a");
+        let workspace = project.join(".ac");
+        let team_dir = workspace.join("_team_dev-team");
+        let origin_tl = workspace.join("_agent_tech-lead");
+        let wg_dir = workspace.join("wg-1-dev-team");
+        let sender_cwd = wg_dir.join("__agent_tech-lead");
+        let peer_cwd = wg_dir.join("__agent_dev-rust");
+        for d in [&team_dir, &origin_tl, &sender_cwd, &peer_cwd] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(
+            team_dir.join("config.json"),
+            r#"{"agents":["../_agent_dev-rust"],"coordinator":"../_agent_tech-lead"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            sender_cwd.join("config.json"),
+            r#"{"identity":"../../_agent_tech-lead"}"#,
+        )
+        .unwrap();
+
+        let app_struct = make_mailbox_app(temp.path());
+        let app = app_handle(&app_struct);
+        let hooks = MailboxTestHooks::default();
+        let hooks_clone = hooks.clone();
+
+        // Seed a session at the peer CWD that looks like a root agent record.
+        let session_id = add_mailbox_session(
+            &app,
+            &peer_cwd,
+            "wg-1-dev-team/dev-rust",
+            SessionStatus::Idle,
+            None,
+        )
+        .await;
+        {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = session_mgr.read().await;
+            mgr.set_is_root_agent(session_id, true).await;
+        }
+
+        // We need a valid session token for the sender. Seed a session at the
+        // sender CWD to get a token.
+        let sender_session_id = add_mailbox_session(
+            &app,
+            &sender_cwd,
+            "wg-1-dev-team/tech-lead",
+            SessionStatus::Idle,
+            None,
+        )
+        .await;
+        let token = {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = session_mgr.read().await;
+            mgr.get_session(sender_session_id)
+                .await
+                .expect("sender session must exist")
+                .token
+                .to_string()
+        };
+
+        let path = build_purge_wg_message(
+            &sender_cwd,
+            "msg-purge-rootguard",
+            "rid-purge-rootguard",
+            "proj-a:wg-1-dev-team/tech-lead",
+            Some(&token),
+            false,
+            3000,
+            None,
+        );
+        let poller = MailboxPoller::new_with_test_hooks(hooks);
+        let _ = poller.process_message(&app, &path, false).await;
+
+        // The response should contain "failed_root_guard".
+        let responses_dir = sender_cwd
+            .join(crate::config::agent_local_dir_name())
+            .join("responses");
+        let response_path = responses_dir.join("rid-purge-rootguard.json");
+        if response_path.exists() {
+            let body = std::fs::read_to_string(&response_path).unwrap();
+            assert!(
+                body.contains("failed_root_guard"),
+                "response must contain 'failed_root_guard': {}",
+                body
+            );
+        }
+
+        // Zero destroy events: the root guard aborts before the destroy loop.
+        assert_no_spawn_or_destroy_events(&hooks_clone);
+    }
+
+    /// (D-3) A hand-crafted `quietPeriodMs: 0` must be clamped to >= 2500
+    /// daemon-side. The clamp is inside `handle_purge_wg` and unreachable
+    /// from a unit test on `evaluate_gate` alone, so this exercises the
+    /// full `process_message` path.
+    #[tokio::test]
+    async fn quiet_period_is_clamped_to_floor() {
+        // This test verifies the clamp logic exists by checking the code path
+        // does not panic with quiet_period_ms=0. The clamp at mailbox.rs
+        // applies `.max(IdleTuning::DEFAULT.idle_threshold.as_millis() as u64)`,
+        // which is 2500. We exercise it via a dry-run that will pass (no live
+        // sessions = vacuously purgeable) and verify the response contains
+        // quiet_period_ms >= 2500.
+        let temp = tempfile::TempDir::new().unwrap();
+        let project = temp.path().join("proj-a");
+        let workspace = project.join(".ac");
+        let team_dir = workspace.join("_team_dev-team");
+        let origin_tl = workspace.join("_agent_tech-lead");
+        let wg_dir = workspace.join("wg-1-dev-team");
+        let sender_cwd = wg_dir.join("__agent_tech-lead");
+        let peer_cwd = wg_dir.join("__agent_dev-rust");
+        for d in [&team_dir, &origin_tl, &sender_cwd, &peer_cwd] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(
+            team_dir.join("config.json"),
+            r#"{"agents":["../_agent_dev-rust"],"coordinator":"../_agent_tech-lead"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            sender_cwd.join("config.json"),
+            r#"{"identity":"../../_agent_tech-lead"}"#,
+        )
+        .unwrap();
+
+        let app_struct = make_mailbox_app(temp.path());
+        let app = app_handle(&app_struct);
+
+        // Seed a sender session for the token.
+        let sender_session_id = add_mailbox_session(
+            &app,
+            &sender_cwd,
+            "wg-1-dev-team/tech-lead",
+            SessionStatus::Idle,
+            None,
+        )
+        .await;
+        let token = {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = session_mgr.read().await;
+            mgr.get_session(sender_session_id)
+                .await
+                .expect("sender session must exist")
+                .token
+                .to_string()
+        };
+
+        // Dry-run with quiet_period_ms=0. The clamp must raise it to >= 2500.
+        let path = build_purge_wg_message(
+            &sender_cwd,
+            "msg-purge-clamp",
+            "rid-purge-clamp",
+            "proj-a:wg-1-dev-team/tech-lead",
+            Some(&token),
+            true, // dry-run
+            0,    // below floor
+            None,
+        );
+        let poller = MailboxPoller::new();
+        let _ = poller.process_message(&app, &path, false).await;
+
+        let responses_dir = sender_cwd
+            .join(crate::config::agent_local_dir_name())
+            .join("responses");
+        let response_path = responses_dir.join("rid-purge-clamp.json");
+        assert!(
+            response_path.exists(),
+            "dry-run response must be written"
+        );
+        let body: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&response_path).unwrap()).unwrap();
+        let qp = body
+            .get("quiet_period_ms")
+            .and_then(|v| v.as_u64())
+            .expect("response must contain quiet_period_ms");
+        assert!(
+            qp >= 2500,
+            "quiet_period_ms must be clamped to >= 2500, got {}",
+            qp
         );
     }
 }

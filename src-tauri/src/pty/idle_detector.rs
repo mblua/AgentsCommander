@@ -703,24 +703,25 @@ mod tests {
 
         // Record initial activity.
         detector.record_activity_with_bytes(id, 10);
-        let first_age = detector.purge_readiness(&[id])[0].activity_age.unwrap();
-
         // Enter resize grace.
         detector.record_resize(id);
-
+        // Sleep so a refresh would be detectable: if the early-return were
+        // removed, the next record_activity_with_bytes would reset activity
+        // to ~0ms, making age << 200ms.
+        std::thread::sleep(Duration::from_millis(200));
         // Simulate the child printing during grace.
         detector.record_activity_with_bytes(id, 99);
 
         // activity must NOT have moved: the early-return at :159 suppressed it.
-        let second_age = detector.purge_readiness(&[id])[0].activity_age.unwrap();
+        // An un-suppressed refresh would reset age to ~0, so age would be < 200ms.
+        let age = detector.purge_readiness(&[id])[0].activity_age.unwrap();
         assert!(
-            second_age >= first_age,
-            "activity_age must NOT decrease during resize grace (it is frozen). \
-             first={first_age:?}, second={second_age:?}. \
-             If this fails, record_activity_with_bytes is no longer early-returning \
-             during grace, and the F-1 fourth gate leg may be unnecessary."
+            age >= Duration::from_millis(200),
+            "activity must be FROZEN during resize grace; an un-suppressed \
+             refresh would reset age to ~0. age={age:?}. \
+             If this fails, record_activity_with_bytes is no longer \
+             early-returning during grace, and the F-1 fourth gate leg \
+             may be unnecessary."
         );
-        // The age grew, which is the bug: the child printed but activity didn't
-        // refresh. This is exactly what resize_settled defends against.
     }
 }
