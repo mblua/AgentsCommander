@@ -659,7 +659,7 @@ pub async fn purge_sessions_outside_project_paths(
     Ok(before_len.saturating_sub(filtered.len()))
 }
 
-async fn purge_sessions_outside_project_paths_in_dir(
+pub(crate) async fn purge_sessions_outside_project_paths_in_dir(
     dir: &Path,
     project_paths: &[String],
 ) -> Result<Vec<PersistedSession>, String> {

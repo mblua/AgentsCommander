@@ -2046,7 +2046,7 @@ pub fn refresh_project_paths_from_disk(settings: &mut AppSettings) -> Result<(),
 /// momentarily resurrect an entry; orders of magnitude smaller than the prior
 /// snapshot-age window. Airtight cross-process safety would need an advisory
 /// file lock (tracked separately), deliberately not added here.
-pub fn save_settings(settings: &AppSettings) -> Result<(), String> {
+pub fn save_settings(settings: &AppSettings) -> Result<AppSettings, String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
     let path = dir.join("settings.json");
     save_settings_to_path_preserving_project_paths(settings, &path)
@@ -2069,15 +2069,16 @@ pub fn save_settings_with_project_paths(settings: &AppSettings) -> Result<(), St
 /// them into a clone of `settings`, then hands off to the verbatim
 /// #774-hardened writer. Split out with an explicit `path` so tests can drive it
 /// against a `tempfile::tempdir()`.
-fn save_settings_to_path_preserving_project_paths(
+pub(crate) fn save_settings_to_path_preserving_project_paths(
     settings: &AppSettings,
     path: &Path,
-) -> Result<(), String> {
+) -> Result<AppSettings, String> {
     let (disk_paths, disk_head) = read_project_paths_from_disk(path)?;
     let mut to_write = settings.clone();
     to_write.project_paths = disk_paths;
     to_write.project_path = disk_head;
-    save_settings_to_path(&to_write, path)
+    save_settings_to_path(&to_write, path)?;
+    Ok(to_write)
 }
 
 fn save_settings_to_path(settings: &AppSettings, path: &Path) -> Result<(), String> {
@@ -3540,7 +3541,8 @@ mod tests {
 
         let mut candidate = settings_with_project_paths(&["A"]); // stale, missing X
         candidate.sidebar_style = "deep-space".to_string(); // unrelated GUI field
-        super::save_settings_to_path_preserving_project_paths(&candidate, &path).unwrap();
+        let written =
+            super::save_settings_to_path_preserving_project_paths(&candidate, &path).unwrap();
 
         let contents = std::fs::read_to_string(&path).unwrap();
         let reloaded: AppSettings = serde_json::from_str(&contents).unwrap();
@@ -3550,6 +3552,8 @@ mod tests {
         ); // X preserved, not clobbered
         assert_eq!(reloaded.project_path.as_deref(), Some("A"));
         assert_eq!(reloaded.sidebar_style, "deep-space"); // unrelated field persisted
+        assert_eq!(written.project_paths, reloaded.project_paths);
+        assert_eq!(written.project_path, reloaded.project_path);
     }
 
     #[test]

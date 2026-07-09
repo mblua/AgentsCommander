@@ -1466,7 +1466,7 @@ async fn persist_agent_delete_metadata_with_saver<S>(
     save_settings_fn: S,
 ) -> Result<(), String>
 where
-    S: Fn(&AppSettings) -> Result<(), String>,
+    S: Fn(&AppSettings) -> Result<AppSettings, String>,
 {
     persist_agent_delete_metadata_with_writers(
         metadata,
@@ -1485,7 +1485,7 @@ async fn persist_agent_delete_metadata_with_writers<T, S>(
 ) -> Result<(), String>
 where
     T: FnMut(&Path, &[u8]) -> Result<(), String>,
-    S: Fn(&AppSettings) -> Result<(), String>,
+    S: Fn(&AppSettings) -> Result<AppSettings, String>,
 {
     metadata.settings_changed.store(false, Ordering::SeqCst);
 
@@ -1524,17 +1524,22 @@ where
                     "Failed to validate settings after agent delete: {}",
                     e
                 ))
-            } else if let Err(e) = save_settings_fn(&candidate) {
-                restore_removed_settings(
-                    &mut guard,
-                    &metadata.agent_name,
-                    removed_auto,
-                    removed_default,
-                );
-                Err(format!("Failed to save settings after agent delete: {}", e))
             } else {
-                *guard = candidate;
-                Ok(())
+                match save_settings_fn(&candidate) {
+                    Ok(written) => {
+                        *guard = written;
+                        Ok(())
+                    }
+                    Err(e) => {
+                        restore_removed_settings(
+                            &mut guard,
+                            &metadata.agent_name,
+                            removed_auto,
+                            removed_default,
+                        );
+                        Err(format!("Failed to save settings after agent delete: {}", e))
+                    }
+                }
             }
         } else {
             Ok(())
@@ -4078,8 +4083,10 @@ mod tests {
             ));
         }
 
-        if let Err(e) =
-            persist_agent_delete_metadata_with_saver(&metadata, settings, |_| Ok(())).await
+        if let Err(e) = persist_agent_delete_metadata_with_saver(&metadata, settings, |candidate| {
+            Ok(candidate.clone())
+        })
+        .await
         {
             let restore = restore_agent_delete_metadata_snapshots(&metadata, settings).await;
             let rollback = rollback_staged_agent_delete_targets(&staged);
@@ -4591,7 +4598,7 @@ mod tests {
                     write_team_config_json_atomic(path, bytes)
                 }
             },
-            |_| Ok(()),
+            |candidate| Ok(candidate.clone()),
         )
         .await
         .expect_err("team write failure");

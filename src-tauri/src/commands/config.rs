@@ -12,8 +12,8 @@ use crate::api::auth;
 use crate::config::claude_settings::{ensure_rtk_pretool_hook, enumerate_managed_agent_dirs};
 use crate::config::settings::{
     load_settings, merge_protected_coding_agent_settings, parse_api_server_socket_addr,
-    refresh_project_paths_from_disk, save_settings, validate_and_repair_settings, AppSettings,
-    CodingAgentEnv, CodingAgentProfilesConfig, SettingsState,
+    save_settings, validate_and_repair_settings, AppSettings, CodingAgentEnv,
+    CodingAgentProfilesConfig, SettingsState,
 };
 use crate::network::OutboundNetwork;
 use crate::pty::manager::PtyManager;
@@ -222,14 +222,14 @@ pub(crate) async fn persist_protected_settings_update(
 async fn persist_protected_settings_update_with_saver(
     settings: &SettingsState,
     new_settings: AppSettings,
-    save: impl FnOnce(&AppSettings) -> Result<(), String>,
+    save: impl FnOnce(&AppSettings) -> Result<AppSettings, String>,
 ) -> Result<AppSettings, String> {
     let mut s = settings.write().await;
     let current = s.clone();
     let candidate = build_protected_settings_candidate(&current, new_settings)?;
-    save(&candidate)?;
-    *s = candidate.clone();
-    Ok(candidate)
+    let written = save(&candidate)?;
+    *s = written.clone();
+    Ok(written)
 }
 
 fn build_protected_settings_candidate(
@@ -239,7 +239,6 @@ fn build_protected_settings_candidate(
     let mut candidate = merge_protected_coding_agent_settings(current, new_settings);
     // Preserve existing root token. Frontend settings payloads cannot overwrite it.
     candidate.root_token = current.root_token.clone();
-    refresh_project_paths_from_disk(&mut candidate)?;
     validate_and_repair_settings(&mut candidate)?;
     Ok(candidate)
 }
@@ -254,30 +253,42 @@ pub(crate) async fn persist_settings_draft_update(
 async fn persist_settings_draft_update_with_saver(
     settings: &SettingsState,
     mut draft: AppSettings,
-    save: impl FnOnce(&AppSettings) -> Result<(), String>,
+    save: impl FnOnce(&AppSettings) -> Result<AppSettings, String>,
 ) -> Result<(AppSettings, SettingsDraftUpdateEvents), String> {
     let mut s = settings.write().await;
     let current = s.clone();
     draft.root_token = current.root_token.clone();
-    refresh_project_paths_from_disk(&mut draft)?;
     validate_and_repair_settings(&mut draft)?;
     let events = settings_draft_update_events(&current, &draft);
-    save(&draft)?;
-    *s = draft.clone();
-    Ok((draft, events))
+    let written = save(&draft)?;
+    *s = written.clone();
+    Ok((written, events))
 }
 
 pub(crate) async fn purge_sessions_after_settings_update(saved: &AppSettings) {
-    if let Err(e) = crate::config::sessions_persistence::purge_sessions_outside_project_paths(
-        &saved.project_paths,
-    )
-    .await
-    {
+    let Some(dir) = crate::config::config_dir() else {
+        log::warn!("Could not determine home directory for session purge after settings update");
+        return;
+    };
+
+    if let Err(e) = purge_sessions_after_settings_update_in_dir(saved, &dir).await {
         log::warn!(
             "[settings] Failed to purge sessions outside current projectPaths after settings update: {}",
             e
         );
     }
+}
+
+async fn purge_sessions_after_settings_update_in_dir(
+    saved: &AppSettings,
+    dir: &Path,
+) -> Result<(), String> {
+    crate::config::sessions_persistence::purge_sessions_outside_project_paths_in_dir(
+        dir,
+        &saved.project_paths,
+    )
+    .await
+    .map(|_| ())
 }
 
 fn settings_draft_update_events(
@@ -376,8 +387,8 @@ async fn persist_coding_agent_profiles_update(
     let mut candidate = s.clone();
     candidate.coding_agent_profiles = profiles;
     validate_and_repair_settings(&mut candidate)?;
-    save_settings(&candidate)?;
-    *s = candidate;
+    let written = save_settings(&candidate)?;
+    *s = written;
     Ok(())
 }
 
@@ -414,8 +425,8 @@ async fn persist_coding_agent_env_settings_update(
     agent.envs = envs;
     agent.isolated_home = isolated_home;
     validate_and_repair_settings(&mut candidate)?;
-    save_settings(&candidate)?;
-    *s = candidate;
+    let written = save_settings(&candidate)?;
+    *s = written;
     Ok(())
 }
 
@@ -1600,13 +1611,13 @@ async fn persist_narrow_settings_update(
 async fn persist_narrow_settings_update_with_saver(
     settings: &SettingsState,
     mutate_candidate: impl FnOnce(&mut AppSettings),
-    save: impl FnOnce(&AppSettings) -> Result<(), String>,
+    save: impl FnOnce(&AppSettings) -> Result<AppSettings, String>,
 ) -> Result<(), String> {
     let mut s = settings.write().await;
     let mut candidate = s.clone();
     mutate_candidate(&mut candidate);
-    save(&candidate)?;
-    *s = candidate;
+    let written = save(&candidate)?;
+    *s = written;
     Ok(())
 }
 
@@ -1872,7 +1883,7 @@ mod tests {
         ensure_web_remote_open_allowed, is_tcp_socket_listening, mint_api_client_with_path,
         persist_coding_agent_env_settings_update, persist_coding_agent_profiles_update,
         persist_narrow_settings_update_with_saver, persist_protected_settings_update_with_saver,
-        persist_settings_draft_update_with_saver, purge_sessions_after_settings_update,
+        persist_settings_draft_update_with_saver, purge_sessions_after_settings_update_in_dir,
         start_api_server, RtkSweepError, RtkSweepResult, WebServerOwnershipState,
         MINT_API_CLIENT_DEFAULT_TTL_HOURS, MINT_API_CLIENT_MAX_TTL_DAYS, MINT_API_CLIENT_NOTE,
     };
@@ -1889,7 +1900,7 @@ mod tests {
     use std::collections::{BTreeMap, HashMap};
     use std::net::{IpAddr, Ipv4Addr};
     use std::path::{Path, PathBuf};
-    use std::sync::{Arc, Mutex, OnceLock};
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use tauri::Manager;
     use tokio::sync::RwLock;
@@ -1947,79 +1958,6 @@ mod tests {
 
     fn state_for(settings: AppSettings) -> SettingsState {
         Arc::new(RwLock::new(settings))
-    }
-
-    fn config_files_test_lock() -> &'static tokio::sync::Mutex<()> {
-        static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
-    }
-
-    struct ConfigFilesFixture {
-        dir: PathBuf,
-        settings_backup: Option<Vec<u8>>,
-        sessions_backup: Option<Vec<u8>>,
-    }
-
-    impl ConfigFilesFixture {
-        fn capture() -> Self {
-            let dir = crate::config::config_dir().expect("config dir");
-            std::fs::create_dir_all(&dir).expect("create config dir");
-            let fixture = Self {
-                settings_backup: read_optional_file(&dir.join("settings.json")),
-                sessions_backup: read_optional_file(&dir.join("sessions.json")),
-                dir,
-            };
-            remove_file_if_exists(&fixture.dir.join("settings.json"));
-            remove_file_if_exists(&fixture.dir.join("sessions.json"));
-            fixture
-        }
-
-        fn dir(&self) -> &Path {
-            &self.dir
-        }
-    }
-
-    impl Drop for ConfigFilesFixture {
-        fn drop(&mut self) {
-            restore_optional_file(
-                &self.dir.join("settings.json"),
-                self.settings_backup.as_deref(),
-            );
-            restore_optional_file(
-                &self.dir.join("sessions.json"),
-                self.sessions_backup.as_deref(),
-            );
-        }
-    }
-
-    fn read_optional_file(path: &Path) -> Option<Vec<u8>> {
-        match std::fs::read(path) {
-            Ok(bytes) => Some(bytes),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => panic!("read {}: {}", path.display(), e),
-        }
-    }
-
-    fn remove_file_if_exists(path: &Path) {
-        match std::fs::remove_file(path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => panic!("remove {}: {}", path.display(), e),
-        }
-    }
-
-    fn restore_optional_file(path: &Path, backup: Option<&[u8]>) {
-        match backup {
-            Some(bytes) => {
-                if let Some(parent) = path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                let _ = std::fs::write(path, bytes);
-            }
-            None => {
-                let _ = std::fs::remove_file(path);
-            }
-        }
     }
 
     fn write_settings_file(dir: &Path, settings: &AppSettings) {
@@ -2678,12 +2616,13 @@ mod tests {
                 },
             );
 
-        let err =
-            persist_settings_draft_update_with_saver(&state, draft, |_| -> Result<(), String> {
-                panic!("save must not run")
-            })
-            .await
-            .unwrap_err();
+        let err = persist_settings_draft_update_with_saver(
+            &state,
+            draft,
+            |_| -> Result<AppSettings, String> { panic!("save must not run") },
+        )
+        .await
+        .unwrap_err();
 
         assert!(err.contains("reserved by AgentsCommander"), "{err}");
         let live = state.read().await;
@@ -2803,11 +2742,11 @@ mod tests {
 
     #[tokio::test]
     async fn settings_update_does_not_clobber_in_memory_project_lists() {
-        let _lock = config_files_test_lock().lock().await;
-        let fixture = ConfigFilesFixture::capture();
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
         let disk_project = "C:/disk/project-a";
         write_settings_file(
-            fixture.dir(),
+            temp.path(),
             &AppSettings {
                 project_paths: vec![disk_project.to_string()],
                 project_path: Some(disk_project.to_string()),
@@ -2828,8 +2767,10 @@ mod tests {
 
         let saved =
             persist_protected_settings_update_with_saver(&protected_state, stale, |candidate| {
-                assert_single_project(candidate, disk_project);
-                Ok(())
+                crate::config::settings::save_settings_to_path_preserving_project_paths(
+                    candidate,
+                    &settings_path,
+                )
             })
             .await
             .unwrap();
@@ -2849,8 +2790,10 @@ mod tests {
 
         let (saved, _events) =
             persist_settings_draft_update_with_saver(&draft_state, draft, |candidate| {
-                assert_single_project(candidate, disk_project);
-                Ok(())
+                crate::config::settings::save_settings_to_path_preserving_project_paths(
+                    candidate,
+                    &settings_path,
+                )
             })
             .await
             .unwrap();
@@ -2863,19 +2806,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn purge_sessions_after_settings_update_uses_disk_project_lists() {
-        let _lock = config_files_test_lock().lock().await;
-        let fixture = ConfigFilesFixture::capture();
-        let project = fixture.dir().join("project-a");
+    async fn settings_update_returns_written_project_lists_for_session_purge() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let project = temp.path().join("project-a");
         let kept_workdir = project.join(".ac").join("wg-1").join("__agent_dev");
-        let outside = fixture.dir().join("project-b");
+        let outside = temp.path().join("project-b");
         let outside_workdir = outside.join(".ac").join("wg-1").join("__agent_dev");
         std::fs::create_dir_all(&kept_workdir).expect("create kept workdir");
         std::fs::create_dir_all(&outside_workdir).expect("create outside workdir");
 
         let project_path = project.to_string_lossy().to_string();
         write_settings_file(
-            fixture.dir(),
+            temp.path(),
             &AppSettings {
                 project_paths: vec![project_path.clone()],
                 project_path: Some(project_path.clone()),
@@ -2883,7 +2826,7 @@ mod tests {
             },
         );
         write_sessions_file(
-            fixture.dir(),
+            temp.path(),
             &[
                 PersistedSession {
                     name: "kept".to_string(),
@@ -2906,20 +2849,27 @@ mod tests {
         let state = state_for(current.clone());
         let stale = current;
 
-        let saved = persist_protected_settings_update_with_saver(&state, stale, |_| Ok(()))
+        let saved = persist_protected_settings_update_with_saver(&state, stale, |candidate| {
+            crate::config::settings::save_settings_to_path_preserving_project_paths(
+                candidate,
+                &settings_path,
+            )
+        })
+        .await
+        .unwrap();
+
+        purge_sessions_after_settings_update_in_dir(&saved, temp.path())
             .await
             .unwrap();
-        assert_single_project(&saved, &project_path);
 
-        purge_sessions_after_settings_update(&saved).await;
-
-        let remaining = read_sessions_file(fixture.dir());
+        let remaining = read_sessions_file(temp.path());
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].name, "kept");
         assert_eq!(
             remaining[0].working_directory,
             kept_workdir.to_string_lossy()
         );
+        assert_single_project(&saved, &project_path);
     }
 
     #[tokio::test]
@@ -2954,9 +2904,11 @@ mod tests {
         stale.agents[0].isolated_home = false;
         stale.coding_agent_profiles.profiles_by_agent.clear();
 
-        let saved = persist_protected_settings_update_with_saver(&state, stale, |_| Ok(()))
-            .await
-            .unwrap();
+        let saved = persist_protected_settings_update_with_saver(&state, stale, |candidate| {
+            Ok(candidate.clone())
+        })
+        .await
+        .unwrap();
 
         assert_eq!(saved.sidebar_style, "command-center");
         assert_eq!(saved.agents[0].envs, current.agents[0].envs);

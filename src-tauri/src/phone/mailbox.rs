@@ -5383,18 +5383,23 @@ impl MailboxPoller {
             let applied = {
                 let mut s = state.write().await;
                 let mut candidate = s.clone();
-                let mut save = |st: &crate::config::settings::AppSettings| {
-                    crate::config::settings::save_settings(st)
+                let mut written_settings = None;
+                let disposition = {
+                    let mut save = |st: &crate::config::settings::AppSettings| {
+                        let written = crate::config::settings::save_settings(st)?;
+                        written_settings = Some(written);
+                        Ok(())
+                    };
+                    ca::process_coding_agent_request(
+                        &path,
+                        &results_dir,
+                        now_ms,
+                        &mut candidate,
+                        &mut save,
+                    )
                 };
-                let disposition = ca::process_coding_agent_request(
-                    &path,
-                    &results_dir,
-                    now_ms,
-                    &mut candidate,
-                    &mut save,
-                );
                 if let ca::RequestDisposition::Applied { op, agent_id } = disposition {
-                    *s = candidate;
+                    *s = written_settings.unwrap_or(candidate);
                     Some((op, agent_id))
                 } else {
                     None
