@@ -114,7 +114,7 @@ const resolveSettingsSection = (s: string | undefined): SettingsTab =>
       : "general";
 
 const BYTES_PER_GIB = 1024 ** 3;
-const DEFAULT_CONTAINER_IMAGE = "agentscommander/session-bridge:latest";
+const CONTAINER_IMAGE_EXAMPLE = "agentscommander/ac-claude:latest";
 
 const bytesToGiBInput = (bytes: number): string => {
   const value = bytes / BYTES_PER_GIB;
@@ -1945,6 +1945,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     const expanded = () => activeAgentId() === agent.id;
     const pill = () => railPillFor(agent.id);
     const agentBackendKind = () => agent.backend?.kind ?? "localProcess";
+    const containerImageMissing = () => !agent.backend?.image?.trim();
     const containerBindWarning = () => isContainerLoopbackBind(settings.data?.apiServerBind);
     return (
       <div
@@ -2087,7 +2088,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                   class="settings-input"
                   value={agent.backend?.image ?? ""}
                   onInput={(e) => setAgentBackendImage(i(), e.currentTarget.value)}
-                  placeholder={DEFAULT_CONTAINER_IMAGE}
+                  placeholder="Required unless AGENTSCOMMANDER_CONTAINER_IMAGE is set"
                   data-ac-testid={`settings.agentRow.${i()}.containerImage`}
                   data-ac-role="textbox"
                 />
@@ -2096,9 +2097,20 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 class="settings-hint"
                 data-ac-testid={`settings.agentRow.${i()}.containerHint.image`}
               >
-                Leave blank to use the host default. Resolution: this field, then
-                AGENTSCOMMANDER_CONTAINER_IMAGE, then {DEFAULT_CONTAINER_IMAGE}.
+                Set a Docker image here, for example {CONTAINER_IMAGE_EXAMPLE}. Leave
+                blank only if the AgentsCommander process has
+                AGENTSCOMMANDER_CONTAINER_IMAGE set; there is no built-in image fallback.
               </div>
+              <Show when={containerImageMissing()}>
+                <div
+                  class="settings-hint settings-hint-warning"
+                  data-ac-testid={`settings.agentRow.${i()}.containerWarning.image`}
+                  data-ac-role="status"
+                >
+                  Saving this blank relies on AGENTSCOMMANDER_CONTAINER_IMAGE; launch
+                  will fail if it is not set.
+                </div>
+              </Show>
               <Show when={!apiServerChecked()}>
                 <div
                   class="settings-hint settings-hint-warning"
