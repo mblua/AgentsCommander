@@ -2,16 +2,19 @@ import { createEffect, onCleanup } from "solid-js";
 import { NonStopAPI } from "../../shared/ipc";
 import type { NonStopReport } from "../../shared/types";
 import { workgroupGroupsStore, nonStopDisplayName, nonStopMatchesWorkgroup } from "../stores/workgroup-groups";
-import { workgroupIsWorking } from "../components/workgroup-session";
+import { splitWorkgroupsByWorking } from "../components/workgroup-session";
 import { projectStore } from "../stores/project";
 
 // #777 Non-stop watchdog client (hybrid design, D1). The frontend owns ONLY the
-// disparity detection, computed with the exact same code the rail counter uses
-// (workgroupIsWorking + projectStore.projects), so parity is by construction and
-// cannot drift. The backend owns the tolerance timer and actuation. Detection is
-// reactive (a Solid effect that re-runs on any session/config/project change),
-// which is immune to Chromium's hidden-window timer throttling; the keepalive
-// setInterval is only a non-critical backstop.
+// disparity detection. #882: the working/not-working partition comes from
+// splitWorkgroupsByWorking(), the same single function the rail counter calls,
+// which derives from session state and not from the dot's CSS class. So parity
+// with the rail counter is by construction and cannot drift, and a visual tweak
+// to the status dot can no longer change when this fires. The backend owns the
+// tolerance timer and actuation. Detection is reactive (a Solid effect that
+// re-runs on any session/config/project change), which is immune to Chromium's
+// hidden-window timer throttling; the keepalive setInterval is only a
+// non-critical backstop.
 
 const KEEPALIVE_MS = 10_000;
 
@@ -32,8 +35,8 @@ export function buildSnapshot(): NonStopReport[] {
     const members = project.workgroups.filter((wg) => nonStopMatchesWorkgroup(ns, wg));
     const total = members.length;
     if (total === 0) continue; // empty group, no disparity possible
-    const notWorking = members.filter((wg) => !workgroupIsWorking(wg));
-    const working = total - notWorking.length;
+    const { working: workingWgs, notWorking } = splitWorkgroupsByWorking(members);
+    const working = workingWgs.length;
     reports.push({
       projectPath: project.path,
       groupName: nonStopDisplayName(ns.name),

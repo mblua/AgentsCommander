@@ -1,7 +1,7 @@
 import type { AcAgentReplica, AcWorkgroup, Session } from "../../shared/types";
+import { isSessionWorking } from "../../shared/session-activity";
 import { normalizeProjectPathForCompare } from "../stores/project-refresh";
 import { sessionsStore } from "../stores/sessions";
-import { sessionDotClass, type SessionDotClass } from "./session-status";
 
 export function replicaSessionName(wg: AcWorkgroup, replica: AcAgentReplica): string {
   return `${wg.name}/${replica.name}`;
@@ -24,16 +24,35 @@ export function findReplicaSession(wg: AcWorkgroup, replica: AcAgentReplica): Se
   );
 }
 
-export function replicaDotClass(wg: AcWorkgroup, replica: AcAgentReplica): SessionDotClass {
-  return sessionDotClass(findReplicaSession(wg, replica));
-}
-
-export function isWorkingReplicaDot(dot: SessionDotClass): boolean {
-  return dot === "running" || dot === "active";
+/**
+ * #882 Domain predicate over session state. Replaces the pre-#882 dot-class
+ * predicate. Same answer for every at-rest store state.
+ */
+export function isReplicaWorking(wg: AcWorkgroup, replica: AcAgentReplica): boolean {
+  return isSessionWorking(findReplicaSession(wg, replica));
 }
 
 export function workgroupIsWorking(wg: AcWorkgroup): boolean {
-  return wg.agents.some((replica) => isWorkingReplicaDot(replicaDotClass(wg, replica)));
+  return wg.agents.some((replica) => isReplicaWorking(wg, replica));
+}
+
+/**
+ * #777/#882 parity primitive. The rail counter and the non-stop watchdog both
+ * partition their workgroup list with this one function, in one traversal,
+ * preserving input order. Do not reimplement either side with filter().
+ *
+ * Must be called inside a reactive scope. It reads sessionsStore through
+ * findReplicaSession; caching its result at module scope silently kills tracking.
+ */
+export function splitWorkgroupsByWorking(
+  workgroups: readonly AcWorkgroup[]
+): { working: AcWorkgroup[]; notWorking: AcWorkgroup[] } {
+  const working: AcWorkgroup[] = [];
+  const notWorking: AcWorkgroup[] = [];
+  for (const wg of workgroups) {
+    (workgroupIsWorking(wg) ? working : notWorking).push(wg);
+  }
+  return { working, notWorking };
 }
 
 /**
