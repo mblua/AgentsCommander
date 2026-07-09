@@ -17,7 +17,7 @@ pub struct AgentBackendConfig {
     #[serde(default)]
     pub kind: SessionBackendKind,
     /// #868 - optional per-agent Docker image override for container runtime.
-    /// None falls back to AGENTSCOMMANDER_CONTAINER_IMAGE, then DEFAULT_CONTAINER_IMAGE.
+    /// None falls back to AGENTSCOMMANDER_CONTAINER_IMAGE at launch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
 }

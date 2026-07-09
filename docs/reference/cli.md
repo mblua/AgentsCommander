@@ -431,7 +431,7 @@ Subcommands:
 | `--isolated-home <true\|false>` | Provide an isolated CODEX_HOME at spawn (Codex). |
 | `--backend <local\|container>` | Runtime backend. `local` clears any per-agent container image; `container` uses Docker container transport. |
 | `--container-image <image>` | Per-agent Docker image override. Implies `--backend container`; conflicts with `--backend local`; rejects empty or leading-dash values. |
-| `--clear-container-image` | (update) Clear the per-agent Docker image override. Conflicts with `--container-image`; valid with `--backend container` to fall back to `AGENTSCOMMANDER_CONTAINER_IMAGE`, then the built-in default. |
+| `--clear-container-image` | (update) Clear the per-agent Docker image override. Conflicts with `--container-image`; with `--backend container`, launch succeeds only if the AgentsCommander process has `AGENTSCOMMANDER_CONTAINER_IMAGE` set. There is no built-in image default. |
 | `--instructions-filename <name.md>` | Bare `.md` filename AC writes into the agent root at launch. |
 | `--clear-instructions-filename` | (update) Clear it. Conflicts with `--instructions-filename`. |
 | `--config-seed-dest <folder>` | Config-folder seed destination NAME under the replica root. Implies enabled unless `--config-seed-enabled false`. |
