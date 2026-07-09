@@ -1256,7 +1256,7 @@ pub async fn start_api_server(
     }
 
     let api_shutdown = shutdown.token().child_token();
-    let join_handle = crate::api::start_server(
+    let server_start = crate::api::start_server(
         bind,
         port,
         app_handle,
@@ -1264,8 +1264,19 @@ pub async fn start_api_server(
         Arc::clone(&pty_mgr),
         api_shutdown.clone(),
     );
+    let bound_addr = match crate::api::wait_for_startup_ready(server_start.readiness).await {
+        Ok(bound_addr) => bound_addr,
+        Err(err) => {
+            api_shutdown.cancel();
+            return Err(err);
+        }
+    };
 
-    if !api_handle.store_if_idle(ApiServerTask::new(join_handle, api_shutdown))? {
+    if !api_handle.store_if_idle(ApiServerTask::new(
+        server_start.join_handle,
+        api_shutdown,
+        bound_addr,
+    ))? {
         return Ok(false);
     }
 
@@ -1857,7 +1868,7 @@ mod tests {
         ensure_web_remote_open_allowed, is_tcp_socket_listening, mint_api_client_with_path,
         persist_coding_agent_env_settings_update, persist_coding_agent_profiles_update,
         persist_narrow_settings_update_with_saver, persist_protected_settings_update_with_saver,
-        persist_settings_draft_update_with_saver, RtkSweepError, RtkSweepResult,
+        persist_settings_draft_update_with_saver, start_api_server, RtkSweepError, RtkSweepResult,
         WebServerOwnershipState, MINT_API_CLIENT_DEFAULT_TTL_HOURS, MINT_API_CLIENT_MAX_TTL_DAYS,
         MINT_API_CLIENT_NOTE,
     };
@@ -1870,12 +1881,12 @@ mod tests {
     };
     use crate::session::manager::SessionManager;
     use crate::{ApiServerHandle, ApiServerTask, WebServerHandle};
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashMap};
     use std::net::{IpAddr, Ipv4Addr};
     #[cfg(windows)]
     use std::path::Path;
     use std::path::PathBuf;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use tauri::Manager;
     use tokio::sync::RwLock;
@@ -1935,6 +1946,32 @@ mod tests {
         Arc::new(RwLock::new(settings))
     }
 
+    fn api_server_command_test_app(settings: AppSettings) -> tauri::App {
+        let session_mgr = Arc::new(RwLock::new(SessionManager::new()));
+        let app = tauri::Builder::default()
+            .any_thread()
+            .manage(ApiServerHandle::default())
+            .manage(state_for(settings))
+            .manage(Arc::clone(&session_mgr))
+            .manage(crate::shutdown::ShutdownSignal::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build test app");
+        let idle_detector = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
+        let git_watcher = crate::pty::git_watcher::GitWatcher::new(
+            Arc::clone(&session_mgr),
+            app.handle().clone(),
+        );
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new(
+            Arc::new(Mutex::new(HashMap::new())),
+            idle_detector,
+            git_watcher,
+            None,
+            session_mgr,
+        )));
+        app.manage(pty_mgr);
+        app
+    }
+
     #[test]
     fn api_server_probe_addr_maps_wildcards_to_loopback() {
         assert_eq!(
@@ -1971,9 +2008,13 @@ mod tests {
 
     #[tokio::test]
     async fn api_server_status_reports_running_for_managed_wildcard_server() {
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0))
+            .await
+            .expect("bind wildcard test listener");
+        let bound_addr = listener.local_addr().expect("listener local addr");
         let settings = AppSettings {
             api_server_bind: "0.0.0.0".to_string(),
-            api_server_port: 9906,
+            api_server_port: bound_addr.port(),
             ..AppSettings::default()
         };
         let app = tauri::test::mock_builder()
@@ -1985,10 +2026,11 @@ mod tests {
         let shutdown = CancellationToken::new();
         let task_shutdown = shutdown.clone();
         let join = tauri::async_runtime::spawn(async move {
+            let _listener = listener;
             task_shutdown.cancelled().await;
         });
         app.state::<ApiServerHandle>()
-            .store_if_idle(ApiServerTask::new(join, shutdown))
+            .store_if_idle(ApiServerTask::new(join, shutdown, bound_addr))
             .expect("store api server task");
 
         let running =
@@ -2002,6 +2044,35 @@ mod tests {
             .shutdown_running(Duration::from_secs(1))
             .await
             .expect("shutdown stored task"));
+    }
+
+    #[tokio::test]
+    async fn start_api_server_bind_failure_returns_err_and_status_false() {
+        let settings = AppSettings {
+            api_server_bind: "192.0.2.1".to_string(),
+            api_server_port: 9906,
+            ..AppSettings::default()
+        };
+        let app = api_server_command_test_app(settings);
+
+        let err = start_api_server(
+            app.handle().clone(),
+            app.state::<ApiServerHandle>(),
+            app.state::<SettingsState>(),
+            app.state::<Arc<RwLock<SessionManager>>>(),
+            app.state::<Arc<Mutex<crate::pty::manager::PtyManager>>>(),
+            app.state::<crate::shutdown::ShutdownSignal>(),
+        )
+        .await
+        .expect_err("nonlocal bind should fail readiness");
+
+        assert!(err.contains("API server bind failed"), "{err}");
+        assert!(!app.state::<ApiServerHandle>().has_running().unwrap());
+        assert!(
+            !api_server_status(app.state::<ApiServerHandle>(), app.state::<SettingsState>())
+                .await
+                .expect("status succeeds")
+        );
     }
 
     struct MintApiClientFixture {
