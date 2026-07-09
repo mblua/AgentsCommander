@@ -46,6 +46,28 @@ describe("sessionActivity", () => {
     expect(sessionDotClass(both)).toBe("pending");
   });
 
+  it("pins every domain activity to its visual dot projection", () => {
+    const cases: Record<SessionActivity, { session: ActivitySession | null; inactive?: boolean; dot: string }> = {
+      offline: { session: null, dot: "offline" },
+      exited: { session: activitySession({ exited: 0 }), dot: "exited" },
+      pendingReview: { session: activitySession("running", { pendingReview: true }), dot: "pending" },
+      waitingForInput: { session: activitySession("running", { waitingForInput: true }), dot: "waiting" },
+      active: { session: activitySession("active"), dot: "active" },
+      running: { session: activitySession("running"), dot: "running" },
+      idle: { session: activitySession("idle"), dot: "idle" },
+    };
+
+    for (const [activity, spec] of Object.entries(cases) as Array<[
+      SessionActivity,
+      { session: ActivitySession | null; inactive?: boolean; dot: string },
+    ]>) {
+      expect(sessionActivity(spec.session, { inactive: spec.inactive })).toBe(activity);
+      expect(sessionDotClass(spec.session, { inactive: spec.inactive })).toBe(spec.dot);
+    }
+
+    expect(sessionDotClass(activitySession("running"), { inactive: true })).toBe("offline");
+  });
+
   it("classifies only active and running as working", () => {
     const expected: Record<SessionActivity, boolean> = {
       offline: false,
@@ -62,7 +84,7 @@ describe("sessionActivity", () => {
     }
   });
 
-  it("is equivalent to the pre-#882 dot-class working projection", () => {
+  it("keeps the working predicate aligned with the dot-class working projection", () => {
     const statuses: SessionStatus[] = ["active", "running", "idle", { exited: 0 }];
     const flags = [false, true];
     const workingDots = new Set(["active", "running"]);
