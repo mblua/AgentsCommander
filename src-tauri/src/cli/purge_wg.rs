@@ -37,7 +37,9 @@ fn print_status_prose(content: &str) {
     let status = resp.get("status").and_then(|v| v.as_str()).unwrap_or("");
     match status {
         "rejected_busy" => {
-            crate::cli_println!("Purge rejected: one or more peers are busy. See per-peer table above.");
+            crate::cli_println!(
+                "Purge rejected: one or more peers are not purgeable. See per-peer table above."
+            );
         }
         "dry_run_ready" => {
             crate::cli_println!("Dry-run: gate would PASS. No sessions destroyed.");
@@ -192,7 +194,9 @@ pub fn execute(args: PurgeWgArgs) -> i32 {
         return 1;
     }
 
-    let response_path = ac_dir.join("responses").join(format!("{}.json", request_id));
+    let response_path = ac_dir
+        .join("responses")
+        .join(format!("{}.json", request_id));
     let rejected_reason_path = outbox_dir
         .join("rejected")
         .join(format!("{}.reason.txt", msg_id));
@@ -345,6 +349,8 @@ mod tests {
         print_status_prose("");
         print_status_prose(r#"{"status":"purged"}"#);
         print_status_prose(r#"{"status":"rejected_busy"}"#);
-        print_status_prose(r#"{"status":"failed_root_guard","offending_session_id":"x","offending_working_directory":"y"}"#);
+        print_status_prose(
+            r#"{"status":"failed_root_guard","offending_session_id":"x","offending_working_directory":"y"}"#,
+        );
     }
 }
