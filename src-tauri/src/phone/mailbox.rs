@@ -1596,7 +1596,9 @@ pub(crate) fn evaluate_gate(peers: &[PurgeGatePeer], quiet: std::time::Duration)
         }
 
         let mut peer_purgeable = true;
-        let mut peer_outcome = "skipped";
+        let mut saw_untracked_failure = false;
+        let mut saw_busy_failure = false;
+        let mut saw_resize_only_failure = false;
         let mut idle_ms: Option<u128> = None;
         let mut silence_ms: Option<u128> = None;
         let mut watcher_idle = true;
@@ -1616,17 +1618,13 @@ pub(crate) fn evaluate_gate(peers: &[PurgeGatePeer], quiet: std::time::Duration)
 
             if !purgeable {
                 peer_purgeable = false;
-                // (#885 E-5) Distinguish resize-unsettled from busy: an
-                // operator told their idle agent is "busy" will hunt for a
-                // working agent that does not exist. If resize is the only
-                // failing leg, the terminal was recently resized.
-                peer_outcome = if r.activity_age.is_none() {
-                    "untracked"
+                if r.activity_age.is_none() {
+                    saw_untracked_failure = true;
                 } else if !r_settled && activity_ok && r.watcher_idle && m_idle {
-                    "resize_unsettled"
+                    saw_resize_only_failure = true;
                 } else {
-                    "busy"
-                };
+                    saw_busy_failure = true;
+                }
             }
 
             if let Some(a) = r.activity_age {
@@ -1649,6 +1647,22 @@ pub(crate) fn evaluate_gate(peers: &[PurgeGatePeer], quiet: std::time::Duration)
         if !peer_purgeable {
             passed = false;
         }
+
+        // (#885 E-5) Distinguish resize-unsettled from busy, but aggregate
+        // across all live sessions for the peer. `resize_unsettled` is only
+        // honest when resize is the sole failing leg for every failing live
+        // session. Unknown liveness is more important than either diagnostic.
+        let peer_outcome = if peer_purgeable {
+            "skipped"
+        } else if saw_untracked_failure {
+            "untracked"
+        } else if saw_busy_failure {
+            "busy"
+        } else if saw_resize_only_failure {
+            "resize_unsettled"
+        } else {
+            "busy"
+        };
 
         results.push(PurgePeerResult {
             fqn: peer.fqn.clone(),
@@ -11540,6 +11554,37 @@ mod tests {
         assert!(
             !decision.peers[0].resize_settled,
             "resize_settled must be false"
+        );
+    }
+
+    #[test]
+    fn gate_reports_busy_when_same_peer_has_busy_and_resize_unsettled_sessions() {
+        let quiet = Duration::from_millis(3000);
+        let busy_sid = Uuid::new_v4();
+        let resize_sid = Uuid::new_v4();
+        let peer = make_gate_peer(
+            "proj:wg-1/devs/alice",
+            vec![
+                PurgeGateSession {
+                    session_id: busy_sid,
+                    readiness: make_readiness(busy_sid, Some(100), true, None),
+                    mirror_idle: true,
+                },
+                PurgeGateSession {
+                    session_id: resize_sid,
+                    readiness: make_readiness(resize_sid, Some(3000), true, Some(3100)),
+                    mirror_idle: true,
+                },
+            ],
+            vec![busy_sid.to_string(), resize_sid.to_string()],
+        );
+
+        let decision = evaluate_gate(&[peer], quiet);
+
+        assert!(!decision.passed);
+        assert_eq!(
+            decision.peers[0].outcome, "busy",
+            "resize_unsettled must not mask a busy live session on the same peer"
         );
     }
 
