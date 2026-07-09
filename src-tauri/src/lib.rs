@@ -851,8 +851,8 @@ pub fn run(
                         let project_paths =
                             match crate::config::settings::save_settings(&snapshot) {
                                 Ok(written) => {
-                                    *s = written.clone();
-                                    written.project_paths
+                                    *s = written;
+                                    s.project_paths.clone()
                                 }
                                 Err(e) => {
                                     log::warn!(

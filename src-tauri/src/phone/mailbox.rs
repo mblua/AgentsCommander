@@ -5399,7 +5399,7 @@ impl MailboxPoller {
                     )
                 };
                 if let ca::RequestDisposition::Applied { op, agent_id } = disposition {
-                    *s = written_settings.unwrap_or(candidate);
+                    *s = written_settings.expect("Applied implies save() succeeded");
                     Some((op, agent_id))
                 } else {
                     None

@@ -2873,6 +2873,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn settings_update_missing_settings_file_preserves_project_sessions() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        assert!(!settings_path.exists());
+
+        let project = temp.path().join("project-a");
+        let kept_workdir = project.join(".ac").join("wg-1").join("__agent_dev");
+        std::fs::create_dir_all(&kept_workdir).expect("create kept workdir");
+        let project_path = project.to_string_lossy().to_string();
+
+        write_sessions_file(
+            temp.path(),
+            &[PersistedSession {
+                name: "kept".to_string(),
+                shell: "codex".to_string(),
+                working_directory: kept_workdir.to_string_lossy().to_string(),
+                ..Default::default()
+            }],
+        );
+
+        let mut current = settings_with_single_agent();
+        current.project_paths = vec![project_path.clone()];
+        current.project_path = Some(project_path.clone());
+        let state = state_for(current.clone());
+
+        let mut incoming = current.clone();
+        incoming.sidebar_style = "deep-space".to_string();
+        let saved = persist_protected_settings_update_with_saver(&state, incoming, |candidate| {
+            crate::config::settings::save_settings_to_path_preserving_project_paths(
+                candidate,
+                &settings_path,
+            )
+        })
+        .await
+        .unwrap();
+
+        assert_single_project(&saved, &project_path);
+        {
+            let live = state.read().await;
+            assert_single_project(&live, &project_path);
+        }
+
+        purge_sessions_after_settings_update_in_dir(&saved, temp.path())
+            .await
+            .unwrap();
+
+        let remaining = read_sessions_file(temp.path());
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].name, "kept");
+        assert_eq!(
+            remaining[0].working_directory,
+            kept_workdir.to_string_lossy()
+        );
+    }
+
+    #[tokio::test]
     async fn protected_update_settings_transaction_preserves_current_coding_fields() {
         let mut current = settings_with_single_agent();
         current.agents[0].envs = vec![CodingAgentEnv {
