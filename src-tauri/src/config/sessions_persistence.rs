@@ -299,12 +299,42 @@ pub(crate) fn working_directory_under_any_project_path(
     project_paths: &[String],
 ) -> bool {
     let cwd = normalize_for_project_compare(Path::new(working_directory));
-    project_paths
+    let roots: Vec<String> = project_paths
         .iter()
         .map(|p| p.trim())
         .filter(|p| !p.is_empty())
         .map(|p| normalize_for_project_compare(Path::new(p)))
-        .any(|project| path_is_under_or_equal(&cwd, &project))
+        .collect();
+    working_directory_under_any_normalized_root(&cwd, &roots)
+}
+
+fn working_directory_under_any_normalized_root(cwd: &str, roots: &[String]) -> bool {
+    roots
+        .iter()
+        .any(|project| path_is_under_or_equal(cwd, project))
+}
+
+/// #881: paths that may retain persisted sessions. Active projects plus archived
+/// projects are both registered from the session store's point of view; only
+/// active projects should be used for discovery and background project work.
+pub(crate) fn session_retention_project_paths(
+    settings: &crate::config::settings::AppSettings,
+) -> Vec<String> {
+    let mut paths = settings.project_paths.clone();
+    paths.extend(settings.archived_project_paths.iter().cloned());
+    paths
+}
+
+/// #881: true when `path` lives under one of `archived_project_paths`.
+///
+/// The empty-list fast path lives here because callers run on poll intervals
+/// and spawn paths. Do not reimplement it upstream.
+#[allow(dead_code)]
+pub(crate) fn is_under_archived_project(path: &str, archived_project_paths: &[String]) -> bool {
+    if archived_project_paths.is_empty() {
+        return false;
+    }
+    working_directory_under_any_project_path(path, archived_project_paths)
 }
 
 fn is_root_persisted_session(session: &PersistedSession) -> bool {
@@ -317,14 +347,20 @@ fn filter_sessions_for_project_paths(
     project_paths: &[String],
 ) -> Vec<PersistedSession> {
     let total = sessions.len();
+    let roots: Vec<String> = project_paths
+        .iter()
+        .map(|p| p.trim())
+        .filter(|p| !p.is_empty())
+        .map(|p| normalize_for_project_compare(Path::new(p)))
+        .collect();
     let filtered: Vec<PersistedSession> = sessions
         .into_iter()
         .filter(|session| {
             if is_root_persisted_session(session) {
                 return true;
             }
-            let keep =
-                working_directory_under_any_project_path(&session.working_directory, project_paths);
+            let cwd = normalize_for_project_compare(Path::new(&session.working_directory));
+            let keep = working_directory_under_any_normalized_root(&cwd, &roots);
             if !keep {
                 log::warn!(
                     "[sessions] Dropping orphan persisted session '{}' at '{}' (outside current projectPaths)",
@@ -344,6 +380,16 @@ fn filter_sessions_for_project_paths(
     }
 
     filtered
+}
+
+async fn filter_sessions_for_project_paths_blocking(
+    sessions: Vec<PersistedSession>,
+    project_paths: &[String],
+) -> Result<Vec<PersistedSession>, String> {
+    let project_paths = project_paths.to_vec();
+    tokio::task::spawn_blocking(move || filter_sessions_for_project_paths(sessions, &project_paths))
+        .await
+        .map_err(|e| format!("session filter task failed: {}", e))
 }
 
 /// Remove duplicate sessions by name AND working_directory.
@@ -645,7 +691,18 @@ pub async fn load_sessions_purging_outside_project_paths(
             // Read-only fallback (no save): a stale read here cannot violate the
             // atomicity contract because nothing is written back. Restore
             // reconciles on the next persist.
-            filter_sessions_for_project_paths(load_sessions_from_dir(&dir), project_paths)
+            match filter_sessions_for_project_paths_blocking(
+                load_sessions_from_dir(&dir),
+                project_paths,
+            )
+            .await
+            {
+                Ok(filtered) => filtered,
+                Err(e) => {
+                    log::error!("Failed to filter sessions after purge failure: {}", e);
+                    vec![]
+                }
+            }
         }
     }
 }
@@ -690,7 +747,7 @@ async fn purge_sessions_outside_project_paths_in_dir_locked(
     let _guard = sessions_save_lock().lock().await;
     let before = load_sessions_from_dir(dir);
     let before_len = before.len();
-    let filtered = filter_sessions_for_project_paths(before, project_paths);
+    let filtered = filter_sessions_for_project_paths_blocking(before, project_paths).await?;
     if filtered.len() < before_len {
         save_sessions_to_dir(dir, &filtered)?;
     }
@@ -1141,7 +1198,8 @@ pub async fn persist_merging_failed_result(
     failed: &[PersistedSession],
 ) -> Result<(), String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
-    let project_paths = crate::config::settings::load_settings_for_cli().project_paths;
+    let settings = crate::config::settings::load_settings_for_cli();
+    let project_paths = session_retention_project_paths(&settings);
     persist_merging_failed_to_dir_for_project_paths_result(mgr, failed, &dir, Some(&project_paths))
         .await
 }
@@ -1175,7 +1233,9 @@ async fn persist_merging_failed_to_dir_for_project_paths_result(
     snapshot.extend(failed.iter().map(sanitize_failed_recoverable));
     let snapshot = deduplicate(snapshot);
     let snapshot = match project_paths {
-        Some(project_paths) => filter_sessions_for_project_paths(snapshot, project_paths),
+        Some(project_paths) => {
+            filter_sessions_for_project_paths_blocking(snapshot, project_paths).await?
+        }
         None => snapshot,
     };
     save_sessions_to_dir(dir, &snapshot)
@@ -1190,7 +1250,8 @@ pub async fn persist_merging_failed(mgr: &SessionManager, failed: &[PersistedSes
 /// Convenience: snapshot and save in one call. Logs errors but never fails.
 pub async fn persist_current_state_result(mgr: &SessionManager) -> Result<(), String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
-    let project_paths = crate::config::settings::load_settings_for_cli().project_paths;
+    let settings = crate::config::settings::load_settings_for_cli();
+    let project_paths = session_retention_project_paths(&settings);
     persist_current_state_to_dir_for_project_paths_result(mgr, &dir, Some(&project_paths)).await
 }
 
@@ -1219,7 +1280,9 @@ async fn snapshot_and_save_locked(
 ) -> Result<(), String> {
     let snapshot = snapshot_sessions(mgr).await;
     let snapshot = match project_paths {
-        Some(project_paths) => filter_sessions_for_project_paths(snapshot, project_paths),
+        Some(project_paths) => {
+            filter_sessions_for_project_paths_blocking(snapshot, project_paths).await?
+        }
         None => snapshot,
     };
     save_sessions_to_dir(dir, &snapshot)
@@ -1274,7 +1337,8 @@ pub async fn raise_hand_and_persist_result(
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<RaiseHandPersistOutcome, String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
-    let project_paths = crate::config::settings::load_settings_for_cli().project_paths;
+    let settings = crate::config::settings::load_settings_for_cli();
+    let project_paths = session_retention_project_paths(&settings);
     raise_hand_and_persist_to_dir_result(mgr, session_id, now, &dir, Some(&project_paths)).await
 }
 
@@ -1341,7 +1405,8 @@ pub async fn clear_user_input_transitions_and_persist_result(
     clear_fresh: bool,
 ) -> Result<ClearedUserInputTransitions, String> {
     let dir = super::config_dir();
-    let project_paths = crate::config::settings::load_settings_for_cli().project_paths;
+    let settings = crate::config::settings::load_settings_for_cli();
+    let project_paths = session_retention_project_paths(&settings);
     clear_user_input_transitions_and_persist_to_dir_result(
         mgr,
         session_id,
@@ -1392,7 +1457,8 @@ pub async fn set_start_fresh_and_persist_result(
     session_id: Uuid,
 ) -> Result<bool, String> {
     let dir = super::config_dir();
-    let project_paths = crate::config::settings::load_settings_for_cli().project_paths;
+    let settings = crate::config::settings::load_settings_for_cli();
+    let project_paths = session_retention_project_paths(&settings);
     write_start_fresh_and_persist_to_dir_result(
         mgr,
         session_id,
@@ -1412,7 +1478,8 @@ pub async fn clear_start_fresh_and_persist_result(
     session_id: Uuid,
 ) -> Result<bool, String> {
     let dir = super::config_dir();
-    let project_paths = crate::config::settings::load_settings_for_cli().project_paths;
+    let settings = crate::config::settings::load_settings_for_cli();
+    let project_paths = session_retention_project_paths(&settings);
     write_start_fresh_and_persist_to_dir_result(
         mgr,
         session_id,
@@ -1453,12 +1520,14 @@ mod tests {
         load_sessions_raw_from_dir_for_test, persist_current_state_result,
         persist_current_state_to_dir_result, purge_sessions_outside_project_paths_in_dir,
         raise_hand_and_persist_to_dir_result, rename_with_retry, sanitize_failed_recoverable,
-        save_sessions_to_dir, sessions_save_lock, snapshot_sessions, strip_auto_injected_args,
-        working_directory_under_any_project_path, write_start_fresh_and_persist_to_dir_result,
-        PersistedSession, RaiseHandPersistOutcome, RENAME_ATTEMPTS,
+        save_sessions_to_dir, session_retention_project_paths, sessions_save_lock,
+        snapshot_sessions, strip_auto_injected_args, working_directory_under_any_project_path,
+        write_start_fresh_and_persist_to_dir_result, PersistedSession, RaiseHandPersistOutcome,
+        RENAME_ATTEMPTS,
     };
     #[cfg(windows)]
     use super::{deduplicate, load_sessions_from_path};
+    use crate::config::settings::AppSettings;
     use crate::session::manager::SessionManager;
     use crate::session::session::{SessionCommunication, SessionCommunicationKind, SessionStatus};
     use std::time::Duration;
@@ -2416,6 +2485,85 @@ mod tests {
         assert_eq!(filtered[0].name, "kept-coordinator");
     }
 
+    #[test]
+    fn session_retention_project_paths_includes_archived_paths() {
+        let settings = AppSettings {
+            project_paths: vec!["A".to_string()],
+            archived_project_paths: vec!["B".to_string()],
+            ..AppSettings::default()
+        };
+
+        assert_eq!(
+            session_retention_project_paths(&settings),
+            vec!["A".to_string(), "B".to_string()]
+        );
+    }
+
+    #[test]
+    fn filter_sessions_for_project_paths_keeps_archived_when_called_with_retention_paths() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let active = temp.path().join("active");
+        let archived = temp.path().join("archived");
+        let orphan = temp.path().join("orphan");
+        let active_agent = active.join(".ac").join("wg-1").join("__agent_active");
+        let archived_agent = archived.join(".ac").join("wg-1").join("__agent_archived");
+        let orphan_agent = orphan.join(".ac").join("wg-1").join("__agent_orphan");
+        std::fs::create_dir_all(&active_agent).expect("create active agent");
+        std::fs::create_dir_all(&archived_agent).expect("create archived agent");
+        std::fs::create_dir_all(&orphan_agent).expect("create orphan agent");
+        let retention_paths = vec![
+            active.to_string_lossy().to_string(),
+            archived.to_string_lossy().to_string(),
+        ];
+        let sessions = vec![
+            PersistedSession {
+                name: "active".into(),
+                working_directory: active_agent.to_string_lossy().to_string(),
+                ..Default::default()
+            },
+            PersistedSession {
+                name: "archived".into(),
+                working_directory: archived_agent.to_string_lossy().to_string(),
+                ..Default::default()
+            },
+            PersistedSession {
+                name: "orphan".into(),
+                working_directory: orphan_agent.to_string_lossy().to_string(),
+                ..Default::default()
+            },
+        ];
+
+        let filtered = filter_sessions_for_project_paths(sessions, &retention_paths);
+
+        let names: Vec<&str> = filtered
+            .iter()
+            .map(|session| session.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["active", "archived"]);
+    }
+
+    #[test]
+    fn filter_sessions_for_project_paths_normalizes_roots_once() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("current");
+        let agent = project.join(".ac").join("wg-1").join("__agent_keep");
+        std::fs::create_dir_all(&agent).expect("create agent");
+        let root_with_dot = project.join(".");
+        let sessions = vec![PersistedSession {
+            name: "keep".into(),
+            working_directory: agent.to_string_lossy().to_string(),
+            ..Default::default()
+        }];
+
+        let filtered = filter_sessions_for_project_paths(
+            sessions,
+            &[root_with_dot.to_string_lossy().to_string()],
+        );
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "keep");
+    }
+
     #[tokio::test]
     async fn purge_sessions_outside_project_paths_rewrites_sessions_json() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -2455,6 +2603,58 @@ mod tests {
         let rows: Vec<PersistedSession> = serde_json::from_str(&saved).expect("parse sessions");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].name, "keep");
+    }
+
+    #[tokio::test]
+    async fn purge_sessions_outside_project_paths_keeps_archived_session_when_retention_paths_used()
+    {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let active = temp.path().join("active");
+        let archived = temp.path().join("archived");
+        let orphan = temp.path().join("orphan");
+        let active_agent = active.join(".ac").join("wg-1").join("__agent_active");
+        let archived_agent = archived.join(".ac").join("wg-1").join("__agent_archived");
+        let orphan_agent = orphan.join(".ac").join("wg-1").join("__agent_orphan");
+        std::fs::create_dir_all(&active_agent).expect("create active agent");
+        std::fs::create_dir_all(&archived_agent).expect("create archived agent");
+        std::fs::create_dir_all(&orphan_agent).expect("create orphan agent");
+        let sessions = vec![
+            PersistedSession {
+                name: "active".into(),
+                working_directory: active_agent.to_string_lossy().to_string(),
+                ..Default::default()
+            },
+            PersistedSession {
+                name: "archived".into(),
+                working_directory: archived_agent.to_string_lossy().to_string(),
+                ..Default::default()
+            },
+            PersistedSession {
+                name: "orphan".into(),
+                working_directory: orphan_agent.to_string_lossy().to_string(),
+                ..Default::default()
+            },
+        ];
+        save_sessions_to_dir(temp.path(), &sessions).expect("seed sessions");
+        let retention_paths = vec![
+            active.to_string_lossy().to_string(),
+            archived.to_string_lossy().to_string(),
+        ];
+
+        let filtered = purge_sessions_outside_project_paths_in_dir(temp.path(), &retention_paths)
+            .await
+            .expect("purge sessions");
+
+        let names: Vec<&str> = filtered
+            .iter()
+            .map(|session| session.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["active", "archived"]);
+        let saved =
+            std::fs::read_to_string(temp.path().join("sessions.json")).expect("read sessions");
+        let rows: Vec<PersistedSession> = serde_json::from_str(&saved).expect("parse sessions");
+        let saved_names: Vec<&str> = rows.iter().map(|session| session.name.as_str()).collect();
+        assert_eq!(saved_names, vec!["active", "archived"]);
     }
 
     /// #698 grinch HIGH regression — the orphan purge must take

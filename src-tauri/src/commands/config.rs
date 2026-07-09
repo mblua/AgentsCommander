@@ -267,9 +267,11 @@ async fn purge_sessions_after_settings_update_in_dir(
     saved: &AppSettings,
     dir: &Path,
 ) -> Result<(), String> {
+    let retention_paths =
+        crate::config::sessions_persistence::session_retention_project_paths(saved);
     crate::config::sessions_persistence::purge_sessions_outside_project_paths_in_dir(
         dir,
-        &saved.project_paths,
+        &retention_paths,
     )
     .await
     .map(|_| ())

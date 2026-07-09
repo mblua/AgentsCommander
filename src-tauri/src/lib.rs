@@ -815,9 +815,11 @@ pub fn run(
             // run-event handler. The lock is uncontended at this point (the
             // mailbox poller and other writers start below), so it returns
             // immediately.
+            let restore_session_paths =
+                sessions_persistence::session_retention_project_paths(&restore_settings_snapshot);
             let persisted = tauri::async_runtime::block_on(
                 sessions_persistence::load_sessions_purging_outside_project_paths(
-                    &restore_settings_snapshot.project_paths,
+                    &restore_session_paths,
                 ),
             );
             let restore_flag = app
