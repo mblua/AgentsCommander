@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { SESSION_WARNING_KINDS } from "./types";
 
 const BACKEND_WARNING_KIND_SOURCES = import.meta.glob<string>(
-  "../../src-tauri/src/{pty/container_paths,session/warnings}.rs",
+  "../../src-tauri/src/**/*.rs",
   {
     query: "?raw",
     import: "default",

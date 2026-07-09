@@ -341,7 +341,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     // #912: subscribe before the startup warning drain. The backend appends
     // before live emit, so exact live/drained duplicates are collapsed below.
     unlisteners.push(await onSessionEnvWarning(handleLiveSessionWarning));
-    await drainBufferedSessionWarnings();
+    void drainBufferedSessionWarnings();
 
     unlisteners.push(
       await onAcProjectRefreshRequested((data) => {
