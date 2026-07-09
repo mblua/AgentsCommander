@@ -127,7 +127,9 @@ pub async fn get_settings(settings: State<'_, SettingsState>) -> Result<AppSetti
 pub async fn get_coding_agent_catalog(
 ) -> Result<Vec<crate::config::coding_agents_catalog::CodingAgentDefinition>, String> {
     let config_dir = crate::config::config_dir().ok_or("No config dir")?;
-    Ok(crate::config::coding_agents_catalog::load_catalog(&config_dir))
+    Ok(crate::config::coding_agents_catalog::load_catalog(
+        &config_dir,
+    ))
 }
 
 /// #769 Phase 2 - the coding-agent command executable basenames that ship a
@@ -220,14 +222,14 @@ pub(crate) async fn persist_protected_settings_update(
 async fn persist_protected_settings_update_with_saver(
     settings: &SettingsState,
     new_settings: AppSettings,
-    save: impl FnOnce(&AppSettings) -> Result<(), String>,
+    save: impl FnOnce(&AppSettings) -> Result<AppSettings, String>,
 ) -> Result<AppSettings, String> {
     let mut s = settings.write().await;
     let current = s.clone();
     let candidate = build_protected_settings_candidate(&current, new_settings)?;
-    save(&candidate)?;
-    *s = candidate.clone();
-    Ok(candidate)
+    let written = save(&candidate)?;
+    *s = written.clone();
+    Ok(written)
 }
 
 fn build_protected_settings_candidate(
@@ -251,29 +253,42 @@ pub(crate) async fn persist_settings_draft_update(
 async fn persist_settings_draft_update_with_saver(
     settings: &SettingsState,
     mut draft: AppSettings,
-    save: impl FnOnce(&AppSettings) -> Result<(), String>,
+    save: impl FnOnce(&AppSettings) -> Result<AppSettings, String>,
 ) -> Result<(AppSettings, SettingsDraftUpdateEvents), String> {
     let mut s = settings.write().await;
     let current = s.clone();
     draft.root_token = current.root_token.clone();
     validate_and_repair_settings(&mut draft)?;
     let events = settings_draft_update_events(&current, &draft);
-    save(&draft)?;
-    *s = draft.clone();
-    Ok((draft, events))
+    let written = save(&draft)?;
+    *s = written.clone();
+    Ok((written, events))
 }
 
 pub(crate) async fn purge_sessions_after_settings_update(saved: &AppSettings) {
-    if let Err(e) = crate::config::sessions_persistence::purge_sessions_outside_project_paths(
-        &saved.project_paths,
-    )
-    .await
-    {
+    let Some(dir) = crate::config::config_dir() else {
+        log::warn!("Could not determine home directory for session purge after settings update");
+        return;
+    };
+
+    if let Err(e) = purge_sessions_after_settings_update_in_dir(saved, &dir).await {
         log::warn!(
             "[settings] Failed to purge sessions outside current projectPaths after settings update: {}",
             e
         );
     }
+}
+
+async fn purge_sessions_after_settings_update_in_dir(
+    saved: &AppSettings,
+    dir: &Path,
+) -> Result<(), String> {
+    crate::config::sessions_persistence::purge_sessions_outside_project_paths_in_dir(
+        dir,
+        &saved.project_paths,
+    )
+    .await
+    .map(|_| ())
 }
 
 fn settings_draft_update_events(
@@ -372,8 +387,8 @@ async fn persist_coding_agent_profiles_update(
     let mut candidate = s.clone();
     candidate.coding_agent_profiles = profiles;
     validate_and_repair_settings(&mut candidate)?;
-    save_settings(&candidate)?;
-    *s = candidate;
+    let written = save_settings(&candidate)?;
+    *s = written;
     Ok(())
 }
 
@@ -410,8 +425,8 @@ async fn persist_coding_agent_env_settings_update(
     agent.envs = envs;
     agent.isolated_home = isolated_home;
     validate_and_repair_settings(&mut candidate)?;
-    save_settings(&candidate)?;
-    *s = candidate;
+    let written = save_settings(&candidate)?;
+    *s = written;
     Ok(())
 }
 
@@ -1596,13 +1611,13 @@ async fn persist_narrow_settings_update(
 async fn persist_narrow_settings_update_with_saver(
     settings: &SettingsState,
     mutate_candidate: impl FnOnce(&mut AppSettings),
-    save: impl FnOnce(&AppSettings) -> Result<(), String>,
+    save: impl FnOnce(&AppSettings) -> Result<AppSettings, String>,
 ) -> Result<(), String> {
     let mut s = settings.write().await;
     let mut candidate = s.clone();
     mutate_candidate(&mut candidate);
-    save(&candidate)?;
-    *s = candidate;
+    let written = save(&candidate)?;
+    *s = written;
     Ok(())
 }
 
@@ -1868,13 +1883,14 @@ mod tests {
         ensure_web_remote_open_allowed, is_tcp_socket_listening, mint_api_client_with_path,
         persist_coding_agent_env_settings_update, persist_coding_agent_profiles_update,
         persist_narrow_settings_update_with_saver, persist_protected_settings_update_with_saver,
-        persist_settings_draft_update_with_saver, start_api_server, RtkSweepError, RtkSweepResult,
-        WebServerOwnershipState, MINT_API_CLIENT_DEFAULT_TTL_HOURS, MINT_API_CLIENT_MAX_TTL_DAYS,
-        MINT_API_CLIENT_NOTE,
+        persist_settings_draft_update_with_saver, purge_sessions_after_settings_update_in_dir,
+        start_api_server, RtkSweepError, RtkSweepResult, WebServerOwnershipState,
+        MINT_API_CLIENT_DEFAULT_TTL_HOURS, MINT_API_CLIENT_MAX_TTL_DAYS, MINT_API_CLIENT_NOTE,
     };
     #[cfg(windows)]
     use super::{build_profile_assignment_target, canonical_compare_key};
     use crate::api::auth;
+    use crate::config::sessions_persistence::PersistedSession;
     use crate::config::settings::{
         AgentConfig, AppSettings, CodingAgentEnv, CodingAgentEnvSource, ProfileCellConfig,
         SettingsState,
@@ -1883,9 +1899,7 @@ mod tests {
     use crate::{ApiServerHandle, ApiServerTask, WebServerHandle};
     use std::collections::{BTreeMap, HashMap};
     use std::net::{IpAddr, Ipv4Addr};
-    #[cfg(windows)]
-    use std::path::Path;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use tauri::Manager;
@@ -1944,6 +1958,26 @@ mod tests {
 
     fn state_for(settings: AppSettings) -> SettingsState {
         Arc::new(RwLock::new(settings))
+    }
+
+    fn write_settings_file(dir: &Path, settings: &AppSettings) {
+        let json = serde_json::to_vec_pretty(settings).expect("serialize settings");
+        std::fs::write(dir.join("settings.json"), json).expect("write settings.json");
+    }
+
+    fn write_sessions_file(dir: &Path, sessions: &[PersistedSession]) {
+        let json = serde_json::to_vec_pretty(sessions).expect("serialize sessions");
+        std::fs::write(dir.join("sessions.json"), json).expect("write sessions.json");
+    }
+
+    fn read_sessions_file(dir: &Path) -> Vec<PersistedSession> {
+        let json = std::fs::read_to_string(dir.join("sessions.json")).expect("read sessions.json");
+        serde_json::from_str(&json).expect("parse sessions.json")
+    }
+
+    fn assert_single_project(settings: &AppSettings, project: &str) {
+        assert_eq!(settings.project_paths, vec![project.to_string()]);
+        assert_eq!(settings.project_path.as_deref(), Some(project));
     }
 
     fn api_server_command_test_app(settings: AppSettings) -> tauri::App {
@@ -2582,12 +2616,13 @@ mod tests {
                 },
             );
 
-        let err =
-            persist_settings_draft_update_with_saver(&state, draft, |_| -> Result<(), String> {
-                panic!("save must not run")
-            })
-            .await
-            .unwrap_err();
+        let err = persist_settings_draft_update_with_saver(
+            &state,
+            draft,
+            |_| -> Result<AppSettings, String> { panic!("save must not run") },
+        )
+        .await
+        .unwrap_err();
 
         assert!(err.contains("reserved by AgentsCommander"), "{err}");
         let live = state.read().await;
@@ -2706,6 +2741,202 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn settings_update_does_not_clobber_in_memory_project_lists() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let disk_project = "C:/disk/project-a";
+        write_settings_file(
+            temp.path(),
+            &AppSettings {
+                project_paths: vec![disk_project.to_string()],
+                project_path: Some(disk_project.to_string()),
+                ..AppSettings::default()
+            },
+        );
+
+        let mut current = settings_with_single_agent();
+        current.project_paths = vec!["C:/stale/current".to_string()];
+        current.project_path = Some("C:/stale/current".to_string());
+        current.root_token = Some("current-root-token".to_string());
+
+        let protected_state = state_for(current.clone());
+        let mut stale = current.clone();
+        stale.project_paths.clear();
+        stale.project_path = None;
+        stale.root_token = Some("frontend-root-token".to_string());
+
+        let saved =
+            persist_protected_settings_update_with_saver(&protected_state, stale, |candidate| {
+                crate::config::settings::save_settings_to_path_preserving_project_paths(
+                    candidate,
+                    &settings_path,
+                )
+            })
+            .await
+            .unwrap();
+
+        assert_single_project(&saved, disk_project);
+        assert_eq!(saved.root_token.as_deref(), Some("current-root-token"));
+        {
+            let live = protected_state.read().await;
+            assert_single_project(&live, disk_project);
+            assert_eq!(live.root_token.as_deref(), Some("current-root-token"));
+        }
+
+        let draft_state = state_for(current.clone());
+        let mut draft = current;
+        draft.project_paths.clear();
+        draft.project_path = None;
+
+        let (saved, _events) =
+            persist_settings_draft_update_with_saver(&draft_state, draft, |candidate| {
+                crate::config::settings::save_settings_to_path_preserving_project_paths(
+                    candidate,
+                    &settings_path,
+                )
+            })
+            .await
+            .unwrap();
+
+        assert_single_project(&saved, disk_project);
+        {
+            let live = draft_state.read().await;
+            assert_single_project(&live, disk_project);
+        }
+    }
+
+    #[tokio::test]
+    async fn settings_update_returns_written_project_lists_for_session_purge() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let project = temp.path().join("project-a");
+        let kept_workdir = project.join(".ac").join("wg-1").join("__agent_dev");
+        let outside = temp.path().join("project-b");
+        let outside_workdir = outside.join(".ac").join("wg-1").join("__agent_dev");
+        std::fs::create_dir_all(&kept_workdir).expect("create kept workdir");
+        std::fs::create_dir_all(&outside_workdir).expect("create outside workdir");
+
+        let project_path = project.to_string_lossy().to_string();
+        write_settings_file(
+            temp.path(),
+            &AppSettings {
+                project_paths: vec![project_path.clone()],
+                project_path: Some(project_path.clone()),
+                ..AppSettings::default()
+            },
+        );
+        write_sessions_file(
+            temp.path(),
+            &[
+                PersistedSession {
+                    name: "kept".to_string(),
+                    shell: "codex".to_string(),
+                    working_directory: kept_workdir.to_string_lossy().to_string(),
+                    ..Default::default()
+                },
+                PersistedSession {
+                    name: "outside".to_string(),
+                    shell: "codex".to_string(),
+                    working_directory: outside_workdir.to_string_lossy().to_string(),
+                    ..Default::default()
+                },
+            ],
+        );
+
+        let mut current = settings_with_single_agent();
+        current.project_paths.clear();
+        current.project_path = None;
+        let state = state_for(current.clone());
+        let stale = current;
+
+        let saved = persist_protected_settings_update_with_saver(&state, stale, |candidate| {
+            crate::config::settings::save_settings_to_path_preserving_project_paths(
+                candidate,
+                &settings_path,
+            )
+        })
+        .await
+        .unwrap();
+
+        purge_sessions_after_settings_update_in_dir(&saved, temp.path())
+            .await
+            .unwrap();
+
+        let remaining = read_sessions_file(temp.path());
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].name, "kept");
+        assert_eq!(
+            remaining[0].working_directory,
+            kept_workdir.to_string_lossy()
+        );
+        assert_single_project(&saved, &project_path);
+    }
+
+    #[tokio::test]
+    async fn settings_update_missing_settings_file_preserves_project_sessions() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        assert!(!settings_path.exists());
+
+        let project = temp.path().join("project-a");
+        let kept_workdir = project.join(".ac").join("wg-1").join("__agent_dev");
+        std::fs::create_dir_all(&kept_workdir).expect("create kept workdir");
+        let project_path = project.to_string_lossy().to_string();
+
+        write_sessions_file(
+            temp.path(),
+            &[PersistedSession {
+                name: "kept".to_string(),
+                shell: "codex".to_string(),
+                working_directory: kept_workdir.to_string_lossy().to_string(),
+                ..Default::default()
+            }],
+        );
+
+        let mut current = settings_with_single_agent();
+        current.project_paths = vec![project_path.clone()];
+        current.project_path = Some(project_path.clone());
+        let state = state_for(current.clone());
+
+        let mut incoming = current.clone();
+        incoming.sidebar_style = "deep-space".to_string();
+        let saved = persist_protected_settings_update_with_saver(&state, incoming, |candidate| {
+            crate::config::settings::save_settings_to_path_preserving_project_paths(
+                candidate,
+                &settings_path,
+            )
+        })
+        .await
+        .unwrap();
+
+        assert_single_project(&saved, &project_path);
+        {
+            let live = state.read().await;
+            assert_single_project(&live, &project_path);
+        }
+        assert!(settings_path.exists(), "writer must create settings.json");
+        let disk: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        assert_eq!(
+            disk["projectPaths"],
+            serde_json::json!([project_path.clone()])
+        );
+        assert_eq!(disk["projectPath"], serde_json::json!(project_path));
+
+        purge_sessions_after_settings_update_in_dir(&saved, temp.path())
+            .await
+            .unwrap();
+
+        let remaining = read_sessions_file(temp.path());
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].name, "kept");
+        assert_eq!(
+            remaining[0].working_directory,
+            kept_workdir.to_string_lossy()
+        );
+    }
+
+    #[tokio::test]
     async fn protected_update_settings_transaction_preserves_current_coding_fields() {
         let mut current = settings_with_single_agent();
         current.agents[0].envs = vec![CodingAgentEnv {
@@ -2737,9 +2968,11 @@ mod tests {
         stale.agents[0].isolated_home = false;
         stale.coding_agent_profiles.profiles_by_agent.clear();
 
-        let saved = persist_protected_settings_update_with_saver(&state, stale, |_| Ok(()))
-            .await
-            .unwrap();
+        let saved = persist_protected_settings_update_with_saver(&state, stale, |candidate| {
+            Ok(candidate.clone())
+        })
+        .await
+        .unwrap();
 
         assert_eq!(saved.sidebar_style, "command-center");
         assert_eq!(saved.agents[0].envs, current.agents[0].envs);

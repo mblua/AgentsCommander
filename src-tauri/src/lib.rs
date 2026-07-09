@@ -849,10 +849,20 @@ pub fn run(
                         let mut s = settings_state.write().await;
                         s.inject_rtk_hook = false;
                         let snapshot = s.clone();
-                        if let Err(e) = crate::config::settings::save_settings(&snapshot) {
-                            log::warn!("[rtk-startup] Failed to persist auto-disable: {}", e);
-                        }
-                        let project_paths = snapshot.project_paths.clone();
+                        let project_paths =
+                            match crate::config::settings::save_settings(&snapshot) {
+                                Ok(written) => {
+                                    *s = written;
+                                    s.project_paths.clone()
+                                }
+                                Err(e) => {
+                                    log::warn!(
+                                        "[rtk-startup] Failed to persist auto-disable: {}",
+                                        e
+                                    );
+                                    snapshot.project_paths.clone()
+                                }
+                            };
                         drop(s); // explicit; lock released AFTER the disk write
 
                         // M8 fix: hold RtkSweepLock through the OFF-sweep loop.

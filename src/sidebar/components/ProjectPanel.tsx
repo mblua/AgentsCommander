@@ -46,6 +46,7 @@ import { voiceRecorder } from "../../shared/voice-recorder";
 import { isWgReplicaPath, profileDisplayLabel, sessionProfileBadge, shouldOfferRestartAfterAssign } from "../../shared/profile-utils";
 import { clockStore } from "../stores/clock";
 import { coordinatorIdleBadge } from "../../shared/coordinator-badge";
+import { COORD_IDLE_CLASS } from "./coordinator-badge-class";
 import SessionItem from "./SessionItem";
 import ProfileOutdatedBadge from "./ProfileOutdatedBadge";
 import NewEntityAgentModal from "./NewEntityAgentModal";
@@ -65,9 +66,10 @@ import {
   repoLabelFromPath,
 } from "./replica-repo-badges";
 import { sessionDotClass } from "./session-status";
+import { replicaDotClass } from "./replica-dot";
 import {
   findReplicaSession as replicaSession,
-  replicaDotClass,
+  isReplicaWorking,
   replicaSessionName,
 } from "./workgroup-session";
 import {
@@ -368,11 +370,9 @@ function getActiveReplicasForWg(wg: AcWorkgroup): AcAgentReplica[] {
 }
 
 function runningCoordinatorPeers(wg: AcWorkgroup, replica: AcAgentReplica): AcAgentReplica[] {
-  return (wg.agents ?? []).filter((peer) => {
-    if (peer.name === replica.name) return false;
-    const dot = replicaDotClass(wg, peer);
-    return dot === "running" || dot === "active";
-  });
+  return (wg.agents ?? []).filter(
+    (peer) => peer.name !== replica.name && isReplicaWorking(wg, peer)
+  );
 }
 
 const ProjectPanel: Component = () => {
@@ -2185,7 +2185,7 @@ const ProjectPanel: Component = () => {
                   <Show when={!autoClosed() && !manuallyClosed() && idleBadge()}>
                     {(b) => (
                       <span
-                        class={`ac-discovery-badge coord-idle ${b().colorClass}`}
+                        class={`ac-discovery-badge coord-idle ${COORD_IDLE_CLASS[b().level]}`}
                         title={idleBadgeTitle()}
                       >
                         {b().label}

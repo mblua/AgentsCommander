@@ -1966,16 +1966,42 @@ pub(crate) async fn open_project_inner(
     settings: &SettingsState,
     path: &str,
 ) -> Result<crate::config::projects::ProjectRegistration, String> {
+    open_project_inner_with_settings_path(settings, path, None).await
+}
+
+async fn open_project_inner_with_settings_path(
+    settings: &SettingsState,
+    path: &str,
+    settings_path: Option<&Path>,
+) -> Result<crate::config::projects::ProjectRegistration, String> {
+    mutate_project_paths_with_settings_path(settings, settings_path, |s| {
+        crate::config::projects::register_existing_project(s, path).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+async fn mutate_project_paths_with_settings_path<T>(
+    settings: &SettingsState,
+    settings_path: Option<&Path>,
+    mutate: impl FnOnce(&mut crate::config::settings::AppSettings) -> Result<T, String>,
+) -> Result<T, String> {
     let mut s = settings.write().await;
     // #778: reconcile project_paths from disk BEFORE the upsert so a concurrent
     // CLI append is folded in, not clobbered, then write the deliberate list
     // verbatim (project_paths is disk-authoritative under Design S). Aborts on a
     // non-NotFound read error (G2) rather than registering against a stale list.
-    crate::config::settings::refresh_project_paths_from_disk(&mut s)?;
-    let result = crate::config::projects::register_existing_project(&mut s, path)
-        .map_err(|e| e.to_string())?;
+    if let Some(path) = settings_path {
+        crate::config::settings::refresh_project_paths_from_path(&mut s, path)?;
+    } else {
+        crate::config::settings::refresh_project_paths_from_disk(&mut s)?;
+    }
+    let result = mutate(&mut s)?;
     let snapshot = s.clone();
-    crate::config::settings::save_settings_with_project_paths(&snapshot)?;
+    if let Some(path) = settings_path {
+        crate::config::settings::save_settings_with_project_paths_to_path(&snapshot, path)?;
+    } else {
+        crate::config::settings::save_settings_with_project_paths(&snapshot)?;
+    }
     drop(s); // explicit; lock released AFTER the disk write completes
     Ok(result)
 }
@@ -1996,17 +2022,18 @@ pub async fn new_project(
     settings: State<'_, SettingsState>,
     path: String,
 ) -> Result<crate::config::projects::ProjectRegistration, String> {
-    let mut s = settings.write().await;
-    // #778: reconcile project_paths from disk BEFORE the upsert (see open_project),
-    // then write the deliberate list verbatim. Aborts on a non-NotFound read
-    // error (G2).
-    crate::config::settings::refresh_project_paths_from_disk(&mut s)?;
-    let result =
-        crate::config::projects::register_new_project(&mut s, &path).map_err(|e| e.to_string())?;
-    let snapshot = s.clone();
-    crate::config::settings::save_settings_with_project_paths(&snapshot)?;
-    drop(s); // explicit; lock released AFTER the disk write completes
-    Ok(result)
+    new_project_inner_with_settings_path(settings.inner(), &path, None).await
+}
+
+async fn new_project_inner_with_settings_path(
+    settings: &SettingsState,
+    path: &str,
+    settings_path: Option<&Path>,
+) -> Result<crate::config::projects::ProjectRegistration, String> {
+    mutate_project_paths_with_settings_path(settings, settings_path, |s| {
+        crate::config::projects::register_new_project(s, path).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// #778 Part 3: targeted project removal. `project_paths` is disk-authoritative
@@ -2022,13 +2049,19 @@ pub(crate) async fn remove_project_inner(
     settings: &SettingsState,
     path: &str,
 ) -> Result<(), String> {
-    let mut s = settings.write().await;
-    crate::config::settings::refresh_project_paths_from_disk(&mut s)?;
-    crate::config::projects::remove_project_path(&mut s, path);
-    let snapshot = s.clone();
-    crate::config::settings::save_settings_with_project_paths(&snapshot)?;
-    drop(s); // explicit; lock released AFTER the disk write completes
-    Ok(())
+    remove_project_inner_with_settings_path(settings, path, None).await
+}
+
+async fn remove_project_inner_with_settings_path(
+    settings: &SettingsState,
+    path: &str,
+    settings_path: Option<&Path>,
+) -> Result<(), String> {
+    mutate_project_paths_with_settings_path(settings, settings_path, |s| {
+        crate::config::projects::remove_project_path(s, path);
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2160,6 +2193,82 @@ mod tests {
         assert!(!workspace
             .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
             .exists());
+    }
+
+    #[tokio::test]
+    async fn missing_settings_file_project_mutators_preserve_live_list() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let settings_path = temp.path().join("settings.json");
+        assert!(!settings_path.exists(), "precondition: no settings.json");
+
+        fn base(paths: &[String]) -> Vec<&str> {
+            paths
+                .iter()
+                .map(|p| p.rsplit(['/', '\\']).next().unwrap())
+                .collect()
+        }
+
+        let mk = |name: &str| {
+            let path = temp.path().join(name);
+            std::fs::create_dir_all(path.join(".ac")).expect("create project .ac");
+            path.to_string_lossy().to_string()
+        };
+        let (a, b, c) = (mk("proj-a"), mk("proj-b"), mk("proj-c"));
+
+        let settings = crate::config::settings::AppSettings {
+            project_paths: vec![a.clone(), b.clone()],
+            project_path: Some(a.clone()),
+            ..Default::default()
+        };
+        let state: SettingsState = std::sync::Arc::new(tokio::sync::RwLock::new(settings));
+
+        let disk = || -> Vec<String> {
+            let value: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+            value["projectPaths"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x.as_str().unwrap().to_string())
+                .collect()
+        };
+
+        remove_project_inner_with_settings_path(&state, &a, Some(&settings_path))
+            .await
+            .expect("remove");
+        let memory = state.read().await.project_paths.clone();
+        assert_eq!(
+            base(&memory),
+            vec!["proj-b"],
+            "A removed, B preserved in memory"
+        );
+        assert_eq!(
+            base(&disk()),
+            vec!["proj-b"],
+            "A removed, B preserved on disk"
+        );
+
+        open_project_inner_with_settings_path(&state, &c, Some(&settings_path))
+            .await
+            .expect("open");
+        let memory = state.read().await.project_paths.clone();
+        assert_eq!(base(&memory), vec!["proj-b", "proj-c"]);
+        assert_eq!(base(&disk()), vec!["proj-b", "proj-c"]);
+
+        std::fs::remove_file(&settings_path).expect("remove settings.json");
+        let d_path = temp.path().join("proj-d");
+        let d = d_path.to_string_lossy().to_string();
+        new_project_inner_with_settings_path(&state, &d, Some(&settings_path))
+            .await
+            .expect("new project");
+        assert!(d_path.join(".ac").is_dir());
+        let memory = state.read().await.project_paths.clone();
+        assert_eq!(base(&memory), vec!["proj-b", "proj-c", "proj-d"]);
+        assert_eq!(
+            base(&disk()),
+            vec!["proj-b", "proj-c", "proj-d"],
+            "B and C must not be lost"
+        );
     }
 
     #[tokio::test]

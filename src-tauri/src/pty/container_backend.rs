@@ -11,8 +11,9 @@ use uuid::Uuid;
 use crate::errors::AppError;
 use crate::pty::backend::{BackendSpawnSpec, PtyBackend};
 use crate::pty::container_runtime::{
-    api_url_for_container, resolve_container_image, ContainerRuntime, ContainerRuntimeHandle,
-    ContainerStartRequest, CONTAINER_STOP_TIMEOUT, DEFAULT_CONTAINER_WORKDIR,
+    api_url_for_container, resolve_container_image, ContainerDiagnostics, ContainerRuntime,
+    ContainerRuntimeHandle, ContainerStartRequest, CONTAINER_STOP_TIMEOUT,
+    DEFAULT_CONTAINER_WORKDIR,
 };
 use crate::pty::container_tokens::{ContainerApiToken, ContainerApiTokenManager};
 use crate::pty::idle_detector::IdleDetector;
@@ -25,6 +26,7 @@ pub const TRANSPORT_PROTOCOL_VERSION: u32 = 1;
 pub const MAX_TRANSPORT_FRAME_BYTES: usize = 64 * 1024;
 const TRANSPORT_LOST_EXIT_CODE: i32 = 1;
 const CLEANUP_TASK_TIMEOUT: Duration = Duration::from_secs(10);
+const CONTAINER_DIAGNOSTIC_LOG_TAIL_LINES: usize = 80;
 
 type RouteRemover = Arc<dyn Fn(Uuid) + Send + Sync>;
 
@@ -658,15 +660,62 @@ impl ContainerTransportBackend {
             Ok(_) if self.has_session(id) => Ok(()),
             _ => {
                 if let Some(resources) = self.remove_session_state(id) {
+                    let diagnostics = if let (Some(runtime), Some(handle)) =
+                        (self.runtime.clone(), resources.runtime_handle.clone())
+                    {
+                        Some(Self::collect_container_diagnostics(runtime, handle).await)
+                    } else {
+                        None
+                    };
+                    if let Some(diagnostics) = diagnostics.as_ref() {
+                        log::error!(
+                            "[container-transport] attach timeout diagnostics for session {}:\n{}",
+                            id,
+                            diagnostics.log_summary()
+                        );
+                    }
                     self.cleanup_removed_resources_offloaded(resources, "handshake-timeout")
                         .await;
+                    return Err(Self::handshake_timeout_error(
+                        self.tuning.handshake_timeout,
+                        diagnostics.as_ref(),
+                    ));
                 }
-                Err(AppError::PtyError(format!(
-                    "container bridge did not attach within {:?}",
-                    self.tuning.handshake_timeout
-                )))
+                Err(Self::handshake_timeout_error(
+                    self.tuning.handshake_timeout,
+                    None,
+                ))
             }
         }
+    }
+
+    async fn collect_container_diagnostics(
+        runtime: Arc<dyn ContainerRuntime>,
+        handle: ContainerRuntimeHandle,
+    ) -> ContainerDiagnostics {
+        let fallback_handle = handle.clone();
+        let task = tokio::task::spawn_blocking(move || {
+            runtime.diagnostics(&handle, CONTAINER_DIAGNOSTIC_LOG_TAIL_LINES)
+        });
+        match task.await {
+            Ok(diagnostics) => diagnostics,
+            Err(err) => ContainerDiagnostics::unavailable(
+                &fallback_handle,
+                format!("container diagnostics task failed: {err}"),
+            ),
+        }
+    }
+
+    fn handshake_timeout_error(
+        timeout: Duration,
+        diagnostics: Option<&ContainerDiagnostics>,
+    ) -> AppError {
+        let mut message = format!("container bridge did not attach within {timeout:?}");
+        if let Some(diagnostics) = diagnostics {
+            message.push_str("; ");
+            message.push_str(&diagnostics.ui_summary());
+        }
+        AppError::PtyError(message)
     }
 
     fn cleanup_removed_resources_async(
@@ -1085,7 +1134,7 @@ fn build_start_request_with_settings(
     let child_env = sanitized_child_env(configured_env, env_remove_keys);
     Ok(ContainerStartRequest {
         session_id,
-        image: resolve_container_image(container_image.as_deref()),
+        image: resolve_container_image(container_image.as_deref())?,
         host_root: cwd.to_string(),
         container_workdir: DEFAULT_CONTAINER_WORKDIR.to_string(),
         api_url,
@@ -1404,6 +1453,60 @@ mod tests {
         .unwrap();
 
         assert_eq!(request.image, "agentscommander/ac-claude:latest");
+    }
+
+    #[test]
+    fn handshake_timeout_error_includes_container_diagnostics() {
+        let diagnostics = ContainerDiagnostics {
+            container_id: "container-123".to_string(),
+            state: Some(crate::pty::container_runtime::ContainerStateSnapshot {
+                status: Some("exited".to_string()),
+                running: Some(false),
+                exit_code: Some(127),
+                error: None,
+            }),
+            inspect_error: None,
+            log_tail: Some("session-bridge error: command not found: claude".to_string()),
+            logs_error: None,
+        };
+
+        let err = ContainerTransportBackend::handshake_timeout_error(
+            Duration::from_secs(5),
+            Some(&diagnostics),
+        )
+        .to_string();
+
+        assert!(
+            err.contains("container bridge did not attach within 5s"),
+            "{err}"
+        );
+        assert!(err.contains("container id container-123"), "{err}");
+        assert!(err.contains("exitCode=127"), "{err}");
+        assert!(err.contains("command not found: claude"), "{err}");
+    }
+
+    #[test]
+    fn handshake_timeout_error_leads_when_diagnostics_fail() {
+        let diagnostics = ContainerDiagnostics {
+            container_id: "container-123".to_string(),
+            state: None,
+            inspect_error: Some("inspect failed".to_string()),
+            log_tail: None,
+            logs_error: Some("logs failed".to_string()),
+        };
+
+        let err = ContainerTransportBackend::handshake_timeout_error(
+            Duration::from_secs(5),
+            Some(&diagnostics),
+        )
+        .to_string();
+
+        assert!(
+            err.starts_with("PTY error: container bridge did not attach within 5s"),
+            "{err}"
+        );
+        assert!(err.contains("container id container-123"), "{err}");
+        assert!(err.contains("logs unavailable: logs failed"), "{err}");
     }
 
     #[tokio::test]
