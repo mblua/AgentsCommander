@@ -39,7 +39,7 @@ Config seed is configured **per coding agent**, on the agent's entry in `setting
 | `enabled` | bool | `true` | Whether seeding runs for this agent. |
 | `dest` | string | `""` | Destination folder name under the replica root (for example `.claude`). |
 
-Config seed is **active only when `enabled` is true and `dest` is non-empty**. Omit `configSeed` entirely (the default) and no seeding happens. `dest` is a single folder name, validated as a safe name with no path separators or traversal, both at save time and again at spawn.
+Config seed is **active only when `enabled` is true and `dest` is non-empty**. Omitting `configSeed` disables seeding. Note that the built-in **Claude**, **Codex**, and **OpenCode** agents ship with `configSeed` already enabled (dest `.claude`, `.codex`, and `.opencode` respectively), so seeding is active for them out of the box. `dest` is a single folder name, validated as a safe name with no path separators or traversal, both at save time and again at spawn.
 
 ## Seed tiers: where the config comes from
 
@@ -71,7 +71,7 @@ The five tiers split into two groups with **different ownership and different ov
 - **Workspace beats matrix.** Every workspace-level candidate outranks every matrix-level candidate.
 - **Profile beats base.** Within a location, the folder named for the session's resolved profile letter outranks the plain `default<dest>` folder.
 
-**Tier 5 is the AC factory default (catalog-owned).** This is the config folder AC ships for a built-in coding agent, at `<config_dir>/coding-agents/_seed/<dest>/`. It has the **lowest precedence** and behaves differently from tiers 1-4: it is **absent-only**. AC fills `<replica>/<dest>` from it **only when the destination does not already exist** (and the factory folder holds at least one file). It **never overwrites** an existing config folder, so a replica's accumulated config, credentials, and session state are safe. If the destination is already present, tier 5 is skipped and the spawn is byte-for-byte unchanged. Tier 5 is, in effect, a one-time bootstrap for a brand-new replica when you have supplied no template of your own.
+**Tier 5 is the AC factory default (catalog-owned).** This is the config folder AC ships for a recognized `<dest>` value, at `<config_dir>/coding-agents/_seed/<dest>/`. It has the **lowest precedence** and behaves differently from tiers 1-4: it is **absent-only**. AC fills `<replica>/<dest>` from it **only when the destination does not already exist** (and the factory folder holds at least one file). It **never overwrites** an existing config folder, so a replica's accumulated config, credentials, and session state are safe. If the destination is already present, tier 5 is skipped and the spawn is byte-for-byte unchanged. Tier 5 is, in effect, a one-time bootstrap for a brand-new replica when you have supplied no template of your own.
 
 > **The matrix's own `<dest>` is not a template.** A folder like `_agent_<name>/.claude` is the matrix agent's live config, not a seed source. AC deliberately never copies from it, so seeding cannot clobber the agent's real config. The matrix tiers use the `default<dest>` and `default_profile_<letter><dest>` naming instead.
 
@@ -89,9 +89,11 @@ The first that qualifies is copied to `<replica>/.claude`. So `<workspace>/defau
 
 ## The factory default and the "Re-seed" button
 
-Only the built-in **Claude**, **Codex**, and **OpenCode** agents ship a factory default (tier 5); other agents ship none, so for them tier 5 is simply absent. AC writes each shipped master into `<config_dir>/coding-agents/_seed/<dest>/` once, on first launch, then leaves it alone. The master is **yours to edit** afterward: change `_seed/.claude/settings.json` and every future absent-only bootstrap uses your edited copy.
+AC ships factory masters for three Config folder values only: `.claude`, `.codex`, and `.opencode` (the defaults of the built-in Claude, Codex, and OpenCode agents). **Tier 5 is keyed by the Config folder value, not by agent identity.** It therefore exists for any agent whose Config folder is one of those three, including an agent you create yourself. For any other Config folder value the tier is absent.
 
-**Settings -> Coding Agents** shows a **Re-seed default configuration** button on each built-in that ships a master. It restores that master to the version AC shipped:
+AC writes each shipped master into `<config_dir>/coding-agents/_seed/<dest>/` on launch if that master is absent, and never touches one that already exists. The master is **yours to edit** afterward: change `_seed/.claude/settings.json` and every future absent-only bootstrap uses your edited copy.
+
+**Settings -> Coding Agents** shows a **Re-seed default configuration** button on any agent whose command is exactly `claude`, `codex`, or `opencode`. That button is gated on the **command's executable basename**, not on the Config folder, so a custom agent that runs `claude` shows it too. It restores the master for that command's shipped Config folder back to the version AC ships:
 
 - It first backs up your current master to `<dest>.bak-<timestamp>` (your edits are never lost), then atomically swaps AC's shipped default into place.
 - It changes **only** the tier-5 master under `<config_dir>/coding-agents/_seed/`. It does **not** touch any running session, any replica's live `<dest>`, or your workspace/matrix templates (tiers 1-4).
@@ -136,7 +138,7 @@ The only post-seed step is the RTK PreToolUse hook, and only for a `.claude` des
 
 ## Troubleshooting
 
-**"Nothing got seeded."** Config seed is active only when `enabled` is true and `dest` is non-empty. Then a source must qualify: one of the four workspace/matrix template folders, or, for a built-in that ships one, the tier-5 factory default (used only when the replica has no `<dest>` yet). If nothing qualifies, AC has nothing to copy and skips silently, logging that it found no source at any tier. Check the spawn logs for `[config-seed]` lines (see [Log filtering](../reference/log-filtering.md)).
+**"Nothing got seeded."** Config seed is active only when `enabled` is true and `dest` is non-empty. Then a source must qualify: one of the four workspace/matrix template folders, or, when `dest` is a Config folder value AC ships a master for, the tier-5 factory default (used only when the replica has no `<dest>` yet). If nothing qualifies, AC has nothing to copy and skips, logging at `info` that it found no source at any tier. Check the spawn logs for `[config-seed]` lines (see [Log filtering](../reference/log-filtering.md)).
 
 **"My agent's config is overwritten on every launch."** That is expected: the destination is replaced atomically on every spawn. If `dest` matches the coding agent's actual config directory, the seed overwrites that live config each time. AC logs a heuristic warning when `dest` lines up with, or exactly matches, the agent's configured config-dir env. Point `dest` at a directory you intend AC to own, or turn seeding off for that agent.
 
