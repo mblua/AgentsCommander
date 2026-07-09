@@ -681,8 +681,8 @@ pub(crate) async fn purge_sessions_outside_project_paths_in_dir(
 /// `SAVE_SESSIONS_LOCK` never re-enters this one), so there is no deadlock and
 /// no await is held across a second acquisition of this lock.
 ///
-/// Returns `(before_len, filtered)` so callers can report either the removed
-/// count or the retained snapshot.
+/// Returns `(before_len, filtered)` so callers can retain the filtered snapshot
+/// and keep the removed count available for diagnostics.
 async fn purge_sessions_outside_project_paths_in_dir_locked(
     dir: &Path,
     project_paths: &[String],

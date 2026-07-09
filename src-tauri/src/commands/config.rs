@@ -2914,6 +2914,14 @@ mod tests {
             let live = state.read().await;
             assert_single_project(&live, &project_path);
         }
+        assert!(settings_path.exists(), "writer must create settings.json");
+        let disk: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        assert_eq!(
+            disk["projectPaths"],
+            serde_json::json!([project_path.clone()])
+        );
+        assert_eq!(disk["projectPath"], serde_json::json!(project_path));
 
         purge_sessions_after_settings_update_in_dir(&saved, temp.path())
             .await

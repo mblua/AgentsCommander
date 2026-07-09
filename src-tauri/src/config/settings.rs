@@ -1995,15 +1995,20 @@ fn read_project_paths_from_disk(path: &Path) -> Result<Option<DiskProjectPaths>,
             e
         )
     })?;
-    let project_paths = value
-        .get("projectPaths")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|x| x.as_str().map(str::to_string))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let project_paths = match value.get("projectPaths") {
+        None | Some(serde_json::Value::Null) => return Ok(None),
+        Some(serde_json::Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|x| x.as_str().map(str::to_string))
+            .collect::<Vec<_>>(),
+        Some(other) => {
+            return Err(format!(
+                "{}: projectPaths is {}, not an array (aborting save)",
+                path.display(),
+                other
+            ));
+        }
+    };
     let project_path = value
         .get("projectPath")
         .and_then(|v| v.as_str())
@@ -2021,7 +2026,14 @@ pub fn refresh_project_paths_from_disk(settings: &mut AppSettings) -> Result<(),
     let Some(path) = settings_path() else {
         return Ok(());
     };
-    if let Some((project_paths, project_path)) = read_project_paths_from_disk(&path)? {
+    refresh_project_paths_from_path(settings, &path)
+}
+
+pub(crate) fn refresh_project_paths_from_path(
+    settings: &mut AppSettings,
+    path: &Path,
+) -> Result<(), String> {
+    if let Some((project_paths, project_path)) = read_project_paths_from_disk(path)? {
         settings.project_paths = project_paths;
         settings.project_path = project_path;
     }
@@ -2064,7 +2076,14 @@ pub fn save_settings(settings: &AppSettings) -> Result<AppSettings, String> {
 pub fn save_settings_with_project_paths(settings: &AppSettings) -> Result<(), String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
     let path = dir.join("settings.json");
-    save_settings_to_path(settings, &path)
+    save_settings_with_project_paths_to_path(settings, &path)
+}
+
+pub(crate) fn save_settings_with_project_paths_to_path(
+    settings: &AppSettings,
+    path: &Path,
+) -> Result<(), String> {
+    save_settings_to_path(settings, path)
 }
 
 /// #778: the preserve-disk wrapper behind the default `save_settings`. Reads the
@@ -3510,6 +3529,40 @@ mod tests {
         let path = temp.path().join("does-not-exist.json");
         // NotFound means there is no disk truth to substitute.
         assert_eq!(super::read_project_paths_from_disk(&path).unwrap(), None);
+    }
+
+    #[test]
+    fn read_project_paths_from_disk_returns_none_when_key_absent() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, r#"{"themeLight":true}"#).unwrap();
+        assert_eq!(super::read_project_paths_from_disk(&path).unwrap(), None);
+    }
+
+    #[test]
+    fn read_project_paths_from_disk_returns_none_when_key_null() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, r#"{"projectPaths":null}"#).unwrap();
+        assert_eq!(super::read_project_paths_from_disk(&path).unwrap(), None);
+    }
+
+    #[test]
+    fn read_project_paths_from_disk_aborts_when_key_wrong_type() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, r#"{"projectPaths":"C:/a"}"#).unwrap();
+        assert!(super::read_project_paths_from_disk(&path).is_err());
+    }
+
+    #[test]
+    fn read_project_paths_from_disk_accepts_legit_empty_list() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, r#"{"projectPaths":[]}"#).unwrap();
+        let (paths, head) = super::read_project_paths_from_disk(&path).unwrap().unwrap();
+        assert!(paths.is_empty());
+        assert_eq!(head, None);
     }
 
     #[test]

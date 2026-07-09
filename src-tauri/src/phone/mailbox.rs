@@ -5399,7 +5399,14 @@ impl MailboxPoller {
                     )
                 };
                 if let ca::RequestDisposition::Applied { op, agent_id } = disposition {
-                    *s = written_settings.expect("Applied implies save() succeeded");
+                    debug_assert!(
+                        written_settings.is_some(),
+                        "Applied implies save() succeeded"
+                    );
+                    *s = written_settings.unwrap_or_else(|| {
+                        log::error!("coding-agent op Applied without a save; publishing candidate");
+                        candidate
+                    });
                     Some((op, agent_id))
                 } else {
                     None
