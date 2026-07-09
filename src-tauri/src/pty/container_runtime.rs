@@ -12,7 +12,7 @@ pub const DEFAULT_API_HELPER_PATH: &str = "/usr/local/bin/agentscommander-api-he
 pub const CONTAINER_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const DIAGNOSTIC_UI_LOG_LIMIT: usize = 500;
 const REDACTED_SECRET: &str = "[REDACTED]";
-// Keep AGENTSCOMMANDER_* entries in sync with container_backend::is_reserved_container_env.
+// Keep AGENTSCOMMANDER_* entries in sync with DockerRuntime::build_run_command.
 // This list is separate because diagnostics must also scrub valid provider env keys.
 const SENSITIVE_LOG_KEYS: &[&str] = &[
     "AGENTSCOMMANDER_API_TOKEN",
@@ -26,7 +26,14 @@ const SENSITIVE_LOG_KEYS: &[&str] = &[
     "GITHUB_TOKEN",
     "OPENAI_API_KEY",
 ];
-const SENSITIVE_TOKEN_PREFIXES: &[&str] = &["ac-container-", "acst-", "sk-ant-"];
+const SENSITIVE_TOKEN_PREFIXES: &[&str] = &[
+    "ac-container-",
+    "acst-",
+    "AIza",
+    "ghp_",
+    "sk-ant-",
+    "sk-proj-",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContainerStartRequest {
@@ -287,19 +294,31 @@ fn redact_key_values(input: &str, key: &str) -> String {
         while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
             cursor += 1;
         }
+        let mut quoted_key = false;
         if cursor < bytes.len() && (bytes[cursor] == b'"' || bytes[cursor] == b'\'') {
+            quoted_key = true;
             cursor += 1;
             while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
                 cursor += 1;
             }
         }
-        if cursor >= bytes.len() || !matches!(bytes[cursor], b'=' | b':') {
+        if quoted_key && cursor < bytes.len() && bytes[cursor] == b',' {
+            cursor += 1;
+            while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+                cursor += 1;
+            }
+            if cursor >= bytes.len() || !matches!(bytes[cursor], b'"' | b'\'') {
+                search_start = key_start + key.len();
+                continue;
+            }
+        } else if cursor < bytes.len() && matches!(bytes[cursor], b'=' | b':') {
+            cursor += 1;
+            while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+                cursor += 1;
+            }
+        } else {
             search_start = key_start + key.len();
             continue;
-        }
-        cursor += 1;
-        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
-            cursor += 1;
         }
 
         let (value_start, value_end) =
@@ -477,6 +496,23 @@ mod tests {
         let openai_key = "openai-secret-without-sensitive-prefix";
         let gemini_key = "gemini-secret-without-sensitive-prefix";
         let github_token = "github-token-without-sensitive-prefix";
+        let bare_openai_key = "sk-proj-bare-openai-secret";
+        let bare_gemini_key = "AIzaBareGeminiSecret";
+        let bare_github_token = "ghp_bare_github_secret";
+        let child_env = vec![
+            ("OPENAI_API_KEY".to_string(), openai_key.to_string()),
+            ("GEMINI_API_KEY".to_string(), gemini_key.to_string()),
+            ("GITHUB_TOKEN".to_string(), github_token.to_string()),
+            ("PATH".to_string(), "/usr/local/bin".to_string()),
+        ];
+        let child_env_json = serde_json::to_string(&child_env).expect("serialize child env");
+        let bridge_args = vec![
+            bare_openai_key,
+            bare_gemini_key,
+            bare_github_token,
+            "--verbose",
+        ];
+        let bridge_args_json = serde_json::to_string(&bridge_args).expect("serialize bridge args");
         let diagnostics = ContainerDiagnostics {
             container_id: "abc123".to_string(),
             state: None,
@@ -484,9 +520,8 @@ mod tests {
             log_tail: Some(format!(
                 "AGENTSCOMMANDER_API_TOKEN={api_token}\n\
                  AGENTSCOMMANDER_SESSION_REGISTRATION_TOKEN={registration_ticket}\n\
-                 OPENAI_API_KEY={openai_key}\n\
-                 GEMINI_API_KEY='{gemini_key}'\n\
-                 GITHUB_TOKEN: \"{github_token}\""
+                 AGENTSCOMMANDER_BRIDGE_ARGS_JSON={bridge_args_json}\n\
+                 AGENTSCOMMANDER_BRIDGE_ENV_JSON={child_env_json}"
             )),
             logs_error: Some(format!(
                 "failed after token {api_token} and ticket {registration_ticket}"
@@ -502,12 +537,21 @@ mod tests {
             openai_key,
             gemini_key,
             github_token,
+            bare_openai_key,
+            bare_gemini_key,
+            bare_github_token,
         ] {
             assert!(!ui.contains(secret), "{ui}");
             assert!(!full.contains(secret), "{full}");
         }
         assert!(ui.contains(REDACTED_SECRET), "{ui}");
         assert!(full.contains(REDACTED_SECRET), "{full}");
+        assert!(ui.contains("PATH"), "{ui}");
+        assert!(ui.contains("/usr/local/bin"), "{ui}");
+        assert!(full.contains("PATH"), "{full}");
+        assert!(full.contains("/usr/local/bin"), "{full}");
+        assert!(ui.contains("--verbose"), "{ui}");
+        assert!(full.contains("--verbose"), "{full}");
     }
 
     #[test]
