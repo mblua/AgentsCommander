@@ -269,6 +269,11 @@ fn strip_long_prefix_str(s: &str) -> String {
     crate::path_utils::normalize_windows_verbatim_path(s)
 }
 
+#[cfg(test)]
+static FILTER_PROJECT_PATHS_THREAD_ID: std::sync::OnceLock<
+    std::sync::Mutex<Option<std::thread::ThreadId>>,
+> = std::sync::OnceLock::new();
+
 fn normalize_for_project_compare(path: &Path) -> String {
     let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let mut s = strip_long_prefix_str(&path.to_string_lossy()).replace('\\', "/");
@@ -294,18 +299,27 @@ fn path_is_under_or_equal(candidate: &str, root: &str) -> bool {
     candidate.starts_with(&format!("{}/", root))
 }
 
+#[allow(dead_code)]
 pub(crate) fn working_directory_under_any_project_path(
     working_directory: &str,
     project_paths: &[String],
 ) -> bool {
     let cwd = normalize_for_project_compare(Path::new(working_directory));
-    let roots: Vec<String> = project_paths
+    let roots = normalize_project_roots(project_paths);
+    working_directory_under_any_normalized_root(&cwd, &roots)
+}
+
+/// #881: canonicalize a project-root list once. Blocking
+/// (`std::fs::canonicalize` per root). Hoist the call out of per-session or
+/// per-dir loops, and off the async runtime when the caller is on a poll
+/// interval. Empty input yields empty output with zero syscalls.
+pub(crate) fn normalize_project_roots(project_paths: &[String]) -> Vec<String> {
+    project_paths
         .iter()
         .map(|p| p.trim())
         .filter(|p| !p.is_empty())
         .map(|p| normalize_for_project_compare(Path::new(p)))
-        .collect();
-    working_directory_under_any_normalized_root(&cwd, &roots)
+        .collect()
 }
 
 fn working_directory_under_any_normalized_root(cwd: &str, roots: &[String]) -> bool {
@@ -325,16 +339,27 @@ pub(crate) fn session_retention_project_paths(
     paths
 }
 
-/// #881: true when `path` lives under one of `archived_project_paths`.
+/// #881: true when `path` lives under one of `normalized_archived_roots`,
+/// which the caller produced with `normalize_project_roots` once per poll tick,
+/// restore loop, or resolution.
 ///
-/// The empty-list fast path lives here because callers run on poll intervals
-/// and spawn paths. Do not reimplement it upstream.
+/// The empty-list fast path lives here, before `path` itself is canonicalized,
+/// so the common case of no archived projects pays zero syscalls.
+///
+/// Do not add a raw-root convenience wrapper. The per-root canonicalize must
+/// not hide inside a per-dir loop.
 #[allow(dead_code)]
-pub(crate) fn is_under_archived_project(path: &str, archived_project_paths: &[String]) -> bool {
-    if archived_project_paths.is_empty() {
+pub(crate) fn is_under_normalized_archived_roots(
+    path: &str,
+    normalized_archived_roots: &[String],
+) -> bool {
+    if normalized_archived_roots.is_empty() {
         return false;
     }
-    working_directory_under_any_project_path(path, archived_project_paths)
+    working_directory_under_any_normalized_root(
+        &normalize_for_project_compare(Path::new(path)),
+        normalized_archived_roots,
+    )
 }
 
 fn is_root_persisted_session(session: &PersistedSession) -> bool {
@@ -346,13 +371,23 @@ fn filter_sessions_for_project_paths(
     sessions: Vec<PersistedSession>,
     project_paths: &[String],
 ) -> Vec<PersistedSession> {
-    let total = sessions.len();
-    let roots: Vec<String> = project_paths
+    let roots = normalize_project_roots(project_paths);
+    filter_sessions_for_normalized_roots(sessions, &roots)
+}
+
+fn filter_sessions_for_normalized_roots(
+    sessions: Vec<PersistedSession>,
+    roots: &[String],
+) -> Vec<PersistedSession> {
+    #[cfg(test)]
+    if sessions
         .iter()
-        .map(|p| p.trim())
-        .filter(|p| !p.is_empty())
-        .map(|p| normalize_for_project_compare(Path::new(p)))
-        .collect();
+        .any(|session| session.name == "__panic_filter_for_test__")
+    {
+        panic!("test-only session filter panic");
+    }
+
+    let total = sessions.len();
     let filtered: Vec<PersistedSession> = sessions
         .into_iter()
         .filter(|session| {
@@ -360,7 +395,7 @@ fn filter_sessions_for_project_paths(
                 return true;
             }
             let cwd = normalize_for_project_compare(Path::new(&session.working_directory));
-            let keep = working_directory_under_any_normalized_root(&cwd, &roots);
+            let keep = working_directory_under_any_normalized_root(&cwd, roots);
             if !keep {
                 log::warn!(
                     "[sessions] Dropping orphan persisted session '{}' at '{}' (outside current projectPaths)",
@@ -382,12 +417,22 @@ fn filter_sessions_for_project_paths(
     filtered
 }
 
+#[cfg(test)]
+fn record_filter_project_paths_thread_id() {
+    let slot = FILTER_PROJECT_PATHS_THREAD_ID.get_or_init(|| std::sync::Mutex::new(None));
+    *slot.lock().expect("thread id mutex poisoned") = Some(std::thread::current().id());
+}
+
 async fn filter_sessions_for_project_paths_blocking(
     sessions: Vec<PersistedSession>,
     project_paths: &[String],
 ) -> Result<Vec<PersistedSession>, String> {
     let project_paths = project_paths.to_vec();
-    tokio::task::spawn_blocking(move || filter_sessions_for_project_paths(sessions, &project_paths))
+    tokio::task::spawn_blocking(move || {
+        #[cfg(test)]
+        record_filter_project_paths_thread_id();
+        filter_sessions_for_project_paths(sessions, &project_paths)
+    })
         .await
         .map_err(|e| format!("session filter task failed: {}", e))
 }
@@ -681,7 +726,14 @@ pub async fn load_sessions_purging_outside_project_paths(
         }
     };
 
-    match purge_sessions_outside_project_paths_in_dir(&dir, project_paths).await {
+    load_sessions_purging_outside_project_paths_in_dir(&dir, project_paths).await
+}
+
+async fn load_sessions_purging_outside_project_paths_in_dir(
+    dir: &Path,
+    project_paths: &[String],
+) -> Vec<PersistedSession> {
+    match purge_sessions_outside_project_paths_in_dir(dir, project_paths).await {
         Ok(filtered) => filtered,
         Err(e) => {
             log::error!(
@@ -692,7 +744,7 @@ pub async fn load_sessions_purging_outside_project_paths(
             // atomicity contract because nothing is written back. Restore
             // reconciles on the next persist.
             match filter_sessions_for_project_paths_blocking(
-                load_sessions_from_dir(&dir),
+                load_sessions_from_dir(dir),
                 project_paths,
             )
             .await
@@ -700,7 +752,7 @@ pub async fn load_sessions_purging_outside_project_paths(
                 Ok(filtered) => filtered,
                 Err(e) => {
                     log::error!("Failed to filter sessions after purge failure: {}", e);
-                    vec![]
+                    load_sessions_from_dir(dir)
                 }
             }
         }
@@ -1517,13 +1569,15 @@ async fn write_start_fresh_and_persist_to_dir_result(
 mod tests {
     use super::{
         clear_user_input_transitions_and_persist_to_dir_result, filter_sessions_for_project_paths,
-        load_sessions_raw_from_dir_for_test, persist_current_state_result,
+        filter_sessions_for_project_paths_blocking, filter_sessions_for_normalized_roots,
+        is_under_normalized_archived_roots, load_sessions_purging_outside_project_paths_in_dir,
+        load_sessions_raw_from_dir_for_test, normalize_project_roots, persist_current_state_result,
         persist_current_state_to_dir_result, purge_sessions_outside_project_paths_in_dir,
         raise_hand_and_persist_to_dir_result, rename_with_retry, sanitize_failed_recoverable,
         save_sessions_to_dir, session_retention_project_paths, sessions_save_lock,
         snapshot_sessions, strip_auto_injected_args, working_directory_under_any_project_path,
         write_start_fresh_and_persist_to_dir_result, PersistedSession, RaiseHandPersistOutcome,
-        RENAME_ATTEMPTS,
+        FILTER_PROJECT_PATHS_THREAD_ID, RENAME_ATTEMPTS,
     };
     #[cfg(windows)]
     use super::{deduplicate, load_sessions_from_path};
@@ -2500,6 +2554,60 @@ mod tests {
     }
 
     #[test]
+    fn is_under_normalized_archived_roots_returns_false_for_empty_roots() {
+        assert!(!is_under_normalized_archived_roots(
+            "Z:/does/not/exist/.ac/wg-1/__agent_dev",
+            &[]
+        ));
+    }
+
+    #[test]
+    fn is_under_normalized_archived_roots_matches_nested_dir() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let archived = temp.path().join("archived");
+        let agent = archived.join(".ac").join("wg-1").join("__agent_dev");
+        std::fs::create_dir_all(&agent).expect("create archived agent");
+        let roots = normalize_project_roots(&[archived.to_string_lossy().to_string()]);
+
+        assert!(is_under_normalized_archived_roots(
+            &agent.to_string_lossy(),
+            &roots
+        ));
+    }
+
+    #[test]
+    fn is_under_normalized_archived_roots_ignores_unnormalized_roots() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let archived = temp.path().join("archived");
+        let agent = archived.join(".ac").join("wg-1").join("__agent_dev");
+        std::fs::create_dir_all(&agent).expect("create archived agent");
+        let raw_root = archived.join(".").to_string_lossy().to_string();
+
+        assert!(!is_under_normalized_archived_roots(
+            &agent.to_string_lossy(),
+            &[raw_root]
+        ));
+    }
+
+    #[test]
+    fn normalize_project_roots_drops_blank_entries_and_normalizes_each() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("current");
+        std::fs::create_dir_all(&project).expect("create project");
+        let root_with_dot = project.join(".");
+        let roots = normalize_project_roots(&[
+            "".to_string(),
+            "  ".to_string(),
+            root_with_dot.to_string_lossy().to_string(),
+        ]);
+
+        assert_eq!(
+            roots,
+            vec![super::normalize_for_project_compare(project.as_path())]
+        );
+    }
+
+    #[test]
     fn filter_sessions_for_project_paths_keeps_archived_when_called_with_retention_paths() {
         let temp = tempfile::tempdir().expect("tempdir");
         let active = temp.path().join("active");
@@ -2543,7 +2651,7 @@ mod tests {
     }
 
     #[test]
-    fn filter_sessions_for_project_paths_normalizes_roots_once() {
+    fn filter_sessions_for_project_paths_matches_root_with_dot_segment() {
         let temp = tempfile::tempdir().expect("tempdir");
         let project = temp.path().join("current");
         let agent = project.join(".ac").join("wg-1").join("__agent_keep");
@@ -2562,6 +2670,121 @@ mod tests {
 
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].name, "keep");
+    }
+
+    #[test]
+    fn filter_sessions_for_normalized_roots_does_not_normalize_its_roots() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("current");
+        let agent = project.join(".ac").join("wg-1").join("__agent_drop");
+        std::fs::create_dir_all(&agent).expect("create agent");
+        let raw_root = project.join(".").to_string_lossy().to_string();
+        let sessions = vec![PersistedSession {
+            name: "drop".into(),
+            working_directory: agent.to_string_lossy().to_string(),
+            ..Default::default()
+        }];
+
+        let filtered = filter_sessions_for_normalized_roots(sessions, &[raw_root]);
+
+        assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn filter_sessions_for_project_paths_normalizes_its_roots() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("current");
+        let agent = project.join(".ac").join("wg-1").join("__agent_keep");
+        std::fs::create_dir_all(&agent).expect("create agent");
+        let raw_root = project.join(".").to_string_lossy().to_string();
+        let sessions = vec![PersistedSession {
+            name: "keep".into(),
+            working_directory: agent.to_string_lossy().to_string(),
+            ..Default::default()
+        }];
+
+        let filtered = filter_sessions_for_project_paths(sessions, &[raw_root]);
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "keep");
+    }
+
+    #[tokio::test]
+    async fn filter_sessions_for_project_paths_blocking_runs_off_the_calling_thread() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("current");
+        let agent = project.join(".ac").join("wg-1").join("__agent_keep");
+        std::fs::create_dir_all(&agent).expect("create agent");
+        let calling_thread = std::thread::current().id();
+        let slot = FILTER_PROJECT_PATHS_THREAD_ID
+            .get_or_init(|| std::sync::Mutex::new(None));
+        *slot.lock().expect("thread id mutex poisoned") = None;
+
+        let filtered = filter_sessions_for_project_paths_blocking(
+            vec![PersistedSession {
+                name: "keep".into(),
+                working_directory: agent.to_string_lossy().to_string(),
+                ..Default::default()
+            }],
+            &[project.to_string_lossy().to_string()],
+        )
+        .await
+        .expect("filter sessions");
+        let worker_thread = slot
+            .lock()
+            .expect("thread id mutex poisoned")
+            .expect("worker thread id recorded");
+
+        assert_eq!(filtered.len(), 1);
+        assert_ne!(worker_thread, calling_thread);
+    }
+
+    #[tokio::test]
+    async fn filter_sessions_for_project_paths_blocking_surfaces_join_error() {
+        let result = filter_sessions_for_project_paths_blocking(
+            vec![PersistedSession {
+                name: "__panic_filter_for_test__".into(),
+                working_directory: "C:/projects/current/.ac/wg-1/__agent_dev".into(),
+                ..Default::default()
+            }],
+            &["C:/projects/current".to_string()],
+        )
+        .await;
+
+        let Err(err) = result else {
+            panic!("worker panic must surface as JoinError");
+        };
+        assert!(err.contains("session filter task failed"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn load_sessions_purging_outside_project_paths_returns_unfiltered_on_filter_error() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let keep = PersistedSession {
+            name: "__panic_filter_for_test__".into(),
+            working_directory: "C:/projects/current/.ac/wg-1/__agent_dev".into(),
+            ..Default::default()
+        };
+        let other = PersistedSession {
+            name: "other".into(),
+            working_directory: "C:/projects/other/.ac/wg-1/__agent_other".into(),
+            ..Default::default()
+        };
+        save_sessions_to_dir(temp.path(), &[keep.clone(), other.clone()]).expect("seed sessions");
+
+        let loaded = load_sessions_purging_outside_project_paths_in_dir(
+            temp.path(),
+            &["C:/projects/current".to_string()],
+        )
+        .await;
+
+        let names: Vec<&str> = loaded
+            .iter()
+            .map(|session| session.name.as_str())
+            .collect();
+        assert_eq!(names, vec![keep.name.as_str(), other.name.as_str()]);
+        let saved = load_sessions_raw_from_dir_for_test(temp.path());
+        assert_eq!(saved.len(), 2);
     }
 
     #[tokio::test]

@@ -1956,6 +1956,11 @@ fn read_project_paths_from_disk(path: &Path) -> Result<Option<DiskProjectLists>,
     })?;
     let project_paths = match value.get("projectPaths") {
         None | Some(serde_json::Value::Null) => return Ok(None),
+        // #881: non-string elements are dropped here, but rejected in the
+        // archivedProjectPaths arm below. Deliberate. `projectPaths` only feeds
+        // discovery; `archivedProjectPaths` feeds session retention, where a
+        // silently-emptied list deletes sessions. Tightening this one is
+        // #888's call, not #881's.
         Some(serde_json::Value::Array(arr)) => arr
             .iter()
             .filter_map(|x| x.as_str().map(str::to_string))
@@ -1974,11 +1979,24 @@ fn read_project_paths_from_disk(path: &Path) -> Result<Option<DiskProjectLists>,
         .map(str::to_string);
     let archived_project_paths = match value.get("archivedProjectPaths") {
         None | Some(serde_json::Value::Null) => None,
-        Some(serde_json::Value::Array(arr)) => Some(
-            arr.iter()
-                .filter_map(|x| x.as_str().map(str::to_string))
-                .collect::<Vec<_>>(),
-        ),
+        Some(serde_json::Value::Array(arr)) => {
+            // #881 R2-G5: a non-string element is corruption, not an entry to
+            // skip. The `projectPaths` arm above silently drops non-strings;
+            // do not copy that here. `[123]` would read as `Some(vec![])`,
+            // meaning disk authoritatively says nothing is archived.
+            let mut archived = Vec::with_capacity(arr.len());
+            for item in arr {
+                let Some(archived_path) = item.as_str() else {
+                    return Err(format!(
+                        "{}: archivedProjectPaths contains {}, not a string (aborting save)",
+                        path.display(),
+                        item
+                    ));
+                };
+                archived.push(archived_path.to_string());
+            }
+            Some(archived)
+        }
         Some(other) => {
             return Err(format!(
                 "{}: archivedProjectPaths is {}, not an array (aborting save)",
@@ -3639,6 +3657,38 @@ mod tests {
     }
 
     #[test]
+    fn read_project_paths_from_disk_aborts_when_archived_list_has_non_string_element() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"projectPaths":["C:/a"],"archivedProjectPaths":["C:/old",123]}"#,
+        )
+        .unwrap();
+
+        assert!(super::read_project_paths_from_disk(&path).is_err());
+    }
+
+    #[test]
+    fn read_project_paths_from_disk_drops_non_string_project_path_elements() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"projectPaths":["C:/a",123],"archivedProjectPaths":["C:/old"]}"#,
+        )
+        .unwrap();
+
+        let lists = super::read_project_paths_from_disk(&path).unwrap().unwrap();
+
+        assert_eq!(lists.project_paths, vec!["C:/a".to_string()]);
+        assert_eq!(
+            lists.archived_project_paths,
+            Some(vec!["C:/old".to_string()])
+        );
+    }
+
+    #[test]
     fn read_project_paths_from_disk_aborts_on_unparseable_json() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("settings.json");
@@ -3745,10 +3795,11 @@ mod tests {
     }
 
     #[test]
-    fn save_settings_returns_candidate_archived_list_when_disk_key_absent() {
+    fn save_settings_returns_caller_archived_list_when_disk_key_absent() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("settings.json");
         std::fs::write(&path, r#"{"projectPaths":["A"],"projectPath":"A"}"#).unwrap();
+        let caller_archived = vec!["Archived".to_string()];
         let candidate = settings_with_project_and_archived_paths(&["stale"], &["Archived"]);
 
         let written =
@@ -3758,11 +3809,8 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(written.project_paths, vec!["A".to_string()]);
         assert_eq!(written.project_path.as_deref(), Some("A"));
-        assert_eq!(written.archived_project_paths, vec!["Archived".to_string()]);
-        assert_eq!(
-            reloaded.archived_project_paths,
-            vec!["Archived".to_string()]
-        );
+        assert_eq!(written.archived_project_paths, caller_archived);
+        assert_eq!(reloaded.archived_project_paths, caller_archived);
     }
 
     #[test]
