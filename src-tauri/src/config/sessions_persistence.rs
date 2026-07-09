@@ -650,16 +650,7 @@ pub async fn load_sessions_purging_outside_project_paths(
     }
 }
 
-pub async fn purge_sessions_outside_project_paths(
-    project_paths: &[String],
-) -> Result<usize, String> {
-    let dir = super::config_dir().ok_or("Could not determine home directory")?;
-    let (before_len, filtered) =
-        purge_sessions_outside_project_paths_in_dir_locked(&dir, project_paths).await?;
-    Ok(before_len.saturating_sub(filtered.len()))
-}
-
-async fn purge_sessions_outside_project_paths_in_dir(
+pub(crate) async fn purge_sessions_outside_project_paths_in_dir(
     dir: &Path,
     project_paths: &[String],
 ) -> Result<Vec<PersistedSession>, String> {
@@ -668,10 +659,10 @@ async fn purge_sessions_outside_project_paths_in_dir(
     Ok(filtered)
 }
 
-/// #698 HIGH fix — the lock-holding core shared by BOTH purge entry points:
-/// `purge_sessions_outside_project_paths` (settings-update path, reachable from
-/// `purge_sessions_after_settings_update`) and
-/// `purge_sessions_outside_project_paths_in_dir` (startup-restore path).
+/// #698 HIGH fix: the lock-holding core shared by both live purge callers:
+/// `commands::config::purge_sessions_after_settings_update_in_dir` (settings
+/// update path) and `load_sessions_purging_outside_project_paths` (startup
+/// restore path).
 ///
 /// The orphan purge is a load -> filter -> save sequence. Before this fix the
 /// load and save ran OUTSIDE `sessions_save_lock()`, so another locked
@@ -690,8 +681,8 @@ async fn purge_sessions_outside_project_paths_in_dir(
 /// `SAVE_SESSIONS_LOCK` never re-enters this one), so there is no deadlock and
 /// no await is held across a second acquisition of this lock.
 ///
-/// Returns `(before_len, filtered)` so callers can report either the removed
-/// count or the retained snapshot.
+/// Returns `(before_len, filtered)` so callers can retain the filtered snapshot
+/// and keep the removed count available for diagnostics.
 async fn purge_sessions_outside_project_paths_in_dir_locked(
     dir: &Path,
     project_paths: &[String],
