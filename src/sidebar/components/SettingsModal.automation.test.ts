@@ -573,6 +573,9 @@ describe("SettingsModal automation hooks", () => {
     expect(runtime.value).toBe("localProcess");
     expect(document.querySelector('[data-ac-testid="settings.agentRow.0.containerImage"]')).toBeNull();
     expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.containerWarning.image"]'),
+    ).toBeNull();
+    expect(
       document.querySelector('[data-ac-testid="settings.agentRow.0.containerWarning.apiServer"]'),
     ).toBeNull();
     expect(
@@ -584,7 +587,19 @@ describe("SettingsModal automation hooks", () => {
     await settle();
 
     const image = byTestId<HTMLInputElement>("settings.agentRow.0.containerImage");
-    expect(image.placeholder).toBe("agentscommander/session-bridge:latest");
+    expect(image.placeholder).toBe(
+      "Required unless AGENTSCOMMANDER_CONTAINER_IMAGE is set",
+    );
+    const imageHint = byTestId("settings.agentRow.0.containerHint.image").textContent ?? "";
+    expect(imageHint).toContain(
+      "Set a Docker image here, for example agentscommander/ac-claude:latest.",
+    );
+    expect(imageHint).toContain("AGENTSCOMMANDER_CONTAINER_IMAGE");
+    expect(imageHint).toContain("no built-in image fallback");
+    expect(imageHint).not.toContain("agentscommander/session-bridge:latest");
+    expect(byTestId("settings.agentRow.0.containerWarning.image").textContent).toContain(
+      "Saving this blank relies on AGENTSCOMMANDER_CONTAINER_IMAGE",
+    );
     expect(byTestId("settings.agentRow.0.containerWarning.apiServer").textContent).toContain(
       "API server enabled",
     );
@@ -598,11 +613,47 @@ describe("SettingsModal automation hooks", () => {
 
     expect(document.querySelector('[data-ac-testid="settings.agentRow.0.containerImage"]')).toBeNull();
     expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.containerWarning.image"]'),
+    ).toBeNull();
+    expect(
       document.querySelector('[data-ac-testid="settings.agentRow.0.containerWarning.apiServer"]'),
     ).toBeNull();
     expect(
       document.querySelector('[data-ac-testid="settings.agentRow.0.containerWarning.bind"]'),
     ).toBeNull();
+
+    dispose();
+  });
+
+  it("does not synthesize a container image when the field is left blank", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "agents" }),
+      root,
+    );
+    await settle();
+    expandAgentRow(0);
+    await settle();
+
+    const runtime = byTestId<HTMLSelectElement>("settings.agentRow.0.runtimeKind");
+    runtime.value = "containerTransport";
+    runtime.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    expect(document.body.textContent).not.toContain(
+      "agentscommander/session-bridge:latest",
+    );
+    expect(byTestId<HTMLInputElement>("settings.agentRow.0.containerImage").value).toBe("");
+
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.agents[0]?.backend).toEqual({
+      kind: "containerTransport",
+    });
+    expect(saved?.agents[0]?.backend?.image).toBeUndefined();
 
     dispose();
   });
