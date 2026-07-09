@@ -223,6 +223,15 @@ fn build_protected_settings_candidate(
     let mut candidate = merge_protected_coding_agent_settings(current, new_settings);
     // Preserve existing root token. Frontend settings payloads cannot overwrite it.
     candidate.root_token = current.root_token.clone();
+    // #881 A7 / R2-G1: project lists are disk-authoritative and are mutated
+    // only by dedicated project commands. A settings payload from the GUI, CLI,
+    // or API must never carry authority for them, so restore all three from
+    // live memory before repair.
+    //
+    // This is not the prohibited disk re-read. The preserving writer still
+    // overwrites all three from disk whenever disk has an opinion, so disk
+    // authority is untouched. These copies only matter on the no-disk-truth
+    // arms where a stale client would otherwise publish an empty list.
     candidate.project_paths = current.project_paths.clone();
     candidate.project_path = current.project_path.clone();
     candidate.archived_project_paths = current.archived_project_paths.clone();
@@ -245,6 +254,9 @@ async fn persist_settings_draft_update_with_saver(
     let mut s = settings.write().await;
     let current = s.clone();
     draft.root_token = current.root_token.clone();
+    // #881 A7 / R2-G1: same protected-list restore as the whole settings
+    // publisher above. This is an in-memory copy from the held settings guard,
+    // not a second disk read, and it only affects the no-disk-truth arms.
     draft.project_paths = current.project_paths.clone();
     draft.project_path = current.project_path.clone();
     draft.archived_project_paths = current.archived_project_paths.clone();
@@ -1764,9 +1776,7 @@ mod tests {
     #[cfg(windows)]
     use super::{build_profile_assignment_target, canonical_compare_key};
     use crate::api::auth;
-    use crate::config::sessions_persistence::{
-        session_retention_project_paths, PersistedSession,
-    };
+    use crate::config::sessions_persistence::{session_retention_project_paths, PersistedSession};
     use crate::config::settings::{
         AgentConfig, AppSettings, CodingAgentEnv, CodingAgentEnvSource, ProfileCellConfig,
         SettingsState,
@@ -1862,7 +1872,10 @@ mod tests {
             .as_object_mut()
             .expect("settings payload must serialize to an object");
         for key in keys {
-            object.remove(*key);
+            assert!(
+                object.remove(*key).is_some(),
+                "settings payload has no `{key}` key to strip; the A7 gate would be a no-op"
+            );
         }
         serde_json::from_value(value).expect("deserialize stale settings payload")
     }
@@ -2875,13 +2888,13 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(saved.archived_project_paths, vec![disk_archived.to_string()]);
+        assert_eq!(
+            saved.archived_project_paths,
+            vec![disk_archived.to_string()]
+        );
         {
             let live = state.read().await;
-            assert_eq!(
-                live.archived_project_paths,
-                vec![disk_archived.to_string()]
-            );
+            assert_eq!(live.archived_project_paths, vec![disk_archived.to_string()]);
         }
         let disk: AppSettings =
             serde_json::from_str(&std::fs::read_to_string(settings_path).unwrap()).unwrap();

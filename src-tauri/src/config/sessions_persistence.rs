@@ -270,11 +270,18 @@ fn strip_long_prefix_str(s: &str) -> String {
 }
 
 #[cfg(test)]
-static FILTER_PROJECT_PATHS_THREAD_ID: std::sync::OnceLock<
-    std::sync::Mutex<Option<std::thread::ThreadId>>,
+static FILTER_PROJECT_PATHS_THREAD_IDS: std::sync::OnceLock<
+    std::sync::Mutex<Vec<std::thread::ThreadId>>,
 > = std::sync::OnceLock::new();
 
+#[cfg(test)]
+thread_local! {
+    static NORMALIZE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn normalize_for_project_compare(path: &Path) -> String {
+    #[cfg(test)]
+    NORMALIZE_CALLS.with(|calls| calls.set(calls.get() + 1));
     let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let mut s = strip_long_prefix_str(&path.to_string_lossy()).replace('\\', "/");
     while s.ends_with('/') && s.len() > 1 {
@@ -299,6 +306,12 @@ fn path_is_under_or_equal(candidate: &str, root: &str) -> bool {
     candidate.starts_with(&format!("{}/", root))
 }
 
+/// Raw-root convenience for active project lists that are checked once, such
+/// as `archive_session_blockers`.
+///
+/// Do not call this with `archived_project_paths` or inside a per-dir loop.
+/// In those paths, normalize roots once with `normalize_project_roots` and use
+/// the normalized helpers.
 #[allow(dead_code)]
 pub(crate) fn working_directory_under_any_project_path(
     working_directory: &str,
@@ -419,8 +432,10 @@ fn filter_sessions_for_normalized_roots(
 
 #[cfg(test)]
 fn record_filter_project_paths_thread_id() {
-    let slot = FILTER_PROJECT_PATHS_THREAD_ID.get_or_init(|| std::sync::Mutex::new(None));
-    *slot.lock().expect("thread id mutex poisoned") = Some(std::thread::current().id());
+    let slot = FILTER_PROJECT_PATHS_THREAD_IDS.get_or_init(|| std::sync::Mutex::new(Vec::new()));
+    slot.lock()
+        .expect("thread id mutex poisoned")
+        .push(std::thread::current().id());
 }
 
 async fn filter_sessions_for_project_paths_blocking(
@@ -433,8 +448,8 @@ async fn filter_sessions_for_project_paths_blocking(
         record_filter_project_paths_thread_id();
         filter_sessions_for_project_paths(sessions, &project_paths)
     })
-        .await
-        .map_err(|e| format!("session filter task failed: {}", e))
+    .await
+    .map_err(|e| format!("session filter task failed: {}", e))
 }
 
 /// Remove duplicate sessions by name AND working_directory.
@@ -1568,16 +1583,17 @@ async fn write_start_fresh_and_persist_to_dir_result(
 #[cfg(test)]
 mod tests {
     use super::{
-        clear_user_input_transitions_and_persist_to_dir_result, filter_sessions_for_project_paths,
-        filter_sessions_for_project_paths_blocking, filter_sessions_for_normalized_roots,
-        is_under_normalized_archived_roots, load_sessions_purging_outside_project_paths_in_dir,
-        load_sessions_raw_from_dir_for_test, normalize_project_roots, persist_current_state_result,
-        persist_current_state_to_dir_result, purge_sessions_outside_project_paths_in_dir,
-        raise_hand_and_persist_to_dir_result, rename_with_retry, sanitize_failed_recoverable,
-        save_sessions_to_dir, session_retention_project_paths, sessions_save_lock,
-        snapshot_sessions, strip_auto_injected_args, working_directory_under_any_project_path,
+        clear_user_input_transitions_and_persist_to_dir_result,
+        filter_sessions_for_normalized_roots, filter_sessions_for_project_paths,
+        filter_sessions_for_project_paths_blocking, is_under_normalized_archived_roots,
+        load_sessions_purging_outside_project_paths_in_dir, load_sessions_raw_from_dir_for_test,
+        normalize_project_roots, persist_current_state_result, persist_current_state_to_dir_result,
+        purge_sessions_outside_project_paths_in_dir, raise_hand_and_persist_to_dir_result,
+        rename_with_retry, sanitize_failed_recoverable, save_sessions_to_dir,
+        session_retention_project_paths, sessions_save_lock, snapshot_sessions,
+        strip_auto_injected_args, working_directory_under_any_project_path,
         write_start_fresh_and_persist_to_dir_result, PersistedSession, RaiseHandPersistOutcome,
-        FILTER_PROJECT_PATHS_THREAD_ID, RENAME_ATTEMPTS,
+        FILTER_PROJECT_PATHS_THREAD_IDS, NORMALIZE_CALLS, RENAME_ATTEMPTS,
     };
     #[cfg(windows)]
     use super::{deduplicate, load_sessions_from_path};
@@ -2562,6 +2578,22 @@ mod tests {
     }
 
     #[test]
+    fn is_under_normalized_archived_roots_short_circuits_before_canonicalizing_path() {
+        NORMALIZE_CALLS.with(|calls| calls.set(0));
+
+        assert!(!is_under_normalized_archived_roots(
+            "Z:/does/not/exist/x",
+            &[]
+        ));
+
+        assert_eq!(
+            NORMALIZE_CALLS.with(|calls| calls.get()),
+            0,
+            "empty archived roots must not canonicalize path"
+        );
+    }
+
+    #[test]
     fn is_under_normalized_archived_roots_matches_nested_dir() {
         let temp = tempfile::tempdir().expect("tempdir");
         let archived = temp.path().join("archived");
@@ -2716,9 +2748,9 @@ mod tests {
         let agent = project.join(".ac").join("wg-1").join("__agent_keep");
         std::fs::create_dir_all(&agent).expect("create agent");
         let calling_thread = std::thread::current().id();
-        let slot = FILTER_PROJECT_PATHS_THREAD_ID
-            .get_or_init(|| std::sync::Mutex::new(None));
-        *slot.lock().expect("thread id mutex poisoned") = None;
+        let slot =
+            FILTER_PROJECT_PATHS_THREAD_IDS.get_or_init(|| std::sync::Mutex::new(Vec::new()));
+        slot.lock().expect("thread id mutex poisoned").clear();
 
         let filtered = filter_sessions_for_project_paths_blocking(
             vec![PersistedSession {
@@ -2730,13 +2762,14 @@ mod tests {
         )
         .await
         .expect("filter sessions");
-        let worker_thread = slot
-            .lock()
-            .expect("thread id mutex poisoned")
-            .expect("worker thread id recorded");
+        let recorded = slot.lock().expect("thread id mutex poisoned").clone();
 
         assert_eq!(filtered.len(), 1);
-        assert_ne!(worker_thread, calling_thread);
+        assert!(!recorded.is_empty(), "filter thread id should be recorded");
+        assert!(
+            !recorded.contains(&calling_thread),
+            "filter ran on the calling thread"
+        );
     }
 
     #[tokio::test]
@@ -2778,10 +2811,7 @@ mod tests {
         )
         .await;
 
-        let names: Vec<&str> = loaded
-            .iter()
-            .map(|session| session.name.as_str())
-            .collect();
+        let names: Vec<&str> = loaded.iter().map(|session| session.name.as_str()).collect();
         assert_eq!(names, vec![keep.name.as_str(), other.name.as_str()]);
         let saved = load_sessions_raw_from_dir_for_test(temp.path());
         assert_eq!(saved.len(), 2);
