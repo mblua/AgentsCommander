@@ -65,6 +65,30 @@ fn sessions_crossing_idle_threshold(
         .collect()
 }
 
+/// (#885) One peer's purge-readiness inputs, sampled at a single instant.
+#[derive(Debug, Clone, Copy)]
+pub struct PurgeReadiness {
+    pub session_id: Uuid,
+    /// Age of the last PRINTABLE output. `None` when the session is untracked.
+    pub activity_age: Option<Duration>,
+    /// The watcher has already crossed this session into the idle set.
+    pub watcher_idle: bool,
+    /// (#885 F-1) Age of the last `record_resize`, or `None` if never resized.
+    /// `activity_age` is FROZEN and untrustworthy for `resize_grace` after this
+    /// instant: `record_activity_with_bytes` early-returns without touching
+    /// `activity` inside the grace window (`:150-161`).
+    pub last_resize_age: Option<Duration>,
+    /// This session's resolved `resize_grace` and `idle_threshold`, so the
+    /// caller's gate is per-session rather than against a global constant.
+    pub resize_grace: Duration,
+    pub idle_threshold: Duration,
+    /// Age of the last output of any kind, printable or escape-only.
+    /// DIAGNOSTIC ONLY. Never gate on this: `pty/output.rs:127` resets it for
+    /// escape-only chunks, so a repainting TUI would keep it permanently fresh
+    /// and the gate could never pass.
+    pub silence_age: Option<Duration>,
+}
+
 impl IdleDetector {
     pub fn new(
         on_idle: impl Fn(Uuid) + Send + Sync + 'static,
@@ -201,6 +225,57 @@ impl IdleDetector {
             .unwrap_or_else(|e| e.into_inner())
             .get(&session_id)
             .and_then(|&t| now.checked_duration_since(t))
+    }
+
+    /// (#885) Sample readiness for `ids` under a SINGLE critical section.
+    ///
+    /// A PTY reader thread must take `activity` then `idle_set` to record activity
+    /// (`record_activity_with_bytes`), so holding both here yields a view no reader
+    /// thread can interleave. That is the strongest consistency available for the
+    /// purge busy-gate.
+    ///
+    /// LOCK ORDER. `tuning` and `resize_grace` are cloned under their own locks
+    /// and released before `activity` is taken, exactly as the watcher does with
+    /// `tuning` (`start`, `:251`). This introduces ZERO new nesting: the only
+    /// nested acquisition anywhere in this file is `activity -> idle_set`
+    /// (`:165-166`, `:252-253`), and `silence` is only ever taken alone
+    /// (`:112`, `:189`, `:199`, `:222`), so appending it at the tail cannot
+    /// deadlock.
+    ///
+    /// Reading `resize_grace` before `activity` can only MISS a resize newer than
+    /// the `activity` value we read. Such a resize begins its freeze after that
+    /// value was written, so it cannot have corrupted it. The skew is safe.
+    pub fn purge_readiness(&self, ids: &[Uuid]) -> Vec<PurgeReadiness> {
+        // Phase 1: clone the small maps, each under its own lock, then release.
+        let tuning = self.tuning.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let resizes = self
+            .resize_grace
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+
+        // Phase 2: the consistent snapshot. Nesting matches the reader thread's.
+        let now = Instant::now();
+        let activity = self.activity.lock().unwrap_or_else(|e| e.into_inner());
+        let idle_set = self.idle_set.lock().unwrap_or_else(|e| e.into_inner());
+        let silence = self.silence.lock().unwrap_or_else(|e| e.into_inner());
+
+        ids.iter()
+            .map(|id| {
+                let t = tuning.get(id).copied().unwrap_or(IdleTuning::DEFAULT);
+                PurgeReadiness {
+                    session_id: *id,
+                    activity_age: activity.get(id).and_then(|&x| now.checked_duration_since(x)),
+                    watcher_idle: idle_set.contains(id),
+                    last_resize_age: resizes
+                        .get(id)
+                        .and_then(|&x| now.checked_duration_since(x)),
+                    resize_grace: t.resize_grace,
+                    idle_threshold: t.idle_threshold,
+                    silence_age: silence.get(id).and_then(|&x| now.checked_duration_since(x)),
+                }
+            })
+            .collect()
     }
 
     /// (#580) Time since this session's PTY was registered (spawned), or None if
@@ -550,5 +625,102 @@ mod tests {
             second >= first,
             "alive age must be monotonic non-decreasing ({second:?} >= {first:?})"
         );
+    }
+
+    // ── (#885) purge_readiness tests ──
+
+    #[test]
+    fn purge_readiness_snapshot_is_consistent() {
+        let detector = IdleDetector::new(|_| {}, |_| {});
+        let id = Uuid::new_v4();
+        detector.register_session(id, IdleTuning::DEFAULT);
+        detector.record_activity_with_bytes(id, 42);
+
+        let readiness = detector.purge_readiness(&[id]);
+        assert_eq!(readiness.len(), 1);
+        let r = &readiness[0];
+        assert_eq!(r.session_id, id);
+        assert!(
+            r.activity_age.is_some(),
+            "activity_age must be Some after record_activity"
+        );
+        assert!(
+            r.activity_age.unwrap() < Duration::from_secs(1),
+            "activity_age must be small right after record_activity"
+        );
+        assert!(
+            !r.watcher_idle,
+            "watcher_idle must be false right after activity"
+        );
+    }
+
+    #[test]
+    fn purge_readiness_untracked_is_none() {
+        let detector = IdleDetector::new(|_| {}, |_| {});
+        let untracked = Uuid::new_v4();
+
+        let readiness = detector.purge_readiness(&[untracked]);
+        assert_eq!(readiness.len(), 1);
+        assert!(
+            readiness[0].activity_age.is_none(),
+            "activity_age must be None for an unregistered session"
+        );
+    }
+
+    #[test]
+    fn purge_readiness_reports_resize_age() {
+        let detector = IdleDetector::new(|_| {}, |_| {});
+        let id = Uuid::new_v4();
+        detector.register_session(id, IdleTuning::DEFAULT);
+        detector.record_resize(id);
+
+        let readiness = detector.purge_readiness(&[id]);
+        let r = &readiness[0];
+        assert!(
+            r.last_resize_age.is_some(),
+            "last_resize_age must be Some after record_resize"
+        );
+        assert!(
+            r.last_resize_age.unwrap() < Duration::from_secs(1),
+            "last_resize_age must be small right after record_resize"
+        );
+        assert_eq!(
+            r.resize_grace,
+            IdleTuning::DEFAULT.resize_grace,
+            "resize_grace must be the session's tuning value"
+        );
+    }
+
+    /// (#885 F-1) The core bug: inside resize grace, `record_activity_with_bytes`
+    /// early-returns WITHOUT touching `activity`, so `activity_age` grows
+    /// without bound while the child is "printing". This test pins the bug so
+    /// nobody deletes the fourth gate leg.
+    #[test]
+    fn resize_grace_freezes_activity_age() {
+        let detector = IdleDetector::new(|_| {}, |_| {});
+        let id = Uuid::new_v4();
+        detector.register_session(id, IdleTuning::DEFAULT);
+
+        // Record initial activity.
+        detector.record_activity_with_bytes(id, 10);
+        let first_age = detector.purge_readiness(&[id])[0].activity_age.unwrap();
+
+        // Enter resize grace.
+        detector.record_resize(id);
+
+        // Simulate the child printing during grace.
+        detector.record_activity_with_bytes(id, 99);
+
+        // activity must NOT have moved: the early-return at :159 suppressed it.
+        let second_age = detector.purge_readiness(&[id])[0].activity_age.unwrap();
+        assert!(
+            second_age >= first_age,
+            "activity_age must NOT decrease during resize grace (it is frozen). \
+             first={first_age:?}, second={second_age:?}. \
+             If this fails, record_activity_with_bytes is no longer early-returning \
+             during grace, and the F-1 fourth gate leg may be unnecessary."
+        );
+        // The age grew, which is the bug: the child printed but activity didn't
+        // refresh. This is exactly what resize_settled defends against.
     }
 }

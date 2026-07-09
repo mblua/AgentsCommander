@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::Future;
+use tauri::Manager;
 use tokio_util::sync::CancellationToken;
 
 use crate::api::message_store::{LeasedMessage, MessageStore};
@@ -45,26 +46,37 @@ pub fn start_dispatcher(
                     break;
                 }
                 _ = interval.tick() => {
-                    if let Err(e) = dispatch_due_with(
-                        &store,
-                        chrono::Utc::now(),
-                        &config,
-                        |msg| {
-                                let app = app.clone();
-                                async move {
-                                    crate::phone::mailbox::MailboxPoller::new()
-                                        .deliver_wake_with_origin(
-                                            &app,
-                                            &msg,
-                                            crate::phone::mailbox::WakeDeliveryOrigin::DbQueue,
-                                        )
-                                        .await
-                                }
-                            },
-                        )
-                    .await
-                    {
-                        log::warn!("[api-dispatcher] dispatch tick failed: {}", e);
+                    // (#885 F-5) Skip DISPATCH (not the reaper) while a purge
+                    // holds a lease. Leasing a row we cannot deliver burns an
+                    // attempt against max_attempts (5) and can poison the
+                    // message permanently. A purge is bounded; the next tick
+                    // delivers.
+                    let purging = app
+                        .try_state::<std::sync::Arc<crate::session::purge_guard::PurgeGuard>>()
+                        .map(|g| g.is_active())
+                        .unwrap_or(false);
+                    if !purging {
+                        if let Err(e) = dispatch_due_with(
+                            &store,
+                            chrono::Utc::now(),
+                            &config,
+                            |msg| {
+                                    let app = app.clone();
+                                    async move {
+                                        crate::phone::mailbox::MailboxPoller::new()
+                                            .deliver_wake_with_origin(
+                                                &app,
+                                                &msg,
+                                                crate::phone::mailbox::WakeDeliveryOrigin::DbQueue,
+                                            )
+                                            .await
+                                    }
+                                },
+                            )
+                            .await
+                        {
+                            log::warn!("[api-dispatcher] dispatch tick failed: {}", e);
+                        }
                     }
                     let cutoff = chrono::Utc::now() - config.retention;
                     if let Err(e) = store.reap_terminal_before_offloaded(cutoff).await {
@@ -149,6 +161,8 @@ pub fn build_outbox_message(row: &LeasedMessage) -> OutboxMessage {
         timeout_secs: None,
         switch_coding_agent: None,
         switch_profile: None,
+        dry_run: None,
+        quiet_period_ms: None,
     }
 }
 

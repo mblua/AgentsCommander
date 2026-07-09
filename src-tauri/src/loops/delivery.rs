@@ -51,6 +51,30 @@ pub async fn deliver_loop_prompt(
         }
     };
     let target_fqn = target.target_fqn.clone();
+
+    // (#885 J1/J2) A purge is destroying this agent right now.
+    // `deliver_loop_prompt` both injects into a live session and SPAWNS one
+    // when none exists (`spawn_coordinator_session`), so an unguarded loop
+    // tick can resurrect a peer the purge already destroyed. Keyed on the
+    // FQN, not a session id, because the J2 case is precisely the one where
+    // the session record is already gone.
+    if let Some(g) = app.try_state::<std::sync::Arc<crate::session::purge_guard::PurgeGuard>>() {
+        if g.blocks_agent(&target_fqn) {
+            return LoopDeliveryReport {
+                kind: LoopAuditKind::SkippedBusy,
+                message: format!(
+                    "purge-wg in progress for '{}'; loop delivery skipped",
+                    target_fqn
+                ),
+                target: Some(target_fqn),
+                session_id: None,
+                error: None,
+                prompt_snapshot: None,
+                completed_at: Some(Utc::now()),
+            };
+        }
+    }
+
     let loop_storage_dir = loop_dir(&target.workspace_dir, &config.loop_def.id);
     let policy = config.policy.busy_coordinator.clone();
     let prompt = config.prompt.body.clone();

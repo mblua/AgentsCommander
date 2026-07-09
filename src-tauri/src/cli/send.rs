@@ -522,6 +522,8 @@ pub fn execute(args: SendArgs) -> i32 {
         timeout_secs: None,
         switch_coding_agent: None,
         switch_profile: None,
+        dry_run: None,
+        quiet_period_ms: None,
     };
 
     // Write to --outbox if specified, app outbox if root/master token, otherwise <root>/<local_dir>/outbox/

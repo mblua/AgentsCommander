@@ -45,6 +45,15 @@ pub struct OutboxMessage {
     /// self-handoff-and-switch target profile slot letter A-Z.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub switch_profile: Option<String>,
+    /// (#885) purge-wg: evaluate the gate and report, destroy nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dry_run: Option<bool>,
+    /// (#885) purge-wg: printable-silence a peer must show to be purgeable.
+    /// CLAMPED daemon-side to a floor of `IdleTuning::DEFAULT.idle_threshold`
+    /// (2500 ms). The outbox is a trust boundary; a hand-crafted message must
+    /// not be able to set this to 0 and defeat the busy gate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quiet_period_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,6 +112,8 @@ mod tests {
             timeout_secs: None,
             switch_coding_agent: None,
             switch_profile: None,
+            dry_run: None,
+            quiet_period_ms: None,
         }
     }
 
