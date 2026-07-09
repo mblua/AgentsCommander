@@ -2318,21 +2318,51 @@ html.light-theme .settings-api-client-warning {
 }
 
 .settings-rail-select {
-  /* Shrinkable (0 1 auto) with a small floor: the old `0 0 auto` + 110px floor
-     could not shrink, so in a narrow rail it forced an internal horizontal
-     scrollbar and rode over the title. At comfortable widths it still sizes to
-     its content up to 160px. */
+  /* Shrinkable (0 1 auto): the old `0 0 auto` + 110px floor could not shrink, so
+     in a narrow rail it forced an internal horizontal scrollbar and rode over the
+     title. At comfortable widths it still sizes to its content up to 160px.
+     #895: `min-width: 0` — the 72px floor was the last thing keeping this header
+     from fitting, and it pushed the sibling clear button out of the clipped
+     `.settings-compare-zone`. The select is the item that should give way here;
+     it stays operable at any width, and the header stops overflowing at all. */
   flex: 0 1 auto;
   width: auto;
-  min-width: 72px;
+  min-width: 0;
   max-width: 160px;
 }
 
-/* #895 — clears the comparison rail. Deliberately NOT `.danger`: it drops a
-   selection, it does not delete anything. The trash on the agent row is the only
-   destructive control in this area and should be the only red one. */
+/* #895 — clears the comparison rail. Two constraints:
+   1. NOT `.danger`, and not red: it drops a selection, it deletes nothing. The
+      trash on the agent row is the only destructive control in this area.
+   2. Icon-only and never shrinking. A 42px text button was a third unshrinkable
+      item in a header already at its shrink limit; below ~648px of effective
+      width the header overflowed and this button — the only way to empty the
+      comparison rail — was clipped out of the rail and became unclickable. */
 .settings-rail-clear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--sidebar-fg-dim);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.settings-rail-clear:hover {
+  background: var(--sidebar-hover);
+  color: var(--sidebar-fg);
+}
+
+.settings-rail-clear-icon {
+  width: 13px;
+  height: 13px;
+  display: block;
 }
 
 .settings-rail-empty {

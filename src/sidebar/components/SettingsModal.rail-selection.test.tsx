@@ -261,6 +261,28 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
     }
   });
 
+  // ── F5: the clear control is icon-only, so it must carry its own name ──
+
+  it("names the icon-only clear control and still empties the rail", async () => {
+    const r = renderAgents();
+    try {
+      await ready(r.root);
+      const clear = byTestId<HTMLButtonElement>(r.root, "settings.profileRail.1.clear")!;
+
+      // No text node names this button, so the aria-label is the only accessible
+      // name it has. The glyph itself must stay out of the accessibility tree.
+      expect(clear.textContent?.trim()).toBe("");
+      expect(clear.getAttribute("aria-label")).toBe("Clear the comparison rail");
+      expect(clear.getAttribute("title")).toBeTruthy();
+      expect(clear.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+
+      clear.click();
+      await waitFor(() => expect(rails(r.root)).toEqual(["codex", null]));
+    } finally {
+      r.cleanup();
+    }
+  });
+
   // ── Delete and expand must never touch the rails ──
 
   it("deletes the agent from the trash button without assigning a rail", async () => {

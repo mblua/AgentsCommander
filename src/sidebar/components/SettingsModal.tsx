@@ -23,6 +23,7 @@ import { projectStore } from "../stores/project";
 import { newAgentId, definitionToSeed } from "../../shared/agent-presets";
 import { codingAgentsStore } from "../stores/coding-agents";
 import TrashIcon from "./TrashIcon";
+import XMarkIcon from "./XMarkIcon";
 import { mergeSettingsForSavePreservingProjects } from "./settings-save";
 import {
   AC_MATRIX_ROOT_PLACEHOLDER,
@@ -2752,16 +2753,19 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               agent row: it sits next to what it clears, it no longer reflows the
               agent list, and it is no longer a red button 4px from the trash
               that deletes the agent outright. It selects nothing; it deletes
-              nothing. */}
+              nothing. Icon-only: a text button was a 42px unshrinkable third
+              item in a header already at its shrink limit, so it overflowed and
+              got clipped out of the rail below ~648px of effective width. */}
           <Show when={side === "right"}>
             <button
-              class="settings-row-btn settings-rail-clear"
+              class="settings-rail-clear"
               onClick={() => setRightRailId(null)}
               title="Clear the comparison rail (keeps the agent and its profiles)"
+              aria-label="Clear the comparison rail"
               data-ac-testid={`settings.profileRail.${railIndex}.clear`}
               data-ac-role="button"
             >
-              Clear
+              <XMarkIcon class="settings-rail-clear-icon" />
             </button>
           </Show>
         </div>
