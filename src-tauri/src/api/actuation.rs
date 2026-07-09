@@ -172,6 +172,8 @@ pub fn build_inline_wake_message(id: &str, from: &str, to: &str, body: String) -
         timeout_secs: None,
         switch_coding_agent: None,
         switch_profile: None,
+        dry_run: None,
+        quiet_period_ms: None,
     }
 }
 
