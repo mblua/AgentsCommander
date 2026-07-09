@@ -40,34 +40,34 @@ describe("coordinatorIdleBadge", () => {
     expect(coordinatorIdleBadge(minsAgo(4320), NOW, thresholds(30, 60))?.label).toBe("4320m");
   });
 
-  it("applies green/yellow/red exactly at the default 30/60 boundaries", () => {
+  it("applies ok/warn/stale exactly at the default 30/60 boundaries", () => {
     const t = thresholds(30, 60);
-    expect(coordinatorIdleBadge(minsAgo(0), NOW, t)?.colorClass).toBe("green");
-    expect(coordinatorIdleBadge(minsAgo(29), NOW, t)?.colorClass).toBe("green"); // yellow - 1
-    expect(coordinatorIdleBadge(minsAgo(30), NOW, t)?.colorClass).toBe("yellow"); // == yellow
-    expect(coordinatorIdleBadge(minsAgo(59), NOW, t)?.colorClass).toBe("yellow"); // red - 1
-    expect(coordinatorIdleBadge(minsAgo(60), NOW, t)?.colorClass).toBe("red"); // == red
-    expect(coordinatorIdleBadge(minsAgo(600), NOW, t)?.colorClass).toBe("red");
+    expect(coordinatorIdleBadge(minsAgo(0), NOW, t)?.level).toBe("ok");
+    expect(coordinatorIdleBadge(minsAgo(29), NOW, t)?.level).toBe("ok"); // yellow - 1
+    expect(coordinatorIdleBadge(minsAgo(30), NOW, t)?.level).toBe("warn"); // == yellow
+    expect(coordinatorIdleBadge(minsAgo(59), NOW, t)?.level).toBe("warn"); // red - 1
+    expect(coordinatorIdleBadge(minsAgo(60), NOW, t)?.level).toBe("stale"); // == red
+    expect(coordinatorIdleBadge(minsAgo(600), NOW, t)?.level).toBe("stale");
   });
 
   it("honors custom thresholds", () => {
     const t = thresholds(5, 10);
-    expect(coordinatorIdleBadge(minsAgo(4), NOW, t)?.colorClass).toBe("green");
-    expect(coordinatorIdleBadge(minsAgo(5), NOW, t)?.colorClass).toBe("yellow");
-    expect(coordinatorIdleBadge(minsAgo(9), NOW, t)?.colorClass).toBe("yellow");
-    expect(coordinatorIdleBadge(minsAgo(10), NOW, t)?.colorClass).toBe("red");
+    expect(coordinatorIdleBadge(minsAgo(4), NOW, t)?.level).toBe("ok");
+    expect(coordinatorIdleBadge(minsAgo(5), NOW, t)?.level).toBe("warn");
+    expect(coordinatorIdleBadge(minsAgo(9), NOW, t)?.level).toBe("warn");
+    expect(coordinatorIdleBadge(minsAgo(10), NOW, t)?.level).toBe("stale");
   });
 
   it("falls back to default 30/60 thresholds when settings is null", () => {
-    expect(coordinatorIdleBadge(minsAgo(29), NOW, null)?.colorClass).toBe("green");
-    expect(coordinatorIdleBadge(minsAgo(30), NOW, null)?.colorClass).toBe("yellow");
-    expect(coordinatorIdleBadge(minsAgo(60), NOW, null)?.colorClass).toBe("red");
+    expect(coordinatorIdleBadge(minsAgo(29), NOW, null)?.level).toBe("ok");
+    expect(coordinatorIdleBadge(minsAgo(30), NOW, null)?.level).toBe("warn");
+    expect(coordinatorIdleBadge(minsAgo(60), NOW, null)?.level).toBe("stale");
   });
 
   it("floors a future-dated timestamp to 0m green (clock skew), never negative", () => {
     const future = new Date(NOW + 5 * 60_000).toISOString();
     const badge = coordinatorIdleBadge(future, NOW, thresholds(30, 60));
     expect(badge?.label).toBe("0m");
-    expect(badge?.colorClass).toBe("green");
+    expect(badge?.level).toBe("ok");
   });
 });

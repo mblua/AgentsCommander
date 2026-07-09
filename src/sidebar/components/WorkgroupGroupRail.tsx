@@ -14,10 +14,9 @@ import {
   type WorkgroupGroupSelection,
 } from "../stores/workgroup-groups";
 import {
-  isWorkingReplicaDot,
-  replicaDotClass,
+  isReplicaWorking,
+  splitWorkgroupsByWorking,
   workgroupHasRaisedHand,
-  workgroupIsWorking,
 } from "./workgroup-session";
 import WorkgroupGroupsModal from "./WorkgroupGroupsModal";
 import RaiseHandIcon from "./RaiseHandIcon";
@@ -30,8 +29,8 @@ interface GroupButton {
   key: string;
   name: string;
   counter: string;
-  /** #746 — true when the button's workgroup set has >=1 working agent
-   *  (same predicate as the counter's X: running/active, not waiting/pending). */
+  /** #746/#882: true when the button's workgroup set has >=1 working agent
+   *  (isSessionWorking: live + active/running, not waiting/pending). */
   working: boolean;
   /** #763 — true when >=1 coordinator in the button's workgroup set has a
    *  raised hand (mirrors ProjectPanel's per-row `showRaiseHand`). */
@@ -81,7 +80,7 @@ function tooltipFor(workgroups: AcWorkgroup[]): string {
   const rows = workgroups
     .flatMap((wg) =>
       wg.agents
-        .filter((replica) => isWorkingReplicaDot(replicaDotClass(wg, replica)))
+        .filter((replica) => isReplicaWorking(wg, replica))
         .map((replica) => ({ wg, replica }))
     )
     .sort((a, b) => {
@@ -97,7 +96,7 @@ function buttonContent(
   name: string,
   workgroups: AcWorkgroup[]
 ): Pick<GroupButton, "name" | "counter" | "working" | "raiseHand"> {
-  const working = workgroups.filter(workgroupIsWorking).length;
+  const working = splitWorkgroupsByWorking(workgroups).working.length;
   return {
     name,
     counter: `${working}/${workgroups.length}`,

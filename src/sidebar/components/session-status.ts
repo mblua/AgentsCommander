@@ -1,4 +1,4 @@
-import type { Session, SessionStatus } from "../../shared/types";
+import { sessionActivity, type ActivitySession, type SessionActivity } from "../../shared/session-activity";
 
 export type SessionDotClass =
   | "active"
@@ -9,22 +9,23 @@ export type SessionDotClass =
   | "waiting"
   | "offline";
 
-type DotSession = Pick<Session, "status" | "pendingReview" | "waitingForInput">;
-
-export function sessionStatusClass(status: SessionStatus): "active" | "running" | "idle" | "exited" {
-  if (typeof status === "string") return status;
-  return "exited";
-}
+/**
+ * #882 Presentation projection: SessionActivity -> CSS dot class. Total and 1:1.
+ * Editing a value here changes pixels only; no behavior reads a dot class.
+ */
+const DOT_CLASS: Record<SessionActivity, SessionDotClass> = {
+  offline: "offline",
+  exited: "exited",
+  pendingReview: "pending",
+  waitingForInput: "waiting",
+  active: "active",
+  running: "running",
+  idle: "idle",
+};
 
 export function sessionDotClass(
-  session: DotSession | null | undefined,
+  session: ActivitySession | null | undefined,
   options: { inactive?: boolean } = {},
 ): SessionDotClass {
-  if (!session || options.inactive) return "offline";
-
-  const status = sessionStatusClass(session.status);
-  if (status === "exited") return "exited";
-  if (session.pendingReview) return "pending";
-  if (session.waitingForInput) return "waiting";
-  return status;
+  return DOT_CLASS[sessionActivity(session, options)];
 }
