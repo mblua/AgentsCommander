@@ -8,8 +8,9 @@ use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::pty::container_runtime::{
-    ContainerCleanupReport, ContainerRuntime, ContainerRuntimeHandle, ContainerStartRequest,
-    DEFAULT_API_HELPER_PATH, DEFAULT_BRIDGE_ENTRYPOINT, SESSION_LABEL,
+    ContainerCleanupReport, ContainerDiagnostics, ContainerRuntime, ContainerRuntimeHandle,
+    ContainerStartRequest, ContainerStateSnapshot, DEFAULT_API_HELPER_PATH,
+    DEFAULT_BRIDGE_ENTRYPOINT, SESSION_LABEL,
 };
 
 const DOCKER_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
@@ -19,6 +20,11 @@ const DOCKER_COMMAND_POLL: Duration = Duration::from_millis(50);
 pub struct DockerCommandSpec {
     pub program: String,
     pub args: Vec<String>,
+}
+
+struct DockerCommandOutput {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -53,7 +59,6 @@ impl DockerRuntime {
 
         let mut args = vec![
             "run".to_string(),
-            "--rm".to_string(),
             "-d".to_string(),
             "--label".to_string(),
             format!("{}={}", SESSION_LABEL, request.session_id),
@@ -137,6 +142,37 @@ impl DockerRuntime {
         }
     }
 
+    pub fn build_inspect_state_command(
+        &self,
+        handle: &ContainerRuntimeHandle,
+    ) -> DockerCommandSpec {
+        DockerCommandSpec {
+            program: self.program.clone(),
+            args: vec![
+                "inspect".to_string(),
+                "--format".to_string(),
+                "{{json .State}}".to_string(),
+                handle.container_id.clone(),
+            ],
+        }
+    }
+
+    pub fn build_logs_command(
+        &self,
+        handle: &ContainerRuntimeHandle,
+        tail_lines: usize,
+    ) -> DockerCommandSpec {
+        DockerCommandSpec {
+            program: self.program.clone(),
+            args: vec![
+                "logs".to_string(),
+                "--tail".to_string(),
+                tail_lines.to_string(),
+                handle.container_id.clone(),
+            ],
+        }
+    }
+
     pub fn build_list_labeled_command(&self) -> DockerCommandSpec {
         DockerCommandSpec {
             program: self.program.clone(),
@@ -151,7 +187,7 @@ impl DockerRuntime {
         }
     }
 
-    fn run_command(&self, spec: DockerCommandSpec) -> Result<String, AppError> {
+    fn run_command_output(&self, spec: DockerCommandSpec) -> Result<DockerCommandOutput, AppError> {
         let mut child = Command::new(&spec.program)
             .args(&spec.args)
             .stdout(Stdio::piped())
@@ -214,14 +250,24 @@ impl DockerRuntime {
         let stdout = join_command_reader(stdout_reader, "stdout")?;
         let stderr = join_command_reader(stderr_reader, "stderr")?;
         if !status.success() {
-            let stderr = String::from_utf8_lossy(&stderr);
+            let stderr_text = String::from_utf8_lossy(&stderr);
+            let stdout_text = String::from_utf8_lossy(&stdout);
+            let detail = if stderr_text.trim().is_empty() {
+                stdout_text.trim()
+            } else {
+                stderr_text.trim()
+            };
             return Err(AppError::PtyError(format!(
                 "container runtime command exited {}: {}",
-                status,
-                stderr.trim()
+                status, detail
             )));
         }
-        Ok(String::from_utf8_lossy(&stdout).trim().to_string())
+        Ok(DockerCommandOutput { stdout, stderr })
+    }
+
+    fn run_command(&self, spec: DockerCommandSpec) -> Result<String, AppError> {
+        let output = self.run_command_output(spec)?;
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
     fn parse_labeled_containers(raw: &str) -> Vec<(String, String)> {
@@ -237,6 +283,42 @@ impl DockerRuntime {
                 }
             })
             .collect()
+    }
+
+    fn parse_container_state(raw: &str) -> Result<ContainerStateSnapshot, AppError> {
+        #[derive(serde::Deserialize)]
+        struct DockerState {
+            #[serde(rename = "Status")]
+            status: Option<String>,
+            #[serde(rename = "Running")]
+            running: Option<bool>,
+            #[serde(rename = "ExitCode")]
+            exit_code: Option<i64>,
+            #[serde(rename = "Error")]
+            error: Option<String>,
+        }
+
+        let state: DockerState = serde_json::from_str(raw)
+            .map_err(|e| AppError::PtyError(format!("container state JSON parse failed: {e}")))?;
+        Ok(ContainerStateSnapshot {
+            status: state.status,
+            running: state.running,
+            exit_code: state.exit_code,
+            error: state.error,
+        })
+    }
+
+    fn combined_output_text(output: DockerCommandOutput) -> Option<String> {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = stdout.trim_end();
+        let stderr = stderr.trim_end();
+        match (stdout.is_empty(), stderr.is_empty()) {
+            (true, true) => None,
+            (false, true) => Some(stdout.to_string()),
+            (true, false) => Some(stderr.to_string()),
+            (false, false) => Some(format!("{stdout}\n{stderr}")),
+        }
     }
 }
 
@@ -278,17 +360,41 @@ impl ContainerRuntime for DockerRuntime {
     }
 
     fn stop(&self, handle: &ContainerRuntimeHandle, timeout: Duration) -> Result<(), AppError> {
-        match self.run_command(self.build_stop_command(handle, timeout)) {
-            Ok(_) => Ok(()),
-            Err(stop_err) => {
-                log::warn!(
-                    "[container-runtime] graceful stop failed for session {}: {}",
-                    handle.session_id,
-                    stop_err
-                );
-                self.run_command(self.build_force_remove_command(handle))
-                    .map(|_| ())
-            }
+        if let Err(stop_err) = self.run_command(self.build_stop_command(handle, timeout)) {
+            log::warn!(
+                "[container-runtime] graceful stop failed for session {}: {}",
+                handle.session_id,
+                stop_err
+            );
+        }
+        self.run_command(self.build_force_remove_command(handle))
+            .map(|_| ())
+    }
+
+    fn diagnostics(
+        &self,
+        handle: &ContainerRuntimeHandle,
+        log_tail_lines: usize,
+    ) -> ContainerDiagnostics {
+        let (state, inspect_error) =
+            match self.run_command(self.build_inspect_state_command(handle)) {
+                Ok(raw) => match Self::parse_container_state(&raw) {
+                    Ok(state) => (Some(state), None),
+                    Err(err) => (None, Some(err.to_string())),
+                },
+                Err(err) => (None, Some(err.to_string())),
+            };
+        let (log_tail, logs_error) =
+            match self.run_command_output(self.build_logs_command(handle, log_tail_lines)) {
+                Ok(output) => (Self::combined_output_text(output), None),
+                Err(err) => (None, Some(err.to_string())),
+            };
+        ContainerDiagnostics {
+            container_id: handle.container_id.clone(),
+            state,
+            inspect_error,
+            log_tail,
+            logs_error,
         }
     }
 
@@ -369,6 +475,7 @@ mod tests {
 
         assert_eq!(spec.program, "docker-test");
         assert!(spec.args.iter().any(|arg| arg == "-d"));
+        assert!(!spec.args.iter().any(|arg| arg == "--rm"));
         assert!(!spec
             .args
             .iter()
@@ -424,6 +531,15 @@ mod tests {
         let stop = runtime.build_stop_command(&handle, Duration::from_secs(5));
         assert_eq!(stop.args, vec!["stop", "--time", "5", "abc123"]);
 
+        let inspect = runtime.build_inspect_state_command(&handle);
+        assert_eq!(
+            inspect.args,
+            vec!["inspect", "--format", "{{json .State}}", "abc123"]
+        );
+
+        let logs = runtime.build_logs_command(&handle, 80);
+        assert_eq!(logs.args, vec!["logs", "--tail", "80", "abc123"]);
+
         let list = runtime.build_list_labeled_command();
         assert_eq!(list.args[0], "ps");
         assert!(list.args.contains(&format!("label={}", SESSION_LABEL)));
@@ -439,5 +555,16 @@ mod tests {
                 "11111111-1111-4111-8111-111111111111".to_string()
             )]
         );
+    }
+
+    #[test]
+    fn parse_container_state_reads_docker_inspect_state_json() {
+        let raw = r#"{"Status":"exited","Running":false,"ExitCode":127,"Error":""}"#;
+        let state = DockerRuntime::parse_container_state(raw).unwrap();
+
+        assert_eq!(state.status.as_deref(), Some("exited"));
+        assert_eq!(state.running, Some(false));
+        assert_eq!(state.exit_code, Some(127));
+        assert_eq!(state.error.as_deref(), Some(""));
     }
 }
