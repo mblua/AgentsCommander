@@ -1939,14 +1939,16 @@ pub fn read_log_level_only() -> Option<String> {
 /// counter so the two can be reasoned about independently in diagnostics.
 static SAVE_OP_ID: AtomicU64 = AtomicU64::new(0);
 
+type DiskProjectPaths = (Vec<String>, Option<String>);
+
 /// #778: side-effect-free reader of ONLY `project_paths`/`project_path` from
 /// `settings.json` on disk. Under Design S `project_paths` is disk-authoritative,
 /// so the default `save_settings` uses this to preserve whatever another process
 /// (a CLI verb, a second instance) wrote, and the add/remove commands use it to
 /// reconcile before a deliberate mutation.
 ///
-/// Error policy (grinch G2): a genuine `NotFound` yields empty (fresh install:
-/// nothing on disk to preserve). ANY other error (a transient os 5/32/33/1175
+/// Error policy (grinch G2): a genuine `NotFound` yields `None` (fresh install:
+/// no disk truth to substitute). ANY other error (a transient os 5/32/33/1175
 /// lock, a permission failure, or unparseable JSON) returns `Err` so the caller
 /// ABORTS the save. The read runs BEFORE the #774 temp write, so disk is
 /// untouched and #774 is unaffected. For #778's threat model, aborting a
@@ -1959,7 +1961,7 @@ static SAVE_OP_ID: AtomicU64 = AtomicU64::new(0);
 /// so the later `MoveFileEx` rename cannot hit a sharing violation (os 32).
 /// MUST NOT call `load_settings` (it migrates, generates root_token, and
 /// re-saves: infinite recursion + side effects).
-fn read_project_paths_from_disk(path: &Path) -> Result<(Vec<String>, Option<String>), String> {
+fn read_project_paths_from_disk(path: &Path) -> Result<Option<DiskProjectPaths>, String> {
     // 1 initial attempt + up to 2 retries on a transient (non-NotFound) read error.
     const READ_RETRY_BACKOFFS_MS: [u64; 2] = [10, 40];
     let mut attempt = 0usize;
@@ -1967,8 +1969,8 @@ fn read_project_paths_from_disk(path: &Path) -> Result<(Vec<String>, Option<Stri
         match std::fs::read_to_string(path) {
             Ok(c) => break c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // Fresh install / never-saved: nothing on disk to preserve.
-                return Ok((Vec::new(), None));
+                // Fresh install / never-saved: no disk truth to preserve.
+                return Ok(None);
             }
             Err(e) => {
                 if attempt < READ_RETRY_BACKOFFS_MS.len() {
@@ -1993,20 +1995,25 @@ fn read_project_paths_from_disk(path: &Path) -> Result<(Vec<String>, Option<Stri
             e
         )
     })?;
-    let project_paths = value
-        .get("projectPaths")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|x| x.as_str().map(str::to_string))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let project_paths = match value.get("projectPaths") {
+        None | Some(serde_json::Value::Null) => return Ok(None),
+        Some(serde_json::Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|x| x.as_str().map(str::to_string))
+            .collect::<Vec<_>>(),
+        Some(other) => {
+            return Err(format!(
+                "{}: projectPaths is {}, not an array (aborting save)",
+                path.display(),
+                other
+            ));
+        }
+    };
     let project_path = value
         .get("projectPath")
         .and_then(|v| v.as_str())
         .map(str::to_string);
-    Ok((project_paths, project_path))
+    Ok(Some((project_paths, project_path)))
 }
 
 /// #778: overwrite `settings`' in-memory project list with the disk-authoritative
@@ -2019,9 +2026,17 @@ pub fn refresh_project_paths_from_disk(settings: &mut AppSettings) -> Result<(),
     let Some(path) = settings_path() else {
         return Ok(());
     };
-    let (project_paths, project_path) = read_project_paths_from_disk(&path)?;
-    settings.project_paths = project_paths;
-    settings.project_path = project_path;
+    refresh_project_paths_from_path(settings, &path)
+}
+
+pub(crate) fn refresh_project_paths_from_path(
+    settings: &mut AppSettings,
+    path: &Path,
+) -> Result<(), String> {
+    if let Some((project_paths, project_path)) = read_project_paths_from_disk(path)? {
+        settings.project_paths = project_paths;
+        settings.project_path = project_path;
+    }
     Ok(())
 }
 
@@ -2046,7 +2061,7 @@ pub fn refresh_project_paths_from_disk(settings: &mut AppSettings) -> Result<(),
 /// momentarily resurrect an entry; orders of magnitude smaller than the prior
 /// snapshot-age window. Airtight cross-process safety would need an advisory
 /// file lock (tracked separately), deliberately not added here.
-pub fn save_settings(settings: &AppSettings) -> Result<(), String> {
+pub fn save_settings(settings: &AppSettings) -> Result<AppSettings, String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
     let path = dir.join("settings.json");
     save_settings_to_path_preserving_project_paths(settings, &path)
@@ -2061,7 +2076,14 @@ pub fn save_settings(settings: &AppSettings) -> Result<(), String> {
 pub fn save_settings_with_project_paths(settings: &AppSettings) -> Result<(), String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
     let path = dir.join("settings.json");
-    save_settings_to_path(settings, &path)
+    save_settings_with_project_paths_to_path(settings, &path)
+}
+
+pub(crate) fn save_settings_with_project_paths_to_path(
+    settings: &AppSettings,
+    path: &Path,
+) -> Result<(), String> {
+    save_settings_to_path(settings, path)
 }
 
 /// #778: the preserve-disk wrapper behind the default `save_settings`. Reads the
@@ -2069,15 +2091,17 @@ pub fn save_settings_with_project_paths(settings: &AppSettings) -> Result<(), St
 /// them into a clone of `settings`, then hands off to the verbatim
 /// #774-hardened writer. Split out with an explicit `path` so tests can drive it
 /// against a `tempfile::tempdir()`.
-fn save_settings_to_path_preserving_project_paths(
+pub(crate) fn save_settings_to_path_preserving_project_paths(
     settings: &AppSettings,
     path: &Path,
-) -> Result<(), String> {
-    let (disk_paths, disk_head) = read_project_paths_from_disk(path)?;
+) -> Result<AppSettings, String> {
     let mut to_write = settings.clone();
-    to_write.project_paths = disk_paths;
-    to_write.project_path = disk_head;
-    save_settings_to_path(&to_write, path)
+    if let Some((disk_paths, disk_head)) = read_project_paths_from_disk(path)? {
+        to_write.project_paths = disk_paths;
+        to_write.project_path = disk_head;
+    }
+    save_settings_to_path(&to_write, path)?;
+    Ok(to_write)
 }
 
 fn save_settings_to_path(settings: &AppSettings, path: &Path) -> Result<(), String> {
@@ -3494,20 +3518,51 @@ mod tests {
         let path = temp.path().join("settings.json");
         super::save_settings_to_path(&settings_with_project_paths(&["C:/a", "C:/b"]), &path)
             .unwrap();
-        let (paths, head) = super::read_project_paths_from_disk(&path).unwrap();
+        let (paths, head) = super::read_project_paths_from_disk(&path).unwrap().unwrap();
         assert_eq!(paths, vec!["C:/a".to_string(), "C:/b".to_string()]);
         assert_eq!(head.as_deref(), Some("C:/a"));
     }
 
     #[test]
-    fn read_project_paths_from_disk_empty_when_file_absent() {
+    fn read_project_paths_from_disk_returns_none_when_file_absent() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("does-not-exist.json");
-        // NotFound is the ONLY error that degrades to empty (fresh install).
-        assert_eq!(
-            super::read_project_paths_from_disk(&path).unwrap(),
-            (Vec::new(), None)
-        );
+        // NotFound means there is no disk truth to substitute.
+        assert_eq!(super::read_project_paths_from_disk(&path).unwrap(), None);
+    }
+
+    #[test]
+    fn read_project_paths_from_disk_returns_none_when_key_absent() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, r#"{"themeLight":true}"#).unwrap();
+        assert_eq!(super::read_project_paths_from_disk(&path).unwrap(), None);
+    }
+
+    #[test]
+    fn read_project_paths_from_disk_returns_none_when_key_null() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, r#"{"projectPaths":null}"#).unwrap();
+        assert_eq!(super::read_project_paths_from_disk(&path).unwrap(), None);
+    }
+
+    #[test]
+    fn read_project_paths_from_disk_aborts_when_key_wrong_type() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, r#"{"projectPaths":"C:/a"}"#).unwrap();
+        assert!(super::read_project_paths_from_disk(&path).is_err());
+    }
+
+    #[test]
+    fn read_project_paths_from_disk_accepts_legit_empty_list() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, r#"{"projectPaths":[]}"#).unwrap();
+        let (paths, head) = super::read_project_paths_from_disk(&path).unwrap().unwrap();
+        assert!(paths.is_empty());
+        assert_eq!(head, None);
     }
 
     #[test]
@@ -3540,7 +3595,8 @@ mod tests {
 
         let mut candidate = settings_with_project_paths(&["A"]); // stale, missing X
         candidate.sidebar_style = "deep-space".to_string(); // unrelated GUI field
-        super::save_settings_to_path_preserving_project_paths(&candidate, &path).unwrap();
+        let written =
+            super::save_settings_to_path_preserving_project_paths(&candidate, &path).unwrap();
 
         let contents = std::fs::read_to_string(&path).unwrap();
         let reloaded: AppSettings = serde_json::from_str(&contents).unwrap();
@@ -3550,6 +3606,8 @@ mod tests {
         ); // X preserved, not clobbered
         assert_eq!(reloaded.project_path.as_deref(), Some("A"));
         assert_eq!(reloaded.sidebar_style, "deep-space"); // unrelated field persisted
+        assert_eq!(written.project_paths, reloaded.project_paths);
+        assert_eq!(written.project_path, reloaded.project_path);
     }
 
     #[test]
@@ -3559,7 +3617,7 @@ mod tests {
         let path = temp.path().join("settings.json");
         super::save_settings_to_path(&settings_with_project_paths(&["A"]), &path).unwrap();
         super::save_settings_to_path(&settings_with_project_paths(&["A", "Y"]), &path).unwrap();
-        let (paths, _) = super::read_project_paths_from_disk(&path).unwrap();
+        let (paths, _) = super::read_project_paths_from_disk(&path).unwrap().unwrap();
         assert_eq!(paths, vec!["A".to_string(), "Y".to_string()]);
     }
 
@@ -3581,7 +3639,7 @@ mod tests {
             &path,
         )
         .unwrap();
-        let (paths, _) = super::read_project_paths_from_disk(&path).unwrap();
+        let (paths, _) = super::read_project_paths_from_disk(&path).unwrap().unwrap();
         assert_eq!(paths, vec!["A".to_string()]);
     }
 
@@ -3594,13 +3652,13 @@ mod tests {
         super::save_settings_to_path(&settings_with_project_paths(&["A", "X"]), &path).unwrap();
 
         let mut s = settings_with_project_paths(&["A"]); // stale in-memory
-        let (disk_paths, disk_head) = super::read_project_paths_from_disk(&path).unwrap();
+        let (disk_paths, disk_head) = super::read_project_paths_from_disk(&path).unwrap().unwrap();
         s.project_paths = disk_paths;
         s.project_path = disk_head; // reconciled to [A, X]
         assert!(crate::config::projects::remove_project_path(&mut s, "A"));
         super::save_settings_to_path(&s, &path).unwrap(); // verbatim
 
-        let (paths, head) = super::read_project_paths_from_disk(&path).unwrap();
+        let (paths, head) = super::read_project_paths_from_disk(&path).unwrap().unwrap();
         assert_eq!(paths, vec!["X".to_string()]); // A gone, X preserved
         assert_eq!(head.as_deref(), Some("X"));
     }
@@ -3614,14 +3672,14 @@ mod tests {
         super::save_settings_to_path(&settings_with_project_paths(&["A", "X"]), &path).unwrap();
 
         let mut s = settings_with_project_paths(&["A"]); // stale
-        let (disk_paths, disk_head) = super::read_project_paths_from_disk(&path).unwrap();
+        let (disk_paths, disk_head) = super::read_project_paths_from_disk(&path).unwrap().unwrap();
         s.project_paths = disk_paths;
         s.project_path = disk_head; // [A, X]
         s.project_paths.push("Y".to_string()); // stand-in for register upsert
         s.project_path = s.project_paths.first().cloned();
         super::save_settings_to_path(&s, &path).unwrap();
 
-        let (paths, _) = super::read_project_paths_from_disk(&path).unwrap();
+        let (paths, _) = super::read_project_paths_from_disk(&path).unwrap().unwrap();
         assert_eq!(
             paths,
             vec!["A".to_string(), "X".to_string(), "Y".to_string()]
