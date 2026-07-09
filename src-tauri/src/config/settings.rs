@@ -1118,7 +1118,7 @@ pub fn repair_coding_agent_profiles_config(
         .retain(|_, letter| is_valid_profile_letter(letter));
     changed |= profiles.default_profile_by_agent.len() != original_defaults_len;
 
-    for (_agent_id, cells) in profiles.profiles_by_agent.iter_mut() {
+    for cells in profiles.profiles_by_agent.values_mut() {
         let original_cells_len = cells.len();
         cells.retain(|letter, _| is_valid_profile_letter(letter));
         changed |= cells.len() != original_cells_len;
@@ -1129,7 +1129,7 @@ pub fn repair_coding_agent_profiles_config(
     // prunes by agent id (an override for a not-yet-loaded agent is harmless and may
     // precede its agent in load order, per plan 3.7). `retain` keeps every valid key,
     // so a clean config leaves `changed` false and is not rewritten on load.
-    for (_agent_id, labels) in profiles.profile_labels_by_agent.iter_mut() {
+    for labels in profiles.profile_labels_by_agent.values_mut() {
         let original_len = labels.len();
         labels.retain(|letter, _| is_valid_profile_letter(letter));
         changed |= labels.len() != original_len;

@@ -1725,10 +1725,8 @@ impl RequestFile {
 
         let (request_id, kind) = if let Some(id) = name.strip_suffix(".inflight.json") {
             (id, RequestFileKind::Inflight)
-        } else if let Some(id) = name.strip_suffix(".json") {
-            (id, RequestFileKind::Ready)
         } else {
-            return None;
+            (name.strip_suffix(".json")?, RequestFileKind::Ready)
         };
 
         if Uuid::parse_str(request_id).is_err() {
