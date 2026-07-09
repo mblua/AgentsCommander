@@ -943,7 +943,7 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("clears the right comparison rail when the right agent's Remove is clicked", async () => {
+  it("clears the right comparison rail from the rail's own Clear button", async () => {
     vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
       agents: [
         {
@@ -974,15 +974,19 @@ describe("SettingsModal automation hooks", () => {
 
     // The comparison pair seeds left=codex, right=claude (second agent).
     expect(byTestId("settings.profileRail.1").getAttribute("data-ac-agent-id")).toBe("claude");
-    // Removing the right-rail agent actually empties the rail (no positional re-fill).
-    byTestId<HTMLButtonElement>("settings.agentRow.1.unuse").click();
+    // #895: clearing now lives on the rail itself, not on the agent row. It still
+    // actually empties the rail (no positional re-fill).
+    byTestId<HTMLButtonElement>("settings.profileRail.1.clear").click();
     await settle();
     expect(byTestId("settings.profileRail.1").getAttribute("data-ac-agent-id")).toBeNull();
-    // #895: Claude is available again. There is no "Use" button any more — the
-    // row head itself re-adds it — and the Remove button is gone with the pill.
+    // #895: Claude is available again, and the row head itself re-adds it. Neither
+    // a "Use" nor a "Remove" button survives on any agent row — that per-row
+    // button was what made one row taller than the rest.
     expect(document.querySelector('[data-ac-testid="settings.agentRow.1.use"]')).toBeNull();
     expect(document.querySelector('[data-ac-testid="settings.agentRow.1.unuse"]')).toBeNull();
     expect(byTestId("settings.agentRow.1").getAttribute("data-ac-rail")).toBe("available");
+    // The emptied rail has no header, so no Clear button either.
+    expect(document.querySelector('[data-ac-testid="settings.profileRail.1.clear"]')).toBeNull();
 
     dispose();
   });

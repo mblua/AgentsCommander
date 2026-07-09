@@ -2084,6 +2084,17 @@ html.light-theme .settings-api-client-warning {
   cursor: pointer;
 }
 
+/* #895 — a row already sitting on the rail its click would target does nothing.
+   Don't offer a pointer for it; the nested delete/expand buttons re-arm their
+   own cursor. */
+.settings-agent-row-head[aria-disabled="true"] {
+  cursor: default;
+}
+
+.settings-agent-row-head[aria-disabled="true"] button {
+  cursor: pointer;
+}
+
 .settings-agent-dot {
   width: 10px;
   height: 10px;
@@ -2315,6 +2326,13 @@ html.light-theme .settings-api-client-warning {
   width: auto;
   min-width: 72px;
   max-width: 160px;
+}
+
+/* #895 — clears the comparison rail. Deliberately NOT `.danger`: it drops a
+   selection, it does not delete anything. The trash on the agent row is the only
+   destructive control in this area and should be the only red one. */
+.settings-rail-clear {
+  flex: 0 0 auto;
 }
 
 .settings-rail-empty {

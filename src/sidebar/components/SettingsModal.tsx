@@ -460,27 +460,52 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     setRightRailId(left);
   };
 
-  const useAgentInComparison = (agentId: string) => {
-    if (leftRailAgent()?.id === agentId) return;
-    setRightRailId(agentId);
-  };
-
-  // #895 — the agent list doubles as the rail picker: clicking the first row
-  // pins the left/primary rail, clicking any later row targets the right
-  // /comparison rail. Left assignment mirrors the rail's own agent dropdown
-  // (`setRailAgent`): a plain pin, so a collision with the right rail empties it
-  // exactly as the dropdown already does. Right assignment keeps
-  // `useAgentInComparison`'s guard against pointing both rails at one agent.
-  const selectAgentRail = (agentId: string, index: number) => {
-    if (index === 0) setLeftRailId(agentId);
-    else useAgentInComparison(agentId);
-  };
-
   type RailPill = "left" | "right" | "available";
   const railPillFor = (agentId: string): RailPill => {
     if (leftRailAgent()?.id === agentId) return "left";
     if (rightRailAgent()?.id === agentId) return "right";
     return "available";
+  };
+
+  // #895 — the agent list doubles as the rail picker: clicking the first row
+  // targets the left/primary rail, clicking any later row targets the
+  // right/comparison rail.
+  const railSideForIndex = (index: number): "left" | "right" =>
+    index === 0 ? "left" : "right";
+
+  // What a click on that row would actually do. The head's title and
+  // `aria-disabled` are driven off this, so the row never advertises an action
+  // it will not perform.
+  type RailAction = "assign" | "swap" | "none";
+  const railActionFor = (agentId: string, index: number): RailAction => {
+    const pill = railPillFor(agentId);
+    if (pill === railSideForIndex(index)) return "none";
+    return pill === "available" ? "assign" : "swap";
+  };
+
+  // The two rails must never point at the same agent (`rightRailAgent()`
+  // collapses to null on a collision). So when the clicked agent already holds
+  // the *other* rail, the two exchange places instead of one stomping the other.
+  const selectAgentRail = (agentId: string, index: number) => {
+    const left = leftRailAgent()?.id ?? null;
+    const right = rightRailAgent()?.id ?? null;
+    if (railSideForIndex(index) === "left") {
+      if (left === agentId) return;
+      // Row 0 already holds the comparison rail: hand the right rail the agent
+      // being displaced. A bare setLeftRailId here would leave `rightRailId`
+      // pointing at the new left agent — emptying the rail and wedging
+      // "Swap Rails", which early-returns on a null derived right.
+      if (right === agentId) setRightRailId(left);
+      setLeftRailId(agentId);
+      return;
+    }
+    if (right === agentId) return;
+    // The clicked row holds the left rail. Demote it to the right and promote
+    // whatever was on the right. When the right rail is empty, `setLeftRailId(null)`
+    // hands the left back to the positional fallback (agents[0]) — never this
+    // agent, which sits at index > 0.
+    if (left === agentId) setLeftRailId(right);
+    setRightRailId(agentId);
   };
 
   const toggleAgentEditor = (agentId: string) =>
@@ -1957,6 +1982,18 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     const i = () => index();
     const expanded = () => activeAgentId() === agent.id;
     const pill = () => railPillFor(agent.id);
+    const railAction = () => railActionFor(agent.id, i());
+    const railSide = () => railSideForIndex(i());
+    const railTitle = () => {
+      switch (railAction()) {
+        case "none":
+          return `Already on the ${railSide()} comparison rail`;
+        case "swap":
+          return `Swap this agent onto the ${railSide()} comparison rail`;
+        default:
+          return `Show this agent in the ${railSide()} comparison rail`;
+      }
+    };
     const agentBackendKind = () => agent.backend?.kind ?? "localProcess";
     const containerBindWarning = () => isContainerLoopbackBind(settings.data?.apiServerBind);
     return (
@@ -1973,11 +2010,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           class="settings-agent-row-head"
           role="button"
           tabindex={0}
-          title={
-            i() === 0
-              ? "Show this agent in the left comparison rail"
-              : "Show this agent in the right comparison rail"
-          }
+          title={railTitle()}
+          aria-disabled={railAction() === "none"}
           onClick={() => selectAgentRail(agent.id, i())}
           onKeyDown={(e) => {
             // The delete and chevron buttons live inside this head, and their
@@ -2009,22 +2043,12 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           </div>
           <div class="settings-agent-row-actions">
             {/* #526: the rail indicator is shown once, on the color line. #895:
-                the head click assigns the rail, so no "Use" button lives here.
-                The right rail still needs an explicit way to empty itself. */}
-            <Show when={pill() === "right"}>
-              <button
-                class="settings-row-btn danger"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setRightRailId(null);
-                }}
-                title="Remove this agent from the comparison"
-                data-ac-testid={`settings.agentRow.${i()}.unuse`}
-                data-ac-role="button"
-              >
-                Remove
-              </button>
-            </Show>
+                the head click assigns the rail, so no "Use" button lives here —
+                and no "Remove" either. A per-row Remove widened this column on
+                exactly one row, squeezing the meta column until the rail pill
+                wrapped to a second line: that row rendered 15px taller and the
+                tall row moved on every click. Clearing the comparison now lives
+                in the right rail's own header, next to the thing it clears. */}
             <button
               class="settings-agent-row-delete"
               onClick={(e) => {
@@ -2724,6 +2748,22 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               {(a) => <option value={a.id}>{a.label || a.id}</option>}
             </For>
           </select>
+          {/* #895 — emptying the comparison rail lives here rather than on the
+              agent row: it sits next to what it clears, it no longer reflows the
+              agent list, and it is no longer a red button 4px from the trash
+              that deletes the agent outright. It selects nothing; it deletes
+              nothing. */}
+          <Show when={side === "right"}>
+            <button
+              class="settings-row-btn settings-rail-clear"
+              onClick={() => setRightRailId(null)}
+              title="Clear the comparison rail (keeps the agent and its profiles)"
+              data-ac-testid={`settings.profileRail.${railIndex}.clear`}
+              data-ac-role="button"
+            >
+              Clear
+            </button>
+          </Show>
         </div>
         <div class="settings-profile-rail-body">
           <For each={profileLetters()}>
