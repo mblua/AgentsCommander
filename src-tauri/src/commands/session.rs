@@ -10,7 +10,6 @@ use crate::config::coordinator_clocks::CoordinatorClocksState;
 use crate::config::sessions_persistence::persist_current_state;
 use crate::config::settings::{AppSettings, SettingsState};
 use crate::pty::backend::{BackendSpawnSpec, SessionBackendKind};
-use crate::pty::container_runtime::DEFAULT_CONTAINER_WORKDIR;
 use crate::pty::manager::PtyManager;
 use crate::pty::output::PtyOutputTarget;
 use crate::resource_monitor::{
@@ -642,128 +641,6 @@ fn claude_projects_dir_for_config_dir(config_dir: &str, cwd: &str) -> std::path:
     base.join("projects").join(mangled)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ClaudeResumeProbe {
-    projects_dir: Option<std::path::PathBuf>,
-    exists: bool,
-    filesystem: &'static str,
-    detail: String,
-}
-
-fn looks_like_windows_absolute_path(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    bytes.len() >= 3
-        && bytes[0].is_ascii_alphabetic()
-        && bytes[1] == b':'
-        && (bytes[2] == b'/' || bytes[2] == b'\\')
-}
-
-fn map_container_workspace_path_to_host(
-    container_path: &str,
-    host_root: &str,
-) -> Option<std::path::PathBuf> {
-    let expanded = expand_env_var_refs(container_path);
-    let trimmed = expanded.trim();
-    if trimmed.is_empty()
-        || trimmed.starts_with('~')
-        || trimmed.contains('$')
-        || trimmed.contains('%')
-        || looks_like_windows_absolute_path(trimmed)
-    {
-        return None;
-    }
-
-    let normalized = trimmed.replace('\\', "/");
-    let normalized = if normalized.starts_with('/') {
-        normalized
-    } else {
-        format!(
-            "{}/{}",
-            DEFAULT_CONTAINER_WORKDIR.trim_end_matches('/'),
-            normalized.trim_start_matches("./")
-        )
-    };
-    let workdir = DEFAULT_CONTAINER_WORKDIR.trim_end_matches('/');
-    let relative = if normalized == workdir {
-        ""
-    } else {
-        normalized.strip_prefix(&format!("{workdir}/"))?
-    };
-
-    let mut host_path = std::path::PathBuf::from(host_root);
-    for segment in relative.split('/').filter(|segment| !segment.is_empty()) {
-        if segment == "." || segment == ".." {
-            return None;
-        }
-        host_path.push(segment);
-    }
-    Some(host_path)
-}
-
-fn claude_projects_dir_for_container_config_dir(
-    config_dir: &str,
-    host_root: &str,
-) -> Option<std::path::PathBuf> {
-    let host_config_dir = map_container_workspace_path_to_host(config_dir, host_root)?;
-    let mangled = crate::session::session::mangle_cwd_for_claude(DEFAULT_CONTAINER_WORKDIR);
-    Some(host_config_dir.join("projects").join(mangled))
-}
-
-fn resolve_claude_resume_probe(
-    backend_kind: SessionBackendKind,
-    claude_config_dir_override: Option<&str>,
-    shell: &str,
-    shell_args: &[String],
-    cwd: &str,
-) -> ClaudeResumeProbe {
-    if backend_kind == SessionBackendKind::ContainerTransport {
-        return match claude_config_dir_override {
-            Some(config_dir) => {
-                match claude_projects_dir_for_container_config_dir(config_dir, cwd) {
-                    Some(projects_dir) => {
-                        let exists = projects_dir.is_dir();
-                        ClaudeResumeProbe {
-                            projects_dir: Some(projects_dir),
-                            exists,
-                            filesystem: "container-workspace",
-                            detail: format!(
-                                "container_config_dir={config_dir:?} container_cwd={DEFAULT_CONTAINER_WORKDIR:?}"
-                            ),
-                        }
-                    }
-                    None => ClaudeResumeProbe {
-                        projects_dir: None,
-                        exists: false,
-                        filesystem: "container-unmapped",
-                        detail: format!(
-                            "container_config_dir={config_dir:?} is not reachable through {DEFAULT_CONTAINER_WORKDIR}"
-                        ),
-                    },
-                }
-            }
-            None => ClaudeResumeProbe {
-                projects_dir: None,
-                exists: false,
-                filesystem: "container-unresolved",
-                detail: "no CLAUDE_CONFIG_DIR in resolved child env; container auto-resume skipped"
-                    .to_string(),
-            },
-        };
-    }
-
-    let projects_dir = match claude_config_dir_override {
-        Some(dir) => Some(claude_projects_dir_for_config_dir(dir, cwd)),
-        None => resolve_claude_projects_dir(shell, shell_args, cwd),
-    };
-    let exists = projects_dir.as_ref().map(|p| p.is_dir()).unwrap_or(false);
-    ClaudeResumeProbe {
-        projects_dir,
-        exists,
-        filesystem: "host",
-        detail: "host filesystem".to_string(),
-    }
-}
-
 /// Decide whether to auto-inject `--continue` for a Claude session.
 /// Pure function: no filesystem access. Caller is responsible for resolving
 /// `claude_project_exists` (typically `~/.claude/projects/<mangled-cwd>/.is_dir()`).
@@ -1135,15 +1012,14 @@ pub async fn create_session_inner<R: tauri::Runtime>(
             .find(|(k, _)| k.eq_ignore_ascii_case("CLAUDE_CONFIG_DIR"))
             .map(|(_, v)| v.clone())
     });
-    let claude_resume_probe = resolve_claude_resume_probe(
-        backend_kind,
-        claude_config_dir_override.as_deref(),
-        &shell,
-        &shell_args,
-        &cwd,
-    );
-    let resolved_claude_projects_dir = claude_resume_probe.projects_dir.clone();
-    let claude_project_exists = claude_resume_probe.exists;
+    let resolved_claude_projects_dir = match claude_config_dir_override {
+        Some(ref dir) => Some(claude_projects_dir_for_config_dir(dir, &cwd)),
+        None => resolve_claude_projects_dir(&shell, &shell_args, &cwd),
+    };
+    let claude_project_exists = resolved_claude_projects_dir
+        .as_ref()
+        .map(|p| p.is_dir())
+        .unwrap_or(false);
     let is_claude = agent_kind == Some(CodingAgentKind::Claude);
     let will_inject_continue = should_inject_continue(
         is_claude,
@@ -1156,12 +1032,10 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     // during the stabilization window; demote later.
     if agent_kind.is_some() {
         log::info!(
-            "[session] resume-decision {} agent={:?} cwd={:?} resume_fs={} resume_detail={} projects_dir={:?} exists={} skip_auto_resume={} -> inject_continue={}",
+            "[session] resume-decision {} agent={:?} cwd={:?} projects_dir={:?} exists={} skip_auto_resume={} -> inject_continue={}",
             &id.to_string()[..8],
             agent_kind,
             cwd,
-            claude_resume_probe.filesystem,
-            claude_resume_probe.detail,
             resolved_claude_projects_dir,
             claude_project_exists,
             skip_auto_resume,
@@ -4348,62 +4222,6 @@ mod tests {
             .join("projects")
             .join(crate::session::session::mangle_cwd_for_claude("C:\\x"));
         assert_eq!(resolved, expected);
-    }
-
-    #[test]
-    fn container_claude_resume_probe_maps_workspace_config_dir() {
-        let tmp = tempfile::tempdir().unwrap();
-        let host_root = tmp.path().join("__agent_dev-rust");
-        let expected = host_root.join(".claude").join("projects").join(
-            crate::session::session::mangle_cwd_for_claude(
-                crate::pty::container_runtime::DEFAULT_CONTAINER_WORKDIR,
-            ),
-        );
-        std::fs::create_dir_all(&expected).unwrap();
-
-        let probe = super::resolve_claude_resume_probe(
-            crate::pty::backend::SessionBackendKind::ContainerTransport,
-            Some("/workspace/.claude"),
-            "claude",
-            &[],
-            host_root.to_str().unwrap(),
-        );
-
-        assert_eq!(probe.projects_dir.as_deref(), Some(expected.as_path()));
-        assert!(probe.exists);
-        assert_eq!(probe.filesystem, "container-workspace");
-    }
-
-    #[test]
-    fn container_claude_resume_probe_skips_unmapped_config_dir() {
-        let tmp = tempfile::tempdir().unwrap();
-        let probe = super::resolve_claude_resume_probe(
-            crate::pty::backend::SessionBackendKind::ContainerTransport,
-            Some("C:\\Users\\maria\\.claude"),
-            "claude",
-            &[],
-            tmp.path().to_str().unwrap(),
-        );
-
-        assert!(probe.projects_dir.is_none());
-        assert!(!probe.exists);
-        assert_eq!(probe.filesystem, "container-unmapped");
-    }
-
-    #[test]
-    fn container_claude_resume_probe_skips_without_config_dir() {
-        let tmp = tempfile::tempdir().unwrap();
-        let probe = super::resolve_claude_resume_probe(
-            crate::pty::backend::SessionBackendKind::ContainerTransport,
-            None,
-            "claude",
-            &[],
-            tmp.path().to_str().unwrap(),
-        );
-
-        assert!(probe.projects_dir.is_none());
-        assert!(!probe.exists);
-        assert_eq!(probe.filesystem, "container-unresolved");
     }
 
     // ── should_inject_continue tests (issue #82, plan §8.1) ──

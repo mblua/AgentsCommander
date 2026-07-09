@@ -15,6 +15,7 @@ use crate::pty::container_runtime::{
 
 const DOCKER_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const DOCKER_COMMAND_POLL: Duration = Duration::from_millis(50);
+const DOCKER_COMMAND_OUTPUT_BYTE_LIMIT: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DockerCommandSpec {
@@ -22,14 +23,85 @@ pub struct DockerCommandSpec {
     pub args: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct CappedCommandStream {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
 struct DockerCommandOutput {
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
+    stdout: CappedCommandStream,
+    stderr: CappedCommandStream,
+}
+
+impl DockerCommandOutput {
+    #[cfg(test)]
+    fn empty() -> Self {
+        Self {
+            stdout: CappedCommandStream::default(),
+            stderr: CappedCommandStream::default(),
+        }
+    }
+}
+
+impl CappedCommandStream {
+    fn trimmed_text(&self) -> String {
+        let mut text = String::from_utf8_lossy(&self.bytes).trim().to_string();
+        if self.truncated {
+            append_truncation_marker(&mut text);
+        }
+        text
+    }
+
+    fn trim_end_text(&self) -> String {
+        let mut text = String::from_utf8_lossy(&self.bytes).trim_end().to_string();
+        if self.truncated {
+            append_truncation_marker(&mut text);
+        }
+        text
+    }
+}
+
+fn append_truncation_marker(text: &mut String) {
+    if !text.is_empty() {
+        text.push('\n');
+    }
+    text.push_str("[output truncated]");
+}
+
+fn read_capped_to_end<R: Read>(
+    mut reader: R,
+    limit: usize,
+) -> std::io::Result<CappedCommandStream> {
+    let mut output = CappedCommandStream {
+        bytes: Vec::with_capacity(limit.min(8 * 1024)),
+        truncated: false,
+    };
+    let mut chunk = [0_u8; 8 * 1024];
+    loop {
+        let n = reader.read(&mut chunk)?;
+        if n == 0 {
+            break;
+        }
+        let remaining = limit.saturating_sub(output.bytes.len());
+        if remaining > 0 {
+            let keep = n.min(remaining);
+            output.bytes.extend_from_slice(&chunk[..keep]);
+            if keep < n {
+                output.truncated = true;
+            }
+        } else {
+            output.truncated = true;
+        }
+    }
+    Ok(output)
 }
 
 #[derive(Debug, Clone)]
 pub struct DockerRuntime {
     program: String,
+    #[cfg(test)]
+    recorded_commands: Option<std::sync::Arc<std::sync::Mutex<Vec<DockerCommandSpec>>>>,
 }
 
 impl Default for DockerRuntime {
@@ -42,6 +114,8 @@ impl DockerRuntime {
     pub fn new() -> Self {
         Self {
             program: "docker".to_string(),
+            #[cfg(test)]
+            recorded_commands: None,
         }
     }
 
@@ -49,6 +123,18 @@ impl DockerRuntime {
     pub(crate) fn with_program(program: impl Into<String>) -> Self {
         Self {
             program: program.into(),
+            recorded_commands: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_recorded_commands(
+        program: impl Into<String>,
+        recorded_commands: std::sync::Arc<std::sync::Mutex<Vec<DockerCommandSpec>>>,
+    ) -> Self {
+        Self {
+            program: program.into(),
+            recorded_commands: Some(recorded_commands),
         }
     }
 
@@ -188,6 +274,12 @@ impl DockerRuntime {
     }
 
     fn run_command_output(&self, spec: DockerCommandSpec) -> Result<DockerCommandOutput, AppError> {
+        #[cfg(test)]
+        if let Some(recorded_commands) = &self.recorded_commands {
+            recorded_commands.lock().unwrap().push(spec);
+            return Ok(DockerCommandOutput::empty());
+        }
+
         let mut child = Command::new(&spec.program)
             .args(&spec.args)
             .stdout(Stdio::piped())
@@ -210,12 +302,10 @@ impl DockerRuntime {
             ));
         };
         let stdout_reader = std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            stdout.read_to_end(&mut buf).map(|_| buf)
+            read_capped_to_end(&mut stdout, DOCKER_COMMAND_OUTPUT_BYTE_LIMIT)
         });
         let stderr_reader = std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            stderr.read_to_end(&mut buf).map(|_| buf)
+            read_capped_to_end(&mut stderr, DOCKER_COMMAND_OUTPUT_BYTE_LIMIT)
         });
 
         let deadline = Instant::now() + DOCKER_COMMAND_TIMEOUT;
@@ -250,8 +340,8 @@ impl DockerRuntime {
         let stdout = join_command_reader(stdout_reader, "stdout")?;
         let stderr = join_command_reader(stderr_reader, "stderr")?;
         if !status.success() {
-            let stderr_text = String::from_utf8_lossy(&stderr);
-            let stdout_text = String::from_utf8_lossy(&stdout);
+            let stderr_text = stderr.trimmed_text();
+            let stdout_text = stdout.trimmed_text();
             let detail = if stderr_text.trim().is_empty() {
                 stdout_text.trim()
             } else {
@@ -267,7 +357,9 @@ impl DockerRuntime {
 
     fn run_command(&self, spec: DockerCommandSpec) -> Result<String, AppError> {
         let output = self.run_command_output(spec)?;
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        Ok(String::from_utf8_lossy(&output.stdout.bytes)
+            .trim()
+            .to_string())
     }
 
     fn parse_labeled_containers(raw: &str) -> Vec<(String, String)> {
@@ -309,8 +401,8 @@ impl DockerRuntime {
     }
 
     fn combined_output_text(output: DockerCommandOutput) -> Option<String> {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = output.stdout.trim_end_text();
+        let stderr = output.stderr.trim_end_text();
         let stdout = stdout.trim_end();
         let stderr = stderr.trim_end();
         match (stdout.is_empty(), stderr.is_empty()) {
@@ -323,9 +415,9 @@ impl DockerRuntime {
 }
 
 fn join_command_reader(
-    reader: JoinHandle<std::io::Result<Vec<u8>>>,
+    reader: JoinHandle<std::io::Result<CappedCommandStream>>,
     stream_name: &'static str,
-) -> Result<Vec<u8>, AppError> {
+) -> Result<CappedCommandStream, AppError> {
     reader
         .join()
         .map_err(|_| {
@@ -446,8 +538,11 @@ impl ContainerRuntime for DockerRuntime {
 mod tests {
     use super::*;
     use crate::pty::container_runtime::{
-        ContainerStartRequest, DEFAULT_API_HELPER_PATH, DEFAULT_CONTAINER_WORKDIR, SESSION_LABEL,
+        ContainerRuntime, ContainerStartRequest, DEFAULT_API_HELPER_PATH,
+        DEFAULT_CONTAINER_WORKDIR, SESSION_LABEL,
     };
+    use std::io::Cursor;
+    use std::sync::{Arc, Mutex};
 
     fn request() -> ContainerStartRequest {
         ContainerStartRequest {
@@ -543,6 +638,38 @@ mod tests {
         let list = runtime.build_list_labeled_command();
         assert_eq!(list.args[0], "ps");
         assert!(list.args.contains(&format!("label={}", SESSION_LABEL)));
+    }
+
+    #[test]
+    fn stop_runs_force_remove_after_successful_stop() {
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let runtime = DockerRuntime::with_recorded_commands("docker-test", recorded.clone());
+        let handle = ContainerRuntimeHandle {
+            session_id: Uuid::nil(),
+            container_id: "abc123".to_string(),
+        };
+
+        runtime.stop(&handle, Duration::from_secs(5)).unwrap();
+
+        let commands = recorded.lock().unwrap().clone();
+        assert_eq!(commands.len(), 2);
+        assert_eq!(commands[0].args, vec!["stop", "--time", "5", "abc123"]);
+        assert_eq!(commands[1].args, vec!["rm", "-f", "abc123"]);
+    }
+
+    #[test]
+    fn read_capped_to_end_retains_limit_and_reports_truncation() {
+        let oversized = vec![b'x'; DOCKER_COMMAND_OUTPUT_BYTE_LIMIT + 17];
+        let capped =
+            read_capped_to_end(Cursor::new(oversized), DOCKER_COMMAND_OUTPUT_BYTE_LIMIT).unwrap();
+        assert_eq!(capped.bytes.len(), DOCKER_COMMAND_OUTPUT_BYTE_LIMIT);
+        assert!(capped.truncated);
+
+        let exact = vec![b'y'; DOCKER_COMMAND_OUTPUT_BYTE_LIMIT];
+        let uncapped =
+            read_capped_to_end(Cursor::new(exact), DOCKER_COMMAND_OUTPUT_BYTE_LIMIT).unwrap();
+        assert_eq!(uncapped.bytes.len(), DOCKER_COMMAND_OUTPUT_BYTE_LIMIT);
+        assert!(!uncapped.truncated);
     }
 
     #[test]

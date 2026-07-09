@@ -1193,11 +1193,16 @@ mod tests {
     #[derive(Default)]
     struct RecordingRuntime {
         stopped: Arc<Mutex<Vec<Uuid>>>,
+        removed: Arc<Mutex<Vec<Uuid>>>,
     }
 
     impl RecordingRuntime {
         fn stopped(&self) -> Vec<Uuid> {
             self.stopped.lock().unwrap().clone()
+        }
+
+        fn removed(&self) -> Vec<Uuid> {
+            self.removed.lock().unwrap().clone()
         }
     }
 
@@ -1218,6 +1223,7 @@ mod tests {
             _timeout: Duration,
         ) -> Result<(), AppError> {
             self.stopped.lock().unwrap().push(handle.session_id);
+            self.removed.lock().unwrap().push(handle.session_id);
             Ok(())
         }
 
@@ -1387,12 +1393,12 @@ mod tests {
                 .revoked
         );
         for _ in 0..20 {
-            if runtime.stopped().contains(&id) {
+            if runtime.stopped().contains(&id) && runtime.removed().contains(&id) {
                 return;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        panic!("runtime stop was not called");
+        panic!("runtime cleanup was not called");
     }
 
     #[test]
@@ -1483,6 +1489,30 @@ mod tests {
         assert!(err.contains("container id container-123"), "{err}");
         assert!(err.contains("exitCode=127"), "{err}");
         assert!(err.contains("command not found: claude"), "{err}");
+    }
+
+    #[test]
+    fn handshake_timeout_error_leads_when_diagnostics_fail() {
+        let diagnostics = ContainerDiagnostics {
+            container_id: "container-123".to_string(),
+            state: None,
+            inspect_error: Some("inspect failed".to_string()),
+            log_tail: None,
+            logs_error: Some("logs failed".to_string()),
+        };
+
+        let err = ContainerTransportBackend::handshake_timeout_error(
+            Duration::from_secs(5),
+            Some(&diagnostics),
+        )
+        .to_string();
+
+        assert!(
+            err.starts_with("PTY error: container bridge did not attach within 5s"),
+            "{err}"
+        );
+        assert!(err.contains("container id container-123"), "{err}");
+        assert!(err.contains("logs unavailable: logs failed"), "{err}");
     }
 
     #[tokio::test]
