@@ -2101,6 +2101,15 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 blank only if the AgentsCommander process has
                 AGENTSCOMMANDER_CONTAINER_IMAGE set; there is no built-in image fallback.
               </div>
+              <div
+                class="settings-hint settings-hint-warning"
+                data-ac-testid={`settings.agentRow.${i()}.containerHint.env`}
+                data-ac-role="status"
+              >
+                Container sessions read CLAUDE_CONFIG_DIR from inside the container.
+                Set it to %AC_REPLICA_ROOT%\.claude, or conversation state will not
+                persist and auto-resume is skipped.
+              </div>
               <Show when={containerImageMissing()}>
                 <div
                   class="settings-hint settings-hint-warning"

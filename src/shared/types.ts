@@ -293,6 +293,14 @@ export interface BridgeInfo {
 
 export type BridgeStatus = "active" | { error: string } | "detaching";
 
+export interface SessionEnvWarningPayload {
+  sessionId: string;
+  key: string;
+  /** DD7 currently names container-path-in-host-field and outside-mount. */
+  kind: string;
+  message: string;
+}
+
 export interface WindowGeometry {
   x: number;
   y: number;

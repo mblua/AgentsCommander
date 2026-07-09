@@ -6,6 +6,7 @@ import type {
   Session,
   SessionCommunication,
   SessionRepo,
+  SessionEnvWarningPayload,
   PtyOutputEvent,
   PtyScreenSnapshot,
   AppSettings,
@@ -739,6 +740,15 @@ export function onTelegramBridgeError(
 ): Promise<UnlistenFn> {
   return transport.listen<{ sessionId: string; error: string }>(
     "telegram_bridge_error",
+    callback
+  );
+}
+
+export function onSessionEnvWarning(
+  callback: (data: SessionEnvWarningPayload) => void
+): Promise<UnlistenFn> {
+  return transport.listen<SessionEnvWarningPayload>(
+    "session_env_warning",
     callback
   );
 }

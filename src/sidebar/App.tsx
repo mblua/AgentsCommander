@@ -21,6 +21,7 @@ import {
   onTelegramBridgeAttached,
   onTelegramBridgeDetached,
   onTelegramBridgeError,
+  onSessionEnvWarning,
   onTerminalDetached,
   onTerminalAttached,
   onWorkgroupTaskUpdated,
@@ -547,6 +548,15 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     unlisteners.push(
       await onTelegramBridgeError(({ sessionId, error }) => {
         console.error(`Bridge error for ${sessionId}: ${error}`);
+      })
+    );
+
+    unlisteners.push(
+      await onSessionEnvWarning((warning) => {
+        console.warn(
+          `Session environment warning for ${warning.sessionId} (${warning.key}/${warning.kind}): ${warning.message}`
+        );
+        toastStore.error(warning.message);
       })
     );
   });
