@@ -28,6 +28,7 @@ pub struct BackendSpawnSpec {
     pub container_image: Option<String>,
     pub configured_env: Vec<(String, String)>,
     pub env_remove_keys: Vec<String>,
+    pub env_unset: Vec<String>,
     pub extra_env: Vec<(String, String)>,
     pub idle_tuning: IdleTuning,
     pub output_target: PtyOutputTarget,

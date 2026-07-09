@@ -10,6 +10,10 @@ use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::pty::backend::{BackendSpawnSpec, PtyBackend};
+use crate::pty::container_paths::{
+    canonical_host_path_env_key, claude_config_dir_unmappable_warning, container_config_dir,
+    ContainerEnvClass, ContainerEnvWarning, ContainerPathMap, CLAUDE_CONFIG_DIR_KEY,
+};
 use crate::pty::container_runtime::{
     api_url_for_container, resolve_container_image, ContainerDiagnostics, ContainerRuntime,
     ContainerRuntimeHandle, ContainerStartRequest, CONTAINER_STOP_TIMEOUT,
@@ -22,7 +26,7 @@ use crate::resource_monitor::ResourceLogicalAgentSlot;
 use crate::session::manager::SessionManager;
 use crate::telegram::manager::OutputSenderMap;
 
-pub const TRANSPORT_PROTOCOL_VERSION: u32 = 1;
+pub const TRANSPORT_PROTOCOL_VERSION: u32 = 2;
 pub const MAX_TRANSPORT_FRAME_BYTES: usize = 64 * 1024;
 const TRANSPORT_LOST_EXIT_CODE: i32 = 1;
 const CLEANUP_TASK_TIMEOUT: Duration = Duration::from_secs(10);
@@ -565,6 +569,7 @@ impl ContainerTransportBackend {
             container_image,
             configured_env,
             env_remove_keys,
+            env_unset,
             extra_env: _,
             idle_tuning,
             output_target,
@@ -612,6 +617,7 @@ impl ContainerTransportBackend {
             cols,
             configured_env,
             env_remove_keys,
+            env_unset,
             container_image,
             ticket,
             &token,
@@ -1093,6 +1099,7 @@ fn build_start_request(
     cols: u16,
     configured_env: Vec<(String, String)>,
     env_remove_keys: Vec<String>,
+    env_unset: Vec<String>,
     container_image: Option<String>,
     registration_ticket: String,
     token: &ContainerApiToken,
@@ -1107,6 +1114,7 @@ fn build_start_request(
         cols,
         configured_env,
         env_remove_keys,
+        env_unset,
         container_image,
         registration_ticket,
         token,
@@ -1124,6 +1132,7 @@ fn build_start_request_with_settings(
     cols: u16,
     configured_env: Vec<(String, String)>,
     env_remove_keys: Vec<String>,
+    env_unset: Vec<String>,
     container_image: Option<String>,
     registration_ticket: String,
     token: &ContainerApiToken,
@@ -1134,8 +1143,18 @@ fn build_start_request_with_settings(
             "container transport requires the control-plane API server to be enabled".to_string(),
         ));
     }
+    if let Some(reason) =
+        crate::pty::container_paths::container_mount_source_rejection(std::path::Path::new(cwd))
+    {
+        return Err(AppError::Other(reason));
+    }
     let api_url = api_url_for_container(&settings.api_server_bind, settings.api_server_port)?;
     let child_env = sanitized_child_env(configured_env, env_remove_keys);
+    log::info!(
+        "[container-transport] mount source '{}' -> '{}'",
+        cwd,
+        DEFAULT_CONTAINER_WORKDIR
+    );
     Ok(ContainerStartRequest {
         session_id,
         image: resolve_container_image(container_image.as_deref())?,
@@ -1148,9 +1167,66 @@ fn build_start_request_with_settings(
         command: cmd.to_string(),
         args,
         child_env,
+        env_unset,
         cols,
         rows,
     })
+}
+
+pub(crate) struct ContainerChildEnv {
+    pub child_env: Vec<(String, String)>,
+    pub env_unset: Vec<String>,
+    pub warnings: Vec<ContainerEnvWarning>,
+}
+
+pub(crate) fn container_child_env(
+    configured_env: Vec<(String, String)>,
+    env_remove_keys: Vec<String>,
+    map: &ContainerPathMap,
+) -> ContainerChildEnv {
+    let mut child_env = Vec::new();
+    let mut env_unset = Vec::new();
+    let mut warnings = Vec::new();
+    for (key, value) in configured_env {
+        if env_remove_keys
+            .iter()
+            .any(|remove| env_key_matches_platform(remove, &key))
+            || is_reserved_container_env(&key)
+        {
+            continue;
+        }
+
+        let Some(canonical_key) = canonical_host_path_env_key(&key) else {
+            child_env.push((key, value));
+            continue;
+        };
+
+        match crate::pty::container_paths::classify_container_env(&key) {
+            ContainerEnvClass::Opaque => child_env.push((key, value)),
+            ContainerEnvClass::HostPathTranslate => {
+                if let Some(container_value) = container_config_dir(map, &value) {
+                    child_env.push((canonical_key.to_string(), container_value));
+                } else {
+                    if !env_unset.iter().any(|existing| existing == canonical_key) {
+                        env_unset.push(canonical_key.to_string());
+                    }
+                    if canonical_key == CLAUDE_CONFIG_DIR_KEY {
+                        warnings.push(claude_config_dir_unmappable_warning(map, &value));
+                    }
+                }
+            }
+        }
+    }
+    ContainerChildEnv {
+        child_env,
+        env_unset,
+        warnings,
+    }
+}
+
+fn env_key_matches_platform(left: &str, right: &str) -> bool {
+    crate::config::settings::normalize_env_key_for_platform(left)
+        == crate::config::settings::normalize_env_key_for_platform(right)
 }
 
 fn sanitized_child_env(
@@ -1255,6 +1331,7 @@ mod tests {
             container_image: None,
             configured_env: Vec::new(),
             env_remove_keys: Vec::new(),
+            env_unset: Vec::new(),
             extra_env: Vec::new(),
             idle_tuning: crate::session::profile::IdleTuning::DEFAULT,
             output_target,
@@ -1410,6 +1487,86 @@ mod tests {
         );
     }
 
+    fn child_env_map() -> ContainerPathMap {
+        ContainerPathMap::new(r"C:\Users\maria\repo\.ac\wg-1\__agent_x", "/workspace").unwrap()
+    }
+
+    #[test]
+    fn container_child_env_translates_mappable_host_path_keys() {
+        let got = container_child_env(
+            vec![
+                (
+                    CLAUDE_CONFIG_DIR_KEY.to_string(),
+                    r"C:\Users\maria\repo\.ac\wg-1\__agent_x\.claude".to_string(),
+                ),
+                ("MY_VAR".to_string(), r"C:\Users\maria\.outside".to_string()),
+            ],
+            Vec::new(),
+            &child_env_map(),
+        );
+
+        assert_eq!(
+            got.child_env,
+            vec![
+                (
+                    CLAUDE_CONFIG_DIR_KEY.to_string(),
+                    "/workspace/.claude".to_string()
+                ),
+                ("MY_VAR".to_string(), r"C:\Users\maria\.outside".to_string())
+            ]
+        );
+        assert!(got.env_unset.is_empty());
+        assert!(got.warnings.is_empty());
+    }
+
+    #[test]
+    fn container_child_env_unsets_unmappable_host_path_keys() {
+        let got = container_child_env(
+            vec![
+                (
+                    CLAUDE_CONFIG_DIR_KEY.to_string(),
+                    r"C:\Users\maria\.claude".to_string(),
+                ),
+                (
+                    crate::pty::container_paths::CODEX_HOME_KEY.to_string(),
+                    "/workspace/.codex".to_string(),
+                ),
+            ],
+            Vec::new(),
+            &child_env_map(),
+        );
+
+        assert!(got.child_env.is_empty());
+        assert_eq!(
+            got.env_unset,
+            vec![
+                CLAUDE_CONFIG_DIR_KEY.to_string(),
+                crate::pty::container_paths::CODEX_HOME_KEY.to_string()
+            ]
+        );
+        assert_eq!(got.warnings.len(), 1);
+        assert_eq!(
+            got.warnings[0].kind,
+            crate::pty::container_paths::WARNING_KIND_OUTSIDE_MOUNT
+        );
+    }
+
+    #[test]
+    fn container_child_env_removal_suppresses_unset_and_warning() {
+        let got = container_child_env(
+            vec![(
+                CLAUDE_CONFIG_DIR_KEY.to_string(),
+                r"C:\Users\maria\.claude".to_string(),
+            )],
+            vec![CLAUDE_CONFIG_DIR_KEY.to_string()],
+            &child_env_map(),
+        );
+
+        assert!(got.child_env.is_empty());
+        assert!(got.env_unset.is_empty());
+        assert!(got.warnings.is_empty());
+    }
+
     fn api_enabled_settings() -> crate::config::settings::AppSettings {
         crate::config::settings::AppSettings {
             api_server_enabled: true,
@@ -1436,6 +1593,7 @@ mod tests {
             "C:/repo/.ac/wg-1/__agent_dev",
             30,
             120,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Some(" agentscommander/ac-claude:latest ".to_string()),

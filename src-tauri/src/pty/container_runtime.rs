@@ -48,6 +48,7 @@ pub struct ContainerStartRequest {
     pub command: String,
     pub args: Vec<String>,
     pub child_env: Vec<(String, String)>,
+    pub env_unset: Vec<String>,
     pub cols: u16,
     pub rows: u16,
 }

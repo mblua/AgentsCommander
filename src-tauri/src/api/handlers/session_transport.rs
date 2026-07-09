@@ -117,10 +117,8 @@ async fn handle_ws_connection(
     };
 
     let (tx, rx) = tokio::sync::mpsc::channel(backend.tuning().outbound_queue_capacity);
-    if validate_hello(first, &backend, session_id, &bound_root, tx)
-        .await
-        .is_err()
-    {
+    if let Err(reason) = validate_hello(first, &backend, session_id, &bound_root, tx).await {
+        log::error!("[container-transport] {reason}");
         backend.handle_handshake_failed(session_id).await;
         return;
     }
@@ -170,35 +168,49 @@ async fn validate_hello(
     session_id: Uuid,
     bound_root: &str,
     sender: tokio::sync::mpsc::Sender<HostToBridgeFrame>,
-) -> Result<(), ()> {
+) -> Result<(), String> {
     let Message::Text(text) = message else {
-        return Err(());
+        return Err("container transport handshake failed: first frame was not text".to_string());
     };
     if text.len() > MAX_TRANSPORT_FRAME_BYTES {
-        return Err(());
+        return Err("container transport handshake failed: first frame was too large".to_string());
     }
 
-    let frame = parse_bridge_text_frame(text.as_str()).map_err(|_| ())?;
+    let frame = parse_bridge_text_frame(text.as_str())
+        .map_err(|e| format!("container transport handshake failed: invalid hello: {e}"))?;
     let BridgeToHostFrame::Hello {
         version,
         session_id: hello_session_id,
         root,
     } = frame
     else {
-        return Err(());
+        return Err("container transport handshake failed: first frame was not hello".to_string());
     };
 
-    if version != TRANSPORT_PROTOCOL_VERSION || hello_session_id != session_id {
-        return Err(());
+    if version != TRANSPORT_PROTOCOL_VERSION {
+        return Err(format!(
+            "container transport protocol mismatch: host expects protocol {} but container image reported protocol {}. Rebuild or re-pull the AgentsCommander container image so it contains the current session-bridge.",
+            TRANSPORT_PROTOCOL_VERSION, version
+        ));
+    }
+
+    if hello_session_id != session_id {
+        return Err(format!(
+            "container transport handshake failed: hello session id {} did not match expected {}",
+            hello_session_id, session_id
+        ));
     }
 
     if root_key(&root) != root_key(bound_root) {
-        return Err(());
+        return Err(
+            "container transport handshake failed: bridge root did not match bound root"
+                .to_string(),
+        );
     }
 
     backend
         .complete_hello(session_id, &root, sender)
-        .map_err(|_| ())
+        .map_err(|_| "container transport handshake failed: session was not pending".to_string())
 }
 
 async fn recv_bridge_loop(
@@ -264,6 +276,12 @@ async fn handle_bridge_message(
                 return false;
             };
             if frame.version() != TRANSPORT_PROTOCOL_VERSION {
+                log::warn!(
+                    "[container-transport] closing session {} after protocol mismatch: host expects protocol {} but bridge sent protocol {}. Rebuild or re-pull the AgentsCommander container image so it contains the current session-bridge.",
+                    session_id,
+                    TRANSPORT_PROTOCOL_VERSION,
+                    frame.version()
+                );
                 return false;
             }
 
@@ -294,10 +312,52 @@ async fn handle_bridge_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pty::idle_detector::IdleDetector;
+    use crate::session::manager::SessionManager;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn uniform_transport_auth_failure_is_generic_401() {
         let response = uniform_transport_auth_failure().into_response();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn validate_hello_protocol_mismatch_names_image_remedy() {
+        let output_senders: crate::telegram::manager::OutputSenderMap =
+            Arc::new(Mutex::new(HashMap::new()));
+        let idle_detector = IdleDetector::new(|_| {}, |_| {});
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend =
+            ContainerTransportBackend::new(output_senders, idle_detector, None, session_mgr);
+        let session_id = Uuid::new_v4();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let reported_version = TRANSPORT_PROTOCOL_VERSION - 1;
+        let text = serde_json::json!({
+            "type": "hello",
+            "version": reported_version,
+            "sessionId": session_id,
+            "root": "C:/root"
+        })
+        .to_string();
+
+        let err = validate_hello(
+            Message::Text(text.into()),
+            &backend,
+            session_id,
+            "C:/root",
+            tx,
+        )
+        .await
+        .expect_err("protocol mismatch");
+
+        assert_eq!(
+            err,
+            format!(
+                "container transport protocol mismatch: host expects protocol {} but container image reported protocol {}. Rebuild or re-pull the AgentsCommander container image so it contains the current session-bridge.",
+                TRANSPORT_PROTOCOL_VERSION, reported_version
+            )
+        );
     }
 }

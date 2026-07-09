@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
@@ -10,6 +11,11 @@ use crate::config::coordinator_clocks::CoordinatorClocksState;
 use crate::config::sessions_persistence::persist_current_state;
 use crate::config::settings::{AppSettings, SettingsState};
 use crate::pty::backend::{BackendSpawnSpec, SessionBackendKind};
+use crate::pty::container_paths::{
+    claude_config_dir_no_value_warning, container_config_dir, ContainerEnvWarning,
+    ContainerPathMap, CLAUDE_CONFIG_DIR_KEY,
+};
+use crate::pty::container_runtime::DEFAULT_CONTAINER_WORKDIR;
 use crate::pty::manager::PtyManager;
 use crate::pty::output::PtyOutputTarget;
 use crate::resource_monitor::{
@@ -641,6 +647,121 @@ fn claude_projects_dir_for_config_dir(config_dir: &str, cwd: &str) -> std::path:
     base.join("projects").join(mangled)
 }
 
+#[derive(Debug, Clone)]
+struct ResumeProbeTarget {
+    host_probe_path: Option<PathBuf>,
+    filesystem: &'static str,
+    warning: Option<ContainerEnvWarning>,
+}
+
+fn container_path_map_for_cwd(cwd: &str) -> Result<ContainerPathMap, String> {
+    let canonical_host_root = match std::fs::canonicalize(cwd) {
+        Ok(path) => crate::path_utils::path_to_string_without_windows_verbatim_prefix(&path),
+        Err(err) => {
+            log::warn!(
+                "[container-transport] failed to canonicalize mount source '{}': {}; using raw cwd for path comparisons",
+                cwd,
+                err
+            );
+            cwd.to_string()
+        }
+    };
+    ContainerPathMap::new(&canonical_host_root, DEFAULT_CONTAINER_WORKDIR)
+}
+
+fn resume_probe_target(
+    backend_kind: SessionBackendKind,
+    container_map: Option<&ContainerPathMap>,
+    resolved_spawn: Option<&AgentSpawnCommand>,
+    shell: &str,
+    shell_args: &[String],
+    cwd: &str,
+) -> ResumeProbeTarget {
+    let claude_config_dir_override =
+        resolved_spawn.and_then(|s| s.effective_env_value(CLAUDE_CONFIG_DIR_KEY));
+    resume_probe_target_for_config_dir(
+        backend_kind,
+        container_map,
+        claude_config_dir_override,
+        shell,
+        shell_args,
+        cwd,
+    )
+}
+
+fn resume_probe_target_for_config_dir(
+    backend_kind: SessionBackendKind,
+    container_map: Option<&ContainerPathMap>,
+    claude_config_dir_override: Option<&str>,
+    shell: &str,
+    shell_args: &[String],
+    cwd: &str,
+) -> ResumeProbeTarget {
+    match backend_kind {
+        SessionBackendKind::LocalProcess => {
+            let host_probe_path = match claude_config_dir_override {
+                Some(dir) => Some(claude_projects_dir_for_config_dir(dir, cwd)),
+                None => resolve_claude_projects_dir(shell, shell_args, cwd),
+            };
+            ResumeProbeTarget {
+                host_probe_path,
+                filesystem: "host",
+                warning: None,
+            }
+        }
+        SessionBackendKind::ContainerTransport => {
+            let Some(map) = container_map else {
+                return ResumeProbeTarget {
+                    host_probe_path: None,
+                    filesystem: "container-unreachable",
+                    warning: Some(claude_config_dir_no_value_warning()),
+                };
+            };
+            let Some(raw_config_dir) = claude_config_dir_override else {
+                return ResumeProbeTarget {
+                    host_probe_path: None,
+                    filesystem: "container-unreachable",
+                    warning: Some(claude_config_dir_no_value_warning()),
+                };
+            };
+            let Some(container_config_dir) = container_config_dir(map, raw_config_dir) else {
+                return ResumeProbeTarget {
+                    host_probe_path: None,
+                    filesystem: "container-unreachable",
+                    warning: None,
+                };
+            };
+            let container_projects_path = format!(
+                "{}/projects/{}",
+                container_config_dir.trim_end_matches('/'),
+                crate::session::session::mangle_cwd_for_claude(DEFAULT_CONTAINER_WORKDIR)
+            );
+            ResumeProbeTarget {
+                host_probe_path: map.to_host(&container_projects_path),
+                filesystem: "container-via-mount",
+                warning: None,
+            }
+        }
+    }
+}
+
+fn emit_session_env_warning<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+    warning: &ContainerEnvWarning,
+) {
+    log::warn!("{}", warning.message);
+    let _ = app.emit(
+        "session_env_warning",
+        serde_json::json!({
+            "sessionId": session_id.to_string(),
+            "key": warning.key,
+            "kind": warning.kind,
+            "message": warning.message,
+        }),
+    );
+}
+
 /// Decide whether to auto-inject `--continue` for a Claude session.
 /// Pure function: no filesystem access. Caller is responsible for resolving
 /// `claude_project_exists` (typically `~/.claude/projects/<mangled-cwd>/.is_dir()`).
@@ -901,6 +1022,25 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         release_resource_launch_permit(&resource_monitor, &mut resource_permit);
         return Err("root-agent cannot use container transport".to_string());
     }
+    if backend_kind == SessionBackendKind::ContainerTransport {
+        if let Some(reason) = crate::pty::container_paths::container_mount_source_rejection(
+            std::path::Path::new(&cwd),
+        ) {
+            release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+            return Err(reason);
+        }
+    }
+    let container_path_map = if backend_kind == SessionBackendKind::ContainerTransport {
+        match container_path_map_for_cwd(&cwd) {
+            Ok(map) => Some(map),
+            Err(err) => {
+                release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+                return Err(err);
+            }
+        }
+    } else {
+        None
+    };
     let mut session = match mgr
         .create_session(
             shell.clone(),
@@ -1001,26 +1141,30 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     // call sites pass `skip_auto_resume = true` for fresh creates).
     // Issue #186: honor `CLAUDE_CONFIG_DIR` overrides set by `.cmd`/`.bat`/`.ps1`/`.sh`
     // wrappers (e.g. `claude-mb`) so the probe locates the real transcript store.
-    // #599 R2 - also honor the profile/agent env layer's CLAUDE_CONFIG_DIR. The env
-    // approach launches a plain `claude`, so resolve_claude_projects_dir would
-    // short-circuit to ~/.claude and miss env-relocated transcripts. When the
-    // resolved spawn carries CLAUDE_CONFIG_DIR, probe <that>/projects/<mangled>;
-    // otherwise keep the wrapper-aware default resolution.
-    let claude_config_dir_override = resolved_spawn.as_ref().and_then(|s| {
-        s.child_env
-            .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case("CLAUDE_CONFIG_DIR"))
-            .map(|(_, v)| v.clone())
-    });
-    let resolved_claude_projects_dir = match claude_config_dir_override {
-        Some(ref dir) => Some(claude_projects_dir_for_config_dir(dir, &cwd)),
-        None => resolve_claude_projects_dir(&shell, &shell_args, &cwd),
-    };
-    let claude_project_exists = resolved_claude_projects_dir
+    // #894: local sessions keep the host probe, while container sessions probe
+    // only paths reachable through the bind mount. Missing or unmappable
+    // CLAUDE_CONFIG_DIR skips resume and is surfaced as a session env warning.
+    let resume_probe = resume_probe_target(
+        session.backend_kind,
+        container_path_map.as_ref(),
+        resolved_spawn.as_ref(),
+        &shell,
+        &shell_args,
+        &cwd,
+    );
+    let resolved_claude_projects_dir = resume_probe.host_probe_path.clone();
+    let claude_project_exists = resume_probe
+        .host_probe_path
         .as_ref()
         .map(|p| p.is_dir())
         .unwrap_or(false);
     let is_claude = agent_kind == Some(CodingAgentKind::Claude);
+    let mut session_env_warnings: Vec<ContainerEnvWarning> = Vec::new();
+    if is_claude {
+        if let Some(warning) = resume_probe.warning {
+            session_env_warnings.push(warning);
+        }
+    }
     let will_inject_continue = should_inject_continue(
         is_claude,
         skip_auto_resume,
@@ -1032,11 +1176,12 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     // during the stabilization window; demote later.
     if agent_kind.is_some() {
         log::info!(
-            "[session] resume-decision {} agent={:?} cwd={:?} projects_dir={:?} exists={} skip_auto_resume={} -> inject_continue={}",
+            "[session] resume-decision {} agent={:?} cwd={:?} projects_dir={:?} filesystem={} exists={} skip_auto_resume={} -> inject_continue={}",
             &id.to_string()[..8],
             agent_kind,
             cwd,
             resolved_claude_projects_dir,
+            resume_probe.filesystem,
             claude_project_exists,
             skip_auto_resume,
             will_inject_continue
@@ -1198,7 +1343,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     } else {
         Vec::new()
     };
-    let configured_env: Vec<(String, String)> = resolved_spawn
+    let mut configured_env: Vec<(String, String)> = resolved_spawn
         .as_ref()
         .map(|spawn| spawn.child_env.clone())
         .unwrap_or_default();
@@ -1206,6 +1351,21 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         .as_ref()
         .map(|spawn| spawn.env_remove_keys.clone())
         .unwrap_or_default();
+    let mut env_unset: Vec<String> = Vec::new();
+    if session.backend_kind == SessionBackendKind::ContainerTransport {
+        if let Some(map) = container_path_map.as_ref() {
+            let translated = crate::pty::container_backend::container_child_env(
+                configured_env,
+                env_remove_keys.clone(),
+                map,
+            );
+            configured_env = translated.child_env;
+            env_unset = translated.env_unset;
+            if is_claude {
+                session_env_warnings.extend(translated.warnings);
+            }
+        }
+    }
     let (resource_registration, logical_resource_slot): (
         Option<ResourceLaunchRegistration>,
         Option<ResourceLogicalAgentSlot>,
@@ -1313,6 +1473,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
             .and_then(|spawn| spawn.backend.image.clone()),
         configured_env,
         env_remove_keys,
+        env_unset,
         extra_env,
         idle_tuning: crate::session::profile::idle_tuning_for(agent_kind),
         output_target: PtyOutputTarget::from_app_handle(app.clone()),
@@ -1429,6 +1590,9 @@ pub async fn create_session_inner<R: tauri::Runtime>(
 
     let info = SessionInfo::from(&session);
     let _ = app.emit("session_created", info.clone());
+    for warning in &session_env_warnings {
+        emit_session_env_warning(app, id, warning);
+    }
 
     // 0.8.0: removed the "Show the terminal window when a session is created" branch.
     // Under the unified-window model the main window is created up-front and stays
@@ -3106,12 +3270,15 @@ pub async fn create_root_agent_session(
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_existing_root, compute_profile_outdated, count_working_members,
-        effective_restart_requested_profile, inject_codex_resume, resolve_actual_agent,
-        resolve_agent_command, resolve_agent_from_shell, resolve_restart_selected_agent_id,
-        resolve_root_agent_command, should_inject_continue, ExistingRootAction,
+        classify_existing_root, claude_projects_dir_for_config_dir, compute_profile_outdated,
+        count_working_members, effective_restart_requested_profile, inject_codex_resume,
+        resolve_actual_agent, resolve_agent_command, resolve_agent_from_shell,
+        resolve_restart_selected_agent_id, resolve_root_agent_command,
+        resume_probe_target_for_config_dir, should_inject_continue, ExistingRootAction,
     };
     use crate::config::settings::{AgentConfig, AppSettings, ProfileCellConfig};
+    use crate::pty::backend::SessionBackendKind;
+    use crate::pty::container_paths::{ContainerPathMap, WARNING_KIND_NO_VALUE};
     use crate::session::manager::SessionManager;
     use crate::session::session::{SessionInfo, SessionStatus};
     use std::collections::BTreeMap;
@@ -3178,6 +3345,90 @@ mod tests {
             ],
             ..AppSettings::default()
         }
+    }
+
+    fn probe_map() -> ContainerPathMap {
+        ContainerPathMap::new(r"C:\Users\maria\repo\.ac\wg-1\__agent_x", "/workspace").unwrap()
+    }
+
+    fn norm(path: &std::path::Path) -> String {
+        path.to_string_lossy().replace('\\', "/")
+    }
+
+    #[test]
+    fn resume_probe_target_local_uses_effective_config_dir_on_host() {
+        let cwd = r"C:\Users\maria\repo\.ac\wg-1\__agent_x";
+        let config_dir = r"C:\Users\maria\.claude-work";
+        let got = resume_probe_target_for_config_dir(
+            SessionBackendKind::LocalProcess,
+            None,
+            Some(config_dir),
+            "claude",
+            &[],
+            cwd,
+        );
+
+        assert_eq!(got.filesystem, "host");
+        assert_eq!(
+            got.host_probe_path,
+            Some(claude_projects_dir_for_config_dir(config_dir, cwd))
+        );
+        assert!(got.warning.is_none());
+    }
+
+    #[test]
+    fn resume_probe_target_container_no_value_warns_and_skips_probe() {
+        let map = probe_map();
+        let got = resume_probe_target_for_config_dir(
+            SessionBackendKind::ContainerTransport,
+            Some(&map),
+            None,
+            "claude",
+            &[],
+            map.host_root(),
+        );
+
+        assert_eq!(got.filesystem, "container-unreachable");
+        assert!(got.host_probe_path.is_none());
+        assert_eq!(
+            got.warning.as_ref().map(|w| w.kind),
+            Some(WARNING_KIND_NO_VALUE)
+        );
+    }
+
+    #[test]
+    fn resume_probe_target_container_maps_bind_mounted_config_dir() {
+        let map = probe_map();
+        let got = resume_probe_target_for_config_dir(
+            SessionBackendKind::ContainerTransport,
+            Some(&map),
+            Some(r"C:\Users\maria\repo\.ac\wg-1\__agent_x\.claude"),
+            "claude",
+            &[],
+            map.host_root(),
+        );
+
+        assert_eq!(got.filesystem, "container-via-mount");
+        let host_probe = got.host_probe_path.expect("host probe");
+        assert!(norm(&host_probe).ends_with("/__agent_x/.claude/projects/-workspace"));
+        assert!(got.warning.is_none());
+    }
+
+    #[test]
+    fn resume_probe_target_container_unmappable_config_dir_skips_probe_without_duplicate_warning() {
+        let map = probe_map();
+        let got = resume_probe_target_for_config_dir(
+            SessionBackendKind::ContainerTransport,
+            Some(&map),
+            Some("/workspace/.claude"),
+            "claude",
+            &[],
+            map.host_root(),
+        );
+
+        assert_eq!(got.filesystem, "container-unreachable");
+        assert!(got.host_probe_path.is_none());
+        assert!(got.warning.is_none());
     }
 
     #[derive(Default)]

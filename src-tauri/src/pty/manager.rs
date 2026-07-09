@@ -407,6 +407,7 @@ mod tests {
             container_image: None,
             configured_env: Vec::new(),
             env_remove_keys: Vec::new(),
+            env_unset: Vec::new(),
             extra_env: Vec::new(),
             idle_tuning: crate::session::profile::IdleTuning::DEFAULT,
             output_target: crate::pty::output::PtyOutputTarget::noop(),

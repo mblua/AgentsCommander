@@ -405,6 +405,7 @@ impl LocalProcessBackend {
             container_image: _,
             configured_env,
             env_remove_keys,
+            env_unset: _,
             extra_env,
             idle_tuning,
             output_target,

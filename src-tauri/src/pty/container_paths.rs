@@ -22,6 +22,17 @@ pub const HOST_PATH_TRANSLATE_ENV_KEYS: [&str; 3] = [
     OPENCODE_CONFIG_DIR_KEY,
 ];
 
+pub const WARNING_KIND_CONTAINER_PATH_IN_HOST_FIELD: &str = "container-path-in-host-field";
+pub const WARNING_KIND_OUTSIDE_MOUNT: &str = "outside-mount";
+pub const WARNING_KIND_NO_VALUE: &str = "no-value";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerEnvWarning {
+    pub key: String,
+    pub kind: &'static str,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContainerPathMap {
     host_root: String,
@@ -109,6 +120,14 @@ impl ContainerPathMap {
             })
             .unwrap_or(false)
     }
+
+    pub fn host_root(&self) -> &str {
+        &self.host_root
+    }
+
+    pub fn container_root(&self) -> &str {
+        &self.container_root
+    }
 }
 
 pub fn root_key(root: &str) -> String {
@@ -151,6 +170,42 @@ pub fn host_path_env_validation_regime(key: &str) -> Option<ContainerEnvValidati
 
 pub fn container_config_dir(map: &ContainerPathMap, raw_value: &str) -> Option<String> {
     map.to_container(raw_value)
+}
+
+pub fn claude_config_dir_unmappable_warning(
+    map: &ContainerPathMap,
+    raw_value: &str,
+) -> ContainerEnvWarning {
+    let (kind, message) = if map.is_container_path(raw_value) {
+        (
+            WARNING_KIND_CONTAINER_PATH_IN_HOST_FIELD,
+            format!(
+                "container session: CLAUDE_CONFIG_DIR='{raw_value}' looks like a container path. Path env rows in AgentsCommander are host-side values; AgentsCommander translates them for container sessions. This value was unset in the container, so conversation state will not persist and auto-resume is skipped. Set CLAUDE_CONFIG_DIR=%AC_REPLICA_ROOT%\\.claude (it resolves to /workspace/.claude inside the container)."
+            ),
+        )
+    } else {
+        (
+            WARNING_KIND_OUTSIDE_MOUNT,
+            format!(
+                "container session: CLAUDE_CONFIG_DIR='{raw_value}' is outside the bind mount ({} -> {}); it is not visible inside the container. The variable was unset in the container environment and auto-resume is skipped. Set CLAUDE_CONFIG_DIR=%AC_REPLICA_ROOT%\\.claude to make conversation state durable and resumable.",
+                map.host_root(),
+                map.container_root()
+            ),
+        )
+    };
+    ContainerEnvWarning {
+        key: CLAUDE_CONFIG_DIR_KEY.to_string(),
+        kind,
+        message,
+    }
+}
+
+pub fn claude_config_dir_no_value_warning() -> ContainerEnvWarning {
+    ContainerEnvWarning {
+        key: CLAUDE_CONFIG_DIR_KEY.to_string(),
+        kind: WARNING_KIND_NO_VALUE,
+        message: "container session: no CLAUDE_CONFIG_DIR is set. Conversation transcripts are container-ephemeral, Telegram bridge is inactive, and auto-resume is skipped. Set CLAUDE_CONFIG_DIR=%AC_REPLICA_ROOT%\\.claude to make conversation state durable and resumable.".to_string(),
+    }
 }
 
 pub fn container_mount_source_rejection(cwd: &Path) -> Option<String> {
@@ -465,6 +520,38 @@ mod tests {
         assert_eq!(
             host_path_env_validation_regime("OPENCODE_CONFIG_DIR"),
             Some(ContainerEnvValidationRegime::AllowsUnexpandedMarkers)
+        );
+    }
+
+    #[test]
+    fn claude_config_dir_warnings_have_pinned_kinds_and_messages() {
+        let map = map();
+
+        let container_path = claude_config_dir_unmappable_warning(&map, "/workspace/.claude");
+        assert_eq!(container_path.key, CLAUDE_CONFIG_DIR_KEY);
+        assert_eq!(
+            container_path.kind,
+            WARNING_KIND_CONTAINER_PATH_IN_HOST_FIELD
+        );
+        assert_eq!(
+            container_path.message,
+            "container session: CLAUDE_CONFIG_DIR='/workspace/.claude' looks like a container path. Path env rows in AgentsCommander are host-side values; AgentsCommander translates them for container sessions. This value was unset in the container, so conversation state will not persist and auto-resume is skipped. Set CLAUDE_CONFIG_DIR=%AC_REPLICA_ROOT%\\.claude (it resolves to /workspace/.claude inside the container)."
+        );
+
+        let outside = claude_config_dir_unmappable_warning(&map, r"C:\Users\maria\.claude");
+        assert_eq!(outside.key, CLAUDE_CONFIG_DIR_KEY);
+        assert_eq!(outside.kind, WARNING_KIND_OUTSIDE_MOUNT);
+        assert_eq!(
+            outside.message,
+            "container session: CLAUDE_CONFIG_DIR='C:\\Users\\maria\\.claude' is outside the bind mount (C:\\Users\\maria\\repo\\.ac\\wg-1\\__agent_x -> /workspace); it is not visible inside the container. The variable was unset in the container environment and auto-resume is skipped. Set CLAUDE_CONFIG_DIR=%AC_REPLICA_ROOT%\\.claude to make conversation state durable and resumable."
+        );
+
+        let no_value = claude_config_dir_no_value_warning();
+        assert_eq!(no_value.key, CLAUDE_CONFIG_DIR_KEY);
+        assert_eq!(no_value.kind, WARNING_KIND_NO_VALUE);
+        assert_eq!(
+            no_value.message,
+            "container session: no CLAUDE_CONFIG_DIR is set. Conversation transcripts are container-ephemeral, Telegram bridge is inactive, and auto-resume is skipped. Set CLAUDE_CONFIG_DIR=%AC_REPLICA_ROOT%\\.claude to make conversation state durable and resumable."
         );
     }
 
