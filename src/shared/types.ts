@@ -293,13 +293,24 @@ export interface BridgeInfo {
 
 export type BridgeStatus = "active" | { error: string } | "detaching";
 
-export interface SessionEnvWarningPayload {
+export const SESSION_WARNING_KINDS = [
+  "container-path-in-host-field",
+  "outside-mount",
+  "no-value",
+  "protocol-mismatch",
+] as const;
+
+export type SessionWarningKind = (typeof SESSION_WARNING_KINDS)[number];
+
+export interface SessionWarning {
   sessionId: string;
+  /** Environment key, or a protocol sentinel such as CONTAINER_TRANSPORT_PROTOCOL. */
   key: string;
-  /** DD7 currently names container-path-in-host-field and outside-mount. */
-  kind: string;
+  kind: SessionWarningKind;
   message: string;
 }
+
+export type SessionEnvWarningPayload = SessionWarning;
 
 export interface WindowGeometry {
   x: number;

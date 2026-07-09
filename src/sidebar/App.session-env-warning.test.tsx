@@ -50,6 +50,7 @@ function setupTransport(fake: FakeTransport): void {
   fake.resolve("get_active_session", "session-1");
   fake.resolve("list_detached_sessions", []);
   fake.resolve("telegram_list_bridges", []);
+  fake.resolve("drain_session_warnings", []);
 }
 
 describe("SidebarApp session environment warnings", () => {
@@ -88,6 +89,67 @@ describe("SidebarApp session environment warnings", () => {
         expect(toastStore.items[0]).toMatchObject({
           kind: "error",
           message,
+          exiting: false,
+        });
+      });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("drains buffered session warnings on mount", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    const message =
+      "container session: no CLAUDE_CONFIG_DIR is set. Set CLAUDE_CONFIG_DIR=%AC_REPLICA_ROOT%\\.claude.";
+    fake.resolve("drain_session_warnings", [
+      {
+        sessionId: "session-1",
+        key: "CLAUDE_CONFIG_DIR",
+        kind: "no-value",
+        message,
+      },
+    ]);
+
+    const rendered = renderWithFakeTransport(() => <SidebarApp embedded />, fake);
+    try {
+      await waitFor(() => {
+        expect(fake.lastCall("drain_session_warnings")?.args).toEqual({
+          sessionId: null,
+        });
+        expect(toastStore.items).toHaveLength(1);
+        expect(toastStore.items[0]).toMatchObject({
+          kind: "error",
+          message,
+          exiting: false,
+        });
+      });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("dedupes a live warning that is also returned by the initial drain", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    const warning = {
+      sessionId: "session-1",
+      key: "CONTAINER_TRANSPORT_PROTOCOL",
+      kind: "protocol-mismatch" as const,
+      message: "Container image protocol is old. Rebuild the image.",
+    };
+    fake.onInvoke("drain_session_warnings", () => {
+      fake.emitFromBackend("session_env_warning", warning);
+      return [warning];
+    });
+
+    const rendered = renderWithFakeTransport(() => <SidebarApp embedded />, fake);
+    try {
+      await waitFor(() => {
+        expect(toastStore.items).toHaveLength(1);
+        expect(toastStore.items[0]).toMatchObject({
+          kind: "error",
+          message: warning.message,
           exiting: false,
         });
       });
