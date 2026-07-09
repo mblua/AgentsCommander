@@ -25,6 +25,7 @@ use std::time::Duration;
 use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use axum::Router;
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 use crate::pty::manager::PtyManager;
@@ -33,6 +34,12 @@ use crate::session::manager::SessionManager;
 /// Hard ceiling on a buffered request body. Inline sends allow a 256 KiB
 /// semantic body plus JSON envelope overhead.
 const MAX_BODY_LIMIT_BYTES: usize = message_store::INLINE_BODY_MAX_BYTES + (16 * 1024);
+const STARTUP_READY_TIMEOUT: Duration = Duration::from_secs(2);
+
+pub struct ApiServerStart {
+    pub join_handle: tauri::async_runtime::JoinHandle<()>,
+    pub readiness: oneshot::Receiver<Result<SocketAddr, String>>,
+}
 
 /// Shared state injected into every handler.
 #[derive(Clone)]
@@ -68,11 +75,25 @@ pub fn build_router(state: ApiState) -> Router {
         .with_state(state)
 }
 
+pub async fn wait_for_startup_ready(
+    readiness: oneshot::Receiver<Result<SocketAddr, String>>,
+) -> Result<SocketAddr, String> {
+    match tokio::time::timeout(STARTUP_READY_TIMEOUT, readiness).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err("API server startup task ended before reporting readiness".to_string()),
+        Err(_) => Err(format!(
+            "API server did not report bind readiness within {:?}",
+            STARTUP_READY_TIMEOUT
+        )),
+    }
+}
+
 /// Start the control-plane API server on the shared tokio runtime, mirroring
-/// `web::start_server`. Returns the join handle for the managed
-/// `ApiServerHandle`. On any startup failure (unresolvable config dir, invalid
-/// address, or `bind` error) it logs at error and the task returns cleanly: it
-/// does NOT panic (§0.5 dev-rust F7, unlike `web/mod.rs`'s `.expect()`).
+/// `web::start_server`. Returns the join handle plus a readiness receiver for
+/// the managed `ApiServerHandle`. On any startup failure (unresolvable config
+/// dir, invalid address, or `bind` error) it logs at error, sends readiness
+/// `Err`, and the task returns cleanly: it does NOT panic (§0.5 dev-rust F7,
+/// unlike `web/mod.rs`'s `.expect()`).
 pub fn start_server(
     bind: String,
     port: u16,
@@ -80,22 +101,30 @@ pub fn start_server(
     session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
     pty_mgr: Arc<Mutex<PtyManager>>,
     shutdown: CancellationToken,
-) -> tauri::async_runtime::JoinHandle<()> {
+) -> ApiServerStart {
+    let (readiness_tx, readiness) = oneshot::channel();
     let store = match auth::ApiClientStore::at_config_dir() {
         Some(s) => Arc::new(s),
         None => {
-            log::error!("[api-server] cannot resolve config_dir; API server not started");
-            return tauri::async_runtime::spawn(async {});
+            let message = "Cannot resolve config_dir for API server".to_string();
+            log::error!("[api-server] {}; API server not started", message);
+            let _ = readiness_tx.send(Err(message));
+            return ApiServerStart {
+                join_handle: tauri::async_runtime::spawn(async {}),
+                readiness,
+            };
         }
     };
     let message_store = match message_store::MessageStore::at_config_dir() {
         Ok(s) => Arc::new(s),
         Err(e) => {
-            log::error!(
-                "[api-server] cannot initialize DB message store; API server not started: {}",
-                e
-            );
-            return tauri::async_runtime::spawn(async {});
+            let message = format!("Cannot initialize API DB message store: {}", e);
+            log::error!("[api-server] {}; API server not started", message);
+            let _ = readiness_tx.send(Err(message));
+            return ApiServerStart {
+                join_handle: tauri::async_runtime::spawn(async {}),
+                readiness,
+            };
         }
     };
 
@@ -109,24 +138,29 @@ pub fn start_server(
     };
     let router = build_router(state);
 
-    tauri::async_runtime::spawn(async move {
+    let join_handle = tauri::async_runtime::spawn(async move {
+        let mut readiness_tx = Some(readiness_tx);
         let dispatcher_handle = dispatcher::start_dispatcher(
             message_store,
             app_handle.clone(),
             shutdown.clone(),
             dispatcher::DispatcherConfig::default(),
         );
-        let addr: SocketAddr = match crate::config::settings::parse_api_server_socket_addr(
-            &bind, port,
-        ) {
-            Ok(a) => a,
-            Err(e) => {
-                log::error!("[api-server] invalid bind address {}:{}: {}", bind, port, e);
-                shutdown.cancel();
-                wait_for_dispatcher(dispatcher_handle, "invalid-bind").await;
-                return;
-            }
-        };
+        let addr: SocketAddr =
+            match crate::config::settings::parse_api_server_socket_addr(&bind, port) {
+                Ok(a) => a,
+                Err(e) => {
+                    let message =
+                        format!("Invalid API server bind address {}:{}: {}", bind, port, e);
+                    log::error!("[api-server] {}", message);
+                    if let Some(tx) = readiness_tx.take() {
+                        let _ = tx.send(Err(message));
+                    }
+                    shutdown.cancel();
+                    wait_for_dispatcher(dispatcher_handle, "invalid-bind").await;
+                    return;
+                }
+            };
 
         // Loud warning on any non-loopback bind (§0.5 DESIGN DECISION).
         if !addr.ip().is_loopback() {
@@ -142,17 +176,20 @@ pub fn start_server(
         let listener = match tokio::net::TcpListener::bind(addr).await {
             Ok(l) => l,
             Err(e) => {
-                log::error!(
-                    "[api-server] bind failed on {} (port occupied?): {}; API server not started",
-                    addr,
-                    e
-                );
+                let message = format!("API server bind failed on {}: {}", addr, e);
+                log::error!("[api-server] {}; API server not started", message);
+                if let Some(tx) = readiness_tx.take() {
+                    let _ = tx.send(Err(message));
+                }
                 shutdown.cancel();
                 wait_for_dispatcher(dispatcher_handle, "bind-failure").await;
                 return;
             }
         };
 
+        if let Some(tx) = readiness_tx.take() {
+            let _ = tx.send(Ok(addr));
+        }
         log::info!("[api-server] listening on http://{}", addr);
         println!("[api-server] listening on http://{}", addr);
 
@@ -169,7 +206,12 @@ pub fn start_server(
         }
         shutdown.cancel();
         wait_for_dispatcher(dispatcher_handle, "server-stop").await;
-    })
+    });
+
+    ApiServerStart {
+        join_handle,
+        readiness,
+    }
 }
 
 const DISPATCHER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);

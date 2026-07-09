@@ -66,11 +66,11 @@ pub fn build_credential_values(token: &Uuid, cwd: &str) -> CredentialValues {
         .and_then(|p| p.parent())
         .map(|parent| {
             parent
-                .join(format!(".{}", &binary))
+                .join(format!(".{}", binary))
                 .to_string_lossy()
                 .to_string()
         })
-        .unwrap_or_else(|| format!(".{}", &binary));
+        .unwrap_or_else(|| format!(".{}", binary));
 
     CredentialValues {
         token: token.to_string(),

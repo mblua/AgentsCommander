@@ -20,6 +20,7 @@ pub mod voice;
 pub mod web;
 
 use std::collections::{HashMap, HashSet};
+use std::net::SocketAddr;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -100,11 +101,20 @@ pub struct ApiServerHandle {
 pub struct ApiServerTask {
     join: tauri::async_runtime::JoinHandle<()>,
     shutdown: CancellationToken,
+    bound_addr: SocketAddr,
 }
 
 impl ApiServerTask {
-    pub fn new(join: tauri::async_runtime::JoinHandle<()>, shutdown: CancellationToken) -> Self {
-        Self { join, shutdown }
+    pub fn new(
+        join: tauri::async_runtime::JoinHandle<()>,
+        shutdown: CancellationToken,
+        bound_addr: SocketAddr,
+    ) -> Self {
+        Self {
+            join,
+            shutdown,
+            bound_addr,
+        }
     }
 }
 
@@ -115,10 +125,14 @@ impl ApiServerHandle {
             .inner
             .lock()
             .map_err(|_| "API server handle lock is poisoned".to_string())?;
-        if inner
+        if let Some(stored) = inner
             .as_ref()
-            .is_some_and(|stored| !stored.join.inner().is_finished())
+            .filter(|stored| !stored.join.inner().is_finished())
         {
+            log::debug!(
+                "[api-server] start ignored; server already running on {}",
+                stored.bound_addr
+            );
             task.shutdown.cancel();
             task.join.abort();
             return Ok(false);
@@ -128,18 +142,22 @@ impl ApiServerHandle {
     }
 
     pub fn has_running(&self) -> Result<bool, String> {
+        Ok(self.running_bound_addr()?.is_some())
+    }
+
+    pub fn running_bound_addr(&self) -> Result<Option<SocketAddr>, String> {
         let mut inner = self
             .inner
             .lock()
             .map_err(|_| "API server handle lock is poisoned".to_string())?;
-        if inner
+        if let Some(stored) = inner
             .as_ref()
-            .is_some_and(|stored| !stored.join.inner().is_finished())
+            .filter(|stored| !stored.join.inner().is_finished())
         {
-            return Ok(true);
+            return Ok(Some(stored.bound_addr));
         }
         *inner = None;
-        Ok(false)
+        Ok(None)
     }
 
     pub async fn shutdown_running(&self, timeout: std::time::Duration) -> Result<bool, String> {
@@ -731,16 +749,15 @@ pub fn run(
             }
 
             // #791 - start the control-plane API server if enabled in settings.
-            // Opt-in (default false), mirroring the web server block above. On
-            // any startup failure `api::start_server`'s task logs and returns
-            // (no panic); a listening server is stored in the managed handle.
+            // Opt-in (default false), mirroring the web server block above. The
+            // managed handle is stored only after bind readiness is confirmed.
             {
                 let api_settings = config::settings::load_settings();
                 if api_settings.api_server_enabled {
                     let bind = api_settings.api_server_bind.clone();
                     let port = api_settings.api_server_port;
                     let api_shutdown = shutdown_for_setup.token().child_token();
-                    let join_handle = api::start_server(
+                    let server_start = api::start_server(
                         bind,
                         port,
                         app.handle().clone(),
@@ -748,11 +765,23 @@ pub fn run(
                         pty_mgr.clone(),
                         api_shutdown.clone(),
                     );
-                    let api_handle = app.state::<ApiServerHandle>();
-                    if let Err(e) =
-                        api_handle.store_if_idle(ApiServerTask::new(join_handle, api_shutdown))
-                    {
-                        log::error!("[api-server] failed to store server handle: {}", e);
+                    match tauri::async_runtime::block_on(api::wait_for_startup_ready(
+                        server_start.readiness,
+                    )) {
+                        Ok(bound_addr) => {
+                            let api_handle = app.state::<ApiServerHandle>();
+                            if let Err(e) = api_handle.store_if_idle(ApiServerTask::new(
+                                server_start.join_handle,
+                                api_shutdown,
+                                bound_addr,
+                            )) {
+                                log::error!("[api-server] failed to store server handle: {}", e);
+                            }
+                        }
+                        Err(err) => {
+                            api_shutdown.cancel();
+                            log::warn!("[api-server] startup failed: {}", err);
+                        }
                     }
                 }
             }
@@ -2445,8 +2474,13 @@ mod tests {
     };
     use crate::config::settings::{AgentConfig, AppSettings};
     use crate::session::session::SessionStatus;
+    use std::net::SocketAddr;
     use std::time::Duration;
     use tokio_util::sync::CancellationToken;
+
+    fn api_test_addr(port: u16) -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, 1], port))
+    }
 
     fn settings_with_agent() -> AppSettings {
         AppSettings {
@@ -2526,9 +2560,13 @@ mod tests {
         });
 
         assert!(handle
-            .store_if_idle(ApiServerTask::new(join, shutdown))
+            .store_if_idle(ApiServerTask::new(join, shutdown, api_test_addr(9906)))
             .unwrap());
         assert!(handle.has_running().unwrap());
+        assert_eq!(
+            handle.running_bound_addr().unwrap(),
+            Some(api_test_addr(9906))
+        );
         assert!(handle
             .shutdown_running(Duration::from_secs(1))
             .await
@@ -2545,7 +2583,11 @@ mod tests {
             first_task_shutdown.cancelled().await;
         });
         assert!(handle
-            .store_if_idle(ApiServerTask::new(first_join, first_shutdown))
+            .store_if_idle(ApiServerTask::new(
+                first_join,
+                first_shutdown,
+                api_test_addr(9906),
+            ))
             .unwrap());
 
         let second_shutdown = CancellationToken::new();
@@ -2555,7 +2597,11 @@ mod tests {
             second_task_shutdown.cancelled().await;
         });
         assert!(!handle
-            .store_if_idle(ApiServerTask::new(second_join, second_shutdown))
+            .store_if_idle(ApiServerTask::new(
+                second_join,
+                second_shutdown,
+                api_test_addr(9907),
+            ))
             .unwrap());
         assert!(second_observer.is_cancelled());
         assert!(handle.has_running().unwrap());
