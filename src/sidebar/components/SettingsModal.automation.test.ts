@@ -171,8 +171,9 @@ function byTestId<T extends Element = Element>(testId: string): T {
 }
 
 // #526: the unified Coding Agents screen keeps each agent's config editor
-// collapsed by default (the resting screen reads as the prototype). Clicking the
-// row head expands the inline editor that holds label/command/env/isolation.
+// collapsed by default (the resting screen reads as the prototype). #895: the
+// row head now assigns the rail, so the chevron button owns the expand of the
+// inline editor that holds label/command/env/isolation.
 function expandAgentRow(index = 0): void {
   const toggle = document.querySelector<HTMLElement>(
     `[data-ac-testid="settings.agentRow.${index}.toggle"]`,
@@ -977,8 +978,11 @@ describe("SettingsModal automation hooks", () => {
     byTestId<HTMLButtonElement>("settings.agentRow.1.unuse").click();
     await settle();
     expect(byTestId("settings.profileRail.1").getAttribute("data-ac-agent-id")).toBeNull();
-    // Claude is now available again and offers "Use" to re-add it.
-    expect(document.querySelector('[data-ac-testid="settings.agentRow.1.use"]')).toBeTruthy();
+    // #895: Claude is available again. There is no "Use" button any more — the
+    // row head itself re-adds it — and the Remove button is gone with the pill.
+    expect(document.querySelector('[data-ac-testid="settings.agentRow.1.use"]')).toBeNull();
+    expect(document.querySelector('[data-ac-testid="settings.agentRow.1.unuse"]')).toBeNull();
+    expect(byTestId("settings.agentRow.1").getAttribute("data-ac-rail")).toBe("available");
 
     dispose();
   });

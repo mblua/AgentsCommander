@@ -22,6 +22,7 @@ import { sessionsStore } from "../stores/sessions";
 import { projectStore } from "../stores/project";
 import { newAgentId, definitionToSeed } from "../../shared/agent-presets";
 import { codingAgentsStore } from "../stores/coding-agents";
+import TrashIcon from "./TrashIcon";
 import { mergeSettingsForSavePreservingProjects } from "./settings-save";
 import {
   AC_MATRIX_ROOT_PLACEHOLDER,
@@ -462,6 +463,17 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const useAgentInComparison = (agentId: string) => {
     if (leftRailAgent()?.id === agentId) return;
     setRightRailId(agentId);
+  };
+
+  // #895 — the agent list doubles as the rail picker: clicking the first row
+  // pins the left/primary rail, clicking any later row targets the right
+  // /comparison rail. Left assignment mirrors the rail's own agent dropdown
+  // (`setRailAgent`): a plain pin, so a collision with the right rail empties it
+  // exactly as the dropdown already does. Right assignment keeps
+  // `useAgentInComparison`'s guard against pointing both rails at one agent.
+  const selectAgentRail = (agentId: string, index: number) => {
+    if (index === 0) setLeftRailId(agentId);
+    else useAgentInComparison(agentId);
   };
 
   type RailPill = "left" | "right" | "available";
@@ -1936,10 +1948,11 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   };
 
   // Left-panel agent row: compact prototype-style header (dot, name, command
-  // basename, color swatch+hex, rail pill, Use/Remove) with the full agent
-  // config editor (#384: label/command/color/flags/env/CODEX_HOME isolation)
-  // collapsed behind the head. Collapsed by default — the resting screen reads
-  // as the prototype; the editor is secondary, behind the expand.
+  // basename, color swatch+hex, rail pill, delete) with the full agent config
+  // editor (#384: label/command/color/flags/env/CODEX_HOME isolation) collapsed
+  // behind the chevron. Collapsed by default — the resting screen reads as the
+  // prototype; the editor is secondary, behind the expand. #895: the head itself
+  // is the rail picker, so the editor expand lives on the chevron button.
   const renderAgentRow = (agent: AgentConfig, index: () => number) => {
     const i = () => index();
     const expanded = () => activeAgentId() === agent.id;
@@ -1960,17 +1973,25 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           class="settings-agent-row-head"
           role="button"
           tabindex={0}
-          aria-expanded={expanded()}
-          onClick={() => toggleAgentEditor(agent.id)}
+          title={
+            i() === 0
+              ? "Show this agent in the left comparison rail"
+              : "Show this agent in the right comparison rail"
+          }
+          onClick={() => selectAgentRail(agent.id, i())}
           onKeyDown={(e) => {
+            // The delete and chevron buttons live inside this head, and their
+            // keydown bubbles here. Only act on keys aimed at the head itself,
+            // or Enter on the trash icon would also reassign a rail.
+            if (e.target !== e.currentTarget) return;
             if (e.key === "Enter" || e.key === " ") {
               e.preventDefault();
-              toggleAgentEditor(agent.id);
+              selectAgentRail(agent.id, i());
             }
           }}
-          data-ac-testid={`settings.agentRow.${i()}.toggle`}
+          data-ac-testid={`settings.agentRow.${i()}.select`}
           data-ac-role="button"
-          data-ac-state={expanded() ? "expanded" : "collapsed"}
+          data-ac-state={pill()}
         >
           <span class="settings-agent-dot" style={{ background: agent.color }} />
           <div class="settings-agent-row-meta">
@@ -1987,56 +2008,53 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             </div>
           </div>
           <div class="settings-agent-row-actions">
-            {/* #526: the rail indicator is shown once, on the color line. The
-                left/primary agent has no Use/Remove action here, so render
-                nothing (previously a duplicate "left" pill lived here). */}
-            <Show when={pill() !== "left"}>
-              <Show
-                when={pill() === "right"}
-                fallback={
-                  <button
-                    class="settings-row-btn"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      useAgentInComparison(agent.id);
-                    }}
-                    title="Show this agent in the right comparison rail"
-                    data-ac-testid={`settings.agentRow.${i()}.use`}
-                    data-ac-role="button"
-                  >
-                    Use
-                  </button>
-                }
+            {/* #526: the rail indicator is shown once, on the color line. #895:
+                the head click assigns the rail, so no "Use" button lives here.
+                The right rail still needs an explicit way to empty itself. */}
+            <Show when={pill() === "right"}>
+              <button
+                class="settings-row-btn danger"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setRightRailId(null);
+                }}
+                title="Remove this agent from the comparison"
+                data-ac-testid={`settings.agentRow.${i()}.unuse`}
+                data-ac-role="button"
               >
-                <button
-                  class="settings-row-btn danger"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setRightRailId(null);
-                  }}
-                  title="Remove this agent from the comparison"
-                  data-ac-testid={`settings.agentRow.${i()}.unuse`}
-                  data-ac-role="button"
-                >
-                  Remove
-                </button>
-              </Show>
+                Remove
+              </button>
             </Show>
             <button
-              class="settings-agent-remove"
+              class="settings-agent-row-delete"
               onClick={(e) => {
+                // Without this the head's click handler would also fire and
+                // assign a rail on the way out.
                 e.stopPropagation();
                 removeAgent(i());
               }}
               title="Delete agent"
+              aria-label={`Delete ${agent.label || "agent"}`}
               data-ac-testid={`settings.agentRow.${i()}.remove`}
               data-ac-role="button"
             >
-              &#x2715;
+              <TrashIcon class="settings-agent-row-delete-icon" />
             </button>
-            <span class="settings-agent-chevron" aria-hidden="true">
+            <button
+              class="settings-agent-chevron"
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleAgentEditor(agent.id);
+              }}
+              aria-expanded={expanded()}
+              aria-label={expanded() ? "Collapse agent settings" : "Expand agent settings"}
+              title={expanded() ? "Collapse agent settings" : "Expand agent settings"}
+              data-ac-testid={`settings.agentRow.${i()}.toggle`}
+              data-ac-role="button"
+              data-ac-state={expanded() ? "expanded" : "collapsed"}
+            >
               {expanded() ? "▾" : "▸"}
-            </span>
+            </button>
           </div>
         </div>
 
@@ -2667,7 +2685,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         >
           <div class="settings-rail-empty-note">
             {side === "right"
-              ? "Pick a second coding agent (Use, or the rail selector) to compare side by side."
+              ? "Pick a second coding agent (click its row, or use the rail selector) to compare side by side."
               : "Add a coding agent to begin."}
           </div>
         </section>

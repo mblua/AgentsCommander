@@ -2194,11 +2194,51 @@ html.light-theme .settings-api-client-warning {
   cursor: not-allowed;
 }
 
+/* #895 — always-visible delete affordance on the agent row. Unlike
+   .settings-agent-remove (hover-revealed inside .settings-button-card) the agent
+   row head is itself clickable, so the destructive action has to announce itself
+   rather than wait for a hover. */
+.settings-agent-row-delete {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--sidebar-fg-dim);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.settings-agent-row-delete:hover {
+  background: rgba(255, 59, 92, 0.15);
+  color: var(--status-exited, #ff5d5d);
+}
+
+.settings-agent-row-delete-icon {
+  width: 13px;
+  height: 13px;
+  display: block;
+}
+
 .settings-agent-chevron {
   color: var(--sidebar-fg-dim);
   font-size: 10px;
   width: 14px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
   text-align: center;
+  transition: color var(--transition-fast);
+}
+
+.settings-agent-chevron:hover {
+  color: var(--sidebar-accent);
 }
 
 .settings-agent-editor {
