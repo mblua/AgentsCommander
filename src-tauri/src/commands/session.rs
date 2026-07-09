@@ -4224,6 +4224,38 @@ mod tests {
         assert_eq!(resolved, expected);
     }
 
+    #[test]
+    fn local_resume_probe_env_layer_uses_config_dir_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let custom_base = tmp.path().join(".claude-env");
+        let cwd = "C:\\Users\\Test\\repo";
+
+        let resolved =
+            super::claude_projects_dir_for_config_dir(custom_base.to_str().unwrap(), cwd);
+
+        let expected = custom_base
+            .join("projects")
+            .join(crate::session::session::mangle_cwd_for_claude(cwd));
+        assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn local_resume_probe_env_layer_expands_powershell_envvar() {
+        let var = "AC_TEST_894_CONFIG_DIR";
+        let tmp = tempfile::tempdir().unwrap();
+        let custom_base = tmp.path().join(".claude-env");
+        std::env::set_var(var, custom_base.to_str().unwrap());
+
+        let resolved =
+            super::claude_projects_dir_for_config_dir(&format!("$env:{}\\.claude", var), "C:\\x");
+
+        std::env::remove_var(var);
+        let expected = PathBuf::from(format!("{}\\.claude", custom_base.to_string_lossy()))
+            .join("projects")
+            .join(crate::session::session::mangle_cwd_for_claude("C:\\x"));
+        assert_eq!(resolved, expected);
+    }
+
     // ── should_inject_continue tests (issue #82, plan §8.1) ──
 
     #[test]

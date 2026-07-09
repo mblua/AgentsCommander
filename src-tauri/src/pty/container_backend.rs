@@ -28,6 +28,10 @@ const TRANSPORT_LOST_EXIT_CODE: i32 = 1;
 const CLEANUP_TASK_TIMEOUT: Duration = Duration::from_secs(10);
 const CONTAINER_DIAGNOSTIC_LOG_TAIL_LINES: usize = 80;
 
+// Keep this re-export so session_transport and container_backend continue to
+// share exactly one normalization rule.
+pub(crate) use crate::pty::container_paths::root_key;
+
 type RouteRemover = Arc<dyn Fn(Uuid) + Send + Sync>;
 
 #[derive(Debug, Clone, Copy)]
@@ -1170,17 +1174,6 @@ fn is_reserved_container_env(key: &str) -> bool {
         || key.eq_ignore_ascii_case("AGENTSCOMMANDER_SESSION_REGISTRATION_TOKEN")
         || key.eq_ignore_ascii_case("AGENTSCOMMANDER_API_TOKEN")
         || key.eq_ignore_ascii_case("AGENTSCOMMANDER_ROOT")
-}
-
-pub(crate) fn root_key(root: &str) -> String {
-    let normalized = crate::path_utils::normalize_windows_verbatim_path(root);
-    let normalized = normalized.replace('\\', "/");
-    let trimmed = normalized.trim_end_matches('/').to_string();
-    if cfg!(windows) {
-        trimmed.to_ascii_lowercase()
-    } else {
-        trimmed
-    }
 }
 
 #[cfg(test)]
