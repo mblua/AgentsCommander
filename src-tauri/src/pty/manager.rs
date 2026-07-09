@@ -402,6 +402,7 @@ mod tests {
             cmd: "cmd".to_string(),
             args: Vec::new(),
             cwd: ".".to_string(),
+            selected_cwd: None,
             cols: 80,
             rows: 24,
             container_image: None,

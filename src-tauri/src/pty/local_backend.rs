@@ -400,6 +400,7 @@ impl LocalProcessBackend {
             cmd,
             args,
             cwd,
+            selected_cwd: _,
             cols,
             rows,
             container_image: _,

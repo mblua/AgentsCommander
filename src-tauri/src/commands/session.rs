@@ -27,6 +27,7 @@ use crate::session::profile::CodingAgentKind;
 use crate::session::session::{
     SessionCommunication, SessionCommunicationKind, SessionInfo, SessionRepo, SessionStatus,
 };
+use crate::session::warnings::{emit_session_warning, SessionWarning};
 use crate::telegram::manager::TelegramBridgeState;
 use crate::DetachedSessionsState;
 
@@ -672,13 +673,48 @@ fn container_path_context_for_cwd(cwd: &str) -> Result<ContainerPathContext, Str
     if let Some(reason) = crate::pty::container_paths::container_mount_source_rejection(
         std::path::Path::new(&canonical_host_root),
     ) {
-        return Err(reason);
+        return Err(container_mount_rejection_message(
+            cwd,
+            &canonical_host_root,
+            reason,
+        ));
     };
     let map = ContainerPathMap::new(&canonical_host_root, DEFAULT_CONTAINER_WORKDIR)?;
     Ok(ContainerPathContext {
         host_root: canonical_host_root,
         map,
     })
+}
+
+fn container_mount_rejection_message(selected: &str, canonical: &str, reason: String) -> String {
+    if selected == canonical {
+        reason
+    } else {
+        format!(
+            "{} (selected path '{}', canonical path '{}')",
+            reason, selected, canonical
+        )
+    }
+}
+
+fn effective_codex_home_for_backend(
+    backend_kind: SessionBackendKind,
+    container_map: Option<&ContainerPathMap>,
+    spawn: &AgentSpawnCommand,
+) -> Option<String> {
+    let raw_home = spawn.effective_codex_home.as_ref()?;
+    let raw_home =
+        crate::path_utils::path_to_string_without_windows_verbatim_prefix(raw_home.as_path());
+    match backend_kind {
+        SessionBackendKind::LocalProcess => Some(raw_home),
+        SessionBackendKind::ContainerTransport => {
+            let map = container_map?;
+            let container_home = container_config_dir(map, &raw_home)?;
+            map.to_host(&container_home).map(|path| {
+                crate::path_utils::path_to_string_without_windows_verbatim_prefix(path.as_path())
+            })
+        }
+    }
 }
 
 fn resume_probe_target(
@@ -755,23 +791,6 @@ fn resume_probe_target_for_config_dir(
             }
         }
     }
-}
-
-fn emit_session_env_warning<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    session_id: Uuid,
-    warning: &ContainerEnvWarning,
-) {
-    log::warn!("{}", warning.message);
-    let _ = app.emit(
-        "session_env_warning",
-        serde_json::json!({
-            "sessionId": session_id.to_string(),
-            "key": warning.key,
-            "kind": warning.kind,
-            "message": warning.message,
-        }),
-    );
 }
 
 /// Decide whether to auto-inject `--continue` for a Claude session.
@@ -1095,10 +1114,11 @@ pub async fn create_session_inner<R: tauri::Runtime>(
 
     let id = session.id;
     if let Some(spawn) = resolved_spawn.as_ref() {
-        let effective_codex_home = spawn
-            .effective_codex_home
-            .as_ref()
-            .map(|path| path.to_string_lossy().to_string());
+        let effective_codex_home = effective_codex_home_for_backend(
+            session.backend_kind,
+            container_path_context.as_ref().map(|context| &context.map),
+            spawn,
+        );
         mgr.set_profile_metadata(
             id,
             Some(spawn.profile_resolution.requested_profile.clone()),
@@ -1157,6 +1177,9 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         &cwd,
     );
     let resolved_claude_projects_dir = resume_probe.host_probe_path.clone();
+    mgr.set_resolved_claude_projects_dir(id, resolved_claude_projects_dir.clone())
+        .await;
+    session.resolved_claude_projects_dir = resolved_claude_projects_dir.clone();
     let claude_project_exists = resume_probe
         .host_probe_path
         .as_ref()
@@ -1471,7 +1494,12 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         id,
         cmd: shell.clone(),
         args: shell_args.clone(),
-        cwd: spawn_cwd,
+        cwd: spawn_cwd.clone(),
+        selected_cwd: if spawn_cwd != cwd {
+            Some(cwd.clone())
+        } else {
+            None
+        },
         cols: 120,
         rows: 30,
         container_image: resolved_spawn
@@ -1597,7 +1625,15 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     let info = SessionInfo::from(&session);
     let _ = app.emit("session_created", info.clone());
     for warning in &session_env_warnings {
-        emit_session_env_warning(app, id, warning);
+        emit_session_warning(
+            app,
+            SessionWarning::new(
+                id,
+                warning.key.clone(),
+                warning.kind,
+                warning.message.clone(),
+            ),
+        );
     }
 
     // 0.8.0: removed the "Show the terminal window when a session is created" branch.
@@ -3288,7 +3324,11 @@ mod tests {
     use crate::session::manager::SessionManager;
     use crate::session::session::{SessionInfo, SessionStatus};
     use std::collections::BTreeMap;
+    #[cfg(windows)]
+    use std::path::Path;
     use std::path::PathBuf;
+    #[cfg(windows)]
+    use std::process::Command;
     use std::sync::{Arc, Mutex};
     use uuid::Uuid;
 
@@ -3508,6 +3548,79 @@ mod tests {
 
         assert_eq!(got.host_root, canonical);
         assert_eq!(got.map.host_root(), canonical);
+    }
+
+    #[cfg(windows)]
+    fn create_junction(link: &Path, target: &Path) {
+        let output = Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(link)
+            .arg(target)
+            .output()
+            .expect("failed to invoke mklink");
+        assert!(
+            output.status.success(),
+            "failed to create junction link='{}' target='{}': stdout={} stderr={}",
+            link.display(),
+            target.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn container_path_context_refuses_junction_targeting_workgroup_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp
+            .path()
+            .join("project")
+            .join(".ac")
+            .join("wg-11-dev-v4-team");
+        std::fs::create_dir_all(&target).unwrap();
+        let link = tmp.path().join("link-to-wg");
+        create_junction(&link, &target);
+
+        let err = container_path_context_for_cwd(link.to_str().unwrap())
+            .expect_err("junction to workgroup root must be refused");
+
+        assert!(err.contains("workgroup root"), "{err}");
+        assert!(err.contains("selected path"), "{err}");
+        assert!(err.contains("canonical path"), "{err}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn container_path_context_refuses_junction_targeting_home_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = dirs::home_dir().expect("home dir required for junction guard test");
+        let link = tmp.path().join("link-to-home");
+        create_junction(&link, &home);
+
+        let err = container_path_context_for_cwd(link.to_str().unwrap())
+            .expect_err("junction to home dir must be refused");
+
+        assert!(err.contains("home directory"), "{err}");
+        assert!(err.contains("selected path"), "{err}");
+        assert!(err.contains("canonical path"), "{err}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn container_path_context_refuses_cwd_that_cannot_be_canonicalized() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("missing");
+
+        let err = container_path_context_for_cwd(missing.to_str().unwrap())
+            .expect_err("missing cwd must be refused");
+
+        assert!(
+            err.contains("failed to canonicalize container mount source"),
+            "{err}"
+        );
+        assert!(err.contains(missing.to_str().unwrap()), "{err}");
     }
 
     #[derive(Default)]

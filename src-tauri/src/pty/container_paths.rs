@@ -22,10 +22,11 @@ pub const HOST_PATH_TRANSLATE_ENV_KEYS: [&str; 3] = [
     OPENCODE_CONFIG_DIR_KEY,
 ];
 
+/// Contract: path-valued env rows are host-side values; AgentsCommander
+/// translates them for container sessions when they live under the replica mount.
 pub const WARNING_KIND_CONTAINER_PATH_IN_HOST_FIELD: &str = "container-path-in-host-field";
 pub const WARNING_KIND_OUTSIDE_MOUNT: &str = "outside-mount";
 pub const WARNING_KIND_NO_VALUE: &str = "no-value";
-pub const WARNING_KIND_PROTOCOL_MISMATCH: &str = "protocol-mismatch";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContainerEnvWarning {

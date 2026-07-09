@@ -564,6 +564,7 @@ impl ContainerTransportBackend {
             cmd,
             args,
             cwd,
+            selected_cwd,
             cols,
             rows,
             container_image,
@@ -619,6 +620,7 @@ impl ContainerTransportBackend {
             env_remove_keys,
             env_unset,
             container_image,
+            selected_cwd.as_deref(),
             ticket,
             &token,
         ) {
@@ -1101,6 +1103,7 @@ fn build_start_request(
     env_remove_keys: Vec<String>,
     env_unset: Vec<String>,
     container_image: Option<String>,
+    selected_cwd: Option<&str>,
     registration_ticket: String,
     token: &ContainerApiToken,
 ) -> Result<ContainerStartRequest, AppError> {
@@ -1116,6 +1119,7 @@ fn build_start_request(
         env_remove_keys,
         env_unset,
         container_image,
+        selected_cwd,
         registration_ticket,
         token,
         &settings,
@@ -1134,6 +1138,7 @@ fn build_start_request_with_settings(
     env_remove_keys: Vec<String>,
     env_unset: Vec<String>,
     container_image: Option<String>,
+    selected_cwd: Option<&str>,
     registration_ticket: String,
     token: &ContainerApiToken,
     settings: &crate::config::settings::AppSettings,
@@ -1146,15 +1151,30 @@ fn build_start_request_with_settings(
     if let Some(reason) =
         crate::pty::container_paths::container_mount_source_rejection(std::path::Path::new(cwd))
     {
-        return Err(AppError::Other(reason));
+        let message = match selected_cwd {
+            Some(selected) if selected != cwd => format!(
+                "{} (selected path '{}', canonical path '{}')",
+                reason, selected, cwd
+            ),
+            _ => reason,
+        };
+        return Err(AppError::Other(message));
     }
     let api_url = api_url_for_container(&settings.api_server_bind, settings.api_server_port)?;
     let child_env = sanitized_child_env(configured_env, env_remove_keys);
-    log::info!(
-        "[container-transport] mount source '{}' -> '{}'",
-        cwd,
-        DEFAULT_CONTAINER_WORKDIR
-    );
+    match selected_cwd {
+        Some(selected) if selected != cwd => log::info!(
+            "[container-transport] mount source selected '{}' canonical '{}' -> '{}'",
+            selected,
+            cwd,
+            DEFAULT_CONTAINER_WORKDIR
+        ),
+        _ => log::info!(
+            "[container-transport] mount source '{}' -> '{}'",
+            cwd,
+            DEFAULT_CONTAINER_WORKDIR
+        ),
+    }
     Ok(ContainerStartRequest {
         session_id,
         image: resolve_container_image(container_image.as_deref())?,
@@ -1326,6 +1346,7 @@ mod tests {
             cmd: "container".to_string(),
             args: Vec::new(),
             cwd: root.to_string(),
+            selected_cwd: None,
             cols: 120,
             rows: 30,
             container_image: None,
@@ -1608,6 +1629,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Some(" agentscommander/ac-claude:latest ".to_string()),
+            None,
             "ticket".to_string(),
             &token(),
             &api_enabled_settings(),
