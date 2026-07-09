@@ -12,14 +12,21 @@ pub const DEFAULT_API_HELPER_PATH: &str = "/usr/local/bin/agentscommander-api-he
 pub const CONTAINER_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const DIAGNOSTIC_UI_LOG_LIMIT: usize = 500;
 const REDACTED_SECRET: &str = "[REDACTED]";
+// Keep AGENTSCOMMANDER_* entries in sync with container_backend::is_reserved_container_env.
+// This list is separate because diagnostics must also scrub valid provider env keys.
 const SENSITIVE_LOG_KEYS: &[&str] = &[
+    "AGENTSCOMMANDER_API_TOKEN",
+    "AGENTSCOMMANDER_SESSION_REGISTRATION_TOKEN",
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
     "ANTHROPIC_TOKEN",
     "CLAUDE_API_KEY",
     "CLAUDE_CODE_OAUTH_TOKEN",
+    "GEMINI_API_KEY",
+    "GITHUB_TOKEN",
+    "OPENAI_API_KEY",
 ];
-const SENSITIVE_TOKEN_PREFIXES: &[&str] = &["sk-ant-"];
+const SENSITIVE_TOKEN_PREFIXES: &[&str] = &["ac-container-", "acst-", "sk-ant-"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContainerStartRequest {
@@ -463,22 +470,42 @@ mod tests {
 
     #[test]
     fn container_diagnostics_redacts_tokens_from_ui_and_log_summary() {
-        let token = "sk-ant-oat01-abcdefghijklmnopqrstuvwxyz0123456789";
+        let api_token =
+            "ac-container-11111111-1111-4111-8111-111111111111-22222222-2222-4222-8222-222222222222";
+        let registration_ticket =
+            "acst-33333333-3333-4333-8333-333333333333-44444444-4444-4444-8444-444444444444";
+        let openai_key = "openai-secret-without-sensitive-prefix";
+        let gemini_key = "gemini-secret-without-sensitive-prefix";
+        let github_token = "github-token-without-sensitive-prefix";
         let diagnostics = ContainerDiagnostics {
             container_id: "abc123".to_string(),
             state: None,
             inspect_error: Some("inspect failed".to_string()),
             log_tail: Some(format!(
-                "CLAUDE_CODE_OAUTH_TOKEN={token}\nANTHROPIC_API_KEY=\"{token}\""
+                "AGENTSCOMMANDER_API_TOKEN={api_token}\n\
+                 AGENTSCOMMANDER_SESSION_REGISTRATION_TOKEN={registration_ticket}\n\
+                 OPENAI_API_KEY={openai_key}\n\
+                 GEMINI_API_KEY='{gemini_key}'\n\
+                 GITHUB_TOKEN: \"{github_token}\""
             )),
-            logs_error: Some(format!("failed after token {token}")),
+            logs_error: Some(format!(
+                "failed after token {api_token} and ticket {registration_ticket}"
+            )),
         };
 
         let ui = diagnostics.ui_summary();
         let full = diagnostics.log_summary();
 
-        assert!(!ui.contains(token), "{ui}");
-        assert!(!full.contains(token), "{full}");
+        for secret in [
+            api_token,
+            registration_ticket,
+            openai_key,
+            gemini_key,
+            github_token,
+        ] {
+            assert!(!ui.contains(secret), "{ui}");
+            assert!(!full.contains(secret), "{full}");
+        }
         assert!(ui.contains(REDACTED_SECRET), "{ui}");
         assert!(full.contains(REDACTED_SECRET), "{full}");
     }

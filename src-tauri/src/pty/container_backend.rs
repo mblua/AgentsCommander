@@ -1193,16 +1193,11 @@ mod tests {
     #[derive(Default)]
     struct RecordingRuntime {
         stopped: Arc<Mutex<Vec<Uuid>>>,
-        removed: Arc<Mutex<Vec<Uuid>>>,
     }
 
     impl RecordingRuntime {
         fn stopped(&self) -> Vec<Uuid> {
             self.stopped.lock().unwrap().clone()
-        }
-
-        fn removed(&self) -> Vec<Uuid> {
-            self.removed.lock().unwrap().clone()
         }
     }
 
@@ -1223,7 +1218,6 @@ mod tests {
             _timeout: Duration,
         ) -> Result<(), AppError> {
             self.stopped.lock().unwrap().push(handle.session_id);
-            self.removed.lock().unwrap().push(handle.session_id);
             Ok(())
         }
 
@@ -1393,12 +1387,12 @@ mod tests {
                 .revoked
         );
         for _ in 0..20 {
-            if runtime.stopped().contains(&id) && runtime.removed().contains(&id) {
+            if runtime.stopped().contains(&id) {
                 return;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        panic!("runtime cleanup was not called");
+        panic!("runtime stop was not called");
     }
 
     #[test]
