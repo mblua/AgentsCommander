@@ -11,8 +11,8 @@ use uuid::Uuid;
 use crate::errors::AppError;
 use crate::pty::backend::{BackendSpawnSpec, PtyBackend};
 use crate::pty::container_paths::{
-    canonical_host_path_env_key, claude_config_dir_unmappable_warning, container_config_dir,
-    ContainerEnvClass, ContainerEnvWarning, ContainerPathMap, CLAUDE_CONFIG_DIR_KEY,
+    canonical_host_path_env_key, container_config_dir, host_path_env_unmappable_warning,
+    ContainerEnvClass, ContainerEnvWarning, ContainerPathMap,
 };
 use crate::pty::container_runtime::{
     api_url_for_container, resolve_container_image, ContainerDiagnostics, ContainerRuntime,
@@ -1207,11 +1207,10 @@ pub(crate) fn container_child_env(
                 if let Some(container_value) = container_config_dir(map, &value) {
                     child_env.push((canonical_key.to_string(), container_value));
                 } else {
-                    if !env_unset.iter().any(|existing| existing == canonical_key) {
+                    let already_unset = env_unset.iter().any(|existing| existing == canonical_key);
+                    if !already_unset {
                         env_unset.push(canonical_key.to_string());
-                    }
-                    if canonical_key == CLAUDE_CONFIG_DIR_KEY {
-                        warnings.push(claude_config_dir_unmappable_warning(map, &value));
+                        warnings.push(host_path_env_unmappable_warning(map, canonical_key, &value));
                     }
                 }
             }
@@ -1256,6 +1255,7 @@ fn is_reserved_container_env(key: &str) -> bool {
 mod tests {
     use super::*;
     use crate::pty::backend::SessionBackendKind;
+    use crate::pty::container_paths::CLAUDE_CONFIG_DIR_KEY;
     use crate::pty::container_runtime::ContainerCleanupReport;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1544,10 +1544,21 @@ mod tests {
                 crate::pty::container_paths::CODEX_HOME_KEY.to_string()
             ]
         );
-        assert_eq!(got.warnings.len(), 1);
         assert_eq!(
-            got.warnings[0].kind,
-            crate::pty::container_paths::WARNING_KIND_OUTSIDE_MOUNT
+            got.warnings
+                .iter()
+                .map(|warning| (warning.key.as_str(), warning.kind))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    CLAUDE_CONFIG_DIR_KEY,
+                    crate::pty::container_paths::WARNING_KIND_OUTSIDE_MOUNT
+                ),
+                (
+                    crate::pty::container_paths::CODEX_HOME_KEY,
+                    crate::pty::container_paths::WARNING_KIND_CONTAINER_PATH_IN_HOST_FIELD
+                )
+            ]
         );
     }
 

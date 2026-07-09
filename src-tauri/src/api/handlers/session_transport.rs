@@ -11,6 +11,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
+use tauri::Emitter;
 use uuid::Uuid;
 
 use crate::api::auth::SCOPE_SESSION_TRANSPORT;
@@ -20,6 +21,9 @@ use crate::pty::container_backend::{
     parse_bridge_text_frame, root_key, BridgeToHostFrame, ContainerTransportBackend,
     HostToBridgeFrame, MAX_TRANSPORT_FRAME_BYTES, TRANSPORT_PROTOCOL_VERSION,
 };
+use crate::pty::container_paths::WARNING_KIND_PROTOCOL_MISMATCH;
+
+const PROTOCOL_WARNING_KEY: &str = "CONTAINER_TRANSPORT_PROTOCOL";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,6 +50,7 @@ pub async fn handle(
         Err(err) => return err.into_response(),
     };
 
+    let app_handle = state.app_handle.clone();
     ws.max_message_size(MAX_TRANSPORT_FRAME_BYTES)
         .max_frame_size(MAX_TRANSPORT_FRAME_BYTES)
         .on_upgrade(move |socket| {
@@ -54,6 +59,7 @@ pub async fn handle(
                 authorized.backend,
                 authorized.session_id,
                 authorized.bound_root,
+                app_handle,
             )
         })
 }
@@ -102,6 +108,7 @@ async fn handle_ws_connection(
     backend: std::sync::Arc<ContainerTransportBackend>,
     session_id: Uuid,
     bound_root: String,
+    app_handle: tauri::AppHandle,
 ) {
     let first = match tokio::time::timeout(
         backend.tuning().handshake_timeout,
@@ -119,6 +126,12 @@ async fn handle_ws_connection(
     let (tx, rx) = tokio::sync::mpsc::channel(backend.tuning().outbound_queue_capacity);
     if let Err(reason) = validate_hello(first, &backend, session_id, &bound_root, tx).await {
         log::error!("[container-transport] {reason}");
+        if reason.starts_with("container transport protocol mismatch:") {
+            emit_session_env_warning(
+                &app_handle,
+                protocol_mismatch_session_warning_payload(session_id, &reason),
+            );
+        }
         backend.handle_handshake_failed(session_id).await;
         return;
     }
@@ -211,6 +224,19 @@ async fn validate_hello(
     backend
         .complete_hello(session_id, &root, sender)
         .map_err(|_| "container transport handshake failed: session was not pending".to_string())
+}
+
+fn protocol_mismatch_session_warning_payload(session_id: Uuid, message: &str) -> serde_json::Value {
+    serde_json::json!({
+        "sessionId": session_id.to_string(),
+        "key": PROTOCOL_WARNING_KEY,
+        "kind": WARNING_KIND_PROTOCOL_MISMATCH,
+        "message": message,
+    })
+}
+
+fn emit_session_env_warning(app_handle: &tauri::AppHandle, payload: serde_json::Value) {
+    let _ = app_handle.emit("session_env_warning", payload);
 }
 
 async fn recv_bridge_loop(
@@ -359,5 +385,18 @@ mod tests {
                 TRANSPORT_PROTOCOL_VERSION, reported_version
             )
         );
+    }
+
+    #[test]
+    fn protocol_mismatch_warning_payload_uses_session_env_warning_contract() {
+        let session_id = Uuid::nil();
+        let message = "container transport protocol mismatch: host expects protocol 2 but container image reported protocol 1. Rebuild or re-pull the AgentsCommander container image so it contains the current session-bridge.";
+
+        let payload = protocol_mismatch_session_warning_payload(session_id, message);
+
+        assert_eq!(payload["sessionId"], session_id.to_string());
+        assert_eq!(payload["key"], PROTOCOL_WARNING_KEY);
+        assert_eq!(payload["kind"], WARNING_KIND_PROTOCOL_MISMATCH);
+        assert_eq!(payload["message"], message);
     }
 }

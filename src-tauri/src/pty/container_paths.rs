@@ -25,6 +25,7 @@ pub const HOST_PATH_TRANSLATE_ENV_KEYS: [&str; 3] = [
 pub const WARNING_KIND_CONTAINER_PATH_IN_HOST_FIELD: &str = "container-path-in-host-field";
 pub const WARNING_KIND_OUTSIDE_MOUNT: &str = "outside-mount";
 pub const WARNING_KIND_NO_VALUE: &str = "no-value";
+pub const WARNING_KIND_PROTOCOL_MISMATCH: &str = "protocol-mismatch";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContainerEnvWarning {
@@ -195,6 +196,42 @@ pub fn claude_config_dir_unmappable_warning(
     };
     ContainerEnvWarning {
         key: CLAUDE_CONFIG_DIR_KEY.to_string(),
+        kind,
+        message,
+    }
+}
+
+pub fn host_path_env_unmappable_warning(
+    map: &ContainerPathMap,
+    key: &str,
+    raw_value: &str,
+) -> ContainerEnvWarning {
+    if key == CLAUDE_CONFIG_DIR_KEY {
+        return claude_config_dir_unmappable_warning(map, raw_value);
+    }
+
+    let (kind, message) = if map.is_container_path(raw_value) {
+        (
+            WARNING_KIND_CONTAINER_PATH_IN_HOST_FIELD,
+            format!(
+                "container session: {key}='{raw_value}' looks like a container path. Path env rows in AgentsCommander are host-side values; AgentsCommander translates them for container sessions. This value was unset in the container. Set {key} to a host path under {} so it resolves under {} inside the container.",
+                map.host_root(),
+                map.container_root()
+            ),
+        )
+    } else {
+        (
+            WARNING_KIND_OUTSIDE_MOUNT,
+            format!(
+                "container session: {key}='{raw_value}' is outside the bind mount ({} -> {}); it is not visible inside the container. The variable was unset in the container environment. Set {key} to a host path under {} so AgentsCommander can translate it for the container.",
+                map.host_root(),
+                map.container_root(),
+                map.host_root()
+            ),
+        )
+    };
+    ContainerEnvWarning {
+        key: key.to_string(),
         kind,
         message,
     }
@@ -552,6 +589,35 @@ mod tests {
         assert_eq!(
             no_value.message,
             "container session: no CLAUDE_CONFIG_DIR is set. Conversation transcripts are container-ephemeral, Telegram bridge is inactive, and auto-resume is skipped. Set CLAUDE_CONFIG_DIR=%AC_REPLICA_ROOT%\\.claude to make conversation state durable and resumable."
+        );
+    }
+
+    #[test]
+    fn host_path_env_warnings_cover_non_claude_keys() {
+        let map = map();
+
+        let container_path =
+            host_path_env_unmappable_warning(&map, CODEX_HOME_KEY, "/workspace/.codex");
+        assert_eq!(container_path.key, CODEX_HOME_KEY);
+        assert_eq!(
+            container_path.kind,
+            WARNING_KIND_CONTAINER_PATH_IN_HOST_FIELD
+        );
+        assert_eq!(
+            container_path.message,
+            "container session: CODEX_HOME='/workspace/.codex' looks like a container path. Path env rows in AgentsCommander are host-side values; AgentsCommander translates them for container sessions. This value was unset in the container. Set CODEX_HOME to a host path under C:\\Users\\maria\\repo\\.ac\\wg-1\\__agent_x so it resolves under /workspace inside the container."
+        );
+
+        let outside = host_path_env_unmappable_warning(
+            &map,
+            OPENCODE_CONFIG_DIR_KEY,
+            r"C:\Users\maria\.opencode",
+        );
+        assert_eq!(outside.key, OPENCODE_CONFIG_DIR_KEY);
+        assert_eq!(outside.kind, WARNING_KIND_OUTSIDE_MOUNT);
+        assert_eq!(
+            outside.message,
+            "container session: OPENCODE_CONFIG_DIR='C:\\Users\\maria\\.opencode' is outside the bind mount (C:\\Users\\maria\\repo\\.ac\\wg-1\\__agent_x -> /workspace); it is not visible inside the container. The variable was unset in the container environment. Set OPENCODE_CONFIG_DIR to a host path under C:\\Users\\maria\\repo\\.ac\\wg-1\\__agent_x so AgentsCommander can translate it for the container."
         );
     }
 

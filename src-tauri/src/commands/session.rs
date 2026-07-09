@@ -654,19 +654,31 @@ struct ResumeProbeTarget {
     warning: Option<ContainerEnvWarning>,
 }
 
-fn container_path_map_for_cwd(cwd: &str) -> Result<ContainerPathMap, String> {
-    let canonical_host_root = match std::fs::canonicalize(cwd) {
-        Ok(path) => crate::path_utils::path_to_string_without_windows_verbatim_prefix(&path),
-        Err(err) => {
-            log::warn!(
-                "[container-transport] failed to canonicalize mount source '{}': {}; using raw cwd for path comparisons",
-                cwd,
-                err
-            );
-            cwd.to_string()
-        }
+#[derive(Debug, Clone)]
+struct ContainerPathContext {
+    host_root: String,
+    map: ContainerPathMap,
+}
+
+fn container_path_context_for_cwd(cwd: &str) -> Result<ContainerPathContext, String> {
+    let canonical_host_root = std::fs::canonicalize(cwd)
+        .map(|path| crate::path_utils::path_to_string_without_windows_verbatim_prefix(&path))
+        .map_err(|err| {
+            format!(
+                "failed to canonicalize container mount source '{}': {}",
+                cwd, err
+            )
+        })?;
+    if let Some(reason) = crate::pty::container_paths::container_mount_source_rejection(
+        std::path::Path::new(&canonical_host_root),
+    ) {
+        return Err(reason);
     };
-    ContainerPathMap::new(&canonical_host_root, DEFAULT_CONTAINER_WORKDIR)
+    let map = ContainerPathMap::new(&canonical_host_root, DEFAULT_CONTAINER_WORKDIR)?;
+    Ok(ContainerPathContext {
+        host_root: canonical_host_root,
+        map,
+    })
 }
 
 fn resume_probe_target(
@@ -1022,17 +1034,9 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         release_resource_launch_permit(&resource_monitor, &mut resource_permit);
         return Err("root-agent cannot use container transport".to_string());
     }
-    if backend_kind == SessionBackendKind::ContainerTransport {
-        if let Some(reason) = crate::pty::container_paths::container_mount_source_rejection(
-            std::path::Path::new(&cwd),
-        ) {
-            release_resource_launch_permit(&resource_monitor, &mut resource_permit);
-            return Err(reason);
-        }
-    }
-    let container_path_map = if backend_kind == SessionBackendKind::ContainerTransport {
-        match container_path_map_for_cwd(&cwd) {
-            Ok(map) => Some(map),
+    let container_path_context = if backend_kind == SessionBackendKind::ContainerTransport {
+        match container_path_context_for_cwd(&cwd) {
+            Ok(context) => Some(context),
             Err(err) => {
                 release_resource_launch_permit(&resource_monitor, &mut resource_permit);
                 return Err(err);
@@ -1146,7 +1150,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     // CLAUDE_CONFIG_DIR skips resume and is surfaced as a session env warning.
     let resume_probe = resume_probe_target(
         session.backend_kind,
-        container_path_map.as_ref(),
+        container_path_context.as_ref().map(|context| &context.map),
         resolved_spawn.as_ref(),
         &shell,
         &shell_args,
@@ -1353,17 +1357,15 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         .unwrap_or_default();
     let mut env_unset: Vec<String> = Vec::new();
     if session.backend_kind == SessionBackendKind::ContainerTransport {
-        if let Some(map) = container_path_map.as_ref() {
+        if let Some(context) = container_path_context.as_ref() {
             let translated = crate::pty::container_backend::container_child_env(
                 configured_env,
                 env_remove_keys.clone(),
-                map,
+                &context.map,
             );
             configured_env = translated.child_env;
             env_unset = translated.env_unset;
-            if is_claude {
-                session_env_warnings.extend(translated.warnings);
-            }
+            session_env_warnings.extend(translated.warnings);
         }
     }
     let (resource_registration, logical_resource_slot): (
@@ -1461,11 +1463,15 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         }
     }
 
+    let spawn_cwd = container_path_context
+        .as_ref()
+        .map(|context| context.host_root.clone())
+        .unwrap_or_else(|| cwd.clone());
     let spawn_spec = BackendSpawnSpec {
         id,
         cmd: shell.clone(),
         args: shell_args.clone(),
-        cwd: cwd.clone(),
+        cwd: spawn_cwd,
         cols: 120,
         rows: 30,
         container_image: resolved_spawn
@@ -3271,9 +3277,9 @@ pub async fn create_root_agent_session(
 mod tests {
     use super::{
         classify_existing_root, claude_projects_dir_for_config_dir, compute_profile_outdated,
-        count_working_members, effective_restart_requested_profile, inject_codex_resume,
-        resolve_actual_agent, resolve_agent_command, resolve_agent_from_shell,
-        resolve_restart_selected_agent_id, resolve_root_agent_command,
+        container_path_context_for_cwd, count_working_members, effective_restart_requested_profile,
+        inject_codex_resume, resolve_actual_agent, resolve_agent_command, resolve_agent_from_shell,
+        resolve_claude_projects_dir, resolve_restart_selected_agent_id, resolve_root_agent_command,
         resume_probe_target_for_config_dir, should_inject_continue, ExistingRootAction,
     };
     use crate::config::settings::{AgentConfig, AppSettings, ProfileCellConfig};
@@ -3377,6 +3383,58 @@ mod tests {
     }
 
     #[test]
+    fn resume_probe_target_local_bare_claude_uses_default_resolver() {
+        let cwd = r"C:\Users\Test\repo";
+        let got = resume_probe_target_for_config_dir(
+            SessionBackendKind::LocalProcess,
+            None,
+            None,
+            "claude",
+            &[],
+            cwd,
+        );
+
+        let expected = resolve_claude_projects_dir("claude", &[], cwd);
+        let Some(expected) = expected else {
+            return;
+        };
+        assert_eq!(got.filesystem, "host");
+        assert_eq!(got.host_probe_path, Some(expected));
+        assert!(got.warning.is_none());
+    }
+
+    #[test]
+    fn resume_probe_target_local_wrapper_uses_wrapper_config_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let custom_base = tmp.path().join(".claude-mb");
+        let wrapper = write_wrapper(
+            tmp.path(),
+            "claude-mb.cmd",
+            &format!(
+                "@echo off\r\nset CLAUDE_CONFIG_DIR={}\r\nclaude %*\r\n",
+                custom_base.display()
+            ),
+        );
+        let cwd = r"C:\Users\Test\repo";
+
+        let got = resume_probe_target_for_config_dir(
+            SessionBackendKind::LocalProcess,
+            None,
+            None,
+            wrapper.to_str().unwrap(),
+            &[],
+            cwd,
+        );
+
+        let expected = custom_base
+            .join("projects")
+            .join(crate::session::session::mangle_cwd_for_claude(cwd));
+        assert_eq!(got.filesystem, "host");
+        assert_eq!(got.host_probe_path, Some(expected));
+        assert!(got.warning.is_none());
+    }
+
+    #[test]
     fn resume_probe_target_container_no_value_warns_and_skips_probe() {
         let map = probe_map();
         let got = resume_probe_target_for_config_dir(
@@ -3429,6 +3487,27 @@ mod tests {
         assert_eq!(got.filesystem, "container-unreachable");
         assert!(got.host_probe_path.is_none());
         assert!(got.warning.is_none());
+    }
+
+    #[test]
+    fn container_path_context_uses_canonical_host_root_for_guard_and_map() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp
+            .path()
+            .join("project")
+            .join(".ac")
+            .join("wg-1-team")
+            .join("repo-foo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let raw = repo.join(".");
+        let canonical = crate::path_utils::path_to_string_without_windows_verbatim_prefix(
+            &std::fs::canonicalize(&repo).unwrap(),
+        );
+
+        let got = container_path_context_for_cwd(raw.to_str().unwrap()).unwrap();
+
+        assert_eq!(got.host_root, canonical);
+        assert_eq!(got.map.host_root(), canonical);
     }
 
     #[derive(Default)]
