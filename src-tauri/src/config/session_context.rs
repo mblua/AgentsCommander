@@ -2385,7 +2385,7 @@ When finishing a delegated task or getting blocked, you must explicitly reply to
 /// `matrix_section`'s trailing blank line before the messaging exception /
 /// summary. A root agent has no origin matrix (matrix_root == None), so this
 /// never collides with the matrix "3.".
-const ROOT_PROJECT_SCOPE_ENTRY: &str = "3. **Every registered AgentsCommander project folder (the entire `<project>` directory, one level ABOVE `.ac`), including its git repository and its `.ac` tree:** as the verified Root Agent you may create, modify, and delete files anywhere under ANY project folder registered in this AgentsCommander install. This is a RULE, not a fixed list. The registered project folders are exactly the entries in `settings.projectPaths` (in the app config `settings.json`); reading that file to enumerate the current set is always allowed, and this grant automatically covers every project registered now or added later. For each registered project folder the grant covers all of it: its source tree and its git repository (you may edit source and run state-changing Git there), the nested `.ac` AgentsCommander tree, and everything beneath. Inside the `.ac` tree the Golden Rule does NOT confine you: you may write other agents' canonical state (`_agent_*` matrices and `__agent_*` replicas, including their `Role.md`, `memory/`, and `skills/`), workgroup directories, messaging directories, plans, and session artifacts, as the user's task requires; this overrides the \"Do NOT write into other agents' replica directories\" caution in entry #2, which binds only non-root agents. The `repo-*` naming restriction in entry #1 does NOT apply to you: you operate on each registered project's actual repository whatever its folder is named (it need not be named `repo-*`), always identified as the registered `settings.projectPaths` entry. You are the only agent permitted to write a registered project folder or its repository; non-root agents stay confined to `repo-*` working repos and their own replica directories. This grant has ONE hard exclusion that always wins: it never extends to the AgentsCommander app config directory itself (the portable directory next to the binary that holds the global `settings.json` and the Agency template cache). Those files stay CLI-managed and off-limits to direct edits EVEN WHEN that config directory happens to physically sit inside a registered project folder (as it does in dev and workgroup layouts); only your own Root Agent home inside that directory stays writable, as covered by entry #2.\n\n";
+const ROOT_PROJECT_SCOPE_ENTRY: &str = "3. **Every registered AgentsCommander project folder (the entire `<project>` directory, one level ABOVE `.ac`), including its git repository and its `.ac` tree:** as the verified Root Agent you may create, modify, and delete files anywhere under ANY project folder registered in this AgentsCommander install. This is a RULE, not a fixed list. The registered project folders are exactly the entries in `settings.projectPaths` (in the app config `settings.json`); reading that file to enumerate the current set is always allowed, and this grant automatically covers every project registered now or added later. For each registered project folder the grant covers all of it: its source tree and its git repository (you may edit source and run state-changing Git there), the nested `.ac` AgentsCommander tree, and everything beneath. Inside the `.ac` tree the Golden Rule does NOT confine you: you may write other agents' canonical state (`_agent_*` matrices and `__agent_*` replicas, including their `Role.md`, `memory/`, and `skills/`), workgroup directories, messaging directories, plans, and session artifacts, as the user's task requires. The caution about other agents' replica directories that entry #2 carries for non-root agents is not rendered for you, and does not bind you: this grant covers reading and writing them alike. The `repo-*` naming restriction in entry #1 does NOT apply to you: you operate on each registered project's actual repository whatever its folder is named (it need not be named `repo-*`), always identified as the registered `settings.projectPaths` entry. You are the only agent permitted to write a registered project folder or its repository; non-root agents stay confined to `repo-*` working repos and their own replica directories. This grant has ONE hard exclusion that always wins: it never extends to the AgentsCommander app config directory itself (the portable directory next to the binary that holds the global `settings.json` and the Agency template cache). Those files stay CLI-managed and off-limits to direct edits EVEN WHEN that config directory happens to physically sit inside a registered project folder (as it does in dev and workgroup layouts); only your own Root Agent home inside that directory stays writable, as covered by entry #2.\n\n";
 
 /// Allowed-bullet companion to the grant. Ends with "\n" to mirror
 /// `matrix_allowed` before the FORBIDDEN bullet.
@@ -2433,6 +2433,10 @@ fn strip_legacy_self_maintenance(content: &str) -> String {
 }
 
 struct DefaultContextDynamicValues {
+    // #923 D1: entry #2's peer-replica caution binds non-root agents only. The Root
+    // Agent's ROOT_PROJECT_SCOPE_ENTRY grants reads AND writes across every `.ac`
+    // tree, so it must not render a prohibition that entry #3 then retracts.
+    replica_usage: String,
     matrix_section: String,
     matrix_allowed: String,
     messaging_exception: String,
@@ -2456,15 +2460,13 @@ fn render_write_restrictions_block(
     agent_root: &str,
     rendered: &DefaultContextDynamicValues,
 ) -> String {
-    let replica_usage =
-        "   Use this for replica-local scratch, personal notes, inbox/outbox, role drafts, and session artifacts. Do NOT store canonical memory, plans, or skills here. Do NOT read or write into other agents' replica directories.";
     let allowed_places = "the entries listed below";
     format!(
         r#"## GOLDEN RULE — Repository Access Restrictions
 
 **ABSOLUTE AND NON-NEGOTIABLE:** You may ONLY read or modify files in {allowed_places}:
 
-1. **Repositories whose root folder name starts with `repo-`** (e.g. `repo-AgentsCommander`, `repo-myapp`). These are the working repos you are meant to edit.
+1. **Repositories whose root folder name starts with `repo-`** (e.g. `repo-AgentsCommander`, `repo-myapp`). These are the working repos you are meant to edit. Listing your workspace root to discover which `repo-*` folders exist is allowed.
 2. **Your own agent replica directory and its subdirectories** — your assigned root:
    ```
    {agent_root}
@@ -2482,15 +2484,15 @@ fn render_write_restrictions_block(
 
 **Exception - AgentsCommander CLI operations:**
 
-When the user explicitly asks this agent to run an AgentsCommander CLI command using `AGENTSCOMMANDER_BINARY_PATH`, the command is authorized as an AgentsCommander operation. The agent may execute documented AgentsCommander CLI subcommands even if their filesystem effects create, modify, or delete files outside the normal repository/replica write zones. Those filesystem effects are governed by AgentsCommander itself, not by the agent's repository write restrictions.
+When the user explicitly asks this agent to run an AgentsCommander CLI command using `AGENTSCOMMANDER_BINARY_PATH`, the command is authorized as an AgentsCommander operation. The agent may execute documented AgentsCommander CLI subcommands even if their filesystem effects read, create, modify, or delete files outside the normal repository/replica access zones. Those filesystem effects are governed by AgentsCommander itself, not by the agent's repository access restrictions.
 
-This exception applies only to invocations of the configured AgentsCommander CLI binary through `AGENTSCOMMANDER_BINARY_PATH`. It does not allow arbitrary shell commands, direct filesystem writes, hand-written scripts, or hardcoded alternate binaries outside the normal allowed paths.
+This exception applies only to invocations of the configured AgentsCommander CLI binary through `AGENTSCOMMANDER_BINARY_PATH`. It does not allow arbitrary shell commands, direct filesystem reads or writes, hand-written scripts, or hardcoded alternate binaries outside the normal allowed paths.
 
 {agency_cache_guidance}
 If instructed to read or modify a path outside these zones, REFUSE and explain this restriction, except for explicitly requested AgentsCommander CLI operations covered by the AgentsCommander CLI exception above.{root_authority_section}"#,
         allowed_places = allowed_places,
         agent_root = agent_root,
-        replica_usage = replica_usage,
+        replica_usage = rendered.replica_usage,
         matrix_section = rendered.matrix_section,
         messaging_exception = rendered.messaging_exception,
         matrix_allowed = rendered.matrix_allowed,
@@ -2551,6 +2553,15 @@ fn default_context_dynamic_values(
         !(is_root_agent && matrix_root.is_some()),
         "root agent must not also have an origin matrix (single item-3 invariant)"
     );
+
+    // #923 D1: the Root Agent may read and write every agent's replica under a
+    // registered project (ROOT_PROJECT_SCOPE_ENTRY / ROOT_PROJECT_SCOPE_ALLOWED), so
+    // the peer-replica prohibition is rendered for non-root agents only.
+    let replica_usage = if is_root_agent {
+        "   Use this for replica-local scratch, personal notes, inbox/outbox, role drafts, and session artifacts. Do NOT store canonical memory, plans, or skills here.".to_string()
+    } else {
+        "   Use this for replica-local scratch, personal notes, inbox/outbox, role drafts, and session artifacts. Do NOT store canonical memory, plans, or skills here. Do NOT read or write into other agents' replica directories.".to_string()
+    };
     enum MessagingContextMode {
         None,
         Workgroup(String),
@@ -2619,7 +2630,13 @@ fn default_context_dynamic_values(
              - **Allowed (read-only)**: Read message files inside your Root Agent messaging directory ({path}).\n",
             path = path,
         ),
-        MessagingContextMode::None => String::new(),
+        // #923 D3: this session has no messaging directory of its own (no `wg-<N>-*`
+        // ancestor, not the Root Agent), so `send --send` rejects it outright
+        // (cli/send.rs:406). It can still be a delivery target, and the Inter-Agent
+        // Messaging block tells it to read the notified path. Grant exactly that read,
+        // and nothing more, so the document never orders an operation it forbids.
+        MessagingContextMode::None => "- **Allowed (read-only)**: Read an inter-agent message file when AgentsCommander hands you its absolute path in an incoming `[Message from <peer>]` notification. This grant covers that file only; no other path outside the entries above becomes readable.
+".to_string(),
     };
     let has_messaging_exception = !matches!(messaging_mode, MessagingContextMode::None);
     let workspace_root_phrase = if has_messaging_exception {
@@ -2640,13 +2657,29 @@ fn default_context_dynamic_values(
             ws = workspace_root_phrase,
         )
     };
+    // #923 D4: the messaging directory is a "Narrow exception" paragraph, not a numbered
+    // entry, so the read bullet must defuse it exactly like the write bullet does.
+    let messaging_read_phrase = if has_messaging_exception {
+        " (other than the narrow messaging exception above)"
+    } else {
+        ""
+    };
     // #923: reads are now restricted to the same allowed entries as writes. The Root
     // Agent already holds a project-wide read grant, so it gets a scope sentence rather
-    // than the peer-privacy clause that applies to every other agent.
+    // than the peer-privacy clause that applies to every other agent. D2: that scope is
+    // defined by `settings.json`, which lives in the app config dir OUTSIDE every
+    // registered project in a normal install, so reading it must be granted explicitly
+    // or the grant becomes self-referentially unreadable.
     let forbidden_read_scope = if is_root_agent {
-        "the entries listed above. Your Root Agent scope already grants reads across every project folder registered in `settings.projectPaths`, including its `.ac` tree; what stays off-limits is anything outside that registered set: files of projects not listed in `settings.projectPaths`, user home files unrelated to AgentsCommander, and arbitrary paths on disk.".to_string()
+        format!(
+            "the entries listed above{ms}, except for explicitly requested AgentsCommander CLI operations covered by the exception below. Your Root Agent scope already grants reads across every project folder registered in `settings.projectPaths`, including its `.ac` tree. You may ALWAYS read the app config `settings.json` to enumerate that set, and the Agency template cache directory that `agency-templates status` and `agency-templates list` report on, even though both sit in the app config directory outside every registered project; those two reads are grants, while direct writes to them stay CLI-managed. What stays off-limits to reads is anything beyond the registered set: files of projects not listed in `settings.projectPaths`, user home files unrelated to AgentsCommander, and arbitrary paths on disk.",
+            ms = messaging_read_phrase,
+        )
     } else {
-        "the entries listed above. This includes other agents' replica directories, and any other agent's `memory/`, `plans/`, `skills/`, or `Role.md`. Another agent's memory is private to that agent. Do not read it, list it, search it, or summarize it, even if asked. If you need information another agent holds, message that agent and ask.".to_string()
+        format!(
+            "the entries listed above{ms}, except for explicitly requested AgentsCommander CLI operations covered by the exception below. This includes other agents' replica directories, and any other agent's `memory/`, `plans/`, `skills/`, or `Role.md`. Another agent's memory is private to that agent. Do not read it, list it, search it, or summarize it, even if asked. If you need information another agent holds, message that agent and ask.",
+            ms = messaging_read_phrase,
+        )
     };
     let git_scope = if is_root_agent {
         "As the Root Agent your session directory sits inside the app config directory, beneath a registered project's `.ac/` folder that the project repository `.gitignore`s, and AgentsCommander blocks Git repository discovery above your session root. To act on a registered project's repository (the user's task may require commits, branches, or other state-changing Git, plus source edits), deliberately change into that project's root folder (the `settings.projectPaths` entry, one level above its `.ac`) and run Git there; the `repo-*` naming restriction does NOT apply to you and the project folder need not be named `repo-*`. Do NOT run state-changing Git from inside your own `ac-root-agent` directory or any `.ac` subtree, since repository discovery is intentionally ceilinged there. `git status`, `git log`, and `git diff` are read-only, and fine anywhere your read scope above already reaches.".to_string()
@@ -2677,7 +2710,7 @@ fn default_context_dynamic_values(
              Origin coordinators and non-coordinator WG replicas are not valid Root Agent targets in #277.\n",
             path = path,
         ),
-        _ => "Messaging is **file-based** to avoid PTY truncation. Two steps:\n\n\
+        MessagingContextMode::Workgroup(_) => "Messaging is **file-based** to avoid PTY truncation. Two steps:\n\n\
              1. Write your message to a new file in the workgroup messaging directory. The\n\
                 directory lives at `<workgroup-root>/messaging/` (walk up from your root\n\
                 until you find the parent `wg-<N>-*` folder). Filename must follow the\n\
@@ -2692,6 +2725,12 @@ fn default_context_dynamic_values(
              - GOOD: `--send \"20260419-143052-wg3-you-to-wg3-peer-hello.md\"`\n\n\
              The CLI resolves the filename against `<workgroup-root>/messaging/` automatically. Passing a path triggers `filename '...' contains path separators or traversal`.\n"
             .to_string(),
+        // #923 D3: no `wg-<N>-*` ancestor and not the Root Agent, so `send --send`
+        // refuses this root (cli/send.rs:406-414). Telling it to walk up to a workgroup
+        // root it does not have would order an operation the Golden Rule forbids and the
+        // CLI rejects. State the truth instead.
+        MessagingContextMode::None => "This session has no messaging directory: `--send` requires your `--root` to sit under a `wg-<N>-*` ancestor, or to be the canonical Root Agent directory, and this root is neither. Do NOT walk up the filesystem looking for one.\n\nYou can still RECEIVE messages. When AgentsCommander hands you an absolute path in an incoming `[Message from <peer>]` notification, read that file and act on it, then report your result in this session rather than through `send --send`.\n"
+            .to_string(),
     };
 
     let (root_scope_section, root_scope_allowed, root_authority_section) = if is_root_agent {
@@ -2705,6 +2744,7 @@ fn default_context_dynamic_values(
     };
 
     DefaultContextDynamicValues {
+        replica_usage,
         matrix_section,
         matrix_allowed,
         messaging_exception,
@@ -3787,7 +3827,15 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
 
     #[test]
     fn default_context_embeds_filename_only_warning() {
-        let out = default_context("C:/tmp/fake-agent", None, &no_skill_section());
+        // #923 D3: the two-step `--send` guidance is emitted for agents that can
+        // actually send. A `MessagingContextMode::None` root cannot (cli/send.rs
+        // rejects a `--root` with no `wg-<N>-*` ancestor), so it now renders the
+        // no-messaging-directory arm instead. Assert against a real WG replica.
+        let out = default_context(
+            "C:/fake/wg-7-dev-team/__agent_architect",
+            None,
+            &no_skill_section(),
+        );
         assert!(out.contains("filename ONLY"));
         assert!(out.contains("BAD:"));
         assert!(out.contains("GOOD:"));
@@ -3856,11 +3904,11 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             "explicitly asks this agent to run an AgentsCommander CLI command using `AGENTSCOMMANDER_BINARY_PATH`"
         ));
         assert!(out.contains(
-            "filesystem effects create, modify, or delete files outside the normal repository/replica write zones"
+            "filesystem effects read, create, modify, or delete files outside the normal repository/replica access zones"
         ));
         assert!(out.contains("Those filesystem effects are governed by AgentsCommander itself"));
         assert!(out.contains(
-            "does not allow arbitrary shell commands, direct filesystem writes, hand-written scripts, or hardcoded alternate binaries"
+            "does not allow arbitrary shell commands, direct filesystem reads or writes, hand-written scripts, or hardcoded alternate binaries"
         ));
         assert!(out.contains(
             "REFUSE and explain this restriction, except for explicitly requested AgentsCommander CLI operations"
@@ -3933,6 +3981,14 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             "expected no messaging exception header for non-WG agent, got:\n{}",
             out
         );
+        // #923 D3: a `None`-mode agent is never told to walk up to a workgroup root it
+        // does not have, and it gets exactly one read grant: the message file whose
+        // absolute path AgentsCommander itself hands it.
+        assert!(out.contains("This session has no messaging directory"));
+        assert!(!out.contains("walk up from your root"));
+        assert!(out.contains(
+            "Read an inter-agent message file when AgentsCommander hands you its absolute path"
+        ));
         assert!(
             !out.contains("- **Allowed (narrow)**:"),
             "expected no narrow-allowed bullet for non-WG agent, got:\n{}",
@@ -3996,6 +4052,85 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(!out.contains("workgroup messaging directory"));
         assert!(!out.contains("walk up from your root"));
         assert!(!out.contains("<workgroup-root>/messaging/"));
+    }
+
+    /// #923 D1: entry #2's peer-replica caution binds non-root agents only. The Root
+    /// Agent's entry #3 grants read AND write across every `.ac` tree, so the caution
+    /// must not be rendered for it, and entry #3 must not quote a sentence that is
+    /// no longer in the document.
+    #[test]
+    fn root_context_omits_peer_replica_prohibition_and_stale_quote() {
+        let out = default_context_as_root("C:/fake/ac-root-agent", None, &no_skill_section());
+        assert!(
+            !out.contains("Do NOT read or write into other agents' replica directories"),
+            "root must not carry the peer-replica prohibition it is granted to override, got:
+{out}"
+        );
+        assert!(
+            !out.contains("Do NOT write into other agents' replica directories"),
+            "stale quoted sentence must not survive anywhere in the root render, got:
+{out}"
+        );
+        assert!(out.contains("does not bind you: this grant covers reading and writing them alike"));
+
+        // Non-root agents still receive it, on both axes.
+        let replica = default_context(
+            "C:/fake/wg-7-dev-team/__agent_architect",
+            Some("C:/fake/_agent_architect"),
+            &no_skill_section(),
+        );
+        assert!(replica.contains("Do NOT read or write into other agents' replica directories"));
+    }
+
+    /// #923 D2: the Root Agent's read scope is defined by `settings.json`, which sits in
+    /// the app config directory, OUTSIDE every registered project in a normal install.
+    /// Forbidding that read would make the grant self-referentially unreadable.
+    #[test]
+    fn root_read_scope_grants_settings_json_and_agency_cache() {
+        let out = default_context_as_root("C:/fake/ac-root-agent", None, &no_skill_section());
+        assert!(out.contains("- **FORBIDDEN**: Any read operation outside"));
+        assert!(out.contains("You may ALWAYS read the app config `settings.json` to enumerate that set"));
+        assert!(out.contains("`agency-templates status` and `agency-templates list` report on"));
+        assert!(out.contains("those two reads are grants, while direct writes to them stay CLI-managed"));
+    }
+
+    /// #923 D4: the messaging directory is a "Narrow exception" paragraph, not a numbered
+    /// entry. The read bullet must defuse it exactly like the write bullet does, or a
+    /// conservative agent stops reading its own inbox.
+    #[test]
+    fn read_bullet_carves_out_the_messaging_exception_like_the_write_bullet() {
+        let out = default_context(
+            "C:/fake/wg-7-dev-team/__agent_architect",
+            Some("C:/fake/_agent_architect"),
+            &no_skill_section(),
+        );
+        let read_bullet = out
+            .split("- **FORBIDDEN**: Any read operation outside ")
+            .nth(1)
+            .expect("read FORBIDDEN bullet must be present");
+        assert!(
+            read_bullet.starts_with("the entries listed above (other than the narrow messaging exception above)"),
+            "read bullet missing the messaging carve-out, got:
+{read_bullet}"
+        );
+        // Symmetry with the write axis: both bullets defer to the CLI exception.
+        assert!(read_bullet.contains(
+            "except for explicitly requested AgentsCommander CLI operations covered by the exception below"
+        ));
+        // And the read grant for the inbox is actually present.
+        assert!(out.contains("- **Allowed (read-only)**: Read message files inside your workgroup messaging directory"));
+    }
+
+    /// #923 D6: entry #1 grants `repo-*` by name pattern; discovery needs a listing.
+    #[test]
+    fn entry_one_grants_workspace_root_listing_for_repo_discovery() {
+        let out = default_context(
+            "C:/fake/wg-7-dev-team/__agent_architect",
+            None,
+            &no_skill_section(),
+        );
+        assert!(out
+            .contains("Listing your workspace root to discover which `repo-*` folders exist is allowed"));
     }
 
     #[test]
