@@ -934,6 +934,8 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     resolved_spawn: Option<AgentSpawnCommand>,
 ) -> Result<SessionInfo, String> {
     let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
+    let session_label = session_name.as_deref().unwrap_or(&shell).to_string();
+    crate::config::archive_gate::enforce_unarchived_for_spawn(app, &cwd, &session_label).await?;
     let (agent_id, agent_label) = {
         if let Some(spawn) = resolved_spawn.as_ref() {
             (
@@ -1083,6 +1085,16 @@ pub async fn create_session_inner<R: tauri::Runtime>(
             return Err(e.to_string());
         }
     };
+
+    if let Err(e) =
+        crate::config::archive_gate::enforce_unarchived_for_spawn(app, &cwd, &session_label).await
+    {
+        let err = e.to_string();
+        release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+        drop(mgr);
+        rollback_pre_created_session(app, session_mgr, pty_mgr, session.id, &err).await;
+        return Err(err);
+    }
 
     // (#756) Propagate the mirror-forced intent onto the NEW record: the
     // startup-restore path reads ONLY the record, so without this an app close
@@ -2599,6 +2611,7 @@ pub async fn restart_session_inner_with_activation<R: tauri::Runtime>(
         cwd
     };
     let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
+    crate::config::archive_gate::probe_spawn_refusal(app, &cwd).await?;
 
     // 2. Strip auto-injected args before restart so the new session starts from the saved recipe.
     let clean_args =

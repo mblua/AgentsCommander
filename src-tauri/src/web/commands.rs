@@ -28,6 +28,9 @@ enum BrowserProjectCommand {
     UpdateProjectGroups,
     OpenProject,
     RemoveProject,
+    ArchiveProject,
+    UnarchiveProject,
+    ListArchivedProjects,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,6 +55,13 @@ fn route_web_command(cmd: &str) -> WebCommandRoute {
         }
         "open_project" => WebCommandRoute::BrowserProject(BrowserProjectCommand::OpenProject),
         "remove_project" => WebCommandRoute::BrowserProject(BrowserProjectCommand::RemoveProject),
+        "archive_project" => WebCommandRoute::BrowserProject(BrowserProjectCommand::ArchiveProject),
+        "unarchive_project" => {
+            WebCommandRoute::BrowserProject(BrowserProjectCommand::UnarchiveProject)
+        }
+        "list_archived_projects" => {
+            WebCommandRoute::BrowserProject(BrowserProjectCommand::ListArchivedProjects)
+        }
         _ => WebCommandRoute::Other,
     }
 }
@@ -707,17 +717,76 @@ async fn dispatch_browser_project_command(
 
         BrowserProjectCommand::OpenProject => {
             let path = require_str(args, "path")?;
-            let result =
-                crate::commands::ac_discovery::open_project_inner(&state.settings, &path).await?;
+            let result = crate::commands::ac_discovery::open_project_inner(
+                &state.app_handle,
+                &state.settings,
+                &path,
+            )
+            .await?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
 
         BrowserProjectCommand::RemoveProject => {
             let path = require_str(args, "path")?;
-            crate::commands::ac_discovery::remove_project_inner(&state.settings, &path).await?;
+            crate::commands::ac_discovery::remove_project_inner(
+                &state.app_handle,
+                &state.settings,
+                &path,
+            )
+            .await?;
             Ok(json!(null))
         }
+
+        BrowserProjectCommand::ArchiveProject => {
+            let path = require_str(args, "path")?;
+            crate::commands::ac_discovery::archive_project_inner(
+                &state.app_handle,
+                &state.settings,
+                &state.session_mgr,
+                &state.pty_mgr,
+                &path,
+            )
+            .await?;
+            Ok(json!(null))
+        }
+
+        BrowserProjectCommand::UnarchiveProject => {
+            let path = require_str(args, "path")?;
+            let result = crate::commands::ac_discovery::unarchive_project_inner(
+                &state.app_handle,
+                &state.settings,
+                &path,
+            )
+            .await?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+
+        BrowserProjectCommand::ListArchivedProjects => {
+            let result =
+                crate::commands::ac_discovery::list_archived_projects_inner(&state.settings)
+                    .await?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
     }
+}
+
+fn broadcast_all_to_managed<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    event: &str,
+    payload: &Value,
+) -> bool {
+    let _ = tauri::Emitter::emit(app, event, payload.clone());
+    if let Some(bc) = app.try_state::<WsBroadcaster>() {
+        bc.broadcast_event(event, payload);
+        true
+    } else {
+        false
+    }
+}
+
+/// Emit event to both Tauri windows and managed WebSocket clients.
+pub fn broadcast_all_r<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: &str, payload: &Value) {
+    let _ = broadcast_all_to_managed(app, event, payload);
 }
 
 /// Emit event to both Tauri windows and WebSocket clients.
@@ -727,8 +796,9 @@ pub fn broadcast_all(
     event: &str,
     payload: &Value,
 ) {
-    let _ = tauri::Emitter::emit(app, event, payload.clone());
-    broadcaster.broadcast_event(event, payload);
+    if !broadcast_all_to_managed(app, event, payload) {
+        broadcaster.broadcast_event(event, payload);
+    }
 }
 
 // --- Arg helpers ---
@@ -795,6 +865,12 @@ mod tests {
                 BrowserProjectCommand::CheckProjectPath,
             ),
             ("remove_project", BrowserProjectCommand::RemoveProject),
+            ("archive_project", BrowserProjectCommand::ArchiveProject),
+            ("unarchive_project", BrowserProjectCommand::UnarchiveProject),
+            (
+                "list_archived_projects",
+                BrowserProjectCommand::ListArchivedProjects,
+            ),
             (
                 "get_project_groups",
                 BrowserProjectCommand::GetProjectGroups,

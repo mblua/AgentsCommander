@@ -12,7 +12,8 @@ use crate::config::loops::{
     write_loop_state_atomic, LoopAuditEntry, LoopAuditKind, LoopConfigDetails,
     LoopConfigRevalidation, LoopConfigToml, LoopLastResult, LoopState, LOOP_DIR_PREFIX,
 };
-use crate::config::projects::enumerate_registered_project_candidates;
+use crate::config::projects::{enumerate_registered_project_candidates, ProjectResolution};
+use crate::config::sessions_persistence;
 use crate::config::settings::SettingsState;
 use crate::config::workspace::existing_workspace_dir;
 use crate::loops::delivery::{deliver_loop_prompt, LoopDeliveryReport};
@@ -104,12 +105,14 @@ impl LoopScheduler {
 
     async fn scan_once(&self, app: AppHandle, startup: bool, pending_only: bool) {
         let _guard = self.scan_lock.lock().await;
-        let project_paths = {
+        let (project_paths, archived) = {
             let settings = app.state::<SettingsState>();
-            let project_paths = settings.read().await.project_paths.clone();
-            project_paths
+            let s = settings.read().await;
+            (s.project_paths.clone(), s.archived_project_paths.clone())
         };
         let projects = enumerate_registered_project_candidates(&project_paths);
+        let archived_roots = sessions_persistence::normalize_project_roots(&archived);
+        let projects = retain_unarchived_candidates(projects, &archived_roots);
         for project in projects {
             if let Err(e) = self
                 .scan_project(&app, &project.path, startup, pending_only)
@@ -483,6 +486,27 @@ fn loop_is_current_for_delivery(dir: &Path, expected: &LoopConfigToml) -> Result
     }
 }
 
+/// #881 A5: candidate discovery also yields immediate `.ac`-bearing children
+/// of registered paths. Subtract archived roots so nested archived projects do
+/// not keep firing loops from a registered parent.
+fn retain_unarchived_candidates(
+    candidates: Vec<ProjectResolution>,
+    normalized_archived_roots: &[String],
+) -> Vec<ProjectResolution> {
+    if normalized_archived_roots.is_empty() {
+        return candidates;
+    }
+    candidates
+        .into_iter()
+        .filter(|candidate| {
+            !sessions_persistence::is_under_normalized_archived_roots(
+                &candidate.path.to_string_lossy(),
+                normalized_archived_roots,
+            )
+        })
+        .collect()
+}
+
 fn emit_transition(
     app: &AppHandle,
     project_dir: &Path,
@@ -558,6 +582,48 @@ mod tests {
                 ..LoopPolicy::default()
             },
         }
+    }
+
+    #[test]
+    fn retain_unarchived_candidates_drops_a_candidate_under_an_archived_root() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let archived = temp.path().join("archived");
+        let active = temp.path().join("active");
+        std::fs::create_dir_all(&archived).expect("archived");
+        std::fs::create_dir_all(&active).expect("active");
+        let roots = sessions_persistence::normalize_project_roots(&[archived
+            .to_string_lossy()
+            .to_string()]);
+        let archived_candidate = ProjectResolution {
+            path: archived.clone(),
+            folder_name: "archived".to_string(),
+            registered: true,
+        };
+        let active_candidate = ProjectResolution {
+            path: active.clone(),
+            folder_name: "active".to_string(),
+            registered: true,
+        };
+
+        let filtered = retain_unarchived_candidates(
+            vec![archived_candidate, active_candidate.clone()],
+            &roots,
+        );
+
+        assert_eq!(filtered, vec![active_candidate]);
+    }
+
+    #[test]
+    fn retain_unarchived_candidates_returns_input_unchanged_when_archived_list_is_empty() {
+        let candidate = ProjectResolution {
+            path: PathBuf::from("Z:/does/not/exist"),
+            folder_name: "missing".to_string(),
+            registered: true,
+        };
+
+        let filtered = retain_unarchived_candidates(vec![candidate.clone()], &[]);
+
+        assert_eq!(filtered, vec![candidate]);
     }
 
     #[test]

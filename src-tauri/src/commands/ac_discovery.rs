@@ -1,11 +1,11 @@
 use futures::future::join_all;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 use crate::config::settings::SettingsState;
@@ -13,8 +13,9 @@ use crate::config::workspace::{
     canonical_workspace_dir_label, existing_workspace_dir, find_workspace_segment,
     has_workspace_dir, workspace_dir_for_project,
 };
+use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
-use crate::session::session::SessionRepo;
+use crate::session::session::{SessionInfo, SessionRepo, SessionStatus};
 
 /// Per-call monotonic ID partitioning concurrent `discover_*` invocations in the log
 /// stream. See plan §3 A0 (round-2 G5 + round-3 H1 placement-fix). Consumed only by
@@ -568,7 +569,9 @@ impl DiscoveryBranchWatcher {
                             break;
                         }
                         _ = tokio::time::sleep(BRANCH_POLL_INTERVAL) => {
-                            watcher.poll().await;
+                            if let Err(e) = watcher.poll().await {
+                                log::warn!("[DiscoveryBranchWatcher] poll failed: {}", e);
+                            }
                         }
                     }
                 }
@@ -576,7 +579,7 @@ impl DiscoveryBranchWatcher {
         });
     }
 
-    async fn poll(&self) {
+    async fn poll(&self) -> Result<(), String> {
         // Flatten per-project entries.
         let entries: Vec<ReplicaBranchEntry> = {
             let map = self.replicas.lock().unwrap();
@@ -697,13 +700,14 @@ impl DiscoveryBranchWatcher {
         // Gate C: TASK.md detection. Runs every tick whether or not Gate A/B
         // had work to do — sessions in workgroups whose project is not loaded
         // still need brief updates.
-        self.poll_tasks(&entries).await;
+        self.poll_tasks(&entries).await?;
+        Ok(())
     }
 
     /// Gate C: detect TASK.md changes per unique workgroup root and emit
     /// `workgroup_task_updated` on change. Runs on every existing 15s tick
     /// of `poll()`; no new thread, no new cadence.
-    async fn poll_tasks(&self, entries: &[ReplicaBranchEntry]) {
+    async fn poll_tasks(&self, entries: &[ReplicaBranchEntry]) -> Result<(), String> {
         // Build the union of workgroup roots to watch:
         //   1. Replicas in loaded projects (from `entries`) — covers the
         //      sidebar `ProjectPanel` surface.
@@ -726,9 +730,24 @@ impl DiscoveryBranchWatcher {
             }
         }
 
+        let archived = {
+            let settings = self.app_handle.state::<SettingsState>();
+            let cfg = settings.read().await;
+            cfg.archived_project_paths.clone()
+        };
         let sessions: Vec<(Uuid, String)> = {
             let mgr = self.session_manager.read().await;
             mgr.get_sessions_working_dirs().await
+        };
+        let sessions = if archived.is_empty() {
+            sessions
+        } else {
+            tokio::task::spawn_blocking(move || {
+                let roots = crate::config::sessions_persistence::normalize_project_roots(&archived);
+                crate::phone::mailbox::retain_unarchived_session_dirs(sessions, &roots)
+            })
+            .await
+            .map_err(|e| format!("archived task-session filter task failed: {}", e))?
         };
         for (id, cwd) in sessions {
             if let Some(task_path) = crate::session::session::find_workgroup_task_path_for_cwd(&cwd)
@@ -743,12 +762,13 @@ impl DiscoveryBranchWatcher {
         }
 
         if wg_roots.is_empty() {
-            return;
+            return Ok(());
         }
 
         for (wg_root, session_ids) in wg_roots {
             self.check_workgroup_task(wg_root, session_ids).await;
         }
+        Ok(())
     }
 
     /// Per-workgroup brief check. Stat short-circuits unchanged files; on
@@ -1954,32 +1974,6 @@ pub async fn set_replica_context_files(path: String, files: Vec<String>) -> Resu
 
 // ── #191 — shared open/new project commands ──────────────────────────────
 
-/// Validate an existing AC project at `path` and register it in
-/// `settings.project_paths`. Mirrors the ActionBar "Open Project" flow at
-/// `src/sidebar/components/ActionBar.tsx:78-94` but performs the dedup +
-/// persist atomically against `SettingsState`.
-///
-/// Holds the SettingsState write lock through `save_settings` (the same
-/// pattern as the narrow setters in `commands/config.rs`), so concurrent
-/// `update_settings` calls cannot race.
-pub(crate) async fn open_project_inner(
-    settings: &SettingsState,
-    path: &str,
-) -> Result<crate::config::projects::ProjectRegistration, String> {
-    open_project_inner_with_settings_path(settings, path, None).await
-}
-
-async fn open_project_inner_with_settings_path(
-    settings: &SettingsState,
-    path: &str,
-    settings_path: Option<&Path>,
-) -> Result<crate::config::projects::ProjectRegistration, String> {
-    mutate_project_paths_with_settings_path(settings, settings_path, |s| {
-        crate::config::projects::register_existing_project(s, path).map_err(|e| e.to_string())
-    })
-    .await
-}
-
 async fn mutate_project_paths_with_settings_path<T>(
     settings: &SettingsState,
     settings_path: Option<&Path>,
@@ -2006,12 +2000,82 @@ async fn mutate_project_paths_with_settings_path<T>(
     Ok(result)
 }
 
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum ArchiveChangeReason {
+    Archive,
+    Unarchive,
+    AutoUnarchive,
+    Open,
+    Remove,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProjectArchiveChanged {
+    pub path: String,
+    pub folder_name: String,
+    pub archived: bool,
+    pub reason: ArchiveChangeReason,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_name: Option<String>,
+}
+
+fn project_folder_name(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(path)
+        .to_string()
+}
+
+pub(crate) fn broadcast_project_archive_changed<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    path: &str,
+    archived: bool,
+    reason: ArchiveChangeReason,
+    session_name: Option<&str>,
+) {
+    let payload = serde_json::json!(ProjectArchiveChanged {
+        path: path.to_string(),
+        folder_name: project_folder_name(path),
+        archived,
+        reason,
+        session_name: session_name.map(|name| name.to_string()),
+    });
+    crate::web::commands::broadcast_all_r(app, "project_archive_changed", &payload);
+}
+
+/// Validate an existing AC project at `path` and register it in
+/// `settings.project_paths`.
+pub(crate) async fn open_project_inner<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    settings: &SettingsState,
+    path: &str,
+) -> Result<crate::config::projects::ProjectRegistration, String> {
+    let result = open_project_inner_with_settings_path(settings, path, None).await?;
+    broadcast_project_archive_changed(app, &result.path, false, ArchiveChangeReason::Open, None);
+    Ok(result)
+}
+
+async fn open_project_inner_with_settings_path(
+    settings: &SettingsState,
+    path: &str,
+    settings_path: Option<&Path>,
+) -> Result<crate::config::projects::ProjectRegistration, String> {
+    mutate_project_paths_with_settings_path(settings, settings_path, |s| {
+        crate::config::projects::register_existing_project(s, path).map_err(|e| e.to_string())
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn open_project(
+    app: tauri::AppHandle,
     settings: State<'_, SettingsState>,
     path: String,
 ) -> Result<crate::config::projects::ProjectRegistration, String> {
-    open_project_inner(settings.inner(), &path).await
+    open_project_inner(&app, settings.inner(), &path).await
 }
 
 /// Ensure an AC project at `path` (creating `.ac/` if missing) and
@@ -2019,10 +2083,13 @@ pub async fn open_project(
 /// Project" flow at `src/sidebar/components/ActionBar.tsx:58-71`.
 #[tauri::command]
 pub async fn new_project(
+    app: tauri::AppHandle,
     settings: State<'_, SettingsState>,
     path: String,
 ) -> Result<crate::config::projects::ProjectRegistration, String> {
-    new_project_inner_with_settings_path(settings.inner(), &path, None).await
+    let result = new_project_inner_with_settings_path(settings.inner(), &path, None).await?;
+    broadcast_project_archive_changed(&app, &result.path, false, ArchiveChangeReason::Open, None);
+    Ok(result)
 }
 
 async fn new_project_inner_with_settings_path(
@@ -2045,11 +2112,14 @@ async fn new_project_inner_with_settings_path(
 /// `normalize_for_compare` key matches `path`, re-derive the head, and write the
 /// deliberate list verbatim. Removing against the FRESH disk list means a
 /// CLI-appended entry the sidebar never showed is preserved, not dropped.
-pub(crate) async fn remove_project_inner(
+pub(crate) async fn remove_project_inner<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     settings: &SettingsState,
     path: &str,
 ) -> Result<(), String> {
-    remove_project_inner_with_settings_path(settings, path, None).await
+    remove_project_inner_with_settings_path(settings, path, None).await?;
+    broadcast_project_archive_changed(app, path, false, ArchiveChangeReason::Remove, None);
+    Ok(())
 }
 
 async fn remove_project_inner_with_settings_path(
@@ -2066,10 +2136,262 @@ async fn remove_project_inner_with_settings_path(
 
 #[tauri::command]
 pub async fn remove_project(
+    app: tauri::AppHandle,
     settings: State<'_, SettingsState>,
     path: String,
 ) -> Result<(), String> {
-    remove_project_inner(settings.inner(), &path).await
+    remove_project_inner(&app, settings.inner(), &path).await
+}
+
+async fn snapshot_sessions_with_liveness(
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: &Arc<Mutex<PtyManager>>,
+) -> Vec<(SessionInfo, bool)> {
+    let sessions = {
+        let mgr = session_mgr.read().await;
+        mgr.list_sessions().await
+    };
+    let pty = pty_mgr.lock().unwrap_or_else(|e| e.into_inner());
+    sessions
+        .into_iter()
+        .map(|s| {
+            let has_pty = Uuid::parse_str(&s.id)
+                .map(|id| pty.has_session(id))
+                .unwrap_or(false);
+            (s, has_pty)
+        })
+        .collect()
+}
+
+fn session_is_live(status: &SessionStatus, has_pty: bool) -> bool {
+    match status {
+        SessionStatus::Exited(_) => false,
+        SessionStatus::Active | SessionStatus::Running | SessionStatus::Idle => has_pty,
+    }
+}
+
+pub(crate) fn archive_session_blockers(
+    sessions: &[(SessionInfo, bool)],
+    project_path: &str,
+) -> Vec<String> {
+    let scope = [project_path.to_string()];
+    sessions
+        .iter()
+        .filter(|(s, _)| {
+            !(s.is_root_agent
+                || crate::config::root_agent::is_root_agent_dir_name(&s.working_directory))
+        })
+        .filter(|(s, has_pty)| session_is_live(&s.status, *has_pty))
+        .filter(|(s, _)| {
+            crate::config::sessions_persistence::working_directory_under_any_project_path(
+                &s.working_directory,
+                &scope,
+            )
+        })
+        .map(|(s, _)| s.name.clone())
+        .collect()
+}
+
+fn archive_blocked_message(blockers: &[String]) -> String {
+    const MAX_NAMED: usize = 3;
+    let named = blockers
+        .iter()
+        .take(MAX_NAMED)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let overflow = blockers.len().saturating_sub(MAX_NAMED);
+    if overflow > 0 {
+        format!(
+            "Cannot archive: {} open session(s) in this project ({}, and {} more). Close them first.",
+            blockers.len(),
+            named,
+            overflow
+        )
+    } else {
+        format!(
+            "Cannot archive: {} open session(s) in this project ({}). Close them first.",
+            blockers.len(),
+            named
+        )
+    }
+}
+
+pub(crate) fn archive_late_spawn_blockers(
+    after: &[(SessionInfo, bool)],
+    exited_before: &HashSet<String>,
+    project_path: &str,
+) -> Vec<String> {
+    let scope = [project_path.to_string()];
+    after
+        .iter()
+        .filter(|(s, _)| {
+            !(s.is_root_agent
+                || crate::config::root_agent::is_root_agent_dir_name(&s.working_directory))
+        })
+        .filter(|(s, _)| !matches!(s.status, SessionStatus::Exited(_)))
+        .filter(|(s, _)| !exited_before.contains(&s.id))
+        .filter(|(s, _)| {
+            crate::config::sessions_persistence::working_directory_under_any_project_path(
+                &s.working_directory,
+                &scope,
+            )
+        })
+        .map(|(s, _)| s.name.clone())
+        .collect()
+}
+
+pub(crate) async fn archive_project_inner<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    settings: &SettingsState,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: &Arc<Mutex<PtyManager>>,
+    path: &str,
+) -> Result<(), String> {
+    archive_project_inner_with_settings_path(app, settings, session_mgr, pty_mgr, path, None).await
+}
+
+async fn archive_project_inner_with_settings_path<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    settings: &SettingsState,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: &Arc<Mutex<PtyManager>>,
+    path: &str,
+    settings_path: Option<&Path>,
+) -> Result<(), String> {
+    let before = snapshot_sessions_with_liveness(session_mgr, pty_mgr).await;
+    let blockers = archive_session_blockers(&before, path);
+    if !blockers.is_empty() {
+        return Err(archive_blocked_message(&blockers));
+    }
+
+    mutate_project_paths_with_settings_path(settings, settings_path, |s| {
+        crate::config::projects::archive_project_path(s, path);
+        Ok(())
+    })
+    .await?;
+
+    let exited_before: HashSet<String> = before
+        .iter()
+        .filter(|(s, _)| matches!(s.status, SessionStatus::Exited(_)))
+        .map(|(s, _)| s.id.clone())
+        .collect();
+    let after = snapshot_sessions_with_liveness(session_mgr, pty_mgr).await;
+    let late = archive_late_spawn_blockers(&after, &exited_before, path);
+    if late.is_empty() {
+        broadcast_project_archive_changed(app, path, true, ArchiveChangeReason::Archive, None);
+        return Ok(());
+    }
+
+    let restored: Result<bool, String> =
+        mutate_project_paths_with_settings_path(settings, settings_path, |s| {
+            let key = crate::config::projects::normalize_for_compare(path);
+            let still_archived = s
+                .archived_project_paths
+                .iter()
+                .any(|p| crate::config::projects::normalize_for_compare(p) == key);
+            if !still_archived {
+                return Ok(false);
+            }
+            crate::config::projects::register_existing_project(s, path)
+                .map_err(|e| e.to_string())?;
+            Ok(true)
+        })
+        .await;
+
+    match restored {
+        Ok(false) => Err(archive_blocked_message(&late)),
+        Ok(true) => {
+            broadcast_project_archive_changed(
+                app,
+                path,
+                false,
+                ArchiveChangeReason::Unarchive,
+                None,
+            );
+            Err(archive_blocked_message(&late))
+        }
+        Err(e) => {
+            log::error!(
+                "[archive] '{}' has {} live session(s) but could not be restored: {}",
+                path,
+                late.len(),
+                e
+            );
+            Err(format!(
+                "{} The project could not be restored automatically ({}). Open Archived Projects to restore it.",
+                archive_blocked_message(&late),
+                e
+            ))
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn archive_project(
+    app: tauri::AppHandle,
+    settings: State<'_, SettingsState>,
+    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
+    pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
+    path: String,
+) -> Result<(), String> {
+    archive_project_inner(
+        &app,
+        settings.inner(),
+        session_mgr.inner(),
+        pty_mgr.inner(),
+        &path,
+    )
+    .await
+}
+
+pub(crate) async fn unarchive_project_inner<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    settings: &SettingsState,
+    path: &str,
+) -> Result<crate::config::projects::ProjectRegistration, String> {
+    let result = mutate_project_paths_with_settings_path(settings, None, |s| {
+        crate::config::projects::register_existing_project(s, path).map_err(|e| e.to_string())
+    })
+    .await?;
+    broadcast_project_archive_changed(
+        app,
+        &result.path,
+        false,
+        ArchiveChangeReason::Unarchive,
+        None,
+    );
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn unarchive_project(
+    app: tauri::AppHandle,
+    settings: State<'_, SettingsState>,
+    path: String,
+) -> Result<crate::config::projects::ProjectRegistration, String> {
+    unarchive_project_inner(&app, settings.inner(), &path).await
+}
+
+pub(crate) async fn list_archived_projects_inner(
+    settings: &SettingsState,
+) -> Result<Vec<crate::config::projects::ArchivedProject>, String> {
+    let paths = {
+        let s = settings.read().await;
+        s.archived_project_paths.clone()
+    };
+    tokio::task::spawn_blocking(move || {
+        crate::config::projects::archived_projects_from_paths(&paths)
+    })
+    .await
+    .map_err(|e| format!("archived project stat task failed: {}", e))
+}
+
+#[tauri::command]
+pub async fn list_archived_projects(
+    settings: State<'_, SettingsState>,
+) -> Result<Vec<crate::config::projects::ArchivedProject>, String> {
+    list_archived_projects_inner(settings.inner()).await
 }
 
 type TaskFields = (Option<String>, Option<String>);
@@ -2087,6 +2409,205 @@ fn read_task_fields(wg_path: &Path) -> TaskFields {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn archive_test_session(
+        name: &str,
+        working_directory: &str,
+        status: SessionStatus,
+        is_root_agent: bool,
+    ) -> SessionInfo {
+        SessionInfo {
+            id: Uuid::new_v4().to_string(),
+            name: name.to_string(),
+            shell: "shell".to_string(),
+            shell_args: Vec::new(),
+            backend_kind: crate::pty::backend::SessionBackendKind::LocalProcess,
+            effective_shell_args: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            working_directory: working_directory.to_string(),
+            status,
+            waiting_for_input: false,
+            communication: None,
+            pending_review: false,
+            last_prompt: None,
+            agent_id: None,
+            agent_label: None,
+            git_repos: Vec::new(),
+            workgroup_task: None,
+            is_coordinator: false,
+            is_root_agent,
+            token: "token".to_string(),
+            agent_kind: None,
+            requested_profile: None,
+            effective_profile: None,
+            profile_fallback_chain: Vec::new(),
+            profile_fallback_applied: false,
+            effective_codex_home: None,
+            profile_content_hash: None,
+            profile_outdated: false,
+            telegram_bot_id: None,
+            was_detached: false,
+            detached_geometry: None,
+            start_fresh_on_restore: false,
+        }
+    }
+
+    fn archive_scope() -> (tempfile::TempDir, String, String, String) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("project");
+        let agent = project.join(".ac").join("wg-1").join("__agent_dev");
+        let other = temp
+            .path()
+            .join("other")
+            .join(".ac")
+            .join("wg-1")
+            .join("__agent_other");
+        std::fs::create_dir_all(&agent).expect("agent");
+        std::fs::create_dir_all(&other).expect("other");
+        (
+            temp,
+            project.to_string_lossy().to_string(),
+            agent.to_string_lossy().to_string(),
+            other.to_string_lossy().to_string(),
+        )
+    }
+
+    #[test]
+    fn archive_session_blockers_names_live_sessions_under_project() {
+        let (_temp, project, agent, _) = archive_scope();
+        let sessions = vec![(
+            archive_test_session("live", &agent, SessionStatus::Running, false),
+            true,
+        )];
+
+        assert_eq!(archive_session_blockers(&sessions, &project), vec!["live"]);
+    }
+
+    #[test]
+    fn archive_session_blockers_ignores_exited_session_under_project() {
+        let (_temp, project, agent, _) = archive_scope();
+        let sessions = vec![(
+            archive_test_session("done", &agent, SessionStatus::Exited(0), false),
+            true,
+        )];
+
+        assert!(archive_session_blockers(&sessions, &project).is_empty());
+    }
+
+    #[test]
+    fn archive_session_blockers_ignores_running_session_with_no_pty() {
+        let (_temp, project, agent, _) = archive_scope();
+        let sessions = vec![(
+            archive_test_session("phantom", &agent, SessionStatus::Running, false),
+            false,
+        )];
+
+        assert!(archive_session_blockers(&sessions, &project).is_empty());
+    }
+
+    #[test]
+    fn archive_session_blockers_ignores_root_agent_session() {
+        let (_temp, project, agent, _) = archive_scope();
+        let sessions = vec![(
+            archive_test_session("root", &agent, SessionStatus::Running, true),
+            true,
+        )];
+
+        assert!(archive_session_blockers(&sessions, &project).is_empty());
+    }
+
+    #[test]
+    fn archive_session_blockers_ignores_root_agent_by_dir_name_when_flag_is_false() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("project");
+        let root_dir = project
+            .join(".ac")
+            .join(crate::config::root_agent::ROOT_AGENT_DIR_NAME);
+        std::fs::create_dir_all(&root_dir).expect("root dir");
+        let sessions = vec![(
+            archive_test_session(
+                "root",
+                &root_dir.to_string_lossy(),
+                SessionStatus::Running,
+                false,
+            ),
+            true,
+        )];
+
+        assert!(archive_session_blockers(&sessions, &project.to_string_lossy()).is_empty());
+    }
+
+    #[test]
+    fn archive_session_blockers_ignores_sessions_in_other_projects() {
+        let (_temp, project, _, other) = archive_scope();
+        let sessions = vec![(
+            archive_test_session("other", &other, SessionStatus::Running, false),
+            true,
+        )];
+
+        assert!(archive_session_blockers(&sessions, &project).is_empty());
+    }
+
+    #[test]
+    fn archive_blocked_message_caps_named_sessions_at_three() {
+        let names = vec![
+            "one".to_string(),
+            "two".to_string(),
+            "three".to_string(),
+            "four".to_string(),
+        ];
+
+        let message = archive_blocked_message(&names);
+
+        assert!(message.contains("one, two, three, and 1 more"), "{message}");
+        assert!(!message.contains("four"), "{message}");
+    }
+
+    #[test]
+    fn archive_late_spawn_blockers_catches_record_with_no_pty_yet() {
+        let (_temp, project, agent, _) = archive_scope();
+        let session = archive_test_session("spawning", &agent, SessionStatus::Running, false);
+        let after = vec![(session, false)];
+
+        assert_eq!(
+            archive_late_spawn_blockers(&after, &HashSet::new(), &project),
+            vec!["spawning"]
+        );
+    }
+
+    #[test]
+    fn archive_late_spawn_blockers_ignores_record_that_was_exited_before() {
+        let (_temp, project, agent, _) = archive_scope();
+        let mut session = archive_test_session("promoted", &agent, SessionStatus::Active, false);
+        let mut exited_before = HashSet::new();
+        exited_before.insert(session.id.clone());
+        session.status = SessionStatus::Active;
+        let after = vec![(session, false)];
+
+        assert!(archive_late_spawn_blockers(&after, &exited_before, &project).is_empty());
+    }
+
+    #[test]
+    fn archive_late_spawn_blockers_ignores_exited_records() {
+        let (_temp, project, agent, _) = archive_scope();
+        let after = vec![(
+            archive_test_session("done", &agent, SessionStatus::Exited(0), false),
+            false,
+        )];
+
+        assert!(archive_late_spawn_blockers(&after, &HashSet::new(), &project).is_empty());
+    }
+
+    #[test]
+    fn archive_late_spawn_blockers_ignores_root_agent() {
+        let (_temp, project, agent, _) = archive_scope();
+        let after = vec![(
+            archive_test_session("root", &agent, SessionStatus::Running, true),
+            false,
+        )];
+
+        assert!(archive_late_spawn_blockers(&after, &HashSet::new(), &project).is_empty());
+    }
 
     #[cfg(windows)]
     #[test]

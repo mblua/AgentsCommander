@@ -309,9 +309,10 @@ fn path_is_under_or_equal(candidate: &str, root: &str) -> bool {
 /// Raw-root convenience for active project lists that are checked once, such
 /// as `archive_session_blockers`.
 ///
-/// Do not call this with `archived_project_paths` or inside a per-dir loop.
-/// In those paths, normalize roots once with `normalize_project_roots` and use
-/// the normalized helpers.
+/// Do not call this with `archived_project_paths`,
+/// `session_retention_project_paths`, or inside a per-dir loop. In those paths,
+/// normalize roots once with `normalize_project_roots` and use the normalized
+/// helpers.
 #[allow(dead_code)]
 pub(crate) fn working_directory_under_any_project_path(
     working_directory: &str,
@@ -373,6 +374,25 @@ pub(crate) fn is_under_normalized_archived_roots(
         &normalize_for_project_compare(Path::new(path)),
         normalized_archived_roots,
     )
+}
+
+/// #881: return the normalized archived root containing `path`.
+///
+/// Takes pre-normalized roots produced by `normalize_project_roots`; do not add
+/// a raw-root wrapper that hides per-root canonicalization inside a per-dir
+/// loop.
+pub(crate) fn first_project_path_containing(
+    path: &str,
+    normalized_roots: &[String],
+) -> Option<String> {
+    if normalized_roots.is_empty() {
+        return None;
+    }
+    let cwd = normalize_for_project_compare(Path::new(path));
+    normalized_roots
+        .iter()
+        .find(|root| path_is_under_or_equal(&cwd, root))
+        .cloned()
 }
 
 fn is_root_persisted_session(session: &PersistedSession) -> bool {
@@ -2590,6 +2610,17 @@ mod tests {
             NORMALIZE_CALLS.with(|calls| calls.get()),
             0,
             "empty archived roots must not canonicalize path"
+        );
+
+        NORMALIZE_CALLS.with(|calls| calls.set(0));
+        assert!(!is_under_normalized_archived_roots(
+            "Z:/does/not/exist/x",
+            &["z:/somewhere".to_string()]
+        ));
+        assert_eq!(
+            NORMALIZE_CALLS.with(|calls| calls.get()),
+            1,
+            "non-empty roots must canonicalize path exactly once"
         );
     }
 
