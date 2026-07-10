@@ -1058,6 +1058,117 @@ mod tests {
         assert!(out.starts_with(b"%AC_REPLICA_ROOT%"));
     }
 
+    // ---- %USER_HOME% in seeded content (#924) ------------------------------
+
+    /// `dirs::home_dir()` forward-slashed. `None` on a machine without a home,
+    /// where the token is expected to stay literal.
+    fn home_fwd() -> Option<String> {
+        dirs::home_dir().map(|home| home.to_string_lossy().replace('\\', "/"))
+    }
+
+    #[test]
+    fn copy_file_substitutes_user_home() {
+        let temp = tempfile::tempdir().unwrap();
+        let ctx = ctx_with(&abs(r"C:\r", "/r"), Some(&abs(r"C:\ws", "/ws")), None);
+
+        let src = temp.path().join("s.json");
+        std::fs::write(&src, b"excl=%USER_HOME%/.claude/CLAUDE.md").unwrap();
+        let dst = temp.path().join("s.out");
+        copy_file_substituted(&src, &dst, Some(&ctx), true).unwrap();
+
+        let out = std::fs::read_to_string(&dst).unwrap();
+        match home_fwd() {
+            Some(home) => assert_eq!(out, format!("excl={}/.claude/CLAUDE.md", home)),
+            None => assert_eq!(out, "excl=%USER_HOME%/.claude/CLAUDE.md"),
+        }
+    }
+
+    #[test]
+    fn copy_file_over_cap_does_not_substitute_user_home() {
+        let temp = tempfile::tempdir().unwrap();
+        let ctx = ctx_with(&abs(r"C:\r", "/r"), Some(&abs(r"C:\ws", "/ws")), None);
+
+        let src = temp.path().join("big.json");
+        let mut content = vec![b'a'; (CONTENT_SUBSTITUTION_CAP as usize) + 16];
+        content[..12].copy_from_slice(b"%USER_HOME%\n");
+        std::fs::write(&src, &content).unwrap();
+        let dst = temp.path().join("big.out");
+        copy_file_substituted(&src, &dst, Some(&ctx), true).unwrap();
+
+        let out = std::fs::read(&dst).unwrap();
+        assert_eq!(out.len(), content.len());
+        // Over the cap: streamed verbatim, the token is NOT substituted.
+        assert!(out.starts_with(b"%USER_HOME%"));
+    }
+
+    #[test]
+    fn copy_file_binary_with_user_home_bytes_is_verbatim() {
+        let temp = tempfile::tempdir().unwrap();
+        let ctx = ctx_with(&abs(r"C:\r", "/r"), Some(&abs(r"C:\ws", "/ws")), None);
+
+        let src = temp.path().join("b.bin");
+        let raw: &[u8] = b"%USER_HOME%\x00binary";
+        std::fs::write(&src, raw).unwrap();
+        let dst = temp.path().join("b.out");
+        copy_file_substituted(&src, &dst, Some(&ctx), true).unwrap();
+        // NUL in the leading window -> verbatim, no substitution.
+        assert_eq!(std::fs::read(&dst).unwrap(), raw);
+    }
+
+    #[test]
+    fn copy_tree_verbatim_preserves_user_home_when_substitute_false() {
+        // embedded -> master copies raw templates: the token must survive so the
+        // later replica seed can expand it.
+        let temp = tempfile::tempdir().unwrap();
+        let src = temp.path().join("src");
+        write_file(&src.join("a.json"), b"excl=%USER_HOME%/.claude/CLAUDE.md");
+        let dst = temp.path().join("dst");
+        copy_tree(&src, &dst, 0, None, false).unwrap();
+        assert_eq!(
+            std::fs::read(dst.join("a.json")).unwrap(),
+            b"excl=%USER_HOME%/.claude/CLAUDE.md"
+        );
+    }
+
+    #[test]
+    fn seed_settings_local_expands_user_home_but_not_hook_markers() {
+        // Realistic settings.local.json: `claudeMdExcludes` uses %USER_HOME% (must
+        // expand), while a PreToolUse hook command uses %TEMP% (must NOT).
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("ws");
+        let replica = workspace.join("wg-1-team").join("__agent_x");
+        std::fs::create_dir_all(&replica).unwrap();
+        let template = concat!(
+            "{\n",
+            "  \"claudeMdExcludes\": [\"%USER_HOME%/.claude/CLAUDE.md\"],\n",
+            "  \"hooks\": { \"PreToolUse\": [{ \"command\": \"echo %TEMP%/log.txt\" }] }\n",
+            "}\n"
+        );
+        write_file(
+            &workspace.join("default.claude").join("settings.local.json"),
+            template.as_bytes(),
+        );
+
+        let ctx = ctx_with(&replica, Some(&workspace), None);
+        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
+        assert_eq!(
+            perform_config_seed(&resolved, "sfx924"),
+            ConfigSeedReport::Seeded
+        );
+
+        let out =
+            std::fs::read_to_string(replica.join(".claude").join("settings.local.json")).unwrap();
+        if let Some(home) = home_fwd() {
+            assert!(
+                out.contains(&format!("\"{}/.claude/CLAUDE.md\"", home)),
+                "{out}"
+            );
+            assert!(!out.contains("%USER_HOME%"), "{out}");
+        }
+        // The unknown marker inside the hook command survives verbatim.
+        assert!(out.contains("echo %TEMP%/log.txt"), "{out}");
+    }
+
     // ---- copy_tree (reparse skip + depth bound) ----------------------------
 
     #[test]

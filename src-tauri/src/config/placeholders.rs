@@ -1,8 +1,16 @@
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 pub const AC_REPLICA_ROOT_PLACEHOLDER: &str = "%AC_REPLICA_ROOT%";
 pub const AC_WORKSPACE_ROOT_PLACEHOLDER: &str = "%AC_WORKSPACE_ROOT%";
 pub const AC_MATRIX_ROOT_PLACEHOLDER: &str = "%AC_MATRIX_ROOT%";
+
+/// The current user's home directory (#924). Deliberately NOT a member of
+/// [`AC_PLACEHOLDER_TOKENS`]: that array is the launch-root GATE, and this token
+/// needs no AC context (it resolves from `dirs::home_dir()`, which is
+/// process-global). It is expanded in seeded file CONTENT only, never in the
+/// strict env/arg path.
+pub const USER_HOME_PLACEHOLDER: &str = "%USER_HOME%";
 
 /// Single source of truth for the AC path-placeholder token set. Every site that
 /// gates on, validates, or scans these tokens MUST iterate this list, so adding a
@@ -138,7 +146,26 @@ pub fn expand_placeholders_in_args(
         .collect()
 }
 
-/// Expand the 3 known AC tokens inside file CONTENT (#598 config-folder seed).
+/// Process-global home directory, resolved once. `None` when `dirs::home_dir()`
+/// cannot determine it (no HOME / USERPROFILE); callers leave the token literal.
+fn user_home() -> Option<&'static Path> {
+    static USER_HOME: OnceLock<Option<PathBuf>> = OnceLock::new();
+    USER_HOME
+        .get_or_init(|| {
+            let home = dirs::home_dir();
+            if home.is_none() {
+                log::warn!(
+                    "[placeholders] home directory is undeterminable; {} stays literal in seeded content",
+                    USER_HOME_PLACEHOLDER
+                );
+            }
+            home
+        })
+        .as_deref()
+}
+
+/// Expand the 3 known AC tokens plus `%USER_HOME%` inside file CONTENT
+/// (#598 config-folder seed, #924 user home).
 /// Unlike [`expand_placeholders`] this does NOT fail-closed on unknown `%...%`:
 /// a seeded template may legitimately contain other `%VAR%` text the tool reads
 /// at runtime, so unknown markers are left literal. Substituted paths are
@@ -154,6 +181,14 @@ pub fn expand_placeholders_in_content(value: &str, context: &PlaceholderContext)
     }
     if let Some(mx) = &context.matrix_root {
         out = out.replace(AC_MATRIX_ROOT_PLACEHOLDER, &fwd(mx));
+    }
+    // #924: best-effort, exactly like the AC tokens above. An undeterminable home
+    // leaves the token literal (already warned once by `user_home`) and NEVER
+    // aborts the spawn.
+    if out.contains(USER_HOME_PLACEHOLDER) {
+        if let Some(home) = user_home() {
+            out = out.replace(USER_HOME_PLACEHOLDER, &fwd(home));
+        }
     }
     out
 }
@@ -433,6 +468,85 @@ mod tests {
             out,
             "%AC_REPLICA_ROOT% %AC_WORKSPACE_ROOT% %AC_MATRIX_ROOT%"
         );
+    }
+
+    // ---- %USER_HOME% (#924) ------------------------------------------------
+
+    /// `dirs::home_dir()` forward-slashed, or `None` on a machine without a home.
+    /// Tests derive the expectation instead of hardcoding a literal, so they stay
+    /// deterministic across OSes and CI users.
+    fn expected_home_fwd() -> Option<String> {
+        dirs::home_dir().map(|home| home.to_string_lossy().replace('\\', "/"))
+    }
+
+    #[test]
+    fn content_expands_user_home_forward_slashed() {
+        let temp = tempfile::tempdir().unwrap();
+        let replica = make_replica(temp.path());
+        let ctx = placeholder_context_for_launch_root(&replica).unwrap();
+
+        let out = expand_placeholders_in_content("excl=%USER_HOME%/.claude/CLAUDE.md", &ctx);
+        match expected_home_fwd() {
+            Some(home) => {
+                assert_eq!(out, format!("excl={}/.claude/CLAUDE.md", home));
+                assert!(!out.contains('\\'), "{out}");
+                assert!(!out.contains(USER_HOME_PLACEHOLDER), "{out}");
+            }
+            // No home on this machine: the token stays literal, the spawn never aborts.
+            None => assert_eq!(out, "excl=%USER_HOME%/.claude/CLAUDE.md"),
+        }
+    }
+
+    #[test]
+    fn content_leaves_unknown_percent_markers_literal() {
+        let temp = tempfile::tempdir().unwrap();
+        let replica = make_replica(temp.path());
+        let ctx = placeholder_context_for_launch_root(&replica).unwrap();
+        // %USER_HOME% is the ONLY new token: sibling %VAR% markers that a tool reads
+        // at runtime (hook commands, shell vars) must survive verbatim.
+        let out = expand_placeholders_in_content("%TEMP% %CD% %USERPROFILE%", &ctx);
+        assert_eq!(out, "%TEMP% %CD% %USERPROFILE%");
+    }
+
+    #[test]
+    fn content_expands_user_home_alongside_ac_tokens() {
+        let temp = tempfile::tempdir().unwrap();
+        let replica = make_replica(temp.path());
+        let ctx = placeholder_context_for_launch_root(&replica).unwrap();
+
+        let out = expand_placeholders_in_content(
+            "%AC_REPLICA_ROOT% %AC_WORKSPACE_ROOT% %AC_MATRIX_ROOT% %USER_HOME%",
+            &ctx,
+        );
+        let expected_replica = canonical_stripped(&replica)
+            .to_string_lossy()
+            .replace('\\', "/");
+        assert!(out.starts_with(&expected_replica), "{out}");
+        assert!(!out.contains("%AC_"), "{out}");
+        if let Some(home) = expected_home_fwd() {
+            assert!(out.ends_with(&home), "{out}");
+            assert!(!out.contains('\\'), "{out}");
+        }
+    }
+
+    #[test]
+    fn user_home_is_not_an_ac_placeholder_token() {
+        // GATE, not catalog: `value_contains_ac_placeholder` drives the "this spawn
+        // requires an AC launch root" decision (agent_command.rs) and the CODEX_HOME
+        // validators. %USER_HOME% needs no AC context, so it must stay out.
+        assert!(!AC_PLACEHOLDER_TOKENS.contains(&USER_HOME_PLACEHOLDER));
+        assert!(!value_contains_ac_placeholder("%USER_HOME%/.claude"));
+    }
+
+    #[test]
+    fn strict_expand_still_rejects_user_home() {
+        // v1 scope: env values and command args keep their fail-closed contract,
+        // because `home_dir()` can return None and strict mode cannot degrade.
+        let temp = tempfile::tempdir().unwrap();
+        let replica = make_replica(temp.path());
+        let ctx = placeholder_context_for_launch_root(&replica).unwrap();
+        let err = expand_placeholders("%USER_HOME%/x", &ctx).unwrap_err();
+        assert!(err.contains("unknown placeholder"), "{err}");
     }
 
     #[test]
