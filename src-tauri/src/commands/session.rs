@@ -3573,6 +3573,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn container_path_context_refuses_junction_targeting_workgroup_root() {
+        // B4 regression fence: before cwd canonicalization, the textual guard
+        // saw only `link-to-wg` and permitted a bind mount of the workgroup.
         let tmp = tempfile::tempdir().unwrap();
         let target = tmp
             .path()
@@ -3594,6 +3596,14 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn container_path_context_refuses_junction_targeting_home_dir() {
+        // Guard coverage, not the main B4 regression fence: the pre-B4 home
+        // rule already canonicalized both sides. This test mainly preserves the
+        // selected-vs-canonical rejection text for reparse-point inputs.
+        //
+        // Safety note: `%TEMP%` usually lives under the user's home directory,
+        // so this junction points from a tempdir back to its own ancestor.
+        // The test relies on std::fs::remove_dir_all treating the junction as a
+        // reparse point and deleting only the link, not descending into home.
         let tmp = tempfile::tempdir().unwrap();
         let home = dirs::home_dir().expect("home dir required for junction guard test");
         let link = tmp.path().join("link-to-home");
@@ -3610,6 +3620,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn container_path_context_refuses_cwd_that_cannot_be_canonicalized() {
+        // Pins the fail-closed DD9 behavior from 8d0d3fd5. It is not the B4
+        // junction bypass regression fence.
         let tmp = tempfile::tempdir().unwrap();
         let missing = tmp.path().join("missing");
 
