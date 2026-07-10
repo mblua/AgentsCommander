@@ -1750,7 +1750,7 @@ pub fn materialize_agent_context_file_with_filename(
 /// True iff `meta` is a symlink or (Windows) any reparse point (junction).
 /// Local copy of the gate at `cli/agency_templates.rs:867-880`; kept private to
 /// this module to avoid widening another module's API (the codebase already
-/// inlines this same check in `claude_settings.rs` and `coding_agent_profiles.rs`;
+/// inlines this same check in `coding_agent_profiles.rs`;
 /// do NOT refactor those into one helper here).
 fn is_link_or_reparse(meta: &std::fs::Metadata) -> bool {
     if meta.file_type().is_symlink() {

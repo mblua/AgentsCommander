@@ -1,7 +1,6 @@
 pub mod agent_command;
 pub mod agent_config;
 pub mod agent_creation;
-pub mod claude_settings;
 pub mod coding_agent_mutations;
 pub mod coding_agent_profiles;
 pub mod coding_agents_catalog;
