@@ -1,7 +1,12 @@
 import { Component, createSignal, createEffect, onMount, onCleanup, Show } from "solid-js";
 import { isTauri } from "../shared/platform";
 import type { UnlistenFn } from "../shared/transport";
-import type { SessionStatus, ContextTemplateUpdate, MainSidebarSide } from "../shared/types";
+import type {
+  SessionStatus,
+  ContextTemplateUpdate,
+  MainSidebarSide,
+  SessionWarning,
+} from "../shared/types";
 import {
   SessionAPI,
   SettingsAPI,
@@ -21,6 +26,7 @@ import {
   onTelegramBridgeAttached,
   onTelegramBridgeDetached,
   onTelegramBridgeError,
+  onSessionEnvWarning,
   onTerminalDetached,
   onTerminalAttached,
   onWorkgroupTaskUpdated,
@@ -71,6 +77,32 @@ interface SidebarAppProps {
 
 function isExitedStatus(status: SessionStatus): boolean {
   return typeof status === "object" && status !== null && "exited" in status;
+}
+
+function sessionWarningIdentity(warning: SessionWarning): string {
+  return JSON.stringify([
+    warning.sessionId,
+    warning.key,
+    warning.kind,
+    warning.message,
+  ]);
+}
+
+function incrementWarningCount(counts: Map<string, number>, warning: SessionWarning): void {
+  const key = sessionWarningIdentity(warning);
+  counts.set(key, (counts.get(key) ?? 0) + 1);
+}
+
+function consumeWarningCount(counts: Map<string, number>, warning: SessionWarning): boolean {
+  const key = sessionWarningIdentity(warning);
+  const count = counts.get(key) ?? 0;
+  if (count <= 0) return false;
+  if (count === 1) {
+    counts.delete(key);
+  } else {
+    counts.set(key, count - 1);
+  }
+  return true;
 }
 
 export function blockContextMenu(e: Event): void {
@@ -264,6 +296,41 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     scheduleProfileOutdatedRefresh();
   };
 
+  const liveWarningsDuringInitialDrain = new Map<string, number>();
+  let initialWarningDrainActive = false;
+  let disposed = false;
+
+  const surfaceSessionWarning = (warning: SessionWarning) => {
+    if (disposed) return;
+    console.warn(
+      `Session warning for ${warning.sessionId} (${warning.key}/${warning.kind}): ${warning.message}`
+    );
+    toastStore.error(warning.message);
+  };
+
+  const handleLiveSessionWarning = (warning: SessionWarning) => {
+    if (initialWarningDrainActive) {
+      incrementWarningCount(liveWarningsDuringInitialDrain, warning);
+    }
+    surfaceSessionWarning(warning);
+  };
+
+  const drainBufferedSessionWarnings = async () => {
+    initialWarningDrainActive = true;
+    try {
+      const warnings = await SessionAPI.drainWarnings();
+      for (const warning of warnings) {
+        if (consumeWarningCount(liveWarningsDuringInitialDrain, warning)) continue;
+        surfaceSessionWarning(warning);
+      }
+    } catch (e) {
+      console.error("[session-warning] drain_session_warnings failed:", e);
+    } finally {
+      initialWarningDrainActive = false;
+      liveWarningsDuringInitialDrain.clear();
+    }
+  };
+
   onMount(async () => {
     // #289 / dark-default — dark is the base CSS, so first paint is dark with
     // no optimistic class; the persisted-preference check after
@@ -271,6 +338,11 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     // session. Guarded with !props.embedded because MainApp owns the
     // documentElement classList when this is mounted inside the unified layout
     // — same pattern as zoom/geometry.
+    // #912: subscribe before the startup warning drain. The backend appends
+    // before live emit, so exact live/drained duplicates are collapsed below.
+    unlisteners.push(await onSessionEnvWarning(handleLiveSessionWarning));
+    void drainBufferedSessionWarnings();
+
     unlisteners.push(
       await onAcProjectRefreshRequested((data) => {
         handleProjectRefreshRequested(data);
@@ -549,9 +621,11 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
         console.error(`Bridge error for ${sessionId}: ${error}`);
       })
     );
+
   });
 
   onCleanup(() => {
+    disposed = true;
     unlisteners.forEach((unlisten) => unlisten());
     if (shortcutHandler) unregisterShortcuts(shortcutHandler);
     if (cleanupZoom) cleanupZoom();

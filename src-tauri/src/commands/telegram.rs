@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::config::sessions_persistence::persist_current_state_result;
 use crate::config::settings::SettingsState;
 use crate::network::OutboundNetwork;
+use crate::pty::backend::SessionBackendKind;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 use crate::session::profile::CodingAgentKind;
@@ -25,6 +26,9 @@ use crate::telegram::types::{BridgeInfo, TelegramBotConfig};
 ///   emits `telegram_bridge_error` + early-returns with its contractual success
 ///   value (or `Err` for `telegram_attach`).
 ///
+/// Container sessions require spawn-time memos. They never fall back to host
+/// config resolvers, because the host defaults are not the container filesystem.
+///
 /// #260: agent selection is `Option<CodingAgentKind>`. Mutual exclusion is now
 /// structural (an enum is one variant or none), so the pre-#260
 /// `debug_assert!(kinds_set <= 1, …)` guard was removed.
@@ -32,34 +36,49 @@ pub(crate) fn derive_reader(
     shell: &str,
     shell_args: &[String],
     cwd: &str,
+    backend_kind: SessionBackendKind,
     agent_kind: Option<CodingAgentKind>,
+    resolved_claude_projects_dir: Option<PathBuf>,
     effective_codex_home: Option<&str>,
 ) -> Result<Option<SessionReaderKind>, String> {
     let attach_time = chrono::Utc::now();
 
     match agent_kind {
-        Some(CodingAgentKind::Claude) => {
-            match crate::commands::session::resolve_claude_projects_dir(shell, shell_args, cwd) {
+        Some(CodingAgentKind::Claude) => match backend_kind {
+            SessionBackendKind::LocalProcess => match resolved_claude_projects_dir.or_else(|| {
+                crate::commands::session::resolve_claude_projects_dir(shell, shell_args, cwd)
+            }) {
                 Some(p) => Ok(Some(SessionReaderKind::Claude { project_dir: p })),
                 None => Err("Cannot resolve Claude projects dir".to_string()),
-            }
-        }
+            },
+            SessionBackendKind::ContainerTransport => match resolved_claude_projects_dir {
+                Some(p) => Ok(Some(SessionReaderKind::Claude { project_dir: p })),
+                None => Err("Cannot resolve Claude projects dir for container session; CLAUDE_CONFIG_DIR is not mapped into the replica mount".to_string()),
+            },
+        },
         Some(CodingAgentKind::Codex) => {
-            let effective_home = effective_codex_home.map(Path::new);
-            match crate::commands::codex_resolver::resolve_codex_sessions_root_with_effective_home(
-                effective_home,
-                shell,
-                shell_args,
-                cwd,
-            ) {
+            let root = match backend_kind {
+                SessionBackendKind::LocalProcess => {
+                    let effective_home = effective_codex_home.map(Path::new);
+                    crate::commands::codex_resolver::resolve_codex_sessions_root_with_effective_home(
+                        effective_home,
+                        shell,
+                        shell_args,
+                        cwd,
+                    )
+                }
+                SessionBackendKind::ContainerTransport => {
+                    effective_codex_home.map(|home| Path::new(home).join("sessions"))
+                }
+            };
+            match root {
                 Some(root) => Ok(Some(SessionReaderKind::Codex {
                     search_root: root,
                     cwd: cwd.to_string(),
                     attach_time,
                 })),
-                None => Err(
-                    "Cannot resolve Codex sessions root (~/.codex/sessions/ missing)".to_string(),
-                ),
+                None if backend_kind == SessionBackendKind::ContainerTransport => Err("Cannot resolve Codex sessions root for container session; CODEX_HOME is not mapped into the replica mount".to_string()),
+                None => Err("Cannot resolve Codex sessions root (~/.codex/sessions/ missing)".to_string()),
             }
         }
         Some(CodingAgentKind::Gemini) => {
@@ -94,7 +113,15 @@ pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
     let settings = app.state::<SettingsState>();
     let network = app.state::<OutboundNetwork>().inner().clone();
 
-    let (agent_kind, shell, shell_args, working_directory, effective_codex_home) = {
+    let (
+        agent_kind,
+        shell,
+        shell_args,
+        working_directory,
+        backend_kind,
+        resolved_claude_projects_dir,
+        effective_codex_home,
+    ) = {
         let mgr = session_mgr.read().await;
         let session = mgr
             .get_session(session_id)
@@ -105,6 +132,8 @@ pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
             session.shell.clone(),
             session.shell_args.clone(),
             session.working_directory.clone(),
+            session.backend_kind,
+            session.resolved_claude_projects_dir.clone(),
             session.effective_codex_home.clone(),
         )
     };
@@ -113,7 +142,9 @@ pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
         &shell,
         &shell_args,
         &working_directory,
+        backend_kind,
         agent_kind,
+        resolved_claude_projects_dir,
         effective_codex_home.as_deref(),
     ) {
         Ok(r) => r,
@@ -543,6 +574,82 @@ pub async fn telegram_send_image(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn derive_reader_container_claude_requires_memo() {
+        let result = derive_reader(
+            "claude",
+            &[],
+            r"C:\Users\Test\repo",
+            SessionBackendKind::ContainerTransport,
+            Some(CodingAgentKind::Claude),
+            None,
+            None,
+        );
+
+        assert!(result
+            .expect_err("container Claude memo is required")
+            .contains("CLAUDE_CONFIG_DIR is not mapped"));
+    }
+
+    #[test]
+    fn derive_reader_container_claude_uses_memo() {
+        let project_dir = PathBuf::from(r"C:\repo\.ac\wg-1\__agent\.claude\projects\-workspace");
+        let result = derive_reader(
+            "claude",
+            &[],
+            r"C:\repo\.ac\wg-1\__agent",
+            SessionBackendKind::ContainerTransport,
+            Some(CodingAgentKind::Claude),
+            Some(project_dir.clone()),
+            None,
+        )
+        .unwrap();
+
+        match result {
+            Some(SessionReaderKind::Claude { project_dir: got }) => assert_eq!(got, project_dir),
+            other => panic!("unexpected reader: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn derive_reader_container_codex_requires_effective_home_memo() {
+        let result = derive_reader(
+            "codex",
+            &[],
+            r"C:\Users\Test\repo",
+            SessionBackendKind::ContainerTransport,
+            Some(CodingAgentKind::Codex),
+            None,
+            None,
+        );
+
+        assert!(result
+            .expect_err("container Codex memo is required")
+            .contains("CODEX_HOME is not mapped"));
+    }
+
+    #[test]
+    fn derive_reader_container_codex_uses_effective_home_memo() {
+        let home = r"C:\repo\.ac\wg-1\__agent\.codex";
+        let result = derive_reader(
+            "codex",
+            &[],
+            r"C:\repo\.ac\wg-1\__agent",
+            SessionBackendKind::ContainerTransport,
+            Some(CodingAgentKind::Codex),
+            None,
+            Some(home),
+        )
+        .unwrap();
+
+        match result {
+            Some(SessionReaderKind::Codex { search_root, .. }) => {
+                assert_eq!(search_root, Path::new(home).join("sessions"));
+            }
+            other => panic!("unexpected reader: {other:?}"),
+        }
+    }
 
     #[test]
     fn endpoint_photo_under_limit() {

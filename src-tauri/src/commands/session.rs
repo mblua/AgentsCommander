@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
@@ -10,6 +11,11 @@ use crate::config::coordinator_clocks::CoordinatorClocksState;
 use crate::config::sessions_persistence::persist_current_state;
 use crate::config::settings::{AppSettings, SettingsState};
 use crate::pty::backend::{BackendSpawnSpec, SessionBackendKind};
+use crate::pty::container_paths::{
+    claude_config_dir_no_value_warning, container_config_dir, ContainerEnvWarning,
+    ContainerPathMap, CLAUDE_CONFIG_DIR_KEY,
+};
+use crate::pty::container_runtime::DEFAULT_CONTAINER_WORKDIR;
 use crate::pty::manager::PtyManager;
 use crate::pty::output::PtyOutputTarget;
 use crate::resource_monitor::{
@@ -21,6 +27,7 @@ use crate::session::profile::CodingAgentKind;
 use crate::session::session::{
     SessionCommunication, SessionCommunicationKind, SessionInfo, SessionRepo, SessionStatus,
 };
+use crate::session::warnings::{emit_session_warning, SessionWarning};
 use crate::telegram::manager::TelegramBridgeState;
 use crate::DetachedSessionsState;
 
@@ -641,6 +648,151 @@ fn claude_projects_dir_for_config_dir(config_dir: &str, cwd: &str) -> std::path:
     base.join("projects").join(mangled)
 }
 
+#[derive(Debug, Clone)]
+struct ResumeProbeTarget {
+    host_probe_path: Option<PathBuf>,
+    filesystem: &'static str,
+    warning: Option<ContainerEnvWarning>,
+}
+
+#[derive(Debug, Clone)]
+struct ContainerPathContext {
+    host_root: String,
+    map: ContainerPathMap,
+}
+
+fn container_path_context_for_cwd(cwd: &str) -> Result<ContainerPathContext, String> {
+    let canonical_host_root = std::fs::canonicalize(cwd)
+        .map(|path| crate::path_utils::path_to_string_without_windows_verbatim_prefix(&path))
+        .map_err(|err| {
+            format!(
+                "failed to canonicalize container mount source '{}': {}",
+                cwd, err
+            )
+        })?;
+    if let Some(reason) = crate::pty::container_paths::container_mount_source_rejection(
+        std::path::Path::new(&canonical_host_root),
+    ) {
+        return Err(container_mount_rejection_message(
+            cwd,
+            &canonical_host_root,
+            reason,
+        ));
+    };
+    let map = ContainerPathMap::new(&canonical_host_root, DEFAULT_CONTAINER_WORKDIR)?;
+    Ok(ContainerPathContext {
+        host_root: canonical_host_root,
+        map,
+    })
+}
+
+fn container_mount_rejection_message(selected: &str, canonical: &str, reason: String) -> String {
+    if selected == canonical {
+        reason
+    } else {
+        format!(
+            "{} (selected path '{}', canonical path '{}')",
+            reason, selected, canonical
+        )
+    }
+}
+
+fn effective_codex_home_for_backend(
+    backend_kind: SessionBackendKind,
+    container_map: Option<&ContainerPathMap>,
+    spawn: &AgentSpawnCommand,
+) -> Option<String> {
+    let raw_home = spawn.effective_codex_home.as_ref()?;
+    let raw_home =
+        crate::path_utils::path_to_string_without_windows_verbatim_prefix(raw_home.as_path());
+    match backend_kind {
+        SessionBackendKind::LocalProcess => Some(raw_home),
+        SessionBackendKind::ContainerTransport => {
+            let map = container_map?;
+            let container_home = container_config_dir(map, &raw_home)?;
+            map.to_host(&container_home).map(|path| {
+                crate::path_utils::path_to_string_without_windows_verbatim_prefix(path.as_path())
+            })
+        }
+    }
+}
+
+fn resume_probe_target(
+    backend_kind: SessionBackendKind,
+    container_map: Option<&ContainerPathMap>,
+    resolved_spawn: Option<&AgentSpawnCommand>,
+    shell: &str,
+    shell_args: &[String],
+    cwd: &str,
+) -> ResumeProbeTarget {
+    let claude_config_dir_override =
+        resolved_spawn.and_then(|s| s.effective_env_value(CLAUDE_CONFIG_DIR_KEY));
+    resume_probe_target_for_config_dir(
+        backend_kind,
+        container_map,
+        claude_config_dir_override,
+        shell,
+        shell_args,
+        cwd,
+    )
+}
+
+fn resume_probe_target_for_config_dir(
+    backend_kind: SessionBackendKind,
+    container_map: Option<&ContainerPathMap>,
+    claude_config_dir_override: Option<&str>,
+    shell: &str,
+    shell_args: &[String],
+    cwd: &str,
+) -> ResumeProbeTarget {
+    match backend_kind {
+        SessionBackendKind::LocalProcess => {
+            let host_probe_path = match claude_config_dir_override {
+                Some(dir) => Some(claude_projects_dir_for_config_dir(dir, cwd)),
+                None => resolve_claude_projects_dir(shell, shell_args, cwd),
+            };
+            ResumeProbeTarget {
+                host_probe_path,
+                filesystem: "host",
+                warning: None,
+            }
+        }
+        SessionBackendKind::ContainerTransport => {
+            let Some(map) = container_map else {
+                return ResumeProbeTarget {
+                    host_probe_path: None,
+                    filesystem: "container-unreachable",
+                    warning: Some(claude_config_dir_no_value_warning()),
+                };
+            };
+            let Some(raw_config_dir) = claude_config_dir_override else {
+                return ResumeProbeTarget {
+                    host_probe_path: None,
+                    filesystem: "container-unreachable",
+                    warning: Some(claude_config_dir_no_value_warning()),
+                };
+            };
+            let Some(container_config_dir) = container_config_dir(map, raw_config_dir) else {
+                return ResumeProbeTarget {
+                    host_probe_path: None,
+                    filesystem: "container-unreachable",
+                    warning: None,
+                };
+            };
+            let container_projects_path = format!(
+                "{}/projects/{}",
+                container_config_dir.trim_end_matches('/'),
+                crate::session::session::mangle_cwd_for_claude(DEFAULT_CONTAINER_WORKDIR)
+            );
+            ResumeProbeTarget {
+                host_probe_path: map.to_host(&container_projects_path),
+                filesystem: "container-via-mount",
+                warning: None,
+            }
+        }
+    }
+}
+
 /// Decide whether to auto-inject `--continue` for a Claude session.
 /// Pure function: no filesystem access. Caller is responsible for resolving
 /// `claude_project_exists` (typically `~/.claude/projects/<mangled-cwd>/.is_dir()`).
@@ -901,6 +1053,17 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         release_resource_launch_permit(&resource_monitor, &mut resource_permit);
         return Err("root-agent cannot use container transport".to_string());
     }
+    let container_path_context = if backend_kind == SessionBackendKind::ContainerTransport {
+        match container_path_context_for_cwd(&cwd) {
+            Ok(context) => Some(context),
+            Err(err) => {
+                release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+                return Err(err);
+            }
+        }
+    } else {
+        None
+    };
     let mut session = match mgr
         .create_session(
             shell.clone(),
@@ -951,10 +1114,11 @@ pub async fn create_session_inner<R: tauri::Runtime>(
 
     let id = session.id;
     if let Some(spawn) = resolved_spawn.as_ref() {
-        let effective_codex_home = spawn
-            .effective_codex_home
-            .as_ref()
-            .map(|path| path.to_string_lossy().to_string());
+        let effective_codex_home = effective_codex_home_for_backend(
+            session.backend_kind,
+            container_path_context.as_ref().map(|context| &context.map),
+            spawn,
+        );
         mgr.set_profile_metadata(
             id,
             Some(spawn.profile_resolution.requested_profile.clone()),
@@ -1001,26 +1165,33 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     // call sites pass `skip_auto_resume = true` for fresh creates).
     // Issue #186: honor `CLAUDE_CONFIG_DIR` overrides set by `.cmd`/`.bat`/`.ps1`/`.sh`
     // wrappers (e.g. `claude-mb`) so the probe locates the real transcript store.
-    // #599 R2 - also honor the profile/agent env layer's CLAUDE_CONFIG_DIR. The env
-    // approach launches a plain `claude`, so resolve_claude_projects_dir would
-    // short-circuit to ~/.claude and miss env-relocated transcripts. When the
-    // resolved spawn carries CLAUDE_CONFIG_DIR, probe <that>/projects/<mangled>;
-    // otherwise keep the wrapper-aware default resolution.
-    let claude_config_dir_override = resolved_spawn.as_ref().and_then(|s| {
-        s.child_env
-            .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case("CLAUDE_CONFIG_DIR"))
-            .map(|(_, v)| v.clone())
-    });
-    let resolved_claude_projects_dir = match claude_config_dir_override {
-        Some(ref dir) => Some(claude_projects_dir_for_config_dir(dir, &cwd)),
-        None => resolve_claude_projects_dir(&shell, &shell_args, &cwd),
-    };
-    let claude_project_exists = resolved_claude_projects_dir
+    // #894: local sessions keep the host probe, while container sessions probe
+    // only paths reachable through the bind mount. Missing or unmappable
+    // CLAUDE_CONFIG_DIR skips resume and is surfaced as a session env warning.
+    let resume_probe = resume_probe_target(
+        session.backend_kind,
+        container_path_context.as_ref().map(|context| &context.map),
+        resolved_spawn.as_ref(),
+        &shell,
+        &shell_args,
+        &cwd,
+    );
+    let resolved_claude_projects_dir = resume_probe.host_probe_path.clone();
+    mgr.set_resolved_claude_projects_dir(id, resolved_claude_projects_dir.clone())
+        .await;
+    session.resolved_claude_projects_dir = resolved_claude_projects_dir.clone();
+    let claude_project_exists = resume_probe
+        .host_probe_path
         .as_ref()
         .map(|p| p.is_dir())
         .unwrap_or(false);
     let is_claude = agent_kind == Some(CodingAgentKind::Claude);
+    let mut session_env_warnings: Vec<ContainerEnvWarning> = Vec::new();
+    if is_claude {
+        if let Some(warning) = resume_probe.warning {
+            session_env_warnings.push(warning);
+        }
+    }
     let will_inject_continue = should_inject_continue(
         is_claude,
         skip_auto_resume,
@@ -1032,11 +1203,12 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     // during the stabilization window; demote later.
     if agent_kind.is_some() {
         log::info!(
-            "[session] resume-decision {} agent={:?} cwd={:?} projects_dir={:?} exists={} skip_auto_resume={} -> inject_continue={}",
+            "[session] resume-decision {} agent={:?} cwd={:?} projects_dir={:?} filesystem={} exists={} skip_auto_resume={} -> inject_continue={}",
             &id.to_string()[..8],
             agent_kind,
             cwd,
             resolved_claude_projects_dir,
+            resume_probe.filesystem,
             claude_project_exists,
             skip_auto_resume,
             will_inject_continue
@@ -1198,7 +1370,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     } else {
         Vec::new()
     };
-    let configured_env: Vec<(String, String)> = resolved_spawn
+    let mut configured_env: Vec<(String, String)> = resolved_spawn
         .as_ref()
         .map(|spawn| spawn.child_env.clone())
         .unwrap_or_default();
@@ -1206,6 +1378,19 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         .as_ref()
         .map(|spawn| spawn.env_remove_keys.clone())
         .unwrap_or_default();
+    let mut env_unset: Vec<String> = Vec::new();
+    if session.backend_kind == SessionBackendKind::ContainerTransport {
+        if let Some(context) = container_path_context.as_ref() {
+            let translated = crate::pty::container_backend::container_child_env(
+                configured_env,
+                env_remove_keys.clone(),
+                &context.map,
+            );
+            configured_env = translated.child_env;
+            env_unset = translated.env_unset;
+            session_env_warnings.extend(translated.warnings);
+        }
+    }
     let (resource_registration, logical_resource_slot): (
         Option<ResourceLaunchRegistration>,
         Option<ResourceLogicalAgentSlot>,
@@ -1301,11 +1486,20 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         }
     }
 
+    let spawn_cwd = container_path_context
+        .as_ref()
+        .map(|context| context.host_root.clone())
+        .unwrap_or_else(|| cwd.clone());
     let spawn_spec = BackendSpawnSpec {
         id,
         cmd: shell.clone(),
         args: shell_args.clone(),
-        cwd: cwd.clone(),
+        cwd: spawn_cwd.clone(),
+        selected_cwd: if spawn_cwd != cwd {
+            Some(cwd.clone())
+        } else {
+            None
+        },
         cols: 120,
         rows: 30,
         container_image: resolved_spawn
@@ -1313,6 +1507,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
             .and_then(|spawn| spawn.backend.image.clone()),
         configured_env,
         env_remove_keys,
+        env_unset,
         extra_env,
         idle_tuning: crate::session::profile::idle_tuning_for(agent_kind),
         output_target: PtyOutputTarget::from_app_handle(app.clone()),
@@ -1429,6 +1624,17 @@ pub async fn create_session_inner<R: tauri::Runtime>(
 
     let info = SessionInfo::from(&session);
     let _ = app.emit("session_created", info.clone());
+    for warning in &session_env_warnings {
+        emit_session_warning(
+            app,
+            SessionWarning::new(
+                id,
+                warning.key.clone(),
+                warning.kind,
+                warning.message.clone(),
+            ),
+        );
+    }
 
     // 0.8.0: removed the "Show the terminal window when a session is created" branch.
     // Under the unified-window model the main window is created up-front and stays
@@ -3106,16 +3312,23 @@ pub async fn create_root_agent_session(
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_existing_root, compute_profile_outdated, count_working_members,
-        effective_restart_requested_profile, inject_codex_resume, resolve_actual_agent,
-        resolve_agent_command, resolve_agent_from_shell, resolve_restart_selected_agent_id,
-        resolve_root_agent_command, should_inject_continue, ExistingRootAction,
+        classify_existing_root, claude_projects_dir_for_config_dir, compute_profile_outdated,
+        container_path_context_for_cwd, count_working_members, effective_restart_requested_profile,
+        inject_codex_resume, resolve_actual_agent, resolve_agent_command, resolve_agent_from_shell,
+        resolve_claude_projects_dir, resolve_restart_selected_agent_id, resolve_root_agent_command,
+        resume_probe_target_for_config_dir, should_inject_continue, ExistingRootAction,
     };
     use crate::config::settings::{AgentConfig, AppSettings, ProfileCellConfig};
+    use crate::pty::backend::SessionBackendKind;
+    use crate::pty::container_paths::{ContainerPathMap, WARNING_KIND_NO_VALUE};
     use crate::session::manager::SessionManager;
     use crate::session::session::{SessionInfo, SessionStatus};
     use std::collections::BTreeMap;
+    #[cfg(windows)]
+    use std::path::Path;
     use std::path::PathBuf;
+    #[cfg(windows)]
+    use std::process::Command;
     use std::sync::{Arc, Mutex};
     use uuid::Uuid;
 
@@ -3178,6 +3391,248 @@ mod tests {
             ],
             ..AppSettings::default()
         }
+    }
+
+    fn probe_map() -> ContainerPathMap {
+        ContainerPathMap::new(r"C:\Users\maria\repo\.ac\wg-1\__agent_x", "/workspace").unwrap()
+    }
+
+    fn norm(path: &std::path::Path) -> String {
+        path.to_string_lossy().replace('\\', "/")
+    }
+
+    #[test]
+    fn resume_probe_target_local_uses_effective_config_dir_on_host() {
+        let cwd = r"C:\Users\maria\repo\.ac\wg-1\__agent_x";
+        let config_dir = r"C:\Users\maria\.claude-work";
+        let got = resume_probe_target_for_config_dir(
+            SessionBackendKind::LocalProcess,
+            None,
+            Some(config_dir),
+            "claude",
+            &[],
+            cwd,
+        );
+
+        assert_eq!(got.filesystem, "host");
+        assert_eq!(
+            got.host_probe_path,
+            Some(claude_projects_dir_for_config_dir(config_dir, cwd))
+        );
+        assert!(got.warning.is_none());
+    }
+
+    #[test]
+    fn resume_probe_target_local_bare_claude_uses_default_resolver() {
+        let cwd = r"C:\Users\Test\repo";
+        let got = resume_probe_target_for_config_dir(
+            SessionBackendKind::LocalProcess,
+            None,
+            None,
+            "claude",
+            &[],
+            cwd,
+        );
+
+        let expected = resolve_claude_projects_dir("claude", &[], cwd);
+        let Some(expected) = expected else {
+            return;
+        };
+        assert_eq!(got.filesystem, "host");
+        assert_eq!(got.host_probe_path, Some(expected));
+        assert!(got.warning.is_none());
+    }
+
+    #[test]
+    fn resume_probe_target_local_wrapper_uses_wrapper_config_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let custom_base = tmp.path().join(".claude-mb");
+        let wrapper = write_wrapper(
+            tmp.path(),
+            "claude-mb.cmd",
+            &format!(
+                "@echo off\r\nset CLAUDE_CONFIG_DIR={}\r\nclaude %*\r\n",
+                custom_base.display()
+            ),
+        );
+        let cwd = r"C:\Users\Test\repo";
+
+        let got = resume_probe_target_for_config_dir(
+            SessionBackendKind::LocalProcess,
+            None,
+            None,
+            wrapper.to_str().unwrap(),
+            &[],
+            cwd,
+        );
+
+        let expected = custom_base
+            .join("projects")
+            .join(crate::session::session::mangle_cwd_for_claude(cwd));
+        assert_eq!(got.filesystem, "host");
+        assert_eq!(got.host_probe_path, Some(expected));
+        assert!(got.warning.is_none());
+    }
+
+    #[test]
+    fn resume_probe_target_container_no_value_warns_and_skips_probe() {
+        let map = probe_map();
+        let got = resume_probe_target_for_config_dir(
+            SessionBackendKind::ContainerTransport,
+            Some(&map),
+            None,
+            "claude",
+            &[],
+            map.host_root(),
+        );
+
+        assert_eq!(got.filesystem, "container-unreachable");
+        assert!(got.host_probe_path.is_none());
+        assert_eq!(
+            got.warning.as_ref().map(|w| w.kind),
+            Some(WARNING_KIND_NO_VALUE)
+        );
+    }
+
+    #[test]
+    fn resume_probe_target_container_maps_bind_mounted_config_dir() {
+        let map = probe_map();
+        let got = resume_probe_target_for_config_dir(
+            SessionBackendKind::ContainerTransport,
+            Some(&map),
+            Some(r"C:\Users\maria\repo\.ac\wg-1\__agent_x\.claude"),
+            "claude",
+            &[],
+            map.host_root(),
+        );
+
+        assert_eq!(got.filesystem, "container-via-mount");
+        let host_probe = got.host_probe_path.expect("host probe");
+        assert!(norm(&host_probe).ends_with("/__agent_x/.claude/projects/-workspace"));
+        assert!(got.warning.is_none());
+    }
+
+    #[test]
+    fn resume_probe_target_container_unmappable_config_dir_skips_probe_without_duplicate_warning() {
+        let map = probe_map();
+        let got = resume_probe_target_for_config_dir(
+            SessionBackendKind::ContainerTransport,
+            Some(&map),
+            Some("/workspace/.claude"),
+            "claude",
+            &[],
+            map.host_root(),
+        );
+
+        assert_eq!(got.filesystem, "container-unreachable");
+        assert!(got.host_probe_path.is_none());
+        assert!(got.warning.is_none());
+    }
+
+    #[test]
+    fn container_path_context_uses_canonical_host_root_for_guard_and_map() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp
+            .path()
+            .join("project")
+            .join(".ac")
+            .join("wg-1-team")
+            .join("repo-foo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let raw = repo.join(".");
+        let canonical = crate::path_utils::path_to_string_without_windows_verbatim_prefix(
+            &std::fs::canonicalize(&repo).unwrap(),
+        );
+
+        let got = container_path_context_for_cwd(raw.to_str().unwrap()).unwrap();
+
+        assert_eq!(got.host_root, canonical);
+        assert_eq!(got.map.host_root(), canonical);
+    }
+
+    #[cfg(windows)]
+    fn create_junction(link: &Path, target: &Path) {
+        let output = Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(link)
+            .arg(target)
+            .output()
+            .expect("failed to invoke mklink");
+        assert!(
+            output.status.success(),
+            "failed to create junction link='{}' target='{}': stdout={} stderr={}",
+            link.display(),
+            target.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn container_path_context_refuses_junction_targeting_workgroup_root() {
+        // B4 regression fence: before cwd canonicalization, the textual guard
+        // saw only `link-to-wg` and permitted a bind mount of the workgroup.
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp
+            .path()
+            .join("project")
+            .join(".ac")
+            .join("wg-11-dev-v4-team");
+        std::fs::create_dir_all(&target).unwrap();
+        let link = tmp.path().join("link-to-wg");
+        create_junction(&link, &target);
+
+        let err = container_path_context_for_cwd(link.to_str().unwrap())
+            .expect_err("junction to workgroup root must be refused");
+
+        assert!(err.contains("workgroup root"), "{err}");
+        assert!(err.contains("selected path"), "{err}");
+        assert!(err.contains("canonical path"), "{err}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn container_path_context_refuses_junction_targeting_home_dir() {
+        // Guard coverage, not the main B4 regression fence: the pre-B4 home
+        // rule already canonicalized both sides. This test mainly preserves the
+        // selected-vs-canonical rejection text for reparse-point inputs.
+        //
+        // Safety note: `%TEMP%` usually lives under the user's home directory,
+        // so this junction points from a tempdir back to its own ancestor.
+        // The test relies on std::fs::remove_dir_all treating the junction as a
+        // reparse point and deleting only the link, not descending into home.
+        let tmp = tempfile::tempdir().unwrap();
+        let home = dirs::home_dir().expect("home dir required for junction guard test");
+        let link = tmp.path().join("link-to-home");
+        create_junction(&link, &home);
+
+        let err = container_path_context_for_cwd(link.to_str().unwrap())
+            .expect_err("junction to home dir must be refused");
+
+        assert!(err.contains("home directory"), "{err}");
+        assert!(err.contains("selected path"), "{err}");
+        assert!(err.contains("canonical path"), "{err}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn container_path_context_refuses_cwd_that_cannot_be_canonicalized() {
+        // Pins the fail-closed DD9 behavior from 8d0d3fd5. It is not the B4
+        // junction bypass regression fence.
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("missing");
+
+        let err = container_path_context_for_cwd(missing.to_str().unwrap())
+            .expect_err("missing cwd must be refused");
+
+        assert!(
+            err.contains("failed to canonicalize container mount source"),
+            "{err}"
+        );
+        assert!(err.contains(missing.to_str().unwrap()), "{err}");
     }
 
     #[derive(Default)]
@@ -4219,6 +4674,38 @@ mod tests {
         let resolved = super::claude_projects_dir_for_config_dir(&format!("%{}%", var), "C:\\x");
         std::env::remove_var(var);
         let expected = custom_base
+            .join("projects")
+            .join(crate::session::session::mangle_cwd_for_claude("C:\\x"));
+        assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn local_resume_probe_env_layer_uses_config_dir_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let custom_base = tmp.path().join(".claude-env");
+        let cwd = "C:\\Users\\Test\\repo";
+
+        let resolved =
+            super::claude_projects_dir_for_config_dir(custom_base.to_str().unwrap(), cwd);
+
+        let expected = custom_base
+            .join("projects")
+            .join(crate::session::session::mangle_cwd_for_claude(cwd));
+        assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn local_resume_probe_env_layer_expands_powershell_envvar() {
+        let var = "AC_TEST_894_CONFIG_DIR";
+        let tmp = tempfile::tempdir().unwrap();
+        let custom_base = tmp.path().join(".claude-env");
+        std::env::set_var(var, custom_base.to_str().unwrap());
+
+        let resolved =
+            super::claude_projects_dir_for_config_dir(&format!("$env:{}\\.claude", var), "C:\\x");
+
+        std::env::remove_var(var);
+        let expected = PathBuf::from(format!("{}\\.claude", custom_base.to_string_lossy()))
             .join("projects")
             .join(crate::session::session::mangle_cwd_for_claude("C:\\x"));
         assert_eq!(resolved, expected);

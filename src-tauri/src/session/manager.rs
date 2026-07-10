@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -83,6 +84,7 @@ impl SessionManager {
             profile_fallback_chain: Vec::new(),
             profile_fallback_applied: false,
             effective_codex_home: None,
+            resolved_claude_projects_dir: None,
             profile_content_hash: None,
             telegram_bot_id: None,
             was_detached: false,
@@ -621,6 +623,13 @@ impl SessionManager {
             s.profile_fallback_applied = profile_fallback_applied;
             s.effective_codex_home = effective_codex_home;
             s.profile_content_hash = profile_content_hash;
+        }
+    }
+
+    pub async fn set_resolved_claude_projects_dir(&self, id: Uuid, path: Option<PathBuf>) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(s) = sessions.get_mut(&id) {
+            s.resolved_claude_projects_dir = path;
         }
     }
 

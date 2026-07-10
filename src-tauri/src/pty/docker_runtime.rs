@@ -138,10 +138,16 @@ impl DockerRuntime {
         }
     }
 
-    pub fn build_run_command(&self, request: &ContainerStartRequest) -> DockerCommandSpec {
+    pub fn build_run_command(
+        &self,
+        request: &ContainerStartRequest,
+    ) -> Result<DockerCommandSpec, AppError> {
         let args_json = serde_json::to_string(&request.args).unwrap_or_else(|_| "[]".to_string());
         let child_env_json =
             serde_json::to_string(&request.child_env).unwrap_or_else(|_| "[]".to_string());
+        let env_unset_json = serde_json::to_string(&request.env_unset).map_err(|e| {
+            AppError::Other(format!("failed to serialize container env unset: {e}"))
+        })?;
 
         let mut args = vec![
             "run".to_string(),
@@ -179,6 +185,12 @@ impl DockerRuntime {
             "--env".to_string(),
             format!("AGENTSCOMMANDER_BRIDGE_ENV_JSON={}", child_env_json),
             "--env".to_string(),
+            // This is a flat key-name array, not key/value pairs. Do not add
+            // AGENTSCOMMANDER_BRIDGE_ENV_UNSET_JSON to SENSITIVE_LOG_KEYS:
+            // the value carries no secrets, and the redactor treats quoted
+            // sensitive key names as keys whose following array item is a value.
+            format!("AGENTSCOMMANDER_BRIDGE_ENV_UNSET_JSON={}", env_unset_json),
+            "--env".to_string(),
             format!("AGENTSCOMMANDER_BRIDGE_COLS={}", request.cols),
             "--env".to_string(),
             format!("AGENTSCOMMANDER_BRIDGE_ROWS={}", request.rows),
@@ -195,10 +207,10 @@ impl DockerRuntime {
         ];
 
         args.retain(|arg| !arg.is_empty());
-        DockerCommandSpec {
+        Ok(DockerCommandSpec {
             program: self.program.clone(),
             args,
-        }
+        })
     }
 
     pub fn build_stop_command(
@@ -435,7 +447,7 @@ fn join_command_reader(
 impl ContainerRuntime for DockerRuntime {
     fn start(&self, request: ContainerStartRequest) -> Result<ContainerRuntimeHandle, AppError> {
         let session_id = request.session_id;
-        let stdout = self.run_command(self.build_run_command(&request))?;
+        let stdout = self.run_command(self.build_run_command(&request)?)?;
         let container_id = stdout
             .lines()
             .next()
@@ -557,6 +569,7 @@ mod tests {
             command: "codex".to_string(),
             args: vec!["--version".to_string()],
             child_env: vec![("CODEX_HOME".to_string(), "/workspace/.codex".to_string())],
+            env_unset: vec!["CLAUDE_CONFIG_DIR".to_string()],
             cols: 120,
             rows: 30,
         }
@@ -565,7 +578,7 @@ mod tests {
     #[test]
     fn run_command_is_detached_labeled_and_has_expected_env_without_interactive_flags() {
         let runtime = DockerRuntime::with_program("docker-test");
-        let spec = runtime.build_run_command(&request());
+        let spec = runtime.build_run_command(&request()).unwrap();
         let joined = spec.args.join(" ");
 
         assert_eq!(spec.program, "docker-test");
@@ -586,6 +599,7 @@ mod tests {
             "AGENTSCOMMANDER_BINARY_PATH={DEFAULT_API_HELPER_PATH}"
         )));
         assert!(joined.contains("AGENTSCOMMANDER_BRIDGE_COMMAND=codex"));
+        assert!(joined.contains("AGENTSCOMMANDER_BRIDGE_ENV_UNSET_JSON=[\"CLAUDE_CONFIG_DIR\"]"));
         assert!(joined
             .contains("type=bind,source=C:/project/.ac/wg-1-team/__agent_dev,target=/workspace"));
         let image_idx = spec
@@ -605,7 +619,7 @@ mod tests {
         let runtime = DockerRuntime::with_program("docker-test");
         let mut request = request();
         request.image = "--privileged".to_string();
-        let spec = runtime.build_run_command(&request);
+        let spec = runtime.build_run_command(&request).unwrap();
         let image_idx = spec
             .args
             .iter()
