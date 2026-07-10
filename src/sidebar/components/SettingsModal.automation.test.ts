@@ -154,6 +154,7 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     npmUpdateNotificationsEnabled: true,
     autoSelfClearEnabled: true,
     autoSelfClearByAgent: {},
+    containerCredentialsFromHost: true,
     logLevel: null,
     ...overrides,
   };
@@ -1755,6 +1756,118 @@ describe("SettingsModal automation hooks", () => {
 
     const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
     expect(saved?.autoSelfClearEnabled).toBe(false);
+
+    dispose();
+  });
+
+  it("round-trips containerCredentialsFromHost through the General reuse checkbox (#930)", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    const checkbox = byTestId<HTMLInputElement>("settings.general.containerCredentialsFromHost");
+    expect(checkbox.closest("label")?.textContent).toContain(
+      "Reuse host login for container coding agents",
+    );
+    // Loaded default is true (copy-in is the default auth path for #930).
+    expect(checkbox.checked).toBe(true);
+
+    // Toggle OFF and save -> the persisted draft carries the new value, proving
+    // updateField accepts the new AppSettings key end to end.
+    checkbox.checked = false;
+    checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.containerCredentialsFromHost).toBe(false);
+
+    dispose();
+  });
+
+  it("shows the host-login-on hint when Container runtime is selected (default #930)", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "agents" }),
+      root,
+    );
+    await settle();
+    expandAgentRow(0);
+    await settle();
+
+    // Local runtime: neither credential hint is present.
+    expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.hostLogin"]'),
+    ).toBeNull();
+    expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.hostLoginOff"]'),
+    ).toBeNull();
+
+    const runtime = byTestId<HTMLSelectElement>("settings.agentRow.0.runtimeKind");
+    runtime.value = "containerTransport";
+    runtime.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    // Setting defaults ON -> the on-branch hint renders; the off-branch stays absent.
+    const onHint = byTestId("settings.agentRow.0.containerHint.hostLogin").textContent ?? "";
+    expect(onHint).toContain("Host login reuse is on");
+    expect(onHint).toContain("removes them when the session stops");
+    expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.hostLoginOff"]'),
+    ).toBeNull();
+
+    // Switch back to local -> the credential hint disappears with the block.
+    runtime.value = "localProcess";
+    runtime.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+    expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.hostLogin"]'),
+    ).toBeNull();
+
+    dispose();
+  });
+
+  it("shows the host-login-off hint when reuse is disabled and Container is selected (#930)", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    // Turn the global reuse setting OFF from the General tab.
+    const toggle = byTestId<HTMLInputElement>("settings.general.containerCredentialsFromHost");
+    expect(toggle.checked).toBe(true);
+    toggle.checked = false;
+    toggle.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    // Move to Coding Agents and select Container runtime for the row. The draft
+    // store persists across tabs, so the OFF value carries over.
+    byTestId<HTMLButtonElement>("settings.tab.agents").click();
+    await settle();
+    expandAgentRow(0);
+    await settle();
+    const runtime = byTestId<HTMLSelectElement>("settings.agentRow.0.runtimeKind");
+    runtime.value = "containerTransport";
+    runtime.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    // Off-branch (warning) hint renders; the on-branch hint is absent.
+    const offHint = byTestId("settings.agentRow.0.containerHint.hostLoginOff").textContent ?? "";
+    expect(offHint).toContain("Host login reuse is off");
+    expect(offHint).toContain("CLAUDE_CODE_OAUTH_TOKEN");
+    expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.hostLogin"]'),
+    ).toBeNull();
 
     dispose();
   });

@@ -169,6 +169,7 @@ export function baseSettings(overrides: Partial<AppSettings> = {}): AppSettings 
     npmUpdateNotificationsEnabled: true,
     autoSelfClearEnabled: true,
     autoSelfClearByAgent: {},
+    containerCredentialsFromHost: true,
     logLevel: null,
     ...overrides,
     codingAgentProfiles: overrides.codingAgentProfiles ?? defaultCodingAgentProfiles(),

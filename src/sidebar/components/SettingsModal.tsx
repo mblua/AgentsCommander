@@ -1430,6 +1430,31 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       </div>
 
       <div class="settings-section">
+        <div class="settings-section-title">Container Coding Agents</div>
+        <label class="settings-checkbox-field">
+          <input
+            type="checkbox"
+            class="settings-checkbox"
+            checked={settings.data!.containerCredentialsFromHost}
+            disabled={saving()}
+            onChange={(e) =>
+              updateField("containerCredentialsFromHost", e.currentTarget.checked)
+            }
+            data-ac-testid="settings.general.containerCredentialsFromHost"
+          />
+          <span>Reuse host login for container coding agents</span>
+        </label>
+        <div class="settings-hint">
+          On by default. When a coding agent runs under the Container runtime, AC copies your
+          host credential file for that agent (for Claude, ~/.claude/.credentials.json) into the
+          container at launch and deletes it when the session stops. Turn this off to supply
+          credentials yourself (for example a CLAUDE_CODE_OAUTH_TOKEN env row). Host and
+          containers share one login, so a token refresh in one place can require re-login in
+          another.
+        </div>
+      </div>
+
+      <div class="settings-section">
         <div class="settings-section-title">RTK Token Compression</div>
         <label class="settings-checkbox-field">
           <input
@@ -2153,6 +2178,29 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 Set it to %AC_REPLICA_ROOT%\.claude, or conversation state will not
                 persist and auto-resume is skipped.
               </div>
+              <Show
+                when={settings.data!.containerCredentialsFromHost}
+                fallback={
+                  <div
+                    class="settings-hint settings-hint-warning"
+                    data-ac-testid={`settings.agentRow.${i()}.containerHint.hostLoginOff`}
+                    data-ac-role="status"
+                  >
+                    Host login reuse is off. Provide credentials yourself (for example a
+                    CLAUDE_CODE_OAUTH_TOKEN env row), or enable it in Settings &gt; General.
+                  </div>
+                }
+              >
+                <div
+                  class="settings-hint"
+                  data-ac-testid={`settings.agentRow.${i()}.containerHint.hostLogin`}
+                  data-ac-role="status"
+                >
+                  Host login reuse is on: AC copies your host credentials for this coding agent
+                  into the container at launch and removes them when the session stops. Change
+                  this in Settings &gt; General.
+                </div>
+              </Show>
               <Show when={containerImageMissing()}>
                 <div
                   class="settings-hint settings-hint-warning"

@@ -490,6 +490,12 @@ export interface AppSettings {
   autoSelfClearEnabled: boolean;
   /** #640 Per-agent override of the class default, keyed by agent name. */
   autoSelfClearByAgent: Record<string, boolean>;
+  /** #930 When true (default), container coding-agent sessions copy the host
+   *  user's credential file for that agent into the replica config dir at spawn
+   *  and delete it on teardown. When false, the user supplies credentials
+   *  themselves (e.g. a CLAUDE_CODE_OAUTH_TOKEN env row). Mirrors the Rust
+   *  `container_credentials_from_host` field (camelCase via serde). */
+  containerCredentialsFromHost: boolean;
   /** #612 LIVE log level for agentscommander targets. null (legacy/unset) => "info". */
   logLevel: LogLevel | null;
   /** #714 Native global hotkey for screenshot capture (e.g. "Ctrl+Q"). Optional
