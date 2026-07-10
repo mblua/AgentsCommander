@@ -1,6 +1,6 @@
 ---
 name: agency-agents-roles
-description: How the Root Agent offers Agency Agents role templates before creating any specialist agent: the mandatory offer, identifying Agency Agents from real local data (its source repo and cached templates, never invented), the bounded skip exceptions, the agency-templates CLI flow, and handling a missing local template cache.
+description: "How the Root Agent offers Agency Agents role templates before creating any specialist agent: the mandatory offer, identifying Agency Agents from real local data (its source repo and cached templates, never invented), the bounded skip exceptions, the agency-templates CLI flow, and handling a missing local template cache."
 when_to_use: Load before creating any new specialist agent, i.e. before any role-defined create-agent-matrix. Also whenever the user asks to add, create, or set up a new specialist role or agent.
 ---
 
