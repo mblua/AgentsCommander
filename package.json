@@ -13,6 +13,8 @@
     "validate-branch-name": "node scripts/validate-branch-name.mjs",
     "version:bump": "node scripts/bump-version.mjs",
     "version:check": "node scripts/check-version-sync.mjs",
+    "reclaim:artifacts": "node scripts/reclaim-build-artifacts.mjs",
+    "reclaim:artifacts:apply": "node scripts/reclaim-build-artifacts.mjs --apply",
     "prepare": "husky",
     "tauri": "tauri",
     "typecheck": "tsc --noEmit",
