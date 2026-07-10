@@ -197,16 +197,6 @@ See [Telegram bridge setup](../integrations/telegram.md).
 | `webServerPort` | u16 | platform-default per binary suffix | Listening port. |
 | `webServerBind` | string | `"127.0.0.1"` | Bind address. Use `"0.0.0.0"` only if you understand the implications. |
 
-### RTK integration
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `injectRtkHook` | bool | `false` | Inject the RTK `PreToolUse` hook into every managed agent's `.claude/settings.local.json` at startup. |
-| `informWhenRtkInstalled` | bool | `false` | Opt-in gate for the startup "RTK detected, enable hook injection?" banner. Off by default, so the banner never appears unless you enable it. The banner also requires `injectRtkHook=false` and `rtkPromptDismissed=false`. Evaluated at startup; a change applies on the next launch. |
-| `rtkPromptDismissed` | bool | `false` | Suppress the "RTK detected, enable hook injection?" banner for the lifetime of this settings file. |
-
-See [RTK integration](../features/rtk-integration.md).
-
 ### Brief auto-title
 
 | Field | Type | Default | Description |
