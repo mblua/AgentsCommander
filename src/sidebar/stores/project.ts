@@ -41,6 +41,7 @@ const [initState, setInitState] = createSignal<{ attempted: boolean; pathCount: 
 });
 const inFlightLoads = new Map<string, Promise<void>>();
 const inFlightReloads = new Map<string, Promise<void>>();
+const archiveChangeTails = new Map<string, Promise<void>>();
 const queuedReloads = new Set<string>();
 let loadingCount = 0;
 
@@ -52,6 +53,37 @@ function normalizePath(p: string): string {
  *  set of paths whose live volatile overrides a fresh snapshot supersedes. */
 function workgroupReplicaPaths(source: { workgroups: AcWorkgroup[] }): string[] {
   return source.workgroups.flatMap((wg) => wg.agents.map((agent) => agent.path));
+}
+
+function hasArchivedPath(key: string): boolean {
+  return archivedPaths().some((p) => normalizePath(p) === key);
+}
+
+function hasLoadedProject(key: string): boolean {
+  return projects().some((p) => normalizePath(p.path) === key);
+}
+
+async function runSerializedArchiveChange(
+  key: string,
+  task: () => Promise<void> | void
+): Promise<void> {
+  const previous = archiveChangeTails.get(key) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(task);
+  archiveChangeTails.set(key, next);
+  try {
+    await next;
+  } finally {
+    if (archiveChangeTails.get(key) === next) {
+      archiveChangeTails.delete(key);
+    }
+  }
+}
+
+async function discoverAndAppendIfCurrent(path: string, key: string): Promise<void> {
+  const result = await ProjectAPI.discover(path);
+  if (hasArchivedPath(key)) return;
+  if (hasLoadedProject(key)) return;
+  appendDiscoveredProject(path, result);
 }
 
 /** Append a freshly discovered project unless an equivalent path is already
@@ -395,11 +427,11 @@ export const projectStore = {
   /** #881 - restore an archived project and load its discovery data. */
   async unarchiveProject(path: string) {
     const reg = await ProjectAPI.unarchive(path);
-    const result = await ProjectAPI.discover(reg.path);
     const normalized = normalizePath(reg.path);
-    batch(() => {
+    await runSerializedArchiveChange(normalized, async () => {
       setArchivedPaths((prev) => prev.filter((p) => normalizePath(p) !== normalized));
-      appendDiscoveredProject(reg.path, result);
+      if (hasLoadedProject(normalized)) return;
+      await discoverAndAppendIfCurrent(reg.path, normalized);
     });
   },
 
@@ -407,36 +439,37 @@ export const projectStore = {
    *  initiating windows receive their own backend event echoes. */
   async applyArchiveChange(event: ProjectArchiveChanged) {
     const key = normalizePath(event.path);
-    if (event.archived) {
-      const archived = projects().find((p) => normalizePath(p.path) === key);
-      batch(() => {
-        setProjects((prev) => prev.filter((p) => normalizePath(p.path) !== key));
-        setArchivedPaths((prev) =>
-          prev.some((p) => normalizePath(p) === key) ? prev : [...prev, event.path]
-        );
-        if (archived) {
-          replicaVolatileStore.clearForPaths(workgroupReplicaPaths(archived));
-        }
-      });
-      return;
-    }
+    await runSerializedArchiveChange(key, async () => {
+      if (event.archived) {
+        const archived = projects().find((p) => normalizePath(p.path) === key);
+        batch(() => {
+          setProjects((prev) => prev.filter((p) => normalizePath(p.path) !== key));
+          setArchivedPaths((prev) =>
+            prev.some((p) => normalizePath(p) === key) ? prev : [...prev, event.path]
+          );
+          if (archived) {
+            replicaVolatileStore.clearForPaths(workgroupReplicaPaths(archived));
+          }
+        });
+        return;
+      }
 
-    if (event.reason === "remove") {
-      const removed = projects().find((p) => normalizePath(p.path) === key);
-      batch(() => {
-        setProjects((prev) => prev.filter((p) => normalizePath(p.path) !== key));
-        setArchivedPaths((prev) => prev.filter((p) => normalizePath(p) !== key));
-        if (removed) {
-          replicaVolatileStore.clearForPaths(workgroupReplicaPaths(removed));
-        }
-      });
-      return;
-    }
+      if (event.reason === "remove") {
+        const removed = projects().find((p) => normalizePath(p.path) === key);
+        batch(() => {
+          setProjects((prev) => prev.filter((p) => normalizePath(p.path) !== key));
+          setArchivedPaths((prev) => prev.filter((p) => normalizePath(p) !== key));
+          if (removed) {
+            replicaVolatileStore.clearForPaths(workgroupReplicaPaths(removed));
+          }
+        });
+        return;
+      }
 
-    setArchivedPaths((prev) => prev.filter((p) => normalizePath(p) !== key));
-    if (projects().some((p) => normalizePath(p.path) === key)) return;
-    const result = await ProjectAPI.discover(event.path);
-    appendDiscoveredProject(event.path, result);
+      setArchivedPaths((prev) => prev.filter((p) => normalizePath(p) !== key));
+      if (hasLoadedProject(key)) return;
+      await discoverAndAppendIfCurrent(event.path, key);
+    });
   },
 
   /** #695 — drop exactly one resolved pending context-template update. The key
@@ -481,6 +514,7 @@ export const projectStore = {
     setInitState({ attempted: false, pathCount: 0 });
     inFlightLoads.clear();
     inFlightReloads.clear();
+    archiveChangeTails.clear();
     queuedReloads.clear();
     replicaVolatileStore.clearAll();
   },

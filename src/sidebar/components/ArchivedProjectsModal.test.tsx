@@ -54,6 +54,36 @@ describe("ArchivedProjectsModal (#881)", () => {
     }
   });
 
+  it("exposes dialog semantics, takes focus, and restores focus on cleanup", async () => {
+    const trigger = document.createElement("button");
+    document.body.appendChild(trigger);
+    trigger.focus();
+
+    const fake = new FakeTransport();
+    fake.resolve("list_archived_projects", []);
+    const onClose = vi.fn();
+
+    const rendered = renderWithFakeTransport(() => <ArchivedProjectsModal onClose={onClose} />, fake);
+    try {
+      await waitFor(() => expect(byTestId("archivedProjects.empty")).toBeTruthy());
+      const modal = byTestId("archivedProjects.modal");
+      const closeButton = modal.querySelector<HTMLButtonElement>(".modal-close");
+
+      expect(modal.getAttribute("role")).toBe("dialog");
+      expect(modal.getAttribute("aria-modal")).toBe("true");
+      expect(modal.getAttribute("aria-labelledby")).toBe("archived-projects-title");
+      expect(document.getElementById("archived-projects-title")?.textContent).toBe("Archived projects");
+      await waitFor(() => expect(document.activeElement).toBe(closeButton));
+
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      expect(onClose).toHaveBeenCalledTimes(1);
+    } finally {
+      rendered.cleanup();
+    }
+
+    expect(document.activeElement).toBe(trigger);
+  });
+
   it("renders rows, unarchives through the backend, discovers, and refetches", async () => {
     let rows = [row("C:\\Archive\\One"), row("C:\\Archive\\Two")];
     const fake = new FakeTransport();
@@ -142,6 +172,35 @@ describe("ArchivedProjectsModal (#881)", () => {
         expect(byTestId(`archivedProjects.rowError.${id}`).textContent).toContain("Workspace missing"),
       );
       expect(byTestId(`archivedProjects.row.${id}`)).toBeTruthy();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("renders a failed post-unarchive refetch as a top-level list error", async () => {
+    let listCalls = 0;
+    const fake = new FakeTransport();
+    fake.onInvoke("list_archived_projects", () => {
+      listCalls++;
+      if (listCalls === 1) return [row("C:\\Archive\\Refetch")];
+      throw "refresh failed";
+    });
+    fake.onInvoke("unarchive_project", (args) => ({
+      path: args.path as string,
+      registered: true,
+      created: false,
+    }));
+    fake.resolve("discover_project", discovery());
+
+    const rendered = renderWithFakeTransport(() => <ArchivedProjectsModal onClose={vi.fn()} />, fake);
+    try {
+      const id = automationIdPart("C:\\Archive\\Refetch");
+      await waitFor(() => expect(byTestId(`archivedProjects.unarchive.${id}`)).toBeTruthy());
+
+      click(byTestId(`archivedProjects.unarchive.${id}`));
+
+      await waitFor(() => expect(byTestId("archivedProjects.error").textContent).toContain("refresh failed"));
+      expect(document.querySelector(`[data-ac-testid="archivedProjects.rowError.${id}"]`)).toBeNull();
     } finally {
       rendered.cleanup();
     }
