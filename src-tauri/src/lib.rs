@@ -625,6 +625,7 @@ pub fn run(
         .manage(screenshot_capture_state) // #714
         .manage(screenshot_hotkey_state) // #714
         .manage(crate::pty::input_activity::new_state()) // #871 substantive-input tracker
+        .manage(crate::session::warnings::new_session_warning_state())
         .setup(move |app| {
             use tauri::WebviewWindowBuilder;
             use tauri::WebviewUrl;
@@ -2161,6 +2162,7 @@ pub fn run(
             commands::session::set_last_prompt,
             commands::session::list_sessions,
             commands::session::get_active_session,
+            session::warnings::drain_session_warnings,
             commands::session::create_root_agent_session,
             commands::task::task_get_title,
             commands::task::task_set_title,

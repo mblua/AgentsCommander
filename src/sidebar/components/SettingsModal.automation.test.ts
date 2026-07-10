@@ -580,6 +580,9 @@ describe("SettingsModal automation hooks", () => {
     expect(
       document.querySelector('[data-ac-testid="settings.agentRow.0.containerWarning.bind"]'),
     ).toBeNull();
+    expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.env"]'),
+    ).toBeNull();
 
     runtime.value = "containerTransport";
     runtime.dispatchEvent(new Event("change", { bubbles: true }));
@@ -596,6 +599,10 @@ describe("SettingsModal automation hooks", () => {
     expect(imageHint).toContain("AGENTSCOMMANDER_CONTAINER_IMAGE");
     expect(imageHint).toContain("no built-in image fallback");
     expect(imageHint).not.toContain("agentscommander/session-bridge:latest");
+    const envHint = byTestId("settings.agentRow.0.containerHint.env").textContent ?? "";
+    expect(envHint).toContain("Container sessions read CLAUDE_CONFIG_DIR");
+    expect(envHint).toContain("%AC_REPLICA_ROOT%\\.claude");
+    expect(envHint).toContain("auto-resume is skipped");
     expect(byTestId("settings.agentRow.0.containerWarning.image").textContent).toContain(
       "Saving this blank relies on AGENTSCOMMANDER_CONTAINER_IMAGE",
     );
@@ -619,6 +626,9 @@ describe("SettingsModal automation hooks", () => {
     ).toBeNull();
     expect(
       document.querySelector('[data-ac-testid="settings.agentRow.0.containerWarning.bind"]'),
+    ).toBeNull();
+    expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.env"]'),
     ).toBeNull();
 
     dispose();

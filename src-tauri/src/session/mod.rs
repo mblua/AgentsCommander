@@ -5,3 +5,4 @@ pub mod profile;
 pub mod purge_guard;
 #[allow(clippy::module_inception)]
 pub mod session;
+pub mod warnings;
