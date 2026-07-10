@@ -1010,6 +1010,14 @@ fn read_bounded(path: &Path, bound: u64) -> Result<BoundedRead, String> {
 ///
 /// Keyed by path, not a global `AtomicBool`: `session_context.rs:38` gates on
 /// `is_root_agent_dir_name`, a BASENAME comparison, so one process can seed several distinct roots.
+///
+/// **This set is append-only, and two tests depend on that.** `warn_once_for_path` is its only
+/// writer; there is no `remove`, `clear`, `drain`, or `retain` anywhere. That is what lets
+/// `migration_skips_non_utf8_file` and the healthy branch of `migration_skips_read_only_destination`
+/// assert `!warned_for_path(..)` *after* the act without also asserting it before: a passing
+/// post-condition implies the pre-condition only while the set never shrinks. Adding a `#[cfg(test)]`
+/// reset helper is a tempting and otherwise reasonable thing to want; it would silently weaken both
+/// assertions, and both would then need an explicit pre-assertion, as the positive sites already have.
 static SKILL_REPAIR_WARNED: LazyLock<Mutex<HashSet<PathBuf>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
@@ -2704,8 +2712,19 @@ mod tests {
     /// exactly the snapshot, matches, and gets overwritten with `content`. `MY NOTES` is gone and
     /// nothing warns. The whole file, read honestly, is a user edit.
     ///
-    /// `migration_skips_oversized_file` cannot catch that: it pads to exactly `bound + 1`, so the
-    /// take limit and EOF coincide and no bytes ever sit past the cut. Here they do.
+    /// Two things this fixture has that `migration_skips_oversized_file` does not. It is **the only
+    /// fixture in the suite where `Take` stops strictly before EOF** (measured: every other call into
+    /// `read_bounded` reads a file of at most `bound + 1` bytes, so the take limit and EOF coincide),
+    /// which means the truncation path had no coverage at all until this test existed. And it is the
+    /// only place where the data-loss consequence is executable rather than prose: a real user's
+    /// bytes past the cut, destroyed, with the function reporting `Repaired`.
+    ///
+    /// What it does **not** add is coverage of the missing `+ 1`. `migration_skips_oversized_file`
+    /// already catches that mutation: its fixture is exactly `bound + 1` bytes, so under `take(bound)`
+    /// the read returns `bound` bytes, `buf.len() > bound` can never fire, the prefix trims to the
+    /// snapshot, and it is `Repaired`. Both tests go red on it. The difference is the consequence:
+    /// the old fixture's padding is pure whitespace, so the repair destroys nothing a user would miss
+    /// and the test reports only a wrong classification. This one reports a destroyed file.
     ///
     /// Sized from `max_migratable_len` at runtime. A constant fires on an LF build and silently
     /// misses on a Windows `autocrlf` build, where the bound is 66 bytes larger.
