@@ -470,6 +470,22 @@ impl ContainerTransportBackend {
         removed.map(resources_from_state)
     }
 
+    /// #930 F1 - after copy-in, if a concurrent teardown already removed the
+    /// session from the map, that teardown's `remove_copied` ran before the file
+    /// physically existed (idempotent no-op), so delete the now-orphaned file
+    /// here. The shared `sessions` mutex serializes this check against teardown,
+    /// so every interleaving converges on a deleted file. Body is identical to
+    /// the previous inline recheck; extracted only so the race is unit-testable.
+    fn remove_credential_if_orphaned(
+        &self,
+        id: Uuid,
+        plan: &crate::pty::container_credentials::ContainerCredentialPlan,
+    ) {
+        if !self.sessions.lock().unwrap().contains_key(&id) {
+            crate::pty::container_credentials::remove_copied(&plan.dest);
+        }
+    }
+
     fn remove_route(&self, session_id: Uuid) {
         let remover = self.route_remover.lock().unwrap().clone();
         if let Some(remove) = remover {
@@ -610,10 +626,9 @@ impl ContainerTransportBackend {
             // F1 - if a concurrent teardown removed the session while we were
             // copying, its remove_copied ran before the file existed (no-op). The
             // shared std::Mutex serializes this check against teardown, so all
-            // interleavings converge on a deleted file.
-            if !self.sessions.lock().unwrap().contains_key(&id) {
-                crate::pty::container_credentials::remove_copied(&plan.dest);
-            }
+            // interleavings converge on a deleted file. Extracted into a method
+            // so the race branch is unit-testable (see tests).
+            self.remove_credential_if_orphaned(id, plan);
         }
 
         let token = match token_manager.mint_for_session(id, &cwd) {
@@ -1531,6 +1546,92 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         panic!("runtime stop was not called");
+    }
+
+    // #930 plan section 9.a - a teardown funnel (kill -> remove_session_state ->
+    // cleanup_removed_resources_async) must delete the copied host credential so
+    // no live refresh token is left in the workspace tree.
+    #[test]
+    fn teardown_deletes_copied_credential() {
+        let id = Uuid::new_v4();
+        let dir = tempfile::TempDir::new().unwrap();
+        let dest = dir.path().join(".claude").join(".credentials.json");
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::write(&dest, b"refresh-token-bytes").unwrap();
+        assert!(dest.is_file(), "precondition: credential present");
+
+        let (backend, _mgr) = backend_with_tuning(ContainerTransportTuning::default());
+        // No runtime/token_manager: cleanup runs remove_copied first, then the
+        // runtime-stop and token-revoke branches are skipped (both None).
+        let (tx, _rx) = mpsc::channel(8);
+        backend.sessions.lock().unwrap().insert(
+            id,
+            ContainerSessionState::Active(ActiveSession {
+                output_target: PtyOutputTarget::noop(),
+                sender: tx,
+                rows: 30,
+                cols: 120,
+                runtime_handle: None,
+                api_client_id: None,
+                logical_resource_slot: None,
+                container_credential_path: Some(dest.clone()),
+            }),
+        );
+
+        backend.kill(id).expect("kill");
+
+        assert!(
+            !dest.exists(),
+            "teardown must delete the copied credential"
+        );
+    }
+
+    // #930 F1 - the teardown-during-spawn race: if the session is gone from the
+    // map at the post-copy_in recheck, the recheck deletes the orphaned file;
+    // if it is still registered, the file survives for the container. Drives the
+    // real `remove_credential_if_orphaned` (the extracted recheck).
+    #[test]
+    fn f1_recheck_removes_credential_when_session_gone() {
+        let id = Uuid::new_v4();
+        let dir = tempfile::TempDir::new().unwrap();
+        let dest = dir.path().join(".claude").join(".credentials.json");
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::write(&dest, b"refresh-token-bytes").unwrap();
+        let plan = crate::pty::container_credentials::ContainerCredentialPlan {
+            source: dir.path().join("unused-source"),
+            dest: dest.clone(),
+        };
+
+        let (backend, _mgr) = backend_with_tuning(ContainerTransportTuning::default());
+        let (tx, _rx) = mpsc::channel(8);
+        backend.sessions.lock().unwrap().insert(
+            id,
+            ContainerSessionState::Active(ActiveSession {
+                output_target: PtyOutputTarget::noop(),
+                sender: tx,
+                rows: 30,
+                cols: 120,
+                runtime_handle: None,
+                api_client_id: None,
+                logical_resource_slot: None,
+                container_credential_path: Some(dest.clone()),
+            }),
+        );
+
+        // Session still registered (normal spawn): recheck is a no-op, file survives.
+        backend.remove_credential_if_orphaned(id, &plan);
+        assert!(
+            dest.is_file(),
+            "file must survive while the session is registered"
+        );
+
+        // Session removed before the recheck (teardown-during-spawn): recheck deletes.
+        backend.sessions.lock().unwrap().remove(&id);
+        backend.remove_credential_if_orphaned(id, &plan);
+        assert!(
+            !dest.exists(),
+            "recheck must delete the orphaned credential when the session is gone"
+        );
     }
 
     #[test]
