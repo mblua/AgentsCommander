@@ -63,6 +63,8 @@ describe("projectStore archive operations (#881)", () => {
     }));
 
     const archivePromise = projectStore.archiveProject(PROJECT_PATH);
+    await Promise.resolve();
+    await Promise.resolve();
     expect(m.archive).toHaveBeenCalledWith(PROJECT_PATH);
     expect(projectStore.projects).toHaveLength(1);
     expect(projectStore.archivedPaths).toEqual([]);

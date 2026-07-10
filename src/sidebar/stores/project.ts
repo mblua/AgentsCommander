@@ -82,7 +82,6 @@ async function runSerializedArchiveChange(
 async function discoverAndAppendIfCurrent(path: string, key: string): Promise<void> {
   const result = await ProjectAPI.discover(path);
   if (hasArchivedPath(key)) return;
-  if (hasLoadedProject(key)) return;
   appendDiscoveredProject(path, result);
 }
 
@@ -182,8 +181,10 @@ export const projectStore = {
         // is responsible for creating it first via projectStore.createAndLoad
         // when that case is expected.
         const reg = await ProjectAPI.open(path);
-        const result = await ProjectAPI.discover(reg.path);
-        appendDiscoveredProject(reg.path, result);
+        const normalizedReg = normalizePath(reg.path);
+        await runSerializedArchiveChange(normalizedReg, () =>
+          discoverAndAppendIfCurrent(reg.path, normalizedReg)
+        );
         setLastLoadError(null);
       } catch (e) {
         // Round-1 G11: surface the failure instead of only logging it. The
@@ -227,8 +228,10 @@ export const projectStore = {
   async createAndLoad(path: string) {
     const reg = await ProjectAPI.new(path);
     // After ensuring Project AC Root exists and persistence is set, run discovery for UI.
-    const result = await ProjectAPI.discover(reg.path);
-    appendDiscoveredProject(reg.path, result);
+    const normalized = normalizePath(reg.path);
+    await runSerializedArchiveChange(normalized, () =>
+      discoverAndAppendIfCurrent(reg.path, normalized)
+    );
   },
 
   /** Full open flow: pick folder, check Project AC Root, auto-load if found */
@@ -410,25 +413,28 @@ export const projectStore = {
   /** #881 - hide a project. The backend call runs first and its rejection
    *  propagates so a blocked archive leaves the project visible. */
   async archiveProject(path: string) {
-    await ProjectAPI.archive(path);
     const normalized = normalizePath(path);
-    const archived = projects().find((p) => normalizePath(p.path) === normalized);
-    batch(() => {
-      setProjects((prev) => prev.filter((p) => normalizePath(p.path) !== normalized));
-      setArchivedPaths((prev) =>
-        prev.some((p) => normalizePath(p) === normalized) ? prev : [...prev, path]
-      );
-      if (archived) {
-        replicaVolatileStore.clearForPaths(workgroupReplicaPaths(archived));
-      }
+    await runSerializedArchiveChange(normalized, async () => {
+      await ProjectAPI.archive(path);
+      const archived = projects().find((p) => normalizePath(p.path) === normalized);
+      batch(() => {
+        setProjects((prev) => prev.filter((p) => normalizePath(p.path) !== normalized));
+        setArchivedPaths((prev) =>
+          prev.some((p) => normalizePath(p) === normalized) ? prev : [...prev, path]
+        );
+        if (archived) {
+          replicaVolatileStore.clearForPaths(workgroupReplicaPaths(archived));
+        }
+      });
     });
   },
 
   /** #881 - restore an archived project and load its discovery data. */
   async unarchiveProject(path: string) {
-    const reg = await ProjectAPI.unarchive(path);
-    const normalized = normalizePath(reg.path);
-    await runSerializedArchiveChange(normalized, async () => {
+    const key = normalizePath(path);
+    await runSerializedArchiveChange(key, async () => {
+      const reg = await ProjectAPI.unarchive(path);
+      const normalized = normalizePath(reg.path);
       setArchivedPaths((prev) => prev.filter((p) => normalizePath(p) !== normalized));
       if (hasLoadedProject(normalized)) return;
       await discoverAndAppendIfCurrent(reg.path, normalized);

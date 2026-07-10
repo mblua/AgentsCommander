@@ -155,6 +155,72 @@ describe("projectStore archive event reconciliation (#881)", () => {
     expect(projectStore.archivedPaths).toEqual([]);
   });
 
+  it("does not render a loadProject result after an archive event lands during discover", async () => {
+    const pendingDiscover = deferred<ReturnType<typeof discovery>>();
+    m.discover.mockReturnValueOnce(pendingDiscover.promise);
+
+    const load = projectStore.loadProject(PROJECT_PATH);
+    await flushArchiveQueueStart();
+    expect(m.open).toHaveBeenCalledWith(PROJECT_PATH);
+    expect(m.discover).toHaveBeenCalledWith(PROJECT_PATH);
+
+    const archiveEvent = projectStore.applyArchiveChange(event("archive", true));
+    await flushArchiveQueueStart();
+
+    pendingDiscover.resolve(discovery());
+    await Promise.all([load, archiveEvent]);
+
+    expect(projectStore.projects).toHaveLength(0);
+    expect(projectStore.archivedPaths).toEqual([PROJECT_PATH]);
+  });
+
+  it("does not append a loadProject result while the path is already archived", async () => {
+    await projectStore.initFromSettings([], null, [PROJECT_PATH]);
+
+    await projectStore.loadProject(PROJECT_PATH);
+
+    expect(m.discover).toHaveBeenCalledWith(PROJECT_PATH);
+    expect(projectStore.projects).toHaveLength(0);
+    expect(projectStore.archivedPaths).toEqual([PROJECT_PATH]);
+  });
+
+  it("does not render a createAndLoad result after an archive event lands during discover", async () => {
+    const pendingDiscover = deferred<ReturnType<typeof discovery>>();
+    m.discover.mockReturnValueOnce(pendingDiscover.promise);
+
+    const create = projectStore.createAndLoad(PROJECT_PATH);
+    await flushArchiveQueueStart();
+    expect(m.newProject).toHaveBeenCalledWith(PROJECT_PATH);
+    expect(m.discover).toHaveBeenCalledWith(PROJECT_PATH);
+
+    const archiveEvent = projectStore.applyArchiveChange(event("archive", true));
+    await flushArchiveQueueStart();
+
+    pendingDiscover.resolve(discovery());
+    await Promise.all([create, archiveEvent]);
+
+    expect(projectStore.projects).toHaveLength(0);
+    expect(projectStore.archivedPaths).toEqual([PROJECT_PATH]);
+  });
+
+  it("does not resurrect loadProject after a remove event lands during discover", async () => {
+    const pendingDiscover = deferred<ReturnType<typeof discovery>>();
+    m.discover.mockReturnValueOnce(pendingDiscover.promise);
+
+    const load = projectStore.loadProject(PROJECT_PATH);
+    await flushArchiveQueueStart();
+    expect(m.discover).toHaveBeenCalledWith(PROJECT_PATH);
+
+    const removeEvent = projectStore.applyArchiveChange(event("remove", false));
+    await flushArchiveQueueStart();
+
+    pendingDiscover.resolve(discovery());
+    await Promise.all([load, removeEvent]);
+
+    expect(projectStore.projects).toHaveLength(0);
+    expect(projectStore.archivedPaths).toEqual([]);
+  });
+
   it("does not re-add a project when an archive event lands during an open-event discover", async () => {
     const pendingDiscover = deferred<ReturnType<typeof discovery>>();
     m.discover.mockReturnValueOnce(pendingDiscover.promise);
@@ -205,6 +271,24 @@ describe("projectStore archive event reconciliation (#881)", () => {
     expect(projectStore.archivedPaths).toEqual([]);
   });
 
+  it("keeps a concurrent archive event authoritative while direct unarchive is in flight", async () => {
+    await projectStore.initFromSettings([], null, [PROJECT_PATH]);
+    const pendingUnarchive = deferred<{ path: string; registered: boolean; created: boolean }>();
+    m.unarchive.mockReturnValueOnce(pendingUnarchive.promise);
+
+    const unarchive = projectStore.unarchiveProject(PROJECT_PATH);
+    await flushArchiveQueueStart();
+    expect(m.unarchive).toHaveBeenCalledWith(PROJECT_PATH);
+
+    const archiveEvent = projectStore.applyArchiveChange(event("archive", true));
+
+    pendingUnarchive.resolve({ path: PROJECT_PATH, registered: true, created: false });
+    await Promise.all([unarchive, archiveEvent]);
+
+    expect(projectStore.projects).toHaveLength(0);
+    expect(projectStore.archivedPaths).toEqual([PROJECT_PATH]);
+  });
+
   it("does not append after a direct archiveProject completes during an open-event discover", async () => {
     const pendingDiscover = deferred<ReturnType<typeof discovery>>();
     m.discover.mockReturnValueOnce(pendingDiscover.promise);
@@ -212,10 +296,10 @@ describe("projectStore archive event reconciliation (#881)", () => {
     const openEvent = projectStore.applyArchiveChange(event("open", false));
     await flushArchiveQueueStart();
     expect(m.discover).toHaveBeenCalledWith(PROJECT_PATH);
-    await projectStore.archiveProject(PROJECT_PATH);
+    const archive = projectStore.archiveProject(PROJECT_PATH);
 
     pendingDiscover.resolve(discovery());
-    await openEvent;
+    await Promise.all([openEvent, archive]);
 
     expect(projectStore.projects).toHaveLength(0);
     expect(projectStore.archivedPaths).toEqual([PROJECT_PATH]);

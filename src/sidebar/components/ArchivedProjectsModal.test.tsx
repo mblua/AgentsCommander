@@ -66,12 +66,14 @@ describe("ArchivedProjectsModal (#881)", () => {
     const rendered = renderWithFakeTransport(() => <ArchivedProjectsModal onClose={onClose} />, fake);
     try {
       await waitFor(() => expect(byTestId("archivedProjects.empty")).toBeTruthy());
-      const modal = byTestId("archivedProjects.modal");
-      const closeButton = modal.querySelector<HTMLButtonElement>(".modal-close");
+      const overlay = byTestId("archivedProjects.modal");
+      const dialog = overlay.querySelector<HTMLDivElement>(".agent-modal");
+      const closeButton = dialog?.querySelector<HTMLButtonElement>(".modal-close");
 
-      expect(modal.getAttribute("role")).toBe("dialog");
-      expect(modal.getAttribute("aria-modal")).toBe("true");
-      expect(modal.getAttribute("aria-labelledby")).toBe("archived-projects-title");
+      expect(overlay.getAttribute("role")).toBeNull();
+      expect(dialog?.getAttribute("role")).toBe("dialog");
+      expect(dialog?.getAttribute("aria-modal")).toBe("true");
+      expect(dialog?.getAttribute("aria-labelledby")).toBe("archived-projects-title");
       expect(document.getElementById("archived-projects-title")?.textContent).toBe("Archived projects");
       await waitFor(() => expect(document.activeElement).toBe(closeButton));
 
@@ -82,6 +84,40 @@ describe("ArchivedProjectsModal (#881)", () => {
     }
 
     expect(document.activeElement).toBe(trigger);
+  });
+
+  it("traps Tab focus inside the dialog", async () => {
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+
+    const fake = new FakeTransport();
+    fake.resolve("list_archived_projects", []);
+
+    const rendered = renderWithFakeTransport(() => <ArchivedProjectsModal onClose={vi.fn()} />, fake);
+    try {
+      await waitFor(() => expect(byTestId("archivedProjects.empty")).toBeTruthy());
+      const modal = byTestId("archivedProjects.modal");
+      const closeButton = modal.querySelector<HTMLButtonElement>(".modal-close");
+      const footerButton = modal.querySelector<HTMLButtonElement>(".agent-modal-footer button");
+      if (!closeButton || !footerButton) throw new Error("Missing focus trap buttons");
+      await waitFor(() => expect(document.activeElement).toBe(closeButton));
+
+      footerButton.focus();
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
+      expect(document.activeElement).toBe(closeButton);
+
+      closeButton.focus();
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true }),
+      );
+      expect(document.activeElement).toBe(footerButton);
+
+      outside.focus();
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
+      expect(document.activeElement).toBe(closeButton);
+    } finally {
+      rendered.cleanup();
+    }
   });
 
   it("renders rows, unarchives through the backend, discovers, and refetches", async () => {

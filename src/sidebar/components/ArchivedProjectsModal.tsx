@@ -112,14 +112,14 @@ const ArchivedProjectsModal: Component<ArchivedProjectsModalProps> = (props) => 
   };
 
   return (
-    <div
-      class="modal-overlay"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="archived-projects-title"
-      data-ac-testid="archivedProjects.modal"
-    >
-      <div class="agent-modal archived-projects-modal" ref={modalRef}>
+    <div class="modal-overlay" data-ac-testid="archivedProjects.modal">
+      <div
+        class="agent-modal archived-projects-modal"
+        ref={modalRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="archived-projects-title"
+      >
         <div class="agent-modal-header">
           <span class="agent-modal-title" id="archived-projects-title">
             Archived projects
