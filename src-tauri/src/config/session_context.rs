@@ -6930,7 +6930,21 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     /// Asserts that every shipped default skill survives the real indexer with no warning at all,
     /// and that it actually reaches the rendered context. Shared by the two gates below.
     fn assert_defaults_index_and_render_cleanly(root: &Path) {
-        let index = discover_skill_index(Some(&path_string(root)));
+        // Resolve the owner root the way production does, rather than handing `discover_skill_index`
+        // a path we already know is right. `resolve_skill_owner_root` was long believed untestable
+        // in-process because of `config_dir()`'s `OnceLock`; it is not. That `OnceLock` is reached by
+        // `ensure_session_context_with_config` (`:27-28`), NOT by this function: it calls only
+        // `is_canonical_agent_matrix_dir` and `is_root_agent_dir_name`, and neither touches it.
+        //
+        // For a temp `ac-root-agent` directory the first is false, so it falls through to the second
+        // and canonicalizes, which is exactly the production path for a real root agent.
+        //
+        // This closes a real hole. `discover_skill_index(None)` returns an empty index with ZERO
+        // warnings, so a regression in owner resolution would leave the root agent silently indexing
+        // nothing while the `warnings.is_empty()` assertion below stayed green. The `skills.len()`
+        // assertion is what catches it.
+        let owner = resolve_skill_owner_root(&path_string(root), None);
+        let index = discover_skill_index(owner.as_deref());
 
         // MUST be first. On the unfixed seed the YAML error is pushed at `:512` and the loop
         // `continue`s, so `skills.len() == 1`; a length check first would report `1 != 2` and say

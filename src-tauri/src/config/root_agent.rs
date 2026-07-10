@@ -1011,6 +1011,23 @@ fn read_bounded(path: &Path, bound: u64) -> Result<BoundedRead, String> {
 /// Keyed by path, not a global `AtomicBool`: `session_context.rs:38` gates on
 /// `is_root_agent_dir_name`, a BASENAME comparison, so one process can seed several distinct roots.
 ///
+/// **Suppressible at exactly one runtime level, and not the one you would guess.** Measured against
+/// `LevelGateLogger` (`logging.rs:80-97`), which gates our own `agentscommander*` targets on
+/// `(record.level() as u8) <= runtime_level`:
+///
+/// | runtime level | this `warn!` is logged | the repair's `info!` is logged |
+/// |---|---|---|
+/// | Error | **no** | no |
+/// | Warn | yes | no |
+/// | Info or lower | yes | yes |
+///
+/// `max_filter_for` (`logging.rs:66`) clamps the global max level to at least Warn, so the `warn!`
+/// macro never short-circuits. That clamp exists to keep **third-party** warnings visible, and those
+/// take the `self.inner.enabled(..)` branch. Ours do not: at runtime level Error the gate rejects
+/// them. A user who has selected Error learns nothing from a failed repair, not even from
+/// `discover_skill_index`'s own per-build warning, which is a `warn!` on the same target and is
+/// suppressed identically.
+///
 /// **This set is append-only, and two tests depend on that.** `warn_once_for_path` is its only
 /// writer; there is no `remove`, `clear`, `drain`, or `retain` anywhere. That is what lets
 /// `migration_skips_non_utf8_file` and the healthy branch of `migration_skips_read_only_destination`
@@ -1130,6 +1147,13 @@ fn migrate_default_skill_file(
     )? {
         Publish::AlreadyCurrent => Ok(SkillMigration::Skipped(SkipReason::AlreadyCurrent)),
         Publish::Published => {
+            // This line requires the runtime log level at Info or lower. The default is Info
+            // (`init_logger_inner`: `read_log_level_only().unwrap_or("info")`), so it normally
+            // appears. But if the user has lowered verbosity to Warn or Error, the `info!` macro
+            // short-circuits before the gate ever sees it, because `max_filter_for`
+            // (`logging.rs:66`) leaves the global max level at Warn. The repair still happened; only
+            // the record of it is gone. Do not read an absent line as a failed repair: check the
+            // file, not the log.
             log::info!(
                 "[skills] #909 repaired stale default skill {}: {} -> {}",
                 path.display(),
