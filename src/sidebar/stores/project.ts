@@ -210,7 +210,16 @@ export const projectStore = {
     legacyPath: string | null,
     archivedProjectPaths: string[] = []
   ) {
-    setArchivedPaths(archivedProjectPaths);
+    // #881 (FE-F11) - union, not wholesale replace. `onProjectArchiveChanged`
+    // is registered before this boot-time call runs against an already-read
+    // settings snapshot; a concurrent archive from another window/CLI that
+    // `applyArchiveChange` committed into `archivedPaths` during that gap must
+    // survive, or the stale snapshot silently reverts it (and loadProject then
+    // re-registers the path on disk). Merge instead of clobbering.
+    setArchivedPaths((prev) => {
+      const keys = new Set(prev.map(normalizePath));
+      return [...prev, ...archivedProjectPaths.filter((p) => !keys.has(normalizePath(p)))];
+    });
     // Merge legacy single path into the array (deduplicated)
     const paths = [...projectPaths];
     if (legacyPath && !paths.some((p) => normalizePath(p) === normalizePath(legacyPath))) {

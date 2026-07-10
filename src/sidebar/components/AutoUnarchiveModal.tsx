@@ -67,15 +67,14 @@ const AutoUnarchiveModal: Component = () => {
   return (
     <Show when={autoUnarchiveStore.open}>
       <Portal>
-        <div
-          class="modal-overlay auto-unarchive-overlay"
-          role="alertdialog"
-          aria-modal="true"
-          aria-labelledby="auto-unarchive-title"
-          aria-describedby="auto-unarchive-description"
-          data-ac-testid="autoUnarchive.modal"
-        >
-          <div class="agent-modal auto-unarchive-modal">
+        <div class="modal-overlay auto-unarchive-overlay" data-ac-testid="autoUnarchive.modal">
+          <div
+            class="agent-modal auto-unarchive-modal"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="auto-unarchive-title"
+            aria-describedby="auto-unarchive-description"
+          >
             <div class="agent-modal-header">
               <span class="agent-modal-title" id="auto-unarchive-title">
                 {entries().length === 1 ? "Project un-archived" : "Projects un-archived"}

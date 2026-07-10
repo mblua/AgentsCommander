@@ -289,19 +289,91 @@ describe("projectStore archive event reconciliation (#881)", () => {
     expect(projectStore.archivedPaths).toEqual([PROJECT_PATH]);
   });
 
-  it("does not append after a direct archiveProject completes during an open-event discover", async () => {
-    const pendingDiscover = deferred<ReturnType<typeof discovery>>();
-    m.discover.mockReturnValueOnce(pendingDiscover.promise);
+  it("preserves a concurrent boot-time archive when initFromSettings runs with a stale snapshot", async () => {
+    // FE-F11 (G4): a second window/CLI archived P during this window's boot -
+    // applyArchiveChange committed it before initFromSettings ran with the
+    // already-read (stale) settings snapshot. A wholesale replace would drop
+    // it, then loadProject would re-register P on disk. Reds on wholesale-replace.
+    await projectStore.applyArchiveChange(event("archive", true));
+    expect(projectStore.archivedPaths).toEqual([PROJECT_PATH]);
 
-    const openEvent = projectStore.applyArchiveChange(event("open", false));
-    await flushArchiveQueueStart();
-    expect(m.discover).toHaveBeenCalledWith(PROJECT_PATH);
-    const archive = projectStore.archiveProject(PROJECT_PATH);
-
-    pendingDiscover.resolve(discovery());
-    await Promise.all([openEvent, archive]);
+    await projectStore.initFromSettings([PROJECT_PATH], null, []);
 
     expect(projectStore.projects).toHaveLength(0);
     expect(projectStore.archivedPaths).toEqual([PROJECT_PATH]);
+  });
+
+  it("queues a direct archiveProject behind an in-flight direct unarchiveProject", async () => {
+    // FE-F13 (G3): without archiveProject's tail (MU3), unarchive's stale
+    // continuation resumes after the archive commits and re-appends P.
+    await projectStore.initFromSettings([], null, [PROJECT_PATH]);
+    const pending = deferred<{ path: string; registered: boolean; created: boolean }>();
+    m.unarchive.mockReturnValueOnce(pending.promise);
+
+    const un = projectStore.unarchiveProject(PROJECT_PATH);
+    await flushArchiveQueueStart();
+    expect(m.unarchive).toHaveBeenCalledWith(PROJECT_PATH);
+
+    const arch = projectStore.archiveProject(PROJECT_PATH);
+    await flushArchiveQueueStart();
+    expect(m.archive).not.toHaveBeenCalled();
+
+    pending.resolve({ path: PROJECT_PATH, registered: true, created: false });
+    await Promise.all([un, arch]);
+
+    expect(m.archive).toHaveBeenCalledWith(PROJECT_PATH);
+    expect(projectStore.projects).toHaveLength(0);
+    expect(projectStore.archivedPaths).toEqual([PROJECT_PATH]);
+  });
+
+  it("keeps the tail alive for a queued event after the head archiveProject rejects", async () => {
+    // FE-F18 (G2): previous.catch(() => undefined) lets a queued task run after
+    // the head rejects - and the rejecting head is the COMMON live-sessions
+    // path. Reds on MU13 (drop the catch): the echo is silently dropped.
+    await projectStore.loadProject(PROJECT_PATH);
+    expect(projectStore.projects).toHaveLength(1);
+
+    const pendingArchive = deferred<void>();
+    m.archive.mockReturnValueOnce(pendingArchive.promise);
+
+    const archive = projectStore.archiveProject(PROJECT_PATH);
+    await flushArchiveQueueStart();
+    expect(m.archive).toHaveBeenCalledWith(PROJECT_PATH);
+
+    const archiveEvent = projectStore.applyArchiveChange(event("archive", true));
+    pendingArchive.reject("Cannot archive: 1 open session in this project.");
+    await expect(archive).rejects.toBe("Cannot archive: 1 open session in this project.");
+    await archiveEvent;
+
+    // The echo queued behind the rejected head still applied.
+    expect(projectStore.projects).toHaveLength(0);
+    expect(projectStore.archivedPaths).toEqual([PROJECT_PATH]);
+
+    // Tail not poisoned: a later change on the same key still runs.
+    await projectStore.applyArchiveChange(event("unarchive", false));
+    expect(projectStore.projects).toHaveLength(1);
+    expect(projectStore.projects[0].path).toBe(PROJECT_PATH);
+    expect(projectStore.archivedPaths).toEqual([]);
+  });
+
+  it("does not resurrect createAndLoad after a remove event lands during discover", async () => {
+    // FE-F12 (P6b): mirrors P6 for createAndLoad's tail; MU2 (createAndLoad
+    // drops the tail, keeps the belt) was previously unpinned.
+    const pendingDiscover = deferred<ReturnType<typeof discovery>>();
+    m.discover.mockReturnValueOnce(pendingDiscover.promise);
+
+    const create = projectStore.createAndLoad(PROJECT_PATH);
+    await flushArchiveQueueStart();
+    expect(m.newProject).toHaveBeenCalledWith(PROJECT_PATH);
+    expect(m.discover).toHaveBeenCalledWith(PROJECT_PATH);
+
+    const removeEvent = projectStore.applyArchiveChange(event("remove", false));
+    await flushArchiveQueueStart();
+
+    pendingDiscover.resolve(discovery());
+    await Promise.all([create, removeEvent]);
+
+    expect(projectStore.projects).toHaveLength(0);
+    expect(projectStore.archivedPaths).toEqual([]);
   });
 });
