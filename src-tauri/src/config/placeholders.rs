@@ -523,9 +523,16 @@ mod tests {
             .replace('\\', "/");
         assert!(out.starts_with(&expected_replica), "{out}");
         assert!(!out.contains("%AC_"), "{out}");
-        if let Some(home) = expected_home_fwd() {
-            assert!(out.ends_with(&home), "{out}");
-            assert!(!out.contains('\\'), "{out}");
+        match expected_home_fwd() {
+            Some(home) => {
+                assert!(out.ends_with(&home), "{out}");
+                assert!(!out.contains('\\'), "{out}");
+            }
+            // No home: the AC tokens still expand, %USER_HOME% stays literal.
+            None => {
+                assert!(out.ends_with(USER_HOME_PLACEHOLDER), "{out}");
+                assert!(out.contains("%USER_HOME%"), "{out}");
+            }
         }
     }
 

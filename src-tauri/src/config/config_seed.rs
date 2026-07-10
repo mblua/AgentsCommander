@@ -1158,12 +1158,16 @@ mod tests {
 
         let out =
             std::fs::read_to_string(replica.join(".claude").join("settings.local.json")).unwrap();
-        if let Some(home) = home_fwd() {
-            assert!(
-                out.contains(&format!("\"{}/.claude/CLAUDE.md\"", home)),
-                "{out}"
-            );
-            assert!(!out.contains("%USER_HOME%"), "{out}");
+        match home_fwd() {
+            Some(home) => {
+                assert!(
+                    out.contains(&format!("\"{}/.claude/CLAUDE.md\"", home)),
+                    "{out}"
+                );
+                assert!(!out.contains("%USER_HOME%"), "{out}");
+            }
+            // No home: the seed still succeeds, the token is written literally.
+            None => assert!(out.contains("\"%USER_HOME%/.claude/CLAUDE.md\""), "{out}"),
         }
         // The unknown marker inside the hook command survives verbatim.
         assert!(out.contains("echo %TEMP%/log.txt"), "{out}");
