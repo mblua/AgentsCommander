@@ -36,6 +36,15 @@ pub async fn pty_write(
 ) -> Result<(), String> {
     let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
 
+    // (#885 J1) Keystrokes into a session being purged would flip it busy
+    // between the readiness snapshot and its destroy. Scoped to the purge's
+    // target set, so typing in unrelated sessions is unaffected.
+    if let Some(g) = app.try_state::<std::sync::Arc<crate::session::purge_guard::PurgeGuard>>() {
+        if g.blocks_session(uuid) {
+            return Err("purge-wg in progress for this session; input rejected".to_string());
+        }
+    }
+
     // Flag if user typed while voice recording is active for this session.
     // Lock scope closes before pty_mgr lock to avoid holding both.
     {

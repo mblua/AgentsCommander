@@ -10,6 +10,7 @@ pub mod list_sessions;
 pub mod loop_cmd;
 pub mod new_project;
 pub mod open_project;
+pub mod purge_wg;
 pub mod raise_hand;
 pub mod role_experiment;
 pub mod self_clear;
@@ -150,6 +151,9 @@ pub enum Commands {
     RoleExperiment(role_experiment::RoleExperimentArgs),
     /// Close all sessions for a target agent (coordinator authorization required)
     CloseSession(close_session::CloseSessionArgs),
+    /// Purge every agent in the caller's own workgroup (coordinator-only, fail-closed busy gate)
+    #[command(name = "purge-wg")]
+    PurgeWg(purge_wg::PurgeWgArgs),
     /// Set the title field in the workgroup TASK.md frontmatter (coordinator-only)
     TaskSetTitle(task_set_title::TaskSetTitleArgs),
     /// Append text to the body of the workgroup TASK.md (coordinator-only)
@@ -316,6 +320,7 @@ pub fn handle_cli(cmd: Commands) -> i32 {
         Commands::CreateAgentMatrix(args) => create_agent_matrix::execute(args),
         Commands::RoleExperiment(args) => role_experiment::execute(args),
         Commands::CloseSession(args) => close_session::execute(args),
+        Commands::PurgeWg(args) => purge_wg::execute(args),
         Commands::TaskSetTitle(args) => task_set_title::execute(args),
         Commands::TaskAppendBody(args) => task_append_body::execute(args),
         Commands::OpenProject(args) => open_project::execute(args),

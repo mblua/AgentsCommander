@@ -606,6 +606,7 @@ pub fn run(
         .manage(settings)
         .manage(idle_detector_for_state) // #552 managed type: Arc<IdleDetector>
         .manage(coordinator_clocks) // #552 managed type: CoordinatorClocksState
+        .manage(std::sync::Arc::new(crate::session::purge_guard::PurgeGuard::default())) // #885
         .manage(detached_sessions.clone())
         .manage(spec_board_state.clone())
         .manage(loop_scheduler.clone())
