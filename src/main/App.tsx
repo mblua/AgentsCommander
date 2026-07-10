@@ -13,7 +13,6 @@ import { centralViewStore } from "./stores/centralView";
 import { wireCentralViewListeners } from "./listeners-central-view";
 import Titlebar from "../sidebar/components/Titlebar";
 import QuitConfirmModal from "./components/QuitConfirmModal";
-import RtkBanner from "./components/RtkBanner";
 import ErrorModal from "./components/ErrorModal";
 import ExternalLinkConfirm from "../shared/components/ExternalLinkConfirm";
 import { wireHomeListeners } from "./listeners-home";
@@ -244,7 +243,6 @@ const MainApp: Component = () => {
       data-ac-state={dragging() ? "dragging" : "idle"}
     >
       <Titlebar />
-      <RtkBanner />
       <div class="main-body">
         <div class="main-sidebar-pane" style={{ width: `${sidebarWidth()}px` }}>
           <SidebarApp embedded railSide={sidebarSide()} />

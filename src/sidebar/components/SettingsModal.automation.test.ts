@@ -32,7 +32,6 @@ vi.mock("../../shared/ipc", async () => {
       startApiServer: vi.fn(() => Promise.resolve(false)),
       stopApiServer: vi.fn(() => Promise.resolve(false)),
       apiServerStatus: vi.fn(() => Promise.resolve(false)),
-      sweepRtkHook: vi.fn(() => Promise.resolve({ total: 0, updated: 0, errors: [] })),
     },
     TelegramAPI: {
       sendTest: vi.fn(() => Promise.resolve(0)),
@@ -88,8 +87,6 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     restoreCoordinatorWakeState: true,
     soundsEnabled: true,
     teamIdleBeepEnabled: true,
-    injectRtkHook: false,
-    informWhenRtkInstalled: true,
     webServerEnabled: false,
     webServerPort: 8765,
     webServerBind: "127.0.0.1",
@@ -133,7 +130,6 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     onboardingDismissed: true,
     projectPaths: [],
     projectPath: null,
-    rtkPromptDismissed: false,
     autoGenerateTaskTitle: true,
     agentTemplatesPath: null,
     specBoardEnabled: false,
@@ -1221,46 +1217,6 @@ describe("SettingsModal automation hooks", () => {
     const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
     expect(saved?.codingAgentProfiles.profilesByAgent.codex?.A?.command).toBe("codex --fast");
 
-    dispose();
-  });
-
-  it("uses the seeded RTK baseline when saving before the fresh load resolves", async () => {
-    let resolveLoadedSettings: (value: AppSettings) => void = () => {};
-    vi.mocked(SettingsAPI.get).mockReturnValueOnce(
-      new Promise<AppSettings>((resolve) => {
-        resolveLoadedSettings = resolve;
-      }),
-    );
-
-    const root = document.createElement("div");
-    document.body.append(root);
-    const dispose = render(
-      () => SettingsModal({ onClose: () => {} }),
-      root,
-    );
-    await settle();
-
-    const rtkField = Array.from(
-      document.querySelectorAll<HTMLLabelElement>(".settings-checkbox-field"),
-    ).find((label) => label.textContent?.includes("Inject RTK hook"));
-    const rtkCheckbox = rtkField?.querySelector<HTMLInputElement>('input[type="checkbox"]');
-    if (!rtkCheckbox) throw new Error("missing RTK checkbox");
-    rtkCheckbox.checked = true;
-    rtkCheckbox.dispatchEvent(new Event("change", { bubbles: true }));
-    await settle();
-
-    document.querySelector<HTMLButtonElement>('[data-ac-testid="settings.save"]')?.click();
-    await settle();
-
-    expect(SettingsAPI.saveDraft).toHaveBeenCalledWith(
-      expect.objectContaining({ injectRtkHook: true }),
-    );
-    expect(SettingsAPI.update).not.toHaveBeenCalled();
-    expect(SettingsAPI.updateCodingAgentProfiles).not.toHaveBeenCalled();
-    expect(SettingsAPI.updateCodingAgentEnvSettings).not.toHaveBeenCalled();
-    expect(SettingsAPI.sweepRtkHook).toHaveBeenCalledWith(true);
-
-    resolveLoadedSettings(settings());
     dispose();
   });
 

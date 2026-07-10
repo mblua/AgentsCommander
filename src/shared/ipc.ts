@@ -73,18 +73,6 @@ export interface SessionRepoInput {
   sourcePath: string;
 }
 
-export type RtkStartupMode =
-  | "prompt-enable"
-  | "active"
-  | "auto-disabled"
-  | "silent";
-
-export interface RtkSweepResult {
-  total: number;
-  succeeded: number;
-  errors: { path: string; error: string }[];
-}
-
 function createDefaultTransport(): Transport {
   return isTauri ? new TauriTransport() : new WsTransport();
 }
@@ -316,11 +304,7 @@ export const SettingsAPI = {
   // Narrow setters hold the SettingsState write lock through save_settings on
   // the Rust side, eliminating the IPC-level read-modify-write race that a
   // get+update round-trip would create against a concurrent update_settings
-  // from SettingsModal. Used by RtkBanner.
-  setInjectRtkHook: (value: boolean) =>
-    transport.invoke<void>("set_inject_rtk_hook", { value }),
-  setRtkPromptDismissed: (value: boolean) =>
-    transport.invoke<void>("set_rtk_prompt_dismissed", { value }),
+  // from SettingsModal.
   setSoundsEnabled: (value: boolean) =>
     transport.invoke<void>("set_sounds_enabled", { value }),
   setThemeLight: (value: boolean) =>
@@ -380,10 +364,6 @@ export const SettingsAPI = {
       agentId,
       requestedProfile: requestedProfile ?? null,
     }),
-  sweepRtkHook: (enabled: boolean) =>
-    transport.invoke<RtkSweepResult>("sweep_rtk_hook", { enabled }),
-  getRtkStartupStatus: () =>
-    transport.invoke<RtkStartupMode>("get_rtk_startup_status"),
   getUpdateStatus: () =>
     transport.invoke<UpdateInfo | null>("get_update_status"),
 };
@@ -1024,15 +1004,6 @@ export function onOpenSettings(
 ): Promise<UnlistenFn> {
   return transport.listen<{ section?: string }>("open_settings", (data) =>
     callback(data?.section)
-  );
-}
-
-export function onRtkStartupStatus(
-  callback: (mode: RtkStartupMode) => void
-): Promise<UnlistenFn> {
-  return transport.listen<{ mode: RtkStartupMode }>(
-    "rtk_startup_status",
-    (data) => callback(data.mode)
   );
 }
 
