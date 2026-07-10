@@ -2696,22 +2696,94 @@ mod tests {
         assert_eq!(read_bytes(&fixture.path), oversized.as_bytes());
     }
 
+    /// The data-loss input, made executable. This is the file that `take(bound)` without the `+ 1`
+    /// and its rejection would have DESTROYED: a pristine snapshot, a long whitespace run, and then
+    /// the user's real bytes sitting past the cut.
+    ///
+    /// Read to `bound + 1` and stopped there, the prefix is snapshot-plus-whitespace, which trims to
+    /// exactly the snapshot, matches, and gets overwritten with `content`. `MY NOTES` is gone and
+    /// nothing warns. The whole file, read honestly, is a user edit.
+    ///
+    /// `migration_skips_oversized_file` cannot catch that: it pads to exactly `bound + 1`, so the
+    /// take limit and EOF coincide and no bytes ever sit past the cut. Here they do.
+    ///
+    /// Sized from `max_migratable_len` at runtime. A constant fires on an LF build and silently
+    /// misses on a Windows `autocrlf` build, where the bound is 66 bytes larger.
+    #[test]
+    fn migration_skips_oversized_file_hiding_user_notes_past_the_cut() {
+        let snapshots = [AGENCY_AGENTS_ROLES_SKILL_PRE_YAML_FIX];
+        let bound = max_migratable_len(agency_content(), &snapshots);
+        let cut = bound as usize + 1; // exactly what `read_bounded` will read
+
+        // Enough whitespace that the cut lands strictly inside the run, so the truncated prefix is
+        // snapshot + spaces and nothing else. The slack is what puts `MY NOTES` past the cut.
+        let spaces = cut
+            .checked_sub(AGENCY_AGENTS_ROLES_SKILL_PRE_YAML_FIX.len())
+            .expect("bound must exceed the snapshot length")
+            + 64;
+        let notes = "MY NOTES\n";
+        let hazard = format!(
+            "{}{}{}",
+            AGENCY_AGENTS_ROLES_SKILL_PRE_YAML_FIX,
+            " ".repeat(spaces),
+            notes
+        );
+
+        assert!(hazard.len() > cut, "the user's bytes must sit past the cut");
+        assert!(hazard.is_char_boundary(cut));
+
+        // The hazard, spelled out. Truncated at the cut, this file impersonates the snapshot.
+        assert_eq!(
+            normalize_role_text(&hazard[..cut]),
+            normalize_role_text(AGENCY_AGENTS_ROLES_SKILL_PRE_YAML_FIX),
+            "the truncated prefix must be indistinguishable from a pristine stale default"
+        );
+        // Read honestly, it is nothing of the sort.
+        assert_ne!(
+            normalize_role_text(&hazard),
+            normalize_role_text(AGENCY_AGENTS_ROLES_SKILL_PRE_YAML_FIX)
+        );
+        assert!(normalize_role_text(&hazard).ends_with("MY NOTES"));
+
+        let fixture = seed_agency_skill(hazard.as_bytes());
+        assert_eq!(
+            migrate_agency_with_snapshot(&fixture).expect("migration must not fail"),
+            SkillMigration::Skipped(SkipReason::TooLarge)
+        );
+        assert_eq!(
+            read_bytes(&fixture.path),
+            hazard.as_bytes(),
+            "the user's notes must survive, byte for byte"
+        );
+    }
+
     /// Classified, not an error. `Err` would mean a `log::warn!` on every root-agent context build
     /// forever, for a condition that is sticky and provably unrepairable: `legacy_snapshots` are
     /// `&'static str`, so no non-UTF-8 file can ever normalize-equal one.
+    ///
+    /// The no-WARN half is asserted through `ensure_default_root_agent_skills_at`, not through a
+    /// direct call. `warn_once_for_path` lives at the caller's swallow point, so a direct call never
+    /// has it in its call graph and `!warned_for_path` would be near-vacuous: the `Ok` return alone
+    /// would carry it. Routed this way, the assertion means what its comment claims.
     #[test]
     fn migration_skips_non_utf8_file() {
         let invalid = [0xff_u8, 0xfe, 0x00, 0x41];
         let fixture = seed_agency_skill(&invalid);
 
+        // The classification, asserted where the enum is visible.
         assert_eq!(
             migrate_agency_with_snapshot(&fixture).expect("migration must not fail"),
             SkillMigration::Skipped(SkipReason::NotUtf8)
         );
+
+        // The absence of the warn, asserted where the warn would actually be emitted.
+        ensure_default_root_agent_skills_at(&fixture.root)
+            .expect("an unrepairable skill must never fail a session start");
+
         assert_eq!(read_bytes(&fixture.path), invalid);
         assert!(
             !warned_for_path(&fixture.path),
-            "an unrepairable, sticky condition must not warn"
+            "an unrepairable, sticky condition must not warn, on any build"
         );
     }
 
@@ -2765,6 +2837,10 @@ mod tests {
         // Stale and read-only: `ReplaceFileW` would fail with os error 5, so we skip and warn once.
         let stale = seed_agency_skill(AGENCY_AGENTS_ROLES_SKILL_PRE_YAML_FIX.as_bytes());
         set_readonly(&stale.path, true);
+        // `SKILL_REPAIR_WARNED` is a process-global that is never cleared, so "a WARN was emitted"
+        // below means the `first == true` branch ran only if this path was absent beforehand.
+        // Assert that rather than inherit it from the tempdir being fresh.
+        assert!(!warned_for_path(&stale.path));
         assert_eq!(
             migrate_agency_with_snapshot(&stale).expect("migration must not fail"),
             SkillMigration::Skipped(SkipReason::ReadOnly)
@@ -2790,6 +2866,10 @@ mod tests {
             &fixture.path,
             Box::new(|_| Err("injected publish failure".to_string())),
         );
+
+        // See `migration_skips_read_only_destination`: the post-condition below means "a WARN was
+        // emitted" only because this path was absent from the process-global memo beforehand.
+        assert!(!warned_for_path(&fixture.path));
 
         ensure_default_root_agent_skills_at(&fixture.root)
             .expect("a failed repair must never fail a session start");

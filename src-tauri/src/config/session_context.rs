@@ -6970,15 +6970,31 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         // `push_with_budget` drops entries past the budget and `skill_trigger_text` truncates.
         // The assertion #909 actually wants is "the shipped defaults reach the agent".
         let rendered = render_skills_section(&index);
+        assert!(rendered.contains("### Available Skills"));
+
         for dir_name in expected {
+            let skill = index
+                .skills
+                .iter()
+                .find(|s| s.folder_name == dir_name)
+                .unwrap_or_else(|| panic!("default skill `{}` missing from the index", dir_name));
+
+            // Assert the whole `full_entry` line, not just the name. Two reasons a name-only check
+            // is weaker than it looks: `render_skills_section` prints `skill.name`, the YAML `name:`
+            // field, which only coincides with the directory name for today's two defaults; and the
+            // budget-exhausted `minimal_entry` fallback (`:747-750`) ALSO emits "- `{name}`", so a
+            // name check stays green for a skill whose metadata was dropped on the way to the model.
+            // The trigger text is emitted by `full_entry` alone.
+            let name = sanitize_skill_metadata_for_context(&skill.name);
+            let trigger = sanitize_skill_metadata_for_context(&skill_trigger_text(skill));
             assert!(
-                index.skills.iter().any(|s| s.folder_name == dir_name),
-                "default skill `{}` missing from the index",
+                !trigger.trim().is_empty(),
+                "{} rendered an empty trigger",
                 dir_name
             );
             assert!(
-                rendered.contains(&format!("- `{}`", dir_name)),
-                "default skill `{}` missing from the rendered section",
+                rendered.contains(&format!("- `{}` - {}", name, trigger)),
+                "default skill `{}` did not reach the rendered section with its metadata intact",
                 dir_name
             );
         }
