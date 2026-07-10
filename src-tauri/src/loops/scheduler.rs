@@ -620,10 +620,43 @@ mod tests {
             folder_name: "missing".to_string(),
             registered: true,
         };
+        let input = vec![candidate.clone()];
+        let ptr = input.as_ptr();
+        let capacity = input.capacity();
 
-        let filtered = retain_unarchived_candidates(vec![candidate.clone()], &[]);
+        let filtered = retain_unarchived_candidates(input, &[]);
 
         assert_eq!(filtered, vec![candidate]);
+        assert_eq!(
+            filtered.as_ptr(),
+            ptr,
+            "empty archived roots must skip the into_iter/collect round trip"
+        );
+        assert_eq!(filtered.capacity(), capacity);
+    }
+
+    #[test]
+    fn scan_once_calls_archived_candidate_filter() {
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/loops/scheduler.rs"
+        ))
+        .expect("read scheduler.rs");
+        let production = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production scheduler source");
+        let normalize = production
+            .find("let archived_roots = sessions_persistence::normalize_project_roots(&archived);")
+            .expect("archived root normalization");
+        let retain = production
+            .find("let projects = retain_unarchived_candidates(projects, &archived_roots);")
+            .expect("retain_unarchived_candidates call");
+
+        assert!(
+            normalize < retain,
+            "scan_once must subtract archived candidates after normalizing archived roots"
+        );
     }
 
     #[test]

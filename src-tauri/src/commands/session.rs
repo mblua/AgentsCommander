@@ -935,6 +935,10 @@ pub async fn create_session_inner<R: tauri::Runtime>(
 ) -> Result<SessionInfo, String> {
     let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
     let session_label = session_name.as_deref().unwrap_or(&shell).to_string();
+    let spawn_mark = {
+        let pty = pty_mgr.lock().unwrap_or_else(|e| e.into_inner());
+        pty.mark_spawning(&cwd, &session_label)
+    };
     crate::config::archive_gate::enforce_unarchived_for_spawn(app, &cwd, &session_label).await?;
     let (agent_id, agent_label) = {
         if let Some(spawn) = resolved_spawn.as_ref() {
@@ -1510,6 +1514,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         logical_resource_slot,
     };
     let spawn_result = PtyManager::spawn(pty_mgr, session.backend_kind, spawn_spec).await;
+    drop(spawn_mark);
     if let Err(e) = spawn_result {
         let err = e.to_string();
         drop(mgr);
@@ -3749,6 +3754,88 @@ mod tests {
         assert!(session_mgr.read().await.list_sessions().await.is_empty());
         assert_eq!(backend.killed(), backend.spawned());
         assert_eq!(backend.killed().len(), 1);
+    }
+
+    #[test]
+    fn create_session_inner_keeps_both_archive_activation_gates() {
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/session.rs"
+        ))
+        .expect("read session.rs");
+        let production = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production session source");
+        let gate_call = "crate::config::archive_gate::enforce_unarchived_for_spawn(app, &cwd, &session_label).await";
+        let count = production.matches(gate_call).count();
+
+        assert_eq!(
+            count, 2,
+            "create_session_inner must keep both archive activation gates"
+        );
+    }
+
+    #[test]
+    fn create_session_inner_marks_spawning_until_spawn_returns() {
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/session.rs"
+        ))
+        .expect("read session.rs");
+        let production = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production session source");
+        let mark = production
+            .find("let spawn_mark = {")
+            .expect("spawn mark before archive gate");
+        let first_gate = production
+            .find("crate::config::archive_gate::enforce_unarchived_for_spawn(app, &cwd, &session_label).await?;")
+            .expect("first archive gate");
+        let spawn = production
+            .find("let spawn_result = PtyManager::spawn(pty_mgr, session.backend_kind, spawn_spec).await;")
+            .expect("spawn call");
+        let drop_mark = production
+            .find("drop(spawn_mark);")
+            .expect("spawn mark drop");
+        let spawn_error = production
+            .find("if let Err(e) = spawn_result {")
+            .expect("spawn error handling");
+
+        assert!(mark < first_gate, "spawn mark must cover archive gate A");
+        assert!(
+            first_gate < spawn,
+            "archive gate A must run before PTY spawn"
+        );
+        assert!(
+            spawn < drop_mark,
+            "spawn mark must stay live while spawn awaits"
+        );
+        assert!(
+            drop_mark < spawn_error,
+            "spawn mark must drop immediately after spawn returns"
+        );
+    }
+
+    #[test]
+    fn restart_session_inner_probes_archive_before_destroying_session() {
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/session.rs"
+        ))
+        .expect("read session.rs");
+        let probe = source
+            .find("crate::config::archive_gate::probe_spawn_refusal(app, &cwd).await?;")
+            .expect("restart probe call");
+        let destroy = source
+            .find("// 3. Destroy the old session")
+            .expect("destroy step marker");
+
+        assert!(
+            probe < destroy,
+            "restart must probe archive refusal before destroying the dormant row"
+        );
     }
 
     #[test]

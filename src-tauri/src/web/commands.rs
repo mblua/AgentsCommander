@@ -796,9 +796,8 @@ pub fn broadcast_all(
     event: &str,
     payload: &Value,
 ) {
-    if !broadcast_all_to_managed(app, event, payload) {
-        broadcaster.broadcast_event(event, payload);
-    }
+    let _ = tauri::Emitter::emit(app, event, payload.clone());
+    broadcaster.broadcast_event(event, payload);
 }
 
 // --- Arg helpers ---
@@ -899,6 +898,49 @@ mod tests {
         assert_eq!(route_web_command("new_project"), WebCommandRoute::Other);
         assert_eq!(route_web_command("open-project"), WebCommandRoute::Other);
         assert_eq!(route_web_command("new-project"), WebCommandRoute::Other);
+    }
+
+    #[test]
+    fn broadcast_all_r_sends_to_managed_websocket_broadcaster() {
+        let broadcaster = WsBroadcaster::new();
+        let mut receiver = broadcaster.subscribe();
+        let app = tauri::Builder::default()
+            .any_thread()
+            .manage(broadcaster)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build test app");
+        let payload = json!({ "path": "C:/project", "archived": true });
+
+        broadcast_all_r(app.handle(), "project_archive_changed", &payload);
+
+        let event = match receiver.try_recv().expect("broadcast event") {
+            WsOutMsg::Text(text) => serde_json::from_str::<Value>(&text).expect("parse event"),
+            other => panic!("expected text event, got {other:?}"),
+        };
+        assert_eq!(event["event"], json!("project_archive_changed"));
+        assert_eq!(event["payload"], payload);
+    }
+
+    #[test]
+    fn broadcast_all_sends_to_explicit_websocket_broadcaster() {
+        let managed = WsBroadcaster::new();
+        let explicit = WsBroadcaster::new();
+        let mut receiver = explicit.subscribe();
+        let app = tauri::Builder::default()
+            .any_thread()
+            .manage(managed)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build test app");
+        let payload = json!({ "path": "C:/project", "archived": false });
+
+        broadcast_all(app.handle(), &explicit, "project_archive_changed", &payload);
+
+        let event = match receiver.try_recv().expect("broadcast event") {
+            WsOutMsg::Text(text) => serde_json::from_str::<Value>(&text).expect("parse event"),
+            other => panic!("expected text event, got {other:?}"),
+        };
+        assert_eq!(event["event"], json!("project_archive_changed"));
+        assert_eq!(event["payload"], payload);
     }
 
     #[tokio::test]

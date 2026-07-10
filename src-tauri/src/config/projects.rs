@@ -259,7 +259,7 @@ pub fn resolve_project_reference(
 
 // ── Private helpers ───────────────────────────────────────────────────────
 
-fn absolutise(raw: &str) -> Result<PathBuf, ProjectError> {
+pub(crate) fn absolutise(raw: &str) -> Result<PathBuf, ProjectError> {
     if raw.trim().is_empty() {
         return Err(ProjectError::EmptyPath(raw.to_string()));
     }
@@ -357,6 +357,33 @@ pub fn archive_project_path(settings: &mut AppSettings, abs_path: &str) -> bool 
     }
     settings.project_path = settings.project_paths.first().cloned();
     removed
+}
+
+/// Move a stored archived project back to the active list without probing the
+/// filesystem. Used only to roll back an archive operation that already passed
+/// path normalization and then discovered late liveness.
+pub fn unarchive_project_path(settings: &mut AppSettings, abs_path: &str) -> bool {
+    let key = normalize_for_compare(abs_path);
+    let matched = settings
+        .archived_project_paths
+        .iter()
+        .find(|p| normalize_for_compare(p) == key)
+        .cloned();
+    let Some(restored) = matched else {
+        return false;
+    };
+    settings
+        .archived_project_paths
+        .retain(|p| normalize_for_compare(p) != key);
+    let already_active = settings
+        .project_paths
+        .iter()
+        .any(|p| normalize_for_compare(p) == key);
+    if !already_active {
+        settings.project_paths.push(restored);
+    }
+    settings.project_path = settings.project_paths.first().cloned();
+    true
 }
 
 pub fn archived_projects_from_paths(archived_project_paths: &[String]) -> Vec<ArchivedProject> {
@@ -933,6 +960,20 @@ mod tests {
     }
 
     #[test]
+    fn unarchive_project_path_restores_archived_byte_form_without_io() {
+        let mut s = AppSettings {
+            archived_project_paths: vec!["C:/MissingProject/".to_string()],
+            ..AppSettings::default()
+        };
+
+        assert!(unarchive_project_path(&mut s, "C:/MissingProject"));
+
+        assert_eq!(s.project_paths, vec!["C:/MissingProject/".to_string()]);
+        assert!(s.archived_project_paths.is_empty());
+        assert_eq!(s.project_path.as_deref(), Some("C:/MissingProject/"));
+    }
+
+    #[test]
     fn upsert_project_path_unarchives_matching_entry() {
         let fix = FixtureRoot::new("proj-unarchive-upsert");
         std::fs::create_dir_all(fix.path().join(".ac")).expect("create .ac");
@@ -947,6 +988,29 @@ mod tests {
         assert!(result.registered);
         assert!(s.archived_project_paths.is_empty());
         assert_eq!(s.project_paths, vec![result.path]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn upsert_project_path_unarchives_windows_verbatim_variant() {
+        let mut s = AppSettings {
+            archived_project_paths: vec![r"\\?\C:\Users\maria\MixedCaseProject".to_string()],
+            ..AppSettings::default()
+        };
+
+        assert!(upsert_project_path(
+            &mut s,
+            r"C:\Users\maria\MixedCaseProject"
+        ));
+
+        assert_eq!(
+            s.project_paths,
+            vec![r"C:\Users\maria\MixedCaseProject".to_string()]
+        );
+        assert!(
+            s.archived_project_paths.is_empty(),
+            "verbatim and ordinary Windows paths must not remain in separate lists"
+        );
     }
 
     #[test]

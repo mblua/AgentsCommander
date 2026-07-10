@@ -2414,6 +2414,27 @@ mod tests {
             .expect("web and api server handles must be distinct managed types");
     }
 
+    #[test]
+    fn restore_loop_normalizes_archived_roots_before_persisted_session_loop() {
+        let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
+            .expect("read lib.rs");
+        let production = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production lib source");
+        let hoist = production
+            .find("let archived_roots = sessions_persistence::normalize_project_roots")
+            .expect("archived root normalization");
+        let loop_start = production
+            .find("for ps in &persisted")
+            .expect("persisted session loop");
+
+        assert!(
+            hoist < loop_start,
+            "startup restore must normalize archived roots once before the session loop"
+        );
+    }
+
     #[tokio::test]
     async fn web_server_handle_reports_owned_bind_and_port() {
         let handle = WebServerHandle::default();

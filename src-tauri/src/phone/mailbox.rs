@@ -6354,10 +6354,123 @@ mod tests {
     fn retain_unarchived_session_dirs_returns_input_unchanged_when_archived_list_is_empty() {
         let id = Uuid::new_v4();
         let input = vec![(id, "Z:/does/not/exist".to_string())];
+        let ptr = input.as_ptr();
+        let capacity = input.capacity();
 
-        let filtered = retain_unarchived_session_dirs(input.clone(), &[]);
+        let filtered = retain_unarchived_session_dirs(input, &[]);
 
-        assert_eq!(filtered, input);
+        assert_eq!(filtered, vec![(id, "Z:/does/not/exist".to_string())]);
+        assert_eq!(
+            filtered.as_ptr(),
+            ptr,
+            "empty archived roots must skip the into_iter/collect round trip"
+        );
+        assert_eq!(filtered.capacity(), capacity);
+    }
+
+    #[test]
+    fn mailbox_poll_bypasses_session_dir_filter_when_archived_list_is_empty() {
+        let source =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/phone/mailbox.rs"))
+                .expect("read mailbox.rs");
+        let production = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production mailbox source");
+        let bypass = production
+            .find("let session_dirs = if archived.is_empty()")
+            .expect("archived-empty bypass");
+        let filter = production
+            .find("retain_unarchived_session_dirs(session_dirs, &roots)")
+            .expect("archived session filter call");
+
+        assert!(
+            bypass < filter,
+            "MailboxPoller::poll must bypass filtering before calling the archived-session filter"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_repo_path_filters_archived_session_dirs() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project = temp.path().join("proj-a");
+        let target = project
+            .join(".ac")
+            .join("wg-1-dev-team")
+            .join("__agent_dev-rust");
+        std::fs::create_dir_all(&target).expect("create target");
+        let app = make_mailbox_app(temp.path());
+        let app_handle = app_handle(&app);
+        {
+            let settings = app_handle.state::<SettingsState>();
+            let mut cfg = settings.write().await;
+            cfg.project_paths.clear();
+            cfg.archived_project_paths = vec![project.to_string_lossy().to_string()];
+        }
+        let session_mgr = app_handle.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        {
+            let mgr = session_mgr.read().await;
+            mgr.create_session(
+                "shell".to_string(),
+                Vec::new(),
+                target.to_string_lossy().to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create archived session");
+        }
+        let poller = MailboxPoller::new();
+
+        let resolved = poller
+            .resolve_repo_path(CANONICAL_WAKE_TO, &app_handle)
+            .await;
+
+        assert_eq!(resolved, None);
+    }
+
+    #[tokio::test]
+    async fn resolve_wg_path_from_sessions_filters_archived_session_dirs() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project = temp.path().join("proj-a");
+        let wg_root = project.join(".ac").join("wg-1-dev-team");
+        let sender = wg_root.join("__agent_tech-lead");
+        let target = wg_root.join("__agent_dev-rust");
+        std::fs::create_dir_all(&sender).expect("create sender");
+        std::fs::create_dir_all(&target).expect("create target");
+        let app = make_mailbox_app(temp.path());
+        let app_handle = app_handle(&app);
+        {
+            let settings = app_handle.state::<SettingsState>();
+            let mut cfg = settings.write().await;
+            cfg.archived_project_paths = vec![project.to_string_lossy().to_string()];
+        }
+        let session_mgr = app_handle.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        {
+            let mgr = session_mgr.read().await;
+            mgr.create_session(
+                "shell".to_string(),
+                Vec::new(),
+                sender.to_string_lossy().to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create archived sibling session");
+        }
+        let poller = MailboxPoller::new();
+
+        let resolved = poller
+            .resolve_wg_path_from_sessions(&app_handle, LOCAL_WAKE_TO)
+            .await;
+
+        assert_eq!(resolved, None);
     }
 
     // ── §224 D.5a — wait_for_restore_or_session unit tests ──

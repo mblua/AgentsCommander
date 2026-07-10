@@ -279,6 +279,16 @@ thread_local! {
     static NORMALIZE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+#[cfg(test)]
+pub(crate) fn reset_normalize_call_count() {
+    NORMALIZE_CALLS.with(|calls| calls.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn normalize_call_count() -> usize {
+    NORMALIZE_CALLS.with(|calls| calls.get())
+}
+
 fn normalize_for_project_compare(path: &Path) -> String {
     #[cfg(test)]
     NORMALIZE_CALLS.with(|calls| calls.set(calls.get() + 1));
@@ -306,14 +316,13 @@ fn path_is_under_or_equal(candidate: &str, root: &str) -> bool {
     candidate.starts_with(&format!("{}/", root))
 }
 
-/// Raw-root convenience for active project lists that are checked once, such
-/// as `archive_session_blockers`.
+/// Raw-root convenience for active project lists where each candidate session
+/// is checked against a short per-command scope, such as `archive_blockers`.
 ///
 /// Do not call this with `archived_project_paths`,
 /// `session_retention_project_paths`, or inside a per-dir loop. In those paths,
 /// normalize roots once with `normalize_project_roots` and use the normalized
 /// helpers.
-#[allow(dead_code)]
 pub(crate) fn working_directory_under_any_project_path(
     working_directory: &str,
     project_paths: &[String],
@@ -362,7 +371,6 @@ pub(crate) fn session_retention_project_paths(
 ///
 /// Do not add a raw-root convenience wrapper. The per-root canonicalize must
 /// not hide inside a per-dir loop.
-#[allow(dead_code)]
 pub(crate) fn is_under_normalized_archived_roots(
     path: &str,
     normalized_archived_roots: &[String],
@@ -376,23 +384,25 @@ pub(crate) fn is_under_normalized_archived_roots(
     )
 }
 
-/// #881: return the normalized archived root containing `path`.
-///
-/// Takes pre-normalized roots produced by `normalize_project_roots`; do not add
-/// a raw-root wrapper that hides per-root canonicalization inside a per-dir
-/// loop.
-pub(crate) fn first_project_path_containing(
-    path: &str,
-    normalized_roots: &[String],
-) -> Option<String> {
-    if normalized_roots.is_empty() {
+/// #881: return the stored raw root containing `path`, while matching on the
+/// same normalized form used by `normalize_project_roots`.
+pub(crate) fn raw_project_path_containing(path: &str, project_paths: &[String]) -> Option<String> {
+    if project_paths.is_empty() {
         return None;
     }
     let cwd = normalize_for_project_compare(Path::new(path));
-    normalized_roots
-        .iter()
-        .find(|root| path_is_under_or_equal(&cwd, root))
-        .cloned()
+    project_paths.iter().find_map(|raw| {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let root = normalize_for_project_compare(Path::new(trimmed));
+        if path_is_under_or_equal(&cwd, &root) {
+            Some(raw.clone())
+        } else {
+            None
+        }
+    })
 }
 
 fn is_root_persisted_session(session: &PersistedSession) -> bool {
