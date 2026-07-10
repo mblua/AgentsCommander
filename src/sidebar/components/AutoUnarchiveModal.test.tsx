@@ -75,4 +75,15 @@ describe("AutoUnarchiveModal (#881)", () => {
 
     expect(document.querySelector('[data-ac-testid="autoUnarchive.modal"]')).toBeNull();
   });
+
+  it("coalesces ten simultaneous auto-unarchives into one modal with ten rows", async () => {
+    for (let index = 0; index < 10; index++) {
+      autoUnarchiveStore.push(event(`C:\\Project${index}`, `Project${index}`));
+    }
+
+    await waitFor(() =>
+      expect(document.querySelectorAll('[data-ac-testid^="autoUnarchive.row."]')).toHaveLength(10),
+    );
+    expect(document.querySelectorAll('[data-ac-testid="autoUnarchive.modal"]')).toHaveLength(1);
+  });
 });

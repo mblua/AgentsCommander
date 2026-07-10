@@ -84,6 +84,25 @@ describe("ArchivedProjectsModal (#881)", () => {
     }
   });
 
+  it("derives row automation ids from the full path when folder names collide", async () => {
+    const firstPath = "C:\\Archive\\A\\Same";
+    const secondPath = "D:\\Archive\\B\\Same";
+    const fake = new FakeTransport();
+    fake.resolve("list_archived_projects", [
+      row(firstPath, { folderName: "Same" }),
+      row(secondPath, { folderName: "Same" }),
+    ]);
+
+    const rendered = renderWithFakeTransport(() => <ArchivedProjectsModal onClose={vi.fn()} />, fake);
+    try {
+      await waitFor(() => expect(byTestId(`archivedProjects.row.${automationIdPart(firstPath)}`)).toBeTruthy());
+      expect(byTestId(`archivedProjects.row.${automationIdPart(secondPath)}`)).toBeTruthy();
+      expect(document.querySelectorAll('[data-ac-testid^="archivedProjects.row."]')).toHaveLength(2);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
   it("shows Remove from list for missing folders and routes it through remove_project", async () => {
     let rows = [row("C:\\Archive\\Missing", { exists: false })];
     const fake = new FakeTransport();
