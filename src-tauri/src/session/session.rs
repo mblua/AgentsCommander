@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 use crate::config::settings::WindowGeometry;
@@ -126,6 +126,8 @@ pub struct Session {
     pub profile_fallback_applied: bool,
     #[serde(skip)]
     pub effective_codex_home: Option<String>,
+    #[serde(skip)]
+    pub resolved_claude_projects_dir: Option<PathBuf>,
     /// #592 - 16-hex content-hash of the profile cell this session launched
     /// with. In-memory; the durable copy is `tooling.profileContentHash` in the
     /// replica config. `None` for plain-shell sessions (no resolved profile).
@@ -352,6 +354,7 @@ mod tests {
             profile_fallback_chain: Vec::new(),
             profile_fallback_applied: false,
             effective_codex_home: None,
+            resolved_claude_projects_dir: None,
             profile_content_hash: None,
             telegram_bot_id: None,
             was_detached: false,

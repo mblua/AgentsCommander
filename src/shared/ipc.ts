@@ -6,6 +6,8 @@ import type {
   Session,
   SessionCommunication,
   SessionRepo,
+  SessionEnvWarningPayload,
+  SessionWarning,
   PtyOutputEvent,
   PtyScreenSnapshot,
   AppSettings,
@@ -214,6 +216,11 @@ export const SessionAPI = {
   list: () => transport.invoke<Session[]>("list_sessions"),
 
   getActive: () => transport.invoke<string | null>("get_active_session"),
+
+  drainWarnings: (sessionId?: string | null) =>
+    transport.invoke<SessionWarning[]>("drain_session_warnings", {
+      sessionId: sessionId ?? null,
+    }),
 
   setLastPrompt: (id: string, text: string) =>
     transport.invoke<void>("set_last_prompt", { id, text }),
@@ -739,6 +746,15 @@ export function onTelegramBridgeError(
 ): Promise<UnlistenFn> {
   return transport.listen<{ sessionId: string; error: string }>(
     "telegram_bridge_error",
+    callback
+  );
+}
+
+export function onSessionEnvWarning(
+  callback: (data: SessionEnvWarningPayload) => void
+): Promise<UnlistenFn> {
+  return transport.listen<SessionEnvWarningPayload>(
+    "session_env_warning",
     callback
   );
 }

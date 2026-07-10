@@ -223,6 +223,8 @@ pub fn execute(args: SelfSwitchArgs) -> i32 {
         timeout_secs: None,
         switch_coding_agent: args.coding_agent,
         switch_profile,
+        dry_run: None,
+        quiet_period_ms: None,
     };
 
     let outbox_dir = if is_root {

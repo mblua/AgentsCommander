@@ -14,7 +14,8 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
-pub const TRANSPORT_PROTOCOL_VERSION: u32 = 1;
+pub const TRANSPORT_PROTOCOL_VERSION: u32 = 2;
+const REGISTRATION_TOKEN_ENV: &str = "AGENTSCOMMANDER_SESSION_REGISTRATION_TOKEN";
 
 type BridgeResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -59,6 +60,7 @@ pub struct BridgeConfig {
     pub command: String,
     pub args: Vec<String>,
     pub child_env: Vec<(String, String)>,
+    pub env_unset: Vec<String>,
     pub cols: u16,
     pub rows: u16,
 }
@@ -75,6 +77,8 @@ impl BridgeConfig {
         let command = required_env("AGENTSCOMMANDER_BRIDGE_COMMAND")?;
         let args = parse_json_env("AGENTSCOMMANDER_BRIDGE_ARGS_JSON")?.unwrap_or_default();
         let child_env = parse_json_env("AGENTSCOMMANDER_BRIDGE_ENV_JSON")?.unwrap_or_default();
+        let env_unset =
+            parse_json_env("AGENTSCOMMANDER_BRIDGE_ENV_UNSET_JSON")?.unwrap_or_default();
         let cols = parse_u16_env("AGENTSCOMMANDER_BRIDGE_COLS", 120)?;
         let rows = parse_u16_env("AGENTSCOMMANDER_BRIDGE_ROWS", 30)?;
 
@@ -88,6 +92,7 @@ impl BridgeConfig {
             command,
             args,
             child_env,
+            env_unset,
             cols,
             rows,
         })
@@ -154,10 +159,7 @@ pub async fn run_bridge(config: BridgeConfig) -> BridgeResult<()> {
     }
     command.cwd(&config.workdir);
     command.env("TERM", "xterm-256color");
-    command.env_remove("AGENTSCOMMANDER_SESSION_REGISTRATION_TOKEN");
-    for (key, value) in &config.child_env {
-        command.env(key, value);
-    }
+    apply_bridge_env(&mut command, &config.child_env, &config.env_unset);
 
     let child = pair.slave.spawn_command(command)?;
     let child = Arc::new(Mutex::new(child));
@@ -247,6 +249,52 @@ pub async fn run_bridge(config: BridgeConfig) -> BridgeResult<()> {
     Ok(())
 }
 
+trait BridgeEnvTarget {
+    fn set_env(&mut self, key: &str, value: &str);
+    fn remove_env(&mut self, key: &str);
+}
+
+impl BridgeEnvTarget for CommandBuilder {
+    fn set_env(&mut self, key: &str, value: &str) {
+        self.env(key, value);
+    }
+
+    fn remove_env(&mut self, key: &str) {
+        self.env_remove(key);
+    }
+}
+
+fn apply_bridge_env<T: BridgeEnvTarget>(
+    target: &mut T,
+    child_env: &[(String, String)],
+    env_unset: &[String],
+) {
+    apply_bridge_env_inner(target, child_env, env_unset, true);
+}
+
+fn apply_bridge_env_inner<T: BridgeEnvTarget>(
+    target: &mut T,
+    child_env: &[(String, String)],
+    env_unset: &[String],
+    assert_disjoint: bool,
+) {
+    if assert_disjoint {
+        debug_assert!(
+            !env_unset
+                .iter()
+                .any(|unset| child_env.iter().any(|(key, _)| key == unset)),
+            "env_unset and child_env should be disjoint"
+        );
+    }
+    for (key, value) in child_env {
+        target.set_env(key, value);
+    }
+    for key in env_unset {
+        target.remove_env(key);
+    }
+    target.remove_env(REGISTRATION_TOKEN_ENV);
+}
+
 async fn handle_host_message(
     message: Message,
     master: &(dyn portable_pty::MasterPty + Send),
@@ -303,6 +351,17 @@ fn terminate_child(child: &Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
+    impl BridgeEnvTarget for BTreeMap<String, String> {
+        fn set_env(&mut self, key: &str, value: &str) {
+            self.insert(key.to_string(), value.to_string());
+        }
+
+        fn remove_env(&mut self, key: &str) {
+            self.remove(key);
+        }
+    }
 
     #[test]
     fn transport_url_maps_http_to_ws() {
@@ -316,6 +375,7 @@ mod tests {
             command: "sh".to_string(),
             args: Vec::new(),
             child_env: Vec::new(),
+            env_unset: Vec::new(),
             cols: 80,
             rows: 24,
         };
@@ -339,7 +399,7 @@ mod tests {
 
         let resize: HostToBridgeTextFrame = serde_json::from_value(serde_json::json!({
             "type": "resize",
-            "version": 1,
+            "version": TRANSPORT_PROTOCOL_VERSION,
             "cols": 100,
             "rows": 40
         }))
@@ -347,10 +407,38 @@ mod tests {
         assert_eq!(
             resize,
             HostToBridgeTextFrame::Resize {
-                version: 1,
+                version: TRANSPORT_PROTOCOL_VERSION,
                 cols: 100,
                 rows: 40
             }
         );
+    }
+
+    #[test]
+    fn env_unset_applies_after_child_env() {
+        let mut env = BTreeMap::from([("CODEX_HOME".to_string(), "/opt/codex".to_string())]);
+        apply_bridge_env_inner(
+            &mut env,
+            &[("CODEX_HOME".to_string(), "/workspace/.codex".to_string())],
+            &["CODEX_HOME".to_string()],
+            false,
+        );
+
+        assert_eq!(env.get("CODEX_HOME"), None);
+    }
+
+    #[test]
+    fn registration_token_is_removed_after_child_env() {
+        let mut env = BTreeMap::new();
+        apply_bridge_env(
+            &mut env,
+            &[(
+                REGISTRATION_TOKEN_ENV.to_string(),
+                "should-not-survive".to_string(),
+            )],
+            &[],
+        );
+
+        assert_eq!(env.get(REGISTRATION_TOKEN_ENV), None);
     }
 }

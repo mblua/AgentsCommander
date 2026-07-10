@@ -100,6 +100,20 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             Ok(json!(active))
         }
 
+        "drain_session_warnings" => {
+            let session_id = args.get("sessionId").and_then(|v| v.as_str());
+            let drained = {
+                let warnings = state
+                    .app_handle
+                    .state::<crate::session::warnings::SessionWarningState>();
+                let mut buffer = warnings
+                    .lock()
+                    .map_err(|err| format!("session warning buffer lock poisoned: {err}"))?;
+                buffer.drain(session_id)
+            };
+            serde_json::to_value(drained).map_err(|e| e.to_string())
+        }
+
         "create_session" => {
             let cfg = state.settings.read().await;
             let cwd = str_or(
@@ -888,6 +902,7 @@ mod tests {
     fn ws_state_for(settings: AppSettings) -> (WsState, tokio::sync::mpsc::Receiver<WsOutMsg>) {
         let app = tauri::Builder::default()
             .any_thread()
+            .manage(crate::session::warnings::new_session_warning_state())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build test app");
         let app_handle = app.handle().clone();
@@ -926,6 +941,49 @@ mod tests {
             config_seed: None,
             backend: Default::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn drain_session_warnings_web_dispatch_drains_buffer() {
+        let (state, _rx) = ws_state_for(AppSettings::default());
+        let session_id = Uuid::new_v4();
+        {
+            let warnings = state
+                .app_handle
+                .state::<crate::session::warnings::SessionWarningState>();
+            let mut buffer = warnings.lock().expect("warning buffer lock");
+            buffer.push(crate::session::warnings::SessionWarning::new(
+                session_id,
+                "CLAUDE_CONFIG_DIR",
+                "outside-mount",
+                "warning text",
+            ));
+        }
+
+        let response = dispatch(
+            &state,
+            9,
+            "drain_session_warnings",
+            &json!({ "sessionId": session_id.to_string() }),
+        )
+        .await;
+
+        assert_eq!(response["id"], json!(9));
+        assert_eq!(
+            response["result"][0]["sessionId"],
+            json!(session_id.to_string())
+        );
+        assert_eq!(response["result"][0]["key"], json!("CLAUDE_CONFIG_DIR"));
+
+        let response = dispatch(
+            &state,
+            10,
+            "drain_session_warnings",
+            &json!({ "sessionId": session_id.to_string() }),
+        )
+        .await;
+        assert_eq!(response["id"], json!(10));
+        assert_eq!(response["result"], json!([]));
     }
 
     #[tokio::test]

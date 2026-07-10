@@ -47,6 +47,40 @@ pub struct AgentSpawnCommand {
     pub seed: Option<crate::config::config_seed::ResolvedConfigSeed>,
 }
 
+impl AgentSpawnCommand {
+    pub fn effective_child_env(&self) -> Vec<(String, String)> {
+        self.child_env
+            .iter()
+            .filter(|(key, _)| {
+                !self
+                    .env_remove_keys
+                    .iter()
+                    .any(|remove| env_key_matches_platform(remove, key))
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub fn effective_env_value(&self, key: &str) -> Option<&str> {
+        let wanted = normalize_env_key_for_platform(key);
+        self.child_env
+            .iter()
+            .rev()
+            .filter(|(candidate, _)| {
+                !self
+                    .env_remove_keys
+                    .iter()
+                    .any(|remove| env_key_matches_platform(remove, candidate))
+            })
+            .find(|(candidate, _)| normalize_env_key_for_platform(candidate) == wanted)
+            .map(|(_, value)| value.as_str())
+    }
+}
+
+fn env_key_matches_platform(left: &str, right: &str) -> bool {
+    normalize_env_key_for_platform(left) == normalize_env_key_for_platform(right)
+}
+
 pub fn normalize_legacy_agent_command(command: &str) -> Result<NormalizedAgentCommand, String> {
     let input = command.trim_matches(|c: char| c.is_ascii_whitespace());
     if input.is_empty() {
@@ -947,11 +981,12 @@ mod tests {
         default_instructions_filename_for_command, ensure_opencode_config_dir,
         find_opencode_config_dir, is_safe_instructions_filename, managed_instructions_filenames,
         normalize_legacy_agent_command, profile_content_hash, resolve_instructions_filename,
-        resolve_target_filename, OpencodeConfigDirOutcome,
+        resolve_target_filename, AgentSpawnCommand, OpencodeConfigDirOutcome,
     };
+    use crate::config::coding_agent_profiles::ProfileResolution;
     use crate::config::settings::{
-        AgentConfig, AppSettings, CodingAgentEnv, CodingAgentEnvSource, ConfigSeedConfig,
-        ProfileCellConfig,
+        empty_profile_cell, AgentBackendConfig, AgentConfig, AppSettings, CodingAgentEnv,
+        CodingAgentEnvSource, ConfigSeedConfig, ProfileCellConfig,
     };
     use std::collections::BTreeMap;
 
@@ -1084,6 +1119,63 @@ mod tests {
             instructions_filename: None,
             config_seed: None,
             backend: Default::default(),
+        }
+    }
+
+    fn spawn_with_env(
+        child_env: Vec<(String, String)>,
+        env_remove_keys: Vec<String>,
+    ) -> AgentSpawnCommand {
+        AgentSpawnCommand {
+            shell: "codex".to_string(),
+            shell_args: Vec::new(),
+            agent_env: BTreeMap::new(),
+            profile_env: BTreeMap::new(),
+            generated_env: BTreeMap::new(),
+            child_env,
+            env_remove_keys,
+            effective_codex_home: None,
+            profile_resolution: ProfileResolution {
+                requested_profile: "A".to_string(),
+                effective_profile: "A".to_string(),
+                fallback_chain: vec!["A".to_string()],
+                fallback_applied: false,
+                cell: empty_profile_cell(),
+                warnings: Vec::new(),
+            },
+            profile_content_hash: "0000000000000000".to_string(),
+            trusted_agent_id: "codex".to_string(),
+            trusted_agent_label: "codex".to_string(),
+            backend: AgentBackendConfig::default(),
+            seed: None,
+        }
+    }
+
+    #[test]
+    fn effective_env_helpers_apply_removals_and_last_wins() {
+        let spawn = spawn_with_env(
+            vec![
+                ("FOO".to_string(), "one".to_string()),
+                ("BAR".to_string(), "remove".to_string()),
+                ("FOO".to_string(), "last".to_string()),
+            ],
+            vec!["BAR".to_string()],
+        );
+
+        assert_eq!(
+            spawn.effective_child_env(),
+            vec![
+                ("FOO".to_string(), "one".to_string()),
+                ("FOO".to_string(), "last".to_string())
+            ]
+        );
+        assert_eq!(spawn.effective_env_value("FOO"), Some("last"));
+        assert_eq!(spawn.effective_env_value("BAR"), None);
+
+        if cfg!(windows) {
+            assert_eq!(spawn.effective_env_value("foo"), Some("last"));
+        } else {
+            assert_eq!(spawn.effective_env_value("foo"), None);
         }
     }
 

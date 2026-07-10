@@ -20,6 +20,10 @@ use crate::pty::container_backend::{
     parse_bridge_text_frame, root_key, BridgeToHostFrame, ContainerTransportBackend,
     HostToBridgeFrame, MAX_TRANSPORT_FRAME_BYTES, TRANSPORT_PROTOCOL_VERSION,
 };
+use crate::session::warnings::{
+    emit_session_warning, SessionWarning, CONTAINER_TRANSPORT_PROTOCOL_KEY,
+    WARNING_KIND_PROTOCOL_MISMATCH,
+};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,6 +50,7 @@ pub async fn handle(
         Err(err) => return err.into_response(),
     };
 
+    let app_handle = state.app_handle.clone();
     ws.max_message_size(MAX_TRANSPORT_FRAME_BYTES)
         .max_frame_size(MAX_TRANSPORT_FRAME_BYTES)
         .on_upgrade(move |socket| {
@@ -54,6 +59,7 @@ pub async fn handle(
                 authorized.backend,
                 authorized.session_id,
                 authorized.bound_root,
+                app_handle,
             )
         })
 }
@@ -102,6 +108,7 @@ async fn handle_ws_connection(
     backend: std::sync::Arc<ContainerTransportBackend>,
     session_id: Uuid,
     bound_root: String,
+    app_handle: tauri::AppHandle,
 ) {
     let first = match tokio::time::timeout(
         backend.tuning().handshake_timeout,
@@ -117,10 +124,12 @@ async fn handle_ws_connection(
     };
 
     let (tx, rx) = tokio::sync::mpsc::channel(backend.tuning().outbound_queue_capacity);
-    if validate_hello(first, &backend, session_id, &bound_root, tx)
-        .await
-        .is_err()
-    {
+    if let Err(rejection) = validate_hello(first, &backend, session_id, &bound_root, tx).await {
+        let reason = rejection.message();
+        log::error!("[container-transport] {reason}");
+        if let Some(warning) = rejection.session_warning(session_id) {
+            emit_session_warning(&app_handle, warning);
+        }
         backend.handle_handshake_failed(session_id).await;
         return;
     }
@@ -170,35 +179,104 @@ async fn validate_hello(
     session_id: Uuid,
     bound_root: &str,
     sender: tokio::sync::mpsc::Sender<HostToBridgeFrame>,
-) -> Result<(), ()> {
+) -> Result<(), HelloRejection> {
     let Message::Text(text) = message else {
-        return Err(());
+        return Err(HelloRejection::FirstFrameNotText);
     };
     if text.len() > MAX_TRANSPORT_FRAME_BYTES {
-        return Err(());
+        return Err(HelloRejection::FirstFrameTooLarge);
     }
 
-    let frame = parse_bridge_text_frame(text.as_str()).map_err(|_| ())?;
+    let frame = parse_bridge_text_frame(text.as_str())
+        .map_err(|e| HelloRejection::InvalidHello(e.to_string()))?;
     let BridgeToHostFrame::Hello {
         version,
         session_id: hello_session_id,
         root,
     } = frame
     else {
-        return Err(());
+        return Err(HelloRejection::FirstFrameNotHello);
     };
 
-    if version != TRANSPORT_PROTOCOL_VERSION || hello_session_id != session_id {
-        return Err(());
+    if version != TRANSPORT_PROTOCOL_VERSION {
+        return Err(HelloRejection::ProtocolMismatch {
+            expected: TRANSPORT_PROTOCOL_VERSION,
+            reported: version,
+        });
+    }
+
+    if hello_session_id != session_id {
+        return Err(HelloRejection::SessionIdMismatch {
+            expected: session_id,
+            reported: hello_session_id,
+        });
     }
 
     if root_key(&root) != root_key(bound_root) {
-        return Err(());
+        return Err(HelloRejection::RootMismatch);
     }
 
     backend
         .complete_hello(session_id, &root, sender)
-        .map_err(|_| ())
+        .map_err(|_| HelloRejection::SessionNotPending)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HelloRejection {
+    FirstFrameNotText,
+    FirstFrameTooLarge,
+    InvalidHello(String),
+    FirstFrameNotHello,
+    ProtocolMismatch { expected: u32, reported: u32 },
+    SessionIdMismatch { expected: Uuid, reported: Uuid },
+    RootMismatch,
+    SessionNotPending,
+}
+
+impl HelloRejection {
+    fn message(&self) -> String {
+        match self {
+            Self::FirstFrameNotText => {
+                "container transport handshake failed: first frame was not text".to_string()
+            }
+            Self::FirstFrameTooLarge => {
+                "container transport handshake failed: first frame was too large".to_string()
+            }
+            Self::InvalidHello(err) => {
+                format!("container transport handshake failed: invalid hello: {err}")
+            }
+            Self::FirstFrameNotHello => {
+                "container transport handshake failed: first frame was not hello".to_string()
+            }
+            Self::ProtocolMismatch { expected, reported } => format!(
+                "container transport protocol mismatch: host expects protocol {} but container image reported protocol {}. Rebuild or re-pull the AgentsCommander container image so it contains the current session-bridge.",
+                expected, reported
+            ),
+            Self::SessionIdMismatch { expected, reported } => format!(
+                "container transport handshake failed: hello session id {} did not match expected {}",
+                reported, expected
+            ),
+            Self::RootMismatch => {
+                "container transport handshake failed: bridge root did not match bound root"
+                    .to_string()
+            }
+            Self::SessionNotPending => {
+                "container transport handshake failed: session was not pending".to_string()
+            }
+        }
+    }
+
+    fn session_warning(&self, session_id: Uuid) -> Option<SessionWarning> {
+        match self {
+            Self::ProtocolMismatch { .. } => Some(SessionWarning::new(
+                session_id,
+                CONTAINER_TRANSPORT_PROTOCOL_KEY,
+                WARNING_KIND_PROTOCOL_MISMATCH,
+                self.message(),
+            )),
+            _ => None,
+        }
+    }
 }
 
 async fn recv_bridge_loop(
@@ -264,6 +342,12 @@ async fn handle_bridge_message(
                 return false;
             };
             if frame.version() != TRANSPORT_PROTOCOL_VERSION {
+                log::warn!(
+                    "[container-transport] closing session {} after protocol mismatch: host expects protocol {} but bridge sent protocol {}. Rebuild or re-pull the AgentsCommander container image so it contains the current session-bridge.",
+                    session_id,
+                    TRANSPORT_PROTOCOL_VERSION,
+                    frame.version()
+                );
                 return false;
             }
 
@@ -294,10 +378,80 @@ async fn handle_bridge_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pty::idle_detector::IdleDetector;
+    use crate::session::manager::SessionManager;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn uniform_transport_auth_failure_is_generic_401() {
         let response = uniform_transport_auth_failure().into_response();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn validate_hello_protocol_mismatch_names_image_remedy() {
+        let output_senders: crate::telegram::manager::OutputSenderMap =
+            Arc::new(Mutex::new(HashMap::new()));
+        let idle_detector = IdleDetector::new(|_| {}, |_| {});
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend =
+            ContainerTransportBackend::new(output_senders, idle_detector, None, session_mgr);
+        let session_id = Uuid::new_v4();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let reported_version = TRANSPORT_PROTOCOL_VERSION - 1;
+        let text = serde_json::json!({
+            "type": "hello",
+            "version": reported_version,
+            "sessionId": session_id,
+            "root": "C:/root"
+        })
+        .to_string();
+
+        let err = validate_hello(
+            Message::Text(text.into()),
+            &backend,
+            session_id,
+            "C:/root",
+            tx,
+        )
+        .await
+        .expect_err("protocol mismatch");
+
+        assert!(matches!(
+            err,
+            HelloRejection::ProtocolMismatch {
+                expected: TRANSPORT_PROTOCOL_VERSION,
+                reported
+            } if reported == reported_version
+        ));
+        assert_eq!(
+            err.message(),
+            format!(
+                "container transport protocol mismatch: host expects protocol {} but container image reported protocol {}. Rebuild or re-pull the AgentsCommander container image so it contains the current session-bridge.",
+                TRANSPORT_PROTOCOL_VERSION, reported_version
+            )
+        );
+    }
+
+    #[test]
+    fn protocol_mismatch_warning_payload_uses_session_env_warning_contract() {
+        let session_id = Uuid::nil();
+        let rejection = HelloRejection::ProtocolMismatch {
+            expected: 2,
+            reported: 1,
+        };
+
+        let warning = rejection
+            .session_warning(session_id)
+            .expect("protocol mismatch warning");
+
+        assert_eq!(warning.session_id, session_id.to_string());
+        assert_eq!(warning.key, CONTAINER_TRANSPORT_PROTOCOL_KEY);
+        assert_eq!(warning.kind, WARNING_KIND_PROTOCOL_MISMATCH);
+        assert_eq!(
+            warning.message,
+            "container transport protocol mismatch: host expects protocol 2 but container image reported protocol 1. Rebuild or re-pull the AgentsCommander container image so it contains the current session-bridge."
+        );
     }
 }
