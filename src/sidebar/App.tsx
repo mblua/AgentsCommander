@@ -36,6 +36,7 @@ import {
   onCodingAgentProfileSelectionUpdated,
   onLoopEvent,
   onProjectGroupsUpdated,
+  onProjectArchiveChanged,
   onNpmUpdateAvailable,
 } from "../shared/ipc";
 import { taskFirstLine } from "../shared/markdown";
@@ -57,8 +58,10 @@ import ProjectPanel from "./components/ProjectPanel";
 import WorkgroupGroupRail from "./components/WorkgroupGroupRail";
 import OnboardingModal from "./components/OnboardingModal";
 import ContextTemplateUpdateModal from "./components/ContextTemplateUpdateModal";
+import AutoUnarchiveModal from "./components/AutoUnarchiveModal";
 import ToastHost from "../shared/components/ToastHost";
 import { toastStore } from "../shared/stores/toasts";
+import { autoUnarchiveStore } from "./stores/auto-unarchive";
 import { handleProjectRefreshRequested } from "./project-refresh-handler";
 import { loopToastFromEvent, type LoopToast } from "./loop-event-toast";
 import { createUpdateToaster } from "./update-toast";
@@ -354,6 +357,16 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       })
     );
     unlisteners.push(
+      await onProjectArchiveChanged((data) => {
+        void projectStore.applyArchiveChange(data).catch((error) => {
+          console.error("[archive] Failed to apply project_archive_changed:", error);
+        });
+        if (data.reason === "autoUnarchive") {
+          autoUnarchiveStore.push(data);
+        }
+      })
+    );
+    unlisteners.push(
       await onCodingAgentProfilesUpdated(() => {
         settingsStore.refresh();
         void refreshProfileOutdated();
@@ -472,6 +485,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     await projectStore.initFromSettings(
       appSettings.projectPaths ?? [],
       appSettings.projectPath ?? null,
+      appSettings.archivedProjectPaths ?? [],
     );
 
     // Load all repos for inactive agent display
@@ -688,6 +702,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
           />
         )}
       </Show>
+      <AutoUnarchiveModal />
       <ToastHost />
     </>
   );

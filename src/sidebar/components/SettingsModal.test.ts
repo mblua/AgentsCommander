@@ -79,6 +79,7 @@ function settings(overrides: Partial<AppSettings>): AppSettings {
     autoSelfClearByAgent: {},
     logLevel: null,
     ...overrides,
+    archivedProjectPaths: overrides.archivedProjectPaths ?? [],
   };
 }
 

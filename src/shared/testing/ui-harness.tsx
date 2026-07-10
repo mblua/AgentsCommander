@@ -141,6 +141,7 @@ export function baseSettings(overrides: Partial<AppSettings> = {}): AppSettings 
     apiServerBind: "127.0.0.1",
     projectPath: null,
     projectPaths: [],
+    archivedProjectPaths: [],
     sidebarStyle: "noir-minimal",
     onboardingDismissed: true,
     coordSortByActivity: false,

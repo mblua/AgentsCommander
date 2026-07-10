@@ -6,6 +6,7 @@ import type {
   AcTeam,
   AcLoopSummary,
   ContextTemplateUpdate,
+  ProjectArchiveChanged,
 } from "../../shared/types";
 import { ProjectAPI, AgentCreatorAPI } from "../../shared/ipc";
 import {
@@ -29,6 +30,9 @@ export interface ProjectState {
 }
 
 const [projects, setProjects] = createSignal<ProjectState[]>([]);
+// #881: archived projects leave `projects`, but their persisted sessions must
+// stay suppressed from the generic session list until an unarchive/open event.
+const [archivedPaths, setArchivedPaths] = createSignal<string[]>([]);
 const [loading, setLoading] = createSignal(false);
 const [lastLoadError, setLastLoadError] = createSignal<string | null>(null);
 const [initState, setInitState] = createSignal<{ attempted: boolean; pathCount: number }>({
@@ -107,6 +111,10 @@ export const projectStore = {
     return projects()[0] ?? null;
   },
 
+  get archivedPaths() {
+    return archivedPaths();
+  },
+
   get isLoading() {
     return loading();
   },
@@ -164,7 +172,12 @@ export const projectStore = {
   },
 
   /** Initialize from saved settings (call on mount) */
-  async initFromSettings(projectPaths: string[], legacyPath: string | null) {
+  async initFromSettings(
+    projectPaths: string[],
+    legacyPath: string | null,
+    archivedProjectPaths: string[] = []
+  ) {
+    setArchivedPaths(archivedProjectPaths);
     // Merge legacy single path into the array (deduplicated)
     const paths = [...projectPaths];
     if (legacyPath && !paths.some((p) => normalizePath(p) === normalizePath(legacyPath))) {
@@ -348,6 +361,7 @@ export const projectStore = {
     const removed = projects().find((p) => normalizePath(p.path) === normalized);
     batch(() => {
       setProjects((prev) => prev.filter((p) => normalizePath(p.path) !== normalized));
+      setArchivedPaths((prev) => prev.filter((p) => normalizePath(p) !== normalized));
       // #748 — drop the removed project's live overrides so a later re-add
       // starts from its fresh discovery snapshot, not a stale live layer.
       if (removed) {
@@ -359,6 +373,70 @@ export const projectStore = {
     // Design S (it preserves the on-disk project_paths so it can't clobber
     // CLI-registered projects), so removal must go through remove_project.
     await ProjectAPI.remove(path);
+  },
+
+  /** #881 - hide a project. The backend call runs first and its rejection
+   *  propagates so a blocked archive leaves the project visible. */
+  async archiveProject(path: string) {
+    await ProjectAPI.archive(path);
+    const normalized = normalizePath(path);
+    const archived = projects().find((p) => normalizePath(p.path) === normalized);
+    batch(() => {
+      setProjects((prev) => prev.filter((p) => normalizePath(p.path) !== normalized));
+      setArchivedPaths((prev) =>
+        prev.some((p) => normalizePath(p) === normalized) ? prev : [...prev, path]
+      );
+      if (archived) {
+        replicaVolatileStore.clearForPaths(workgroupReplicaPaths(archived));
+      }
+    });
+  },
+
+  /** #881 - restore an archived project and load its discovery data. */
+  async unarchiveProject(path: string) {
+    const reg = await ProjectAPI.unarchive(path);
+    const result = await ProjectAPI.discover(reg.path);
+    const normalized = normalizePath(reg.path);
+    batch(() => {
+      setArchivedPaths((prev) => prev.filter((p) => normalizePath(p) !== normalized));
+      appendDiscoveredProject(reg.path, result);
+    });
+  },
+
+  /** #881 - reconcile cross-window/browser archive events. Idempotent because
+   *  initiating windows receive their own backend event echoes. */
+  async applyArchiveChange(event: ProjectArchiveChanged) {
+    const key = normalizePath(event.path);
+    if (event.archived) {
+      const archived = projects().find((p) => normalizePath(p.path) === key);
+      batch(() => {
+        setProjects((prev) => prev.filter((p) => normalizePath(p.path) !== key));
+        setArchivedPaths((prev) =>
+          prev.some((p) => normalizePath(p) === key) ? prev : [...prev, event.path]
+        );
+        if (archived) {
+          replicaVolatileStore.clearForPaths(workgroupReplicaPaths(archived));
+        }
+      });
+      return;
+    }
+
+    if (event.reason === "remove") {
+      const removed = projects().find((p) => normalizePath(p.path) === key);
+      batch(() => {
+        setProjects((prev) => prev.filter((p) => normalizePath(p.path) !== key));
+        setArchivedPaths((prev) => prev.filter((p) => normalizePath(p) !== key));
+        if (removed) {
+          replicaVolatileStore.clearForPaths(workgroupReplicaPaths(removed));
+        }
+      });
+      return;
+    }
+
+    setArchivedPaths((prev) => prev.filter((p) => normalizePath(p) !== key));
+    if (projects().some((p) => normalizePath(p.path) === key)) return;
+    const result = await ProjectAPI.discover(event.path);
+    appendDiscoveredProject(event.path, result);
   },
 
   /** #695 — drop exactly one resolved pending context-template update. The key
@@ -396,6 +474,7 @@ export const projectStore = {
 
   clear() {
     setProjects([]);
+    setArchivedPaths([]);
     loadingCount = 0;
     setLoading(false);
     setLastLoadError(null);

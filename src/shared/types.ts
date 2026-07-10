@@ -448,6 +448,9 @@ export interface AppSettings {
   apiServerBind: string;
   projectPath: string | null;
   projectPaths: string[];
+  /** #881 - projects hidden from the sidebar. Disk-authoritative: the backend
+   *  preserve-writer discards whatever this field carries on a whole-object save. */
+  archivedProjectPaths: string[];
   sidebarStyle: string;
   onboardingDismissed: boolean;
   coordSortByActivity: boolean;
@@ -1181,6 +1184,33 @@ export interface ProjectRegistration {
   registered: boolean;
   /** True when this call created .ac/ on disk (always false for openProject). */
   created: boolean;
+}
+
+/** Mirrors src-tauri/src/config/projects.rs::ArchivedProject (#881). */
+export interface ArchivedProject {
+  path: string;
+  folderName: string;
+  /** The directory still exists on disk. */
+  exists: boolean;
+  /** The directory still has a `.ac/` Project AC Root. */
+  hasWorkspace: boolean;
+}
+
+export type ArchiveChangeReason =
+  | "archive"
+  | "unarchive"
+  | "autoUnarchive"
+  | "open"
+  | "remove";
+
+/** Mirrors src-tauri/src/commands/ac_discovery.rs::ProjectArchiveChanged (#881). */
+export interface ProjectArchiveChanged {
+  path: string;
+  folderName: string;
+  archived: boolean;
+  reason: ArchiveChangeReason;
+  /** Only for reason === "autoUnarchive". */
+  sessionName?: string;
 }
 
 // ---------------------------------------------------------------------------
