@@ -119,6 +119,24 @@ impl IdleTuning {
     };
 }
 
+/// #930 - per-coding-agent host credential source for container copy-in.
+/// Static data only (all `&'static str`), so it is usable in the `const`
+/// profile table and carries no host-specific paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContainerCredentialSource {
+    /// Default host config dir, relative to the user's home dir, e.g. ".claude".
+    pub host_dir: &'static str,
+    /// Optional env var whose value (an absolute path) overrides `host_dir` on
+    /// the host, e.g. "CLAUDE_CONFIG_DIR" for Claude. Only the AgentsCommander
+    /// process environment is consulted (NOT wrapper-script parsing).
+    pub host_dir_env: Option<&'static str>,
+    /// Credential filename within the config dir, e.g. ".credentials.json".
+    pub file: &'static str,
+    /// Container-side config dir relative to the bind-mount root (`host_root`),
+    /// e.g. ".claude". Where the file is copied so the container reads it.
+    pub container_dir: &'static str,
+}
+
 /// All behavior that varies per coding agent. Plain `Copy` data (see §2 D1).
 #[derive(Debug, Clone, Copy)]
 pub struct CodingAgentProfile {
@@ -134,6 +152,9 @@ pub struct CodingAgentProfile {
     ///   `--resume=latest` form is handled by the Gemini stripper as a
     ///   recognised variant)
     pub resume_tokens: &'static [&'static str],
+    /// #930 - host credential file this agent reuses in a container (None = no
+    /// copy-in for this agent).
+    pub container_credential: Option<ContainerCredentialSource>,
 }
 
 // All three agents currently use `IdleTuning::DEFAULT` — identical to the
@@ -144,16 +165,31 @@ const CLAUDE_PROFILE: CodingAgentProfile = CodingAgentProfile {
     kind: CodingAgentKind::Claude,
     idle: IdleTuning::DEFAULT,
     resume_tokens: &["--continue"],
+    // #930 - verified end-to-end: host ~/.claude/.credentials.json copies to
+    // <replica>/.claude/.credentials.json, read in-container as
+    // /workspace/.claude/.credentials.json.
+    container_credential: Some(ContainerCredentialSource {
+        host_dir: ".claude",
+        host_dir_env: Some("CLAUDE_CONFIG_DIR"),
+        file: ".credentials.json",
+        container_dir: ".claude",
+    }),
 };
 const CODEX_PROFILE: CodingAgentProfile = CodingAgentProfile {
     kind: CodingAgentKind::Codex,
     idle: IdleTuning::DEFAULT,
     resume_tokens: &["resume", "--last"],
+    // #930 follow-up (needs CODEX_HOME container wiring verified, Q3):
+    // Some(ContainerCredentialSource { host_dir: ".codex", host_dir_env: Some("CODEX_HOME"),
+    //     file: "auth.json", container_dir: ".codex" })
+    container_credential: None,
 };
 const GEMINI_PROFILE: CodingAgentProfile = CodingAgentProfile {
     kind: CodingAgentKind::Gemini,
     idle: IdleTuning::DEFAULT,
     resume_tokens: &["--resume", "latest"],
+    // #930 - no established container credential-file flow for Gemini.
+    container_credential: None,
 };
 
 /// Idle-detector tuning for a session, given its (optional) agent kind.

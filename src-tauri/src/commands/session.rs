@@ -1490,6 +1490,28 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         .as_ref()
         .map(|context| context.host_root.clone())
         .unwrap_or_else(|| cwd.clone());
+    // #930 - resolve the host-credential copy-in plan for container coding agents.
+    // Gated by the global setting (default on) and the per-agent profile
+    // descriptor; None when off, non-container, unrecognized agent, or the host
+    // file is absent.
+    let container_credential = if session.backend_kind == SessionBackendKind::ContainerTransport {
+        let copy_enabled = app
+            .state::<SettingsState>()
+            .read()
+            .await
+            .container_credentials_from_host;
+        if copy_enabled {
+            agent_kind
+                .and_then(|k| k.profile().container_credential)
+                .and_then(|src| {
+                    crate::pty::container_credentials::resolve_plan(&src, &spawn_cwd)
+                })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let spawn_spec = BackendSpawnSpec {
         id,
         cmd: shell.clone(),
@@ -1513,6 +1535,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         output_target: PtyOutputTarget::from_app_handle(app.clone()),
         resource_registration,
         logical_resource_slot,
+        container_credential,
     };
     let spawn_result = PtyManager::spawn(pty_mgr, session.backend_kind, spawn_spec).await;
     if let Err(e) = spawn_result {

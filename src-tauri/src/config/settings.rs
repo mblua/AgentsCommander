@@ -505,6 +505,12 @@ pub struct AppSettings {
     /// while the global master is on; absent = use the class default.
     #[serde(default)]
     pub auto_self_clear_by_agent: std::collections::BTreeMap<String, bool>,
+    /// #930 - when true (default), container coding-agent sessions copy the host
+    /// user's credential file for that agent into the replica config dir at spawn
+    /// and delete it on teardown. When false, the user supplies credentials
+    /// themselves (e.g. a CLAUDE_CODE_OAUTH_TOKEN env row).
+    #[serde(default = "default_true")]
+    pub container_credentials_from_host: bool,
 }
 
 fn default_true() -> bool {
@@ -729,6 +735,7 @@ impl Default for AppSettings {
             npm_update_notifications_enabled: true,
             auto_self_clear_enabled: true,
             auto_self_clear_by_agent: std::collections::BTreeMap::new(),
+            container_credentials_from_host: true,
         }
     }
 }

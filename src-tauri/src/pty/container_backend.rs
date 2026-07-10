@@ -118,6 +118,9 @@ struct PendingSession {
     api_client_id: Option<String>,
     logical_resource_slot: Option<ResourceLogicalAgentSlot>,
     attach_notify: Option<Arc<Notify>>,
+    // #930 - dest of a copied host credential, threaded so every teardown funnel
+    // can delete it. None when copy-in was not applicable.
+    container_credential_path: Option<PathBuf>,
 }
 
 struct AttachingSession {
@@ -130,6 +133,7 @@ struct AttachingSession {
     api_client_id: Option<String>,
     logical_resource_slot: Option<ResourceLogicalAgentSlot>,
     attach_notify: Option<Arc<Notify>>,
+    container_credential_path: Option<PathBuf>,
 }
 
 struct ActiveSession {
@@ -140,6 +144,7 @@ struct ActiveSession {
     runtime_handle: Option<ContainerRuntimeHandle>,
     api_client_id: Option<String>,
     logical_resource_slot: Option<ResourceLogicalAgentSlot>,
+    container_credential_path: Option<PathBuf>,
 }
 
 enum ContainerSessionState {
@@ -152,6 +157,7 @@ struct RemovedSessionResources {
     runtime_handle: Option<ContainerRuntimeHandle>,
     api_client_id: Option<String>,
     logical_resource_slot: Option<ResourceLogicalAgentSlot>,
+    container_credential_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -281,6 +287,7 @@ impl ContainerTransportBackend {
             api_client_id: pending.api_client_id,
             logical_resource_slot: pending.logical_resource_slot,
             attach_notify: pending.attach_notify,
+            container_credential_path: pending.container_credential_path,
         };
         sessions.insert(session_id, ContainerSessionState::Attaching(attaching));
         Ok(())
@@ -326,6 +333,7 @@ impl ContainerTransportBackend {
                     runtime_handle: attach.runtime_handle,
                     api_client_id: attach.api_client_id,
                     logical_resource_slot: attach.logical_resource_slot,
+                    container_credential_path: attach.container_credential_path,
                 }),
             );
             if let Some(notify) = attach_notify {
@@ -480,6 +488,7 @@ impl ContainerTransportBackend {
         output_target: PtyOutputTarget,
         logical_resource_slot: Option<ResourceLogicalAgentSlot>,
         attach_notify: Option<Arc<Notify>>,
+        container_credential_path: Option<PathBuf>,
     ) -> Result<String, AppError> {
         let ticket = format!("acst-{}-{}", Uuid::new_v4(), Uuid::new_v4());
         let ticket_hash = crate::api::auth::hash_token(&ticket);
@@ -495,6 +504,7 @@ impl ContainerTransportBackend {
             api_client_id: None,
             logical_resource_slot,
             attach_notify,
+            container_credential_path,
         };
 
         let mut sessions = self.sessions.lock().unwrap();
@@ -576,6 +586,7 @@ impl ContainerTransportBackend {
             output_target,
             resource_registration: _,
             logical_resource_slot,
+            container_credential,
         } = spec;
 
         let attach_notify = Arc::new(Notify::new());
@@ -588,7 +599,22 @@ impl ContainerTransportBackend {
             output_target,
             logical_resource_slot,
             Some(attach_notify.clone()),
+            container_credential.as_ref().map(|p| p.dest.clone()),
         )?;
+
+        if let Some(plan) = container_credential.as_ref() {
+            if let Err(e) = crate::pty::container_credentials::copy_in(plan) {
+                // Best-effort, mirror config-seed: never abort the spawn.
+                log::warn!("[container-cred] copy-in failed for session {}: {}", id, e);
+            }
+            // F1 - if a concurrent teardown removed the session while we were
+            // copying, its remove_copied ran before the file existed (no-op). The
+            // shared std::Mutex serializes this check against teardown, so all
+            // interleavings converge on a deleted file.
+            if !self.sessions.lock().unwrap().contains_key(&id) {
+                crate::pty::container_credentials::remove_copied(&plan.dest);
+            }
+        }
 
         let token = match token_manager.mint_for_session(id, &cwd) {
             Ok(token) => token,
@@ -659,6 +685,10 @@ impl ContainerTransportBackend {
                 runtime_handle: Some(handle),
                 api_client_id: Some(token.client_id),
                 logical_resource_slot: None,
+                // F3 - the session was already removed from the map before this
+                // branch, so its credential deletion was initiated on that path;
+                // remove_copied idempotency makes a missed second delete a no-op.
+                container_credential_path: None,
             };
             self.cleanup_removed_resources_offloaded(resources, "install-runtime-failure")
                 .await;
@@ -735,6 +765,11 @@ impl ContainerTransportBackend {
         resources: RemovedSessionResources,
         reason: &'static str,
     ) {
+        // #930 - delete the copied credential FIRST so the secret is gone even if
+        // a later revoke/stop errors.
+        if let Some(path) = resources.container_credential_path.as_deref() {
+            crate::pty::container_credentials::remove_copied(path);
+        }
         if let (Some(manager), Some(client_id)) =
             (self.token_manager.clone(), resources.api_client_id.clone())
         {
@@ -756,6 +791,9 @@ impl ContainerTransportBackend {
     }
 
     fn cleanup_removed_resources_blocking(&self, resources: RemovedSessionResources) {
+        if let Some(path) = resources.container_credential_path.as_deref() {
+            crate::pty::container_credentials::remove_copied(path);
+        }
         if let (Some(manager), Some(client_id)) =
             (self.token_manager.clone(), resources.api_client_id.clone())
         {
@@ -937,6 +975,9 @@ fn cleanup_removed_resources_inner(
     resources: RemovedSessionResources,
     reason: &'static str,
 ) {
+    if let Some(path) = resources.container_credential_path.as_deref() {
+        crate::pty::container_credentials::remove_copied(path);
+    }
     if let (Some(manager), Some(client_id)) = (token_manager, resources.api_client_id.clone()) {
         manager.revoke(&client_id);
     }
@@ -981,6 +1022,7 @@ impl PtyBackend for ContainerTransportBackend {
                     idle_tuning,
                     output_target,
                     logical_resource_slot,
+                    None,
                     None,
                 )?;
                 Ok(())
@@ -1077,16 +1119,19 @@ fn resources_from_state(state: ContainerSessionState) -> RemovedSessionResources
             runtime_handle: pending.runtime_handle,
             api_client_id: pending.api_client_id,
             logical_resource_slot: pending.logical_resource_slot,
+            container_credential_path: pending.container_credential_path,
         },
         ContainerSessionState::Attaching(attaching) => RemovedSessionResources {
             runtime_handle: attaching.runtime_handle,
             api_client_id: attaching.api_client_id,
             logical_resource_slot: attaching.logical_resource_slot,
+            container_credential_path: attaching.container_credential_path,
         },
         ContainerSessionState::Active(active) => RemovedSessionResources {
             runtime_handle: active.runtime_handle,
             api_client_id: active.api_client_id,
             logical_resource_slot: active.logical_resource_slot,
+            container_credential_path: active.container_credential_path,
         },
     }
 }
@@ -1358,6 +1403,7 @@ mod tests {
             output_target,
             resource_registration: None,
             logical_resource_slot: None,
+            container_credential: None,
         }
     }
 
@@ -1463,6 +1509,7 @@ mod tests {
                 }),
                 api_client_id: Some(token.client_id.clone()),
                 logical_resource_slot: None,
+                container_credential_path: None,
             }),
         );
 
