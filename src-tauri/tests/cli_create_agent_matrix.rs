@@ -742,58 +742,6 @@ fn create_agent_matrix_from_cached_agency_template_seeds_role_without_skills() {
 }
 
 #[test]
-fn create_agent_matrix_honors_settings_flags() {
-    let tmp = Tmp::new("cli-create-agent-matrix-settings");
-    let bin = copy_binary_into(tmp.path());
-    let config_dir = config_dir_for_bin(&bin);
-    let project = project_with_workspace(tmp.path());
-    write_settings(
-        &config_dir,
-        serde_json::json!({
-            "defaultShell": "powershell.exe",
-            "defaultShellArgs": [],
-            "agents": [{
-                "id": "claude",
-                "label": "Claude",
-                "command": "claude",
-                "color": "#ffffff"
-            }],
-            "injectRtkHook": true,
-            "projectPaths": [tmp.path().to_string_lossy().to_string()]
-        }),
-    );
-
-    let out = Command::new(&bin)
-        .args([
-            "create-agent-matrix",
-            "--project",
-            "ProjectAlpha",
-            "--name",
-            "Architect",
-            "--description",
-            "Build plans",
-        ])
-        .output()
-        .expect("spawn binary");
-
-    assert!(
-        out.status.success(),
-        "exit {:?}\nstdout: {}\nstderr: {}",
-        out.status.code(),
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let settings_path = project
-        .join(".ac")
-        .join("_agent_architect")
-        .join(".claude")
-        .join("settings.local.json");
-    let settings = std::fs::read_to_string(settings_path).expect("read settings.local.json");
-    assert!(settings.contains("PreToolUse"));
-}
-
-#[test]
 fn create_agent_matrix_launch_writes_session_request() {
     let tmp = Tmp::new("cli-create-agent-matrix-launch");
     let bin = copy_binary_into(tmp.path());

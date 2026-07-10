@@ -50,17 +50,6 @@ pub enum ConfigSeedTier {
     CatalogDefault,
 }
 
-/// After a successful seed of `.claude`, re-stamp the AC-managed
-/// `.claude/settings.local.json` (M1). Presence ALSO signals "hold the sweep
-/// lock around the seed + re-apply" (M2). `None` for any non-`.claude` dest,
-/// because `ensure_rtk_pretool_hook` hardcodes the `.claude` subdir (the
-/// `.claude-amp` limitation is documented in the plan §8.2, follow-up F4).
-#[derive(Debug, Clone)]
-pub struct ClaudeSettingsReapply {
-    /// Global `inject_rtk_hook` toggle, sampled at build time.
-    pub inject_rtk_hook: bool,
-}
-
 #[derive(Debug, Clone)]
 pub struct ResolvedConfigSeed {
     /// Candidate source folders, highest precedence first: workspace profile,
@@ -74,8 +63,6 @@ pub struct ResolvedConfigSeed {
     /// Heuristic, log-only warning about a dest vs config-dir-env mismatch
     /// (computed at build time; emitted once at execution).
     pub config_dir_warning: Option<String>,
-    /// Set only when dest is `.claude` (drives the M1 re-apply + M2 lock).
-    pub claude_settings_reapply: Option<ClaudeSettingsReapply>,
 }
 
 /// Outcome of [`perform_config_seed`]. Returned for testing and to gate the
@@ -148,7 +135,6 @@ pub fn resolve_config_seed(
         dest: context.replica_root.join(dest_name),
         context: context.clone(),
         config_dir_warning: None,
-        claude_settings_reapply: None,
     })
 }
 
@@ -264,7 +250,7 @@ fn segments_eq(a: &str, b: &str) -> bool {
 /// same replica, because step 2 sweeps ALL `<dest>.acseed-*` scratch by prefix
 /// (see [`clear_stale_seed_scratch`]) and would otherwise delete a concurrent
 /// spawn's in-flight temp/trash mid-swap. The only caller, the session spawn
-/// chokepoint, holds `RtkSweepLockState` across this call for all dests.
+/// chokepoint, holds `ConfigSeedLockState` across this call for all dests.
 pub fn perform_config_seed(seed: &ResolvedConfigSeed, unique_sfx: &str) -> ConfigSeedReport {
     // 1. Pick the winning tier by source-folder presence (highest precedence first).
     //    The four legacy tiers are unchanged (readable dir wins and overwrites).
@@ -847,7 +833,7 @@ mod tests {
     /// a DIFFERENT session id. The prefix-sweep deletes BOTH of A's in-flight
     /// dirs, after which A can neither install (temp gone) nor restore (trash
     /// gone) -> config lost. This is the data-loss the session chokepoint's
-    /// RtkSweepLockState serialization (held across the seed for ALL dests)
+    /// ConfigSeedLockState serialization (held across the seed for ALL dests)
     /// prevents; a regression that drops or narrows that lock re-opens it.
     #[test]
     fn unserialized_prefix_sweep_would_destroy_a_concurrent_inflight_swap() {

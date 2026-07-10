@@ -9,7 +9,7 @@ use crate::commands::entity_creation::{
     agent_ref_bare_name, create_new_team_config_on_disk, create_or_update_replica_on_disk,
     normalize_team_config_for_project, parse_team_from_workgroup_name, read_team_config,
     remove_replica_dir, resolve_agent_ref, sanitize_name, validate_existing_name,
-    write_team_config, AgentMatrixSettingsFlags, ReplicaDiskCreateArgs, RepoAssignment,
+    write_team_config, ReplicaDiskCreateArgs, RepoAssignment,
 };
 
 #[derive(Args)]
@@ -238,13 +238,11 @@ fn add_member(args: TeamAddMemberArgs) -> Result<(), String> {
     }
     write_team_config(&workspace_dir, &team, &config)?;
 
-    let settings = crate::config::settings::load_settings_for_cli();
     let replica_dir = create_or_update_replica_on_disk(ReplicaDiskCreateArgs {
         workspace_dir: workspace_dir.clone(),
         wg_dir: wg_dir.clone(),
         agent_path: agent_ref.clone(),
         team_repos: config.repos.clone(),
-        settings_flags: AgentMatrixSettingsFlags::from_settings(&settings),
     })?;
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|e| format!("Failed to create async runtime: {}", e))?;

@@ -355,9 +355,8 @@ Behaviour:
 
 1. Resolves `--project` to a registered project path (paths are rejected).
 2. Creates `<project>/.ac/_agent_<id>/` with the matrix layout (`memory/`, `plans/`, `skills/`, `inbox/`, `outbox/`) and writes `Role.md`. A picked role template's body becomes a `## Role Profile` section, and its `skills/` are copied in.
-3. Applies the RTK `PreToolUse` hook when the global `injectRtkHook` setting is on.
-4. Requests a sidebar refresh in the running AC app.
-5. If `--launch` is set, writes a session request the running AC app picks up within ~3s.
+3. Requests a sidebar refresh in the running AC app.
+4. If `--launch` is set, writes a session request the running AC app picks up within ~3s.
 
 Output (stdout, JSON): `{ agentPath, agentName, rolePath, launched, launchAgent }`.
 

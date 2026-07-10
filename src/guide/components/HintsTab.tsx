@@ -40,14 +40,6 @@ const sections: HintSection[] = [
         },
       },
       {
-        title: "RTK - Token Optimizer",
-        body: "CLI proxy that compresses command outputs to reduce token consumption. Prefix any command with rtk and it transparently compresses verbose outputs (git, cargo, npm, etc.) while passing through unchanged when no filter applies. Always safe to use.",
-        link: {
-          label: "rtk-ai.app",
-          url: "https://www.rtk-ai.app/",
-        },
-      },
-      {
         title: "Exclude global CLAUDE.md (Windows)",
         body: "By default, Claude Code loads ~/.claude/CLAUDE.md into every conversation. To prevent this, add the following to your settings.json or settings.local.json:\n\n{\n  \"claudeMdExcludes\": [\n    \"C:/Users/<your user name>/.claude/CLAUDE.md\"\n  ]\n}",
       },

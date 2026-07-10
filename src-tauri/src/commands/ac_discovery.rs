@@ -1959,9 +1959,9 @@ pub async fn set_replica_context_files(path: String, files: Vec<String>) -> Resu
 /// `src/sidebar/components/ActionBar.tsx:78-94` but performs the dedup +
 /// persist atomically against `SettingsState`.
 ///
-/// Holds the SettingsState write lock through `save_settings` — same pattern
-/// as `set_inject_rtk_hook` (`src-tauri/src/commands/config.rs:184-194`) — so
-/// concurrent `update_settings` calls cannot race.
+/// Holds the SettingsState write lock through `save_settings` (the same
+/// pattern as the narrow setters in `commands/config.rs`), so concurrent
+/// `update_settings` calls cannot race.
 pub(crate) async fn open_project_inner(
     settings: &SettingsState,
     path: &str,

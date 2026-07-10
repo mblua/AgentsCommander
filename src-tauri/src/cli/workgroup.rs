@@ -8,7 +8,7 @@ use crate::cli::create_agent_matrix::{write_project_refresh_request, ProjectRefr
 use crate::commands::entity_creation::{
     check_workgroup_repos_dirty, clone_missing_repos_for_workgroup, create_workgroup_on_disk,
     list_workgroup_dirs, read_team_config, resolve_agent_ref, sanitize_name,
-    validate_delete_root_not_link_or_reparse, validate_existing_name, AgentMatrixSettingsFlags,
+    validate_delete_root_not_link_or_reparse, validate_existing_name,
     RepoAssignment, TeamConfigResult, WgDeleteOutcome, WorkgroupDiskCreateArgs,
 };
 use crate::config::projects::resolve_project_reference;
@@ -209,7 +209,6 @@ fn add(args: WorkgroupAddArgs) -> Result<(), String> {
             safe_team
         ));
     };
-    let settings = crate::config::settings::load_settings_for_cli();
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|e| format!("Failed to create async runtime: {}", e))?;
     let (coordinator, agents, repos) = if let Some(config) = provisioning_config {
@@ -228,7 +227,6 @@ fn add(args: WorkgroupAddArgs) -> Result<(), String> {
         coordinator,
         agents,
         repos,
-        settings_flags: AgentMatrixSettingsFlags::from_settings(&settings),
     }))?;
     let changed_path = PathBuf::from(&result.path);
     write_refresh(

@@ -97,7 +97,6 @@ pub(crate) struct WorkgroupDiskCreateArgs {
     pub coordinator: Option<String>,
     pub agents: Vec<String>,
     pub repos: Vec<RepoAssignment>,
-    pub settings_flags: AgentMatrixSettingsFlags,
 }
 
 #[derive(Debug, Clone)]
@@ -106,7 +105,6 @@ pub(crate) struct ReplicaDiskCreateArgs {
     pub wg_dir: PathBuf,
     pub agent_path: String,
     pub team_repos: Vec<RepoAssignment>,
-    pub settings_flags: AgentMatrixSettingsFlags,
 }
 
 // ---------------------------------------------------------------------------
@@ -390,19 +388,6 @@ fn build_role_content(
     )
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct AgentMatrixSettingsFlags {
-    pub inject_rtk_hook: bool,
-}
-
-impl AgentMatrixSettingsFlags {
-    pub(crate) fn from_settings(settings: &AppSettings) -> Self {
-        Self {
-            inject_rtk_hook: settings.inject_rtk_hook,
-        }
-    }
-}
-
 pub(crate) struct CreateAgentMatrixDiskArgs<'a> {
     pub project_path: &'a str,
     pub name: &'a str,
@@ -555,27 +540,6 @@ pub(crate) fn create_agent_matrix_from_role(
         safe_name: args.safe_name.to_string(),
         role_path,
     })
-}
-
-pub(crate) fn apply_agent_matrix_settings_files(
-    agent_dir: &Path,
-    flags: AgentMatrixSettingsFlags,
-) -> Vec<String> {
-    let mut warnings = Vec::new();
-
-    if let Err(e) =
-        crate::config::claude_settings::ensure_rtk_pretool_hook(agent_dir, flags.inject_rtk_hook)
-    {
-        let warning = format!(
-            "Failed to apply rtk hook for matrix {}: {}",
-            agent_dir.display(),
-            e
-        );
-        log::warn!("[entity_creation] {}", warning);
-        warnings.push(warning);
-    }
-
-    warnings
 }
 
 fn default_agent_matrix_config() -> serde_json::Value {
@@ -839,7 +803,6 @@ pub(crate) async fn create_workgroup_on_disk(
             wg_dir: wg_dir.clone(),
             agent_path: agent_path.clone(),
             team_repos: team_config.repos.clone(),
-            settings_flags: args.settings_flags,
         })?;
     }
 
@@ -868,17 +831,6 @@ pub(crate) fn create_or_update_replica_on_disk(
         "replica_dir" => format!("Failed to create replica dir for {}: {}", agent_name, e),
         _ => format!("Failed to create {} for {}: {}", sub, agent_name, e),
     })?;
-
-    if let Err(e) = crate::config::claude_settings::ensure_rtk_pretool_hook(
-        &replica_dir,
-        args.settings_flags.inject_rtk_hook,
-    ) {
-        log::warn!(
-            "[entity_creation] Failed to apply rtk hook for replica {}: {}",
-            replica_dir.display(),
-            e
-        );
-    }
 
     let assigned_repos: Vec<String> = args
         .team_repos
@@ -977,14 +929,12 @@ fn validate_task_title(task_title: &str) -> Result<(), String> {
 #[tauri::command]
 pub async fn create_agent_matrix(
     settings: State<'_, SettingsState>,
-    sweep_lock: State<'_, crate::RtkSweepLockState>,
     project_path: String,
     name: String,
     description: String,
     role_template_id: Option<String>,
 ) -> Result<CreatedEntityResult, String> {
     let settings_snapshot = settings.read().await.clone();
-    let flags = AgentMatrixSettingsFlags::from_settings(&settings_snapshot);
     let config_dir = crate::config::config_dir();
 
     let created = create_agent_matrix_on_disk(CreateAgentMatrixDiskArgs {
@@ -995,11 +945,6 @@ pub async fn create_agent_matrix(
         settings: &settings_snapshot,
         config_dir: config_dir.as_deref(),
     })?;
-
-    {
-        let _guard = sweep_lock.lock().await;
-        let _warnings = apply_agent_matrix_settings_files(&created.agent_dir, flags);
-    }
 
     let result_path =
         crate::path_utils::path_to_string_without_windows_verbatim_prefix(&created.agent_dir);
@@ -1750,8 +1695,6 @@ pub async fn create_team(
 pub async fn create_workgroup(
     app: AppHandle,
     session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
-    settings: State<'_, SettingsState>,
-    sweep_lock: State<'_, crate::RtkSweepLockState>,
     project_path: String,
     team_name: String,
     task_title: String,
@@ -1812,15 +1755,6 @@ pub async fn create_workgroup(
         }
     }
 
-    // Issue #120 - snapshot `inject_rtk_hook` ONCE before the loop. Deliberate:
-    // all replicas in this workgroup creation must use the same value. Mid-loop
-    // toggles via update_settings are intentionally ignored; a half-applied
-    // workgroup would be worse than a stale snapshot.
-    let inject_rtk_hook = {
-        let s = settings.read().await;
-        s.inject_rtk_hook
-    };
-
     // Create __agent_*/ replica dirs
     for agent_path in &team_agents {
         let agent_ref = resolve_agent_ref(&base, agent_path)?;
@@ -1833,23 +1767,6 @@ pub async fn create_workgroup(
             "replica_dir" => format!("Failed to create replica dir for {}: {}", agent_name, e),
             _ => format!("Failed to create {} for {}: {}", sub, agent_name, e),
         })?;
-
-        // Issue #120 - apply the rtk hook based on the global toggle. Per-replica
-        // RtkSweepLock guard keeps the critical section short while still
-        // serializing per-file work against any concurrent sweep.
-        {
-            let _guard = sweep_lock.lock().await;
-            if let Err(e) = crate::config::claude_settings::ensure_rtk_pretool_hook(
-                &replica_dir,
-                inject_rtk_hook,
-            ) {
-                log::warn!(
-                    "[entity_creation] Failed to apply rtk hook for replica {}: {}",
-                    replica_dir.display(),
-                    e
-                );
-            }
-        }
 
         // Determine repos assigned to this agent (match by _agent_ name)
         let assigned_repos: Vec<String> = team_repos
@@ -2626,8 +2543,8 @@ pub(crate) enum WgDeleteOutcome {
 ///
 /// Suffix scheme: `.deleting-<wg_name>-<uuid>` — leading `.` keeps any orphan
 /// (rare race: rename succeeds but remove_dir_all fails) invisible to the
-/// `starts_with("wg-")` filters in `ac_discovery`, `cli::list_peers`, and
-/// `claude_settings`, so an orphan won't surface as a ghost workgroup. UUID is
+/// `starts_with("wg-")` filters in `ac_discovery` and `cli::list_peers`, so an
+/// orphan won't surface as a ghost workgroup. UUID is
 /// used (already in `Cargo.toml`) to guarantee uniqueness across rapid retries.
 ///
 /// `pub(crate)` so unit tests can drive it directly.
@@ -3446,59 +3363,6 @@ mod tests {
     }
 
     #[test]
-    fn agent_matrix_settings_flags_match_ui_contract() {
-        let mut settings = AppSettings::default();
-        settings.inject_rtk_hook = true;
-        settings.agents = vec![
-            crate::config::settings::AgentConfig {
-                id: "codex".to_string(),
-                label: "Codex".to_string(),
-                command: "codex".to_string(),
-                color: "#000000".to_string(),
-                envs: Vec::new(),
-                isolated_home: false,
-                instructions_filename: None,
-                config_seed: None,
-                backend: Default::default(),
-            },
-            crate::config::settings::AgentConfig {
-                id: "claude".to_string(),
-                label: "Claude".to_string(),
-                command: "claude".to_string(),
-                color: "#ffffff".to_string(),
-                envs: Vec::new(),
-                isolated_home: false,
-                instructions_filename: None,
-                config_seed: None,
-                backend: Default::default(),
-            },
-        ];
-
-        let flags = AgentMatrixSettingsFlags::from_settings(&settings);
-
-        assert!(flags.inject_rtk_hook);
-    }
-
-    #[test]
-    fn apply_agent_matrix_settings_files_writes_expected_settings() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let agent_dir = tmp.path().join("_agent_architect");
-        std::fs::create_dir_all(&agent_dir).expect("create agent dir");
-
-        let warnings = apply_agent_matrix_settings_files(
-            &agent_dir,
-            AgentMatrixSettingsFlags {
-                inject_rtk_hook: true,
-            },
-        );
-
-        assert!(warnings.is_empty(), "unexpected warnings: {:?}", warnings);
-        let settings_path = agent_dir.join(".claude").join("settings.local.json");
-        let json = std::fs::read_to_string(settings_path).expect("read settings.local.json");
-        assert!(json.contains("PreToolUse"));
-    }
-
-    #[test]
     fn agent_matrix_dirs_contains_memory_plans_skills() {
         let names: std::collections::HashSet<&str> = AGENT_MATRIX_DIRS.iter().copied().collect();
         for required in &["memory", "plans", "skills"] {
@@ -3622,9 +3486,6 @@ mod tests {
             wg_dir: wg_dir.clone(),
             agent_path: matrix_dir.to_string_lossy().to_string(),
             team_repos: Vec::new(),
-            settings_flags: AgentMatrixSettingsFlags {
-                inject_rtk_hook: false,
-            },
         })
         .expect_err("absolute path refs must be rejected");
 
@@ -3736,9 +3597,6 @@ mod tests {
             wg_dir: wg_dir.clone(),
             agent_path: stale_agent_ref,
             team_repos: Vec::new(),
-            settings_flags: AgentMatrixSettingsFlags {
-                inject_rtk_hook: false,
-            },
         })
         .expect_err("filesystem path refs must be rejected");
 
@@ -3769,9 +3627,6 @@ mod tests {
             wg_dir,
             agent_path: "_agent_tech-lead".to_string(),
             team_repos: Vec::new(),
-            settings_flags: AgentMatrixSettingsFlags {
-                inject_rtk_hook: false,
-            },
         })
         .expect("create replica");
 
@@ -4761,8 +4616,8 @@ mod tests {
 
     /// Suffix scheme invariant (#113 follow-up): the orphan name produced on a
     /// rename-success-then-remove-fails race must NOT match the
-    /// `starts_with("wg-")` filters used by `ac_discovery`, `cli::list_peers`,
-    /// and `claude_settings`. We test this by asserting the format directly:
+    /// `starts_with("wg-")` filters used by `ac_discovery` and `cli::list_peers`.
+    /// We test this by asserting the format directly:
     /// the temp name starts with `.deleting-`, which automatically dodges the
     /// `wg-` prefix filter.
     #[test]

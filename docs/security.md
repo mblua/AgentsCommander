@@ -47,12 +47,6 @@ Token validation:
 
 The current trust model accepts the caller's self-reported `--root` and per-session UUID — see the in-source notes in `task-set-title` and `task-append-body` for the known weakness and the follow-up issue this points to.
 
-## RTK (Rust Token Killer) injection
-
-When [RTK integration](features/rtk-integration.md) is enabled, AC writes a `PreToolUse` hook into each managed agent directory's `.claude/settings.local.json`. This is a Claude-only Bash-tool rewrite hook; it does not exfiltrate output and does not run untrusted code. AC re-sweeps every managed dir on startup so an obsolete hook is removed cleanly.
-
-You can turn the integration off at any time via **Settings → General → RTK** — the next startup sweep removes every hook AC added.
-
 ## Code signing
 
 Windows code signing is planned through SignPath Foundation and is pending setup and approval. Current Windows release artifacts may be unsigned until [epic #717](https://github.com/mblua/AgentsCommander/issues/717) is complete. See [`CODE_SIGNING_POLICY.md`](../CODE_SIGNING_POLICY.md).
