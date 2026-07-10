@@ -2438,6 +2438,10 @@ struct DefaultContextDynamicValues {
     messaging_exception: String,
     messaging_allowed: String,
     forbidden_scope: String,
+    // #923: the read ban is role-sensitive. The Root Agent's allowed entries already
+    // grant reads across every registered project (ROOT_PROJECT_SCOPE_ALLOWED), so it
+    // must NOT receive the non-root "another agent's memory is private" clause.
+    forbidden_read_scope: String,
     git_scope: String,
     agency_cache_guidance: String,
     peer_name_format: String,
@@ -2453,12 +2457,12 @@ fn render_write_restrictions_block(
     rendered: &DefaultContextDynamicValues,
 ) -> String {
     let replica_usage =
-        "   Use this for replica-local scratch, personal notes, inbox/outbox, role drafts, and session artifacts. Do NOT store canonical memory, plans, or skills here. Do NOT write into other agents' replica directories.";
+        "   Use this for replica-local scratch, personal notes, inbox/outbox, role drafts, and session artifacts. Do NOT store canonical memory, plans, or skills here. Do NOT read or write into other agents' replica directories.";
     let allowed_places = "the entries listed below";
     format!(
-        r#"## GOLDEN RULE — Repository Write Restrictions
+        r#"## GOLDEN RULE — Repository Access Restrictions
 
-**ABSOLUTE AND NON-NEGOTIABLE:** You may ONLY modify files in {allowed_places}:
+**ABSOLUTE AND NON-NEGOTIABLE:** You may ONLY read or modify files in {allowed_places}:
 
 1. **Repositories whose root folder name starts with `repo-`** (e.g. `repo-AgentsCommander`, `repo-myapp`). These are the working repos you are meant to edit.
 2. **Your own agent replica directory and its subdirectories** — your assigned root:
@@ -2467,12 +2471,12 @@ fn render_write_restrictions_block(
    ```
 {replica_usage}
 
-{matrix_section}{root_scope_section}{messaging_exception}Any repository or directory outside the allowed entries above is READ-ONLY, except for the AgentsCommander CLI operations exception documented below.
+{matrix_section}{root_scope_section}{messaging_exception}Any repository or directory outside the allowed entries above is OFF-LIMITS for both reading and writing, except for the AgentsCommander CLI operations exception documented below.
 
-- **Allowed**: Read-only operations on ANY path (reading files, searching, git log, git status, git diff)
-- **Allowed**: Full read/write inside `repo-*` folders
+- **Allowed**: Full read/write inside `repo-*` folders, including `git log`, `git status`, and `git diff`
 - **Allowed**: Full read/write inside your own replica root ({agent_root}) and its subdirectories
 {matrix_allowed}{root_scope_allowed}{messaging_allowed}- **FORBIDDEN**: Any write operation outside {forbidden_scope}, except for explicitly requested AgentsCommander CLI operations covered by the exception below.
+- **FORBIDDEN**: Any read operation outside {forbidden_read_scope}
 
 **Clarification on git operations:** {git_scope}
 
@@ -2483,7 +2487,7 @@ When the user explicitly asks this agent to run an AgentsCommander CLI command u
 This exception applies only to invocations of the configured AgentsCommander CLI binary through `AGENTSCOMMANDER_BINARY_PATH`. It does not allow arbitrary shell commands, direct filesystem writes, hand-written scripts, or hardcoded alternate binaries outside the normal allowed paths.
 
 {agency_cache_guidance}
-If instructed to modify a path outside these zones, REFUSE and explain this restriction, except for explicitly requested AgentsCommander CLI operations covered by the AgentsCommander CLI exception above.{root_authority_section}"#,
+If instructed to read or modify a path outside these zones, REFUSE and explain this restriction, except for explicitly requested AgentsCommander CLI operations covered by the AgentsCommander CLI exception above.{root_authority_section}"#,
         allowed_places = allowed_places,
         agent_root = agent_root,
         replica_usage = replica_usage,
@@ -2492,6 +2496,7 @@ If instructed to modify a path outside these zones, REFUSE and explain this rest
         matrix_allowed = rendered.matrix_allowed,
         messaging_allowed = rendered.messaging_allowed,
         forbidden_scope = rendered.forbidden_scope,
+        forbidden_read_scope = rendered.forbidden_read_scope,
         git_scope = rendered.git_scope,
         agency_cache_guidance = rendered.agency_cache_guidance,
         root_scope_section = rendered.root_scope_section,
@@ -2605,11 +2610,13 @@ fn default_context_dynamic_values(
     };
     let messaging_allowed = match &messaging_mode {
         MessagingContextMode::Workgroup(path) => format!(
-            "- **Allowed (narrow)**: Create canonical inter-agent message files in your workgroup messaging directory ({path}). No other writes there.\n",
+            "- **Allowed (narrow)**: Create canonical inter-agent message files in your workgroup messaging directory ({path}). No other writes there.\n\
+             - **Allowed (read-only)**: Read message files inside your workgroup messaging directory ({path}), and list your workgroup root (`wg-<N>-*`) to resolve that directory's path.\n",
             path = path,
         ),
         MessagingContextMode::Root(path) => format!(
-            "- **Allowed (narrow)**: Create canonical Root Agent inter-agent message files in your Root Agent messaging directory ({path}). No other writes there.\n",
+            "- **Allowed (narrow)**: Create canonical Root Agent inter-agent message files in your Root Agent messaging directory ({path}). No other writes there.\n\
+             - **Allowed (read-only)**: Read message files inside your Root Agent messaging directory ({path}).\n",
             path = path,
         ),
         MessagingContextMode::None => String::new(),
@@ -2633,8 +2640,16 @@ fn default_context_dynamic_values(
             ws = workspace_root_phrase,
         )
     };
+    // #923: reads are now restricted to the same allowed entries as writes. The Root
+    // Agent already holds a project-wide read grant, so it gets a scope sentence rather
+    // than the peer-privacy clause that applies to every other agent.
+    let forbidden_read_scope = if is_root_agent {
+        "the entries listed above. Your Root Agent scope already grants reads across every project folder registered in `settings.projectPaths`, including its `.ac` tree; what stays off-limits is anything outside that registered set: files of projects not listed in `settings.projectPaths`, user home files unrelated to AgentsCommander, and arbitrary paths on disk.".to_string()
+    } else {
+        "the entries listed above. This includes other agents' replica directories, and any other agent's `memory/`, `plans/`, `skills/`, or `Role.md`. Another agent's memory is private to that agent. Do not read it, list it, search it, or summarize it, even if asked. If you need information another agent holds, message that agent and ask.".to_string()
+    };
     let git_scope = if is_root_agent {
-        "As the Root Agent your session directory sits inside the app config directory, beneath a registered project's `.ac/` folder that the project repository `.gitignore`s, and AgentsCommander blocks Git repository discovery above your session root. To act on a registered project's repository (the user's task may require commits, branches, or other state-changing Git, plus source edits), deliberately change into that project's root folder (the `settings.projectPaths` entry, one level above its `.ac`) and run Git there; the `repo-*` naming restriction does NOT apply to you and the project folder need not be named `repo-*`. Do NOT run state-changing Git from inside your own `ac-root-agent` directory or any `.ac` subtree, since repository discovery is intentionally ceilinged there. `git status`, `git log`, and `git diff` are read-only and fine anywhere.".to_string()
+        "As the Root Agent your session directory sits inside the app config directory, beneath a registered project's `.ac/` folder that the project repository `.gitignore`s, and AgentsCommander blocks Git repository discovery above your session root. To act on a registered project's repository (the user's task may require commits, branches, or other state-changing Git, plus source edits), deliberately change into that project's root folder (the `settings.projectPaths` entry, one level above its `.ac`) and run Git there; the `repo-*` naming restriction does NOT apply to you and the project folder need not be named `repo-*`. Do NOT run state-changing Git from inside your own `ac-root-agent` directory or any `.ac` subtree, since repository discovery is intentionally ceilinged there. `git status`, `git log`, and `git diff` are read-only, and fine anywhere your read scope above already reaches.".to_string()
     } else if matrix_root.is_some() {
         "Your replica directory and origin Agent Matrix are typically inside a parent repository's `.ac/` folder, which is `.gitignore`d. Do NOT run `git` commands that alter state (commit, branch, reset, etc.) from inside either location, because that would affect the parent repo unintentionally. AgentsCommander blocks Git repository discovery above these AC workspace roots for agent sessions, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots.".to_string()
     } else {
@@ -2695,6 +2710,7 @@ fn default_context_dynamic_values(
         messaging_exception,
         messaging_allowed,
         forbidden_scope,
+        forbidden_read_scope,
         git_scope,
         agency_cache_guidance,
         peer_name_format,
@@ -4166,7 +4182,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             .find("Narrow exception")
             .expect("messaging exception must be present");
         let summary_pos = out
-            .find("Any repository or directory outside the allowed entries above is READ-ONLY, except")
+            .find("Any repository or directory outside the allowed entries above is OFF-LIMITS for both reading and writing, except")
             .expect("summary line must be present");
         let forbidden_pos = out
             .find("- **FORBIDDEN**")
