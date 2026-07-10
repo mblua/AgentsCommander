@@ -2466,7 +2466,7 @@ fn render_write_restrictions_block(
 
 **ABSOLUTE AND NON-NEGOTIABLE:** You may ONLY read or modify files in {allowed_places}:
 
-1. **Repositories whose root folder name starts with `repo-`** (e.g. `repo-AgentsCommander`, `repo-myapp`). These are the working repos you are meant to edit. Listing your workspace root to discover which `repo-*` folders exist is allowed.
+1. **Repositories whose root folder name starts with `repo-`** (e.g. `repo-AgentsCommander`, `repo-myapp`). These are the working repos you are meant to edit. Listing the workspace root that contains them, to discover which `repo-*` folders exist, is allowed; that grants folder names only, not the contents of anything else inside it.
 2. **Your own agent replica directory and its subdirectories** — your assigned root:
    ```
    {agent_root}
@@ -2657,12 +2657,19 @@ fn default_context_dynamic_values(
             ws = workspace_root_phrase,
         )
     };
-    // #923 D4: the messaging directory is a "Narrow exception" paragraph, not a numbered
-    // entry, so the read bullet must defuse it exactly like the write bullet does.
-    let messaging_read_phrase = if has_messaging_exception {
-        " (other than the narrow messaging exception above)"
-    } else {
+    // #923 D4/D8: whatever messaging read grant this agent got, it lives OUTSIDE the
+    // numbered entries, so the read bullet must defuse it exactly like the write bullet
+    // defuses the write exception. Gate on the presence of the GRANT, not on the presence
+    // of a messaging DIRECTORY: since D3 the `None` mode has a grant (the inbound message
+    // file) without a directory, so `has_messaging_exception` is the wrong predicate here.
+    let messaging_read_phrase = if messaging_allowed.is_empty() {
         ""
+    } else {
+        match &messaging_mode {
+            // `None` has no "Narrow exception" paragraph to point at; name the grant.
+            MessagingContextMode::None => " (other than the inbound message file grant above)",
+            _ => " (other than the narrow messaging exception above)",
+        }
     };
     // #923: reads are now restricted to the same allowed entries as writes. The Root
     // Agent already holds a project-wide read grant, so it gets a scope sentence rather
@@ -3989,6 +3996,12 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(out.contains(
             "Read an inter-agent message file when AgentsCommander hands you its absolute path"
         ));
+        // #923 D8: the grant above sits outside the numbered entries, so the read bullet
+        // must carve it out by name. Without this the agent must REFUSE to read its own
+        // inbound message, and it cannot `--send` a blocker either: silently unreachable.
+        assert!(out.contains(
+            "- **FORBIDDEN**: Any read operation outside the entries listed above (other than the inbound message file grant above)"
+        ));
         assert!(
             !out.contains("- **Allowed (narrow)**:"),
             "expected no narrow-allowed bullet for non-WG agent, got:\n{}",
@@ -4094,31 +4107,64 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(out.contains("those two reads are grants, while direct writes to them stay CLI-managed"));
     }
 
-    /// #923 D4: the messaging directory is a "Narrow exception" paragraph, not a numbered
-    /// entry. The read bullet must defuse it exactly like the write bullet does, or a
-    /// conservative agent stops reading its own inbox.
+    fn read_forbidden_bullet(out: &str) -> &str {
+        out.split("- **FORBIDDEN**: Any read operation outside ")
+            .nth(1)
+            .expect("read FORBIDDEN bullet must be present")
+    }
+
+    /// #923 D4/D8: every messaging read grant lives OUTSIDE the numbered entries, so the
+    /// read bullet must defuse it exactly like the write bullet does, or a conservative
+    /// agent stops reading its own inbox. This must hold in ALL THREE messaging modes;
+    /// D8 was exactly the `None` mode slipping through a `Workgroup`-only assertion.
     #[test]
-    fn read_bullet_carves_out_the_messaging_exception_like_the_write_bullet() {
-        let out = default_context(
+    fn read_bullet_carves_out_the_messaging_grant_in_every_mode() {
+        // Workgroup: has a messaging directory and a "Narrow exception" paragraph.
+        let wg = default_context(
             "C:/fake/wg-7-dev-team/__agent_architect",
             Some("C:/fake/_agent_architect"),
             &no_skill_section(),
         );
-        let read_bullet = out
-            .split("- **FORBIDDEN**: Any read operation outside ")
-            .nth(1)
-            .expect("read FORBIDDEN bullet must be present");
         assert!(
-            read_bullet.starts_with("the entries listed above (other than the narrow messaging exception above)"),
-            "read bullet missing the messaging carve-out, got:
-{read_bullet}"
+            read_forbidden_bullet(&wg).starts_with(
+                "the entries listed above (other than the narrow messaging exception above)"
+            ),
+            "workgroup read bullet missing the messaging carve-out, got:
+{}",
+            read_forbidden_bullet(&wg)
         );
-        // Symmetry with the write axis: both bullets defer to the CLI exception.
-        assert!(read_bullet.contains(
-            "except for explicitly requested AgentsCommander CLI operations covered by the exception below"
-        ));
-        // And the read grant for the inbox is actually present.
-        assert!(out.contains("- **Allowed (read-only)**: Read message files inside your workgroup messaging directory"));
+        assert!(wg.contains("- **Allowed (read-only)**: Read message files inside your workgroup messaging directory"));
+
+        // Root: has its own messaging directory and exception paragraph.
+        let root = default_context_as_root("C:/fake/ac-root-agent", None, &no_skill_section());
+        assert!(
+            read_forbidden_bullet(&root).starts_with(
+                "the entries listed above (other than the narrow messaging exception above)"
+            ),
+            "root read bullet missing the messaging carve-out, got:
+{}",
+            read_forbidden_bullet(&root)
+        );
+
+        // None: no messaging directory, but D3 gave it an inbound-file read grant. The
+        // carve-out must name THAT grant, because there is no exception paragraph.
+        let none = default_context("C:/fake/plain/agent", None, &no_skill_section());
+        assert!(
+            read_forbidden_bullet(&none).starts_with(
+                "the entries listed above (other than the inbound message file grant above)"
+            ),
+            "None-mode read bullet missing the inbound-file carve-out, got:
+{}",
+            read_forbidden_bullet(&none)
+        );
+        assert!(!none.contains("narrow messaging exception above"));
+
+        // Symmetry with the write axis: every mode defers to the CLI exception.
+        for out in [&wg, &root, &none] {
+            assert!(read_forbidden_bullet(out).contains(
+                "except for explicitly requested AgentsCommander CLI operations covered by the exception below"
+            ));
+        }
     }
 
     /// #923 D6: entry #1 grants `repo-*` by name pattern; discovery needs a listing.
@@ -4129,8 +4175,10 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             None,
             &no_skill_section(),
         );
-        assert!(out
-            .contains("Listing your workspace root to discover which `repo-*` folders exist is allowed"));
+        assert!(out.contains(
+            "Listing the workspace root that contains them, to discover which `repo-*` folders exist, is allowed"
+        ));
+        assert!(out.contains("that grants folder names only, not the contents of anything else inside it"));
     }
 
     #[test]
