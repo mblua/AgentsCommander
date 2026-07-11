@@ -1568,6 +1568,11 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     let spawn_spec = BackendSpawnSpec {
         id,
         agent_id: agent_id.clone(),
+        // #942 - the CLI identity from the canonical detector (`agent_kind`, resolved
+        // at the top of this function). The profile id above cannot stand in for it:
+        // it is opaque, several profiles can drive the same CLI, and a coding-agent
+        // launch can carry no profile id at all.
+        coding_agent: agent_kind,
         cmd: shell.clone(),
         args: shell_args.clone(),
         cwd: spawn_cwd.clone(),

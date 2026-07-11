@@ -475,6 +475,7 @@ mod tests {
         BackendSpawnSpec {
             id,
             agent_id: None,
+            coding_agent: None,
             cmd: "cmd".to_string(),
             args: Vec::new(),
             cwd: ".".to_string(),
