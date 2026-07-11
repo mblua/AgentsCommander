@@ -35,9 +35,14 @@
 //!
 //! ## Windows caveats this module refuses to paper over
 //!
-//! - ConPTY writes its own 16-byte handshake (`ESC[?9001h ESC[?1004h`) into every PTY
-//!   within ~20ms of the spawn, child or no child. The first byte is therefore never
-//!   evidence that the child came up; crossing the paint floor is.
+//! - The first bytes off the PTY are never the child. Measured on the shipping spawn
+//!   shape (`cmd.exe /C codex ...`, which is what AC does for every npm-installed agent
+//!   CLI), **71 bytes arrive within ~45ms with the child still doing nothing**: ConPTY's
+//!   own handshake (`ESC[?9001h ESC[?1004h`), its screen setup (`ESC[?25l ESC[2J ESC[m
+//!   ESC[H`), and the npm shim's own `title %COMSPEC%` line, which ConPTY renders as an
+//!   OSC title sequence. The paint floor has to sit ABOVE that band or a hung agent
+//!   reads as painted: 64 did not, 256 does. A real coding-agent TUI crosses 256 bytes in
+//!   ~350ms when healthy (measured, fresh codex) and takes seconds when it is hanging.
 //! - `portable_pty::Child::try_wait` cannot tell "running" from "we cannot query this
 //!   handle": `WinChild::is_complete` swallows a failed `GetExitCodeProcess` and
 //!   returns `Ok(None)`, and its `STILL_ACTIVE` sentinel (259) is also a legal exit
@@ -107,9 +112,14 @@ use crate::session::profile::CodingAgentKind;
 
 const DEFAULT_STALL_TIMEOUT_MS: u64 = 5_000;
 const MAX_STALL_TIMEOUT_MS: u64 = 10 * 60 * 1_000;
-/// Output below this many bytes is not a painted screen; it is the ConPTY handshake
-/// (16 bytes) and nothing else. A coding agent paints a full TUI immediately.
-const DEFAULT_PAINT_FLOOR_BYTES: u64 = 64;
+/// Output below this many bytes is not a painted screen; it is the shell saying hello.
+/// Measured on the real spawn shape (`cmd.exe /C codex ...`): ConPTY's handshake and
+/// screen setup plus the npm shim's `title %COMSPEC%` put **71 bytes** on the PTY within
+/// ~45ms while the agent itself has written nothing. A floor of 64 was therefore crossed
+/// by noise alone, which made every hung coding agent read as "painted" and silently
+/// disabled the stall detector this module exists for. A healthy codex TUI crosses 256
+/// bytes in ~350ms; a hanging one takes seconds.
+const DEFAULT_PAINT_FLOOR_BYTES: u64 = 256;
 const MAX_PAINT_FLOOR_BYTES: u64 = 64 * 1024;
 const DEFAULT_HEAD_BYTES: u64 = 512;
 const MAX_HEAD_BYTES: u64 = 64 * 1024;
@@ -1051,7 +1061,7 @@ mod tests {
     fn test_thresholds() -> Thresholds {
         Thresholds {
             stall_timeout: Duration::from_millis(120),
-            paint_floor: 64,
+            paint_floor: DEFAULT_PAINT_FLOOR_BYTES,
             head_bytes: 512,
             concurrency_window: Duration::from_millis(10_000),
             stop_attribution: Duration::from_millis(500),
@@ -1097,6 +1107,12 @@ mod tests {
     }
 
     const CONPTY_PROLOGUE: &[u8] = b"\x1b[?9001h\x1b[?1004h";
+
+    /// The real thing, captured off a live `cmd.exe /C codex ...` spawn: ConPTY handshake,
+    /// ConPTY screen setup, and the npm shim's own `title %COMSPEC%`. 71 bytes, ~45ms, and
+    /// the agent has not written a thing.
+    const AC_SHELL_PROLOGUE: &[u8] =
+        b"\x1b[?9001h\x1b[?1004h\x1b[?25l\x1b[2J\x1b[m\x1b[H\x1b]0;C:\\WINDOWS\\system32\\cmd.exe \x07\x1b[?25h";
 
     fn wait_until(deadline: Duration, mut done: impl FnMut() -> bool) -> bool {
         let start = Instant::now();
@@ -1159,6 +1175,26 @@ mod tests {
             painted_at,
             "the paint stamp is taken once"
         );
+    }
+
+    #[test]
+    fn the_shell_prologue_alone_is_not_a_painted_screen() {
+        // Measured, not assumed: 71 bytes of ConPTY + npm-shim noise land on the PTY of
+        // EVERY codex spawn within ~45ms. With the old 64-byte floor they crossed it on
+        // their own, so a codex that painted nothing at all read as "painted", the stall
+        // detector never fired, and the deadline report called the hang healthy.
+        assert_eq!(AC_SHELL_PROLOGUE.len(), 71);
+        assert!(
+            (AC_SHELL_PROLOGUE.len() as u64) < Thresholds::DEFAULT.paint_floor,
+            "the paint floor must sit above the shell noise band"
+        );
+
+        let agent = aged_record(Some(CodingAgentKind::Codex));
+        agent.note_output(AC_SHELL_PROLOGUE);
+
+        assert!(agent.saw_output(), "the shell greeted us");
+        assert!(!agent.painted(), "but the agent painted nothing");
+        assert!(agent.is_stalled());
     }
 
     #[test]
@@ -1317,7 +1353,7 @@ mod tests {
         // common path in the app, and `exited(1)` is literally the ExitStatus string from
         // the log trap this issue exists to kill.
         let record = test_record(Some(CodingAgentKind::Codex));
-        record.note_output(&[b'x'; 200]); // it came up fine
+        record.note_output(&[b'x'; 300]); // it came up fine (past the paint floor)
 
         record.mark_ac_stop("session-destroy", Some(ChildLiveness::Alive));
         record.mark_ac_stop(
@@ -1497,7 +1533,7 @@ mod tests {
             ..aged_record(Some(CodingAgentKind::Codex))
         };
         record.mark_ac_stop("job-terminate", Some(ChildLiveness::Alive));
-        record.note_output(&[b'x'; 200]);
+        record.note_output(&[b'x'; 300]);
 
         assert!(
             !record.painted(),
