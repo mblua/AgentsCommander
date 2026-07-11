@@ -7114,4 +7114,138 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(!is_generated_context_filename("random.md"));
         assert!(!is_generated_context_filename("context-1.md"));
     }
+
+    /// Seeds a temp `ac-root-agent` root and returns it. The directory name is not load-bearing
+    /// (`validate_root_agent_root_path` never inspects it, and neither does `discover_skill_index`),
+    /// but it matches the existing `root_agent.rs` tests.
+    fn temp_root_agent_dir(temp: &tempfile::TempDir) -> std::path::PathBuf {
+        let root = temp
+            .path()
+            .join(crate::config::root_agent::ROOT_AGENT_DIR_NAME);
+        std::fs::create_dir_all(&root).expect("create root agent dir");
+        root
+    }
+
+    /// Asserts that every shipped default skill survives the real indexer with no warning at all,
+    /// and that it actually reaches the rendered context. Shared by the two gates below.
+    fn assert_defaults_index_and_render_cleanly(root: &Path) {
+        // Resolve the owner root the way production does, rather than handing `discover_skill_index`
+        // a path we already know is right. `resolve_skill_owner_root` was long believed untestable
+        // in-process because of `config_dir()`'s `OnceLock`; it is not. That `OnceLock` is reached by
+        // `ensure_session_context_with_config` (`:27-28`), NOT by this function: it calls only
+        // `is_canonical_agent_matrix_dir` and `is_root_agent_dir_name`, and neither touches it.
+        //
+        // For a temp `ac-root-agent` directory the first is false, so it falls through to the second
+        // and canonicalizes, which is exactly the production path for a real root agent.
+        //
+        // This closes a real hole. `discover_skill_index(None)` returns an empty index with ZERO
+        // warnings, so a regression in owner resolution would leave the root agent silently indexing
+        // nothing while the `warnings.is_empty()` assertion below stayed green. The `skills.len()`
+        // assertion is what catches it.
+        let owner = resolve_skill_owner_root(&path_string(root), None);
+        let index = discover_skill_index(owner.as_deref());
+
+        // MUST be first. On the unfixed seed the YAML error is pushed at `:512` and the loop
+        // `continue`s, so `skills.len() == 1`; a length check first would report `1 != 2` and say
+        // nothing about why.
+        assert!(
+            index.warnings.is_empty(),
+            "indexer warnings: {:?}",
+            index.warnings
+        );
+
+        // Not optional: `discover_skill_index` returns early with NO warning when `skills/` is
+        // absent (`:408-410`), so a silently-no-op seed would pass the assertion above.
+        let expected = crate::config::root_agent::default_root_skill_dir_names();
+        assert_eq!(
+            index.skills.len(),
+            expected.len(),
+            "indexed skills: {:?}",
+            index.skills.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+
+        for skill in &index.skills {
+            assert!(
+                skill.metadata_warnings.is_empty(),
+                "{}: {:?}",
+                skill.folder_name,
+                skill.metadata_warnings
+            );
+            let description = skill.description.as_deref().unwrap_or("");
+            assert!(
+                !description.trim().is_empty(),
+                "{} has an empty description",
+                skill.folder_name
+            );
+        }
+
+        // A skill can sit in `index.skills`, warning-free, and still never reach the model:
+        // `push_with_budget` drops entries past the budget and `skill_trigger_text` truncates.
+        // The assertion #909 actually wants is "the shipped defaults reach the agent".
+        let rendered = render_skills_section(&index);
+        assert!(rendered.contains("### Available Skills"));
+
+        for dir_name in expected {
+            let skill = index
+                .skills
+                .iter()
+                .find(|s| s.folder_name == dir_name)
+                .unwrap_or_else(|| panic!("default skill `{}` missing from the index", dir_name));
+
+            // Assert the whole `full_entry` line, not just the name. Two reasons a name-only check
+            // is weaker than it looks: `render_skills_section` prints `skill.name`, the YAML `name:`
+            // field, which only coincides with the directory name for today's two defaults; and the
+            // budget-exhausted `minimal_entry` fallback (`:747-750`) ALSO emits "- `{name}`", so a
+            // name check stays green for a skill whose metadata was dropped on the way to the model.
+            // The trigger text is emitted by `full_entry` alone.
+            let name = sanitize_skill_metadata_for_context(&skill.name);
+            let trigger = sanitize_skill_metadata_for_context(&skill_trigger_text(skill));
+            assert!(
+                !trigger.trim().is_empty(),
+                "{} rendered an empty trigger",
+                dir_name
+            );
+            assert!(
+                rendered.contains(&format!("- `{}` - {}", name, trigger)),
+                "default skill `{}` did not reach the rendered section with its metadata intact",
+                dir_name
+            );
+        }
+    }
+
+    /// THE GATE. Models a real, already-seeded install: the pre-fix snapshot on disk, written with
+    /// `\r\n`, which is the state every broken install is in. It exercises the **exists arm** and
+    /// therefore the repair.
+    ///
+    /// A fresh-tempdir test cannot do this. `root_agent.rs:1159` and `:1168` asserted
+    /// `seeded == constant` against a fresh temp root and stayed green for eleven days while
+    /// eighteen installs on disk were broken. That blind spot is #909.
+    #[test]
+    fn broken_agency_skill_install_is_repaired_and_reaches_the_context() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp_root_agent_dir(&temp);
+        let skill_dir = root.join(SKILLS_DIR_NAME).join("agency-agents-roles");
+        std::fs::create_dir_all(&skill_dir).expect("create skill dir");
+
+        let broken = crate::config::root_agent::agency_pre_yaml_fix_snapshot().replace('\n', "\r\n");
+        std::fs::write(skill_dir.join("SKILL.md"), &broken).expect("seed the broken skill");
+
+        crate::config::root_agent::ensure_default_root_agent_skills_at(&root)
+            .expect("seeding must not fail");
+
+        assert_defaults_index_and_render_cleanly(&root);
+    }
+
+    /// The constant check, not the gate. A fresh tempdir exercises only the NotFound arm, so this
+    /// proves `DEFAULT_ROOT_SKILLS[..].content` parses. It cannot prove a real install recovers.
+    #[test]
+    fn shipped_default_root_skills_parse_through_the_real_indexer() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp_root_agent_dir(&temp);
+
+        crate::config::root_agent::ensure_default_root_agent_skills_at(&root)
+            .expect("seeding must not fail");
+
+        assert_defaults_index_and_render_cleanly(&root);
+    }
 }
