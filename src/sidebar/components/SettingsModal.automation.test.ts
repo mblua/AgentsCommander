@@ -1780,6 +1780,12 @@ describe("SettingsModal automation hooks", () => {
     expect(onHint).toContain("onboarding is marked complete");
     expect(onHint).toContain("/workspace is marked as trusted");
     expect(onHint).toContain("folder-trust safety prompt");
+    // #930 landing condition: the feature is in progress and a container agent still
+    // cannot reach the repos (#935). The setting is ON by default, so this is the one
+    // place a user learns it at the moment they pick the Container runtime.
+    expect(onHint).toContain("In progress");
+    expect(onHint).toContain("cannot reach your repos yet (#935)");
+    expect(onHint).toContain("Local runtime for repo work");
     expect(
       document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.hostLoginOff"]'),
     ).toBeNull();
@@ -1857,6 +1863,10 @@ describe("SettingsModal automation hooks", () => {
     // The host side is untouched, and the refresh-token drift clause survives (14.5).
     expect(hint).toContain("Your host config is never modified");
     expect(hint).toContain("token refresh in one place can require re-login");
+    // #930 lands as in-progress: the repo access limitation (#935) is stated up front.
+    expect(hint).toContain("In progress");
+    expect(hint).toContain("cannot reach your repos yet (#935)");
+    expect(hint).toContain("Local runtime");
 
     dispose();
   });

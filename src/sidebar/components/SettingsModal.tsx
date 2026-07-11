@@ -1413,11 +1413,13 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           class="settings-hint"
           data-ac-testid="settings.general.containerCredentialsFromHost.hint"
         >
-          On by default. When a coding agent runs under the Container runtime, AC copies your
-          host credential file for that agent (for Claude, ~/.claude/.credentials.json) into the
-          container at launch and deletes it when the session stops. So the agent starts signed
-          in instead of stopping at its first-run prompts, AC also writes that agent's first-run
-          state inside the container: onboarding is marked complete, and the container's
+          In progress: a container coding agent cannot reach your repos yet (#935), so keep repo
+          work on the Local runtime. On by default. When a coding agent runs under the Container
+          runtime, AC copies your host credential file for that agent (for Claude,
+          ~/.claude/.credentials.json) into the container at launch and deletes it when the
+          session stops. So the agent starts signed in instead of stopping at its first-run
+          prompts, AC also writes that agent's first-run state inside the container: onboarding
+          is marked complete, and the container's
           /workspace folder is marked as trusted. That means AC answers the "do you trust this
           folder?" safety prompt on your behalf, for the workspace you chose to open. Your host
           config is never modified. Turn this off to supply credentials yourself (for example a
@@ -2134,10 +2136,13 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 }
               >
                 <div
-                  class="settings-hint"
+                  class="settings-hint settings-hint-warning"
                   data-ac-testid={`settings.agentRow.${i()}.containerHint.hostLogin`}
                   data-ac-role="status"
                 >
+                  In progress: a container agent cannot reach your repos yet (#935). It signs in
+                  and messages peers, but it cannot check out, edit, build or commit them, so use
+                  the Local runtime for repo work.
                   Host login reuse is on: AC copies your host credentials for this coding agent
                   into the container at launch and removes them when the session stops. So the
                   agent starts signed in, AC also writes its first-run state inside the container:
