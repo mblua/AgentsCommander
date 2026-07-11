@@ -922,32 +922,6 @@ pub fn build_agent_spawn_command(
                     &profile_env,
                     computed_codex_home.effective_codex_home.as_deref(),
                 );
-                // M1: only a `.claude` dest can be re-stamped (the writers
-                // hardcode the `.claude` subdir). LOW-1 (grinch): on Windows a
-                // dest like `.Claude` clean-replaces the SAME physical `.claude`
-                // dir, so the re-apply must still fire or the rtk hook is
-                // silently dropped (Resource-Monitor child-tracking regression);
-                // Unix is case-sensitive, so `.Claude` is a different dir there
-                // and must NOT re-apply (the writers would target the wrong dir).
-                let dest_is_dot_claude = r
-                    .dest
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .map(|n| {
-                        if cfg!(windows) {
-                            n.eq_ignore_ascii_case(".claude")
-                        } else {
-                            n == ".claude"
-                        }
-                    })
-                    .unwrap_or(false);
-                r.claude_settings_reapply = if dest_is_dot_claude {
-                    Some(crate::config::config_seed::ClaudeSettingsReapply {
-                        inject_rtk_hook: settings.inject_rtk_hook,
-                    })
-                } else {
-                    None
-                };
             }
             resolved
         }
@@ -2061,11 +2035,10 @@ mod tests {
             enabled: true,
             dest: ".claude".to_string(),
         });
-        let mut settings = AppSettings {
+        let settings = AppSettings {
             agents: vec![claude],
             ..AppSettings::default()
         };
-        settings.inject_rtk_hook = true;
 
         let spawn =
             build_agent_spawn_command(&settings, "claude", Some(&replica), Some("A")).unwrap();
@@ -2109,11 +2082,6 @@ mod tests {
         assert_eq!(seed.dest, expected_replica.join(".claude"));
         // Pure resolution: no template dirs were created.
         assert!(!workspace.join("default.claude").exists());
-        // `.claude` dest -> reapply carries the global rtk flag.
-        let re = seed
-            .claude_settings_reapply
-            .expect("reapply present for .claude");
-        assert!(re.inject_rtk_hook);
     }
 
     #[test]
@@ -2185,44 +2153,6 @@ mod tests {
             build_agent_spawn_command(&settings, "claude", Some(&replica), Some("A")).unwrap();
         let seed = spawn.seed.expect("seed");
         assert_eq!(seed.dest.file_name().unwrap(), ".claude-amp");
-        assert!(
-            seed.claude_settings_reapply.is_none(),
-            "non-.claude dest must not trigger the .claude re-apply"
-        );
-    }
-
-    #[test]
-    fn build_spawn_seed_reapply_is_case_insensitive_only_on_windows() {
-        // LOW-1 (grinch): a `.Claude` dest is the SAME physical dir as `.claude`
-        // on Windows (so re-apply must fire) but a DISTINCT dir on Unix (so it
-        // must not, or the writers would stamp the wrong directory).
-        let temp = tempfile::tempdir().unwrap();
-        let replica = seed_replica(temp.path());
-
-        let mut claude = agent("claude", "claude");
-        claude.config_seed = Some(ConfigSeedConfig {
-            enabled: true,
-            dest: ".Claude".to_string(),
-        });
-        let settings = AppSettings {
-            agents: vec![claude],
-            ..AppSettings::default()
-        };
-
-        let spawn =
-            build_agent_spawn_command(&settings, "claude", Some(&replica), Some("A")).unwrap();
-        let seed = spawn.seed.expect("seed");
-        if cfg!(windows) {
-            assert!(
-                seed.claude_settings_reapply.is_some(),
-                ".Claude must re-apply on Windows (same physical dir as .claude)"
-            );
-        } else {
-            assert!(
-                seed.claude_settings_reapply.is_none(),
-                ".Claude must NOT re-apply on Unix (distinct dir from .claude)"
-            );
-        }
     }
 
     #[test]

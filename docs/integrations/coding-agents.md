@@ -26,7 +26,7 @@ AC does not install the coding-agent binaries. Use the upstream installers:
 - **Codex** — [github.com/openai/codex](https://github.com/openai/codex)
 - **Gemini** — [github.com/google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli)
 
-After install, each CLI authenticates itself (login flow, API key, or both). AC does not touch those credentials.
+After install, each CLI authenticates itself (login flow, API key, or both). Under the local-process runtime AC does not touch those credentials. Under the **Container** runtime AC copies your host credential file into the container by default: see [Container coding agents](../features/container-coding-agents.md).
 
 ## How AC finds them
 
@@ -87,7 +87,7 @@ For deeper integration (a new `CodingAgentKind` with its own resume tokens and i
 
 ## Authentication and secrets
 
-AC does not store coding-agent credentials. Each CLI manages its own:
+AC does not store coding-agent credentials of its own. Each CLI manages its own, on the host:
 
 | CLI | Where it stores credentials |
 |---|---|
@@ -95,12 +95,14 @@ AC does not store coding-agent credentials. Each CLI manages its own:
 | Codex | `~/.codex/` |
 | Gemini | `~/.gemini/` |
 
-If you use the AC-managed agent directories, AC may write minimal `.claude/settings.local.json` files (for RTK integration); these contain configuration only, not credentials.
+Under the **local-process** runtime, AC never copies or writes those credentials: the files it writes into agent directories are configuration only.
+
+Under the **Container** runtime there is one deliberate exception, on by default. AC copies the host user's credential file for that coding agent (Claude: `~/.claude/.credentials.json`) into the replica config dir so the container starts signed in, and deletes it when the session stops. It is Claude Code only today, it puts a full-account token in plaintext inside the workspace tree, and it is governed by the `containerCredentialsFromHost` setting. Read [Container coding agents](../features/container-coding-agents.md) and [Security model](../security.md#container-coding-agents-copied-host-credentials) before you rely on it.
 
 ## See also
 
 - [Coding Agent Profiles](../features/coding-agent-profiles.md): lettered launch variants (A/B/C) per coding agent
+- [Container coding agents](../features/container-coding-agents.md): host login reuse, and why container agents cannot reach repos yet
 - [Creating agents](../agents/creating-agents.md) — make a new agent dir
 - [Settings reference](../reference/settings.md) — full schema for `agents[]`
-- [RTK integration](../features/rtk-integration.md) — Claude Code Bash-tool compression
 - [Roadmap: coding agents](../../ROADMAP.md): OpenCode first-class integration, Nvidia agent, more

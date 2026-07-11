@@ -126,6 +126,16 @@ Lettered launch variants (`A`, `B`, `C`, ...) per coding agent. See [Coding Agen
 
 The per-agent and per-replica assignments do **not** live here. They are stored in each agent's `config.json` under `tooling`: the origin default (`tooling.defaultProfile`), the instance override (`tooling.profile`, legacy `tooling.instanceProfileOverride`), and the drift fingerprint (`tooling.profileContentHash`).
 
+### Container coding agents
+
+Host login reuse for coding agents running under the Container runtime. **This feature is in progress**: container agents cannot reach their `repo-*` directories yet. See [Container coding agents](../features/container-coding-agents.md).
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `containerCredentialsFromHost` | bool | `true` | When a coding agent runs under the Container runtime, copy the host user's credential file for that agent (Claude: `~/.claude/.credentials.json`) into the replica config dir at spawn, set `CLAUDE_CONFIG_DIR` to it, stamp the container's first-run state (onboarding complete, `/workspace` trusted), and delete the copy on teardown. When false, AC copies, injects, and stamps nothing, and you supply credentials yourself (for example a `CLAUDE_CODE_OAUTH_TOKEN` env row). Claude Code only today. |
+
+The copied file is a full-account credential (access token plus long-lived refresh token) in plaintext. Read [Security model → Container coding agents](../security.md#container-coding-agents-copied-host-credentials) before you leave this on.
+
 ### Projects
 
 | Field | Type | Default | Description |
@@ -196,16 +206,6 @@ See [Telegram bridge setup](../integrations/telegram.md).
 | `webServerEnabled` | bool | `false` | Enable the embedded HTTP / WebSocket server. |
 | `webServerPort` | u16 | platform-default per binary suffix | Listening port. |
 | `webServerBind` | string | `"127.0.0.1"` | Bind address. Use `"0.0.0.0"` only if you understand the implications. |
-
-### RTK integration
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `injectRtkHook` | bool | `false` | Inject the RTK `PreToolUse` hook into every managed agent's `.claude/settings.local.json` at startup. |
-| `informWhenRtkInstalled` | bool | `false` | Opt-in gate for the startup "RTK detected, enable hook injection?" banner. Off by default, so the banner never appears unless you enable it. The banner also requires `injectRtkHook=false` and `rtkPromptDismissed=false`. Evaluated at startup; a change applies on the next launch. |
-| `rtkPromptDismissed` | bool | `false` | Suppress the "RTK detected, enable hook injection?" banner for the lifetime of this settings file. |
-
-See [RTK integration](../features/rtk-integration.md).
 
 ### Brief auto-title
 

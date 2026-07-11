@@ -193,27 +193,16 @@ impl ApiServerHandle {
     }
 }
 
-/// Issue #120 — serializes in-process writers of `.claude/settings.local.json`.
-///
-/// Acquired by `commands::config::sweep_rtk_hook`, the startup auto-disable
-/// and active-recovery sweeps in `setup`, and every in-process call site that
-/// invokes `ensure_rtk_pretool_hook` (see plan
-/// §7.5). Cross-process races (CLI / second AC instance) are documented and
-/// out of scope for #120.
-pub type RtkSweepLockState = Arc<tokio::sync::Mutex<()>>;
-
-/// Issue #120 §18 — cached boot-time RTK startup mode.
-///
-/// Set ONCE by the setup task in `run()` after computing the mode and
-/// BEFORE running any side effects. Read by
-/// `commands::config::get_rtk_startup_status` so the getter returns the
-/// boot decision instead of recomputing from post-side-effect state
-/// (which would mismatch the listener for the `auto-disabled` mode).
-pub type RtkStartupModeState = Arc<std::sync::OnceLock<String>>;
+/// Serializes the config-seed critical section (`perform_config_seed`) for a
+/// replica, so two concurrent same-replica spawns cannot clobber each other's
+/// in-flight `<dest>.acseed-*` scratch during `clear_stale_seed_scratch`
+/// (grinch HIGH-1; see `config/config_seed.rs` CONCURRENCY CONTRACT). Acquired
+/// in `commands::session.rs` around the seed swap.
+pub type ConfigSeedLockState = Arc<tokio::sync::Mutex<()>>;
 
 // Issue #609 - cached "npm update available" result. Set ONCE by the startup
 // check task; read by `get_update_status` so a late-mounting sidebar still
-// sees a pending update (mirrors RtkStartupModeState).
+// sees a pending update.
 pub type UpdateCheckState = Arc<std::sync::OnceLock<update_check::UpdateInfo>>;
 
 /// Floating spec/Mermaid board document state.
@@ -317,6 +306,22 @@ pub(crate) fn should_wake_on_restore(
         Some(crate::session::session::SessionStatus::Exited(_)) => false, // asleep at shutdown
         Some(_) | None => true, // awake at shutdown (or unknown → fail-open)
     }
+}
+
+pub(crate) fn restore_session_should_wake(
+    archived_session: bool,
+    setting_on: bool,
+    is_coord: bool,
+    persisted_status: Option<&crate::session::session::SessionStatus>,
+) -> bool {
+    !archived_session && should_wake_on_restore(setting_on, is_coord, persisted_status)
+}
+
+pub(crate) fn restore_session_should_become_active(
+    was_active: bool,
+    archived_session: bool,
+) -> bool {
+    was_active && !archived_session
 }
 
 /// (#630) Resolve coordinator status for a restore decision, backstopping a
@@ -552,17 +557,10 @@ pub fn run(
     let non_stop_state = crate::loops::non_stop_watchdog::NonStopWatchdogState::new();
     let non_stop_state_for_setup = non_stop_state.clone();
 
-    // Issue #120 — RTK sweep mutex. Acquired by every in-process writer of
-    // `.claude/settings.local.json`. See plan §7.5 for the design.
-    let rtk_sweep_lock: RtkSweepLockState = Arc::new(tokio::sync::Mutex::new(()));
-    let rtk_sweep_lock_for_setup = Arc::clone(&rtk_sweep_lock);
-
-    // Issue #120 §18 — cached boot-time RTK startup mode. Set ONCE by the
-    // setup task before running side effects; read by
-    // `get_rtk_startup_status` so the late-mounting banner sees the SAME
-    // mode the listener received.
-    let rtk_startup_mode: RtkStartupModeState = Arc::new(std::sync::OnceLock::new());
-    let rtk_startup_mode_for_setup = Arc::clone(&rtk_startup_mode);
+    // Config-seed critical-section lock. Serializes `perform_config_seed` for a
+    // replica so concurrent same-replica spawns cannot clobber each other's
+    // in-flight seed scratch (see `ConfigSeedLockState`).
+    let config_seed_lock: ConfigSeedLockState = Arc::new(tokio::sync::Mutex::new(()));
 
     // Issue #609 - cached "npm update available" result, set ONCE by the
     // detached startup check below and read by `get_update_status`.
@@ -615,8 +613,7 @@ pub fn run(
         .manage(broadcaster.clone())
         .manage(WebServerHandle::default())
         .manage(ApiServerHandle::default())
-        .manage(rtk_sweep_lock)
-        .manage(rtk_startup_mode)
+        .manage(config_seed_lock)
         .manage(update_check_state)
         .manage(ui_automation_state)
         .manage(shutdown_signal)
@@ -788,130 +785,6 @@ pub fn run(
                 }
             }
 
-            // Issue #120 / #426 — RTK startup detection. Probes PATH for `rtk`,
-            // then maps (rtk_present, inject_rtk_hook, rtk_prompt_dismissed,
-            // inform_when_rtk_installed) to a mode via
-            // `crate::config::settings::compute_rtk_startup_mode`:
-            //   - prompt-enable: rtk found AND inject_rtk_hook=false AND
-            //       rtk_prompt_dismissed=false AND inform_when_rtk_installed=true.
-            //       The banner is opt-in (issue #426): default-false inform means
-            //       no banner unless the user enabled it in Settings.
-            //   - active: rtk found AND inject_rtk_hook=true. Emits mode="active"
-            //       plus an active-recovery ON-sweep (idempotent).
-            //   - auto-disabled: rtk missing AND inject_rtk_hook=true. Persists
-            //       inject_rtk_hook=false (write lock held through save: grinch
-            //       H4 + N1); sweeps with enabled=false (RtkSweepLock held: grinch
-            //       M8); emits mode="auto-disabled".
-            //   - silent: everything else (frontend treats as no-op).
-            // Detached so the rest of setup is not blocked by disk I/O.
-            {
-                let app_handle_for_rtk = app.handle().clone();
-                let sweep_lock = Arc::clone(&rtk_sweep_lock_for_setup);
-                let mode_cache = Arc::clone(&rtk_startup_mode_for_setup);
-                tauri::async_runtime::spawn(async move {
-                    use crate::config::claude_settings::{
-                        enumerate_managed_agent_dirs, ensure_rtk_pretool_hook,
-                    };
-
-                    let rtk_present = which::which("rtk").is_ok();
-
-                    let settings_state = app_handle_for_rtk
-                        .state::<crate::config::settings::SettingsState>();
-
-                    let (inject_enabled, prompt_dismissed, inform_when_installed) = {
-                        let s = settings_state.read().await;
-                        (
-                            s.inject_rtk_hook,
-                            s.rtk_prompt_dismissed,
-                            s.inform_when_rtk_installed,
-                        )
-                    };
-
-                    let mode: &'static str = crate::config::settings::compute_rtk_startup_mode(
-                        rtk_present,
-                        inject_enabled,
-                        prompt_dismissed,
-                        inform_when_installed,
-                    );
-
-                    // §18 — cache the boot decision BEFORE running side effects
-                    // so a late-mounting banner sees the SAME mode the listener
-                    // receives (auto-disabled side-effects mutate inject_rtk_hook,
-                    // breaking any naïve recompute path). `set` returns Err if
-                    // already set; ignore (idempotent for repeated boots).
-                    let _ = mode_cache.set(mode.to_string());
-
-                    if mode == "auto-disabled" {
-                        // H4 + N1 fix: hold the SettingsState write lock through
-                        // save_settings so a concurrent update_settings cannot
-                        // land between our in-memory flip and the disk persist.
-                        // The lock is released explicitly via drop(s) AFTER the
-                        // save returns.
-                        let mut s = settings_state.write().await;
-                        s.inject_rtk_hook = false;
-                        let snapshot = s.clone();
-                        let project_paths =
-                            match crate::config::settings::save_settings(&snapshot) {
-                                Ok(written) => {
-                                    *s = written;
-                                    s.project_paths.clone()
-                                }
-                                Err(e) => {
-                                    log::warn!(
-                                        "[rtk-startup] Failed to persist auto-disable: {}",
-                                        e
-                                    );
-                                    snapshot.project_paths.clone()
-                                }
-                            };
-                        drop(s); // explicit; lock released AFTER the disk write
-
-                        // M8 fix: hold RtkSweepLock through the OFF-sweep loop.
-                        let _guard = sweep_lock.lock().await;
-                        for dir in enumerate_managed_agent_dirs(&project_paths) {
-                            if let Err(e) = ensure_rtk_pretool_hook(&dir, false) {
-                                log::warn!(
-                                    "[rtk-startup] auto-disable sweep failed for {}: {}",
-                                    dir.display(),
-                                    e
-                                );
-                            }
-                        }
-                    } else if mode == "active" {
-                        // M8 fix: hold RtkSweepLock through the ON-sweep loop.
-                        let project_paths = {
-                            let s = settings_state.read().await;
-                            s.project_paths.clone()
-                        };
-                        let _guard = sweep_lock.lock().await;
-                        for dir in enumerate_managed_agent_dirs(&project_paths) {
-                            if let Err(e) = ensure_rtk_pretool_hook(&dir, true) {
-                                log::warn!(
-                                    "[rtk-startup] active recovery sweep failed for {}: {}",
-                                    dir.display(),
-                                    e
-                                );
-                            }
-                        }
-                    }
-
-                    let _ = tauri::Emitter::emit(
-                        &app_handle_for_rtk,
-                        "rtk_startup_status",
-                        serde_json::json!({ "mode": mode }),
-                    );
-
-                    log::info!(
-                        "[rtk-startup] mode={} rtkPresent={} injectEnabled={} promptDismissed={} informWhenInstalled={}",
-                        mode,
-                        rtk_present,
-                        inject_enabled,
-                        prompt_dismissed,
-                        inform_when_installed
-                    );
-                });
-            }
-
             // Issue #609 - detached "npm update available" check. Fully fail-silent;
             // detached so startup is never blocked or delayed (acceptance criterion).
             {
@@ -958,9 +831,11 @@ pub fn run(
             // run-event handler. The lock is uncontended at this point (the
             // mailbox poller and other writers start below), so it returns
             // immediately.
+            let restore_session_paths =
+                sessions_persistence::session_retention_project_paths(&restore_settings_snapshot);
             let persisted = tauri::async_runtime::block_on(
                 sessions_persistence::load_sessions_purging_outside_project_paths(
-                    &restore_settings_snapshot.project_paths,
+                    &restore_session_paths,
                 ),
             );
             let restore_flag = app
@@ -1748,6 +1623,10 @@ pub fn run(
                         failed_recoverable.push(ps.clone());
                     }
 
+                    let archived_roots = sessions_persistence::normalize_project_roots(
+                        &settings_snapshot.archived_project_paths,
+                    );
+
                     for ps in &persisted {
                         if ps.is_root_agent
                             || crate::config::root_agent::is_root_agent_path(
@@ -1777,7 +1656,17 @@ pub fn run(
                             teams.is_empty(),
                             ps.is_coordinator,
                         );
-                        let wake = should_wake_on_restore(setting_on, is_coord, ps.status.as_ref());
+                        let archived_session =
+                            sessions_persistence::is_under_normalized_archived_roots(
+                                &ps.working_directory,
+                                &archived_roots,
+                            );
+                        let wake = restore_session_should_wake(
+                            archived_session,
+                            setting_on,
+                            is_coord,
+                            ps.status.as_ref(),
+                        );
 
                         if !wake {
                             // Defer: create a dormant Session record (no PTY, status = Exited(0)).
@@ -1855,7 +1744,10 @@ pub fn run(
                                     // The post-loop branching (Fix A) ensures `set_active_only`
                                     // is used (not `switch_session`), so the dormant status
                                     // survives selection.
-                                    if ps.was_active {
+                                    if restore_session_should_become_active(
+                                        ps.was_active,
+                                        archived_session,
+                                    ) {
                                         active_id = Some(session.id.to_string());
                                     }
                                 }
@@ -2186,14 +2078,10 @@ pub fn run(
             commands::config::resolve_coding_agent_profile,
             commands::config::preview_coding_agent_profile_selection,
             commands::config::apply_coding_agent_profile_selection,
-            commands::config::set_inject_rtk_hook,
-            commands::config::set_rtk_prompt_dismissed,
             commands::config::set_sounds_enabled,
             commands::config::set_theme_light,
             commands::config::set_main_resource_monitor_attached,
             commands::config::set_log_level,
-            commands::config::sweep_rtk_hook,
-            commands::config::get_rtk_startup_status,
             commands::config::get_update_status,
             commands::repos::search_repos,
             commands::telegram::telegram_attach,
@@ -2255,6 +2143,9 @@ pub fn run(
             commands::ac_discovery::open_project,
             commands::ac_discovery::new_project,
             commands::ac_discovery::remove_project,
+            commands::ac_discovery::archive_project,
+            commands::ac_discovery::unarchive_project,
+            commands::ac_discovery::list_archived_projects,
             commands::ac_discovery::discover_project,
             commands::project_settings::get_project_groups,
             commands::project_settings::update_project_groups,
@@ -2481,7 +2372,8 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::{
-        resolve_is_coord_for_restore, should_auto_create_root_agent_on_first_restore,
+        resolve_is_coord_for_restore, restore_session_should_become_active,
+        restore_session_should_wake, should_auto_create_root_agent_on_first_restore,
         should_wake_on_restore, should_wake_root_agent_on_restore, skip_auto_resume_for_restore,
         ApiServerHandle, ApiServerTask, WebServerHandle,
     };
@@ -2520,6 +2412,27 @@ mod tests {
             .manage(ApiServerHandle::default())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("web and api server handles must be distinct managed types");
+    }
+
+    #[test]
+    fn restore_loop_normalizes_archived_roots_before_persisted_session_loop() {
+        let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
+            .expect("read lib.rs");
+        let production = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production lib source");
+        let hoist = production
+            .find("let archived_roots = sessions_persistence::normalize_project_roots")
+            .expect("archived root normalization");
+        let loop_start = production
+            .find("for ps in &persisted")
+            .expect("persisted session loop");
+
+        assert!(
+            hoist < loop_start,
+            "startup restore must normalize archived roots once before the session loop"
+        );
     }
 
     #[tokio::test]
@@ -2680,6 +2593,29 @@ mod tests {
     #[test]
     fn coord_unknown_status_fails_open_when_on() {
         assert!(should_wake_on_restore(true, true, None));
+    }
+
+    #[test]
+    fn archived_project_session_is_forced_dormant_on_restore_decision() {
+        assert!(!restore_session_should_wake(
+            true,
+            true,
+            true,
+            Some(&SessionStatus::Running)
+        ));
+        assert!(restore_session_should_wake(
+            false,
+            true,
+            true,
+            Some(&SessionStatus::Running)
+        ));
+    }
+
+    #[test]
+    fn archived_project_session_is_never_adopted_as_active_on_restore() {
+        assert!(!restore_session_should_become_active(true, true));
+        assert!(restore_session_should_become_active(true, false));
+        assert!(!restore_session_should_become_active(false, false));
     }
 
     #[test]

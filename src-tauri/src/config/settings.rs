@@ -397,6 +397,11 @@ pub struct AppSettings {
     /// Currently loaded project paths (multi-project support)
     #[serde(default)]
     pub project_paths: Vec<String>,
+    /// #881 - projects hidden from the sidebar but still registered. Disk-authoritative
+    /// under the same Design S rules as `project_paths`: the default `save_settings`
+    /// preserves the on-disk copy and only dedicated list commands mutate it.
+    #[serde(default)]
+    pub archived_project_paths: Vec<String>,
     /// Sidebar visual style: "noir-minimal", "card-sections", "command-center", "deep-space", "arctic-ops", "obsidian-mesh", "neon-circuit"
     #[serde(default = "default_sidebar_style")]
     pub sidebar_style: String,
@@ -419,23 +424,6 @@ pub struct AppSettings {
     /// Phase 2 (UI dropdown) and Phase 3 (live reload) are deferred per the issue.
     #[serde(default)]
     pub log_level: Option<String>,
-    /// When true, AC writes the RTK PreToolUse rewriter hook into every managed
-    /// agent dir's `.claude/settings.local.json` (matrices + workgroup replicas).
-    /// Toggled from Settings/General. See issue #120.
-    #[serde(default)]
-    pub inject_rtk_hook: bool,
-    /// When true, the startup banner offering to enable `inject_rtk_hook` is
-    /// suppressed for the lifetime of this settings file. Set by the `[Don't
-    /// ask again]` button on the banner. See issue #120.
-    #[serde(default)]
-    pub rtk_prompt_dismissed: bool,
-    /// When true, AC may surface the startup banner offering to enable
-    /// `inject_rtk_hook`, subject to the other gates: `rtk` on PATH,
-    /// `inject_rtk_hook == false`, and `rtk_prompt_dismissed == false`.
-    /// Defaults to `false` so the banner is opt-in and never appears unless the
-    /// user enables it in Settings → General → RTK. See issue #426.
-    #[serde(default)]
-    pub inform_when_rtk_installed: bool,
     /// When true, on Coordinator session spawn AC injects a prompt asking the
     /// agent to add a YAML frontmatter `title:` line to its workgroup
     /// `TASK.md` (only if the brief is non-empty and has no `title:` yet).
@@ -505,6 +493,12 @@ pub struct AppSettings {
     /// while the global master is on; absent = use the class default.
     #[serde(default)]
     pub auto_self_clear_by_agent: std::collections::BTreeMap<String, bool>,
+    /// #930 - when true (default), container coding-agent sessions copy the host
+    /// user's credential file for that agent into the replica config dir at spawn
+    /// and delete it on teardown. When false, the user supplies credentials
+    /// themselves (e.g. a CLAUDE_CODE_OAUTH_TOKEN env row).
+    #[serde(default = "default_true")]
+    pub container_credentials_from_host: bool,
 }
 
 fn default_true() -> bool {
@@ -699,15 +693,13 @@ impl Default for AppSettings {
             api_server_bind: default_api_bind(),
             project_path: None,
             project_paths: vec![],
+            archived_project_paths: vec![],
             sidebar_style: default_sidebar_style(),
             root_token: None,
             onboarding_dismissed: false,
             coord_sort_by_activity: false,
             always_show_selected_workgroup: true,
             log_level: None,
-            inject_rtk_hook: false,
-            rtk_prompt_dismissed: false,
-            inform_when_rtk_installed: false,
             auto_generate_task_title: true,
             agent_templates_path: None,
             theme_light: false,
@@ -729,44 +721,8 @@ impl Default for AppSettings {
             npm_update_notifications_enabled: true,
             auto_self_clear_enabled: true,
             auto_self_clear_by_agent: std::collections::BTreeMap::new(),
+            container_credentials_from_host: true,
         }
-    }
-}
-
-/// Pure decision for the boot-time RTK banner/sweep mode (issue #120 §18,
-/// extended by issue #426). Maps the three persisted settings flags plus the
-/// runtime `rtk`-on-PATH probe to one of the four `RtkStartupMode` strings the
-/// frontend understands. Side-effect-free so the full truth table is unit
-/// testable without booting Tauri, spawning the setup task, probing PATH, or
-/// touching disk.
-///
-/// `inform_when_rtk_installed` is the issue #426 opt-in gate: the
-/// `prompt-enable` banner only appears when the user has explicitly turned it
-/// on. `rtk_prompt_dismissed` is retained as a secondary suppression gate (the
-/// banner's `[Don't ask again]` button) and still wins when set.
-pub fn compute_rtk_startup_mode(
-    rtk_present: bool,
-    inject_enabled: bool,
-    prompt_dismissed: bool,
-    inform_when_rtk_installed: bool,
-) -> &'static str {
-    match (
-        rtk_present,
-        inject_enabled,
-        prompt_dismissed,
-        inform_when_rtk_installed,
-    ) {
-        // Opt-in banner: rtk present, not yet injected, not dismissed, and the
-        // user asked to be informed. All four must hold (issue #426).
-        (true, false, false, true) => "prompt-enable",
-        // Already enabled: recover/refresh the hook. `inform` and `dismissed`
-        // are irrelevant once injection is on.
-        (true, true, _, _) => "active",
-        // Enabled but the binary vanished from PATH: auto-disable and clean up.
-        (false, true, _, _) => "auto-disabled",
-        // Everything else (inform=false, or dismissed=true, or rtk absent and
-        // not injected) is a no-op.
-        _ => "silent",
     }
 }
 
@@ -1939,13 +1895,23 @@ pub fn read_log_level_only() -> Option<String> {
 /// counter so the two can be reasoned about independently in diagnostics.
 static SAVE_OP_ID: AtomicU64 = AtomicU64::new(0);
 
-type DiskProjectPaths = (Vec<String>, Option<String>);
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DiskProjectLists {
+    pub project_paths: Vec<String>,
+    pub project_path: Option<String>,
+    pub archived_project_paths: Option<Vec<String>>,
+}
 
-/// #778: side-effect-free reader of ONLY `project_paths`/`project_path` from
-/// `settings.json` on disk. Under Design S `project_paths` is disk-authoritative,
+/// #778/#881: side-effect-free reader of ONLY the project lists from
+/// `settings.json` on disk. Under Design S those lists are disk-authoritative,
 /// so the default `save_settings` uses this to preserve whatever another process
-/// (a CLI verb, a second instance) wrote, and the add/remove commands use it to
+/// (a CLI verb, a second instance) wrote, and the list commands use it to
 /// reconcile before a deliberate mutation.
+///
+/// The outer `Option` means no disk truth at all: the file is absent, or
+/// `projectPaths` is absent/null. `archived_project_paths` has its own inner
+/// `Option`: absent/null means no disk truth for that list only, while
+/// `Some(vec![])` means disk explicitly says nothing is archived.
 ///
 /// Error policy (grinch G2): a genuine `NotFound` yields `None` (fresh install:
 /// no disk truth to substitute). ANY other error (a transient os 5/32/33/1175
@@ -1961,7 +1927,7 @@ type DiskProjectPaths = (Vec<String>, Option<String>);
 /// so the later `MoveFileEx` rename cannot hit a sharing violation (os 32).
 /// MUST NOT call `load_settings` (it migrates, generates root_token, and
 /// re-saves: infinite recursion + side effects).
-fn read_project_paths_from_disk(path: &Path) -> Result<Option<DiskProjectPaths>, String> {
+fn read_project_paths_from_disk(path: &Path) -> Result<Option<DiskProjectLists>, String> {
     // 1 initial attempt + up to 2 retries on a transient (non-NotFound) read error.
     const READ_RETRY_BACKOFFS_MS: [u64; 2] = [10, 40];
     let mut attempt = 0usize;
@@ -1997,6 +1963,11 @@ fn read_project_paths_from_disk(path: &Path) -> Result<Option<DiskProjectPaths>,
     })?;
     let project_paths = match value.get("projectPaths") {
         None | Some(serde_json::Value::Null) => return Ok(None),
+        // #881: non-string elements are dropped here, but rejected in the
+        // archivedProjectPaths arm below. Deliberate. `projectPaths` only feeds
+        // discovery; `archivedProjectPaths` feeds session retention, where a
+        // silently-emptied list deletes sessions. Tightening this one is
+        // #888's call, not #881's.
         Some(serde_json::Value::Array(arr)) => arr
             .iter()
             .filter_map(|x| x.as_str().map(str::to_string))
@@ -2013,11 +1984,44 @@ fn read_project_paths_from_disk(path: &Path) -> Result<Option<DiskProjectPaths>,
         .get("projectPath")
         .and_then(|v| v.as_str())
         .map(str::to_string);
-    Ok(Some((project_paths, project_path)))
+    let archived_project_paths = match value.get("archivedProjectPaths") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::Array(arr)) => {
+            // #881 R2-G5: a non-string element is corruption, not an entry to
+            // skip. The `projectPaths` arm above silently drops non-strings;
+            // do not copy that here. `[123]` would read as `Some(vec![])`,
+            // meaning disk authoritatively says nothing is archived.
+            let mut archived = Vec::with_capacity(arr.len());
+            for item in arr {
+                let Some(archived_path) = item.as_str() else {
+                    return Err(format!(
+                        "{}: archivedProjectPaths contains {}, not a string (aborting save)",
+                        path.display(),
+                        item
+                    ));
+                };
+                archived.push(archived_path.to_string());
+            }
+            Some(archived)
+        }
+        Some(other) => {
+            return Err(format!(
+                "{}: archivedProjectPaths is {}, not an array (aborting save)",
+                path.display(),
+                other
+            ));
+        }
+    };
+    Ok(Some(DiskProjectLists {
+        project_paths,
+        project_path,
+        archived_project_paths,
+    }))
 }
 
-/// #778: overwrite `settings`' in-memory project list with the disk-authoritative
-/// one. The deliberate list mutators (`open_project`/`new_project`/`remove_project`)
+/// #778/#881: overwrite `settings`' in-memory project lists with the
+/// disk-authoritative ones. The deliberate list mutators
+/// (`open_project`/`new_project`/`remove_project`)
 /// call this under the `SettingsState` write lock BEFORE they add/remove, so a
 /// concurrent CLI append is reconciled into the list rather than clobbered by the
 /// following verbatim write. Aborts (propagates `Err`) on a non-`NotFound` read
@@ -2033,20 +2037,24 @@ pub(crate) fn refresh_project_paths_from_path(
     settings: &mut AppSettings,
     path: &Path,
 ) -> Result<(), String> {
-    if let Some((project_paths, project_path)) = read_project_paths_from_disk(path)? {
-        settings.project_paths = project_paths;
-        settings.project_path = project_path;
+    if let Some(lists) = read_project_paths_from_disk(path)? {
+        settings.project_paths = lists.project_paths;
+        settings.project_path = lists.project_path;
+        if let Some(archived) = lists.archived_project_paths {
+            settings.archived_project_paths = archived;
+        }
     }
     Ok(())
 }
 
 /// Save settings to the app config directory (see config_dir()).
 ///
-/// #778: this is the DEFAULT writer and treats `project_paths` as
+/// #778/#881: this is the DEFAULT writer and treats the project lists as
 /// disk-authoritative (Design S). It preserves whatever `project_paths`/
-/// `project_path` is currently on disk and discards this (possibly stale)
+/// `project_path`/`archived_project_paths` is currently on disk and discards this
+/// (possibly stale)
 /// in-memory candidate's copy, so ANY whole-object GUI save is fail-safe for the
-/// project list: a project a CLI verb registered while the GUI ran is never
+/// project lists: a project a CLI verb registered while the GUI ran is never
 /// clobbered. Deliberate list changes (the add/remove commands, the CLI verbs,
 /// the startup root_token/migration write) go through
 /// `save_settings_with_project_paths` instead.
@@ -2054,7 +2062,7 @@ pub(crate) fn refresh_project_paths_from_path(
 /// The underlying write is the #774-hardened atomic tmp+rename
 /// (`save_settings_to_path`): a per-writer unique temp plus
 /// `sessions_persistence::rename_with_retry`. The disk read that preserves
-/// `project_paths` runs first and closes its handle before that write (G4a).
+/// project lists runs first and closes its handle before that write (G4a).
 ///
 /// G4b (accepted, documented): a remove/add racing another writer within the
 /// sub-millisecond window between this preserve-read and the rename could
@@ -2067,7 +2075,8 @@ pub fn save_settings(settings: &AppSettings) -> Result<AppSettings, String> {
     save_settings_to_path_preserving_project_paths(settings, &path)
 }
 
-/// #778: EXPLICIT writer. Persists `project_paths`/`project_path` VERBATIM (the
+/// #778/#881: EXPLICIT writer. Persists `project_paths`/`project_path` and
+/// `archived_project_paths` VERBATIM (the
 /// pre-#778 `save_settings` behavior, still #774-hardened). ONLY for deliberate
 /// list mutators that have already reconciled the list against disk: the add
 /// commands (`open_project`/`new_project`), the `remove_project` command, the two
@@ -2086,8 +2095,8 @@ pub(crate) fn save_settings_with_project_paths_to_path(
     save_settings_to_path(settings, path)
 }
 
-/// #778: the preserve-disk wrapper behind the default `save_settings`. Reads the
-/// current on-disk `project_paths`/`project_path` (G2 abort policy), substitutes
+/// #778/#881: the preserve-disk wrapper behind the default `save_settings`.
+/// Reads the current on-disk project lists (G2 abort policy), substitutes
 /// them into a clone of `settings`, then hands off to the verbatim
 /// #774-hardened writer. Split out with an explicit `path` so tests can drive it
 /// against a `tempfile::tempdir()`.
@@ -2096,9 +2105,12 @@ pub(crate) fn save_settings_to_path_preserving_project_paths(
     path: &Path,
 ) -> Result<AppSettings, String> {
     let mut to_write = settings.clone();
-    if let Some((disk_paths, disk_head)) = read_project_paths_from_disk(path)? {
-        to_write.project_paths = disk_paths;
-        to_write.project_path = disk_head;
+    if let Some(lists) = read_project_paths_from_disk(path)? {
+        to_write.project_paths = lists.project_paths;
+        to_write.project_path = lists.project_path;
+        if let Some(archived) = lists.archived_project_paths {
+            to_write.archived_project_paths = archived;
+        }
     }
     save_settings_to_path(&to_write, path)?;
     Ok(to_write)
@@ -3512,15 +3524,27 @@ mod tests {
         }
     }
 
+    fn settings_with_project_and_archived_paths(paths: &[&str], archived: &[&str]) -> AppSettings {
+        AppSettings {
+            project_paths: paths.iter().map(|p| p.to_string()).collect(),
+            project_path: paths.first().map(|p| p.to_string()),
+            archived_project_paths: archived.iter().map(|p| p.to_string()).collect(),
+            ..AppSettings::default()
+        }
+    }
+
     #[test]
     fn read_project_paths_from_disk_returns_list_and_head() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("settings.json");
         super::save_settings_to_path(&settings_with_project_paths(&["C:/a", "C:/b"]), &path)
             .unwrap();
-        let (paths, head) = super::read_project_paths_from_disk(&path).unwrap().unwrap();
-        assert_eq!(paths, vec!["C:/a".to_string(), "C:/b".to_string()]);
-        assert_eq!(head.as_deref(), Some("C:/a"));
+        let lists = super::read_project_paths_from_disk(&path).unwrap().unwrap();
+        assert_eq!(
+            lists.project_paths,
+            vec!["C:/a".to_string(), "C:/b".to_string()]
+        );
+        assert_eq!(lists.project_path.as_deref(), Some("C:/a"));
     }
 
     #[test]
@@ -3560,9 +3584,115 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("settings.json");
         std::fs::write(&path, r#"{"projectPaths":[]}"#).unwrap();
-        let (paths, head) = super::read_project_paths_from_disk(&path).unwrap().unwrap();
-        assert!(paths.is_empty());
-        assert_eq!(head, None);
+        let lists = super::read_project_paths_from_disk(&path).unwrap().unwrap();
+        assert!(lists.project_paths.is_empty());
+        assert_eq!(lists.project_path, None);
+    }
+
+    #[test]
+    fn read_project_paths_from_disk_returns_archived_list() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        super::save_settings_to_path(
+            &settings_with_project_and_archived_paths(&["C:/a"], &["C:/old"]),
+            &path,
+        )
+        .unwrap();
+
+        let lists = super::read_project_paths_from_disk(&path).unwrap().unwrap();
+
+        assert_eq!(
+            lists.archived_project_paths,
+            Some(vec!["C:/old".to_string()])
+        );
+    }
+
+    #[test]
+    fn read_project_paths_from_disk_returns_archived_none_when_key_absent() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, r#"{"projectPaths":["C:/a"],"projectPath":"C:/a"}"#).unwrap();
+
+        let lists = super::read_project_paths_from_disk(&path).unwrap().unwrap();
+
+        assert_eq!(lists.project_paths, vec!["C:/a".to_string()]);
+        assert_eq!(lists.project_path.as_deref(), Some("C:/a"));
+        assert_eq!(lists.archived_project_paths, None);
+    }
+
+    #[test]
+    fn read_project_paths_from_disk_returns_archived_none_when_key_null() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"projectPaths":["C:/a"],"archivedProjectPaths":null}"#,
+        )
+        .unwrap();
+
+        let lists = super::read_project_paths_from_disk(&path).unwrap().unwrap();
+
+        assert_eq!(lists.archived_project_paths, None);
+    }
+
+    #[test]
+    fn read_project_paths_from_disk_returns_archived_some_empty_when_key_is_empty_list() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"projectPaths":["C:/a"],"archivedProjectPaths":[]}"#,
+        )
+        .unwrap();
+
+        let lists = super::read_project_paths_from_disk(&path).unwrap().unwrap();
+
+        assert_eq!(lists.archived_project_paths, Some(vec![]));
+    }
+
+    #[test]
+    fn read_project_paths_from_disk_aborts_when_archived_key_wrong_type() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"projectPaths":["C:/a"],"archivedProjectPaths":"C:/old"}"#,
+        )
+        .unwrap();
+
+        assert!(super::read_project_paths_from_disk(&path).is_err());
+    }
+
+    #[test]
+    fn read_project_paths_from_disk_aborts_when_archived_list_has_non_string_element() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"projectPaths":["C:/a"],"archivedProjectPaths":["C:/old",123]}"#,
+        )
+        .unwrap();
+
+        assert!(super::read_project_paths_from_disk(&path).is_err());
+    }
+
+    #[test]
+    fn read_project_paths_from_disk_drops_non_string_project_path_elements() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"projectPaths":["C:/a",123],"archivedProjectPaths":["C:/old"]}"#,
+        )
+        .unwrap();
+
+        let lists = super::read_project_paths_from_disk(&path).unwrap().unwrap();
+
+        assert_eq!(lists.project_paths, vec!["C:/a".to_string()]);
+        assert_eq!(
+            lists.archived_project_paths,
+            Some(vec!["C:/old".to_string()])
+        );
     }
 
     #[test]
@@ -3611,14 +3741,112 @@ mod tests {
     }
 
     #[test]
+    fn refresh_project_paths_from_path_keeps_live_archived_list_when_key_absent() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, r#"{"projectPaths":["A"],"projectPath":"A"}"#).unwrap();
+        let mut settings = settings_with_project_and_archived_paths(&["stale"], &["Archived"]);
+
+        super::refresh_project_paths_from_path(&mut settings, &path).unwrap();
+
+        assert_eq!(settings.project_paths, vec!["A".to_string()]);
+        assert_eq!(settings.project_path.as_deref(), Some("A"));
+        assert_eq!(
+            settings.archived_project_paths,
+            vec!["Archived".to_string()]
+        );
+    }
+
+    #[test]
+    fn refresh_project_paths_from_path_clears_archived_list_when_disk_says_empty() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"projectPaths":["A"],"projectPath":"A","archivedProjectPaths":[]}"#,
+        )
+        .unwrap();
+        let mut settings = settings_with_project_and_archived_paths(&["stale"], &["Archived"]);
+
+        super::refresh_project_paths_from_path(&mut settings, &path).unwrap();
+
+        assert_eq!(settings.project_paths, vec!["A".to_string()]);
+        assert_eq!(settings.project_path.as_deref(), Some("A"));
+        assert!(settings.archived_project_paths.is_empty());
+    }
+
+    #[test]
+    fn save_settings_preserves_disk_archived_list() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        super::save_settings_to_path(
+            &settings_with_project_and_archived_paths(&["A"], &["ArchivedA"]),
+            &path,
+        )
+        .unwrap();
+        let candidate = settings_with_project_and_archived_paths(&["A"], &["ArchivedB"]);
+
+        let written =
+            super::save_settings_to_path_preserving_project_paths(&candidate, &path).unwrap();
+
+        let reloaded: AppSettings =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            reloaded.archived_project_paths,
+            vec!["ArchivedA".to_string()]
+        );
+        assert_eq!(
+            written.archived_project_paths,
+            reloaded.archived_project_paths
+        );
+    }
+
+    #[test]
+    fn save_settings_returns_caller_archived_list_when_disk_key_absent() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, r#"{"projectPaths":["A"],"projectPath":"A"}"#).unwrap();
+        let caller_archived = vec!["Archived".to_string()];
+        let candidate = settings_with_project_and_archived_paths(&["stale"], &["Archived"]);
+
+        let written =
+            super::save_settings_to_path_preserving_project_paths(&candidate, &path).unwrap();
+
+        let reloaded: AppSettings =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written.project_paths, vec!["A".to_string()]);
+        assert_eq!(written.project_path.as_deref(), Some("A"));
+        assert_eq!(written.archived_project_paths, caller_archived);
+        assert_eq!(reloaded.archived_project_paths, caller_archived);
+    }
+
+    #[test]
     fn save_settings_with_project_paths_writes_verbatim() {
         // The explicit writer persists the in-memory list as-is (deliberate mutation).
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("settings.json");
         super::save_settings_to_path(&settings_with_project_paths(&["A"]), &path).unwrap();
         super::save_settings_to_path(&settings_with_project_paths(&["A", "Y"]), &path).unwrap();
-        let (paths, _) = super::read_project_paths_from_disk(&path).unwrap().unwrap();
-        assert_eq!(paths, vec!["A".to_string(), "Y".to_string()]);
+        let lists = super::read_project_paths_from_disk(&path).unwrap().unwrap();
+        assert_eq!(lists.project_paths, vec!["A".to_string(), "Y".to_string()]);
+    }
+
+    #[test]
+    fn save_settings_with_project_paths_writes_archived_verbatim() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        super::save_settings_with_project_paths_to_path(
+            &settings_with_project_and_archived_paths(&["A"], &["Archived"]),
+            &path,
+        )
+        .unwrap();
+
+        let lists = super::read_project_paths_from_disk(&path).unwrap().unwrap();
+
+        assert_eq!(
+            lists.archived_project_paths,
+            Some(vec!["Archived".to_string()])
+        );
     }
 
     #[test]
@@ -3639,8 +3867,8 @@ mod tests {
             &path,
         )
         .unwrap();
-        let (paths, _) = super::read_project_paths_from_disk(&path).unwrap().unwrap();
-        assert_eq!(paths, vec!["A".to_string()]);
+        let lists = super::read_project_paths_from_disk(&path).unwrap().unwrap();
+        assert_eq!(lists.project_paths, vec!["A".to_string()]);
     }
 
     #[test]
@@ -3652,15 +3880,15 @@ mod tests {
         super::save_settings_to_path(&settings_with_project_paths(&["A", "X"]), &path).unwrap();
 
         let mut s = settings_with_project_paths(&["A"]); // stale in-memory
-        let (disk_paths, disk_head) = super::read_project_paths_from_disk(&path).unwrap().unwrap();
-        s.project_paths = disk_paths;
-        s.project_path = disk_head; // reconciled to [A, X]
+        let lists = super::read_project_paths_from_disk(&path).unwrap().unwrap();
+        s.project_paths = lists.project_paths;
+        s.project_path = lists.project_path; // reconciled to [A, X]
         assert!(crate::config::projects::remove_project_path(&mut s, "A"));
         super::save_settings_to_path(&s, &path).unwrap(); // verbatim
 
-        let (paths, head) = super::read_project_paths_from_disk(&path).unwrap().unwrap();
-        assert_eq!(paths, vec!["X".to_string()]); // A gone, X preserved
-        assert_eq!(head.as_deref(), Some("X"));
+        let lists = super::read_project_paths_from_disk(&path).unwrap().unwrap();
+        assert_eq!(lists.project_paths, vec!["X".to_string()]); // A gone, X preserved
+        assert_eq!(lists.project_path.as_deref(), Some("X"));
     }
 
     #[test]
@@ -3672,16 +3900,16 @@ mod tests {
         super::save_settings_to_path(&settings_with_project_paths(&["A", "X"]), &path).unwrap();
 
         let mut s = settings_with_project_paths(&["A"]); // stale
-        let (disk_paths, disk_head) = super::read_project_paths_from_disk(&path).unwrap().unwrap();
-        s.project_paths = disk_paths;
-        s.project_path = disk_head; // [A, X]
+        let lists = super::read_project_paths_from_disk(&path).unwrap().unwrap();
+        s.project_paths = lists.project_paths;
+        s.project_path = lists.project_path; // [A, X]
         s.project_paths.push("Y".to_string()); // stand-in for register upsert
         s.project_path = s.project_paths.first().cloned();
         super::save_settings_to_path(&s, &path).unwrap();
 
-        let (paths, _) = super::read_project_paths_from_disk(&path).unwrap().unwrap();
+        let lists = super::read_project_paths_from_disk(&path).unwrap().unwrap();
         assert_eq!(
-            paths,
+            lists.project_paths,
             vec!["A".to_string(), "X".to_string(), "Y".to_string()]
         );
     }
@@ -3736,17 +3964,6 @@ mod tests {
     }
 
     #[test]
-    fn inject_rtk_hook_round_trips_through_serde() {
-        let mut s = AppSettings::default();
-        assert!(!s.inject_rtk_hook);
-        s.inject_rtk_hook = true;
-        let json = serde_json::to_string(&s).expect("serialize");
-        assert!(json.contains("\"injectRtkHook\":true"));
-        let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
-        assert!(back.inject_rtk_hook);
-    }
-
-    #[test]
     fn main_resource_monitor_attached_round_trips_and_defaults_false() {
         // #587 - round-trips through serde as camelCase.
         let mut s = AppSettings::default();
@@ -3793,99 +4010,6 @@ mod tests {
         let from_old: AppSettings =
             serde_json::from_str(json_without).expect("deserialize old json");
         assert!(!from_old.main_resource_monitor_attached);
-    }
-
-    #[test]
-    fn rtk_prompt_dismissed_round_trips_through_serde() {
-        let mut s = AppSettings::default();
-        assert!(!s.rtk_prompt_dismissed);
-        s.rtk_prompt_dismissed = true;
-        let json = serde_json::to_string(&s).expect("serialize");
-        assert!(json.contains("\"rtkPromptDismissed\":true"));
-        let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
-        assert!(back.rtk_prompt_dismissed);
-    }
-
-    #[test]
-    fn inform_when_rtk_installed_round_trips_through_serde() {
-        let mut s = AppSettings::default();
-        assert!(!s.inform_when_rtk_installed);
-        s.inform_when_rtk_installed = true;
-        let json = serde_json::to_string(&s).expect("serialize");
-        assert!(json.contains("\"informWhenRtkInstalled\":true"));
-        let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
-        assert!(back.inform_when_rtk_installed);
-    }
-
-    #[test]
-    fn inform_when_rtk_installed_defaults_false_when_missing_from_json() {
-        // Old settings.json without the #426 field must deserialize to false so
-        // the startup banner stays opt-in (never appears after an upgrade).
-        let json = r#"{
-            "defaultShell": "bash",
-            "defaultShellArgs": [],
-            "agents": []
-        }"#;
-        let s: AppSettings = serde_json::from_str(json).expect("deserialize old json");
-        assert!(!s.inform_when_rtk_installed);
-    }
-
-    #[test]
-    fn compute_rtk_startup_mode_prompt_enable_requires_all_gates() {
-        // Opt-in banner: only when rtk present, injection off, not dismissed,
-        // AND the user opted in (#426).
-        assert_eq!(
-            super::compute_rtk_startup_mode(true, false, false, true),
-            "prompt-enable"
-        );
-    }
-
-    #[test]
-    fn compute_rtk_startup_mode_silent_when_inform_off() {
-        // Core #426 regression guard: rtk present, not injected, not dismissed,
-        // but inform=false => no banner (silent). This is the new default.
-        assert_eq!(
-            super::compute_rtk_startup_mode(true, false, false, false),
-            "silent"
-        );
-    }
-
-    #[test]
-    fn compute_rtk_startup_mode_dismissed_suppresses_even_when_inform_on() {
-        // rtk_prompt_dismissed remains a secondary gate (#426): a dismissed
-        // prompt stays suppressed even if inform was later enabled.
-        assert_eq!(
-            super::compute_rtk_startup_mode(true, false, true, true),
-            "silent"
-        );
-    }
-
-    #[test]
-    fn compute_rtk_startup_mode_active_when_injected_regardless_of_inform() {
-        assert_eq!(
-            super::compute_rtk_startup_mode(true, true, false, false),
-            "active"
-        );
-        assert_eq!(
-            super::compute_rtk_startup_mode(true, true, true, true),
-            "active"
-        );
-    }
-
-    #[test]
-    fn compute_rtk_startup_mode_auto_disabled_when_missing_but_injected() {
-        assert_eq!(
-            super::compute_rtk_startup_mode(false, true, false, false),
-            "auto-disabled"
-        );
-    }
-
-    #[test]
-    fn compute_rtk_startup_mode_silent_when_missing_and_not_injected() {
-        assert_eq!(
-            super::compute_rtk_startup_mode(false, false, false, true),
-            "silent"
-        );
     }
 
     // ── Issue #248 — legacy startOnlyCoordinators → restoreCoordinatorWakeState ──

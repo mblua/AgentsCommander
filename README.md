@@ -136,7 +136,7 @@ These are not accidents.
 - [Quickstart](docs/quickstart.md): 60-second install to first running agent
 - [Concepts](docs/concepts.md): agent, team, workgroup, coordinator, brief
 - [Teams and workgroups](docs/agents/teams-and-workgroups.md): coordinators, members, briefs, messaging
-- [Features](docs/features/): [Coding Agent Profiles](docs/features/coding-agent-profiles.md), [Session auto-close](docs/features/session-auto-close.md), [Config seed](docs/features/config-seed.md), Telegram bridge with image and screenshot sends, voice-to-text, portable instances, RTK integration
+- [Features](docs/features/): [Coding Agent Profiles](docs/features/coding-agent-profiles.md), [Session auto-close](docs/features/session-auto-close.md), [Config seed](docs/features/config-seed.md), [Container coding agents](docs/features/container-coding-agents.md), Telegram bridge with image and screenshot sends, voice-to-text, portable instances
 - [Reference](docs/reference/): full CLI, `settings.json` schema, architecture, log filtering
 - [Roadmap](ROADMAP.md) · [Changelog](CHANGELOG.md) · [Docs style guide](docs/style-guide.md)
 
@@ -173,7 +173,6 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md): branch naming, local build, log-filter
 AgentsCommander stands on the shoulders of:
 
 - **[@msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents)**: community library of agent role templates. AC can download an explicit, offline cache with `agency-templates update`; normal startup and role browsing never hit the network. Big thanks to the maintainers for keeping it open.
-- **[RTK (Rust Token Killer)](https://github.com/rtk-ai/rtk)**: CLI proxy that compresses command outputs to cut LLM token consumption by 60–90% on common dev operations. AC auto-detects `rtk` on PATH at startup and wires the `PreToolUse` hook into managed agent directories (see `src-tauri/src/lib.rs:382-473` and `src-tauri/src/config/claude_settings.rs`).
 
 Also: Tauri, SolidJS, xterm.js, portable-pty, axum, tokio; the toolchain layer this app would be impossible without.
 

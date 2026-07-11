@@ -28,6 +28,9 @@ enum BrowserProjectCommand {
     UpdateProjectGroups,
     OpenProject,
     RemoveProject,
+    ArchiveProject,
+    UnarchiveProject,
+    ListArchivedProjects,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,6 +55,13 @@ fn route_web_command(cmd: &str) -> WebCommandRoute {
         }
         "open_project" => WebCommandRoute::BrowserProject(BrowserProjectCommand::OpenProject),
         "remove_project" => WebCommandRoute::BrowserProject(BrowserProjectCommand::RemoveProject),
+        "archive_project" => WebCommandRoute::BrowserProject(BrowserProjectCommand::ArchiveProject),
+        "unarchive_project" => {
+            WebCommandRoute::BrowserProject(BrowserProjectCommand::UnarchiveProject)
+        }
+        "list_archived_projects" => {
+            WebCommandRoute::BrowserProject(BrowserProjectCommand::ListArchivedProjects)
+        }
         _ => WebCommandRoute::Other,
     }
 }
@@ -707,17 +717,76 @@ async fn dispatch_browser_project_command(
 
         BrowserProjectCommand::OpenProject => {
             let path = require_str(args, "path")?;
-            let result =
-                crate::commands::ac_discovery::open_project_inner(&state.settings, &path).await?;
+            let result = crate::commands::ac_discovery::open_project_inner(
+                &state.app_handle,
+                &state.settings,
+                &path,
+            )
+            .await?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
 
         BrowserProjectCommand::RemoveProject => {
             let path = require_str(args, "path")?;
-            crate::commands::ac_discovery::remove_project_inner(&state.settings, &path).await?;
+            crate::commands::ac_discovery::remove_project_inner(
+                &state.app_handle,
+                &state.settings,
+                &path,
+            )
+            .await?;
             Ok(json!(null))
         }
+
+        BrowserProjectCommand::ArchiveProject => {
+            let path = require_str(args, "path")?;
+            crate::commands::ac_discovery::archive_project_inner(
+                &state.app_handle,
+                &state.settings,
+                &state.session_mgr,
+                &state.pty_mgr,
+                &path,
+            )
+            .await?;
+            Ok(json!(null))
+        }
+
+        BrowserProjectCommand::UnarchiveProject => {
+            let path = require_str(args, "path")?;
+            let result = crate::commands::ac_discovery::unarchive_project_inner(
+                &state.app_handle,
+                &state.settings,
+                &path,
+            )
+            .await?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+
+        BrowserProjectCommand::ListArchivedProjects => {
+            let result =
+                crate::commands::ac_discovery::list_archived_projects_inner(&state.settings)
+                    .await?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
     }
+}
+
+fn broadcast_all_to_managed<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    event: &str,
+    payload: &Value,
+) -> bool {
+    let _ = tauri::Emitter::emit(app, event, payload.clone());
+    if let Some(bc) = app.try_state::<WsBroadcaster>() {
+        bc.broadcast_event(event, payload);
+        true
+    } else {
+        false
+    }
+}
+
+/// Emit event to both Tauri windows and managed WebSocket clients.
+pub fn broadcast_all_r<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: &str, payload: &Value) {
+    let _ = broadcast_all_to_managed(app, event, payload);
 }
 
 /// Emit event to both Tauri windows and WebSocket clients.
@@ -795,6 +864,12 @@ mod tests {
                 BrowserProjectCommand::CheckProjectPath,
             ),
             ("remove_project", BrowserProjectCommand::RemoveProject),
+            ("archive_project", BrowserProjectCommand::ArchiveProject),
+            ("unarchive_project", BrowserProjectCommand::UnarchiveProject),
+            (
+                "list_archived_projects",
+                BrowserProjectCommand::ListArchivedProjects,
+            ),
             (
                 "get_project_groups",
                 BrowserProjectCommand::GetProjectGroups,
@@ -823,6 +898,49 @@ mod tests {
         assert_eq!(route_web_command("new_project"), WebCommandRoute::Other);
         assert_eq!(route_web_command("open-project"), WebCommandRoute::Other);
         assert_eq!(route_web_command("new-project"), WebCommandRoute::Other);
+    }
+
+    #[test]
+    fn broadcast_all_r_sends_to_managed_websocket_broadcaster() {
+        let broadcaster = WsBroadcaster::new();
+        let mut receiver = broadcaster.subscribe();
+        let app = tauri::Builder::default()
+            .any_thread()
+            .manage(broadcaster)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build test app");
+        let payload = json!({ "path": "C:/project", "archived": true });
+
+        broadcast_all_r(app.handle(), "project_archive_changed", &payload);
+
+        let event = match receiver.try_recv().expect("broadcast event") {
+            WsOutMsg::Text(text) => serde_json::from_str::<Value>(&text).expect("parse event"),
+            other => panic!("expected text event, got {other:?}"),
+        };
+        assert_eq!(event["event"], json!("project_archive_changed"));
+        assert_eq!(event["payload"], payload);
+    }
+
+    #[test]
+    fn broadcast_all_sends_to_explicit_websocket_broadcaster() {
+        let managed = WsBroadcaster::new();
+        let explicit = WsBroadcaster::new();
+        let mut receiver = explicit.subscribe();
+        let app = tauri::Builder::default()
+            .any_thread()
+            .manage(managed)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build test app");
+        let payload = json!({ "path": "C:/project", "archived": false });
+
+        broadcast_all(app.handle(), &explicit, "project_archive_changed", &payload);
+
+        let event = match receiver.try_recv().expect("broadcast event") {
+            WsOutMsg::Text(text) => serde_json::from_str::<Value>(&text).expect("parse event"),
+            other => panic!("expected text event, got {other:?}"),
+        };
+        assert_eq!(event["event"], json!("project_archive_changed"));
+        assert_eq!(event["payload"], payload);
     }
 
     #[tokio::test]

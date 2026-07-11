@@ -22,6 +22,8 @@ import { sessionsStore } from "../stores/sessions";
 import { projectStore } from "../stores/project";
 import { newAgentId, definitionToSeed } from "../../shared/agent-presets";
 import { codingAgentsStore } from "../stores/coding-agents";
+import TrashIcon from "./TrashIcon";
+import XMarkIcon from "./XMarkIcon";
 import { mergeSettingsForSavePreservingProjects } from "./settings-save";
 import {
   AC_MATRIX_ROOT_PLACEHOLDER,
@@ -200,17 +202,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   // in-progress key/value edits stable while the underlying Record<string,string>
   // is rebuilt on every keystroke. Keyed by `${agentId}:${letter}`.
   const [profileCellEnvRows, setProfileCellEnvRows] = createStore<Record<string, ProfileCellEnvRow[]>>({});
-  // Snapshot of injectRtkHook captured at modal open. handleSave compares it
-  // against the live form value to decide whether to fire sweepRtkHook.
-  // updateField is local-only (mutates the form draft), so the sweep only
-  // dispatches when the user actually clicks Save and the value changed.
-  const [initialInjectRtk, setInitialInjectRtk] = createSignal<boolean | null>(
-    seededSettings?.injectRtkHook ?? null,
-  );
-  // Disables the Save button and the rtk checkbox while the per-replica sweep
-  // is in flight, preventing a rapid double-Save from queuing two concurrent
-  // sweeps with opposite enabled values (silent partial state).
-  const [rtkSweepInFlight, setRtkSweepInFlight] = createSignal(false);
 
   const s = () => settings.data;
 
@@ -459,16 +450,52 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     setRightRailId(left);
   };
 
-  const useAgentInComparison = (agentId: string) => {
-    if (leftRailAgent()?.id === agentId) return;
-    setRightRailId(agentId);
-  };
-
   type RailPill = "left" | "right" | "available";
   const railPillFor = (agentId: string): RailPill => {
     if (leftRailAgent()?.id === agentId) return "left";
     if (rightRailAgent()?.id === agentId) return "right";
     return "available";
+  };
+
+  // #895 — the agent list doubles as the rail picker: clicking the first row
+  // targets the left/primary rail, clicking any later row targets the
+  // right/comparison rail.
+  const railSideForIndex = (index: number): "left" | "right" =>
+    index === 0 ? "left" : "right";
+
+  // What a click on that row would actually do. The head's title and
+  // `aria-disabled` are driven off this, so the row never advertises an action
+  // it will not perform.
+  type RailAction = "assign" | "swap" | "none";
+  const railActionFor = (agentId: string, index: number): RailAction => {
+    const pill = railPillFor(agentId);
+    if (pill === railSideForIndex(index)) return "none";
+    return pill === "available" ? "assign" : "swap";
+  };
+
+  // The two rails must never point at the same agent (`rightRailAgent()`
+  // collapses to null on a collision). So when the clicked agent already holds
+  // the *other* rail, the two exchange places instead of one stomping the other.
+  const selectAgentRail = (agentId: string, index: number) => {
+    const left = leftRailAgent()?.id ?? null;
+    const right = rightRailAgent()?.id ?? null;
+    if (railSideForIndex(index) === "left") {
+      if (left === agentId) return;
+      // Row 0 already holds the comparison rail: hand the right rail the agent
+      // being displaced. A bare setLeftRailId here would leave `rightRailId`
+      // pointing at the new left agent — emptying the rail and wedging
+      // "Swap Rails", which early-returns on a null derived right.
+      if (right === agentId) setRightRailId(left);
+      setLeftRailId(agentId);
+      return;
+    }
+    if (right === agentId) return;
+    // The clicked row holds the left rail. Demote it to the right and promote
+    // whatever was on the right. When the right rail is empty, `setLeftRailId(null)`
+    // hands the left back to the positional fallback (agents[0]) — never this
+    // agent, which sits at index > 0.
+    if (left === agentId) setLeftRailId(right);
+    setRightRailId(agentId);
   };
 
   const toggleAgentEditor = (agentId: string) =>
@@ -505,7 +532,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       setSettings("data", nextSettings);
       const loadedSeed = cloneSettings(loaded);
       setModalSeed(loadedSeed);
-      setInitialInjectRtk(loaded.injectRtkHook);
       // Seed the comparison pair from the loaded agents (left primary + right
       // comparison slot). Only when still unset, so a user's pick isn't clobbered.
       if (leftRailId() === null && loaded.agents[0]) setLeftRailId(loaded.agents[0].id);
@@ -1114,29 +1140,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         const { getCurrentWindow } = await import("@tauri-apps/api/window");
         await getCurrentWindow().setAlwaysOnTop(nextSettings.sidebarAlwaysOnTop);
       }
-      // RTK sweep — only when the toggle value changed during this modal session.
-      // Fired AFTER save_settings_draft persists, so a sweep failure cannot leave
-      // the persisted setting in disagreement with the on-disk replica state
-      // worse than the pre-save baseline.
-      const initial = initialInjectRtk();
-      const next = nextSettings.injectRtkHook;
-      if (initial !== null && initial !== next) {
-        setRtkSweepInFlight(true);
-        try {
-          const result = await SettingsAPI.sweepRtkHook(next);
-          if (result.errors.length > 0) {
-            console.error(
-              `[rtk] sweep partial failure: ${result.errors.length}/${result.total} dirs failed`,
-              result.errors,
-            );
-          }
-          setInitialInjectRtk(next);
-        } catch (err) {
-          console.error("[rtk] sweep failed:", err);
-        } finally {
-          setRtkSweepInFlight(false);
-        }
-      }
       // Refresh settings store so mic button visibility updates
       settingsStore.refresh();
       // Refresh repos (project_paths may have changed)
@@ -1392,33 +1395,37 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       </div>
 
       <div class="settings-section">
-        <div class="settings-section-title">RTK Token Compression</div>
+        <div class="settings-section-title">Container Coding Agents</div>
         <label class="settings-checkbox-field">
           <input
             type="checkbox"
             class="settings-checkbox"
-            checked={settings.data!.injectRtkHook}
-            disabled={saving() || rtkSweepInFlight()}
-            onChange={(e) => updateField("injectRtkHook", e.currentTarget.checked)}
-          />
-          <span>Inject RTK hook into agent replicas</span>
-        </label>
-        <label class="settings-checkbox-field">
-          <input
-            type="checkbox"
-            class="settings-checkbox"
-            checked={settings.data!.informWhenRtkInstalled}
+            checked={settings.data!.containerCredentialsFromHost}
             disabled={saving()}
             onChange={(e) =>
-              updateField("informWhenRtkInstalled", e.currentTarget.checked)
+              updateField("containerCredentialsFromHost", e.currentTarget.checked)
             }
+            data-ac-testid="settings.general.containerCredentialsFromHost"
           />
-          <span>Show the startup banner when RTK is installed but not enabled</span>
+          <span>Reuse host login for container coding agents</span>
         </label>
-        <div class="settings-hint">
-          Off by default. When on, AC offers to enable RTK injection via a sidebar
-          banner at startup. This banner setting is read once at launch, so changes
-          to it take effect the next time AC starts.
+        <div
+          class="settings-hint"
+          data-ac-testid="settings.general.containerCredentialsFromHost.hint"
+        >
+          In progress: a container coding agent cannot reach your repos yet (#935), so keep repo
+          work on the Local runtime. On by default. When a coding agent runs under the Container
+          runtime, AC copies your host credential file for that agent (for Claude,
+          ~/.claude/.credentials.json) into the container at launch and deletes it when the
+          session stops. So the agent starts signed in instead of stopping at its first-run
+          prompts, AC also writes that agent's first-run state inside the container: onboarding
+          is marked complete, and the container's
+          /workspace folder is marked as trusted. That means AC answers the "do you trust this
+          folder?" safety prompt on your behalf, for the workspace you chose to open. Your host
+          config is never modified. Turn this off to supply credentials yourself (for example a
+          CLAUDE_CODE_OAUTH_TOKEN env row); then nothing is copied and nothing is marked. Host
+          and containers share one login, so a token refresh in one place can require re-login in
+          another.
         </div>
       </div>
 
@@ -1936,14 +1943,27 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   };
 
   // Left-panel agent row: compact prototype-style header (dot, name, command
-  // basename, color swatch+hex, rail pill, Use/Remove) with the full agent
-  // config editor (#384: label/command/color/flags/env/CODEX_HOME isolation)
-  // collapsed behind the head. Collapsed by default — the resting screen reads
-  // as the prototype; the editor is secondary, behind the expand.
+  // basename, color swatch+hex, rail pill, delete) with the full agent config
+  // editor (#384: label/command/color/flags/env/CODEX_HOME isolation) collapsed
+  // behind the chevron. Collapsed by default — the resting screen reads as the
+  // prototype; the editor is secondary, behind the expand. #895: the head itself
+  // is the rail picker, so the editor expand lives on the chevron button.
   const renderAgentRow = (agent: AgentConfig, index: () => number) => {
     const i = () => index();
     const expanded = () => activeAgentId() === agent.id;
     const pill = () => railPillFor(agent.id);
+    const railAction = () => railActionFor(agent.id, i());
+    const railSide = () => railSideForIndex(i());
+    const railTitle = () => {
+      switch (railAction()) {
+        case "none":
+          return `Already on the ${railSide()} comparison rail`;
+        case "swap":
+          return `Swap this agent onto the ${railSide()} comparison rail`;
+        default:
+          return `Show this agent in the ${railSide()} comparison rail`;
+      }
+    };
     const agentBackendKind = () => agent.backend?.kind ?? "localProcess";
     const containerImageMissing = () => !agent.backend?.image?.trim();
     const containerBindWarning = () => isContainerLoopbackBind(settings.data?.apiServerBind);
@@ -1961,17 +1981,22 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           class="settings-agent-row-head"
           role="button"
           tabindex={0}
-          aria-expanded={expanded()}
-          onClick={() => toggleAgentEditor(agent.id)}
+          title={railTitle()}
+          aria-disabled={railAction() === "none"}
+          onClick={() => selectAgentRail(agent.id, i())}
           onKeyDown={(e) => {
+            // The delete and chevron buttons live inside this head, and their
+            // keydown bubbles here. Only act on keys aimed at the head itself,
+            // or Enter on the trash icon would also reassign a rail.
+            if (e.target !== e.currentTarget) return;
             if (e.key === "Enter" || e.key === " ") {
               e.preventDefault();
-              toggleAgentEditor(agent.id);
+              selectAgentRail(agent.id, i());
             }
           }}
-          data-ac-testid={`settings.agentRow.${i()}.toggle`}
+          data-ac-testid={`settings.agentRow.${i()}.select`}
           data-ac-role="button"
-          data-ac-state={expanded() ? "expanded" : "collapsed"}
+          data-ac-state={pill()}
         >
           <span class="settings-agent-dot" style={{ background: agent.color }} />
           <div class="settings-agent-row-meta">
@@ -1988,56 +2013,43 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             </div>
           </div>
           <div class="settings-agent-row-actions">
-            {/* #526: the rail indicator is shown once, on the color line. The
-                left/primary agent has no Use/Remove action here, so render
-                nothing (previously a duplicate "left" pill lived here). */}
-            <Show when={pill() !== "left"}>
-              <Show
-                when={pill() === "right"}
-                fallback={
-                  <button
-                    class="settings-row-btn"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      useAgentInComparison(agent.id);
-                    }}
-                    title="Show this agent in the right comparison rail"
-                    data-ac-testid={`settings.agentRow.${i()}.use`}
-                    data-ac-role="button"
-                  >
-                    Use
-                  </button>
-                }
-              >
-                <button
-                  class="settings-row-btn danger"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setRightRailId(null);
-                  }}
-                  title="Remove this agent from the comparison"
-                  data-ac-testid={`settings.agentRow.${i()}.unuse`}
-                  data-ac-role="button"
-                >
-                  Remove
-                </button>
-              </Show>
-            </Show>
+            {/* #526: the rail indicator is shown once, on the color line. #895:
+                the head click assigns the rail, so no "Use" button lives here —
+                and no "Remove" either. A per-row Remove widened this column on
+                exactly one row, squeezing the meta column until the rail pill
+                wrapped to a second line: that row rendered 15px taller and the
+                tall row moved on every click. Clearing the comparison now lives
+                in the right rail's own header, next to the thing it clears. */}
             <button
-              class="settings-agent-remove"
+              class="settings-agent-row-delete"
               onClick={(e) => {
+                // Without this the head's click handler would also fire and
+                // assign a rail on the way out.
                 e.stopPropagation();
                 removeAgent(i());
               }}
               title="Delete agent"
+              aria-label={`Delete ${agent.label || "agent"}`}
               data-ac-testid={`settings.agentRow.${i()}.remove`}
               data-ac-role="button"
             >
-              &#x2715;
+              <TrashIcon class="settings-agent-row-delete-icon" />
             </button>
-            <span class="settings-agent-chevron" aria-hidden="true">
+            <button
+              class="settings-agent-chevron"
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleAgentEditor(agent.id);
+              }}
+              aria-expanded={expanded()}
+              aria-label={expanded() ? "Collapse agent settings" : "Expand agent settings"}
+              title={expanded() ? "Collapse agent settings" : "Expand agent settings"}
+              data-ac-testid={`settings.agentRow.${i()}.toggle`}
+              data-ac-role="button"
+              data-ac-state={expanded() ? "expanded" : "collapsed"}
+            >
               {expanded() ? "▾" : "▸"}
-            </span>
+            </button>
           </div>
         </div>
 
@@ -2082,6 +2094,15 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               </select>
             </label>
             <Show when={agentBackendKind() === "containerTransport"}>
+              <div
+                class="settings-hint settings-hint-warning"
+                data-ac-testid={`settings.agentRow.${i()}.containerHint.inProgress`}
+                data-ac-role="status"
+              >
+                In progress: a container agent cannot reach your repos yet (#935). It signs in
+                and messages peers, but it cannot check out, edit, build or commit them, so use
+                the Local runtime for repo work.
+              </div>
               <label class="settings-field">
                 <span class="settings-label">Docker image</span>
                 <input
@@ -2110,6 +2131,32 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 Set it to %AC_REPLICA_ROOT%\.claude, or conversation state will not
                 persist and auto-resume is skipped.
               </div>
+              <Show
+                when={settings.data!.containerCredentialsFromHost}
+                fallback={
+                  <div
+                    class="settings-hint settings-hint-warning"
+                    data-ac-testid={`settings.agentRow.${i()}.containerHint.hostLoginOff`}
+                    data-ac-role="status"
+                  >
+                    Host login reuse is off. Provide credentials yourself (for example a
+                    CLAUDE_CODE_OAUTH_TOKEN env row), or enable it in Settings &gt; General.
+                  </div>
+                }
+              >
+                <div
+                  class="settings-hint settings-hint-warning"
+                  data-ac-testid={`settings.agentRow.${i()}.containerHint.hostLogin`}
+                  data-ac-role="status"
+                >
+                  Host login reuse is on: AC copies your host credentials for this coding agent
+                  into the container at launch and removes them when the session stops. So the
+                  agent starts signed in, AC also writes its first-run state inside the container:
+                  onboarding is marked complete, and /workspace is marked as trusted, which
+                  answers the folder-trust safety prompt on your behalf. Your host config is not
+                  touched. Change this in Settings &gt; General.
+                </div>
+              </Show>
               <Show when={containerImageMissing()}>
                 <div
                   class="settings-hint settings-hint-warning"
@@ -2688,7 +2735,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         >
           <div class="settings-rail-empty-note">
             {side === "right"
-              ? "Pick a second coding agent (Use, or the rail selector) to compare side by side."
+              ? "Pick a second coding agent (click its row, or use the rail selector) to compare side by side."
               : "Add a coding agent to begin."}
           </div>
         </section>
@@ -2727,6 +2774,25 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               {(a) => <option value={a.id}>{a.label || a.id}</option>}
             </For>
           </select>
+          {/* #895 — emptying the comparison rail lives here rather than on the
+              agent row: it sits next to what it clears, it no longer reflows the
+              agent list, and it is no longer a red button 4px from the trash
+              that deletes the agent outright. It selects nothing; it deletes
+              nothing. Icon-only: a text button was a 42px unshrinkable third
+              item in a header already at its shrink limit, so it overflowed and
+              got clipped out of the rail below ~648px of effective width. */}
+          <Show when={side === "right"}>
+            <button
+              class="settings-rail-clear"
+              onClick={() => setRightRailId(null)}
+              title="Clear the comparison rail (keeps the agent and its profiles)"
+              aria-label="Clear the comparison rail"
+              data-ac-testid={`settings.profileRail.${railIndex}.clear`}
+              data-ac-role="button"
+            >
+              <XMarkIcon class="settings-rail-clear-icon" />
+            </button>
+          </Show>
         </div>
         <div class="settings-profile-rail-body">
           <For each={profileLetters()}>
@@ -3088,12 +3154,12 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           <button
             class="modal-btn modal-btn-save"
             onClick={handleSave}
-            disabled={saving() || rtkSweepInFlight() || !!currentValidationError()}
+            disabled={saving() || !!currentValidationError()}
             data-ac-testid="settings.save"
             data-ac-role="button"
-            data-ac-state={saving() ? "saving" : rtkSweepInFlight() ? "sweeping" : "ready"}
+            data-ac-state={saving() ? "saving" : "ready"}
           >
-            {saving() ? "Saving..." : rtkSweepInFlight() ? "Sweeping..." : "Save"}
+            {saving() ? "Saving..." : "Save"}
           </button>
         </div>
       </div>

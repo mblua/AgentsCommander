@@ -2084,6 +2084,17 @@ html.light-theme .settings-api-client-warning {
   cursor: pointer;
 }
 
+/* #895 — a row already sitting on the rail its click would target does nothing.
+   Don't offer a pointer for it; the nested delete/expand buttons re-arm their
+   own cursor. */
+.settings-agent-row-head[aria-disabled="true"] {
+  cursor: default;
+}
+
+.settings-agent-row-head[aria-disabled="true"] button {
+  cursor: pointer;
+}
+
 .settings-agent-dot {
   width: 10px;
   height: 10px;
@@ -2194,11 +2205,51 @@ html.light-theme .settings-api-client-warning {
   cursor: not-allowed;
 }
 
+/* #895 — always-visible delete affordance on the agent row. Unlike
+   .settings-agent-remove (hover-revealed inside .settings-button-card) the agent
+   row head is itself clickable, so the destructive action has to announce itself
+   rather than wait for a hover. */
+.settings-agent-row-delete {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--sidebar-fg-dim);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.settings-agent-row-delete:hover {
+  background: rgba(255, 59, 92, 0.15);
+  color: var(--status-exited, #ff5d5d);
+}
+
+.settings-agent-row-delete-icon {
+  width: 13px;
+  height: 13px;
+  display: block;
+}
+
 .settings-agent-chevron {
   color: var(--sidebar-fg-dim);
   font-size: 10px;
   width: 14px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
   text-align: center;
+  transition: color var(--transition-fast);
+}
+
+.settings-agent-chevron:hover {
+  color: var(--sidebar-accent);
 }
 
 .settings-agent-editor {
@@ -2267,14 +2318,51 @@ html.light-theme .settings-api-client-warning {
 }
 
 .settings-rail-select {
-  /* Shrinkable (0 1 auto) with a small floor: the old `0 0 auto` + 110px floor
-     could not shrink, so in a narrow rail it forced an internal horizontal
-     scrollbar and rode over the title. At comfortable widths it still sizes to
-     its content up to 160px. */
+  /* Shrinkable (0 1 auto): the old `0 0 auto` + 110px floor could not shrink, so
+     in a narrow rail it forced an internal horizontal scrollbar and rode over the
+     title. At comfortable widths it still sizes to its content up to 160px.
+     #895: `min-width: 0` — the 72px floor was the last thing keeping this header
+     from fitting, and it pushed the sibling clear button out of the clipped
+     `.settings-compare-zone`. The select is the item that should give way here;
+     it stays operable at any width, and the header stops overflowing at all. */
   flex: 0 1 auto;
   width: auto;
-  min-width: 72px;
+  min-width: 0;
   max-width: 160px;
+}
+
+/* #895 — clears the comparison rail. Two constraints:
+   1. NOT `.danger`, and not red: it drops a selection, it deletes nothing. The
+      trash on the agent row is the only destructive control in this area.
+   2. Icon-only and never shrinking. A 42px text button was a third unshrinkable
+      item in a header already at its shrink limit; below ~648px of effective
+      width the header overflowed and this button — the only way to empty the
+      comparison rail — was clipped out of the rail and became unclickable. */
+.settings-rail-clear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--sidebar-fg-dim);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.settings-rail-clear:hover {
+  background: var(--sidebar-hover);
+  color: var(--sidebar-fg);
+}
+
+.settings-rail-clear-icon {
+  width: 13px;
+  height: 13px;
+  display: block;
 }
 
 .settings-rail-empty {
@@ -3061,16 +3149,64 @@ html.light-theme .settings-hint-warning {
   min-width: 68px;
   max-width: 68px;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.025);
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.workgroup-group-rail-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   padding: 6px 4px;
-  background: rgba(255, 255, 255, 0.025);
-  border-left: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .sidebar-body[data-rail-side="left"] .workgroup-group-rail {
   border-left: none;
   border-right: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.workgroup-group-rail-archive {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 6px 2px;
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  background: transparent;
+  color: var(--sidebar-fg-dim);
+  font-family: var(--font-ui);
+  cursor: pointer;
+}
+
+.workgroup-group-rail-archive:hover {
+  color: var(--sidebar-fg);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.workgroup-group-rail-archive:focus-visible {
+  outline: 2px solid rgba(0, 212, 255, 0.65);
+  outline-offset: -2px;
+}
+
+.workgroup-group-rail-archive-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.workgroup-group-rail-archive-label {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 9px;
+  line-height: 1.2;
 }
 
 .workgroup-group-rail-project + .workgroup-group-rail-project {
@@ -4497,6 +4633,126 @@ html.light-theme .settings-hint-warning {
   color: var(--danger, #ff6b6b);
 }
 
+.archived-projects-modal {
+  width: min(620px, 92vw);
+}
+
+.archived-projects-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: var(--spacing-md);
+  overflow-y: auto;
+}
+
+.archived-projects-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.archived-projects-row-warning {
+  background: rgba(255, 184, 77, 0.09);
+}
+
+.archived-projects-main {
+  min-width: 0;
+}
+
+.archived-projects-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--sidebar-fg);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.archived-projects-path,
+.archived-projects-warning {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--sidebar-fg-dim);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.archived-projects-warning {
+  color: var(--sidebar-warning, #e0a83a);
+}
+
+.archived-projects-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.archived-projects-actions .modal-btn {
+  min-height: 26px;
+  padding: 5px 9px;
+  font-size: 11px;
+}
+
+.archived-projects-row-error {
+  grid-column: 1 / -1;
+}
+
+.auto-unarchive-modal {
+  width: min(560px, 92vw);
+}
+
+.auto-unarchive-body {
+  padding: var(--spacing-md);
+  outline: none;
+}
+
+.auto-unarchive-copy {
+  margin: 0 0 10px;
+  color: var(--sidebar-fg);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.auto-unarchive-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.auto-unarchive-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.auto-unarchive-row strong,
+.auto-unarchive-session {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.auto-unarchive-row strong {
+  color: var(--sidebar-fg);
+  font-size: 12px;
+}
+
+.auto-unarchive-session {
+  color: var(--sidebar-fg-dim);
+  font-size: 11px;
+}
+
 @media (max-width: 680px) {
   .workgroup-group-edit-row {
     grid-template-columns: 1fr;
@@ -4504,6 +4760,15 @@ html.light-theme .settings-hint-warning {
 
   .workgroup-group-delete {
     justify-self: flex-start;
+  }
+
+  .archived-projects-row {
+    grid-template-columns: 1fr;
+  }
+
+  .archived-projects-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
   }
 }
 

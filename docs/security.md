@@ -47,11 +47,26 @@ Token validation:
 
 The current trust model accepts the caller's self-reported `--root` and per-session UUID — see the in-source notes in `task-set-title` and `task-append-body` for the known weakness and the follow-up issue this points to.
 
-## RTK (Rust Token Killer) injection
+## Container coding agents: copied host credentials
 
-When [RTK integration](features/rtk-integration.md) is enabled, AC writes a `PreToolUse` hook into each managed agent directory's `.claude/settings.local.json`. This is a Claude-only Bash-tool rewrite hook; it does not exfiltrate output and does not run untrusted code. AC re-sweeps every managed dir on startup so an obsolete hook is removed cleanly.
+**Status: in progress. On by default** (`containerCredentialsFromHost`). The full feature and its limitations are in [Container coding agents](features/container-coding-agents.md).
 
-You can turn the integration off at any time via **Settings → General → RTK** — the next startup sweep removes every hook AC added.
+When a coding agent runs under the Container runtime, AC copies the executing host user's credential file for that agent (Claude: `~/.claude/.credentials.json`) into the replica config dir, which the container reads at `/workspace/.claude`, and deletes it when the session stops.
+
+What you accept when you leave this on:
+
+- **The copied file is a full-account credential in plaintext**: a short-lived access token plus a long-lived refresh token, account-scoped. It sits in the workspace tree, inside a read-write bind mount, for the lifetime of the session.
+- **AC pre-answers a safety dialog on your behalf.** It marks the container's `/workspace` as trusted (`hasTrustDialogAccepted`) so the agent does not stall on "do you trust this folder?". AC already bind-mounts that folder read-write, so this grants no access the mount did not already grant, but AC is answering a security prompt for you.
+- **Host and containers share one login.** The copy is a snapshot, not a live mount. If the provider rotates the refresh token on use, whichever party refreshes first can invalidate the others: a container refresh can force a re-login on the host.
+
+What AC does to contain it:
+
+- **Your host config is never modified.** AC reads the credential file only. `~/.claude.json` is never read, copied, or written.
+- **Teardown deletes the copy** on every session-stop path, including a spawn that fails and a teardown that races the copy itself.
+- **AC refuses to write or delete through a symlink or junction**, on the destination directory and on the credential file. The bind mount is read-write, so a container can plant a link to redirect the token off-mount on the next write. AC skips the copy instead, and then stamps no first-run state: a container with no token must show its login wizard rather than pretend to be signed in.
+- **On Unix the copy is `0o600`.** A failure to set the mode is logged, not swallowed.
+
+Turn it off in **Settings → General → Container Coding Agents**, or set `containerCredentialsFromHost: false` in `settings.json`. Then AC copies nothing, injects no `CLAUDE_CONFIG_DIR`, stamps nothing, and you supply credentials yourself.
 
 ## Code signing
 
@@ -72,6 +87,8 @@ Linux and macOS builds are not signed today.
 - **`--root` is unverified** at the CLI boundary. A malicious local process with shell access can spoof its own root. Mitigated by the daemon-side per-session token check, but not eliminated.
 - **No sandbox between agents.** Two agents in the same workgroup share filesystem access. If you need hard isolation, run each agent in its own VM or container.
 - **API keys live in plaintext** at `~/.agentscommander/settings.json`. Protect your user account; if your account is compromised, the keys are.
+- **Copied container credentials get no owner-only ACL on Windows** ([#933](https://github.com/mblua/AgentsCommander/issues/933)). The copy inherits the workspace tree's ACL, which for a user-chosen repo path can be broader than `~/.claude` (shared drives, `Everyone:R`). Unix gets `0o600`.
+- **An unclean host crash can leave a copied container credential on disk** ([#933](https://github.com/mblua/AgentsCommander/issues/933)). Teardown deletes it and the next same-agent launch overwrites it, but there is no boot-time sweep, so a replica you never relaunch keeps a live refresh token indefinitely.
 
 ## Reporting vulnerabilities
 

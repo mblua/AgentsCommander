@@ -4,9 +4,18 @@ This image extends the bridge-only image built from `crates/session-bridge/Docke
 It adds Node.js and the official Claude Code npm package, then copies the existing
 `session-bridge` and `agentscommander-api-helper` binaries into `/usr/local/bin`.
 
-No Anthropic credential is baked into the image. Pass authentication at runtime
-through `settings.agents[].envs`; AgentsCommander forwards enabled env rows to
-the child CLI inside the container.
+No Anthropic credential is baked into the image. Authentication happens at
+runtime, in one of two ways:
+
+- **Host login reuse (the default).** AgentsCommander copies your host
+  `~/.claude/.credentials.json` into the container at launch, points
+  `CLAUDE_CONFIG_DIR` at it, and deletes it when the session stops. You configure
+  nothing; the session starts signed in. See
+  [Container coding agents](../../docs/features/container-coding-agents.md).
+- **A credential you pass yourself.** Turn host login reuse off
+  (`containerCredentialsFromHost: false`) and pass authentication through
+  `settings.agents[].envs`; AgentsCommander forwards enabled env rows to the child
+  CLI inside the container. The `envs` examples below document that path.
 
 The image runs the bridge as the non-root `node` user. It also configures Git
 with `safe.directory=*` because AgentsCommander bind-mounts host workspaces
@@ -45,7 +54,9 @@ $env:AGENTSCOMMANDER_CONTAINER_IMAGE = "agentscommander/ac-claude:latest"
 .\agentscommander.exe
 ```
 
-Use the container backend for the Claude agent and keep the command as `claude`:
+Use the container backend for the Claude agent and keep the command as `claude`.
+The `envs` row below is needed **only when host login reuse is off**; with the
+default on, drop it and AgentsCommander supplies the credential:
 
 ```json
 {

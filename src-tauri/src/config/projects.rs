@@ -30,6 +30,15 @@ pub struct ProjectRegistration {
     pub created: bool,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchivedProject {
+    pub path: String,
+    pub folder_name: String,
+    pub exists: bool,
+    pub has_workspace: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectResolution {
     pub path: PathBuf,
@@ -250,7 +259,7 @@ pub fn resolve_project_reference(
 
 // ── Private helpers ───────────────────────────────────────────────────────
 
-fn absolutise(raw: &str) -> Result<PathBuf, ProjectError> {
+pub(crate) fn absolutise(raw: &str) -> Result<PathBuf, ProjectError> {
     if raw.trim().is_empty() {
         return Err(ProjectError::EmptyPath(raw.to_string()));
     }
@@ -267,7 +276,8 @@ fn absolutise(raw: &str) -> Result<PathBuf, ProjectError> {
 /// Mirrors the frontend `normalizePath` at
 /// `src/sidebar/stores/project.ts:17-19`. Comparison only — the persisted
 /// entry retains the original byte sequence.
-fn normalize_for_compare(s: &str) -> String {
+pub(crate) fn normalize_for_compare(s: &str) -> String {
+    let s = crate::path_utils::normalize_windows_verbatim_path(s);
     // Slashes normalised, lowercased, trailing `/` stripped. The trailing
     // strip closes Round-1 IR.3.2 (shell tab-completion appends `\` on dirs;
     // without trim, `C:\foo\` and `C:\foo` would become DIFFERENT entries).
@@ -283,6 +293,9 @@ fn normalize_for_compare(s: &str) -> String {
 /// Returns `true` if a new entry was added.
 fn upsert_project_path(settings: &mut AppSettings, abs_path: &str) -> bool {
     let key = normalize_for_compare(abs_path);
+    settings
+        .archived_project_paths
+        .retain(|p| normalize_for_compare(p) != key);
     let exists = settings
         .project_paths
         .iter()
@@ -313,9 +326,83 @@ pub fn remove_project_path(settings: &mut AppSettings, abs_path: &str) -> bool {
         .project_paths
         .retain(|p| normalize_for_compare(p) != key);
     let removed = settings.project_paths.len() != before;
+    settings
+        .archived_project_paths
+        .retain(|p| normalize_for_compare(p) != key);
     // Keep legacy `projectPath` in lockstep with the head (matches upsert).
     settings.project_path = settings.project_paths.first().cloned();
     removed
+}
+
+/// #881: move `abs_path` from the active list to the archived list.
+pub fn archive_project_path(settings: &mut AppSettings, abs_path: &str) -> bool {
+    let key = normalize_for_compare(abs_path);
+    let matched = settings
+        .project_paths
+        .iter()
+        .find(|p| normalize_for_compare(p) == key)
+        .cloned();
+    settings
+        .project_paths
+        .retain(|p| normalize_for_compare(p) != key);
+    let removed = matched.is_some();
+    let already_archived = settings
+        .archived_project_paths
+        .iter()
+        .any(|p| normalize_for_compare(p) == key);
+    if !already_archived {
+        settings
+            .archived_project_paths
+            .push(matched.unwrap_or_else(|| abs_path.to_string()));
+    }
+    settings.project_path = settings.project_paths.first().cloned();
+    removed
+}
+
+/// Move a stored archived project back to the active list without probing the
+/// filesystem. Used only to roll back an archive operation that already passed
+/// path normalization and then discovered late liveness.
+pub fn unarchive_project_path(settings: &mut AppSettings, abs_path: &str) -> bool {
+    let key = normalize_for_compare(abs_path);
+    let matched = settings
+        .archived_project_paths
+        .iter()
+        .find(|p| normalize_for_compare(p) == key)
+        .cloned();
+    let Some(restored) = matched else {
+        return false;
+    };
+    settings
+        .archived_project_paths
+        .retain(|p| normalize_for_compare(p) != key);
+    let already_active = settings
+        .project_paths
+        .iter()
+        .any(|p| normalize_for_compare(p) == key);
+    if !already_active {
+        settings.project_paths.push(restored);
+    }
+    settings.project_path = settings.project_paths.first().cloned();
+    true
+}
+
+pub fn archived_projects_from_paths(archived_project_paths: &[String]) -> Vec<ArchivedProject> {
+    archived_project_paths
+        .iter()
+        .map(|raw| {
+            let path = Path::new(raw);
+            ArchivedProject {
+                path: raw.clone(),
+                folder_name: path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(raw)
+                    .to_string(),
+                exists: is_real_directory(path),
+                has_workspace: has_workspace_dir(path),
+            }
+        })
+        .collect()
 }
 
 pub fn enumerate_registered_project_candidates(project_paths: &[String]) -> Vec<ProjectResolution> {
@@ -788,6 +875,167 @@ mod tests {
         assert_eq!(s.project_path.as_deref(), Some("C:/a"));
     }
 
+    #[test]
+    fn remove_project_path_also_drops_archived_entry() {
+        let mut s = AppSettings {
+            project_paths: vec!["C:/a".to_string()],
+            project_path: Some("C:/a".to_string()),
+            archived_project_paths: vec!["c:/a/".to_string(), "C:/b".to_string()],
+            ..AppSettings::default()
+        };
+
+        assert!(remove_project_path(&mut s, "C:/a"));
+
+        assert_eq!(s.archived_project_paths, vec!["C:/b".to_string()]);
+    }
+
+    // ── #881 archive_project_path ───────────────────────────────────────
+
+    #[test]
+    fn archive_project_path_moves_entry_and_rederives_head() {
+        let mut s = AppSettings {
+            project_paths: vec!["C:/a".to_string(), "C:/b".to_string()],
+            project_path: Some("C:/a".to_string()),
+            ..AppSettings::default()
+        };
+
+        assert!(archive_project_path(&mut s, "C:/a"));
+
+        assert_eq!(s.project_paths, vec!["C:/b".to_string()]);
+        assert_eq!(s.archived_project_paths, vec!["C:/a".to_string()]);
+        assert_eq!(s.project_path.as_deref(), Some("C:/b"));
+    }
+
+    #[test]
+    fn archive_project_path_last_entry_clears_head_to_none() {
+        let mut s = AppSettings {
+            project_paths: vec!["C:/only".to_string()],
+            project_path: Some("C:/only".to_string()),
+            ..AppSettings::default()
+        };
+
+        assert!(archive_project_path(&mut s, "C:/only"));
+
+        assert!(s.project_paths.is_empty());
+        assert_eq!(s.archived_project_paths, vec!["C:/only".to_string()]);
+        assert_eq!(s.project_path, None);
+    }
+
+    #[test]
+    fn archive_project_path_is_case_slash_insensitive_and_archives_stored_byte_form() {
+        let mut s = AppSettings {
+            project_paths: vec![r"C:\Foo\".to_string(), "C:/keep".to_string()],
+            project_path: Some(r"C:\Foo\".to_string()),
+            ..AppSettings::default()
+        };
+
+        assert!(archive_project_path(&mut s, "c:/foo"));
+
+        assert_eq!(s.project_paths, vec!["C:/keep".to_string()]);
+        assert_eq!(s.archived_project_paths, vec![r"C:\Foo\".to_string()]);
+    }
+
+    #[test]
+    fn archive_project_path_is_idempotent() {
+        let mut s = AppSettings {
+            project_paths: vec!["C:/a".to_string()],
+            project_path: Some("C:/a".to_string()),
+            ..AppSettings::default()
+        };
+
+        assert!(archive_project_path(&mut s, "C:/a"));
+        assert!(!archive_project_path(&mut s, "c:/a/"));
+
+        assert_eq!(s.archived_project_paths, vec!["C:/a".to_string()]);
+    }
+
+    #[test]
+    fn archive_project_path_records_unregistered_path() {
+        let mut s = AppSettings::default();
+
+        assert!(!archive_project_path(&mut s, "C:/missing"));
+
+        assert_eq!(s.archived_project_paths, vec!["C:/missing".to_string()]);
+        assert!(s.project_paths.is_empty());
+    }
+
+    #[test]
+    fn unarchive_project_path_restores_archived_byte_form_without_io() {
+        let mut s = AppSettings {
+            archived_project_paths: vec!["C:/MissingProject/".to_string()],
+            ..AppSettings::default()
+        };
+
+        assert!(unarchive_project_path(&mut s, "C:/MissingProject"));
+
+        assert_eq!(s.project_paths, vec!["C:/MissingProject/".to_string()]);
+        assert!(s.archived_project_paths.is_empty());
+        assert_eq!(s.project_path.as_deref(), Some("C:/MissingProject/"));
+    }
+
+    #[test]
+    fn upsert_project_path_unarchives_matching_entry() {
+        let fix = FixtureRoot::new("proj-unarchive-upsert");
+        std::fs::create_dir_all(fix.path().join(".ac")).expect("create .ac");
+        let mut s = AppSettings {
+            archived_project_paths: vec![fix.path().to_string_lossy().replace('\\', "/") + "/"],
+            ..AppSettings::default()
+        };
+
+        let result = register_existing_project(&mut s, fix.path().to_str().unwrap())
+            .expect("register existing");
+
+        assert!(result.registered);
+        assert!(s.archived_project_paths.is_empty());
+        assert_eq!(s.project_paths, vec![result.path]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn upsert_project_path_unarchives_windows_verbatim_variant() {
+        let mut s = AppSettings {
+            archived_project_paths: vec![r"\\?\C:\Users\maria\MixedCaseProject".to_string()],
+            ..AppSettings::default()
+        };
+
+        assert!(upsert_project_path(
+            &mut s,
+            r"C:\Users\maria\MixedCaseProject"
+        ));
+
+        assert_eq!(
+            s.project_paths,
+            vec![r"C:\Users\maria\MixedCaseProject".to_string()]
+        );
+        assert!(
+            s.archived_project_paths.is_empty(),
+            "verbatim and ordinary Windows paths must not remain in separate lists"
+        );
+    }
+
+    #[test]
+    fn archived_projects_reports_missing_folder_and_missing_workspace() {
+        let full = FixtureRoot::new("proj-archived-full");
+        std::fs::create_dir_all(full.path().join(".ac")).expect("full .ac");
+        let no_workspace = FixtureRoot::new("proj-archived-no-workspace");
+        let deleted = FixtureRoot::new("proj-archived-deleted");
+        let deleted_path = deleted.path().to_string_lossy().to_string();
+        std::fs::remove_dir_all(deleted.path()).expect("delete fixture");
+
+        let rows = archived_projects_from_paths(&[
+            full.path().to_string_lossy().to_string(),
+            no_workspace.path().to_string_lossy().to_string(),
+            deleted_path,
+        ]);
+
+        assert!(rows[0].exists);
+        assert!(rows[0].has_workspace);
+        assert!(rows[1].exists);
+        assert!(!rows[1].has_workspace);
+        assert!(!rows[2].exists);
+        assert!(!rows[2].has_workspace);
+    }
+
     // ── absolutise: relative + dot-dot collapse (Round-1 G4 + G13) ────────
 
     /// CWD is process-wide; restore on Drop. Any other test that mutates
@@ -984,6 +1232,22 @@ mod tests {
         assert!(matches!(err, ProjectResolveError::NotFound(_)));
     }
 
+    #[test]
+    fn enumerate_registered_project_candidates_yields_a_nested_child_of_a_registered_parent() {
+        let fix = FixtureRoot::new("proj-enumerate-nested");
+        create_ac_project(fix.path());
+        let child = fix.path().join("child");
+        create_ac_project(&child);
+        let project_paths = vec![fix.path().to_string_lossy().to_string()];
+
+        let candidates = enumerate_registered_project_candidates(&project_paths);
+
+        assert!(
+            candidates.iter().any(|c| c.path == child),
+            "nested child with .ac must remain a project candidate"
+        );
+    }
+
     // ── serde camelCase shape lock (Round-1 G14) ─────────────────────────
 
     #[test]
@@ -1014,6 +1278,29 @@ mod tests {
         assert!(
             !json.contains("workspace_dir"),
             "snake_case field name leaked: {}",
+            json
+        );
+
+        let archived = ArchivedProject {
+            path: "X".to_string(),
+            folder_name: "X".to_string(),
+            exists: true,
+            has_workspace: false,
+        };
+        let json = serde_json::to_string(&archived).unwrap();
+        assert!(
+            json.contains("\"folderName\""),
+            "missing folderName field: {}",
+            json
+        );
+        assert!(
+            json.contains("\"hasWorkspace\""),
+            "missing hasWorkspace field: {}",
+            json
+        );
+        assert!(
+            !json.contains("folder_name") && !json.contains("has_workspace"),
+            "snake_case archived field leaked: {}",
             json
         );
     }

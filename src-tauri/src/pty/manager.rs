@@ -14,8 +14,33 @@ use crate::pty::local_backend::LocalProcessBackend;
 use crate::pty::output::PtyScreenSnapshot;
 use crate::telegram::manager::OutputSenderMap;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PendingSpawn {
+    pub cwd: String,
+    pub label: String,
+}
+
+#[derive(Default)]
+struct SpawnRegistry {
+    routes: HashMap<Uuid, SessionBackendKind>,
+    pending: HashMap<u64, PendingSpawn>,
+    next_seq: u64,
+}
+
+pub(crate) struct SpawnMark {
+    registry: Arc<Mutex<SpawnRegistry>>,
+    seq: u64,
+}
+
+impl Drop for SpawnMark {
+    fn drop(&mut self) {
+        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        registry.pending.remove(&self.seq);
+    }
+}
+
 pub struct PtyManager {
-    routes: Arc<Mutex<HashMap<Uuid, SessionBackendKind>>>,
+    registry: Arc<Mutex<SpawnRegistry>>,
     local_backend: Arc<dyn PtyBackend>,
     container_backend: Arc<ContainerTransportBackend>,
 }
@@ -43,7 +68,7 @@ impl PtyManager {
             ContainerApiTokenManager::at_config_dir(),
         ));
         Self {
-            routes: Arc::new(Mutex::new(HashMap::new())),
+            registry: Arc::new(Mutex::new(SpawnRegistry::default())),
             local_backend,
             container_backend,
         }
@@ -57,7 +82,7 @@ impl PtyManager {
             crate::session::manager::SessionManager::new(),
         ));
         Self {
-            routes: Arc::new(Mutex::new(HashMap::new())),
+            registry: Arc::new(Mutex::new(SpawnRegistry::default())),
             local_backend,
             container_backend: Arc::new(ContainerTransportBackend::new(
                 output_senders,
@@ -93,27 +118,75 @@ impl PtyManager {
     }
 
     pub fn record_route(&self, id: Uuid, kind: SessionBackendKind) {
-        self.routes.lock().unwrap().insert(id, kind);
+        self.registry
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .routes
+            .insert(id, kind);
     }
 
     pub fn remove_route_if_kind(&self, id: Uuid, kind: SessionBackendKind) {
-        let mut routes = self.routes.lock().unwrap();
-        if routes.get(&id).copied() == Some(kind) {
-            routes.remove(&id);
+        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        if registry.routes.get(&id).copied() == Some(kind) {
+            registry.routes.remove(&id);
         }
     }
 
     fn kind_for_session(&self, id: Uuid) -> Result<SessionBackendKind, AppError> {
-        self.routes
+        self.registry
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
+            .routes
             .get(&id)
             .copied()
             .ok_or_else(|| AppError::SessionNotFound(id.to_string()))
     }
 
     pub fn backend_kind(&self, id: Uuid) -> Option<SessionBackendKind> {
-        self.routes.lock().unwrap().get(&id).copied()
+        self.registry
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .routes
+            .get(&id)
+            .copied()
+    }
+
+    pub(crate) fn mark_spawning(&self, cwd: &str, label: &str) -> SpawnMark {
+        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        let seq = registry.next_seq;
+        registry.next_seq = registry.next_seq.wrapping_add(1);
+        registry.pending.insert(
+            seq,
+            PendingSpawn {
+                cwd: cwd.to_string(),
+                label: label.to_string(),
+            },
+        );
+        SpawnMark {
+            registry: Arc::clone(&self.registry),
+            seq,
+        }
+    }
+
+    pub(crate) fn archive_liveness(&self, ids: &[Uuid]) -> (Vec<PendingSpawn>, Vec<bool>) {
+        let (pending, route_kinds) = {
+            let registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                registry.pending.values().cloned().collect::<Vec<_>>(),
+                ids.iter()
+                    .map(|id| registry.routes.get(id).copied())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let live = ids
+            .iter()
+            .zip(route_kinds)
+            .map(|(id, kind)| {
+                kind.map(|kind| self.backend_for_kind(kind).has_session(*id))
+                    .unwrap_or(false)
+            })
+            .collect();
+        (pending, live)
     }
 
     pub async fn spawn(
@@ -153,9 +226,10 @@ impl PtyManager {
 
     pub fn kill(&self, id: Uuid) -> Result<(), AppError> {
         let kind = self
-            .routes
+            .registry
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
+            .routes
             .get(&id)
             .copied()
             .unwrap_or(SessionBackendKind::LocalProcess);
@@ -193,9 +267,10 @@ impl PtyManager {
         response_dir: std::path::PathBuf,
     ) {
         let kind = self
-            .routes
+            .registry
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
+            .routes
             .get(&session_id)
             .copied()
             .unwrap_or(SessionBackendKind::LocalProcess);
@@ -414,6 +489,7 @@ mod tests {
             output_target: crate::pty::output::PtyOutputTarget::noop(),
             resource_registration: None,
             logical_resource_slot: None,
+            container_credential: None,
         }
     }
 
@@ -458,6 +534,43 @@ mod tests {
 
         assert!(matches!(err, AppError::SessionNotFound(_)));
         assert!(backend.calls().is_empty());
+    }
+
+    #[test]
+    fn archive_liveness_reports_pending_spawn_until_mark_drops() {
+        let backend = Arc::new(RecordingBackend::default());
+        let manager = PtyManager::new_for_test(backend);
+        let mark = manager.mark_spawning("C:/repo/.ac/wg-1/__agent_dev", "dev");
+
+        let (pending, live) = manager.archive_liveness(&[]);
+
+        assert_eq!(
+            pending,
+            vec![PendingSpawn {
+                cwd: "C:/repo/.ac/wg-1/__agent_dev".to_string(),
+                label: "dev".to_string(),
+            }]
+        );
+        assert!(live.is_empty());
+        drop(mark);
+
+        let (pending, _) = manager.archive_liveness(&[]);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn archive_liveness_reports_backend_live_route() {
+        let id = Uuid::new_v4();
+        let backend = Arc::new(RecordingBackend::default());
+        backend.set_live(id);
+        let manager = PtyManager::new_for_test(backend.clone());
+        manager.record_route(id, SessionBackendKind::LocalProcess);
+
+        let (pending, live) = manager.archive_liveness(&[id]);
+
+        assert!(pending.is_empty());
+        assert_eq!(live, vec![true]);
+        assert_eq!(backend.calls(), vec![Call::Has(id)]);
     }
 
     #[tokio::test]

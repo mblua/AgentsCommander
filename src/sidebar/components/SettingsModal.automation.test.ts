@@ -32,7 +32,6 @@ vi.mock("../../shared/ipc", async () => {
       startApiServer: vi.fn(() => Promise.resolve(false)),
       stopApiServer: vi.fn(() => Promise.resolve(false)),
       apiServerStatus: vi.fn(() => Promise.resolve(false)),
-      sweepRtkHook: vi.fn(() => Promise.resolve({ total: 0, updated: 0, errors: [] })),
     },
     TelegramAPI: {
       sendTest: vi.fn(() => Promise.resolve(0)),
@@ -88,8 +87,6 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     restoreCoordinatorWakeState: true,
     soundsEnabled: true,
     teamIdleBeepEnabled: true,
-    injectRtkHook: false,
-    informWhenRtkInstalled: true,
     webServerEnabled: false,
     webServerPort: 8765,
     webServerBind: "127.0.0.1",
@@ -133,7 +130,6 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     onboardingDismissed: true,
     projectPaths: [],
     projectPath: null,
-    rtkPromptDismissed: false,
     autoGenerateTaskTitle: true,
     agentTemplatesPath: null,
     specBoardEnabled: false,
@@ -154,8 +150,10 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     npmUpdateNotificationsEnabled: true,
     autoSelfClearEnabled: true,
     autoSelfClearByAgent: {},
+    containerCredentialsFromHost: true,
     logLevel: null,
     ...overrides,
+    archivedProjectPaths: overrides.archivedProjectPaths ?? [],
   };
 }
 
@@ -171,8 +169,9 @@ function byTestId<T extends Element = Element>(testId: string): T {
 }
 
 // #526: the unified Coding Agents screen keeps each agent's config editor
-// collapsed by default (the resting screen reads as the prototype). Clicking the
-// row head expands the inline editor that holds label/command/env/isolation.
+// collapsed by default (the resting screen reads as the prototype). #895: the
+// row head now assigns the rail, so the chevron button owns the expand of the
+// inline editor that holds label/command/env/isolation.
 function expandAgentRow(index = 0): void {
   const toggle = document.querySelector<HTMLElement>(
     `[data-ac-testid="settings.agentRow.${index}.toggle"]`,
@@ -1003,7 +1002,7 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("clears the right comparison rail when the right agent's Remove is clicked", async () => {
+  it("clears the right comparison rail from the rail's own Clear button", async () => {
     vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
       agents: [
         {
@@ -1034,12 +1033,19 @@ describe("SettingsModal automation hooks", () => {
 
     // The comparison pair seeds left=codex, right=claude (second agent).
     expect(byTestId("settings.profileRail.1").getAttribute("data-ac-agent-id")).toBe("claude");
-    // Removing the right-rail agent actually empties the rail (no positional re-fill).
-    byTestId<HTMLButtonElement>("settings.agentRow.1.unuse").click();
+    // #895: clearing now lives on the rail itself, not on the agent row. It still
+    // actually empties the rail (no positional re-fill).
+    byTestId<HTMLButtonElement>("settings.profileRail.1.clear").click();
     await settle();
     expect(byTestId("settings.profileRail.1").getAttribute("data-ac-agent-id")).toBeNull();
-    // Claude is now available again and offers "Use" to re-add it.
-    expect(document.querySelector('[data-ac-testid="settings.agentRow.1.use"]')).toBeTruthy();
+    // #895: Claude is available again, and the row head itself re-adds it. Neither
+    // a "Use" nor a "Remove" button survives on any agent row — that per-row
+    // button was what made one row taller than the rest.
+    expect(document.querySelector('[data-ac-testid="settings.agentRow.1.use"]')).toBeNull();
+    expect(document.querySelector('[data-ac-testid="settings.agentRow.1.unuse"]')).toBeNull();
+    expect(byTestId("settings.agentRow.1").getAttribute("data-ac-rail")).toBe("available");
+    // The emptied rail has no header, so no Clear button either.
+    expect(document.querySelector('[data-ac-testid="settings.profileRail.1.clear"]')).toBeNull();
 
     dispose();
   });
@@ -1221,46 +1227,6 @@ describe("SettingsModal automation hooks", () => {
     const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
     expect(saved?.codingAgentProfiles.profilesByAgent.codex?.A?.command).toBe("codex --fast");
 
-    dispose();
-  });
-
-  it("uses the seeded RTK baseline when saving before the fresh load resolves", async () => {
-    let resolveLoadedSettings: (value: AppSettings) => void = () => {};
-    vi.mocked(SettingsAPI.get).mockReturnValueOnce(
-      new Promise<AppSettings>((resolve) => {
-        resolveLoadedSettings = resolve;
-      }),
-    );
-
-    const root = document.createElement("div");
-    document.body.append(root);
-    const dispose = render(
-      () => SettingsModal({ onClose: () => {} }),
-      root,
-    );
-    await settle();
-
-    const rtkField = Array.from(
-      document.querySelectorAll<HTMLLabelElement>(".settings-checkbox-field"),
-    ).find((label) => label.textContent?.includes("Inject RTK hook"));
-    const rtkCheckbox = rtkField?.querySelector<HTMLInputElement>('input[type="checkbox"]');
-    if (!rtkCheckbox) throw new Error("missing RTK checkbox");
-    rtkCheckbox.checked = true;
-    rtkCheckbox.dispatchEvent(new Event("change", { bubbles: true }));
-    await settle();
-
-    document.querySelector<HTMLButtonElement>('[data-ac-testid="settings.save"]')?.click();
-    await settle();
-
-    expect(SettingsAPI.saveDraft).toHaveBeenCalledWith(
-      expect.objectContaining({ injectRtkHook: true }),
-    );
-    expect(SettingsAPI.update).not.toHaveBeenCalled();
-    expect(SettingsAPI.updateCodingAgentProfiles).not.toHaveBeenCalled();
-    expect(SettingsAPI.updateCodingAgentEnvSettings).not.toHaveBeenCalled();
-    expect(SettingsAPI.sweepRtkHook).toHaveBeenCalledWith(true);
-
-    resolveLoadedSettings(settings());
     dispose();
   });
 
@@ -1747,6 +1713,178 @@ describe("SettingsModal automation hooks", () => {
 
     const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
     expect(saved?.autoSelfClearEnabled).toBe(false);
+
+    dispose();
+  });
+
+  it("round-trips containerCredentialsFromHost through the General reuse checkbox (#930)", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    const checkbox = byTestId<HTMLInputElement>("settings.general.containerCredentialsFromHost");
+    expect(checkbox.closest("label")?.textContent).toContain(
+      "Reuse host login for container coding agents",
+    );
+    // Loaded default is true (copy-in is the default auth path for #930).
+    expect(checkbox.checked).toBe(true);
+
+    // Toggle OFF and save -> the persisted draft carries the new value, proving
+    // updateField accepts the new AppSettings key end to end.
+    checkbox.checked = false;
+    checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.containerCredentialsFromHost).toBe(false);
+
+    dispose();
+  });
+
+  it("shows the host-login-on hint when Container runtime is selected (default #930)", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "agents" }),
+      root,
+    );
+    await settle();
+    expandAgentRow(0);
+    await settle();
+
+    // Local runtime: no credential hint, and no container caveat.
+    expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.hostLogin"]'),
+    ).toBeNull();
+    expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.hostLoginOff"]'),
+    ).toBeNull();
+    expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.inProgress"]'),
+    ).toBeNull();
+
+    const runtime = byTestId<HTMLSelectElement>("settings.agentRow.0.runtimeKind");
+    runtime.value = "containerTransport";
+    runtime.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    // Setting defaults ON -> the on-branch hint renders; the off-branch stays absent.
+    const onHint = byTestId("settings.agentRow.0.containerHint.hostLogin").textContent ?? "";
+    expect(onHint).toContain("Host login reuse is on");
+    expect(onHint).toContain("removes them when the session stops");
+    // #930 grinch review: AC pre-answers a safety dialog, so the hint must disclose
+    // the first-run state it stamps inside the container.
+    expect(onHint).toContain("onboarding is marked complete");
+    expect(onHint).toContain("/workspace is marked as trusted");
+    expect(onHint).toContain("folder-trust safety prompt");
+    expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.hostLoginOff"]'),
+    ).toBeNull();
+
+    // #930 landing condition: the feature is in progress and a container agent still
+    // cannot reach the repos (#935). The caveat is a property of the RUNTIME, not of
+    // credential reuse, so it lives outside the reuse Show - here it must render with
+    // reuse ON, and it must NOT be duplicated inside the reuse hint.
+    const caveat = byTestId("settings.agentRow.0.containerHint.inProgress").textContent ?? "";
+    expect(caveat).toContain("In progress");
+    expect(caveat).toContain("cannot reach your repos yet (#935)");
+    expect(caveat).toContain("Local runtime for repo work");
+    expect(onHint).not.toContain("#935");
+
+    // Switch back to local -> both the credential hint and the caveat die with the block.
+    runtime.value = "localProcess";
+    runtime.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+    expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.hostLogin"]'),
+    ).toBeNull();
+    expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.inProgress"]'),
+    ).toBeNull();
+
+    dispose();
+  });
+
+  it("shows the host-login-off hint when reuse is disabled and Container is selected (#930)", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    // Turn the global reuse setting OFF from the General tab.
+    const toggle = byTestId<HTMLInputElement>("settings.general.containerCredentialsFromHost");
+    expect(toggle.checked).toBe(true);
+    toggle.checked = false;
+    toggle.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    // Move to Coding Agents and select Container runtime for the row. The draft
+    // store persists across tabs, so the OFF value carries over.
+    byTestId<HTMLButtonElement>("settings.tab.agents").click();
+    await settle();
+    expandAgentRow(0);
+    await settle();
+    const runtime = byTestId<HTMLSelectElement>("settings.agentRow.0.runtimeKind");
+    runtime.value = "containerTransport";
+    runtime.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    // Off-branch (warning) hint renders; the on-branch hint is absent.
+    const offHint = byTestId("settings.agentRow.0.containerHint.hostLoginOff").textContent ?? "";
+    expect(offHint).toContain("Host login reuse is off");
+    expect(offHint).toContain("CLAUDE_CODE_OAUTH_TOKEN");
+    // The OFF branch stamps nothing, so it must NOT claim any first-run state.
+    expect(offHint).not.toContain("onboarding");
+    expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.hostLogin"]'),
+    ).toBeNull();
+
+    // The reason the caveat was hoisted out of the reuse Show: a user with reuse OFF is
+    // still picking the Container runtime, and must still be told it cannot reach repos.
+    const caveat = byTestId("settings.agentRow.0.containerHint.inProgress").textContent ?? "";
+    expect(caveat).toContain("In progress");
+    expect(caveat).toContain("cannot reach your repos yet (#935)");
+    expect(caveat).toContain("Local runtime for repo work");
+
+    dispose();
+  });
+
+  it("discloses the container first-run stamping in the General hint (#930)", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    const hint =
+      byTestId("settings.general.containerCredentialsFromHost.hint").textContent ?? "";
+
+    // Copy + teardown (what the backend does with the credential itself).
+    expect(hint).toContain("deletes it when the session stops");
+    // grinch review: AC answers a safety dialog for the user, so the hint must say
+    // so - onboarding stamped complete + /workspace trusted inside the container.
+    expect(hint).toContain("onboarding is marked complete");
+    expect(hint).toContain("/workspace folder is marked as trusted");
+    expect(hint).toContain("on your behalf");
+    // The host side is untouched, and the refresh-token drift clause survives (14.5).
+    expect(hint).toContain("Your host config is never modified");
+    expect(hint).toContain("token refresh in one place can require re-login");
+    // #930 lands as in-progress: the repo access limitation (#935) is stated up front.
+    expect(hint).toContain("In progress");
+    expect(hint).toContain("cannot reach your repos yet (#935)");
+    expect(hint).toContain("Local runtime");
 
     dispose();
   });

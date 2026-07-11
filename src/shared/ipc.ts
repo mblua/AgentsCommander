@@ -36,6 +36,8 @@ import type {
   TaskUpdateResult,
   WorkgroupTaskUpdatedEvent,
   ProjectRegistration,
+  ArchivedProject,
+  ProjectArchiveChanged,
   ErrorLogEntry,
   AgencyTemplatesStatus,
   AgencyTemplatesUpdateResult,
@@ -71,18 +73,6 @@ import type {
 export interface SessionRepoInput {
   label: string;
   sourcePath: string;
-}
-
-export type RtkStartupMode =
-  | "prompt-enable"
-  | "active"
-  | "auto-disabled"
-  | "silent";
-
-export interface RtkSweepResult {
-  total: number;
-  succeeded: number;
-  errors: { path: string; error: string }[];
 }
 
 function createDefaultTransport(): Transport {
@@ -316,11 +306,7 @@ export const SettingsAPI = {
   // Narrow setters hold the SettingsState write lock through save_settings on
   // the Rust side, eliminating the IPC-level read-modify-write race that a
   // get+update round-trip would create against a concurrent update_settings
-  // from SettingsModal. Used by RtkBanner.
-  setInjectRtkHook: (value: boolean) =>
-    transport.invoke<void>("set_inject_rtk_hook", { value }),
-  setRtkPromptDismissed: (value: boolean) =>
-    transport.invoke<void>("set_rtk_prompt_dismissed", { value }),
+  // from SettingsModal.
   setSoundsEnabled: (value: boolean) =>
     transport.invoke<void>("set_sounds_enabled", { value }),
   setThemeLight: (value: boolean) =>
@@ -380,10 +366,6 @@ export const SettingsAPI = {
       agentId,
       requestedProfile: requestedProfile ?? null,
     }),
-  sweepRtkHook: (enabled: boolean) =>
-    transport.invoke<RtkSweepResult>("sweep_rtk_hook", { enabled }),
-  getRtkStartupStatus: () =>
-    transport.invoke<RtkStartupMode>("get_rtk_startup_status"),
   getUpdateStatus: () =>
     transport.invoke<UpdateInfo | null>("get_update_status"),
 };
@@ -403,6 +385,12 @@ export function onSessionCreated(
   callback: (session: Session) => void
 ): Promise<UnlistenFn> {
   return transport.listen<Session>("session_created", callback);
+}
+
+export function onProjectArchiveChanged(
+  callback: (event: ProjectArchiveChanged) => void
+): Promise<UnlistenFn> {
+  return transport.listen<ProjectArchiveChanged>("project_archive_changed", callback);
 }
 
 export function onSessionDestroyed(
@@ -834,6 +822,18 @@ export const ProjectAPI = {
    * hard failure (e.g. a G2 read abort when the settings file is locked).
    */
   remove: (path: string) => transport.invoke<void>("remove_project", { path }),
+  /**
+   * #881 - hide the project at `path`. Rejects with a human-readable blocker
+   * message when the project still has live sessions, so callers must await it
+   * before mutating any local store.
+   */
+  archive: (path: string) => transport.invoke<void>("archive_project", { path }),
+  /** #881 - restore an archived project and return its backend registration. */
+  unarchive: (path: string) =>
+    transport.invoke<ProjectRegistration>("unarchive_project", { path }),
+  /** #881 - archived projects decorated with on-disk existence flags. */
+  listArchived: () =>
+    transport.invoke<ArchivedProject[]>("list_archived_projects", {}),
 };
 
 /** #777 Non-stop watchdog: frontend pushes the full disparity snapshot; the
@@ -1024,15 +1024,6 @@ export function onOpenSettings(
 ): Promise<UnlistenFn> {
   return transport.listen<{ section?: string }>("open_settings", (data) =>
     callback(data?.section)
-  );
-}
-
-export function onRtkStartupStatus(
-  callback: (mode: RtkStartupMode) => void
-): Promise<UnlistenFn> {
-  return transport.listen<{ mode: RtkStartupMode }>(
-    "rtk_startup_status",
-    (data) => callback(data.mode)
   );
 }
 

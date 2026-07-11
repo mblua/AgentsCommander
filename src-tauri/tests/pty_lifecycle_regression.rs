@@ -31,8 +31,8 @@ use agentscommander_lib::voice::tracker::{VoiceTracker, VoiceTrackingState};
 use agentscommander_lib::web::auth::WebAccessToken;
 use agentscommander_lib::web::broadcast::WsBroadcaster;
 use agentscommander_lib::{
-    AppOutbox, DetachedSessionsState, MasterToken, RestoreInProgress, RtkStartupModeState,
-    RtkSweepLockState, SpecBoardState, WebServerHandle,
+    AppOutbox, ConfigSeedLockState, DetachedSessionsState, MasterToken, RestoreInProgress,
+    SpecBoardState, WebServerHandle,
 };
 use serde::Deserialize;
 use tauri::{Listener, Manager};
@@ -260,8 +260,7 @@ fn make_test_app(
     let spec_board_state: SpecBoardState = Arc::new(tokio::sync::RwLock::new(
         agentscommander_lib::commands::spec_board::SpecBoardManager::new(),
     ));
-    let rtk_sweep_lock: RtkSweepLockState = Arc::new(tokio::sync::Mutex::new(()));
-    let rtk_startup_mode: RtkStartupModeState = Arc::new(std::sync::OnceLock::new());
+    let config_seed_lock: ConfigSeedLockState = Arc::new(tokio::sync::Mutex::new(()));
     let shutdown_signal = ShutdownSignal::new();
 
     let captured = Arc::clone(captured_output);
@@ -286,8 +285,7 @@ fn make_test_app(
         .manage(WsBroadcaster::new())
         .manage(WebServerHandle::default())
         .manage(spec_board_state)
-        .manage(rtk_sweep_lock)
-        .manage(rtk_startup_mode)
+        .manage(config_seed_lock)
         .manage(git_watcher)
         .manage(Arc::new(ResourceMonitorState::new()))
         .manage(Arc::clone(&pty_mgr))

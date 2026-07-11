@@ -119,6 +119,50 @@ impl IdleTuning {
     };
 }
 
+/// #930 - per-coding-agent host credential source for container copy-in.
+/// Static data only (all `&'static str`), so it is usable in the `const`
+/// profile table and carries no host-specific paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContainerCredentialSource {
+    /// Default host config dir, relative to the user's home dir, e.g. ".claude".
+    pub host_dir: &'static str,
+    /// Optional env var whose value (an absolute path) overrides `host_dir` on
+    /// the host, e.g. "CLAUDE_CONFIG_DIR" for Claude. Only the AgentsCommander
+    /// process environment is consulted (NOT wrapper-script parsing).
+    pub host_dir_env: Option<&'static str>,
+    /// Credential filename within the config dir, e.g. ".credentials.json".
+    pub file: &'static str,
+    /// Container-side config dir relative to the bind-mount root (`host_root`),
+    /// e.g. ".claude". Where the file is copied so the container reads it.
+    pub container_dir: &'static str,
+    /// #930 - first-run state stamped next to the copied credential so the
+    /// agent's interactive TUI actually USES it instead of running its
+    /// onboarding wizard. None = nothing is stamped for this agent.
+    pub first_run: Option<ContainerFirstRunState>,
+}
+
+/// #930 - container-side first-run state a coding agent needs before its
+/// interactive TUI will use a copied credential. Verified in a real container:
+/// Claude Code gates its onboarding wizard on `hasCompletedOnboarding` in
+/// `$CLAUDE_CONFIG_DIR/.claude.json`, and the folder-trust dialog on
+/// `projects[<cwd>].hasTrustDialogAccepted`, checking NEITHER against the
+/// credential file. So a valid copied token still lands on "Select login
+/// method" unless these flags are set. Static data only (all `&'static str`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContainerFirstRunState {
+    /// JSON config file inside `container_dir`, e.g. ".claude.json".
+    pub file: &'static str,
+    /// Top-level boolean gating the onboarding wizard, set to `true`, e.g.
+    /// "hasCompletedOnboarding".
+    pub onboarding_flag: &'static str,
+    /// Key of the per-project map in that file, e.g. "projects".
+    pub projects_key: &'static str,
+    /// Booleans set to `true` under `<projects_key>[<container_workdir>]`, e.g.
+    /// ["hasTrustDialogAccepted", "hasCompletedProjectOnboarding"]. Empty = no
+    /// project entry is written.
+    pub project_flags: &'static [&'static str],
+}
+
 /// All behavior that varies per coding agent. Plain `Copy` data (see §2 D1).
 #[derive(Debug, Clone, Copy)]
 pub struct CodingAgentProfile {
@@ -134,6 +178,9 @@ pub struct CodingAgentProfile {
     ///   `--resume=latest` form is handled by the Gemini stripper as a
     ///   recognised variant)
     pub resume_tokens: &'static [&'static str],
+    /// #930 - host credential file this agent reuses in a container (None = no
+    /// copy-in for this agent).
+    pub container_credential: Option<ContainerCredentialSource>,
 }
 
 // All three agents currently use `IdleTuning::DEFAULT` — identical to the
@@ -144,16 +191,40 @@ const CLAUDE_PROFILE: CodingAgentProfile = CodingAgentProfile {
     kind: CodingAgentKind::Claude,
     idle: IdleTuning::DEFAULT,
     resume_tokens: &["--continue"],
+    // #930 - verified end-to-end: host ~/.claude/.credentials.json copies to
+    // <replica>/.claude/.credentials.json, read in-container as
+    // /workspace/.claude/.credentials.json.
+    container_credential: Some(ContainerCredentialSource {
+        host_dir: ".claude",
+        host_dir_env: Some("CLAUDE_CONFIG_DIR"),
+        file: ".credentials.json",
+        container_dir: ".claude",
+        // #930 - without these, a valid copied token STILL shows the onboarding
+        // wizard ("Select login method") and then the folder-trust dialog.
+        // Reproduced in a real container; both prompts vanish once they are set.
+        first_run: Some(ContainerFirstRunState {
+            file: ".claude.json",
+            onboarding_flag: "hasCompletedOnboarding",
+            projects_key: "projects",
+            project_flags: &["hasTrustDialogAccepted", "hasCompletedProjectOnboarding"],
+        }),
+    }),
 };
 const CODEX_PROFILE: CodingAgentProfile = CodingAgentProfile {
     kind: CodingAgentKind::Codex,
     idle: IdleTuning::DEFAULT,
     resume_tokens: &["resume", "--last"],
+    // #930 follow-up (needs CODEX_HOME container wiring verified, Q3):
+    // Some(ContainerCredentialSource { host_dir: ".codex", host_dir_env: Some("CODEX_HOME"),
+    //     file: "auth.json", container_dir: ".codex" })
+    container_credential: None,
 };
 const GEMINI_PROFILE: CodingAgentProfile = CodingAgentProfile {
     kind: CodingAgentKind::Gemini,
     idle: IdleTuning::DEFAULT,
     resume_tokens: &["--resume", "latest"],
+    // #930 - no established container credential-file flow for Gemini.
+    container_credential: None,
 };
 
 /// Idle-detector tuning for a session, given its (optional) agent kind.

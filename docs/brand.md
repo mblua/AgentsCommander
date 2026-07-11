@@ -169,8 +169,8 @@ keep the word.
   command.
 - We say "Claude Code, Codex, Gemini," not "leading AI coding assistants."
   We name the product.
-- Numbers beat adjectives. "60–90% token reduction with RTK" beats
-  "massive token savings."
+- Numbers beat adjectives. "60-second install to first running agent"
+  beats "quick setup."
 - Footguns and limits in the open. "macOS not yet tested" out-converts
   silence on macOS.
 

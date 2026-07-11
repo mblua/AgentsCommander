@@ -9,7 +9,6 @@ use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
 use crate::api::auth;
-use crate::config::claude_settings::{ensure_rtk_pretool_hook, enumerate_managed_agent_dirs};
 use crate::config::settings::{
     load_settings, merge_protected_coding_agent_settings, parse_api_server_socket_addr,
     save_settings, validate_and_repair_settings, AppSettings, CodingAgentEnv,
@@ -22,7 +21,7 @@ use crate::session::session::SessionInfo;
 use crate::web::auth::WebAccessToken;
 use crate::web::broadcast::WsBroadcaster;
 use crate::{
-    ApiServerHandle, ApiServerTask, RtkStartupModeState, RtkSweepLockState, WebServerHandle,
+    ApiServerHandle, ApiServerTask, WebServerHandle,
 };
 
 const HOME_MARKDOWN_URL: &str =
@@ -37,21 +36,6 @@ const MINT_API_CLIENT_DEFAULT_TTL_HOURS: i64 = 24;
 const MINT_API_CLIENT_MAX_TTL_DAYS: i64 = 30;
 const MINT_API_CLIENT_NOTE: &str =
     "Store this token now; it is shown only once. The registry keeps only a hash.";
-
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RtkSweepResult {
-    pub total: u32,
-    pub succeeded: u32,
-    pub errors: Vec<RtkSweepError>,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RtkSweepError {
-    pub path: String,
-    pub error: String,
-}
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -239,6 +223,18 @@ fn build_protected_settings_candidate(
     let mut candidate = merge_protected_coding_agent_settings(current, new_settings);
     // Preserve existing root token. Frontend settings payloads cannot overwrite it.
     candidate.root_token = current.root_token.clone();
+    // #881 A7 / R2-G1: project lists are disk-authoritative and are mutated
+    // only by dedicated project commands. A settings payload from the GUI, CLI,
+    // or API must never carry authority for them, so restore all three from
+    // live memory before repair.
+    //
+    // This is not the prohibited disk re-read. The preserving writer still
+    // overwrites all three from disk whenever disk has an opinion, so disk
+    // authority is untouched. These copies only matter on the no-disk-truth
+    // arms where a stale client would otherwise publish an empty list.
+    candidate.project_paths = current.project_paths.clone();
+    candidate.project_path = current.project_path.clone();
+    candidate.archived_project_paths = current.archived_project_paths.clone();
     validate_and_repair_settings(&mut candidate)?;
     Ok(candidate)
 }
@@ -258,6 +254,12 @@ async fn persist_settings_draft_update_with_saver(
     let mut s = settings.write().await;
     let current = s.clone();
     draft.root_token = current.root_token.clone();
+    // #881 A7 / R2-G1: same protected-list restore as the whole settings
+    // publisher above. This is an in-memory copy from the held settings guard,
+    // not a second disk read, and it only affects the no-disk-truth arms.
+    draft.project_paths = current.project_paths.clone();
+    draft.project_path = current.project_path.clone();
+    draft.archived_project_paths = current.archived_project_paths.clone();
     validate_and_repair_settings(&mut draft)?;
     let events = settings_draft_update_events(&current, &draft);
     let written = save(&draft)?;
@@ -283,9 +285,11 @@ async fn purge_sessions_after_settings_update_in_dir(
     saved: &AppSettings,
     dir: &Path,
 ) -> Result<(), String> {
+    let retention_paths =
+        crate::config::sessions_persistence::session_retention_project_paths(saved);
     crate::config::sessions_persistence::purge_sessions_outside_project_paths_in_dir(
         dir,
-        &saved.project_paths,
+        &retention_paths,
     )
     .await
     .map(|_| ())
@@ -1621,41 +1625,8 @@ async fn persist_narrow_settings_update_with_saver(
     Ok(())
 }
 
-/// Narrow setter for `inject_rtk_hook`. Holds the SettingsState
-/// write lock through `save_settings` and publishes the candidate only after
-/// the disk write succeeds (issue #120, grinch H3 + N1).
-/// Broad settings updates now use the same write-lock-through-save pattern, so
-/// stale full-object payloads cannot interleave with this setter and overwrite
-/// the live value after this save publishes.
-///
-/// Caller is responsible for triggering `sweep_rtk_hook` if disk side-effects
-/// on replicas are desired.
-#[tauri::command]
-pub async fn set_inject_rtk_hook(
-    settings: State<'_, SettingsState>,
-    value: bool,
-) -> Result<(), String> {
-    persist_narrow_settings_update(settings.inner(), |candidate| {
-        candidate.inject_rtk_hook = value;
-    })
-    .await
-}
-
-/// Narrow setter for `rtk_prompt_dismissed`. Same candidate-save-publish
-/// pattern as `set_inject_rtk_hook` (issue #120, grinch H3 + N1).
-#[tauri::command]
-pub async fn set_rtk_prompt_dismissed(
-    settings: State<'_, SettingsState>,
-    value: bool,
-) -> Result<(), String> {
-    persist_narrow_settings_update(settings.inner(), |candidate| {
-        candidate.rtk_prompt_dismissed = value;
-    })
-    .await
-}
-
 /// Narrow setter for `sounds_enabled`. Same candidate-save-publish
-/// pattern as `set_inject_rtk_hook` (issue #158). Replaces the toolbar's
+/// pattern as the other narrow setters (issue #158). Replaces the toolbar's
 /// previous full-object `update_settings(next)` call, which could clobber
 /// unrelated fields from a stale `settingsStore.current` snapshot.
 #[tauri::command]
@@ -1733,91 +1704,6 @@ pub async fn set_log_level(
     Ok(())
 }
 
-/// Sweep every AC-managed agent directory and apply
-/// `ensure_rtk_pretool_hook(dir, enabled)`. Best-effort per directory:
-/// per-dir failures are logged + appended to `errors` and the sweep
-/// continues. Reads `project_paths` from the live `SettingsState` (avoids a
-/// disk-read race against `save_settings`).
-///
-/// Acquires `RtkSweepLockState` for the entire loop — eliminates the
-/// in-process race vs. concurrent `ensure_rtk_pretool_hook` calls from
-/// `entity_creation` (issue #120, grinch M8). Cross-process races (two AC
-/// instances) remain documented in the plan §7.4.
-#[tauri::command]
-pub async fn sweep_rtk_hook(
-    settings: State<'_, SettingsState>,
-    sweep_lock: State<'_, RtkSweepLockState>,
-    enabled: bool,
-) -> Result<RtkSweepResult, String> {
-    let _guard = sweep_lock.lock().await;
-
-    let project_paths: Vec<String> = {
-        let s = settings.read().await;
-        s.project_paths.clone()
-    };
-
-    let dirs = enumerate_managed_agent_dirs(&project_paths);
-    let total = dirs.len() as u32;
-    let mut succeeded: u32 = 0;
-    let mut errors: Vec<RtkSweepError> = Vec::new();
-
-    for dir in dirs {
-        match ensure_rtk_pretool_hook(&dir, enabled) {
-            Ok(()) => {
-                succeeded += 1;
-            }
-            Err(e) => {
-                log::warn!(
-                    "[rtk-sweep] Failed to apply (enabled={}) to {}: {}",
-                    enabled,
-                    dir.display(),
-                    e
-                );
-                errors.push(RtkSweepError {
-                    path: dir.to_string_lossy().to_string(),
-                    error: e,
-                });
-            }
-        }
-    }
-
-    log::info!(
-        "[rtk-sweep] enabled={} total={} succeeded={} errors={}",
-        enabled,
-        total,
-        succeeded,
-        errors.len()
-    );
-
-    Ok(RtkSweepResult {
-        total,
-        succeeded,
-        errors,
-    })
-}
-
-/// Returns the BOOT-TIME RTK startup decision computed by the setup task in
-/// `lib.rs::run` and cached in `RtkStartupModeState`. This is the SAME value
-/// the setup task emitted via `rtk_startup_status` — so the listener and the
-/// getter always agree, even after the auto-disable side-effect mutates
-/// settings (issue #120 §18 amendment).
-///
-/// If called before the setup task has finished (extremely narrow boot
-/// window — `which::which` resolve + a state read), returns "silent". The
-/// listener will fire shortly after with the actual mode; combined with
-/// idempotent `setMode` on the frontend, the banner self-corrects.
-///
-/// Pure read — does NOT auto-disable, does NOT sweep, does NOT probe PATH.
-#[tauri::command]
-pub async fn get_rtk_startup_status(
-    mode_cache: State<'_, RtkStartupModeState>,
-) -> Result<String, String> {
-    Ok(mode_cache
-        .get()
-        .cloned()
-        .unwrap_or_else(|| "silent".to_string()))
-}
-
 /// Issue #609 - return the pending "npm update available" info, or null if the
 /// running build is current / the check has not finished / it is disabled.
 /// Pure read of the cached `UpdateCheckState` (set by the startup task in
@@ -1884,13 +1770,13 @@ mod tests {
         persist_coding_agent_env_settings_update, persist_coding_agent_profiles_update,
         persist_narrow_settings_update_with_saver, persist_protected_settings_update_with_saver,
         persist_settings_draft_update_with_saver, purge_sessions_after_settings_update_in_dir,
-        start_api_server, RtkSweepError, RtkSweepResult, WebServerOwnershipState,
+        start_api_server, WebServerOwnershipState,
         MINT_API_CLIENT_DEFAULT_TTL_HOURS, MINT_API_CLIENT_MAX_TTL_DAYS, MINT_API_CLIENT_NOTE,
     };
     #[cfg(windows)]
     use super::{build_profile_assignment_target, canonical_compare_key};
     use crate::api::auth;
-    use crate::config::sessions_persistence::PersistedSession;
+    use crate::config::sessions_persistence::{session_retention_project_paths, PersistedSession};
     use crate::config::settings::{
         AgentConfig, AppSettings, CodingAgentEnv, CodingAgentEnvSource, ProfileCellConfig,
         SettingsState,
@@ -1965,6 +1851,11 @@ mod tests {
         std::fs::write(dir.join("settings.json"), json).expect("write settings.json");
     }
 
+    fn write_settings_json(dir: &Path, value: serde_json::Value) {
+        let json = serde_json::to_vec_pretty(&value).expect("serialize settings json");
+        std::fs::write(dir.join("settings.json"), json).expect("write settings.json");
+    }
+
     fn write_sessions_file(dir: &Path, sessions: &[PersistedSession]) {
         let json = serde_json::to_vec_pretty(sessions).expect("serialize sessions");
         std::fs::write(dir.join("sessions.json"), json).expect("write sessions.json");
@@ -1973,6 +1864,20 @@ mod tests {
     fn read_sessions_file(dir: &Path) -> Vec<PersistedSession> {
         let json = std::fs::read_to_string(dir.join("sessions.json")).expect("read sessions.json");
         serde_json::from_str(&json).expect("parse sessions.json")
+    }
+
+    fn settings_payload_without_keys(settings: &AppSettings, keys: &[&str]) -> AppSettings {
+        let mut value = serde_json::to_value(settings).expect("serialize settings payload");
+        let object = value
+            .as_object_mut()
+            .expect("settings payload must serialize to an object");
+        for key in keys {
+            assert!(
+                object.remove(*key).is_some(),
+                "settings payload has no `{key}` key to strip; the A7 gate would be a no-op"
+            );
+        }
+        serde_json::from_value(value).expect("deserialize stale settings payload")
     }
 
     fn assert_single_project(settings: &AppSettings, project: &str) {
@@ -2680,8 +2585,6 @@ mod tests {
         assert_candidate: impl FnOnce(&AppSettings) + Send,
     ) {
         let mut original = settings_with_single_agent();
-        original.inject_rtk_hook = false;
-        original.rtk_prompt_dismissed = false;
         original.sounds_enabled = true;
         original.theme_light = false;
         let state = state_for(original.clone());
@@ -2700,32 +2603,12 @@ mod tests {
 
         assert_eq!(err, expected_err);
         let live = state.read().await;
-        assert_eq!(
-            live.inject_rtk_hook, original.inject_rtk_hook,
-            "{field_name}"
-        );
-        assert_eq!(
-            live.rtk_prompt_dismissed, original.rtk_prompt_dismissed,
-            "{field_name}"
-        );
         assert_eq!(live.sounds_enabled, original.sounds_enabled, "{field_name}");
         assert_eq!(live.theme_light, original.theme_light, "{field_name}");
     }
 
     #[tokio::test]
     async fn narrow_settings_setter_save_failure_leaves_live_settings_unchanged() {
-        assert_narrow_setter_save_failure_rolls_back(
-            "inject_rtk_hook",
-            |candidate| candidate.inject_rtk_hook = true,
-            |candidate| assert!(candidate.inject_rtk_hook),
-        )
-        .await;
-        assert_narrow_setter_save_failure_rolls_back(
-            "rtk_prompt_dismissed",
-            |candidate| candidate.rtk_prompt_dismissed = true,
-            |candidate| assert!(candidate.rtk_prompt_dismissed),
-        )
-        .await;
         assert_narrow_setter_save_failure_rolls_back(
             "sounds_enabled",
             |candidate| candidate.sounds_enabled = false,
@@ -2803,6 +2686,219 @@ mod tests {
             let live = draft_state.read().await;
             assert_single_project(&live, disk_project);
         }
+    }
+
+    #[tokio::test]
+    async fn update_settings_keeps_live_archived_list_when_disk_key_absent() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let live_project = "C:/live/a";
+        let archived_project = "C:/archived/b";
+        write_settings_json(
+            temp.path(),
+            serde_json::json!({
+                "projectPaths": [live_project],
+                "projectPath": live_project
+            }),
+        );
+
+        let mut current = settings_with_single_agent();
+        current.project_paths = vec![live_project.to_string()];
+        current.project_path = Some(live_project.to_string());
+        current.archived_project_paths = vec![archived_project.to_string()];
+        let state = state_for(current.clone());
+        let payload = settings_payload_without_keys(&current, &["archivedProjectPaths"]);
+
+        let saved = persist_protected_settings_update_with_saver(&state, payload, |candidate| {
+            crate::config::settings::save_settings_to_path_preserving_project_paths(
+                candidate,
+                &settings_path,
+            )
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(
+            saved.archived_project_paths,
+            vec![archived_project.to_string()]
+        );
+        assert!(session_retention_project_paths(&saved).contains(&archived_project.to_string()));
+        {
+            let live = state.read().await;
+            assert_eq!(
+                live.archived_project_paths,
+                vec![archived_project.to_string()]
+            );
+        }
+        let disk: AppSettings =
+            serde_json::from_str(&std::fs::read_to_string(settings_path).unwrap()).unwrap();
+        assert_eq!(
+            disk.archived_project_paths,
+            vec![archived_project.to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn save_settings_draft_keeps_live_archived_list_when_disk_key_absent() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let live_project = "C:/live/a";
+        let archived_project = "C:/archived/b";
+        write_settings_json(
+            temp.path(),
+            serde_json::json!({
+                "projectPaths": [live_project],
+                "projectPath": live_project
+            }),
+        );
+
+        let mut current = settings_with_single_agent();
+        current.project_paths = vec![live_project.to_string()];
+        current.project_path = Some(live_project.to_string());
+        current.archived_project_paths = vec![archived_project.to_string()];
+        let state = state_for(current.clone());
+        let payload = settings_payload_without_keys(&current, &["archivedProjectPaths"]);
+
+        let (saved, _events) =
+            persist_settings_draft_update_with_saver(&state, payload, |candidate| {
+                crate::config::settings::save_settings_to_path_preserving_project_paths(
+                    candidate,
+                    &settings_path,
+                )
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            saved.archived_project_paths,
+            vec![archived_project.to_string()]
+        );
+        assert!(session_retention_project_paths(&saved).contains(&archived_project.to_string()));
+        {
+            let live = state.read().await;
+            assert_eq!(
+                live.archived_project_paths,
+                vec![archived_project.to_string()]
+            );
+        }
+        let disk: AppSettings =
+            serde_json::from_str(&std::fs::read_to_string(settings_path).unwrap()).unwrap();
+        assert_eq!(
+            disk.archived_project_paths,
+            vec![archived_project.to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn update_settings_keeps_live_project_paths_when_settings_file_absent() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let live_project = "C:/live/a";
+
+        let mut current = settings_with_single_agent();
+        current.project_paths = vec![live_project.to_string()];
+        current.project_path = Some(live_project.to_string());
+        let state = state_for(current.clone());
+        let payload = settings_payload_without_keys(&current, &["projectPaths", "projectPath"]);
+
+        let saved = persist_protected_settings_update_with_saver(&state, payload, |candidate| {
+            crate::config::settings::save_settings_to_path_preserving_project_paths(
+                candidate,
+                &settings_path,
+            )
+        })
+        .await
+        .unwrap();
+
+        assert_single_project(&saved, live_project);
+        assert!(session_retention_project_paths(&saved).contains(&live_project.to_string()));
+        {
+            let live = state.read().await;
+            assert_single_project(&live, live_project);
+        }
+        let disk: AppSettings =
+            serde_json::from_str(&std::fs::read_to_string(settings_path).unwrap()).unwrap();
+        assert_single_project(&disk, live_project);
+    }
+
+    #[tokio::test]
+    async fn save_settings_draft_keeps_live_project_paths_when_settings_file_absent() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let live_project = "C:/live/a";
+
+        let mut current = settings_with_single_agent();
+        current.project_paths = vec![live_project.to_string()];
+        current.project_path = Some(live_project.to_string());
+        let state = state_for(current.clone());
+        let payload = settings_payload_without_keys(&current, &["projectPaths", "projectPath"]);
+
+        let (saved, _events) =
+            persist_settings_draft_update_with_saver(&state, payload, |candidate| {
+                crate::config::settings::save_settings_to_path_preserving_project_paths(
+                    candidate,
+                    &settings_path,
+                )
+            })
+            .await
+            .unwrap();
+
+        assert_single_project(&saved, live_project);
+        assert!(session_retention_project_paths(&saved).contains(&live_project.to_string()));
+        {
+            let live = state.read().await;
+            assert_single_project(&live, live_project);
+        }
+        let disk: AppSettings =
+            serde_json::from_str(&std::fs::read_to_string(settings_path).unwrap()).unwrap();
+        assert_single_project(&disk, live_project);
+    }
+
+    #[tokio::test]
+    async fn update_settings_still_takes_disk_archived_list_when_key_present() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let live_project = "C:/live/a";
+        let disk_archived = "C:/archived/a";
+        let live_archived = "C:/archived/b";
+        let payload_archived = "C:/archived/c";
+        write_settings_json(
+            temp.path(),
+            serde_json::json!({
+                "projectPaths": [live_project],
+                "projectPath": live_project,
+                "archivedProjectPaths": [disk_archived]
+            }),
+        );
+
+        let mut current = settings_with_single_agent();
+        current.project_paths = vec![live_project.to_string()];
+        current.project_path = Some(live_project.to_string());
+        current.archived_project_paths = vec![live_archived.to_string()];
+        let state = state_for(current.clone());
+        let mut payload = settings_payload_without_keys(&current, &[]);
+        payload.archived_project_paths = vec![payload_archived.to_string()];
+
+        let saved = persist_protected_settings_update_with_saver(&state, payload, |candidate| {
+            crate::config::settings::save_settings_to_path_preserving_project_paths(
+                candidate,
+                &settings_path,
+            )
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(
+            saved.archived_project_paths,
+            vec![disk_archived.to_string()]
+        );
+        {
+            let live = state.read().await;
+            assert_eq!(live.archived_project_paths, vec![disk_archived.to_string()]);
+        }
+        let disk: AppSettings =
+            serde_json::from_str(&std::fs::read_to_string(settings_path).unwrap()).unwrap();
+        assert_eq!(disk.archived_project_paths, vec![disk_archived.to_string()]);
     }
 
     #[tokio::test]
@@ -2997,37 +3093,5 @@ mod tests {
             .profiles_by_agent
             .get("agent-0")
             .is_some_and(|cells| cells.contains_key("B")));
-    }
-
-    /// `RtkSweepResult` and `RtkSweepError` cross the Tauri IPC boundary, so
-    /// the `#[serde(rename_all = "camelCase")]` rename is part of the public
-    /// contract with the SolidJS frontend types in `src/shared/ipc.ts`.
-    /// Removing the rename would still compile and the sweep would still
-    /// run, but the banner would render `undefined` for every error.
-    #[test]
-    fn rtk_sweep_result_serializes_camel_case() {
-        let value = RtkSweepResult {
-            total: 5,
-            succeeded: 4,
-            errors: vec![RtkSweepError {
-                path: "/some/dir".to_string(),
-                error: "boom".to_string(),
-            }],
-        };
-        let json = serde_json::to_string(&value).expect("serialize");
-        assert!(json.contains("\"total\":5"), "missing total: {}", json);
-        assert!(
-            json.contains("\"succeeded\":4"),
-            "missing succeeded: {}",
-            json
-        );
-        assert!(
-            json.contains("\"errors\":[{\"path\":\"/some/dir\",\"error\":\"boom\"}]"),
-            "missing errors with camelCase fields: {}",
-            json
-        );
-        // Negative checks: snake_case / PascalCase variants must not appear.
-        assert!(!json.contains("\"Total\""));
-        assert!(!json.contains("\"Path\""));
     }
 }

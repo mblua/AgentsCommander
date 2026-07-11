@@ -448,13 +448,13 @@ export interface AppSettings {
   apiServerBind: string;
   projectPath: string | null;
   projectPaths: string[];
+  /** #881 - projects hidden from the sidebar. Disk-authoritative: the backend
+   *  preserve-writer discards whatever this field carries on a whole-object save. */
+  archivedProjectPaths: string[];
   sidebarStyle: string;
   onboardingDismissed: boolean;
   coordSortByActivity: boolean;
   alwaysShowSelectedWorkgroup?: boolean;
-  injectRtkHook: boolean;
-  rtkPromptDismissed: boolean;
-  informWhenRtkInstalled: boolean;
   autoGenerateTaskTitle: boolean;
   agentTemplatesPath: string | null;
   themeLight: boolean;
@@ -490,6 +490,12 @@ export interface AppSettings {
   autoSelfClearEnabled: boolean;
   /** #640 Per-agent override of the class default, keyed by agent name. */
   autoSelfClearByAgent: Record<string, boolean>;
+  /** #930 When true (default), container coding-agent sessions copy the host
+   *  user's credential file for that agent into the replica config dir at spawn
+   *  and delete it on teardown. When false, the user supplies credentials
+   *  themselves (e.g. a CLAUDE_CODE_OAUTH_TOKEN env row). Mirrors the Rust
+   *  `container_credentials_from_host` field (camelCase via serde). */
+  containerCredentialsFromHost: boolean;
   /** #612 LIVE log level for agentscommander targets. null (legacy/unset) => "info". */
   logLevel: LogLevel | null;
   /** #714 Native global hotkey for screenshot capture (e.g. "Ctrl+Q"). Optional
@@ -1184,6 +1190,33 @@ export interface ProjectRegistration {
   registered: boolean;
   /** True when this call created .ac/ on disk (always false for openProject). */
   created: boolean;
+}
+
+/** Mirrors src-tauri/src/config/projects.rs::ArchivedProject (#881). */
+export interface ArchivedProject {
+  path: string;
+  folderName: string;
+  /** The directory still exists on disk. */
+  exists: boolean;
+  /** The directory still has a `.ac/` Project AC Root. */
+  hasWorkspace: boolean;
+}
+
+export type ArchiveChangeReason =
+  | "archive"
+  | "unarchive"
+  | "autoUnarchive"
+  | "open"
+  | "remove";
+
+/** Mirrors src-tauri/src/commands/ac_discovery.rs::ProjectArchiveChanged (#881). */
+export interface ProjectArchiveChanged {
+  path: string;
+  folderName: string;
+  archived: boolean;
+  reason: ArchiveChangeReason;
+  /** Only for reason === "autoUnarchive". */
+  sessionName?: string;
 }
 
 // ---------------------------------------------------------------------------

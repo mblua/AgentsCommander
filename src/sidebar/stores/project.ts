@@ -6,6 +6,7 @@ import type {
   AcTeam,
   AcLoopSummary,
   ContextTemplateUpdate,
+  ProjectArchiveChanged,
 } from "../../shared/types";
 import { ProjectAPI, AgentCreatorAPI } from "../../shared/ipc";
 import {
@@ -29,6 +30,9 @@ export interface ProjectState {
 }
 
 const [projects, setProjects] = createSignal<ProjectState[]>([]);
+// #881: archived projects leave `projects`, but their persisted sessions must
+// stay suppressed from the generic session list until an unarchive/open event.
+const [archivedPaths, setArchivedPaths] = createSignal<string[]>([]);
 const [loading, setLoading] = createSignal(false);
 const [lastLoadError, setLastLoadError] = createSignal<string | null>(null);
 const [initState, setInitState] = createSignal<{ attempted: boolean; pathCount: number }>({
@@ -37,6 +41,7 @@ const [initState, setInitState] = createSignal<{ attempted: boolean; pathCount: 
 });
 const inFlightLoads = new Map<string, Promise<void>>();
 const inFlightReloads = new Map<string, Promise<void>>();
+const archiveChangeTails = new Map<string, Promise<void>>();
 const queuedReloads = new Set<string>();
 let loadingCount = 0;
 
@@ -48,6 +53,36 @@ function normalizePath(p: string): string {
  *  set of paths whose live volatile overrides a fresh snapshot supersedes. */
 function workgroupReplicaPaths(source: { workgroups: AcWorkgroup[] }): string[] {
   return source.workgroups.flatMap((wg) => wg.agents.map((agent) => agent.path));
+}
+
+function hasArchivedPath(key: string): boolean {
+  return archivedPaths().some((p) => normalizePath(p) === key);
+}
+
+function hasLoadedProject(key: string): boolean {
+  return projects().some((p) => normalizePath(p.path) === key);
+}
+
+async function runSerializedArchiveChange(
+  key: string,
+  task: () => Promise<void> | void
+): Promise<void> {
+  const previous = archiveChangeTails.get(key) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(task);
+  archiveChangeTails.set(key, next);
+  try {
+    await next;
+  } finally {
+    if (archiveChangeTails.get(key) === next) {
+      archiveChangeTails.delete(key);
+    }
+  }
+}
+
+async function discoverAndAppendIfCurrent(path: string, key: string): Promise<void> {
+  const result = await ProjectAPI.discover(path);
+  if (hasArchivedPath(key)) return;
+  appendDiscoveredProject(path, result);
 }
 
 /** Append a freshly discovered project unless an equivalent path is already
@@ -107,6 +142,10 @@ export const projectStore = {
     return projects()[0] ?? null;
   },
 
+  get archivedPaths() {
+    return archivedPaths();
+  },
+
   get isLoading() {
     return loading();
   },
@@ -142,8 +181,10 @@ export const projectStore = {
         // is responsible for creating it first via projectStore.createAndLoad
         // when that case is expected.
         const reg = await ProjectAPI.open(path);
-        const result = await ProjectAPI.discover(reg.path);
-        appendDiscoveredProject(reg.path, result);
+        const normalizedReg = normalizePath(reg.path);
+        await runSerializedArchiveChange(normalizedReg, () =>
+          discoverAndAppendIfCurrent(reg.path, normalizedReg)
+        );
         setLastLoadError(null);
       } catch (e) {
         // Round-1 G11: surface the failure instead of only logging it. The
@@ -164,7 +205,21 @@ export const projectStore = {
   },
 
   /** Initialize from saved settings (call on mount) */
-  async initFromSettings(projectPaths: string[], legacyPath: string | null) {
+  async initFromSettings(
+    projectPaths: string[],
+    legacyPath: string | null,
+    archivedProjectPaths: string[] = []
+  ) {
+    // #881 (FE-F11) - union, not wholesale replace. `onProjectArchiveChanged`
+    // is registered before this boot-time call runs against an already-read
+    // settings snapshot; a concurrent archive from another window/CLI that
+    // `applyArchiveChange` committed into `archivedPaths` during that gap must
+    // survive, or the stale snapshot silently reverts it (and loadProject then
+    // re-registers the path on disk). Merge instead of clobbering.
+    setArchivedPaths((prev) => {
+      const keys = new Set(prev.map(normalizePath));
+      return [...prev, ...archivedProjectPaths.filter((p) => !keys.has(normalizePath(p)))];
+    });
     // Merge legacy single path into the array (deduplicated)
     const paths = [...projectPaths];
     if (legacyPath && !paths.some((p) => normalizePath(p) === normalizePath(legacyPath))) {
@@ -182,8 +237,10 @@ export const projectStore = {
   async createAndLoad(path: string) {
     const reg = await ProjectAPI.new(path);
     // After ensuring Project AC Root exists and persistence is set, run discovery for UI.
-    const result = await ProjectAPI.discover(reg.path);
-    appendDiscoveredProject(reg.path, result);
+    const normalized = normalizePath(reg.path);
+    await runSerializedArchiveChange(normalized, () =>
+      discoverAndAppendIfCurrent(reg.path, normalized)
+    );
   },
 
   /** Full open flow: pick folder, check Project AC Root, auto-load if found */
@@ -348,6 +405,7 @@ export const projectStore = {
     const removed = projects().find((p) => normalizePath(p.path) === normalized);
     batch(() => {
       setProjects((prev) => prev.filter((p) => normalizePath(p.path) !== normalized));
+      setArchivedPaths((prev) => prev.filter((p) => normalizePath(p) !== normalized));
       // #748 — drop the removed project's live overrides so a later re-add
       // starts from its fresh discovery snapshot, not a stale live layer.
       if (removed) {
@@ -359,6 +417,74 @@ export const projectStore = {
     // Design S (it preserves the on-disk project_paths so it can't clobber
     // CLI-registered projects), so removal must go through remove_project.
     await ProjectAPI.remove(path);
+  },
+
+  /** #881 - hide a project. The backend call runs first and its rejection
+   *  propagates so a blocked archive leaves the project visible. */
+  async archiveProject(path: string) {
+    const normalized = normalizePath(path);
+    await runSerializedArchiveChange(normalized, async () => {
+      await ProjectAPI.archive(path);
+      const archived = projects().find((p) => normalizePath(p.path) === normalized);
+      batch(() => {
+        setProjects((prev) => prev.filter((p) => normalizePath(p.path) !== normalized));
+        setArchivedPaths((prev) =>
+          prev.some((p) => normalizePath(p) === normalized) ? prev : [...prev, path]
+        );
+        if (archived) {
+          replicaVolatileStore.clearForPaths(workgroupReplicaPaths(archived));
+        }
+      });
+    });
+  },
+
+  /** #881 - restore an archived project and load its discovery data. */
+  async unarchiveProject(path: string) {
+    const key = normalizePath(path);
+    await runSerializedArchiveChange(key, async () => {
+      const reg = await ProjectAPI.unarchive(path);
+      const normalized = normalizePath(reg.path);
+      setArchivedPaths((prev) => prev.filter((p) => normalizePath(p) !== normalized));
+      if (hasLoadedProject(normalized)) return;
+      await discoverAndAppendIfCurrent(reg.path, normalized);
+    });
+  },
+
+  /** #881 - reconcile cross-window/browser archive events. Idempotent because
+   *  initiating windows receive their own backend event echoes. */
+  async applyArchiveChange(event: ProjectArchiveChanged) {
+    const key = normalizePath(event.path);
+    await runSerializedArchiveChange(key, async () => {
+      if (event.archived) {
+        const archived = projects().find((p) => normalizePath(p.path) === key);
+        batch(() => {
+          setProjects((prev) => prev.filter((p) => normalizePath(p.path) !== key));
+          setArchivedPaths((prev) =>
+            prev.some((p) => normalizePath(p) === key) ? prev : [...prev, event.path]
+          );
+          if (archived) {
+            replicaVolatileStore.clearForPaths(workgroupReplicaPaths(archived));
+          }
+        });
+        return;
+      }
+
+      if (event.reason === "remove") {
+        const removed = projects().find((p) => normalizePath(p.path) === key);
+        batch(() => {
+          setProjects((prev) => prev.filter((p) => normalizePath(p.path) !== key));
+          setArchivedPaths((prev) => prev.filter((p) => normalizePath(p) !== key));
+          if (removed) {
+            replicaVolatileStore.clearForPaths(workgroupReplicaPaths(removed));
+          }
+        });
+        return;
+      }
+
+      setArchivedPaths((prev) => prev.filter((p) => normalizePath(p) !== key));
+      if (hasLoadedProject(key)) return;
+      await discoverAndAppendIfCurrent(event.path, key);
+    });
   },
 
   /** #695 — drop exactly one resolved pending context-template update. The key
@@ -396,12 +522,14 @@ export const projectStore = {
 
   clear() {
     setProjects([]);
+    setArchivedPaths([]);
     loadingCount = 0;
     setLoading(false);
     setLastLoadError(null);
     setInitState({ attempted: false, pathCount: 0 });
     inFlightLoads.clear();
     inFlightReloads.clear();
+    archiveChangeTails.clear();
     queuedReloads.clear();
     replicaVolatileStore.clearAll();
   },

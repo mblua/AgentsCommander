@@ -721,12 +721,16 @@ fn resume_probe_target(
     backend_kind: SessionBackendKind,
     container_map: Option<&ContainerPathMap>,
     resolved_spawn: Option<&AgentSpawnCommand>,
+    injected_claude_config_dir: Option<&str>,
     shell: &str,
     shell_args: &[String],
     cwd: &str,
 ) -> ResumeProbeTarget {
-    let claude_config_dir_override =
-        resolved_spawn.and_then(|s| s.effective_env_value(CLAUDE_CONFIG_DIR_KEY));
+    // #930 - an injected copy-in default (host path under the replica mount) wins
+    // only when the user set no CLAUDE_CONFIG_DIR; the caller enforces that
+    // precondition, so fall back to the user's effective value otherwise.
+    let claude_config_dir_override = injected_claude_config_dir
+        .or_else(|| resolved_spawn.and_then(|s| s.effective_env_value(CLAUDE_CONFIG_DIR_KEY)));
     resume_probe_target_for_config_dir(
         backend_kind,
         container_map,
@@ -735,6 +739,26 @@ fn resume_probe_target(
         shell_args,
         cwd,
     )
+}
+
+/// #930 - the CLAUDE_CONFIG_DIR value to inject for a container coding agent whose
+/// host credentials we will copy. Returns the copy directory (a host path under
+/// the replica mount, which the container env translation later maps to
+/// `/workspace/.claude`) ONLY when a copy plan exists AND the user configured no
+/// CLAUDE_CONFIG_DIR (`user_has_claude_config_dir == false`). `None` => inject
+/// nothing (host-login-reuse off, no host credentials, or an explicit user
+/// value/removal we must not override).
+fn injected_claude_config_dir_for_copy(
+    plan: Option<&crate::pty::container_credentials::ContainerCredentialPlan>,
+    user_has_claude_config_dir: bool,
+) -> Option<String> {
+    if user_has_claude_config_dir {
+        return None;
+    }
+    plan?
+        .dest
+        .parent()
+        .map(crate::path_utils::path_to_string_without_windows_verbatim_prefix)
 }
 
 fn resume_probe_target_for_config_dir(
@@ -934,6 +958,12 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     resolved_spawn: Option<AgentSpawnCommand>,
 ) -> Result<SessionInfo, String> {
     let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
+    let session_label = session_name.as_deref().unwrap_or(&shell).to_string();
+    let spawn_mark = {
+        let pty = pty_mgr.lock().unwrap_or_else(|e| e.into_inner());
+        pty.mark_spawning(&cwd, &session_label)
+    };
+    crate::config::archive_gate::enforce_unarchived_for_spawn(app, &cwd, &session_label).await?;
     let (agent_id, agent_label) = {
         if let Some(spawn) = resolved_spawn.as_ref() {
             (
@@ -1084,6 +1114,16 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         }
     };
 
+    if let Err(e) =
+        crate::config::archive_gate::enforce_unarchived_for_spawn(app, &cwd, &session_label).await
+    {
+        let err = e.to_string();
+        release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+        drop(mgr);
+        rollback_pre_created_session(app, session_mgr, pty_mgr, session.id, &err).await;
+        return Err(err);
+    }
+
     // (#756) Propagate the mirror-forced intent onto the NEW record: the
     // startup-restore path reads ONLY the record, so without this an app close
     // after the forced-fresh reopen would resume the pre-boundary conversation.
@@ -1160,6 +1200,55 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     mgr.set_agent_kind(id, agent_kind).await;
     session.agent_kind = agent_kind;
 
+    // #930 - resolve the host-credential copy-in plan for container coding agents
+    // BEFORE the resume probe and the container env translation, so both consumers
+    // observe the CLAUDE_CONFIG_DIR we may inject below. Gated by the global setting
+    // (default on) and the per-agent profile descriptor; None when off,
+    // non-container, an unrecognized agent, or the host file is absent. The plan is
+    // pure (env read + file-exists check); the actual copy runs later in the
+    // container backend spawn (spawn_runtime_backed), preserving copy-after-seed.
+    let spawn_cwd = container_path_context
+        .as_ref()
+        .map(|context| context.host_root.clone())
+        .unwrap_or_else(|| cwd.clone());
+    let container_credential = if session.backend_kind == SessionBackendKind::ContainerTransport {
+        let copy_enabled = app
+            .state::<SettingsState>()
+            .read()
+            .await
+            .container_credentials_from_host;
+        if copy_enabled {
+            agent_kind
+                .and_then(|k| k.profile().container_credential)
+                .and_then(|src| crate::pty::container_credentials::resolve_plan(&src, &spawn_cwd))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    // #930 - when we WILL copy host creds and the user configured no
+    // CLAUDE_CONFIG_DIR (respecting an explicit value OR an explicit removal),
+    // default it to the copy directory so a default-on container authenticates with
+    // zero env rows. Injected as a host path; the container env translation maps it
+    // to /workspace/.claude and the resume probe then treats state as durable.
+    let user_has_claude_config_dir = resolved_spawn
+        .as_ref()
+        .map(|spawn| {
+            spawn.effective_env_value(CLAUDE_CONFIG_DIR_KEY).is_some()
+                || spawn.env_remove_keys.iter().any(|remove| {
+                    crate::config::settings::normalize_env_key_for_platform(remove)
+                        == crate::config::settings::normalize_env_key_for_platform(
+                            CLAUDE_CONFIG_DIR_KEY,
+                        )
+                })
+        })
+        .unwrap_or(false);
+    let injected_claude_config_dir = injected_claude_config_dir_for_copy(
+        container_credential.as_ref(),
+        user_has_claude_config_dir,
+    );
+
     // Auto-inject --continue for Claude agents when AC has reason to believe a prior
     // conversation exists for this session (issue #82: `is_dir()` alone is unsound;
     // call sites pass `skip_auto_resume = true` for fresh creates).
@@ -1172,6 +1261,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         session.backend_kind,
         container_path_context.as_ref().map(|context| &context.map),
         resolved_spawn.as_ref(),
+        injected_claude_config_dir.as_deref(),
         &shell,
         &shell_args,
         &cwd,
@@ -1374,6 +1464,12 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         .as_ref()
         .map(|spawn| spawn.child_env.clone())
         .unwrap_or_default();
+    // #930 - inject the copy directory as a host-path CLAUDE_CONFIG_DIR so the
+    // container env translation below maps it to /workspace/.claude and the copied
+    // token is actually read. Only present when we will copy and the user set none.
+    if let Some(dir) = injected_claude_config_dir.as_ref() {
+        configured_env.push((CLAUDE_CONFIG_DIR_KEY.to_string(), dir.clone()));
+    }
     let env_remove_keys: Vec<String> = resolved_spawn
         .as_ref()
         .map(|spawn| spawn.env_remove_keys.clone())
@@ -1459,37 +1555,16 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         // delete spawn A's in-flight temp/trash mid-swap and lose the config
         // (breaking H1's "dest always fully-old or fully-new" + M3 isolation).
         // Under this lock any other-id scratch is truly stale, so the
-        // leak-reclaim sweep stays safe. The same lock also gives the `.claude`
-        // re-apply its M2 serialization vs sweep_rtk_hook's settings.local.json
-        // read-modify-write. Clone the Arc out of State first so the owned guard
-        // does not borrow a State temporary (E0716).
+        // leak-reclaim sweep stays safe. Clone the Arc out of State first so the
+        // owned guard does not borrow a State temporary (E0716).
         let _seed_guard = {
-            let lock = app.state::<crate::RtkSweepLockState>().inner().clone();
+            let lock = app.state::<crate::ConfigSeedLockState>().inner().clone();
             lock.lock_owned().await
         };
 
-        let report = crate::config::config_seed::perform_config_seed(seed, &id.to_string());
-
-        // M1: a `.claude` seed clean-replaces the dir, wiping the AC-managed
-        // settings.local.json. Re-stamp the rtk hook (per the global toggle).
-        // `cwd` is the replica root; the writer appends `.claude`, so this lands
-        // in the seeded dir.
-        if matches!(report, crate::config::config_seed::ConfigSeedReport::Seeded) {
-            if let Some(re) = &seed.claude_settings_reapply {
-                let dir = std::path::Path::new(&cwd);
-                if let Err(e) =
-                    crate::config::claude_settings::ensure_rtk_pretool_hook(dir, re.inject_rtk_hook)
-                {
-                    log::warn!("[config-seed] re-apply rtk hook failed: {}", e);
-                }
-            }
-        }
+        let _ = crate::config::config_seed::perform_config_seed(seed, &id.to_string());
     }
 
-    let spawn_cwd = container_path_context
-        .as_ref()
-        .map(|context| context.host_root.clone())
-        .unwrap_or_else(|| cwd.clone());
     let spawn_spec = BackendSpawnSpec {
         id,
         cmd: shell.clone(),
@@ -1513,8 +1588,10 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         output_target: PtyOutputTarget::from_app_handle(app.clone()),
         resource_registration,
         logical_resource_slot,
+        container_credential,
     };
     let spawn_result = PtyManager::spawn(pty_mgr, session.backend_kind, spawn_spec).await;
+    drop(spawn_mark);
     if let Err(e) = spawn_result {
         let err = e.to_string();
         drop(mgr);
@@ -2616,6 +2693,7 @@ pub async fn restart_session_inner_with_activation<R: tauri::Runtime>(
         cwd
     };
     let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
+    crate::config::archive_gate::probe_spawn_refusal(app, &cwd).await?;
 
     // 2. Strip auto-injected args before restart so the new session starts from the saved recipe.
     let clean_args =
@@ -3316,11 +3394,16 @@ mod tests {
         container_path_context_for_cwd, count_working_members, effective_restart_requested_profile,
         inject_codex_resume, resolve_actual_agent, resolve_agent_command, resolve_agent_from_shell,
         resolve_claude_projects_dir, resolve_restart_selected_agent_id, resolve_root_agent_command,
-        resume_probe_target_for_config_dir, should_inject_continue, ExistingRootAction,
+        injected_claude_config_dir_for_copy, resume_probe_target_for_config_dir,
+        should_inject_continue, ExistingRootAction,
     };
     use crate::config::settings::{AgentConfig, AppSettings, ProfileCellConfig};
     use crate::pty::backend::SessionBackendKind;
-    use crate::pty::container_paths::{ContainerPathMap, WARNING_KIND_NO_VALUE};
+    use crate::pty::container_backend::container_child_env;
+    use crate::pty::container_credentials::ContainerCredentialPlan;
+    use crate::pty::container_paths::{
+        ContainerPathMap, CLAUDE_CONFIG_DIR_KEY, WARNING_KIND_NO_VALUE,
+    };
     use crate::session::manager::SessionManager;
     use crate::session::session::{SessionInfo, SessionStatus};
     use std::collections::BTreeMap;
@@ -3529,6 +3612,73 @@ mod tests {
         assert!(got.warning.is_none());
     }
 
+    fn cred_host_root() -> &'static str {
+        if cfg!(windows) {
+            r"C:\Users\maria\repo\.ac\wg-1\__agent_x"
+        } else {
+            "/Users/maria/repo/.ac/wg-1/__agent_x"
+        }
+    }
+
+    fn cred_plan_map() -> ContainerPathMap {
+        ContainerPathMap::new(cred_host_root(), "/workspace").unwrap()
+    }
+
+    fn cred_plan() -> ContainerCredentialPlan {
+        let dest = std::path::Path::new(cred_host_root())
+            .join(".claude")
+            .join(".credentials.json");
+        ContainerCredentialPlan {
+            source: PathBuf::from("unused-host-source"),
+            dest,
+            first_run: None,
+        }
+    }
+
+    #[test]
+    fn injected_config_dir_defaults_to_copy_dir_and_maps_into_container() {
+        // #930 - host-login copy will happen (plan Some) and the user set no
+        // CLAUDE_CONFIG_DIR -> inject the copy dir (host path), which the container
+        // env translation maps to /workspace/.claude so the copied token is read.
+        let plan = cred_plan();
+        let injected = injected_claude_config_dir_for_copy(Some(&plan), false)
+            .expect("copy without a user value must inject the copy dir");
+        let expected_dir = format!("{}/.claude", cred_host_root().replace('\\', "/"));
+        assert_eq!(injected.replace('\\', "/"), expected_dir);
+
+        let translated = container_child_env(
+            vec![(CLAUDE_CONFIG_DIR_KEY.to_string(), injected)],
+            Vec::new(),
+            &cred_plan_map(),
+        );
+        assert_eq!(
+            translated.child_env,
+            vec![(
+                CLAUDE_CONFIG_DIR_KEY.to_string(),
+                "/workspace/.claude".to_string()
+            )]
+        );
+        assert!(translated.env_unset.is_empty());
+        assert!(translated.warnings.is_empty());
+    }
+
+    #[test]
+    fn injected_config_dir_respects_explicit_user_value() {
+        // #930 - the user already configured CLAUDE_CONFIG_DIR; never overwrite it,
+        // even though a copy plan exists.
+        assert_eq!(
+            injected_claude_config_dir_for_copy(Some(&cred_plan()), true),
+            None
+        );
+    }
+
+    #[test]
+    fn injected_config_dir_none_without_copy_plan() {
+        // #930 - host-login-reuse off or no host creds => no plan => inject nothing,
+        // even when the user set no CLAUDE_CONFIG_DIR.
+        assert_eq!(injected_claude_config_dir_for_copy(None, false), None);
+    }
+
     #[test]
     fn container_path_context_uses_canonical_host_root_for_guard_and_map() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3710,6 +3860,108 @@ mod tests {
         }
     }
 
+    /// A `PtyBackend` whose `spawn` parks on a oneshot so a test can observe the
+    /// `create_session_inner` spawn mark while the PTY is still being spawned.
+    /// `fail` decides whether the parked spawn ultimately errors (exercising the
+    /// rollback path) or succeeds and records the session as live.
+    struct GatedSpawnBackend {
+        started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        release: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+        live: Mutex<Vec<Uuid>>,
+        fail: bool,
+    }
+
+    impl GatedSpawnBackend {
+        fn new(
+            started: tokio::sync::oneshot::Sender<()>,
+            release: tokio::sync::oneshot::Receiver<()>,
+            fail: bool,
+        ) -> Self {
+            Self {
+                started: Mutex::new(Some(started)),
+                release: Mutex::new(Some(release)),
+                live: Mutex::new(Vec::new()),
+                fail,
+            }
+        }
+    }
+
+    impl crate::pty::backend::PtyBackend for GatedSpawnBackend {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn spawn(
+            &self,
+            spec: crate::pty::backend::BackendSpawnSpec,
+        ) -> futures::future::BoxFuture<'_, Result<(), crate::errors::AppError>> {
+            let started = self.started.lock().unwrap().take().expect("started sender");
+            let release = self
+                .release
+                .lock()
+                .unwrap()
+                .take()
+                .expect("release receiver");
+            let fail = self.fail;
+            Box::pin(async move {
+                // Announce that PtyManager::spawn has released the outer manager
+                // mutex and is now parked inside the backend, then wait for the
+                // test to inspect the spawn mark before the spawn resolves.
+                let _ = started.send(());
+                let _ = release.await;
+                if fail {
+                    Err(crate::errors::AppError::PtyError(
+                        "synthetic spawn failure".to_string(),
+                    ))
+                } else {
+                    self.live.lock().unwrap().push(spec.id);
+                    Ok(())
+                }
+            })
+        }
+
+        fn write(&self, _id: Uuid, _data: &[u8]) -> Result<(), crate::errors::AppError> {
+            Ok(())
+        }
+
+        fn resize(&self, _id: Uuid, _cols: u16, _rows: u16) -> Result<(), crate::errors::AppError> {
+            Ok(())
+        }
+
+        fn kill(&self, id: Uuid) -> Result<(), crate::errors::AppError> {
+            self.live.lock().unwrap().retain(|live| *live != id);
+            Ok(())
+        }
+
+        fn has_session(&self, id: Uuid) -> bool {
+            self.live.lock().unwrap().contains(&id)
+        }
+
+        fn get_screen_snapshot(&self, _id: Uuid) -> Option<crate::pty::output::PtyScreenSnapshot> {
+            None
+        }
+
+        fn get_pty_size(&self, _id: Uuid) -> Option<(u16, u16)> {
+            None
+        }
+
+        fn register_response_watcher(
+            &self,
+            _session_id: Uuid,
+            _request_id: String,
+            _response_dir: std::path::PathBuf,
+        ) {
+        }
+
+        fn terminate_job_for_session(&self, _id: Uuid) -> bool {
+            false
+        }
+
+        fn kill_all_jobs(&self) -> (usize, usize) {
+            (0, 0)
+        }
+    }
+
     fn session_test_app(settings: AppSettings) -> tauri::App<tauri::test::MockRuntime> {
         tauri::test::mock_builder()
             .manage(Arc::new(tokio::sync::RwLock::new(settings)))
@@ -3753,6 +4005,243 @@ mod tests {
         assert!(session_mgr.read().await.list_sessions().await.is_empty());
         assert_eq!(backend.killed(), backend.spawned());
         assert_eq!(backend.killed().len(), 1);
+    }
+
+    #[test]
+    fn create_session_inner_keeps_both_archive_activation_gates() {
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/session.rs"
+        ))
+        .expect("read session.rs");
+        let production = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production session source");
+        let gate_call = "crate::config::archive_gate::enforce_unarchived_for_spawn(app, &cwd, &session_label).await";
+        let count = production.matches(gate_call).count();
+
+        assert_eq!(
+            count, 2,
+            "create_session_inner must keep both archive activation gates"
+        );
+    }
+
+    #[test]
+    fn create_session_inner_marks_spawning_until_spawn_returns() {
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/session.rs"
+        ))
+        .expect("read session.rs");
+        let production = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production session source");
+        let mark = production
+            .find("let spawn_mark = {")
+            .expect("spawn mark before archive gate");
+        let first_gate = production
+            .find("crate::config::archive_gate::enforce_unarchived_for_spawn(app, &cwd, &session_label).await?;")
+            .expect("first archive gate");
+        let spawn = production
+            .find("let spawn_result = PtyManager::spawn(pty_mgr, session.backend_kind, spawn_spec).await;")
+            .expect("spawn call");
+        let drop_mark = production
+            .find("drop(spawn_mark);")
+            .expect("spawn mark drop");
+        let spawn_error = production
+            .find("if let Err(e) = spawn_result {")
+            .expect("spawn error handling");
+
+        assert!(mark < first_gate, "spawn mark must cover archive gate A");
+        assert!(
+            first_gate < spawn,
+            "archive gate A must run before PTY spawn"
+        );
+        assert!(
+            spawn < drop_mark,
+            "spawn mark must stay live while spawn awaits"
+        );
+        assert!(
+            drop_mark < spawn_error,
+            "spawn mark must drop immediately after spawn returns"
+        );
+    }
+
+    // Runtime witness for plan section 12: drive create_session_inner with a
+    // fake backend and assert archive_liveness sees the spawn mark WHILE the PTY
+    // is spawning, then sees it retired once the PTY exists. Unlike the
+    // source-scrape guards above, this executes the code, so it reds under a
+    // string-preserving runtime mutation (e.g. mark_spawning inserting nothing,
+    // or the mark dropped before PtyManager::spawn).
+    #[tokio::test]
+    async fn create_session_inner_holds_a_spawn_mark_until_the_pty_exists() {
+        use crate::pty::backend::PtyBackend;
+
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().to_string_lossy().to_string();
+        let expected_cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
+
+        let app = session_test_app(test_settings());
+        let app_handle = app.handle().clone();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let backend = Arc::new(GatedSpawnBackend::new(started_tx, release_rx, false));
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+
+        let task = {
+            let app_handle = app_handle.clone();
+            let session_mgr = session_mgr.clone();
+            let pty_mgr = pty_mgr.clone();
+            let cwd = cwd.clone();
+            tokio::spawn(async move {
+                super::create_session_inner(
+                    &app_handle,
+                    &session_mgr,
+                    &pty_mgr,
+                    "hold-mark-test-command".to_string(),
+                    Vec::new(),
+                    cwd,
+                    Some("hold-mark".to_string()),
+                    None,
+                    None,
+                    true,
+                    Vec::new(),
+                    true,
+                    None,
+                )
+                .await
+            })
+        };
+
+        // Park inside the backend's spawn. PtyManager::spawn releases the outer
+        // manager mutex before awaiting backend.spawn, so the mark is readable
+        // here without racing the spawn task.
+        started_rx.await.expect("spawn started");
+        let (pending, _) = pty_mgr.lock().unwrap().archive_liveness(&[]);
+        assert_eq!(
+            pending,
+            vec![crate::pty::manager::PendingSpawn {
+                cwd: expected_cwd.clone(),
+                label: "hold-mark".to_string(),
+            }],
+            "spawn mark must be live while the PTY is still being spawned"
+        );
+
+        let _ = release_tx.send(());
+        let info = task
+            .await
+            .expect("join create_session_inner")
+            .expect("create_session_inner should succeed");
+
+        assert!(
+            backend.has_session(Uuid::parse_str(&info.id).expect("session id is a uuid")),
+            "the PTY must exist once create_session_inner returns Ok"
+        );
+        let (pending, _) = pty_mgr.lock().unwrap().archive_liveness(&[]);
+        assert!(
+            pending.is_empty(),
+            "spawn mark must retire once the PTY exists"
+        );
+    }
+
+    // Runtime witness for plan section 12: the mark is held across a FAILING
+    // spawn exactly as across a succeeding one, and is retired on the rollback
+    // path. Holding the mark across the in-flight spawn is what makes this red
+    // under a string-preserving mutation (mark_spawning no-op / drop before
+    // spawn); the empty-afterwards assertion pins retirement on the failure arm.
+    #[tokio::test]
+    async fn create_session_inner_retires_the_spawn_mark_on_spawn_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().to_string_lossy().to_string();
+        let expected_cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
+
+        let app = session_test_app(test_settings());
+        let app_handle = app.handle().clone();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let backend = Arc::new(GatedSpawnBackend::new(started_tx, release_rx, true));
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+
+        let task = {
+            let app_handle = app_handle.clone();
+            let session_mgr = session_mgr.clone();
+            let pty_mgr = pty_mgr.clone();
+            let cwd = cwd.clone();
+            tokio::spawn(async move {
+                super::create_session_inner(
+                    &app_handle,
+                    &session_mgr,
+                    &pty_mgr,
+                    "retire-mark-test-command".to_string(),
+                    Vec::new(),
+                    cwd,
+                    Some("retire-mark".to_string()),
+                    None,
+                    None,
+                    true,
+                    Vec::new(),
+                    true,
+                    None,
+                )
+                .await
+            })
+        };
+
+        started_rx.await.expect("spawn started");
+        let (pending, _) = pty_mgr.lock().unwrap().archive_liveness(&[]);
+        assert_eq!(
+            pending,
+            vec![crate::pty::manager::PendingSpawn {
+                cwd: expected_cwd.clone(),
+                label: "retire-mark".to_string(),
+            }],
+            "spawn mark must be live while the failing spawn is in flight"
+        );
+
+        let _ = release_tx.send(());
+        let err = task
+            .await
+            .expect("join create_session_inner")
+            .expect_err("create_session_inner should fail when the spawn fails");
+        assert!(err.contains("synthetic spawn failure"), "{err}");
+
+        let (pending, _) = pty_mgr.lock().unwrap().archive_liveness(&[]);
+        assert!(
+            pending.is_empty(),
+            "spawn mark must retire after a failed spawn"
+        );
+        assert!(
+            session_mgr.read().await.list_sessions().await.is_empty(),
+            "rollback must remove the pre-created record on spawn failure"
+        );
+    }
+
+    #[test]
+    fn restart_session_inner_probes_archive_before_destroying_session() {
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/session.rs"
+        ))
+        .expect("read session.rs");
+        let probe = source
+            .find("crate::config::archive_gate::probe_spawn_refusal(app, &cwd).await?;")
+            .expect("restart probe call");
+        let destroy = source
+            .find("// 3. Destroy the old session")
+            .expect("destroy step marker");
+
+        assert!(
+            probe < destroy,
+            "restart must probe archive refusal before destroying the dormant row"
+        );
     }
 
     #[test]

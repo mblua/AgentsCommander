@@ -79,8 +79,6 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     restoreCoordinatorWakeState: true,
     soundsEnabled: true,
     teamIdleBeepEnabled: true,
-    injectRtkHook: false,
-    informWhenRtkInstalled: true,
     webServerEnabled: false,
     webServerPort: 8765,
     webServerBind: "127.0.0.1",
@@ -158,7 +156,6 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     onboardingDismissed: true,
     projectPaths: [],
     projectPath: null,
-    rtkPromptDismissed: false,
     autoGenerateTaskTitle: true,
     agentTemplatesPath: null,
     specBoardEnabled: false,
@@ -179,8 +176,10 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     npmUpdateNotificationsEnabled: true,
     autoSelfClearEnabled: true,
     autoSelfClearByAgent: {},
+    containerCredentialsFromHost: true,
     logLevel: null,
     ...overrides,
+    archivedProjectPaths: overrides.archivedProjectPaths ?? [],
   };
 }
 

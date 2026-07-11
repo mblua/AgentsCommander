@@ -38,6 +38,27 @@ fn sender_name_for_session_cwd(working_directory: &str) -> String {
     sender_name_for_session_cwd_with_root_flag(working_directory, is_root_agent)
 }
 
+/// #881: session working dirs minus those under an archived project.
+///
+/// Subtractive on purpose: root-agent and ad-hoc CWD sessions outside every
+/// project path must still be scanned.
+pub(crate) fn retain_unarchived_session_dirs(
+    dirs: Vec<(Uuid, String)>,
+    normalized_archived_roots: &[String],
+) -> Vec<(Uuid, String)> {
+    if normalized_archived_roots.is_empty() {
+        return dirs;
+    }
+    dirs.into_iter()
+        .filter(|(_, dir)| {
+            !crate::config::sessions_persistence::is_under_normalized_archived_roots(
+                dir,
+                normalized_archived_roots,
+            )
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WakeDeliveryOrigin {
     FilesystemPoller,
@@ -1735,9 +1756,12 @@ impl MailboxPoller {
     /// One poll cycle: scan all repo outbox dirs, process each message.
     async fn poll(&mut self, app: &tauri::AppHandle) -> Result<(), String> {
         let settings = app.state::<SettingsState>();
-        let repo_paths = {
+        let (repo_paths, archived) = {
             let cfg = settings.read().await;
-            cfg.project_paths.clone()
+            (
+                cfg.project_paths.clone(),
+                cfg.archived_project_paths.clone(),
+            )
         };
 
         // Also scan CWDs of active sessions for repos not in settings
@@ -1745,6 +1769,16 @@ impl MailboxPoller {
         let session_dirs = {
             let mgr = session_mgr.read().await;
             mgr.get_sessions_working_dirs().await
+        };
+        let session_dirs = if archived.is_empty() {
+            session_dirs
+        } else {
+            tokio::task::spawn_blocking(move || {
+                let roots = crate::config::sessions_persistence::normalize_project_roots(&archived);
+                retain_unarchived_session_dirs(session_dirs, &roots)
+            })
+            .await
+            .map_err(|e| format!("archived mailbox-session filter task failed: {}", e))?
         };
 
         let mut all_paths: Vec<String> = repo_paths;
@@ -5603,21 +5637,30 @@ impl MailboxPoller {
             }
         };
 
+        let settings = app.state::<SettingsState>();
+        let (project_paths, archived) = {
+            let cfg = settings.read().await;
+            (
+                cfg.project_paths.clone(),
+                cfg.archived_project_paths.clone(),
+            )
+        };
+
         // Loop 1: session CWDs
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let mgr = session_mgr.read().await;
         let dirs = mgr.get_sessions_working_dirs().await;
+        drop(mgr);
+        let roots = crate::config::sessions_persistence::normalize_project_roots(&archived);
+        let dirs = retain_unarchived_session_dirs(dirs, &roots);
         for (_, cwd) in &dirs {
             if hits_agent(cwd) {
                 record_match(cwd, &mut matches);
             }
         }
-        drop(mgr);
 
         // Loop 2: settings project_paths
-        let settings = app.state::<SettingsState>();
-        let cfg = settings.read().await;
-        for rp in &cfg.project_paths {
+        for rp in &project_paths {
             if hits_agent(rp) {
                 record_match(rp, &mut matches);
             }
@@ -5656,7 +5699,7 @@ impl MailboxPoller {
                     }
                 };
 
-                for rp in &cfg.project_paths {
+                for rp in &project_paths {
                     let base = std::path::Path::new(rp);
                     if !base.is_dir() {
                         continue;
@@ -5784,10 +5827,17 @@ impl MailboxPoller {
         app: &tauri::AppHandle<R>,
         agent_name: &str,
     ) -> Option<String> {
+        let archived = {
+            let settings = app.state::<SettingsState>();
+            let cfg = settings.read().await;
+            cfg.archived_project_paths.clone()
+        };
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let mgr = session_mgr.read().await;
         let dirs = mgr.get_sessions_working_dirs().await;
         drop(mgr);
+        let roots = crate::config::sessions_persistence::normalize_project_roots(&archived);
+        let dirs = retain_unarchived_session_dirs(dirs, &roots);
 
         resolve_wg_path_from_session_dirs(&dirs, agent_name)
     }
@@ -6245,6 +6295,182 @@ mod tests {
             backend.clone(),
         )));
         (mgr, backend)
+    }
+
+    #[test]
+    fn retain_unarchived_session_dirs_drops_dirs_under_archived_projects() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let archived = temp.path().join("archived");
+        let archived_agent = archived.join(".ac").join("wg-1").join("__agent_archived");
+        let active_agent = temp
+            .path()
+            .join("active")
+            .join(".ac")
+            .join("wg-1")
+            .join("__agent_active");
+        std::fs::create_dir_all(&archived_agent).expect("archived agent");
+        std::fs::create_dir_all(&active_agent).expect("active agent");
+        let roots = crate::config::sessions_persistence::normalize_project_roots(&[archived
+            .to_string_lossy()
+            .to_string()]);
+        let archived_id = Uuid::new_v4();
+        let active_id = Uuid::new_v4();
+
+        let filtered = retain_unarchived_session_dirs(
+            vec![
+                (archived_id, archived_agent.to_string_lossy().to_string()),
+                (active_id, active_agent.to_string_lossy().to_string()),
+            ],
+            &roots,
+        );
+
+        assert_eq!(
+            filtered,
+            vec![(active_id, active_agent.to_string_lossy().to_string())]
+        );
+    }
+
+    #[test]
+    fn retain_unarchived_session_dirs_keeps_dirs_outside_every_project_path() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let archived = temp.path().join("archived");
+        let ad_hoc = temp.path().join("scratch").join("__agent_ad_hoc");
+        std::fs::create_dir_all(&archived).expect("archived");
+        std::fs::create_dir_all(&ad_hoc).expect("ad hoc");
+        let roots = crate::config::sessions_persistence::normalize_project_roots(&[archived
+            .to_string_lossy()
+            .to_string()]);
+        let id = Uuid::new_v4();
+
+        let filtered = retain_unarchived_session_dirs(
+            vec![(id, ad_hoc.to_string_lossy().to_string())],
+            &roots,
+        );
+
+        assert_eq!(filtered, vec![(id, ad_hoc.to_string_lossy().to_string())]);
+    }
+
+    #[test]
+    fn retain_unarchived_session_dirs_returns_input_unchanged_when_archived_list_is_empty() {
+        let id = Uuid::new_v4();
+        let input = vec![(id, "Z:/does/not/exist".to_string())];
+        let ptr = input.as_ptr();
+        let capacity = input.capacity();
+
+        let filtered = retain_unarchived_session_dirs(input, &[]);
+
+        assert_eq!(filtered, vec![(id, "Z:/does/not/exist".to_string())]);
+        assert_eq!(
+            filtered.as_ptr(),
+            ptr,
+            "empty archived roots must skip the into_iter/collect round trip"
+        );
+        assert_eq!(filtered.capacity(), capacity);
+    }
+
+    #[test]
+    fn mailbox_poll_bypasses_session_dir_filter_when_archived_list_is_empty() {
+        let source =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/phone/mailbox.rs"))
+                .expect("read mailbox.rs");
+        let production = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production mailbox source");
+        let bypass = production
+            .find("let session_dirs = if archived.is_empty()")
+            .expect("archived-empty bypass");
+        let filter = production
+            .find("retain_unarchived_session_dirs(session_dirs, &roots)")
+            .expect("archived session filter call");
+
+        assert!(
+            bypass < filter,
+            "MailboxPoller::poll must bypass filtering before calling the archived-session filter"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_repo_path_filters_archived_session_dirs() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project = temp.path().join("proj-a");
+        let target = project
+            .join(".ac")
+            .join("wg-1-dev-team")
+            .join("__agent_dev-rust");
+        std::fs::create_dir_all(&target).expect("create target");
+        let app = make_mailbox_app(temp.path());
+        let app_handle = app_handle(&app);
+        {
+            let settings = app_handle.state::<SettingsState>();
+            let mut cfg = settings.write().await;
+            cfg.project_paths.clear();
+            cfg.archived_project_paths = vec![project.to_string_lossy().to_string()];
+        }
+        let session_mgr = app_handle.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        {
+            let mgr = session_mgr.read().await;
+            mgr.create_session(
+                "shell".to_string(),
+                Vec::new(),
+                target.to_string_lossy().to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create archived session");
+        }
+        let poller = MailboxPoller::new();
+
+        let resolved = poller
+            .resolve_repo_path(CANONICAL_WAKE_TO, &app_handle)
+            .await;
+
+        assert_eq!(resolved, None);
+    }
+
+    #[tokio::test]
+    async fn resolve_wg_path_from_sessions_filters_archived_session_dirs() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project = temp.path().join("proj-a");
+        let wg_root = project.join(".ac").join("wg-1-dev-team");
+        let sender = wg_root.join("__agent_tech-lead");
+        let target = wg_root.join("__agent_dev-rust");
+        std::fs::create_dir_all(&sender).expect("create sender");
+        std::fs::create_dir_all(&target).expect("create target");
+        let app = make_mailbox_app(temp.path());
+        let app_handle = app_handle(&app);
+        {
+            let settings = app_handle.state::<SettingsState>();
+            let mut cfg = settings.write().await;
+            cfg.archived_project_paths = vec![project.to_string_lossy().to_string()];
+        }
+        let session_mgr = app_handle.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        {
+            let mgr = session_mgr.read().await;
+            mgr.create_session(
+                "shell".to_string(),
+                Vec::new(),
+                sender.to_string_lossy().to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create archived sibling session");
+        }
+        let poller = MailboxPoller::new();
+
+        let resolved = poller
+            .resolve_wg_path_from_sessions(&app_handle, LOCAL_WAKE_TO)
+            .await;
+
+        assert_eq!(resolved, None);
     }
 
     // ── §224 D.5a — wait_for_restore_or_session unit tests ──
