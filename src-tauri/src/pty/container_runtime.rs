@@ -51,6 +51,8 @@ pub struct ContainerStartRequest {
     pub env_unset: Vec<String>,
     pub cols: u16,
     pub rows: u16,
+    /// #935 - read-write repo bind mounts, each rendered as its own --mount.
+    pub repo_mounts: Vec<crate::pty::container_repos::ContainerRepoMount>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

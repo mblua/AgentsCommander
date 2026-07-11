@@ -1094,6 +1094,26 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     } else {
         None
     };
+    // #935 - resolve the container's read-write repo bind mounts from its own
+    // per-agent config.json repos[] (plan Sec 2/4), on the CANONICAL host root.
+    // This runs BEFORE create_session below, so an inadmissible entry (an escape
+    // signature: a repos[] rewrite reaching a sibling replica or messaging/) hard-
+    // fails the spawn here with no session record, token, or container created
+    // (plan Sec 4.3/4.4). None for local-process sessions.
+    let container_repos = match container_path_context.as_ref() {
+        Some(context) => {
+            match crate::pty::container_repos::resolve_repo_mounts(std::path::Path::new(
+                &context.host_root,
+            )) {
+                Ok(resolution) => Some(resolution),
+                Err(err) => {
+                    release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+                    return Err(err);
+                }
+            }
+        }
+        None => None,
+    };
     let mut session = match mgr
         .create_session(
             shell.clone(),
@@ -1417,6 +1437,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
             &managed_filenames,
             is_coordinator,
             auto_self_clear,
+            container_repos.as_ref(),
         ) {
             Ok(_) => {}
             Err(e) => {
@@ -1589,6 +1610,18 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         resource_registration,
         logical_resource_slot,
         container_credential,
+        container_repo_mounts: container_repos
+            .as_ref()
+            .map(|resolution| {
+                resolution
+                    .mounts()
+                    .map(|(host, container)| crate::pty::container_repos::ContainerRepoMount {
+                        host_path: host.to_path_buf(),
+                        container_path: container.to_string(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
     };
     let spawn_result = PtyManager::spawn(pty_mgr, session.backend_kind, spawn_spec).await;
     drop(spawn_mark);

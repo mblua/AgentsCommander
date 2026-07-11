@@ -490,6 +490,7 @@ mod tests {
             resource_registration: None,
             logical_resource_slot: None,
             container_credential: None,
+            container_repo_mounts: Vec::new(),
         }
     }
 

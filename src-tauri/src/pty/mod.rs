@@ -2,6 +2,7 @@ pub mod backend;
 pub mod container_backend;
 pub mod container_credentials;
 pub mod container_paths;
+pub mod container_repos;
 pub mod container_runtime;
 pub mod container_tokens;
 pub mod credentials;
