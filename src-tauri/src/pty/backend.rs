@@ -20,6 +20,10 @@ pub enum SessionBackendKind {
 
 pub struct BackendSpawnSpec {
     pub id: Uuid,
+    /// #942 - configured coding-agent id (e.g. "codex"), None for a plain shell.
+    /// Diagnostics only: it identifies the spawn in `[pty] spawn-record` and keys
+    /// the per-agent concurrency counter.
+    pub agent_id: Option<String>,
     pub cmd: String,
     pub args: Vec<String>,
     pub cwd: String,

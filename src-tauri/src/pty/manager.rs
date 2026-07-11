@@ -474,6 +474,7 @@ mod tests {
     fn test_spawn_spec(id: Uuid) -> BackendSpawnSpec {
         BackendSpawnSpec {
             id,
+            agent_id: None,
             cmd: "cmd".to_string(),
             args: Vec::new(),
             cwd: ".".to_string(),

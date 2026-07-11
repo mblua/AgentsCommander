@@ -1567,6 +1567,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
 
     let spawn_spec = BackendSpawnSpec {
         id,
+        agent_id: agent_id.clone(),
         cmd: shell.clone(),
         args: shell_args.clone(),
         cwd: spawn_cwd.clone(),

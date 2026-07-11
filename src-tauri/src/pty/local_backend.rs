@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use uuid::Uuid;
@@ -18,6 +19,7 @@ use crate::pty::backend::{BackendSpawnSpec, PtyBackend};
 use crate::pty::git_watcher::GitWatcher;
 use crate::pty::idle_detector::IdleDetector;
 use crate::pty::output::{PtyScreenSnapshot, SessionIoFanout};
+use crate::pty::spawn_diagnostics::{self, ChildLiveness, ExitCause, SpawnRecord, SpawnRecordInit};
 use crate::telegram::manager::OutputSenderMap;
 
 struct PtyInstance {
@@ -397,6 +399,7 @@ impl LocalProcessBackend {
     fn spawn_sync(&self, spec: BackendSpawnSpec) -> Result<(), AppError> {
         let BackendSpawnSpec {
             id,
+            agent_id,
             cmd,
             args,
             cwd,
@@ -414,6 +417,11 @@ impl LocalProcessBackend {
             logical_resource_slot: _,
             container_credential: _,
         } = spec;
+        // #942 - how many sessions were spawned in the window just before this one.
+        // Concurrent startups against shared agent state (the global ~/.codex) are a
+        // prime suspect for the intermittent blank terminal, so every spawn record
+        // carries its own concurrency context. Counting only, no behavior change.
+        let spawn_window = spawn_diagnostics::note_spawn_attempt(agent_id.as_deref());
         let pty_system = native_pty_system();
         let spawn_cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
 
@@ -449,6 +457,39 @@ impl LocalProcessBackend {
             c
         };
         command.cwd(&spawn_cwd);
+
+        // #942 - the argv exactly as executed, cmd.exe wrapper included. Mirrors the
+        // branch above instead of reshaping the CommandBuilder, so the spawn stays
+        // byte-for-byte what it was.
+        let exec_argv: Vec<String> = if cfg!(windows) && !is_direct_exe {
+            let mut argv = vec!["cmd.exe".to_string(), "/C".to_string(), cmd.clone()];
+            argv.extend(args.iter().cloned());
+            argv
+        } else {
+            let mut argv = vec![cmd.clone()];
+            argv.extend(args.iter().cloned());
+            argv
+        };
+
+        // #942 - what the child will really see for CODEX_HOME: an explicit configured
+        // value wins, then an explicit removal, then the AC environment the child
+        // inherits. None here means this Codex shares the global ~/.codex with every
+        // other one.
+        let codex_home = configured_env
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case("CODEX_HOME"))
+            .map(|(_, value)| value.clone())
+            .or_else(|| {
+                if env_remove_keys
+                    .iter()
+                    .any(|key| key.eq_ignore_ascii_case("CODEX_HOME"))
+                {
+                    None
+                } else {
+                    std::env::var("CODEX_HOME").ok()
+                }
+            });
+
         for key in &env_remove_keys {
             command.env_remove(key);
         }
@@ -496,15 +537,14 @@ impl LocalProcessBackend {
             }
         }
 
+        // #942 - time zero for time-to-first-output.
+        let spawn_started = Instant::now();
         let mut child = pair
             .slave
             .spawn_command(command)
             .map_err(|e| AppError::PtyError(e.to_string()))?;
-        log::info!(
-            "[pty] Spawned session {} with child pid {:?}",
-            id,
-            child.process_id()
-        );
+        let child_pid = child.process_id();
+        log::info!("[pty] Spawned session {} with child pid {:?}", id, child_pid);
 
         let job = child
             .process_id()
@@ -555,6 +595,29 @@ impl LocalProcessBackend {
         self.ptys.lock().unwrap().insert(id, instance);
         self.fanout.register_session(id, idle_tuning, rows, cols);
 
+        // #942 - emits `[pty] spawn-record` (argv, cwd, agent, CODEX_HOME, concurrency).
+        let record = spawn_diagnostics::register(SpawnRecordInit {
+            session_id: id,
+            pid: child_pid,
+            argv: exec_argv,
+            cwd: spawn_cwd,
+            agent_id,
+            codex_home,
+            configured_env_count: configured_env.len(),
+            removed_env_count: env_remove_keys.len(),
+            window: spawn_window,
+            started: spawn_started,
+        });
+
+        // #942 - startup-stall WARN and exit attribution. The PTY reader alone cannot
+        // carry this: ConPTY holds the pipe open past the death of the child, so a
+        // child that dies on its own would stay invisible until the session is torn
+        // down. The monitor polls the child handle instead and ends with the session.
+        let monitor_backend = self.clone();
+        spawn_diagnostics::watch_child(Arc::clone(&record), move || {
+            monitor_backend.probe_child(id)
+        });
+
         let session_id_str = id.to_string();
         let fanout = self.fanout.clone();
         std::thread::spawn(move || {
@@ -563,6 +626,10 @@ impl LocalProcessBackend {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
+                        // #942 - time-to-first-output and the retained head bytes. Hot
+                        // path: once the first byte is stamped and the head buffer is
+                        // full this is two relaxed loads and one relaxed add.
+                        record.note_output(&buf[..n]);
                         fanout.handle_output(&output_target, id, &session_id_str, buf[..n].to_vec())
                     }
                     Err(_) => break,
@@ -571,6 +638,24 @@ impl LocalProcessBackend {
         });
 
         Ok(())
+    }
+
+    /// #942 - liveness of the child of a session, without disturbing it. `try_wait`
+    /// caches the exit status, so the monitor poll and the kill path always agree on
+    /// what happened.
+    fn probe_child(&self, id: Uuid) -> ChildLiveness {
+        let mut ptys = self.ptys.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(instance) = ptys.get_mut(&id) else {
+            return ChildLiveness::Gone;
+        };
+        let Some(child) = instance.child.as_mut() else {
+            return ChildLiveness::Gone;
+        };
+        match child.try_wait() {
+            Ok(Some(status)) => ChildLiveness::from(&status),
+            Ok(None) => ChildLiveness::Alive,
+            Err(e) => ChildLiveness::Unknown(e.to_string()),
+        }
     }
 }
 
@@ -705,6 +790,13 @@ impl PtyBackend for LocalProcessBackend {
     }
 
     fn kill(&self, id: Uuid) -> Result<(), AppError> {
+        // #942 - tag the stop as ours and snapshot the child BEFORE we terminate
+        // anything. The old "already exited" line fired both for a child that had died
+        // on its own and for one our own job/kill had just taken down; the pre-stop
+        // probe is what tells the two apart.
+        let record = spawn_diagnostics::mark_ac_stop(id, "session-kill");
+        let child_at_stop = self.probe_child(id);
+
         let instance = {
             let mut ptys = self.ptys.lock().unwrap();
             ptys.remove(&id)
@@ -716,14 +808,34 @@ impl PtyBackend for LocalProcessBackend {
             }
             if let Some(mut child) = instance.child.take() {
                 let pid = child.process_id();
+                log::info!(
+                    "[pty] session-stop session={} pid={:?} source=session-kill child_at_stop={}",
+                    id,
+                    pid,
+                    child_at_stop.as_log()
+                );
                 match child.try_wait() {
                     Ok(Some(status)) => {
-                        log::info!(
-                            "[pty] Session {} child pid {:?} already exited: {:?}",
-                            id,
-                            pid,
-                            status
-                        );
+                        // Dead by the time we removed it. Already dead BEFORE we touched
+                        // the job means the child ended itself; otherwise our stop did.
+                        let cause = if matches!(child_at_stop, ChildLiveness::Exited { .. }) {
+                            ExitCause::ChildInitiated
+                        } else {
+                            ExitCause::AcRequested
+                        };
+                        let liveness = ChildLiveness::from(&status);
+                        match record.as_ref() {
+                            Some(record) => {
+                                record.log_child_exit(cause, &liveness, "observed-at-stop");
+                            }
+                            None => log::info!(
+                                "[pty] child-exit session={} pid={:?} cause={} detail=observed-at-stop child={}",
+                                id,
+                                pid,
+                                cause.as_log(),
+                                liveness.as_log()
+                            ),
+                        }
                     }
                     Ok(None) => {
                         if let Err(e) = child.kill() {
@@ -734,7 +846,7 @@ impl PtyBackend for LocalProcessBackend {
                                 e
                             );
                         }
-                        reap_child_in_background(id, pid, child);
+                        reap_child_in_background(id, pid, child, record);
                     }
                     Err(e) => {
                         log::warn!(
@@ -751,7 +863,7 @@ impl PtyBackend for LocalProcessBackend {
                                 kill_err
                             );
                         }
-                        reap_child_in_background(id, pid, child);
+                        reap_child_in_background(id, pid, child, record);
                     }
                 }
             }
@@ -759,11 +871,14 @@ impl PtyBackend for LocalProcessBackend {
 
         self.fanout.remove_session(id);
         self.git_watcher.remove_session(id);
+        spawn_diagnostics::forget(id);
 
         Ok(())
     }
 
     fn terminate_job_for_session(&self, id: Uuid) -> bool {
+        // #942 - AC asked for this stop; tag it so the exit is attributed to us.
+        spawn_diagnostics::mark_ac_stop(id, "job-terminate");
         let ptys = self.ptys.lock().unwrap();
         match ptys.get(&id).and_then(|inst| inst.job.as_ref()) {
             Some(job) => {
@@ -779,6 +894,8 @@ impl PtyBackend for LocalProcessBackend {
         let mut terminated = 0;
         let mut jobless = 0;
         for (id, instance) in ptys.iter() {
+            // #942 - shutdown stops every live session; tag them all as ours.
+            spawn_diagnostics::mark_ac_stop(*id, "app-shutdown");
             match instance.job.as_ref() {
                 Some(job) => {
                     job.terminate();
@@ -814,15 +931,36 @@ fn reap_child_in_background(
     session_id: Uuid,
     pid: Option<u32>,
     mut child: Box<dyn portable_pty::Child + Send + Sync>,
+    record: Option<Arc<SpawnRecord>>,
 ) {
     std::thread::spawn(move || match child.wait() {
         Ok(status) => {
-            log::info!(
-                "[pty] Reaped session {} child pid {:?}: {:?}",
-                session_id,
-                pid,
-                status
-            );
+            // #942 - the exit AC asked for. The monitor may have reported this child
+            // first (it died a hair before our stop); then the event is already on
+            // record with the right cause and we only leave a reap crumb.
+            let liveness = ChildLiveness::from(&status);
+            match record.as_ref() {
+                Some(record) => {
+                    if !record.log_child_exit(
+                        ExitCause::AcRequested,
+                        &liveness,
+                        "reaped-after-stop",
+                    ) {
+                        log::debug!(
+                            "[pty] Reaped session {} child pid {:?}: {:?} (exit already reported)",
+                            session_id,
+                            pid,
+                            status
+                        );
+                    }
+                }
+                None => log::info!(
+                    "[pty] child-exit session={} pid={:?} cause=ac-requested detail=reaped-after-stop child={}",
+                    session_id,
+                    pid,
+                    liveness.as_log()
+                ),
+            }
         }
         Err(e) => {
             log::warn!(

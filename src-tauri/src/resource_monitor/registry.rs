@@ -412,6 +412,10 @@ impl ResourceMonitorState {
         reason: ResourceKillReason,
         fresh_targets_only: bool,
     ) -> Result<ResourceKillResult, String> {
+        // #942 - tag the stop as AC-initiated BEFORE any process is touched, so the
+        // PTY child-exit event can never read one of our kills as a child that died
+        // on its own. No-op for sessions with no local spawn record.
+        crate::pty::spawn_diagnostics::mark_ac_stop(session_id, reason.as_log_reason());
         let kill_started = Instant::now();
         let (root_identity, previous_targets) = {
             let mut inner = self
