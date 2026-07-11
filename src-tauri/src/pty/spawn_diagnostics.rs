@@ -70,6 +70,14 @@
 //! by construction; the residue is a microsecond-wide race, and it is stated here rather
 //! than papered over.
 //!
+//! One more residual, stated rather than "fixed": an exit inside the attribution window
+//! that follows a stop which FAILED (a Quarantined kill leaves the agent running) is
+//! attributed to AC. We err this way deliberately. The alternative mislabels a
+//! slow-but-successful kill as a spontaneous death, which is the fabrication this module
+//! exists to prevent, and `Quarantined` means "AC could not verify the termination", not
+//! "the kill failed". `stop_source` and `stop_age_ms` are printed on every exit event, so
+//! a human can see a 30-second gap for what it is.
+//!
 //! ## Lock order
 //!
 //! `ptys` -> diagnostics registry (`kill_all_jobs` holds the PTY map while tagging
