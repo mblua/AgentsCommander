@@ -19,7 +19,10 @@ import {
   workgroupGroupsStore,
 } from "../stores/workgroup-groups";
 import { projectCollapseStore } from "../stores/project-collapse";
-import { createSidebarSelectionScrollReset } from "../App";
+import {
+  activeWorkgroupGroupSelectionKey,
+  createSidebarSelectionScrollReset,
+} from "../App";
 import WorkgroupGroupRail from "./WorkgroupGroupRail";
 import ProjectPanel from "./ProjectPanel";
 
@@ -138,6 +141,26 @@ function installScrollableLayout(
   return scrollable;
 }
 
+function installScrollTopWriteTrap(scrollable: HTMLDivElement, initialValue: number) {
+  let currentValue = initialValue;
+  const writes: number[] = [];
+  Object.defineProperty(scrollable, "scrollTop", {
+    configurable: true,
+    get: () => currentValue,
+    set: (nextValue: number) => {
+      currentValue = nextValue;
+      writes.push(nextValue);
+    },
+  });
+  return { currentValue: () => currentValue, writes };
+}
+
+async function flushReactiveWork(): Promise<void> {
+  // Solid schedules the effect after the store update, and production adds a
+  // queueMicrotask inside it. Crossing a task boundary drains both layers.
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+
 // Component that renders the production rail/panel boundary and installs the
 // same scroll-owner primitive that SidebarApp uses.
 const SidebarHarness: Component = () => {
@@ -166,6 +189,79 @@ describe("WorkgroupGroupRail selection focus (#810/#941)", () => {
     cleanupDom = null;
     resetUiStoresForTests();
     document.body.replaceChildren();
+  });
+
+  it("uses a stable primitive key for equal selections and distinct keys for real changes", () => {
+    workgroupGroupsStore.applyExternalUpdate(projectPathA, groupsConfig());
+    workgroupGroupsStore.applyExternalUpdate(projectPathB, groupsConfig());
+
+    workgroupGroupsStore.select(projectPathA, { kind: "all" });
+    const projectAAllKey = activeWorkgroupGroupSelectionKey();
+    expect(typeof projectAAllKey).toBe("string");
+
+    // Rebuild the same selection object: the semantic key stays primitive and
+    // value-equal even though the store entry emitted a new object identity.
+    workgroupGroupsStore.select(projectPathA, { kind: "all" });
+    expect(activeWorkgroupGroupSelectionKey()).toBe(projectAAllKey);
+
+    workgroupGroupsStore.select(projectPathA, { kind: "group", id: "dev" });
+    const projectAGroupKey = activeWorkgroupGroupSelectionKey();
+    expect(projectAGroupKey).not.toBe(projectAAllKey);
+
+    workgroupGroupsStore.select(projectPathA, { kind: "all" });
+    const projectAAllAgainKey = activeWorkgroupGroupSelectionKey();
+    expect(projectAAllAgainKey).toBe(projectAAllKey);
+    expect(projectAAllAgainKey).not.toBe(projectAGroupKey);
+
+    workgroupGroupsStore.select(projectPathA, { kind: "ungrouped" });
+    const projectAUngroupedKey = activeWorkgroupGroupSelectionKey();
+    expect(projectAUngroupedKey).not.toBe(projectAAllAgainKey);
+
+    workgroupGroupsStore.select(projectPathA, { kind: "nonstop" });
+    const projectANonStopKey = activeWorkgroupGroupSelectionKey();
+    expect(projectANonStopKey).not.toBe(projectAUngroupedKey);
+
+    workgroupGroupsStore.select(projectPathB, { kind: "all" });
+    const projectBAllKey = activeWorkgroupGroupSelectionKey();
+    expect(projectBAllKey).not.toBe(projectANonStopKey);
+    expect(projectBAllKey).not.toBe(projectAAllKey);
+  });
+
+  it("does not write scrollTop when an equal selection object is emitted", async () => {
+    const fake = new FakeTransport();
+    fake.onInvoke("new_project", (args) => ({
+      path: args.path as string,
+      registered: true,
+      created: false,
+    }));
+    fake.onInvoke("discover_project", (args) => {
+      const path = args.path as string;
+      if (path === projectPathA) return projectDiscovery(path);
+      throw new Error(`unexpected discover_project path: ${path}`);
+    });
+    fake.resolve("get_project_groups", groupsConfig());
+
+    const rendered = renderWithFakeTransport(() => <SidebarHarness />, fake);
+    try {
+      await projectStore.createAndLoad(projectPathA);
+      await waitFor(() => expect(railButton("ProjectA", "all")).toBeTruthy());
+
+      const scrollable = installScrollableLayout(rendered.root, [[projectPathA, 0]]);
+      await flushReactiveWork();
+
+      const priorScrollTop = 137;
+      const scrollState = installScrollTopWriteTrap(scrollable, priorScrollTop);
+
+      // This deliberately rebuilds the entry and selection objects while
+      // preserving the exact active-project/selection semantics.
+      workgroupGroupsStore.select(projectPathA, { kind: "all" });
+      await flushReactiveWork();
+
+      expect(scrollState.writes).toEqual([]);
+      expect(scrollState.currentValue()).toBe(priorScrollTop);
+    } finally {
+      rendered.cleanup();
+    }
   });
 
   it("resets every real selection kind and aligns a non-first project header", async () => {

@@ -116,7 +116,7 @@ export function blockContextMenu(e: Event): void {
   e.preventDefault();
 }
 
-function activeWorkgroupGroupSelectionKey(): string | null {
+export function activeWorkgroupGroupSelectionKey(): string | null {
   const projectPath = workgroupGroupsStore.activeProjectPath();
   if (!projectPath) return null;
   const selection = workgroupGroupsStore.selection(projectPath);
