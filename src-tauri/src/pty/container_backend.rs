@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::pty::backend::{BackendSpawnSpec, PtyBackend};
+use crate::pty::container_credentials::CopyOutcome;
 use crate::pty::container_paths::{
     canonical_host_path_env_key, container_config_dir, host_path_env_unmappable_warning,
     ContainerEnvClass, ContainerEnvWarning, ContainerPathMap,
@@ -623,12 +624,20 @@ impl ContainerTransportBackend {
                 // #930 - a copied token is only USED if the agent skips its
                 // interactive first-run wizard: Claude gates that on
                 // .claude.json flags, not on the credential file. Same gate as
-                // the copy (only when we truly copied), same best-effort
-                // contract. On a copy failure we deliberately do NOT stamp it:
-                // with no token, the login wizard is the correct UX.
-                Ok(()) => crate::pty::container_credentials::ensure_first_run_state(
-                    plan,
-                    DEFAULT_CONTAINER_WORKDIR,
+                // the copy, same best-effort contract.
+                Ok(CopyOutcome::Copied) => {
+                    crate::pty::container_credentials::ensure_first_run_state(
+                        plan,
+                        DEFAULT_CONTAINER_WORKDIR,
+                    )
+                }
+                // grinch Finding 1 - an F2 skip is NOT a copy: the dest dir or
+                // leaf is a symlink/junction, so no token was written. Stamping
+                // here would suppress the login wizard on a container with no
+                // credential. With no token, that wizard is the correct UX.
+                Ok(CopyOutcome::SkippedReparse) => log::warn!(
+                    "[container-cred] copy-in skipped for session {}; not stamping first-run state",
+                    id
                 ),
                 // Best-effort, mirror config-seed: never abort the spawn.
                 Err(e) => log::warn!("[container-cred] copy-in failed for session {}: {}", id, e),

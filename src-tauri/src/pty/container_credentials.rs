@@ -82,12 +82,26 @@ pub fn resolve_plan(
     })
 }
 
+/// Outcome of a `copy_in` that did not error. An F2 skip is NOT a failure (the
+/// spawn continues), but it writes NO token, so the caller MUST distinguish it
+/// from a real copy: stamping first-run state after a skip would suppress the
+/// agent's login wizard on a container that has no credential at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyOutcome {
+    /// The host credential was written to `plan.dest`.
+    Copied,
+    /// The dest dir or the dest leaf is a symlink/junction, so F2 refused to
+    /// write through it and nothing was copied.
+    SkippedReparse,
+}
+
 /// Copy the host credential into the replica dir. Best-effort: refuses to write
 /// through a container-planted symlink/junction (F2), creates the dest parent
 /// dir, overwrites any existing dest with the current host token, and (on Unix)
 /// tightens perms to 0o600. Errors are returned for the caller to log; the caller
-/// does NOT abort the spawn on failure.
-pub fn copy_in(plan: &ContainerCredentialPlan) -> std::io::Result<()> {
+/// does NOT abort the spawn on failure. `Ok(CopyOutcome::SkippedReparse)` means
+/// no token was written, so it must never be treated as a successful copy.
+pub fn copy_in(plan: &ContainerCredentialPlan) -> std::io::Result<CopyOutcome> {
     // F2 - never write through a container-planted symlink/junction, on the
     // container config dir or on the credential leaf.
     if let Some(parent) = plan.dest.parent() {
@@ -96,7 +110,7 @@ pub fn copy_in(plan: &ContainerCredentialPlan) -> std::io::Result<()> {
                 "[container-cred] dest dir {} is a symlink/reparse point; skipping copy-in",
                 parent.display()
             );
-            return Ok(());
+            return Ok(CopyOutcome::SkippedReparse);
         }
     }
     if is_reparse_path(&plan.dest) {
@@ -104,7 +118,7 @@ pub fn copy_in(plan: &ContainerCredentialPlan) -> std::io::Result<()> {
             "[container-cred] dest {} is a symlink/reparse point; skipping copy-in",
             plan.dest.display()
         );
-        return Ok(());
+        return Ok(CopyOutcome::SkippedReparse);
     }
     if let Some(parent) = plan.dest.parent() {
         std::fs::create_dir_all(parent)?;
@@ -129,7 +143,7 @@ pub fn copy_in(plan: &ContainerCredentialPlan) -> std::io::Result<()> {
         "[container-cred] copied host credential into {}",
         plan.dest.display()
     );
-    Ok(())
+    Ok(CopyOutcome::Copied)
 }
 
 /// Delete a previously copied credential file on teardown. Best-effort and
@@ -449,7 +463,11 @@ mod tests {
             first_run: None,
         };
 
-        copy_in(&plan).expect("copy_in ok");
+        assert_eq!(
+            copy_in(&plan).expect("copy_in ok"),
+            CopyOutcome::Copied,
+            "a real copy must report Copied"
+        );
         assert!(dest.is_file(), "dest created");
         assert_eq!(std::fs::read(&dest).unwrap(), b"secret-bytes");
 
@@ -550,6 +568,63 @@ mod tests {
         assert!(
             !root.path().join(".claude").exists(),
             "no descriptor must mean no writes at all"
+        );
+    }
+
+    #[cfg(unix)]
+    fn try_symlink_file(target: &Path, link: &Path) -> bool {
+        std::os::unix::fs::symlink(target, link).is_ok()
+    }
+
+    #[cfg(windows)]
+    fn try_symlink_file(target: &Path, link: &Path) -> bool {
+        std::os::windows::fs::symlink_file(target, link).is_ok()
+    }
+
+    #[test]
+    fn skipped_copy_reports_skipped_and_never_stamps_first_run_state() {
+        // grinch Finding 1 - a prior container plants a symlink at the credential
+        // leaf (the mount is RW: exactly the F2 threat model). F2 refuses to write
+        // through it, so NO token exists. The caller must see SkippedReparse and
+        // NOT stamp first-run state: suppressing the login wizard on a container
+        // that has no credential would strand the agent unauthenticated, with no
+        // way to notice. A skipped copy is not a copy.
+        let root = tempfile::tempdir().expect("root");
+        let src_dir = tempfile::tempdir().expect("src");
+        let src = src_dir.path().join(".credentials.json");
+        std::fs::write(&src, b"secret-bytes").expect("write src");
+
+        let dir = root.path().join(".claude");
+        std::fs::create_dir_all(&dir).expect("dir");
+        let dest = dir.join(".credentials.json");
+        let planted = src_dir.path().join("attacker-target");
+        if !try_symlink_file(&planted, &dest) {
+            // Creating a symlink needs a privilege on Windows; skip cleanly.
+            eprintln!("skipping: no symlink privilege on this platform");
+            return;
+        }
+
+        let plan = ContainerCredentialPlan {
+            source: src,
+            dest: dest.clone(),
+            first_run: Some(first_run()),
+        };
+
+        // Mirror the backend call site (container_backend.rs): stamp ONLY on
+        // Copied. If copy_in ever reports a skip as Copied again, this takes the
+        // Copied arm, stamps, and the assertion below fails.
+        match copy_in(&plan).expect("an F2 skip is not an error") {
+            CopyOutcome::Copied => ensure_first_run_state(&plan, "/workspace"),
+            CopyOutcome::SkippedReparse => {}
+        }
+
+        assert!(
+            !planted.exists(),
+            "F2: must never write the token through the planted link"
+        );
+        assert!(
+            !dir.join(".claude.json").exists(),
+            "a skipped copy must not stamp first-run state: with no token, the login wizard is the correct UX"
         );
     }
 
