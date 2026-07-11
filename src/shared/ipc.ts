@@ -373,6 +373,13 @@ export const SettingsAPI = {
 export const ReposAPI = {
   search: (query: string) =>
     transport.invoke<RepoMatch[]>("search_repos", { query }),
+
+  /// #943 - `origin`'s URL for a repo path, userinfo already stripped by the
+  /// backend. `null` = no origin, not a work tree root, git missing, the 2s
+  /// backend timeout fired, or a web client (the WS dispatcher no-ops this).
+  /// The caller treats all of them the same: no Browse items.
+  gitRemoteUrl: (path: string) =>
+    transport.invoke<string | null>("git_remote_url", { path }),
 };
 
 export function onPtyOutput(
