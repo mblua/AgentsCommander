@@ -114,13 +114,21 @@ const DEFAULT_STOP_ATTRIBUTION_MS: u64 = 60_000;
 const MAX_STOP_ATTRIBUTION_MS: u64 = 60 * 60 * 1_000;
 /// Safety net on the recent-spawn ring; only the time window is load-bearing.
 const RECENT_SPAWNS_CAP: usize = 128;
-/// Values shorter than this are not secrets, they are flags like `1` or `true`.
-const MIN_REDACTED_LEN: usize = 8;
 /// Env keys whose VALUE is a secret and must never reach the log. Keyed on the name, not
 /// swept over every value: a coding-agent profile legitimately carries rows like
 /// `MODEL=gpt-5.6-sol`, and blanking those would shred the argv this module exists to
 /// record, and the Codex error text inside `head=`.
-const SECRET_KEY_MARKERS: &[&str] = &["token", "key", "secret", "password", "passwd", "credential"];
+const SECRET_KEY_MARKERS: &[&str] = &[
+    "token",
+    "key",
+    "secret",
+    "password",
+    "passwd",
+    "credential",
+    // `AUTHORIZATION=Bearer sk-...` is a secret and neither the other markers nor the
+    // URL-shape redactor catches it.
+    "auth",
+];
 
 /// True when an env row's value must be redacted out of anything we echo into the log.
 /// AC's own credential env is covered by this: the only secret it carries is
@@ -128,7 +136,23 @@ const SECRET_KEY_MARKERS: &[&str] = &["token", "key", "secret", "password", "pas
 /// secrets and which we deliberately print in `cwd=` / `argv=`).
 pub fn is_secret_env_key(key: &str) -> bool {
     let key = key.to_ascii_lowercase();
-    SECRET_KEY_MARKERS.iter().any(|marker| key.contains(marker))
+    if SECRET_KEY_MARKERS.iter().any(|marker| key.contains(marker)) {
+        return true;
+    }
+    // A personal access token (`GH_PAT`). Matched as a whole segment, never as a
+    // substring: `PATH`, `PATHEXT` and `COMPATIBILITY` all contain "pat", and blanking a
+    // PATH across the log would shred every path in the evidence.
+    key.split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|segment| segment == "pat")
+}
+
+/// A value from a secret-named row is redacted whatever its length: an explicitly named
+/// `*_TOKEN` row is a secret even when it is short. The one exclusion is a purely numeric
+/// value, because `MAX_TOKENS=8192` and `TOKEN_LIMIT=4096` are real config rows, and
+/// blanking `8192` everywhere it appears would corrupt the evidence while protecting
+/// nothing.
+fn is_redactable_value(value: &str) -> bool {
+    !value.trim().is_empty() && !value.chars().all(|c| c.is_ascii_digit())
 }
 
 /// Everything the diagnostics need to be told, resolved once from the environment and
@@ -360,7 +384,7 @@ impl SpawnRecord {
             redact: init
                 .redact
                 .into_iter()
-                .filter(|value| value.len() >= MIN_REDACTED_LEN)
+                .filter(|value| is_redactable_value(value))
                 .collect(),
             window: init.window,
             started: init.started,
@@ -542,30 +566,61 @@ impl SpawnRecord {
         !self.startup_reported.load(Ordering::Relaxed)
     }
 
-    /// LAST-wins, deliberately. AC supports a stop that FAILS (a Quarantined kill leaves
-    /// the agent running), and a first-wins anchor would let that stale stop own the
-    /// attribution of the real one minutes later: the user closes the session, we kill it,
-    /// and the window measured from the dead stop calls our own kill `child-initiated`.
-    /// That is a fabricated smoking gun, which is exactly what #942 exists to remove. The
-    /// window is therefore measured from the MOST RECENT stop request.
+    /// A stop AC asked for that still owns the child: the flag is set and it is inside
+    /// the attribution window. A stop older than that evidently failed (a Quarantined kill
+    /// leaves the agent running), so the next stop opens a NEW episode.
+    fn stop_episode_open(&self) -> bool {
+        self.stop_requested() && self.stop_cause() == ExitCause::AcRequested
+    }
+
+    /// Timestamp and source are LAST-wins: the attribution window must be measured from
+    /// the stop that actually landed, not from a stale one that failed. The WITNESS is the
+    /// opposite: it is the EARLIEST probe of the current stop episode, never the latest.
     ///
-    /// The witness is upgraded, never downgraded: a fresher probe replaces an older one,
-    /// and a witness-less stop (the resource-monitor watchdog) leaves a witness that a
-    /// real probe already established. A witness that said `Exited` stays true forever: a
-    /// dead child does not come back.
+    /// Once AC has begun stopping a child, a probe is not a witness, it is a photograph of
+    /// our own kill. On the destroy path the resource monitor `TerminateProcess`es the PTY
+    /// child (its process tree includes the root) BEFORE `PtyBackend::kill` ever probes it,
+    /// so a "latest wins" witness would see `Exited(1)`, conclude the child died on its
+    /// own, and stamp a WARN with the full evidence dump on **every closed coding-agent
+    /// tab**. That is requirement 3 inverted on the most common path in the app.
+    ///
+    /// So: a stop already in flight keeps the witness it published (or the absence of one:
+    /// the watchdog publishes none, and a later probe of the corpse it made is no better).
+    /// A new episode takes a fresh probe, because the child may have survived the last stop
+    /// and its state now is genuinely unknown. And a witness that saw the child dead is
+    /// sticky forever, because a dead child does not come back and no later `Gone` or
+    /// `Unqueryable` from a racing second kill can improve on it.
     fn mark_ac_stop(&self, source: &str, pre_stop: Option<ChildLiveness>) {
+        // Read the episode state BEFORE the timestamp below refreshes it.
+        let episode_open = self.stop_episode_open();
+        self.record_witness(pre_stop, episode_open);
+
         *self.ac_stop_source.lock().unwrap_or_else(|e| e.into_inner()) = Some(source.to_string());
-        if let Some(pre_stop) = pre_stop {
-            *self
-                .pre_stop_liveness
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = Some(pre_stop);
-        }
         let stamp = (self.started.elapsed().as_micros().min(u64::MAX as u128) as u64).max(1);
         self.ac_stop_at_us.store(stamp, Ordering::SeqCst);
         // Published last: any thread that sees this flag also sees the source, the
         // timestamp and the pre-stop liveness written above.
         self.ac_stop.store(true, Ordering::SeqCst);
+    }
+
+    fn record_witness(&self, pre_stop: Option<ChildLiveness>, episode_open: bool) {
+        let Some(pre_stop) = pre_stop else {
+            // A witness-less stop (the resource-monitor watchdog) never blanks a witness a
+            // real probe already established.
+            return;
+        };
+        let mut current = self
+            .pre_stop_liveness
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match current.as_ref() {
+            // Sticky: a dead child does not come back.
+            Some(ChildLiveness::Exited { .. }) => {}
+            // An open episode keeps what it has, including nothing at all.
+            _ if episode_open => {}
+            // A new episode: the child may have outlived the last stop, so ask again.
+            _ => *current = Some(pre_stop),
+        }
     }
 
     /// A stop AC asked for, recent enough that the teardown it triggers is still in
@@ -1242,14 +1297,81 @@ mod tests {
     }
 
     #[test]
-    fn ac_stop_takes_the_most_recent_source_timestamp_and_witness() {
-        // grinch D2: first-wins let a stale, failed stop own every later stop.
+    fn closing_a_coding_agent_tab_is_never_reported_as_a_spontaneous_death() {
+        // grinch B1, the chain that ships on EVERY closed Codex tab:
+        //   1. destroy_session publishes the witness: the child is Alive.
+        //   2. kill_group TerminateProcess()es the process tree. Its root IS the PTY
+        //      child, so the child is now dead with exit code 1.
+        //   3. PtyBackend::kill probes that corpse and marks the stop again.
+        // A "latest wins" witness takes the corpse as evidence that the child died on its
+        // own, and log_child_exit then stamps WARN + argv + head on it, because
+        // `exited(1)` is not a clean exit. That is requirement 3 inverted on the most
+        // common path in the app, and `exited(1)` is literally the ExitStatus string from
+        // the log trap this issue exists to kill.
+        let record = test_record(Some(CodingAgentKind::Codex));
+        record.note_output(&[b'x'; 200]); // it came up fine
+
+        record.mark_ac_stop("session-destroy", Some(ChildLiveness::Alive));
+        record.mark_ac_stop(
+            "session-kill",
+            Some(ChildLiveness::Exited {
+                code: 1,
+                success: false,
+            }),
+        );
+
+        assert_eq!(
+            record.attribute_exit(record.stop_snapshot()),
+            ExitCause::AcRequested,
+            "a probe taken after AC has begun killing is not a witness, it is a photograph of our own kill"
+        );
+        assert!(
+            matches!(record.pre_stop_liveness(), Some(ChildLiveness::Alive)),
+            "the earliest probe of the stop episode is the witness"
+        );
+        assert_eq!(
+            record.stop_source(),
+            "session-kill",
+            "source and timestamp stay last-wins; only the witness is first-wins"
+        );
+    }
+
+    #[test]
+    fn ac_stop_takes_the_most_recent_source_and_timestamp() {
+        // grinch D2: first-wins timestamps let a stale, failed stop own every later stop.
         let record = test_record(Some(CodingAgentKind::Codex));
         assert!(!record.stop_requested());
 
         record.mark_ac_stop("job-terminate", Some(ChildLiveness::Alive));
         let first_stamp = record.ac_stop_at_us.load(Ordering::SeqCst);
         std::thread::sleep(Duration::from_millis(5));
+        record.mark_ac_stop("session-kill", None);
+
+        assert!(record.stop_requested());
+        assert_eq!(record.stop_source(), "session-kill");
+        assert!(
+            record.ac_stop_at_us.load(Ordering::SeqCst) > first_stamp,
+            "the attribution window is measured from the most recent stop"
+        );
+    }
+
+    #[test]
+    fn a_new_stop_episode_takes_a_fresh_witness() {
+        // The counterpart to B1: the witness is first-wins WITHIN an episode, not forever.
+        // A stop that failed leaves the child running, so the next stop must look again.
+        let record = SpawnRecord {
+            thresholds: Thresholds {
+                stop_attribution: Duration::from_millis(30),
+                ..test_thresholds()
+            },
+            ..test_record(Some(CodingAgentKind::Codex))
+        };
+
+        // A blocked RM kill: the agent keeps running.
+        record.mark_ac_stop("job-terminate", Some(ChildLiveness::Alive));
+        std::thread::sleep(Duration::from_millis(45));
+
+        // Much later the child dies on its own, and only then does the user close the tab.
         record.mark_ac_stop(
             "session-kill",
             Some(ChildLiveness::Exited {
@@ -1258,18 +1380,49 @@ mod tests {
             }),
         );
 
-        assert!(record.stop_requested());
-        assert_eq!(record.stop_source(), "session-kill");
-        assert!(
-            record.ac_stop_at_us.load(Ordering::SeqCst) > first_stamp,
-            "the attribution window is measured from the most recent stop"
+        assert_eq!(
+            record.attribute_exit(record.stop_snapshot()),
+            ExitCause::ChildInitiated,
+            "the stale stop did not kill it, and it was already dead when we asked again"
         );
+    }
+
+    #[test]
+    fn a_witness_that_saw_the_child_dead_can_never_be_downgraded() {
+        // grinch B2: `LocalProcessBackend::kill` is reachable twice concurrently (the
+        // blocking-spawn cancel guard fires it directly), and the second probe lands after
+        // `ptys.remove` and returns `Gone`. A real death must not be blanked by it.
+        let record = SpawnRecord {
+            thresholds: Thresholds {
+                stop_attribution: Duration::from_millis(1),
+                ..test_thresholds()
+            },
+            ..test_record(Some(CodingAgentKind::Codex))
+        };
+        record.mark_ac_stop(
+            "session-kill",
+            Some(ChildLiveness::Exited {
+                code: 1,
+                success: false,
+            }),
+        );
+        std::thread::sleep(Duration::from_millis(5)); // even once the episode has expired
+        record.mark_ac_stop("session-kill", Some(ChildLiveness::Gone));
+        record.mark_ac_stop(
+            "session-kill",
+            Some(ChildLiveness::Unqueryable("os error 5".to_string())),
+        );
+
         assert!(
             matches!(
                 record.pre_stop_liveness(),
                 Some(ChildLiveness::Exited { .. })
             ),
-            "the fresher witness replaces the older one"
+            "a dead child does not come back"
+        );
+        assert_eq!(
+            record.attribute_exit(record.stop_snapshot()),
+            ExitCause::ChildInitiated
         );
     }
 
@@ -1442,12 +1595,50 @@ mod tests {
         assert!(is_secret_env_key("DB_PASSWORD"));
         assert!(is_secret_env_key("gh_secret"));
         assert!(is_secret_env_key("SERVICE_CREDENTIAL"));
+        assert!(is_secret_env_key("AUTHORIZATION"));
+        assert!(is_secret_env_key("CODEX_AUTH"));
+        assert!(is_secret_env_key("GH_PAT"));
+        assert!(is_secret_env_key("pat"));
 
         assert!(!is_secret_env_key("MODEL"));
         assert!(!is_secret_env_key("CODEX_HOME"));
         assert!(!is_secret_env_key("AGENTSCOMMANDER_ROOT"));
-        assert!(!is_secret_env_key("AGENTSCOMMANDER_BINARY_PATH"));
         assert!(!is_secret_env_key("NODE_ENV"));
+        // "pat" is a segment, never a substring: blanking a PATH across the log would
+        // shred every path in the evidence.
+        assert!(!is_secret_env_key("PATH"));
+        assert!(!is_secret_env_key("PATHEXT"));
+        assert!(!is_secret_env_key("AGENTSCOMMANDER_BINARY_PATH"));
+    }
+
+    #[test]
+    fn a_short_secret_from_a_secret_named_row_is_still_redacted() {
+        // The 8-char floor used to gate rows whose NAME already declares them a secret.
+        let record = SpawnRecord::new(SpawnRecordInit {
+            redact: vec!["sk-ab".to_string()],
+            ..test_init(Some(CodingAgentKind::Codex))
+        });
+        record.note_output(b"AUTHORIZATION=Bearer sk-ab\r\n");
+
+        let head = record.head_log();
+        assert!(!head.contains("sk-ab"), "short secret survived: {head}");
+        assert!(head.contains("<redacted>"));
+    }
+
+    #[test]
+    fn a_numeric_value_from_a_secret_named_row_is_a_config_knob_not_a_secret() {
+        // `MAX_TOKENS=8192` and `TOKEN_LIMIT=4096` are real rows whose NAME matches the
+        // secret markers. Blanking `8192` everywhere would corrupt the evidence and
+        // protect nothing.
+        let record = SpawnRecord::new(SpawnRecordInit {
+            argv: vec!["codex".to_string(), "--max-tokens=8192".to_string()],
+            redact: vec!["8192".to_string()],
+            ..test_init(Some(CodingAgentKind::Codex))
+        });
+        record.note_output(b"max_tokens=8192 loading\r\n");
+
+        assert!(record.head_log().contains("8192"));
+        assert!(record.argv_log().contains("8192"));
     }
 
     #[test]
@@ -1455,7 +1646,7 @@ mod tests {
         let token = "3f1c9d2e-7a4b-4c8d-9e1f-2b3c4d5e6f70";
         let record = SpawnRecord::new(SpawnRecordInit {
             argv: vec!["codex".to_string(), format!("--token={token}")],
-            redact: vec![token.to_string(), "x".to_string()],
+            redact: vec![token.to_string()],
             ..test_init(Some(CodingAgentKind::Codex))
         });
         record.note_output(format!("AGENTSCOMMANDER_TOKEN={token}\r\n").as_bytes());
@@ -1466,7 +1657,7 @@ mod tests {
         assert!(!record.argv_log().contains(token));
         assert!(
             record.head_log().contains("AGENTSCOMMANDER_TOKEN"),
-            "a one-character redaction entry must not shred the whole line"
+            "the rest of the line still has to be readable"
         );
     }
 
