@@ -882,9 +882,17 @@ const ProjectPanel: Component = () => {
             { id: "main", label: "Browse Main", url: githubRepoUrl(ref) },
           ];
           const branch = repo.branch?.trim();
-          // "HEAD" is the detached-HEAD sentinel (both git readers map it to
+          // PRODUCT RULE (user, #943), not an accident: tolerate BOTH `main` and
+          // `master`. A repo whose default branch is `master` already lands on
+          // `master` at the repo-root URL, so a second item pointing at the same
+          // page is noise. Everything else gets Browse Branch. Do NOT "fix" this
+          // back to a literal `!== "main"`.
+          //
+          // Exact match, no casefold: git refs are case-sensitive, so a branch
+          // literally named `Master` is a different, real branch and DOES get the
+          // item. "HEAD" is the detached-HEAD sentinel (both git readers map it to
           // null; this is belt for the volatile override layer).
-          if (branch && branch !== "main" && branch !== "HEAD") {
+          if (branch && branch !== "main" && branch !== "master" && branch !== "HEAD") {
             const url = githubBranchUrl(ref, branch);
             // null = the branch text is not a usable ref (`..`, empty). Rather
             // than build a URL the browser would normalize into another repo, we

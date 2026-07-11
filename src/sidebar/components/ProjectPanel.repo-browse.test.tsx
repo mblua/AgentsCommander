@@ -280,6 +280,33 @@ describe("ProjectPanel coordinator repo Browse submenu (#943)", () => {
     expect(flyoutLabels()).toEqual(["Browse Main"]);
   });
 
+  // 3b
+  it("offers Browse Main only when the branch is master (product rule: main AND master)", async () => {
+    await setupPanel([coordASession([repo(repoA1, "AgentsCommander", "master")])], discoveryA());
+
+    await openMenuWithArrow(rowA);
+    mouseEnter(repoEntries()[0]);
+
+    await waitFor(() => expect(flyout()).not.toBeNull());
+    expect(flyoutLabels()).toEqual(["Browse Main"]);
+  });
+
+  // 3c
+  it("still offers Browse Branch for `Master` (the gate is exact-match, not casefolded)", async () => {
+    // Git refs are case-sensitive: `Master` is a distinct, real branch, not the
+    // default one. Guards against anyone adding a .toLowerCase() to the gate.
+    await setupPanel([coordASession([repo(repoA1, "AgentsCommander", "Master")])], discoveryA());
+
+    await openMenuWithArrow(rowA);
+    mouseEnter(repoEntries()[0]);
+
+    await waitFor(() => expect(flyout()).not.toBeNull());
+    expect(flyoutLabels()).toEqual(["Browse Main", "Browse Branch"]);
+    expect(target("replica.coord-a.menu.repo.0.browse.branch")!.getAttribute("title")).toBe(
+      "https://github.com/mblua/AgentsCommander/tree/Master"
+    );
+  });
+
   // 4
   it("offers Browse Main only when the branch is unknown", async () => {
     await setupPanel([coordASession([repo(repoA1, "AgentsCommander", null)])], discoveryA());
