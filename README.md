@@ -136,7 +136,7 @@ These are not accidents.
 - [Quickstart](docs/quickstart.md): 60-second install to first running agent
 - [Concepts](docs/concepts.md): agent, team, workgroup, coordinator, brief
 - [Teams and workgroups](docs/agents/teams-and-workgroups.md): coordinators, members, briefs, messaging
-- [Features](docs/features/): [Coding Agent Profiles](docs/features/coding-agent-profiles.md), [Session auto-close](docs/features/session-auto-close.md), [Config seed](docs/features/config-seed.md), Telegram bridge with image and screenshot sends, voice-to-text, portable instances
+- [Features](docs/features/): [Coding Agent Profiles](docs/features/coding-agent-profiles.md), [Session auto-close](docs/features/session-auto-close.md), [Config seed](docs/features/config-seed.md), [Container coding agents](docs/features/container-coding-agents.md), Telegram bridge with image and screenshot sends, voice-to-text, portable instances
 - [Reference](docs/reference/): full CLI, `settings.json` schema, architecture, log filtering
 - [Roadmap](ROADMAP.md) · [Changelog](CHANGELOG.md) · [Docs style guide](docs/style-guide.md)
 
