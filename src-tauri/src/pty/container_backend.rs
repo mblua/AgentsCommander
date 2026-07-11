@@ -619,9 +619,19 @@ impl ContainerTransportBackend {
         )?;
 
         if let Some(plan) = container_credential.as_ref() {
-            if let Err(e) = crate::pty::container_credentials::copy_in(plan) {
+            match crate::pty::container_credentials::copy_in(plan) {
+                // #930 - a copied token is only USED if the agent skips its
+                // interactive first-run wizard: Claude gates that on
+                // .claude.json flags, not on the credential file. Same gate as
+                // the copy (only when we truly copied), same best-effort
+                // contract. On a copy failure we deliberately do NOT stamp it:
+                // with no token, the login wizard is the correct UX.
+                Ok(()) => crate::pty::container_credentials::ensure_first_run_state(
+                    plan,
+                    DEFAULT_CONTAINER_WORKDIR,
+                ),
                 // Best-effort, mirror config-seed: never abort the spawn.
-                log::warn!("[container-cred] copy-in failed for session {}: {}", id, e);
+                Err(e) => log::warn!("[container-cred] copy-in failed for session {}: {}", id, e),
             }
             // F1 - if a concurrent teardown removed the session while we were
             // copying, its remove_copied ran before the file existed (no-op). The
@@ -1600,6 +1610,7 @@ mod tests {
         let plan = crate::pty::container_credentials::ContainerCredentialPlan {
             source: dir.path().join("unused-source"),
             dest: dest.clone(),
+            first_run: None,
         };
 
         let (backend, _mgr) = backend_with_tuning(ContainerTransportTuning::default());

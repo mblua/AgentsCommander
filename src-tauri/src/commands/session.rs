@@ -3613,6 +3613,7 @@ mod tests {
         ContainerCredentialPlan {
             source: PathBuf::from("unused-host-source"),
             dest,
+            first_run: None,
         }
     }
 

@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::session::profile::ContainerCredentialSource;
+use crate::session::profile::{ContainerCredentialSource, ContainerFirstRunState};
 
 #[cfg(windows)]
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
@@ -16,6 +16,10 @@ const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
 pub struct ContainerCredentialPlan {
     pub source: PathBuf,
     pub dest: PathBuf,
+    /// #930 - first-run state to stamp in the dest dir after the copy (None =
+    /// none for this agent). Carried on the plan because the container backend
+    /// sees only the plan, never the agent profile.
+    pub first_run: Option<ContainerFirstRunState>,
 }
 
 /// F2 - true if `path` exists AND is a symlink or Windows junction/reparse point.
@@ -71,7 +75,11 @@ pub fn resolve_plan(
     let dest = Path::new(host_root)
         .join(source.container_dir)
         .join(source.file);
-    Some(ContainerCredentialPlan { source: src, dest })
+    Some(ContainerCredentialPlan {
+        source: src,
+        dest,
+        first_run: source.first_run,
+    })
 }
 
 /// Copy the host credential into the replica dir. Best-effort: refuses to write
@@ -147,6 +155,182 @@ pub fn remove_copied(dest: &Path) {
     }
 }
 
+/// Set `key` to `true` in `map`. Returns true when that actually changed
+/// something (so the caller only rewrites the file when needed).
+fn set_true(map: &mut serde_json::Map<String, serde_json::Value>, key: &str) -> bool {
+    if map.get(key) == Some(&serde_json::Value::Bool(true)) {
+        return false;
+    }
+    map.insert(key.to_string(), serde_json::Value::Bool(true));
+    true
+}
+
+/// #930 - stamp the container's first-run state next to the credential we just
+/// copied, so the agent's interactive TUI actually uses it. Claude Code gates
+/// its onboarding wizard on `hasCompletedOnboarding` in
+/// `$CLAUDE_CONFIG_DIR/.claude.json` and the folder-trust dialog on
+/// `projects[<cwd>].hasTrustDialogAccepted`, and checks NEITHER against the
+/// credential: without these flags a valid copied token still lands on "Select
+/// login method" (reproduced in a real container).
+///
+/// Best-effort, non-destructive, and never aborts the spawn:
+/// - merges into an existing JSON object, preserving every other key;
+/// - creates the file when it is absent or empty;
+/// - SKIPS with a warn when the file is unparseable or is not a JSON object,
+///   so user data is never clobbered;
+/// - refuses to write through a symlink/junction (F2), like `copy_in`;
+/// - writes via a temp file + rename, so a crash cannot truncate the config.
+///
+/// The config file can hold user identity fields, so contents are never logged.
+pub fn ensure_first_run_state(plan: &ContainerCredentialPlan, container_workdir: &str) {
+    let Some(state) = plan.first_run else {
+        return;
+    };
+    let Some(dir) = plan.dest.parent() else {
+        return;
+    };
+    let path = dir.join(state.file);
+
+    // F2 - never write through a container-planted symlink/junction, on the
+    // config dir or on the config file itself.
+    if is_reparse_path(dir) {
+        log::warn!(
+            "[container-cred] config dir {} is a symlink/reparse point; skipping first-run state",
+            dir.display()
+        );
+        return;
+    }
+    if is_reparse_path(&path) {
+        log::warn!(
+            "[container-cred] {} is a symlink/reparse point; skipping first-run state",
+            path.display()
+        );
+        return;
+    }
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        log::warn!(
+            "[container-cred] failed to create {}: {}; skipping first-run state",
+            dir.display(),
+            e
+        );
+        return;
+    }
+
+    let mut root = match std::fs::read_to_string(&path) {
+        // An empty file carries no user data, so treat it like a missing one.
+        Ok(text) if text.trim().is_empty() => serde_json::Map::new(),
+        Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(serde_json::Value::Object(map)) => map,
+            Ok(_) => {
+                log::warn!(
+                    "[container-cred] {} is not a JSON object; skipping first-run state",
+                    path.display()
+                );
+                return;
+            }
+            Err(e) => {
+                log::warn!(
+                    "[container-cred] {} is not valid JSON ({}); skipping first-run state",
+                    path.display(),
+                    e
+                );
+                return;
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::Map::new(),
+        Err(e) => {
+            log::warn!(
+                "[container-cred] failed to read {}: {}; skipping first-run state",
+                path.display(),
+                e
+            );
+            return;
+        }
+    };
+
+    let mut changed = set_true(&mut root, state.onboarding_flag);
+
+    // `projects[<container_workdir>]` = { "hasTrustDialogAccepted": true, ... }.
+    // The mount root IS the container workdir, and AC already trusts it by
+    // bind-mounting it, so pre-accepting the folder-trust dialog adds no new
+    // exposure. A non-object at either level is left untouched (warn + skip).
+    if !state.project_flags.is_empty() {
+        let projects = root
+            .entry(state.projects_key)
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        match projects.as_object_mut() {
+            Some(projects) => {
+                let entry = projects
+                    .entry(container_workdir)
+                    .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+                match entry.as_object_mut() {
+                    Some(entry) => {
+                        for flag in state.project_flags {
+                            changed |= set_true(entry, flag);
+                        }
+                    }
+                    None => log::warn!(
+                        "[container-cred] {} entry for '{}' is not a JSON object; skipping the trust entry",
+                        path.display(),
+                        container_workdir
+                    ),
+                }
+            }
+            None => log::warn!(
+                "[container-cred] {} field '{}' is not a JSON object; skipping the trust entry",
+                path.display(),
+                state.projects_key
+            ),
+        }
+    }
+
+    if !changed {
+        log::debug!(
+            "[container-cred] first-run state already present in {}",
+            path.display()
+        );
+        return;
+    }
+
+    let text = match serde_json::to_string_pretty(&serde_json::Value::Object(root)) {
+        Ok(text) => text,
+        Err(e) => {
+            log::warn!(
+                "[container-cred] failed to serialize first-run state for {}: {}",
+                path.display(),
+                e
+            );
+            return;
+        }
+    };
+    // Temp + rename: a crash mid-write must never truncate an existing config.
+    let tmp = dir.join(format!("{}.ac-{}.tmp", state.file, uuid::Uuid::new_v4()));
+    if let Err(e) = std::fs::write(&tmp, text.as_bytes()) {
+        log::warn!(
+            "[container-cred] failed to write first-run state to {}: {}",
+            tmp.display(),
+            e
+        );
+        let _ = std::fs::remove_file(&tmp);
+        return;
+    }
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        log::warn!(
+            "[container-cred] failed to install first-run state at {}: {}",
+            path.display(),
+            e
+        );
+        let _ = std::fs::remove_file(&tmp);
+        return;
+    }
+    log::info!(
+        "[container-cred] ensured container first-run state in {} ({} + trust for {})",
+        path.display(),
+        state.onboarding_flag,
+        container_workdir
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,12 +339,32 @@ mod tests {
     // resolve_plan mutates/reads process env; serialize the env-touching tests.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    fn first_run() -> ContainerFirstRunState {
+        ContainerFirstRunState {
+            file: ".claude.json",
+            onboarding_flag: "hasCompletedOnboarding",
+            projects_key: "projects",
+            project_flags: &["hasTrustDialogAccepted", "hasCompletedProjectOnboarding"],
+        }
+    }
+
     fn source(host_dir_env: Option<&'static str>) -> ContainerCredentialSource {
         ContainerCredentialSource {
             host_dir: ".ac-nonexistent-home-930",
             host_dir_env,
             file: ".credentials.json",
             container_dir: ".claude",
+            first_run: Some(first_run()),
+        }
+    }
+
+    /// A plan pointing at `<root>/.claude/.credentials.json`, like resolve_plan
+    /// builds for a container Claude session.
+    fn plan_for(root: &Path, first_run: Option<ContainerFirstRunState>) -> ContainerCredentialPlan {
+        ContainerCredentialPlan {
+            source: root.join("unused-host-source"),
+            dest: root.join(".claude").join(".credentials.json"),
+            first_run,
         }
     }
 
@@ -196,6 +400,9 @@ mod tests {
             plan.dest,
             host_root.path().join(".claude").join(".credentials.json")
         );
+        // #930 - the first-run descriptor must reach the plan: the container
+        // backend sees only the plan, never the agent profile.
+        assert_eq!(plan.first_run, Some(first_run()));
     }
 
     #[test]
@@ -239,6 +446,7 @@ mod tests {
         let plan = ContainerCredentialPlan {
             source: src,
             dest: dest.clone(),
+            first_run: None,
         };
 
         copy_in(&plan).expect("copy_in ok");
@@ -250,6 +458,99 @@ mod tests {
         // Idempotent: a second delete of a now-missing file is a no-op.
         remove_copied(&dest);
         assert!(!dest.exists());
+    }
+
+    #[test]
+    fn ensure_first_run_state_merges_into_existing_config_without_touching_other_keys() {
+        // #930 - the replica config dir already holds a seeded .claude.json.
+        // Add the flags, preserve everything else (identity fields, other
+        // projects), or we would clobber user config.
+        let root = tempfile::tempdir().expect("root");
+        let dir = root.path().join(".claude");
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join(".claude.json");
+        std::fs::write(
+            &path,
+            br#"{"userID":"abc","oauthAccount":{"emailAddress":"x@y.z"},"projects":{"/other":{"hasTrustDialogAccepted":false}}}"#,
+        )
+        .expect("seed config");
+
+        ensure_first_run_state(&plan_for(root.path(), Some(first_run())), "/workspace");
+
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
+        assert_eq!(v["hasCompletedOnboarding"], serde_json::json!(true));
+        assert_eq!(
+            v["projects"]["/workspace"]["hasTrustDialogAccepted"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            v["projects"]["/workspace"]["hasCompletedProjectOnboarding"],
+            serde_json::json!(true)
+        );
+        // Untouched: pre-existing keys and unrelated project entries.
+        assert_eq!(v["userID"], serde_json::json!("abc"));
+        assert_eq!(v["oauthAccount"]["emailAddress"], serde_json::json!("x@y.z"));
+        assert_eq!(
+            v["projects"]["/other"]["hasTrustDialogAccepted"],
+            serde_json::json!(false)
+        );
+    }
+
+    #[test]
+    fn ensure_first_run_state_creates_config_when_absent() {
+        // #930 - an empty config dir onboards too, so "no config seed" does not
+        // save us: the file must be created.
+        let root = tempfile::tempdir().expect("root");
+        let path = root.path().join(".claude").join(".claude.json");
+        assert!(!path.exists());
+
+        ensure_first_run_state(&plan_for(root.path(), Some(first_run())), "/workspace");
+
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
+        assert_eq!(v["hasCompletedOnboarding"], serde_json::json!(true));
+        assert_eq!(
+            v["projects"]["/workspace"]["hasTrustDialogAccepted"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            v["projects"]["/workspace"]["hasCompletedProjectOnboarding"],
+            serde_json::json!(true)
+        );
+    }
+
+    #[test]
+    fn ensure_first_run_state_skips_unparseable_config() {
+        // #930 - never clobber a config we cannot parse: warn and leave it byte
+        // for byte. The user sees onboarding, which is exactly today's behavior.
+        let root = tempfile::tempdir().expect("root");
+        let dir = root.path().join(".claude");
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join(".claude.json");
+        std::fs::write(&path, b"{not json").expect("seed config");
+
+        ensure_first_run_state(&plan_for(root.path(), Some(first_run())), "/workspace");
+
+        assert_eq!(
+            std::fs::read(&path).expect("read"),
+            b"{not json".to_vec(),
+            "an unparseable config must be left untouched"
+        );
+    }
+
+    #[test]
+    fn ensure_first_run_state_writes_nothing_without_a_descriptor() {
+        // #930 - agents with no first-run descriptor (Codex, Gemini) are
+        // untouched: no file, not even the config dir, is created.
+        let root = tempfile::tempdir().expect("root");
+
+        ensure_first_run_state(&plan_for(root.path(), None), "/workspace");
+
+        assert!(
+            !root.path().join(".claude").exists(),
+            "no descriptor must mean no writes at all"
+        );
     }
 
     #[test]
