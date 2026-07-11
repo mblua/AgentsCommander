@@ -1,4 +1,4 @@
-import { Component, createSignal, createEffect, onMount, onCleanup, Show } from "solid-js";
+import { Component, createSignal, createEffect, createMemo, on, onMount, onCleanup, Show } from "solid-js";
 import { isTauri } from "../shared/platform";
 import type { UnlistenFn } from "../shared/transport";
 import type {
@@ -47,6 +47,8 @@ import { sessionsStore } from "./stores/sessions";
 import { bridgesStore } from "./stores/bridges";
 import { projectStore } from "./stores/project";
 import { workgroupGroupsStore } from "./stores/workgroup-groups";
+import { projectCollapseStore } from "./stores/project-collapse";
+import { normalizeProjectPathForCompare } from "./stores/project-refresh";
 import { startTeamIdleWatcher } from "./stores/team-idle-watcher";
 import { primeAudio } from "../shared/sound";
 import { settingsStore } from "../shared/stores/settings";
@@ -111,6 +113,72 @@ export function blockContextMenu(e: Event): void {
   e.preventDefault();
 }
 
+function activeWorkgroupGroupSelectionKey(): string | null {
+  const projectPath = workgroupGroupsStore.activeProjectPath();
+  if (!projectPath) return null;
+  const selection = workgroupGroupsStore.selection(projectPath);
+  return JSON.stringify([
+    projectPath,
+    selection.kind,
+    selection.kind === "group" ? selection.id : null,
+  ]);
+}
+
+function projectPanelForPath(
+  scrollContainer: HTMLElement,
+  normalizedProjectPath: string,
+): HTMLElement | null {
+  const header = Array.from(
+    scrollContainer.querySelectorAll<HTMLElement>(".project-header"),
+  ).find((candidate) =>
+    normalizeProjectPathForCompare(candidate.getAttribute("title") ?? "") === normalizedProjectPath
+  );
+  return header?.closest<HTMLElement>(".project-panel") ?? null;
+}
+
+/**
+ * #941 — align the newly selected project's header with the top of the shared
+ * sidebar scrollport. The primitive semantic key deliberately suppresses raw
+ * store/config emissions and same-selection re-clicks.
+ */
+export function createSidebarSelectionScrollReset(
+  scrollContainer: () => HTMLDivElement | undefined,
+): void {
+  const selectionKey = createMemo(activeWorkgroupGroupSelectionKey);
+  let disposed = false;
+
+  createEffect(on(selectionKey, (key) => {
+    if (!key) return;
+    const projectPath = workgroupGroupsStore.activeProjectPath();
+    if (!projectPath) return;
+
+    // Collapse/expand and the filtered rows update in the same click. Position
+    // only after those Solid updates settle, and discard a superseded fast click.
+    queueMicrotask(() => {
+      if (disposed || selectionKey() !== key) return;
+      const container = scrollContainer();
+      if (!container) return;
+
+      const projectPanel = projectPanelForPath(container, projectPath);
+      if (projectPanel) {
+        const containerTop = container.getBoundingClientRect().top + container.clientTop;
+        // The header is the panel's first child. Include the panel border so
+        // bordered sidebar themes align the header itself, not the outer edge.
+        const projectTop = projectPanel.getBoundingClientRect().top + projectPanel.clientTop;
+        container.scrollTop = Math.max(0, container.scrollTop + projectTop - containerTop);
+      }
+
+      if (projectCollapseStore.focusTarget() === projectPath) {
+        projectCollapseStore.consumeProjectFocus();
+      }
+    });
+  }, { defer: true }));
+
+  onCleanup(() => {
+    disposed = true;
+  });
+}
+
 const SidebarApp: Component<SidebarAppProps> = (props) => {
   const [showOnboarding, setShowOnboarding] = createSignal(false);
   const [loopToast, setLoopToast] = createSignal<LoopToast | null>(null);
@@ -134,6 +202,8 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
   let raiseTerminalEnabled = true;
   let lastRaiseTime = 0;
   const railSide = () => props.railSide ?? settingsRailSide();
+  let sidebarScrollableEl: HTMLDivElement | undefined;
+  createSidebarSelectionScrollReset(() => sidebarScrollableEl);
   // #592 - debounce handle for the profile-drift re-list (collapses bursts).
   let profileDriftRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   const handleMainSidebarSideChange = (event: Event) => {
@@ -659,7 +729,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
           <Show when={railSide() === "left"}>
             <WorkgroupGroupRail projects={projectStore.projects} />
           </Show>
-          <div class="sidebar-scrollable">
+          <div class="sidebar-scrollable" ref={sidebarScrollableEl}>
             <ProjectPanel />
           </div>
           <Show when={railSide() === "right"}>

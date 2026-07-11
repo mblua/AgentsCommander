@@ -438,37 +438,6 @@ const ProjectPanel: Component = () => {
   const toggleProjectPanelCollapsed = (projectPath: string) =>
     projectCollapseStore.toggleProjectCollapsed(projectPath);
 
-  // #810 (grinch F1) - ref-Map of rendered .project-header elements keyed by
-  // the NORMALIZED project path. Lives in the stable ProjectPanel scope (not
-  // per-row) so it is not disposed mid-focus. A row's ref callback writes its
-  // header here on mount and clears it on cleanup. Replaces the original
-  // CSS-attribute-selector approach, which silently no-oped on Windows
-  // backslash paths because CSS string tokens consume `\` as an escape char.
-  const projectHeaderEls = new Map<string, HTMLElement>();
-
-  // #810 - one-shot focus: scroll the owner project header into view when
-  // the rail requests it. block:"nearest" so an already-visible owner does
-  // not jump. The target from the store is already NORMALIZED; the ref-Map
-  // is keyed on the same normalized form, so map.get(target) resolves
-  // without any CSS selector. Grinch F6: capture target before deferring to
-  // the microtask and only consume the focus if the live signal still
-  // equals the captured value, so two fast clicks (A then B) cannot have
-  // microtask-A clear B's pending target.
-  createEffect(() => {
-    const target = projectCollapseStore.focusTarget();
-    if (!target) return;
-    // Defer to next microtask so the expand (setProjectCollapsed false)
-    // applied by the rail onClick has propagated and the header/body are
-    // mounted before we scroll.
-    queueMicrotask(() => {
-      const live = projectCollapseStore.focusTarget();
-      if (live !== target) return;
-      const el = projectHeaderEls.get(target);
-      el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-      projectCollapseStore.consumeProjectFocus();
-    });
-  });
-
   // #537: post-assign "Restart now?" prompt. Hoisted to the stable ProjectPanel
   // scope (NOT inside the projects <For>) so a background replica-list refresh,
   // which replaces project object references and so re-creates each <For> row
@@ -2348,25 +2317,6 @@ const ProjectPanel: Component = () => {
               class="project-header"
               classList={{ open: filterOpen(), active: filterActive(), invalid: !!filterError() }}
               title={proj.path}
-              ref={(el) => {
-                // #810 (grinch F1 + B1) - register this header element in
-                // the stable-scope ref-Map so the focus effect can scroll it
-                // into view by normalized path key. CSS attribute selector
-                // approach was dropped: backslashes in Windows paths break
-                // the CSS string-token parser. Cleanup owns the deletion
-                // here (captures this specific el): on true project removal
-                // it frees the detached node; on a refresh re-mount the
-                // guard `get(key) === el` is false because the newer row
-                // already `set` a different element, so the fresh entry is
-                // correctly left intact.
-                const key = normalizeProjectPathForCompare(proj.path);
-                projectHeaderEls.set(key, el);
-                onCleanup(() => {
-                  if (projectHeaderEls.get(key) === el) {
-                    projectHeaderEls.delete(key);
-                  }
-                });
-              }}
               onContextMenu={handleProjectContextMenu}
             >
               <button

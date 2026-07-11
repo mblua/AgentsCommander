@@ -1,10 +1,10 @@
 import { createSignal } from "solid-js";
 import { normalizeProjectPathForCompare } from "./project-refresh";
 
-// #810 - Project-level (NOT sub-section) collapse state hoisted into a shared
-// store so WorkgroupGroupRail can drive auto-focus (collapse others, expand
-// owner, scroll owner into view) without App.tsx threading a callback prop
-// into ProjectPanel internals. Sub-section collapse (workgroups/loops/agents/
+// #810/#941 - Project-level (NOT sub-section) collapse state is hoisted into a
+// shared store so WorkgroupGroupRail can collapse others and expand the owner.
+// Its one-shot focus target coordinates the rail with App.tsx, which owns and
+// positions the shared scroll container. Sub-section collapse (workgroups/loops/agents/
 // teams/workgroup/team) STAYS in ProjectPanel's local collapsedByKey signal;
 // this store only owns the "project" section key. Session-only, no persistence
 // (consistent with Role.md: no localStorage for UI state).
@@ -36,12 +36,11 @@ export function projectPanelCollapseKey(
 // ProjectPanel used locally (projectPath-normalized + "project" + "").
 const [collapsedProjects, setCollapsedProjects] = createSignal<Record<string, boolean>>({});
 
-// #810 - one-shot focus target. Stored NORMALIZED (via
+// #810/#941 - one-shot focus target. Stored NORMALIZED (via
 // normalizeProjectPathForCompare) so the rail can pass the raw props.project.path
-// and ProjectPanel's ref-Map (keyed on the same normalized form) resolves it.
-// ProjectPanel reads focusTarget() in a createEffect, scrolls the matching
-// header element into view via its own Map<string, HTMLElement>, then consumes
-// it. Stays null when no focus is requested.
+// and SidebarApp can match it to the active semantic selection. SidebarApp
+// consumes it after positioning that project's header at the top of the shared
+// scrollport. It stays null when no focus is requested.
 const [focusTarget, setFocusTarget] = createSignal<string | null>(null);
 
 function projectKey(projectPath: string): string {
@@ -93,21 +92,18 @@ export const projectCollapseStore = {
       return next;
     });
   },
-  // #810 - focus target is stored NORMALIZED. The rail passes the raw
-  // props.project.path; ProjectPanel's ref-Map is keyed on the same
-  // normalized form, so the effect's map.get(target) resolves.
+  // #810/#941 - focus target is stored NORMALIZED. The rail passes the raw
+  // props.project.path; SidebarApp matches rendered header paths using the
+  // same normalized form.
   focusTarget(): string | null {
     return focusTarget();
   },
   requestProjectFocus(projectPath: string): void {
     setFocusTarget(normalizeProjectPathForCompare(projectPath));
   },
-  // #810 - one-shot consume: returns the current target and clears it.
-  // The focus effect in ProjectPanel captures target BEFORE deferring to a
-  // microtask (grinch F6): on two fast clicks (A then B), microtask-A must
-  // NOT clear B's pending target. The effect handles that by checking the
-  // live signal against its captured value before calling consume; this
-  // method just clears-and-returns whatever is live.
+  // #810/#941 - one-shot consume: returns the current target and clears it.
+  // SidebarApp checks its captured semantic key after deferring, so a stale
+  // microtask from click A cannot consume click B's pending target.
   consumeProjectFocus(): string | null {
     const current = focusTarget();
     if (current !== null) setFocusTarget(null);
