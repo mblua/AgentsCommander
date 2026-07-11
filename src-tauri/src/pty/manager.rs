@@ -245,6 +245,15 @@ impl PtyManager {
         self.backend_for_kind(kind).terminate_job_for_session(id)
     }
 
+    /// #942 - publish the pre-stop witness for a session AC is about to kill outside the
+    /// PTY layer (resource-monitor tree kill). No-op when the session has no route.
+    pub fn publish_stop_witness(&self, id: Uuid, source: &str) {
+        let Ok(kind) = self.kind_for_session(id) else {
+            return;
+        };
+        self.backend_for_kind(kind).publish_stop_witness(id, source);
+    }
+
     pub fn kill_all_jobs(&self) -> (usize, usize) {
         self.backend_for_kind(SessionBackendKind::LocalProcess)
             .kill_all_jobs()

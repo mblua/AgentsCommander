@@ -596,15 +596,23 @@ impl LocalProcessBackend {
             job,
         };
 
-        self.ptys.lock().unwrap().insert(id, instance);
+        self.ptys
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, instance);
         self.fanout.register_session(id, idle_tuning, rows, cols);
 
-        // #942 - app.log is what users paste into issues, so never echo AC credentials
-        // or configured env values (the rows where AC tells users to keep API keys) back
-        // out through the child output or the argv we log.
+        // #942 - app.log is what users paste into issues, so a secret must never be
+        // echoed back out through the child output or the argv we log. Keyed on the env
+        // NAME (token / key / secret / password / credential), across both AC's own
+        // credential env and the configured rows where AC tells users to keep their API
+        // keys. Deliberately not a sweep of every value: a Codex profile legitimately
+        // carries `MODEL=gpt-5.6-sol`, and blanking that would shred the very argv this
+        // instrumentation exists to record.
         let redact: Vec<String> = extra_env
             .iter()
             .chain(configured_env.iter())
+            .filter(|(key, _)| spawn_diagnostics::is_secret_env_key(key))
             .map(|(_, value)| value.clone())
             .collect();
 
@@ -668,8 +676,23 @@ impl LocalProcessBackend {
         let Some(child) = instance.child.as_mut() else {
             return ChildLiveness::Gone;
         };
-        probe_child_liveness(child)
+        probe_child_contained(child)
     }
+}
+
+/// #942 - probe a child while the caller holds the `ptys` guard, and CONTAIN any panic.
+///
+/// portable-pty locks a mutex of its own inside the child and unwraps it (`try_wait`,
+/// `do_kill`, `process_id` and `as_raw_handle` all do). If that mutex is ever poisoned,
+/// an unwind from the probe would escape while the `ptys` guard is held and poison the
+/// PTY map itself, which every terminal write, resize and kill locks on: a diagnostics
+/// probe would silently take the terminal subsystem down with it. Catching AT the call
+/// means the guard above us is released normally and the map stays usable.
+fn probe_child_contained(child: &mut Box<dyn portable_pty::Child + Send + Sync>) -> ChildLiveness {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| probe_child_liveness(child)))
+        .unwrap_or_else(|_| {
+            ChildLiveness::Unqueryable("portable-pty child lock is poisoned".to_string())
+        })
 }
 
 /// #942 - ask Windows directly instead of going through `portable_pty::Child::try_wait`.
@@ -809,7 +832,9 @@ impl PtyBackend for LocalProcessBackend {
     }
 
     fn write(&self, id: Uuid, data: &[u8]) -> Result<(), AppError> {
-        let ptys = self.ptys.lock().unwrap();
+        // #942 - poison-tolerant: a panic anywhere under this guard (portable-pty unwraps
+        // inside its own child polling) must not brick every terminal write that follows.
+        let ptys = self.ptys.lock().unwrap_or_else(|e| e.into_inner());
         let instance = ptys
             .get(&id)
             .ok_or_else(|| AppError::SessionNotFound(id.to_string()))?;
@@ -826,13 +851,16 @@ impl PtyBackend for LocalProcessBackend {
     }
 
     fn has_session(&self, id: Uuid) -> bool {
-        self.ptys.lock().unwrap().contains_key(&id)
+        self.ptys
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&id)
     }
 
     fn resize(&self, id: Uuid, cols: u16, rows: u16) -> Result<(), AppError> {
         self.fanout.record_resize(id);
 
-        let ptys = self.ptys.lock().unwrap();
+        let ptys = self.ptys.lock().unwrap_or_else(|e| e.into_inner());
         let instance = ptys
             .get(&id)
             .ok_or_else(|| AppError::SessionNotFound(id.to_string()))?;
@@ -864,7 +892,7 @@ impl PtyBackend for LocalProcessBackend {
             spawn_diagnostics::mark_ac_stop(id, "session-kill", Some(child_at_stop.clone()));
 
         let instance = {
-            let mut ptys = self.ptys.lock().unwrap();
+            let mut ptys = self.ptys.lock().unwrap_or_else(|e| e.into_inner());
             ptys.remove(&id)
         };
 
@@ -947,6 +975,16 @@ impl PtyBackend for LocalProcessBackend {
         Ok(())
     }
 
+    /// #942 - record who asked for the stop and what the child looked like BEFORE any
+    /// process is touched. The resource monitor kills a process tree without going through
+    /// the PTY layer, so a caller that is about to do that publishes the witness here
+    /// first; without it, a child that had already died on its own would be logged as our
+    /// kill and its evidence dropped.
+    fn publish_stop_witness(&self, id: Uuid, source: &str) {
+        let child_at_stop = self.probe_child(id);
+        spawn_diagnostics::mark_ac_stop(id, source, Some(child_at_stop));
+    }
+
     fn terminate_job_for_session(&self, id: Uuid) -> bool {
         // #942 - AC asked for this stop. Probe first (same reason as `kill`), then tag,
         // so a child that was already dead is never charged to us. This stop can also
@@ -954,7 +992,7 @@ impl PtyBackend for LocalProcessBackend {
         // is why the tag only owns exits that follow it inside the attribution window.
         let child_at_stop = self.probe_child(id);
         spawn_diagnostics::mark_ac_stop(id, "job-terminate", Some(child_at_stop));
-        let ptys = self.ptys.lock().unwrap();
+        let ptys = self.ptys.lock().unwrap_or_else(|e| e.into_inner());
         match ptys.get(&id).and_then(|inst| inst.job.as_ref()) {
             Some(job) => {
                 job.terminate();
@@ -965,14 +1003,19 @@ impl PtyBackend for LocalProcessBackend {
     }
 
     fn kill_all_jobs(&self) -> (usize, usize) {
-        let ptys = self.ptys.lock().unwrap_or_else(|e| e.into_inner());
+        let mut ptys = self.ptys.lock().unwrap_or_else(|e| e.into_inner());
         let mut terminated = 0;
         let mut jobless = 0;
-        for (id, instance) in ptys.iter() {
-            // #942 - shutdown stops every live session; tag them all as ours. Lock order
-            // here is ptys -> diagnostics registry; nothing ever takes them the other way
-            // round (the monitor holds no registry lock while it probes under ptys).
-            spawn_diagnostics::mark_ac_stop(*id, "app-shutdown", None);
+        for (id, instance) in ptys.iter_mut() {
+            // #942 - shutdown stops every live session; tag them all as ours, with the
+            // same pre-stop witness every other stop path publishes. Lock order here is
+            // ptys -> diagnostics registry; nothing ever takes them the other way round
+            // (the monitor holds no registry lock while it probes under ptys).
+            let child_at_stop = match instance.child.as_mut() {
+                Some(child) => probe_child_contained(child),
+                None => ChildLiveness::Gone,
+            };
+            spawn_diagnostics::mark_ac_stop(*id, "app-shutdown", Some(child_at_stop));
             match instance.job.as_ref() {
                 Some(job) => {
                     job.terminate();
@@ -1045,6 +1088,79 @@ fn reap_child_in_background(
             );
         }
     });
+}
+
+#[cfg(test)]
+mod probe_containment_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    /// A child that panics exactly where portable-pty does when its inner mutex is
+    /// poisoned: inside the accessor, with the caller holding the PTY map guard.
+    #[derive(Debug)]
+    struct PoisonedChild;
+
+    impl portable_pty::ChildKiller for PoisonedChild {
+        fn kill(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+            Box::new(PoisonedChild)
+        }
+    }
+
+    impl portable_pty::Child for PoisonedChild {
+        fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
+            panic!("called `Result::unwrap()` on a poisoned mutex");
+        }
+
+        fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
+            panic!("called `Result::unwrap()` on a poisoned mutex");
+        }
+
+        fn process_id(&self) -> Option<u32> {
+            None
+        }
+
+        #[cfg(windows)]
+        fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+            panic!("called `Result::unwrap()` on a poisoned mutex");
+        }
+    }
+
+    /// grinch D4: the probe runs while the global `ptys` guard is held. A panic inside
+    /// portable-pty must not unwind through that guard, because a poisoned `ptys` map
+    /// makes the next terminal write panic, with nothing in the log tying it back here.
+    #[test]
+    fn a_panicking_child_probe_never_poisons_the_pty_map() {
+        let ptys: Mutex<HashMap<Uuid, Box<dyn portable_pty::Child + Send + Sync>>> =
+            Mutex::new(HashMap::new());
+        let id = Uuid::new_v4();
+        ptys.lock()
+            .unwrap()
+            .insert(id, Box::new(PoisonedChild) as Box<dyn portable_pty::Child + Send + Sync>);
+
+        {
+            // Exactly the shape of `probe_child`: guard held, probe called under it.
+            let mut guard = ptys.lock().unwrap();
+            let child = guard.get_mut(&id).expect("child");
+            let liveness = probe_child_contained(child);
+            assert!(
+                matches!(liveness, ChildLiveness::Unqueryable(_)),
+                "a probe that could not ask must never claim the child is alive"
+            );
+        }
+
+        assert!(
+            !ptys.is_poisoned(),
+            "the ptys guard must be released normally, not unwound through"
+        );
+        assert!(
+            ptys.lock().is_ok(),
+            "the next terminal write still gets the lock"
+        );
+    }
 }
 
 #[cfg(test)]

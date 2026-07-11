@@ -2150,6 +2150,17 @@ async fn destroy_session_inner_with_options<R: tauri::Runtime>(
     {
         let resource_monitor = app.state::<Arc<ResourceMonitorState>>().inner().clone();
         if resource_monitor.has_registered_group(uuid) {
+            // #942 - the resource monitor kills the process tree by pid, without going
+            // through the PTY layer, and that cleanup can take seconds. Publish the
+            // pre-stop witness first: without it, a child that had ALREADY died on its
+            // own (the #942 symptom) would be observed dead during the cleanup, charged
+            // to our kill, and its head bytes dropped. The guard is scoped: no std Mutex
+            // is held across the await below.
+            {
+                let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+                let pty = pty_mgr.lock().unwrap_or_else(|e| e.into_inner());
+                pty.publish_stop_witness(uuid, "session-destroy");
+            }
             let cleanup_started = std::time::Instant::now();
             let monitor = Arc::clone(&resource_monitor);
             let result = tokio::task::spawn_blocking(move || {

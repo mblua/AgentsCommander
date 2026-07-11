@@ -48,6 +48,28 @@
 //!   with code 259 stays invisible to it: an upstream limitation, documented here
 //!   rather than asserted away.
 //!
+//! ## Accepted gap: container transport
+//!
+//! Container sessions produce **nothing** here: no spawn record, no deadline report, no
+//! exit event (`container_backend` registers no record, so `mark_ac_stop` is a genuine
+//! no-op for them). A containerised coding-agent hang leaves zero evidence. That is an
+//! accepted gap: #942 is a local-spawn bug. It never MISreports a container session, it
+//! simply says nothing about one.
+//!
+//! ## Exit attribution: where the witness comes from, and the one path without it
+//!
+//! Every AC stop publishes a **pre-stop witness**: the liveness of the child probed
+//! before anything is touched. `kill`, `terminate_job_for_session`, `kill_all_jobs` and
+//! the session-destroy path all publish one, so a child that was already dead when AC
+//! asked can never be charged to us. The resource-monitor **watchdog** is the exception:
+//! it calls `kill_group` straight from `resource_monitor/watchdog.rs` with no access to
+//! the PTY child, so it publishes no witness. There the monitor falls back to the stop
+//! flag as read before the probe, which means a child that died on its own in the
+//! microseconds before the watchdog fired is attributed `ac-requested`. The watchdog
+//! only fires on a group that is measurably burning CPU or memory, so the child is alive
+//! by construction; the residue is a microsecond-wide race, and it is stated here rather
+//! than papered over.
+//!
 //! ## Lock order
 //!
 //! `ptys` -> diagnostics registry (`kill_all_jobs` holds the PTY map while tagging
@@ -94,6 +116,20 @@ const MAX_STOP_ATTRIBUTION_MS: u64 = 60 * 60 * 1_000;
 const RECENT_SPAWNS_CAP: usize = 128;
 /// Values shorter than this are not secrets, they are flags like `1` or `true`.
 const MIN_REDACTED_LEN: usize = 8;
+/// Env keys whose VALUE is a secret and must never reach the log. Keyed on the name, not
+/// swept over every value: a coding-agent profile legitimately carries rows like
+/// `MODEL=gpt-5.6-sol`, and blanking those would shred the argv this module exists to
+/// record, and the Codex error text inside `head=`.
+const SECRET_KEY_MARKERS: &[&str] = &["token", "key", "secret", "password", "passwd", "credential"];
+
+/// True when an env row's value must be redacted out of anything we echo into the log.
+/// AC's own credential env is covered by this: the only secret it carries is
+/// `AGENTSCOMMANDER_TOKEN` (the other rows are paths and a binary name, which are not
+/// secrets and which we deliberately print in `cwd=` / `argv=`).
+pub fn is_secret_env_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    SECRET_KEY_MARKERS.iter().any(|marker| key.contains(marker))
+}
 
 /// Everything the diagnostics need to be told, resolved once from the environment and
 /// then carried by each record, so no code path (and no test) reads a process-global.
@@ -105,6 +141,11 @@ pub struct Thresholds {
     pub head_bytes: usize,
     pub concurrency_window: Duration,
     pub stop_attribution: Duration,
+    /// How long after a stop request ConPTY's teardown repaint can still arrive. Only
+    /// the startup TIMING stamps are suppressed during it; bytes keep counting, and the
+    /// stall verdict is byte-based, so a stop that fails to kill the child cannot fake a
+    /// stall on a session that is painting normally.
+    pub teardown_suppression: Duration,
     pub startup_poll: Duration,
     pub steady_poll: Duration,
 }
@@ -116,6 +157,7 @@ impl Thresholds {
         head_bytes: DEFAULT_HEAD_BYTES as usize,
         concurrency_window: Duration::from_millis(DEFAULT_CONCURRENCY_WINDOW_MS),
         stop_attribution: Duration::from_millis(DEFAULT_STOP_ATTRIBUTION_MS),
+        teardown_suppression: Duration::from_secs(2),
         startup_poll: Duration::from_millis(250),
         steady_poll: Duration::from_secs(2),
     };
@@ -376,10 +418,20 @@ impl SpawnRecord {
         }
     }
 
-    /// Mask AC credentials and configured env values out of anything we echo into the
-    /// log. `app.log` is what users paste into issues.
-    fn scrub(&self, text: String) -> String {
-        let mut text = text;
+    /// Mask secrets out of anything we echo into the log. `app.log` is what users paste
+    /// into issues.
+    ///
+    /// ALWAYS runs on the RAW text, never on escaped text. Escaping first and matching
+    /// second is a silent no-op for any secret containing a backslash, a quote, a control
+    /// character or non-ASCII (the haystack has been rewritten, the needle has not), and
+    /// a redaction that silently fails is worse than none, because it invites the log to
+    /// be pasted in public.
+    fn scrub(&self, text: &str) -> String {
+        // Exact needles first (the secret-keyed env values this child was given), then
+        // the URL-shape redactor AC already applies to error text, so a key smuggled
+        // inside a URL the child printed (`?key=...`, `/bot<token>/`) does not walk out
+        // through `head=` either.
+        let mut text = crate::telegram::redact::redact(text);
         for secret in &self.redact {
             if text.contains(secret.as_str()) {
                 text = text.replace(secret.as_str(), "<redacted>");
@@ -389,7 +441,9 @@ impl SpawnRecord {
     }
 
     fn argv_log(&self) -> String {
-        self.scrub(format!("{:?}", self.argv))
+        // Scrub each raw argument, THEN let Debug do the escaping.
+        let argv: Vec<String> = self.argv.iter().map(|arg| self.scrub(arg)).collect();
+        format!("{argv:?}")
     }
 
     fn head_log(&self) -> String {
@@ -397,8 +451,9 @@ impl SpawnRecord {
         if head.is_empty() {
             return "<empty>".to_string();
         }
-        let text = String::from_utf8_lossy(&head).escape_debug().to_string();
-        format!("\"{}\"", self.scrub(text))
+        // Scrub the raw child output, THEN escape it for the log line.
+        let scrubbed = self.scrub(&String::from_utf8_lossy(&head));
+        format!("\"{}\"", scrubbed.escape_debug())
     }
 
     pub fn saw_output(&self) -> bool {
@@ -487,39 +542,43 @@ impl SpawnRecord {
         !self.startup_reported.load(Ordering::Relaxed)
     }
 
+    /// LAST-wins, deliberately. AC supports a stop that FAILS (a Quarantined kill leaves
+    /// the agent running), and a first-wins anchor would let that stale stop own the
+    /// attribution of the real one minutes later: the user closes the session, we kill it,
+    /// and the window measured from the dead stop calls our own kill `child-initiated`.
+    /// That is a fabricated smoking gun, which is exactly what #942 exists to remove. The
+    /// window is therefore measured from the MOST RECENT stop request.
+    ///
+    /// The witness is upgraded, never downgraded: a fresher probe replaces an older one,
+    /// and a witness-less stop (the resource-monitor watchdog) leaves a witness that a
+    /// real probe already established. A witness that said `Exited` stays true forever: a
+    /// dead child does not come back.
     fn mark_ac_stop(&self, source: &str, pre_stop: Option<ChildLiveness>) {
-        {
-            let mut current = self.ac_stop_source.lock().unwrap_or_else(|e| e.into_inner());
-            if current.is_none() {
-                *current = Some(source.to_string());
-            }
-        }
+        *self.ac_stop_source.lock().unwrap_or_else(|e| e.into_inner()) = Some(source.to_string());
         if let Some(pre_stop) = pre_stop {
-            let mut current = self
+            *self
                 .pre_stop_liveness
                 .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            if current.is_none() {
-                *current = Some(pre_stop);
-            }
+                .unwrap_or_else(|e| e.into_inner()) = Some(pre_stop);
         }
         let stamp = (self.started.elapsed().as_micros().min(u64::MAX as u128) as u64).max(1);
-        let _ = self
-            .ac_stop_at_us
-            .compare_exchange(0, stamp, Ordering::SeqCst, Ordering::Relaxed);
+        self.ac_stop_at_us.store(stamp, Ordering::SeqCst);
         // Published last: any thread that sees this flag also sees the source, the
         // timestamp and the pre-stop liveness written above.
         self.ac_stop.store(true, Ordering::SeqCst);
     }
 
     /// A stop AC asked for, recent enough that the teardown it triggers is still in
-    /// flight. Keeps ConPTY's teardown repaint out of the startup timings without
-    /// going permanently blind on a session whose kill was blocked.
+    /// flight. ConPTY repaints the master when the session is torn down (milliseconds
+    /// after the kill), and that repaint is not the child painting. Deliberately a short
+    /// window of its own, NOT the 60s attribution window: a stop that fails to kill the
+    /// child must not blind the startup timings of a session that keeps running.
     fn stop_in_flight(&self, elapsed: Duration) -> bool {
         match self.ac_stop_at_us.load(Ordering::SeqCst) {
             0 => false,
             at => {
-                elapsed.saturating_sub(Duration::from_micros(at)) <= self.thresholds.stop_attribution
+                elapsed.saturating_sub(Duration::from_micros(at))
+                    <= self.thresholds.teardown_suppression
             }
         }
     }
@@ -625,9 +684,13 @@ impl SpawnRecord {
     /// The child never painted a screen: nothing at all, or nothing past the ConPTY
     /// handshake for a coding agent (which always paints a TUI immediately). A plain
     /// shell whose prompt is legitimately tiny is not stalled, it is just quiet.
+    ///
+    /// Keyed on the BYTES, not on the paint stamp: the stamp can be suppressed while a
+    /// stop is in flight, and a suppressed stamp must never be able to fake a stall on a
+    /// session that is painting normally.
     fn is_stalled(&self) -> bool {
         let bytes = self.bytes_read.load(Ordering::Relaxed);
-        bytes == 0 || (self.cli.is_some() && !self.painted())
+        bytes == 0 || (self.cli.is_some() && bytes < self.thresholds.paint_floor)
     }
 
     /// True once the startup window has elapsed and the verdict is still unwritten.
@@ -697,12 +760,17 @@ impl SpawnRecord {
         // A child that ends itself without ever painting a screen, or with a failing
         // status, is the #942 smoking gun. A clean exit from a session that did come up
         // is just someone quitting.
-        let unexpected =
-            cause == ExitCause::ChildInitiated && (!self.painted() || !liveness.exited_ok());
+        let never_came_up = self.is_stalled();
+        let unexpected = cause == ExitCause::ChildInitiated && (never_came_up || !liveness.exited_ok());
+        // The head bytes and the argv go out whenever the session never came up, whoever
+        // ended it. The user who kills a blank terminal at t=3s (before the deadline
+        // report can fire) is reporting THIS bug, and we must not answer with a one-line
+        // shrug just because the kill was ours.
+        let with_evidence = unexpected || never_came_up;
 
-        if unexpected {
-            log::warn!(
-                "[pty] child-exit session={} pid={} cli={} agent_profile={} cause={} detail={} child={} uptime_ms={} first_output_ms={} first_paint_ms={} bytes_read={} stop_source={} stop_age_ms={} argv={} cwd={} codex_home={} recent_spawns={} recent_same_cli={} window_ms={} head={}",
+        if with_evidence {
+            let line = format!(
+                "[pty] child-exit session={} pid={} cli={} agent_profile={} cause={} detail={} child={} came_up={} uptime_ms={} first_output_ms={} first_paint_ms={} bytes_read={} stop_source={} stop_age_ms={} argv={} cwd={} codex_home={} recent_spawns={} recent_same_cli={} window_ms={} head={}",
                 self.session_id,
                 self.pid_log(),
                 self.cli_log(),
@@ -710,6 +778,7 @@ impl SpawnRecord {
                 cause.as_log(),
                 detail,
                 liveness.as_log(),
+                !never_came_up,
                 uptime.as_millis(),
                 Self::ms_log(&self.first_output_us),
                 Self::ms_log(&self.first_paint_us),
@@ -724,6 +793,11 @@ impl SpawnRecord {
                 self.window.window_ms,
                 self.head_log()
             );
+            if unexpected {
+                log::warn!("{}", line);
+            } else {
+                log::info!("{}", line);
+            }
         } else {
             log::info!(
                 "[pty] child-exit session={} pid={} cli={} agent_profile={} cause={} detail={} child={} uptime_ms={} first_output_ms={} first_paint_ms={} bytes_read={} stop_source={} stop_age_ms={}",
@@ -918,6 +992,7 @@ mod tests {
             head_bytes: 512,
             concurrency_window: Duration::from_millis(10_000),
             stop_attribution: Duration::from_millis(500),
+            teardown_suppression: Duration::from_millis(50),
             startup_poll: Duration::from_millis(5),
             steady_poll: Duration::from_millis(10),
         }
@@ -1167,19 +1242,216 @@ mod tests {
     }
 
     #[test]
-    fn ac_stop_keeps_the_first_source_and_flags_the_record() {
+    fn ac_stop_takes_the_most_recent_source_timestamp_and_witness() {
+        // grinch D2: first-wins let a stale, failed stop own every later stop.
         let record = test_record(Some(CodingAgentKind::Codex));
         assert!(!record.stop_requested());
 
-        record.mark_ac_stop("watchdog", None);
-        record.mark_ac_stop("session-kill", None);
+        record.mark_ac_stop("job-terminate", Some(ChildLiveness::Alive));
+        let first_stamp = record.ac_stop_at_us.load(Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(5));
+        record.mark_ac_stop(
+            "session-kill",
+            Some(ChildLiveness::Exited {
+                code: 0,
+                success: true,
+            }),
+        );
 
         assert!(record.stop_requested());
-        assert_eq!(record.stop_source(), "watchdog");
+        assert_eq!(record.stop_source(), "session-kill");
+        assert!(
+            record.ac_stop_at_us.load(Ordering::SeqCst) > first_stamp,
+            "the attribution window is measured from the most recent stop"
+        );
+        assert!(
+            matches!(
+                record.pre_stop_liveness(),
+                Some(ChildLiveness::Exited { .. })
+            ),
+            "the fresher witness replaces the older one"
+        );
     }
 
     #[test]
-    fn credentials_and_configured_env_values_are_scrubbed_from_echoed_output() {
+    fn a_witness_less_stop_never_erases_a_witness_we_already_have() {
+        let record = test_record(Some(CodingAgentKind::Codex));
+        record.mark_ac_stop(
+            "session-kill",
+            Some(ChildLiveness::Exited {
+                code: 1,
+                success: false,
+            }),
+        );
+        // The resource monitor publishes no witness; it must not blank the real one.
+        record.mark_ac_stop("watchdog", None);
+
+        assert_eq!(
+            record.attribute_exit(record.stop_snapshot()),
+            ExitCause::ChildInitiated,
+            "it was already dead when AC asked, and a witness-less stop cannot rewrite that"
+        );
+    }
+
+    #[test]
+    fn a_stale_failed_stop_does_not_poison_the_stop_that_finally_lands() {
+        // grinch D2, the real run: RM Kill is blocked by AV/EDR (Quarantined leaves the
+        // agent running), the user closes the session minutes later, we kill it. With a
+        // first-wins anchor our own kill came out as `child-initiated` with a WARN and a
+        // head dump: a fabricated smoking gun, the exact lie #942 exists to remove.
+        let record = SpawnRecord {
+            thresholds: Thresholds {
+                stop_attribution: Duration::from_millis(30),
+                ..test_thresholds()
+            },
+            ..test_record(Some(CodingAgentKind::Codex))
+        };
+
+        record.mark_ac_stop("job-terminate", Some(ChildLiveness::Alive));
+        std::thread::sleep(Duration::from_millis(45));
+        assert_eq!(
+            record.attribute_exit(record.stop_snapshot()),
+            ExitCause::ChildInitiated,
+            "a stop that evidently failed does not own a death long after it"
+        );
+
+        record.mark_ac_stop("session-kill", Some(ChildLiveness::Alive));
+        assert_eq!(
+            record.attribute_exit(record.stop_snapshot()),
+            ExitCause::AcRequested,
+            "the window is measured from the stop that actually killed it"
+        );
+        assert_eq!(record.stop_source(), "session-kill");
+    }
+
+    #[test]
+    fn a_blocked_stop_cannot_fake_a_stall_on_a_session_that_keeps_painting() {
+        // Same anchor, second consequence: the timing stamps are suppressed while a stop
+        // is in flight, so the stall verdict must not depend on them.
+        let record = SpawnRecord {
+            thresholds: Thresholds {
+                teardown_suppression: Duration::from_millis(10),
+                ..test_thresholds()
+            },
+            ..aged_record(Some(CodingAgentKind::Codex))
+        };
+        record.mark_ac_stop("job-terminate", Some(ChildLiveness::Alive));
+        record.note_output(&[b'x'; 200]);
+
+        assert!(
+            !record.painted(),
+            "the paint stamp is suppressed while a stop is in flight"
+        );
+        assert!(
+            !record.is_stalled(),
+            "but the bytes are on record, so a blocked kill cannot fake a stall"
+        );
+    }
+
+    #[test]
+    fn a_blank_session_killed_by_ac_still_dumps_its_evidence() {
+        // The user who kills a blank terminal at t=3s, before the deadline report can
+        // fire, is reporting THIS bug. An ac-requested exit must not answer with a
+        // one-line shrug just because the kill was ours.
+        let record = test_record(Some(CodingAgentKind::Codex));
+        record.note_output(CONPTY_PROLOGUE);
+        record.mark_ac_stop("session-kill", Some(ChildLiveness::Alive));
+
+        assert!(
+            record.is_stalled(),
+            "16 bytes of ConPTY handshake is not a painted screen"
+        );
+        assert!(record.log_child_exit(
+            ExitCause::AcRequested,
+            &ChildLiveness::Exited {
+                code: 1,
+                success: false,
+            },
+            "observed-at-stop"
+        ));
+        assert_eq!(
+            *record.exit_cause.lock().unwrap(),
+            Some(ExitCause::AcRequested)
+        );
+    }
+
+    #[test]
+    fn secrets_are_scrubbed_before_the_text_is_escaped() {
+        // grinch D1: escaping first and matching second is a SILENT no-op for any secret
+        // holding a backslash, a quote, a control character or non-ASCII, because the
+        // haystack has been rewritten and the needle has not. A redaction that fails
+        // quietly is worse than none: the feature invites people to paste the log.
+        let windows_path = r"C:\Users\maria\.codex\auth.json";
+        let quoted = "a\"b\\c-secret-value";
+        let control = "tok\tsecret\r\n1234";
+        let unicode = "p\u{e4}ssw\u{f6}rd-\u{fc}-9876";
+        let record = SpawnRecord::new(SpawnRecordInit {
+            argv: vec![
+                "codex".to_string(),
+                format!("--config={windows_path}"),
+                format!("--auth={quoted}"),
+            ],
+            redact: vec![
+                windows_path.to_string(),
+                quoted.to_string(),
+                control.to_string(),
+                unicode.to_string(),
+            ],
+            ..test_init(Some(CodingAgentKind::Codex))
+        });
+        record.note_output(
+            format!("loading {windows_path} with {quoted} {control} {unicode}\r\n").as_bytes(),
+        );
+
+        let head = record.head_log();
+        let argv = record.argv_log();
+        for secret in [windows_path, quoted, control, unicode] {
+            assert!(!head.contains(secret), "raw secret survived in head: {head}");
+            assert!(!argv.contains(secret), "raw secret survived in argv: {argv}");
+        }
+        // The escaped shapes must not survive either: escaping happens after the scrub.
+        assert!(!head.contains("auth.json"), "escaped path survived: {head}");
+        assert!(!argv.contains("auth.json"), "escaped path survived: {argv}");
+        assert!(!head.contains("9876"), "escaped non-ASCII secret survived: {head}");
+        assert!(head.contains("<redacted>"));
+        assert!(argv.contains("<redacted>"));
+        assert!(
+            head.contains("loading"),
+            "the rest of the line still has to be readable: {head}"
+        );
+    }
+
+    #[test]
+    fn a_key_smuggled_inside_a_url_in_the_child_output_is_redacted_too() {
+        let record = test_record(Some(CodingAgentKind::Codex));
+        record.note_output(b"error: GET https://generativelanguage.googleapis.com/v1beta/models?key=AIzaSyFAKE_KEY_VALUE failed
+");
+
+        let head = record.head_log();
+        assert!(!head.contains("AIzaSyFAKE_KEY_VALUE"), "url key survived: {head}");
+        assert!(head.contains("error: GET"), "the error text still has to be readable");
+    }
+
+    #[test]
+    fn only_secret_keyed_env_rows_are_redacted() {
+        // grinch D1 (second half): sweeping every configured env value blanked
+        // `MODEL=gpt-5.6-sol` inside our own argv, the argv requirement 1 exists to
+        // record, and could shred the Codex error text inside `head=`.
+        assert!(is_secret_env_key("AGENTSCOMMANDER_TOKEN"));
+        assert!(is_secret_env_key("OPENAI_API_KEY"));
+        assert!(is_secret_env_key("DB_PASSWORD"));
+        assert!(is_secret_env_key("gh_secret"));
+        assert!(is_secret_env_key("SERVICE_CREDENTIAL"));
+
+        assert!(!is_secret_env_key("MODEL"));
+        assert!(!is_secret_env_key("CODEX_HOME"));
+        assert!(!is_secret_env_key("AGENTSCOMMANDER_ROOT"));
+        assert!(!is_secret_env_key("AGENTSCOMMANDER_BINARY_PATH"));
+        assert!(!is_secret_env_key("NODE_ENV"));
+    }
+
+    #[test]
+    fn credentials_are_scrubbed_from_echoed_output() {
         let token = "3f1c9d2e-7a4b-4c8d-9e1f-2b3c4d5e6f70";
         let record = SpawnRecord::new(SpawnRecordInit {
             argv: vec!["codex".to_string(), format!("--token={token}")],

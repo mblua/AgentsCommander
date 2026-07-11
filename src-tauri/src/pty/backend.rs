@@ -75,5 +75,11 @@ pub trait PtyBackend: Any + Send + Sync {
 
     fn terminate_job_for_session(&self, id: Uuid) -> bool;
 
+    /// #942 - tag an imminent AC stop with the liveness of the child BEFORE any process
+    /// is touched, for callers that are about to kill outside the PTY layer (the resource
+    /// monitor kills a process tree by pid). Diagnostics only; the default no-op covers
+    /// backends with no local child (container transport).
+    fn publish_stop_witness(&self, _id: Uuid, _source: &str) {}
+
     fn kill_all_jobs(&self) -> (usize, usize);
 }
