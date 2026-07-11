@@ -62,6 +62,56 @@ const keyDown = (el: Element, key: string) =>
  *  listening. */
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+function domRect(left: number, top: number, width: number, height: number): DOMRect {
+  return {
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+    x: left,
+    y: top,
+    toJSON: () => ({}),
+  } as DOMRect;
+}
+
+/** The production reclamp prefers requestAnimationFrame, and jsdom's rAF fires on
+ *  a real ~16ms frame - long after a macrotask flush. That let a broken isConnected
+ *  guard escape unobserved (the reposition simply had not run yet when the test
+ *  asserted). Route rAF through a macrotask so the queued clamp is deterministic;
+ *  the production code takes this very path when rAF is unavailable. */
+function stubAnimationFrame(): () => void {
+  const previous = globalThis.requestAnimationFrame;
+  Object.defineProperty(globalThis, "requestAnimationFrame", {
+    configurable: true,
+    writable: true,
+    value: (cb: FrameRequestCallback) => window.setTimeout(() => cb(0), 0),
+  });
+  return () => {
+    Object.defineProperty(globalThis, "requestAnimationFrame", {
+      configurable: true,
+      writable: true,
+      value: previous,
+    });
+  };
+}
+
+/** jsdom reports an all-zero rect for EVERY element, which is exactly why guard 4
+ *  (`isConnected` in reclampRepoFlyout) is invisible by default: a detached anchor
+ *  looks identical to a connected one. Give connected elements a real rect and
+ *  leave detached ones at zeros - which is what a real browser reports for them. */
+function stubBoundingRects(): () => void {
+  const spy = vi
+    .spyOn(Element.prototype, "getBoundingClientRect")
+    .mockImplementation(function (this: Element) {
+      if (!this.isConnected) return domRect(0, 0, 0, 0);
+      if (this.classList?.contains("session-context-flyout")) return domRect(204, 50, 100, 20);
+      return domRect(100, 50, 100, 20); // a repo entry: right = 200, top = 50
+    });
+  return () => spy.mockRestore();
+}
+
 function coordinatorAgent(name: string, path: string, repoPaths: string[], repoBranch?: string) {
   return {
     name,
@@ -671,6 +721,106 @@ describe("ProjectPanel coordinator repo Browse submenu (#943)", () => {
       expect(target("replica.inactive.menu.repo.1.browse.flyout")).not.toBeNull()
     );
     expect(flyoutLabels()).toEqual(["Browse Main"]);
+  });
+
+  // 19 [guard 3 - the sourcePath identity check]
+  it("closes the flyout when the anchored repo is reordered out from under it", async () => {
+    await setupPanel(
+      [
+        coordASession([
+          repo(repoA1, "AgentsCommander", "feature/x"),
+          repo(repoA2, "docs", "main"),
+        ]),
+      ],
+      discoveryA([repoA1, repoA2])
+    );
+
+    await openMenuWithArrow(rowA, 2);
+    mouseEnter(repoEntries()[0]); // flyout anchored to index 0 = repoA1
+    await waitFor(() => expect(flyout()).not.toBeNull());
+
+    // config.json reorders `repos`, so index 0 is now a DIFFERENT repo. Without the
+    // `candidate.sourcePath === fly.sourcePath` check, liveRepo() would happily
+    // return docs and the open flyout would silently start offering docs' links
+    // under AgentsCommander's cursor.
+    sessionsStore.setGitRepos("coord-a", [
+      repo(repoA2, "docs", "main"),
+      repo(repoA1, "AgentsCommander", "feature/x"),
+    ]);
+
+    await waitFor(() => expect(flyout()).toBeNull());
+  });
+
+  // 20 [guard 3 - the close effect]
+  it("does not resurrect a flyout whose repo disappears and comes back", async () => {
+    await setupPanel(
+      [
+        coordASession([
+          repo(repoA1, "AgentsCommander", "feature/x"),
+          repo(repoA2, "docs", "main"),
+        ]),
+      ],
+      discoveryA([repoA1, repoA2])
+    );
+
+    await openMenuWithArrow(rowA, 2);
+    mouseEnter(repoEntries()[0]);
+    await waitFor(() => expect(flyout()).not.toBeNull());
+
+    // The repo leaves the list: <Show> hides the panel, but only the effect clears
+    // repoFlyout() itself.
+    sessionsStore.setGitRepos("coord-a", [repo(repoA2, "docs", "main")]);
+    await waitFor(() => expect(flyout()).toBeNull());
+
+    // ...and comes back on a later tick. Nobody hovered anything. Without the
+    // effect, the stale {index, sourcePath} would match again and the flyout would
+    // pop open on its own - a ghost, with no pointer anywhere near it.
+    sessionsStore.setGitRepos("coord-a", [
+      repo(repoA1, "AgentsCommander", "feature/x"),
+      repo(repoA2, "docs", "main"),
+    ]);
+    await flush();
+
+    expect(flyout()).toBeNull();
+  });
+
+  // 21 [guard 4 - isConnected in reclampRepoFlyout]
+  it("keeps the flyout anchored when the entry row is re-created under the cursor", async () => {
+    const restoreRects = stubBoundingRects();
+    const restoreRaf = stubAnimationFrame();
+    try {
+      await setupPanel(
+        [coordASession([repo(repoA1, "AgentsCommander", "feature/x")])],
+        discoveryA()
+      );
+
+      await openMenuWithArrow(rowA);
+      mouseEnter(repoEntries()[0]); // opens synchronously; the reclamp is queued
+
+      // Proves the rect stub is live: with jsdom's all-zero rects the flyout would
+      // already sit at the viewport margin and this test would be vacuous.
+      expect(flyout()).not.toBeNull();
+      const openLeft = flyout()!.style.left;
+      const openTop = flyout()!.style.top;
+      expect(openLeft).toBe("204px"); // anchor.right (200) + 4
+      expect(openTop).toBe("50px");
+
+      // <For> is reference-keyed and the cold path mints fresh objects on every
+      // evaluation, so the row - and the anchor node - is re-created while the
+      // pointer sits still. The reclamp queued at open time then runs against a
+      // DETACHED anchor, whose rect is all zeros: without the isConnected guard it
+      // flings the flyout to the top-left viewport margin.
+      sessionsStore.setGitRepos("coord-a", [repo(repoA1, "AgentsCommander", "feature/x")]);
+      await flush();
+
+      expect(flyout()).not.toBeNull();
+      expect(flyoutLabels()).toEqual(["Browse Main", "Browse Branch"]);
+      expect(flyout()!.style.left).toBe(openLeft);
+      expect(flyout()!.style.top).toBe(openTop);
+    } finally {
+      restoreRects();
+      restoreRaf();
+    }
   });
 
   // 17

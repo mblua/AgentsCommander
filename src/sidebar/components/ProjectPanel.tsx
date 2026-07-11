@@ -1468,12 +1468,19 @@ const ProjectPanel: Component = () => {
 
         const reclampRepoFlyout = () => {
           const anchor = repoFlyoutAnchorEl;
-          // isConnected: a <For> row can be re-created under the cursor (the cold
-          // path rebuilds entries on every evaluation). getBoundingClientRect on
-          // a detached node is all zeros, which would fling the flyout to the
-          // top-left corner.
           if (!anchor?.isConnected || !repoFlyout()) return;
-          const clamp = () => positionRepoFlyout(anchor);
+          // The re-check INSIDE the deferred callback is the load-bearing one, and
+          // it is not paranoia: <For> is reference-keyed and the cold path mints
+          // fresh entry objects on every evaluation, so a GitWatcher tick or a
+          // discovery refresh re-creates the row - and detaches this anchor -
+          // between scheduling the frame and running it, while the pointer has not
+          // moved. getBoundingClientRect on a detached node is all zeros, which
+          // would fling the flyout to the top-left viewport margin. Guarding only
+          // at schedule time (as this did) never fires on that path at all.
+          const clamp = () => {
+            if (anchor !== repoFlyoutAnchorEl || !anchor.isConnected || !repoFlyout()) return;
+            positionRepoFlyout(anchor);
+          };
           if (typeof window.requestAnimationFrame === "function") {
             window.requestAnimationFrame(clamp);
             return;

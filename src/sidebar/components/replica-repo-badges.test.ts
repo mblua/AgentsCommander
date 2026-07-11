@@ -142,6 +142,26 @@ describe("#943 B2 per-repo branches are merged BY PATH", () => {
     ]);
   });
 
+  it("survives a project reload (H1): the badges keep their per-repo branches", () => {
+    // projectStore.reloadProject() -> clearForPaths() on every loop tick, CLI
+    // refresh, entity creation... Before the fix this wiped the map, the badges
+    // fell back to the (null) single-repo shorthand, and the backend never
+    // re-emitted, so Browse Branch was gone until the app restarted.
+    replicaVolatileStore.applyDiscoveryBranchUpdate(
+      REPLICA,
+      null,
+      [REPO_A, REPO_B],
+      ["feature/943", "main"]
+    );
+
+    replicaVolatileStore.clearForPaths([REPLICA]);
+
+    expect(badgesFor([REPO_A, REPO_B]).map(formatReplicaRepoBadgeLabel)).toEqual([
+      "AgentsCommander/feature/943",
+      "webpage/main",
+    ]);
+  });
+
   it("keeps the pre-B2 fallback until the first branch event lands", () => {
     // Single repo: the discovery shorthand still drives the badge.
     expect(badgesFor([REPO_A], "feature/from-discovery").map((badge) => badge.branch)).toEqual([

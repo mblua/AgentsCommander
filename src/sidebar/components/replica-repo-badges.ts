@@ -36,8 +36,10 @@ export function configuredReplicaRepoBadges(
   // Pre-B2 shorthand: discovery detects a branch only for a SINGLE-repo replica
   // (ac_discovery.rs `repo_paths.len() == 1`), so a multi-repo replica had none.
   // It stays as the fallback for any repo the per-repo layer has not covered: the
-  // first 15s after load, the legacy workgroup.repoPath source above, or a repo
-  // added to config.json since the last watcher tick.
+  // window between project load and the first watcher tick (<=15s), the legacy
+  // workgroup.repoPath source above, or a repo added to config.json since the last
+  // tick. NOT after a reload: `clearForPaths` deliberately preserves the per-repo
+  // map, because discovery has no counterpart to re-supply it (H1).
   const singleRepoBranch = sourcePaths.length === 1 ? replica.repoBranch ?? null : null;
   const byPath = replica.repoBranchByPath;
 
