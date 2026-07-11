@@ -958,6 +958,12 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     resolved_spawn: Option<AgentSpawnCommand>,
 ) -> Result<SessionInfo, String> {
     let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
+    let session_label = session_name.as_deref().unwrap_or(&shell).to_string();
+    let spawn_mark = {
+        let pty = pty_mgr.lock().unwrap_or_else(|e| e.into_inner());
+        pty.mark_spawning(&cwd, &session_label)
+    };
+    crate::config::archive_gate::enforce_unarchived_for_spawn(app, &cwd, &session_label).await?;
     let (agent_id, agent_label) = {
         if let Some(spawn) = resolved_spawn.as_ref() {
             (
@@ -1107,6 +1113,16 @@ pub async fn create_session_inner<R: tauri::Runtime>(
             return Err(e.to_string());
         }
     };
+
+    if let Err(e) =
+        crate::config::archive_gate::enforce_unarchived_for_spawn(app, &cwd, &session_label).await
+    {
+        let err = e.to_string();
+        release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+        drop(mgr);
+        rollback_pre_created_session(app, session_mgr, pty_mgr, session.id, &err).await;
+        return Err(err);
+    }
 
     // (#756) Propagate the mirror-forced intent onto the NEW record: the
     // startup-restore path reads ONLY the record, so without this an app close
@@ -1575,6 +1591,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         container_credential,
     };
     let spawn_result = PtyManager::spawn(pty_mgr, session.backend_kind, spawn_spec).await;
+    drop(spawn_mark);
     if let Err(e) = spawn_result {
         let err = e.to_string();
         drop(mgr);
@@ -2676,6 +2693,7 @@ pub async fn restart_session_inner_with_activation<R: tauri::Runtime>(
         cwd
     };
     let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
+    crate::config::archive_gate::probe_spawn_refusal(app, &cwd).await?;
 
     // 2. Strip auto-injected args before restart so the new session starts from the saved recipe.
     let clean_args =
@@ -3842,6 +3860,108 @@ mod tests {
         }
     }
 
+    /// A `PtyBackend` whose `spawn` parks on a oneshot so a test can observe the
+    /// `create_session_inner` spawn mark while the PTY is still being spawned.
+    /// `fail` decides whether the parked spawn ultimately errors (exercising the
+    /// rollback path) or succeeds and records the session as live.
+    struct GatedSpawnBackend {
+        started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        release: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+        live: Mutex<Vec<Uuid>>,
+        fail: bool,
+    }
+
+    impl GatedSpawnBackend {
+        fn new(
+            started: tokio::sync::oneshot::Sender<()>,
+            release: tokio::sync::oneshot::Receiver<()>,
+            fail: bool,
+        ) -> Self {
+            Self {
+                started: Mutex::new(Some(started)),
+                release: Mutex::new(Some(release)),
+                live: Mutex::new(Vec::new()),
+                fail,
+            }
+        }
+    }
+
+    impl crate::pty::backend::PtyBackend for GatedSpawnBackend {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn spawn(
+            &self,
+            spec: crate::pty::backend::BackendSpawnSpec,
+        ) -> futures::future::BoxFuture<'_, Result<(), crate::errors::AppError>> {
+            let started = self.started.lock().unwrap().take().expect("started sender");
+            let release = self
+                .release
+                .lock()
+                .unwrap()
+                .take()
+                .expect("release receiver");
+            let fail = self.fail;
+            Box::pin(async move {
+                // Announce that PtyManager::spawn has released the outer manager
+                // mutex and is now parked inside the backend, then wait for the
+                // test to inspect the spawn mark before the spawn resolves.
+                let _ = started.send(());
+                let _ = release.await;
+                if fail {
+                    Err(crate::errors::AppError::PtyError(
+                        "synthetic spawn failure".to_string(),
+                    ))
+                } else {
+                    self.live.lock().unwrap().push(spec.id);
+                    Ok(())
+                }
+            })
+        }
+
+        fn write(&self, _id: Uuid, _data: &[u8]) -> Result<(), crate::errors::AppError> {
+            Ok(())
+        }
+
+        fn resize(&self, _id: Uuid, _cols: u16, _rows: u16) -> Result<(), crate::errors::AppError> {
+            Ok(())
+        }
+
+        fn kill(&self, id: Uuid) -> Result<(), crate::errors::AppError> {
+            self.live.lock().unwrap().retain(|live| *live != id);
+            Ok(())
+        }
+
+        fn has_session(&self, id: Uuid) -> bool {
+            self.live.lock().unwrap().contains(&id)
+        }
+
+        fn get_screen_snapshot(&self, _id: Uuid) -> Option<crate::pty::output::PtyScreenSnapshot> {
+            None
+        }
+
+        fn get_pty_size(&self, _id: Uuid) -> Option<(u16, u16)> {
+            None
+        }
+
+        fn register_response_watcher(
+            &self,
+            _session_id: Uuid,
+            _request_id: String,
+            _response_dir: std::path::PathBuf,
+        ) {
+        }
+
+        fn terminate_job_for_session(&self, _id: Uuid) -> bool {
+            false
+        }
+
+        fn kill_all_jobs(&self) -> (usize, usize) {
+            (0, 0)
+        }
+    }
+
     fn session_test_app(settings: AppSettings) -> tauri::App<tauri::test::MockRuntime> {
         tauri::test::mock_builder()
             .manage(Arc::new(tokio::sync::RwLock::new(settings)))
@@ -3885,6 +4005,243 @@ mod tests {
         assert!(session_mgr.read().await.list_sessions().await.is_empty());
         assert_eq!(backend.killed(), backend.spawned());
         assert_eq!(backend.killed().len(), 1);
+    }
+
+    #[test]
+    fn create_session_inner_keeps_both_archive_activation_gates() {
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/session.rs"
+        ))
+        .expect("read session.rs");
+        let production = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production session source");
+        let gate_call = "crate::config::archive_gate::enforce_unarchived_for_spawn(app, &cwd, &session_label).await";
+        let count = production.matches(gate_call).count();
+
+        assert_eq!(
+            count, 2,
+            "create_session_inner must keep both archive activation gates"
+        );
+    }
+
+    #[test]
+    fn create_session_inner_marks_spawning_until_spawn_returns() {
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/session.rs"
+        ))
+        .expect("read session.rs");
+        let production = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production session source");
+        let mark = production
+            .find("let spawn_mark = {")
+            .expect("spawn mark before archive gate");
+        let first_gate = production
+            .find("crate::config::archive_gate::enforce_unarchived_for_spawn(app, &cwd, &session_label).await?;")
+            .expect("first archive gate");
+        let spawn = production
+            .find("let spawn_result = PtyManager::spawn(pty_mgr, session.backend_kind, spawn_spec).await;")
+            .expect("spawn call");
+        let drop_mark = production
+            .find("drop(spawn_mark);")
+            .expect("spawn mark drop");
+        let spawn_error = production
+            .find("if let Err(e) = spawn_result {")
+            .expect("spawn error handling");
+
+        assert!(mark < first_gate, "spawn mark must cover archive gate A");
+        assert!(
+            first_gate < spawn,
+            "archive gate A must run before PTY spawn"
+        );
+        assert!(
+            spawn < drop_mark,
+            "spawn mark must stay live while spawn awaits"
+        );
+        assert!(
+            drop_mark < spawn_error,
+            "spawn mark must drop immediately after spawn returns"
+        );
+    }
+
+    // Runtime witness for plan section 12: drive create_session_inner with a
+    // fake backend and assert archive_liveness sees the spawn mark WHILE the PTY
+    // is spawning, then sees it retired once the PTY exists. Unlike the
+    // source-scrape guards above, this executes the code, so it reds under a
+    // string-preserving runtime mutation (e.g. mark_spawning inserting nothing,
+    // or the mark dropped before PtyManager::spawn).
+    #[tokio::test]
+    async fn create_session_inner_holds_a_spawn_mark_until_the_pty_exists() {
+        use crate::pty::backend::PtyBackend;
+
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().to_string_lossy().to_string();
+        let expected_cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
+
+        let app = session_test_app(test_settings());
+        let app_handle = app.handle().clone();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let backend = Arc::new(GatedSpawnBackend::new(started_tx, release_rx, false));
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+
+        let task = {
+            let app_handle = app_handle.clone();
+            let session_mgr = session_mgr.clone();
+            let pty_mgr = pty_mgr.clone();
+            let cwd = cwd.clone();
+            tokio::spawn(async move {
+                super::create_session_inner(
+                    &app_handle,
+                    &session_mgr,
+                    &pty_mgr,
+                    "hold-mark-test-command".to_string(),
+                    Vec::new(),
+                    cwd,
+                    Some("hold-mark".to_string()),
+                    None,
+                    None,
+                    true,
+                    Vec::new(),
+                    true,
+                    None,
+                )
+                .await
+            })
+        };
+
+        // Park inside the backend's spawn. PtyManager::spawn releases the outer
+        // manager mutex before awaiting backend.spawn, so the mark is readable
+        // here without racing the spawn task.
+        started_rx.await.expect("spawn started");
+        let (pending, _) = pty_mgr.lock().unwrap().archive_liveness(&[]);
+        assert_eq!(
+            pending,
+            vec![crate::pty::manager::PendingSpawn {
+                cwd: expected_cwd.clone(),
+                label: "hold-mark".to_string(),
+            }],
+            "spawn mark must be live while the PTY is still being spawned"
+        );
+
+        let _ = release_tx.send(());
+        let info = task
+            .await
+            .expect("join create_session_inner")
+            .expect("create_session_inner should succeed");
+
+        assert!(
+            backend.has_session(Uuid::parse_str(&info.id).expect("session id is a uuid")),
+            "the PTY must exist once create_session_inner returns Ok"
+        );
+        let (pending, _) = pty_mgr.lock().unwrap().archive_liveness(&[]);
+        assert!(
+            pending.is_empty(),
+            "spawn mark must retire once the PTY exists"
+        );
+    }
+
+    // Runtime witness for plan section 12: the mark is held across a FAILING
+    // spawn exactly as across a succeeding one, and is retired on the rollback
+    // path. Holding the mark across the in-flight spawn is what makes this red
+    // under a string-preserving mutation (mark_spawning no-op / drop before
+    // spawn); the empty-afterwards assertion pins retirement on the failure arm.
+    #[tokio::test]
+    async fn create_session_inner_retires_the_spawn_mark_on_spawn_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().to_string_lossy().to_string();
+        let expected_cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
+
+        let app = session_test_app(test_settings());
+        let app_handle = app.handle().clone();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let backend = Arc::new(GatedSpawnBackend::new(started_tx, release_rx, true));
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+
+        let task = {
+            let app_handle = app_handle.clone();
+            let session_mgr = session_mgr.clone();
+            let pty_mgr = pty_mgr.clone();
+            let cwd = cwd.clone();
+            tokio::spawn(async move {
+                super::create_session_inner(
+                    &app_handle,
+                    &session_mgr,
+                    &pty_mgr,
+                    "retire-mark-test-command".to_string(),
+                    Vec::new(),
+                    cwd,
+                    Some("retire-mark".to_string()),
+                    None,
+                    None,
+                    true,
+                    Vec::new(),
+                    true,
+                    None,
+                )
+                .await
+            })
+        };
+
+        started_rx.await.expect("spawn started");
+        let (pending, _) = pty_mgr.lock().unwrap().archive_liveness(&[]);
+        assert_eq!(
+            pending,
+            vec![crate::pty::manager::PendingSpawn {
+                cwd: expected_cwd.clone(),
+                label: "retire-mark".to_string(),
+            }],
+            "spawn mark must be live while the failing spawn is in flight"
+        );
+
+        let _ = release_tx.send(());
+        let err = task
+            .await
+            .expect("join create_session_inner")
+            .expect_err("create_session_inner should fail when the spawn fails");
+        assert!(err.contains("synthetic spawn failure"), "{err}");
+
+        let (pending, _) = pty_mgr.lock().unwrap().archive_liveness(&[]);
+        assert!(
+            pending.is_empty(),
+            "spawn mark must retire after a failed spawn"
+        );
+        assert!(
+            session_mgr.read().await.list_sessions().await.is_empty(),
+            "rollback must remove the pre-created record on spawn failure"
+        );
+    }
+
+    #[test]
+    fn restart_session_inner_probes_archive_before_destroying_session() {
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/session.rs"
+        ))
+        .expect("read session.rs");
+        let probe = source
+            .find("crate::config::archive_gate::probe_spawn_refusal(app, &cwd).await?;")
+            .expect("restart probe call");
+        let destroy = source
+            .find("// 3. Destroy the old session")
+            .expect("destroy step marker");
+
+        assert!(
+            probe < destroy,
+            "restart must probe archive refusal before destroying the dormant row"
+        );
     }
 
     #[test]

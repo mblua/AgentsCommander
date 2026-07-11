@@ -308,6 +308,22 @@ pub(crate) fn should_wake_on_restore(
     }
 }
 
+pub(crate) fn restore_session_should_wake(
+    archived_session: bool,
+    setting_on: bool,
+    is_coord: bool,
+    persisted_status: Option<&crate::session::session::SessionStatus>,
+) -> bool {
+    !archived_session && should_wake_on_restore(setting_on, is_coord, persisted_status)
+}
+
+pub(crate) fn restore_session_should_become_active(
+    was_active: bool,
+    archived_session: bool,
+) -> bool {
+    was_active && !archived_session
+}
+
 /// (#630) Resolve coordinator status for a restore decision, backstopping a
 /// transient empty `discover_teams()` with the snapshot's persisted
 /// `is_coordinator`. When live discovery returned teams we trust it. Only when
@@ -815,9 +831,11 @@ pub fn run(
             // run-event handler. The lock is uncontended at this point (the
             // mailbox poller and other writers start below), so it returns
             // immediately.
+            let restore_session_paths =
+                sessions_persistence::session_retention_project_paths(&restore_settings_snapshot);
             let persisted = tauri::async_runtime::block_on(
                 sessions_persistence::load_sessions_purging_outside_project_paths(
-                    &restore_settings_snapshot.project_paths,
+                    &restore_session_paths,
                 ),
             );
             let restore_flag = app
@@ -1605,6 +1623,10 @@ pub fn run(
                         failed_recoverable.push(ps.clone());
                     }
 
+                    let archived_roots = sessions_persistence::normalize_project_roots(
+                        &settings_snapshot.archived_project_paths,
+                    );
+
                     for ps in &persisted {
                         if ps.is_root_agent
                             || crate::config::root_agent::is_root_agent_path(
@@ -1634,7 +1656,17 @@ pub fn run(
                             teams.is_empty(),
                             ps.is_coordinator,
                         );
-                        let wake = should_wake_on_restore(setting_on, is_coord, ps.status.as_ref());
+                        let archived_session =
+                            sessions_persistence::is_under_normalized_archived_roots(
+                                &ps.working_directory,
+                                &archived_roots,
+                            );
+                        let wake = restore_session_should_wake(
+                            archived_session,
+                            setting_on,
+                            is_coord,
+                            ps.status.as_ref(),
+                        );
 
                         if !wake {
                             // Defer: create a dormant Session record (no PTY, status = Exited(0)).
@@ -1712,7 +1744,10 @@ pub fn run(
                                     // The post-loop branching (Fix A) ensures `set_active_only`
                                     // is used (not `switch_session`), so the dormant status
                                     // survives selection.
-                                    if ps.was_active {
+                                    if restore_session_should_become_active(
+                                        ps.was_active,
+                                        archived_session,
+                                    ) {
                                         active_id = Some(session.id.to_string());
                                     }
                                 }
@@ -2108,6 +2143,9 @@ pub fn run(
             commands::ac_discovery::open_project,
             commands::ac_discovery::new_project,
             commands::ac_discovery::remove_project,
+            commands::ac_discovery::archive_project,
+            commands::ac_discovery::unarchive_project,
+            commands::ac_discovery::list_archived_projects,
             commands::ac_discovery::discover_project,
             commands::project_settings::get_project_groups,
             commands::project_settings::update_project_groups,
@@ -2334,7 +2372,8 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::{
-        resolve_is_coord_for_restore, should_auto_create_root_agent_on_first_restore,
+        resolve_is_coord_for_restore, restore_session_should_become_active,
+        restore_session_should_wake, should_auto_create_root_agent_on_first_restore,
         should_wake_on_restore, should_wake_root_agent_on_restore, skip_auto_resume_for_restore,
         ApiServerHandle, ApiServerTask, WebServerHandle,
     };
@@ -2373,6 +2412,27 @@ mod tests {
             .manage(ApiServerHandle::default())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("web and api server handles must be distinct managed types");
+    }
+
+    #[test]
+    fn restore_loop_normalizes_archived_roots_before_persisted_session_loop() {
+        let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
+            .expect("read lib.rs");
+        let production = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production lib source");
+        let hoist = production
+            .find("let archived_roots = sessions_persistence::normalize_project_roots")
+            .expect("archived root normalization");
+        let loop_start = production
+            .find("for ps in &persisted")
+            .expect("persisted session loop");
+
+        assert!(
+            hoist < loop_start,
+            "startup restore must normalize archived roots once before the session loop"
+        );
     }
 
     #[tokio::test]
@@ -2533,6 +2593,29 @@ mod tests {
     #[test]
     fn coord_unknown_status_fails_open_when_on() {
         assert!(should_wake_on_restore(true, true, None));
+    }
+
+    #[test]
+    fn archived_project_session_is_forced_dormant_on_restore_decision() {
+        assert!(!restore_session_should_wake(
+            true,
+            true,
+            true,
+            Some(&SessionStatus::Running)
+        ));
+        assert!(restore_session_should_wake(
+            false,
+            true,
+            true,
+            Some(&SessionStatus::Running)
+        ));
+    }
+
+    #[test]
+    fn archived_project_session_is_never_adopted_as_active_on_restore() {
+        assert!(!restore_session_should_become_active(true, true));
+        assert!(restore_session_should_become_active(true, false));
+        assert!(!restore_session_should_become_active(false, false));
     }
 
     #[test]

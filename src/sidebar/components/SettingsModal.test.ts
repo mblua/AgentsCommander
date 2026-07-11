@@ -80,6 +80,7 @@ function settings(overrides: Partial<AppSettings>): AppSettings {
     containerCredentialsFromHost: true,
     logLevel: null,
     ...overrides,
+    archivedProjectPaths: overrides.archivedProjectPaths ?? [],
   };
 }
 

@@ -3,6 +3,7 @@ import { createStore } from "solid-js/store";
 import { NO_TEAM } from "../../shared/constants";
 import type { RepoMatch, Session, SessionCommunication, SessionRepo, SessionsState, Team, TeamSessionGroup } from "../../shared/types";
 import { projectStore } from "./project";
+import { normalizeProjectPathForCompare } from "./project-refresh";
 import { SettingsAPI } from "../../shared/ipc";
 import { settingsStore } from "../../shared/stores/settings";
 import { isRuntimeStringStatus, reconcileVisibleOrderKeys, upsertSessionList } from "./sessions-helpers";
@@ -28,6 +29,15 @@ const [state, setState] = createStore<SessionsState>({
 
 function normalizePath(p: string): string {
   return p.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
+}
+
+function isUnderAnyPath(path: string, roots: string[]): boolean {
+  if (roots.length === 0) return false;
+  const normalizedPath = normalizeProjectPathForCompare(path);
+  return roots.some((root) => {
+    const normalizedRoot = normalizeProjectPathForCompare(root);
+    return normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}/`);
+  });
 }
 
 function stringArraysEqual(a: string[] | undefined, b: string[]): boolean {
@@ -122,12 +132,20 @@ const filteredSessionsMemo = createMemo(() => {
   const visibleSessions = wg.names.size > 0
     ? activeSessions.filter((s) => !wg.names.has(s.name))
     : activeSessions;
+  // #881: hide every session under an archived project. This relies on the
+  // backend invariant that activation inside an archived project unarchives it
+  // before a live PTY can remain hidden.
+  const archived = projectStore.archivedPaths;
+  const notArchived = (s: Session) =>
+    !s.workingDirectory || !isUnderAnyPath(s.workingDirectory, archived);
+  const projectVisibleSessions =
+    archived.length > 0 ? visibleSessions.filter(notArchived) : visibleSessions;
 
   const sortKey = (s: Session) => {
     const i = s.name.lastIndexOf("/");
     return i >= 0 ? s.name.slice(i + 1) : s.name;
   };
-  if (!state.showInactive) return [...visibleSessions].sort((a, b) => sortKey(a).localeCompare(sortKey(b), "en", { sensitivity: "base", numeric: true }));
+  if (!state.showInactive) return [...projectVisibleSessions].sort((a, b) => sortKey(a).localeCompare(sortKey(b), "en", { sensitivity: "base", numeric: true }));
 
   // Add inactive repos/members that don't have active sessions
   const activePathSet = new Set(
@@ -173,8 +191,10 @@ const filteredSessionsMemo = createMemo(() => {
   const filteredInactive = wg.paths.size > 0
     ? inactiveEntries.filter((e) => !wg.paths.has(normalizePath(e.workingDirectory)))
     : inactiveEntries;
+  const visibleInactive =
+    archived.length > 0 ? filteredInactive.filter(notArchived) : filteredInactive;
 
-  return [...visibleSessions, ...filteredInactive].sort((a, b) =>
+  return [...projectVisibleSessions, ...visibleInactive].sort((a, b) =>
     sortKey(a).localeCompare(sortKey(b), "en", { sensitivity: "base", numeric: true })
   );
 });

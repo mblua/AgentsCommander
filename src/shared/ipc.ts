@@ -36,6 +36,8 @@ import type {
   TaskUpdateResult,
   WorkgroupTaskUpdatedEvent,
   ProjectRegistration,
+  ArchivedProject,
+  ProjectArchiveChanged,
   ErrorLogEntry,
   AgencyTemplatesStatus,
   AgencyTemplatesUpdateResult,
@@ -383,6 +385,12 @@ export function onSessionCreated(
   callback: (session: Session) => void
 ): Promise<UnlistenFn> {
   return transport.listen<Session>("session_created", callback);
+}
+
+export function onProjectArchiveChanged(
+  callback: (event: ProjectArchiveChanged) => void
+): Promise<UnlistenFn> {
+  return transport.listen<ProjectArchiveChanged>("project_archive_changed", callback);
 }
 
 export function onSessionDestroyed(
@@ -814,6 +822,18 @@ export const ProjectAPI = {
    * hard failure (e.g. a G2 read abort when the settings file is locked).
    */
   remove: (path: string) => transport.invoke<void>("remove_project", { path }),
+  /**
+   * #881 - hide the project at `path`. Rejects with a human-readable blocker
+   * message when the project still has live sessions, so callers must await it
+   * before mutating any local store.
+   */
+  archive: (path: string) => transport.invoke<void>("archive_project", { path }),
+  /** #881 - restore an archived project and return its backend registration. */
+  unarchive: (path: string) =>
+    transport.invoke<ProjectRegistration>("unarchive_project", { path }),
+  /** #881 - archived projects decorated with on-disk existence flags. */
+  listArchived: () =>
+    transport.invoke<ArchivedProject[]>("list_archived_projects", {}),
 };
 
 /** #777 Non-stop watchdog: frontend pushes the full disparity snapshot; the

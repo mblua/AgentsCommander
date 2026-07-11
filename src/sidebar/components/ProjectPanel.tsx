@@ -1820,6 +1820,15 @@ const ProjectPanel: Component = () => {
           projectStore.removeProject(proj.path);
         };
 
+        const handleArchiveProject = async () => {
+          setShowCtxMenu(false);
+          try {
+            await projectStore.archiveProject(proj.path);
+          } catch (error) {
+            toastStore.error(typeof error === "string" ? error : String(error));
+          }
+        };
+
         const handleTeamContextMenu = (e: MouseEvent, team: AcTeam) => {
           e.preventDefault();
           e.stopPropagation();
@@ -2479,6 +2488,14 @@ const ProjectPanel: Component = () => {
                     data-ac-testid={`loop.action.new.${projectAutomationId()}.projectMenu`}
                   >
                     New Loop
+                  </button>
+                  <div class="context-separator" />
+                  <button
+                    class="session-context-option"
+                    onClick={() => void handleArchiveProject()}
+                    data-ac-testid={`project.action.archive.${projectAutomationId()}`}
+                  >
+                    Archive Project
                   </button>
                   <div class="context-separator" />
                   <button
