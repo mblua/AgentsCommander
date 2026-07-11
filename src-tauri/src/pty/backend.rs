@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::errors::AppError;
 use crate::pty::output::{PtyOutputTarget, PtyScreenSnapshot};
 use crate::resource_monitor::{ResourceLaunchRegistration, ResourceLogicalAgentSlot};
-use crate::session::profile::IdleTuning;
+use crate::session::profile::{CodingAgentKind, IdleTuning};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -20,6 +20,15 @@ pub enum SessionBackendKind {
 
 pub struct BackendSpawnSpec {
     pub id: Uuid,
+    /// #942 - the configured coding-agent PROFILE id (`settings.agents[].id`, an
+    /// opaque string like `agent_1782513272568_0`), or None. It is NOT the CLI:
+    /// several profiles can run the same `codex` binary, and a coding agent can be
+    /// launched with no profile id at all. Diagnostics log it, and never key on it.
+    pub agent_id: Option<String>,
+    /// #942 - the CLI actually being launched, from the canonical detector
+    /// (`CodingAgentKind::detect`). This is the identity the diagnostics key on: the
+    /// stall predicate and the "concurrent startups on the shared ~/.codex" counter.
+    pub coding_agent: Option<CodingAgentKind>,
     pub cmd: String,
     pub args: Vec<String>,
     pub cwd: String,
@@ -65,6 +74,12 @@ pub trait PtyBackend: Any + Send + Sync {
     );
 
     fn terminate_job_for_session(&self, id: Uuid) -> bool;
+
+    /// #942 - tag an imminent AC stop with the liveness of the child BEFORE any process
+    /// is touched, for callers that are about to kill outside the PTY layer (the resource
+    /// monitor kills a process tree by pid). Diagnostics only; the default no-op covers
+    /// backends with no local child (container transport).
+    fn publish_stop_witness(&self, _id: Uuid, _source: &str) {}
 
     fn kill_all_jobs(&self) -> (usize, usize);
 }

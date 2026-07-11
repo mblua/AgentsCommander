@@ -588,6 +588,8 @@ impl ContainerTransportBackend {
         })?;
         let BackendSpawnSpec {
             id,
+            agent_id: _,
+            coding_agent: _,
             cmd,
             args,
             cwd,
@@ -1422,6 +1424,8 @@ mod tests {
     fn test_spec(id: Uuid, root: &str, output_target: PtyOutputTarget) -> BackendSpawnSpec {
         BackendSpawnSpec {
             id,
+            agent_id: None,
+            coding_agent: None,
             cmd: "container".to_string(),
             args: Vec::new(),
             cwd: root.to_string(),
