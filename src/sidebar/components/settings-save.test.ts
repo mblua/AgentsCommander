@@ -91,8 +91,10 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     npmUpdateNotificationsEnabled: true,
     autoSelfClearEnabled: true,
     autoSelfClearByAgent: {},
+    containerCredentialsFromHost: true,
     logLevel: null,
     ...overrides,
+    archivedProjectPaths: overrides.archivedProjectPaths ?? [],
   };
 }
 
@@ -132,13 +134,22 @@ describe("mergeSettingsForSavePreservingProjects (#529 G3 normalization)", () =>
     );
   });
 
-  it("still adopts projectPaths/projectPath from the fresh settings", () => {
-    const draft = settings({ projectPath: "C:/stale", projectPaths: ["C:/stale"] });
-    const fresh = settings({ projectPath: "C:/fresh", projectPaths: ["C:/fresh", "C:/other"] });
+  it("still adopts projectPaths/projectPath and archivedProjectPaths from the fresh settings", () => {
+    const draft = settings({
+      projectPath: "C:/stale",
+      projectPaths: ["C:/stale"],
+      archivedProjectPaths: ["C:/draft-archive"],
+    });
+    const fresh = settings({
+      projectPath: "C:/fresh",
+      projectPaths: ["C:/fresh", "C:/other"],
+      archivedProjectPaths: ["C:/fresh-archive"],
+    });
     const merged = mergeSettingsForSavePreservingProjects(draft, fresh);
 
     expect(merged.projectPath).toBe("C:/fresh");
     expect(merged.projectPaths).toEqual(["C:/fresh", "C:/other"]);
+    expect(merged.archivedProjectPaths).toEqual(["C:/fresh-archive"]);
   });
 });
 

@@ -223,6 +223,18 @@ fn build_protected_settings_candidate(
     let mut candidate = merge_protected_coding_agent_settings(current, new_settings);
     // Preserve existing root token. Frontend settings payloads cannot overwrite it.
     candidate.root_token = current.root_token.clone();
+    // #881 A7 / R2-G1: project lists are disk-authoritative and are mutated
+    // only by dedicated project commands. A settings payload from the GUI, CLI,
+    // or API must never carry authority for them, so restore all three from
+    // live memory before repair.
+    //
+    // This is not the prohibited disk re-read. The preserving writer still
+    // overwrites all three from disk whenever disk has an opinion, so disk
+    // authority is untouched. These copies only matter on the no-disk-truth
+    // arms where a stale client would otherwise publish an empty list.
+    candidate.project_paths = current.project_paths.clone();
+    candidate.project_path = current.project_path.clone();
+    candidate.archived_project_paths = current.archived_project_paths.clone();
     validate_and_repair_settings(&mut candidate)?;
     Ok(candidate)
 }
@@ -242,6 +254,12 @@ async fn persist_settings_draft_update_with_saver(
     let mut s = settings.write().await;
     let current = s.clone();
     draft.root_token = current.root_token.clone();
+    // #881 A7 / R2-G1: same protected-list restore as the whole settings
+    // publisher above. This is an in-memory copy from the held settings guard,
+    // not a second disk read, and it only affects the no-disk-truth arms.
+    draft.project_paths = current.project_paths.clone();
+    draft.project_path = current.project_path.clone();
+    draft.archived_project_paths = current.archived_project_paths.clone();
     validate_and_repair_settings(&mut draft)?;
     let events = settings_draft_update_events(&current, &draft);
     let written = save(&draft)?;
@@ -267,9 +285,11 @@ async fn purge_sessions_after_settings_update_in_dir(
     saved: &AppSettings,
     dir: &Path,
 ) -> Result<(), String> {
+    let retention_paths =
+        crate::config::sessions_persistence::session_retention_project_paths(saved);
     crate::config::sessions_persistence::purge_sessions_outside_project_paths_in_dir(
         dir,
-        &saved.project_paths,
+        &retention_paths,
     )
     .await
     .map(|_| ())
@@ -1756,7 +1776,7 @@ mod tests {
     #[cfg(windows)]
     use super::{build_profile_assignment_target, canonical_compare_key};
     use crate::api::auth;
-    use crate::config::sessions_persistence::PersistedSession;
+    use crate::config::sessions_persistence::{session_retention_project_paths, PersistedSession};
     use crate::config::settings::{
         AgentConfig, AppSettings, CodingAgentEnv, CodingAgentEnvSource, ProfileCellConfig,
         SettingsState,
@@ -1831,6 +1851,11 @@ mod tests {
         std::fs::write(dir.join("settings.json"), json).expect("write settings.json");
     }
 
+    fn write_settings_json(dir: &Path, value: serde_json::Value) {
+        let json = serde_json::to_vec_pretty(&value).expect("serialize settings json");
+        std::fs::write(dir.join("settings.json"), json).expect("write settings.json");
+    }
+
     fn write_sessions_file(dir: &Path, sessions: &[PersistedSession]) {
         let json = serde_json::to_vec_pretty(sessions).expect("serialize sessions");
         std::fs::write(dir.join("sessions.json"), json).expect("write sessions.json");
@@ -1839,6 +1864,20 @@ mod tests {
     fn read_sessions_file(dir: &Path) -> Vec<PersistedSession> {
         let json = std::fs::read_to_string(dir.join("sessions.json")).expect("read sessions.json");
         serde_json::from_str(&json).expect("parse sessions.json")
+    }
+
+    fn settings_payload_without_keys(settings: &AppSettings, keys: &[&str]) -> AppSettings {
+        let mut value = serde_json::to_value(settings).expect("serialize settings payload");
+        let object = value
+            .as_object_mut()
+            .expect("settings payload must serialize to an object");
+        for key in keys {
+            assert!(
+                object.remove(*key).is_some(),
+                "settings payload has no `{key}` key to strip; the A7 gate would be a no-op"
+            );
+        }
+        serde_json::from_value(value).expect("deserialize stale settings payload")
     }
 
     fn assert_single_project(settings: &AppSettings, project: &str) {
@@ -2647,6 +2686,219 @@ mod tests {
             let live = draft_state.read().await;
             assert_single_project(&live, disk_project);
         }
+    }
+
+    #[tokio::test]
+    async fn update_settings_keeps_live_archived_list_when_disk_key_absent() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let live_project = "C:/live/a";
+        let archived_project = "C:/archived/b";
+        write_settings_json(
+            temp.path(),
+            serde_json::json!({
+                "projectPaths": [live_project],
+                "projectPath": live_project
+            }),
+        );
+
+        let mut current = settings_with_single_agent();
+        current.project_paths = vec![live_project.to_string()];
+        current.project_path = Some(live_project.to_string());
+        current.archived_project_paths = vec![archived_project.to_string()];
+        let state = state_for(current.clone());
+        let payload = settings_payload_without_keys(&current, &["archivedProjectPaths"]);
+
+        let saved = persist_protected_settings_update_with_saver(&state, payload, |candidate| {
+            crate::config::settings::save_settings_to_path_preserving_project_paths(
+                candidate,
+                &settings_path,
+            )
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(
+            saved.archived_project_paths,
+            vec![archived_project.to_string()]
+        );
+        assert!(session_retention_project_paths(&saved).contains(&archived_project.to_string()));
+        {
+            let live = state.read().await;
+            assert_eq!(
+                live.archived_project_paths,
+                vec![archived_project.to_string()]
+            );
+        }
+        let disk: AppSettings =
+            serde_json::from_str(&std::fs::read_to_string(settings_path).unwrap()).unwrap();
+        assert_eq!(
+            disk.archived_project_paths,
+            vec![archived_project.to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn save_settings_draft_keeps_live_archived_list_when_disk_key_absent() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let live_project = "C:/live/a";
+        let archived_project = "C:/archived/b";
+        write_settings_json(
+            temp.path(),
+            serde_json::json!({
+                "projectPaths": [live_project],
+                "projectPath": live_project
+            }),
+        );
+
+        let mut current = settings_with_single_agent();
+        current.project_paths = vec![live_project.to_string()];
+        current.project_path = Some(live_project.to_string());
+        current.archived_project_paths = vec![archived_project.to_string()];
+        let state = state_for(current.clone());
+        let payload = settings_payload_without_keys(&current, &["archivedProjectPaths"]);
+
+        let (saved, _events) =
+            persist_settings_draft_update_with_saver(&state, payload, |candidate| {
+                crate::config::settings::save_settings_to_path_preserving_project_paths(
+                    candidate,
+                    &settings_path,
+                )
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            saved.archived_project_paths,
+            vec![archived_project.to_string()]
+        );
+        assert!(session_retention_project_paths(&saved).contains(&archived_project.to_string()));
+        {
+            let live = state.read().await;
+            assert_eq!(
+                live.archived_project_paths,
+                vec![archived_project.to_string()]
+            );
+        }
+        let disk: AppSettings =
+            serde_json::from_str(&std::fs::read_to_string(settings_path).unwrap()).unwrap();
+        assert_eq!(
+            disk.archived_project_paths,
+            vec![archived_project.to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn update_settings_keeps_live_project_paths_when_settings_file_absent() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let live_project = "C:/live/a";
+
+        let mut current = settings_with_single_agent();
+        current.project_paths = vec![live_project.to_string()];
+        current.project_path = Some(live_project.to_string());
+        let state = state_for(current.clone());
+        let payload = settings_payload_without_keys(&current, &["projectPaths", "projectPath"]);
+
+        let saved = persist_protected_settings_update_with_saver(&state, payload, |candidate| {
+            crate::config::settings::save_settings_to_path_preserving_project_paths(
+                candidate,
+                &settings_path,
+            )
+        })
+        .await
+        .unwrap();
+
+        assert_single_project(&saved, live_project);
+        assert!(session_retention_project_paths(&saved).contains(&live_project.to_string()));
+        {
+            let live = state.read().await;
+            assert_single_project(&live, live_project);
+        }
+        let disk: AppSettings =
+            serde_json::from_str(&std::fs::read_to_string(settings_path).unwrap()).unwrap();
+        assert_single_project(&disk, live_project);
+    }
+
+    #[tokio::test]
+    async fn save_settings_draft_keeps_live_project_paths_when_settings_file_absent() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let live_project = "C:/live/a";
+
+        let mut current = settings_with_single_agent();
+        current.project_paths = vec![live_project.to_string()];
+        current.project_path = Some(live_project.to_string());
+        let state = state_for(current.clone());
+        let payload = settings_payload_without_keys(&current, &["projectPaths", "projectPath"]);
+
+        let (saved, _events) =
+            persist_settings_draft_update_with_saver(&state, payload, |candidate| {
+                crate::config::settings::save_settings_to_path_preserving_project_paths(
+                    candidate,
+                    &settings_path,
+                )
+            })
+            .await
+            .unwrap();
+
+        assert_single_project(&saved, live_project);
+        assert!(session_retention_project_paths(&saved).contains(&live_project.to_string()));
+        {
+            let live = state.read().await;
+            assert_single_project(&live, live_project);
+        }
+        let disk: AppSettings =
+            serde_json::from_str(&std::fs::read_to_string(settings_path).unwrap()).unwrap();
+        assert_single_project(&disk, live_project);
+    }
+
+    #[tokio::test]
+    async fn update_settings_still_takes_disk_archived_list_when_key_present() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let live_project = "C:/live/a";
+        let disk_archived = "C:/archived/a";
+        let live_archived = "C:/archived/b";
+        let payload_archived = "C:/archived/c";
+        write_settings_json(
+            temp.path(),
+            serde_json::json!({
+                "projectPaths": [live_project],
+                "projectPath": live_project,
+                "archivedProjectPaths": [disk_archived]
+            }),
+        );
+
+        let mut current = settings_with_single_agent();
+        current.project_paths = vec![live_project.to_string()];
+        current.project_path = Some(live_project.to_string());
+        current.archived_project_paths = vec![live_archived.to_string()];
+        let state = state_for(current.clone());
+        let mut payload = settings_payload_without_keys(&current, &[]);
+        payload.archived_project_paths = vec![payload_archived.to_string()];
+
+        let saved = persist_protected_settings_update_with_saver(&state, payload, |candidate| {
+            crate::config::settings::save_settings_to_path_preserving_project_paths(
+                candidate,
+                &settings_path,
+            )
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(
+            saved.archived_project_paths,
+            vec![disk_archived.to_string()]
+        );
+        {
+            let live = state.read().await;
+            assert_eq!(live.archived_project_paths, vec![disk_archived.to_string()]);
+        }
+        let disk: AppSettings =
+            serde_json::from_str(&std::fs::read_to_string(settings_path).unwrap()).unwrap();
+        assert_eq!(disk.archived_project_paths, vec![disk_archived.to_string()]);
     }
 
     #[tokio::test]

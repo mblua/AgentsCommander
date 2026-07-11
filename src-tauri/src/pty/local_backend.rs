@@ -412,6 +412,7 @@ impl LocalProcessBackend {
             output_target,
             mut resource_registration,
             logical_resource_slot: _,
+            container_credential: _,
         } = spec;
         let pty_system = native_pty_system();
         let spawn_cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);

@@ -11,6 +11,7 @@ import type {
 import { FakeTransport } from "./fake-transport";
 import { toastStore } from "../stores/toasts";
 import { projectStore } from "../../sidebar/stores/project";
+import { autoUnarchiveStore } from "../../sidebar/stores/auto-unarchive";
 import { sessionsStore } from "../../sidebar/stores/sessions";
 import { bridgesStore } from "../../sidebar/stores/bridges";
 import { workgroupGroupsStore } from "../../sidebar/stores/workgroup-groups";
@@ -141,6 +142,7 @@ export function baseSettings(overrides: Partial<AppSettings> = {}): AppSettings 
     apiServerBind: "127.0.0.1",
     projectPath: null,
     projectPaths: [],
+    archivedProjectPaths: [],
     sidebarStyle: "noir-minimal",
     onboardingDismissed: true,
     coordSortByActivity: false,
@@ -166,6 +168,7 @@ export function baseSettings(overrides: Partial<AppSettings> = {}): AppSettings 
     npmUpdateNotificationsEnabled: true,
     autoSelfClearEnabled: true,
     autoSelfClearByAgent: {},
+    containerCredentialsFromHost: true,
     logLevel: null,
     ...overrides,
     codingAgentProfiles: overrides.codingAgentProfiles ?? defaultCodingAgentProfiles(),
@@ -241,6 +244,7 @@ export function resetUiStoresForTests(): void {
   bridgesStore.setBridges([]);
   terminalStore.setActiveSession(null, "", "", null, "", null, false);
   terminalStore.setActiveWorkgroupTask(null);
+  autoUnarchiveStore.acknowledge();
   toastStore.clear();
   __resetHomeStoreForTests();
 }

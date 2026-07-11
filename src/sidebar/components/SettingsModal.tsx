@@ -1395,6 +1395,41 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       </div>
 
       <div class="settings-section">
+        <div class="settings-section-title">Container Coding Agents</div>
+        <label class="settings-checkbox-field">
+          <input
+            type="checkbox"
+            class="settings-checkbox"
+            checked={settings.data!.containerCredentialsFromHost}
+            disabled={saving()}
+            onChange={(e) =>
+              updateField("containerCredentialsFromHost", e.currentTarget.checked)
+            }
+            data-ac-testid="settings.general.containerCredentialsFromHost"
+          />
+          <span>Reuse host login for container coding agents</span>
+        </label>
+        <div
+          class="settings-hint"
+          data-ac-testid="settings.general.containerCredentialsFromHost.hint"
+        >
+          In progress: a container coding agent cannot reach your repos yet (#935), so keep repo
+          work on the Local runtime. On by default. When a coding agent runs under the Container
+          runtime, AC copies your host credential file for that agent (for Claude,
+          ~/.claude/.credentials.json) into the container at launch and deletes it when the
+          session stops. So the agent starts signed in instead of stopping at its first-run
+          prompts, AC also writes that agent's first-run state inside the container: onboarding
+          is marked complete, and the container's
+          /workspace folder is marked as trusted. That means AC answers the "do you trust this
+          folder?" safety prompt on your behalf, for the workspace you chose to open. Your host
+          config is never modified. Turn this off to supply credentials yourself (for example a
+          CLAUDE_CODE_OAUTH_TOKEN env row); then nothing is copied and nothing is marked. Host
+          and containers share one login, so a token refresh in one place can require re-login in
+          another.
+        </div>
+      </div>
+
+      <div class="settings-section">
         <div class="settings-section-title">Web Remote Access</div>
         <label class="settings-checkbox-field">
           <input
@@ -2059,6 +2094,15 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               </select>
             </label>
             <Show when={agentBackendKind() === "containerTransport"}>
+              <div
+                class="settings-hint settings-hint-warning"
+                data-ac-testid={`settings.agentRow.${i()}.containerHint.inProgress`}
+                data-ac-role="status"
+              >
+                In progress: a container agent cannot reach your repos yet (#935). It signs in
+                and messages peers, but it cannot check out, edit, build or commit them, so use
+                the Local runtime for repo work.
+              </div>
               <label class="settings-field">
                 <span class="settings-label">Docker image</span>
                 <input
@@ -2087,6 +2131,32 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 Set it to %AC_REPLICA_ROOT%\.claude, or conversation state will not
                 persist and auto-resume is skipped.
               </div>
+              <Show
+                when={settings.data!.containerCredentialsFromHost}
+                fallback={
+                  <div
+                    class="settings-hint settings-hint-warning"
+                    data-ac-testid={`settings.agentRow.${i()}.containerHint.hostLoginOff`}
+                    data-ac-role="status"
+                  >
+                    Host login reuse is off. Provide credentials yourself (for example a
+                    CLAUDE_CODE_OAUTH_TOKEN env row), or enable it in Settings &gt; General.
+                  </div>
+                }
+              >
+                <div
+                  class="settings-hint settings-hint-warning"
+                  data-ac-testid={`settings.agentRow.${i()}.containerHint.hostLogin`}
+                  data-ac-role="status"
+                >
+                  Host login reuse is on: AC copies your host credentials for this coding agent
+                  into the container at launch and removes them when the session stops. So the
+                  agent starts signed in, AC also writes its first-run state inside the container:
+                  onboarding is marked complete, and /workspace is marked as trusted, which
+                  answers the folder-trust safety prompt on your behalf. Your host config is not
+                  touched. Change this in Settings &gt; General.
+                </div>
+              </Show>
               <Show when={containerImageMissing()}>
                 <div
                   class="settings-hint settings-hint-warning"

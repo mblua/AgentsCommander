@@ -20,6 +20,8 @@ import {
 } from "./workgroup-session";
 import WorkgroupGroupsModal from "./WorkgroupGroupsModal";
 import RaiseHandIcon from "./RaiseHandIcon";
+import ArchiveIcon from "./ArchiveIcon";
+import ArchivedProjectsModal from "./ArchivedProjectsModal";
 
 interface WorkgroupGroupRailProps {
   projects: ProjectState[];
@@ -603,17 +605,37 @@ const ProjectRailSection: Component<{
 };
 
 const WorkgroupGroupRail: Component<WorkgroupGroupRailProps> = (props) => {
+  const [showArchived, setShowArchived] = createSignal(false);
+
   createEffect(() => {
     workgroupGroupsStore.reconcileActiveProject(props.projects.map((project) => project.path));
   });
 
   return (
     <aside class="workgroup-group-rail" data-ac-testid="workgroupGroups.rail">
-      <For each={props.projects}>
-        {(project) => (
-          <ProjectRailSection project={project} showProjectLabel={true} />
-        )}
-      </For>
+      <div class="workgroup-group-rail-scroll">
+        <For each={props.projects}>
+          {(project) => (
+            <ProjectRailSection project={project} showProjectLabel={true} />
+          )}
+        </For>
+      </div>
+
+      <button
+        class="workgroup-group-rail-archive"
+        onClick={() => setShowArchived(true)}
+        title="Archived projects"
+        aria-label="Archived projects"
+        aria-haspopup="dialog"
+        data-ac-testid="workgroupGroups.rail.archive"
+      >
+        <ArchiveIcon class="workgroup-group-rail-archive-icon" />
+        <span class="workgroup-group-rail-archive-label">Archive</span>
+      </button>
+
+      <Show when={showArchived()}>
+        <ArchivedProjectsModal onClose={() => setShowArchived(false)} />
+      </Show>
     </aside>
   );
 };

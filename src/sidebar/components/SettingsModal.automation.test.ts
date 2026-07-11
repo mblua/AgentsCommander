@@ -150,8 +150,10 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     npmUpdateNotificationsEnabled: true,
     autoSelfClearEnabled: true,
     autoSelfClearByAgent: {},
+    containerCredentialsFromHost: true,
     logLevel: null,
     ...overrides,
+    archivedProjectPaths: overrides.archivedProjectPaths ?? [],
   };
 }
 
@@ -1711,6 +1713,178 @@ describe("SettingsModal automation hooks", () => {
 
     const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
     expect(saved?.autoSelfClearEnabled).toBe(false);
+
+    dispose();
+  });
+
+  it("round-trips containerCredentialsFromHost through the General reuse checkbox (#930)", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    const checkbox = byTestId<HTMLInputElement>("settings.general.containerCredentialsFromHost");
+    expect(checkbox.closest("label")?.textContent).toContain(
+      "Reuse host login for container coding agents",
+    );
+    // Loaded default is true (copy-in is the default auth path for #930).
+    expect(checkbox.checked).toBe(true);
+
+    // Toggle OFF and save -> the persisted draft carries the new value, proving
+    // updateField accepts the new AppSettings key end to end.
+    checkbox.checked = false;
+    checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.containerCredentialsFromHost).toBe(false);
+
+    dispose();
+  });
+
+  it("shows the host-login-on hint when Container runtime is selected (default #930)", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "agents" }),
+      root,
+    );
+    await settle();
+    expandAgentRow(0);
+    await settle();
+
+    // Local runtime: no credential hint, and no container caveat.
+    expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.hostLogin"]'),
+    ).toBeNull();
+    expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.hostLoginOff"]'),
+    ).toBeNull();
+    expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.inProgress"]'),
+    ).toBeNull();
+
+    const runtime = byTestId<HTMLSelectElement>("settings.agentRow.0.runtimeKind");
+    runtime.value = "containerTransport";
+    runtime.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    // Setting defaults ON -> the on-branch hint renders; the off-branch stays absent.
+    const onHint = byTestId("settings.agentRow.0.containerHint.hostLogin").textContent ?? "";
+    expect(onHint).toContain("Host login reuse is on");
+    expect(onHint).toContain("removes them when the session stops");
+    // #930 grinch review: AC pre-answers a safety dialog, so the hint must disclose
+    // the first-run state it stamps inside the container.
+    expect(onHint).toContain("onboarding is marked complete");
+    expect(onHint).toContain("/workspace is marked as trusted");
+    expect(onHint).toContain("folder-trust safety prompt");
+    expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.hostLoginOff"]'),
+    ).toBeNull();
+
+    // #930 landing condition: the feature is in progress and a container agent still
+    // cannot reach the repos (#935). The caveat is a property of the RUNTIME, not of
+    // credential reuse, so it lives outside the reuse Show - here it must render with
+    // reuse ON, and it must NOT be duplicated inside the reuse hint.
+    const caveat = byTestId("settings.agentRow.0.containerHint.inProgress").textContent ?? "";
+    expect(caveat).toContain("In progress");
+    expect(caveat).toContain("cannot reach your repos yet (#935)");
+    expect(caveat).toContain("Local runtime for repo work");
+    expect(onHint).not.toContain("#935");
+
+    // Switch back to local -> both the credential hint and the caveat die with the block.
+    runtime.value = "localProcess";
+    runtime.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+    expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.hostLogin"]'),
+    ).toBeNull();
+    expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.inProgress"]'),
+    ).toBeNull();
+
+    dispose();
+  });
+
+  it("shows the host-login-off hint when reuse is disabled and Container is selected (#930)", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    // Turn the global reuse setting OFF from the General tab.
+    const toggle = byTestId<HTMLInputElement>("settings.general.containerCredentialsFromHost");
+    expect(toggle.checked).toBe(true);
+    toggle.checked = false;
+    toggle.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    // Move to Coding Agents and select Container runtime for the row. The draft
+    // store persists across tabs, so the OFF value carries over.
+    byTestId<HTMLButtonElement>("settings.tab.agents").click();
+    await settle();
+    expandAgentRow(0);
+    await settle();
+    const runtime = byTestId<HTMLSelectElement>("settings.agentRow.0.runtimeKind");
+    runtime.value = "containerTransport";
+    runtime.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    // Off-branch (warning) hint renders; the on-branch hint is absent.
+    const offHint = byTestId("settings.agentRow.0.containerHint.hostLoginOff").textContent ?? "";
+    expect(offHint).toContain("Host login reuse is off");
+    expect(offHint).toContain("CLAUDE_CODE_OAUTH_TOKEN");
+    // The OFF branch stamps nothing, so it must NOT claim any first-run state.
+    expect(offHint).not.toContain("onboarding");
+    expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.hostLogin"]'),
+    ).toBeNull();
+
+    // The reason the caveat was hoisted out of the reuse Show: a user with reuse OFF is
+    // still picking the Container runtime, and must still be told it cannot reach repos.
+    const caveat = byTestId("settings.agentRow.0.containerHint.inProgress").textContent ?? "";
+    expect(caveat).toContain("In progress");
+    expect(caveat).toContain("cannot reach your repos yet (#935)");
+    expect(caveat).toContain("Local runtime for repo work");
+
+    dispose();
+  });
+
+  it("discloses the container first-run stamping in the General hint (#930)", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    const hint =
+      byTestId("settings.general.containerCredentialsFromHost.hint").textContent ?? "";
+
+    // Copy + teardown (what the backend does with the credential itself).
+    expect(hint).toContain("deletes it when the session stops");
+    // grinch review: AC answers a safety dialog for the user, so the hint must say
+    // so - onboarding stamped complete + /workspace trusted inside the container.
+    expect(hint).toContain("onboarding is marked complete");
+    expect(hint).toContain("/workspace folder is marked as trusted");
+    expect(hint).toContain("on your behalf");
+    // The host side is untouched, and the refresh-token drift clause survives (14.5).
+    expect(hint).toContain("Your host config is never modified");
+    expect(hint).toContain("token refresh in one place can require re-login");
+    // #930 lands as in-progress: the repo access limitation (#935) is stated up front.
+    expect(hint).toContain("In progress");
+    expect(hint).toContain("cannot reach your repos yet (#935)");
+    expect(hint).toContain("Local runtime");
 
     dispose();
   });

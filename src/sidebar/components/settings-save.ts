@@ -98,5 +98,6 @@ export function mergeSettingsForSavePreservingProjects(
       .map(normalizeAgentBackend),
     projectPaths: fresh.projectPaths ?? [],
     projectPath: fresh.projectPath ?? null,
+    archivedProjectPaths: fresh.archivedProjectPaths ?? [],
   };
 }
