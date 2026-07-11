@@ -2084,6 +2084,7 @@ pub fn run(
             commands::config::set_log_level,
             commands::config::get_update_status,
             commands::repos::search_repos,
+            commands::repos::git_remote_url,
             commands::telegram::telegram_attach,
             commands::telegram::telegram_detach,
             commands::telegram::telegram_list_bridges,

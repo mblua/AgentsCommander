@@ -589,7 +589,15 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
         | "open_in_explorer"
         | "focus_main_window"
         | "open_guide_window"
-        | "open_external_url" => Ok(json!(null)),
+        | "open_external_url"
+        // #943 - Browse is desktop-only: `open_external_url` above is already a
+        // no-op here, so the submenu is hidden in web mode (`browseSupported()`
+        // = isTauri) and this command has no consumer. A real arm would hand a
+        // network client (a) an arbitrary-path existence oracle plus a `git.exe`
+        // spawn per request, and (b) the repo's `origin`. Not worth it for a
+        // feature that cannot run here. See §9 (Module W) for what it costs to
+        // turn Browse on for web.
+        | "git_remote_url" => Ok(json!(null)),
 
         // Home screen Markdown fetch is Tauri-only for v1; browser mode is
         // out of scope (issue #164 §Constraints). The frontend renders this
