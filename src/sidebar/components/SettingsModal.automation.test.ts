@@ -1775,6 +1775,11 @@ describe("SettingsModal automation hooks", () => {
     const onHint = byTestId("settings.agentRow.0.containerHint.hostLogin").textContent ?? "";
     expect(onHint).toContain("Host login reuse is on");
     expect(onHint).toContain("removes them when the session stops");
+    // #930 grinch review: AC pre-answers a safety dialog, so the hint must disclose
+    // the first-run state it stamps inside the container.
+    expect(onHint).toContain("onboarding is marked complete");
+    expect(onHint).toContain("/workspace is marked as trusted");
+    expect(onHint).toContain("folder-trust safety prompt");
     expect(
       document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.hostLoginOff"]'),
     ).toBeNull();
@@ -1821,9 +1826,37 @@ describe("SettingsModal automation hooks", () => {
     const offHint = byTestId("settings.agentRow.0.containerHint.hostLoginOff").textContent ?? "";
     expect(offHint).toContain("Host login reuse is off");
     expect(offHint).toContain("CLAUDE_CODE_OAUTH_TOKEN");
+    // The OFF branch stamps nothing, so it must NOT claim any first-run state.
+    expect(offHint).not.toContain("onboarding");
     expect(
       document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.hostLogin"]'),
     ).toBeNull();
+
+    dispose();
+  });
+
+  it("discloses the container first-run stamping in the General hint (#930)", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    const hint =
+      byTestId("settings.general.containerCredentialsFromHost.hint").textContent ?? "";
+
+    // Copy + teardown (what the backend does with the credential itself).
+    expect(hint).toContain("deletes it when the session stops");
+    // grinch review: AC answers a safety dialog for the user, so the hint must say
+    // so - onboarding stamped complete + /workspace trusted inside the container.
+    expect(hint).toContain("onboarding is marked complete");
+    expect(hint).toContain("/workspace folder is marked as trusted");
+    expect(hint).toContain("on your behalf");
+    // The host side is untouched, and the refresh-token drift clause survives (14.5).
+    expect(hint).toContain("Your host config is never modified");
+    expect(hint).toContain("token refresh in one place can require re-login");
 
     dispose();
   });

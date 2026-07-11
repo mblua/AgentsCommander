@@ -1409,12 +1409,20 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           />
           <span>Reuse host login for container coding agents</span>
         </label>
-        <div class="settings-hint">
+        <div
+          class="settings-hint"
+          data-ac-testid="settings.general.containerCredentialsFromHost.hint"
+        >
           On by default. When a coding agent runs under the Container runtime, AC copies your
           host credential file for that agent (for Claude, ~/.claude/.credentials.json) into the
-          container at launch and deletes it when the session stops. Turn this off to supply
-          credentials yourself (for example a CLAUDE_CODE_OAUTH_TOKEN env row). Host and
-          containers share one login, so a token refresh in one place can require re-login in
+          container at launch and deletes it when the session stops. So the agent starts signed
+          in instead of stopping at its first-run prompts, AC also writes that agent's first-run
+          state inside the container: onboarding is marked complete, and the container's
+          /workspace folder is marked as trusted. That means AC answers the "do you trust this
+          folder?" safety prompt on your behalf, for the workspace you chose to open. Your host
+          config is never modified. Turn this off to supply credentials yourself (for example a
+          CLAUDE_CODE_OAUTH_TOKEN env row); then nothing is copied and nothing is marked. Host
+          and containers share one login, so a token refresh in one place can require re-login in
           another.
         </div>
       </div>
@@ -2131,8 +2139,11 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                   data-ac-role="status"
                 >
                   Host login reuse is on: AC copies your host credentials for this coding agent
-                  into the container at launch and removes them when the session stops. Change
-                  this in Settings &gt; General.
+                  into the container at launch and removes them when the session stops. So the
+                  agent starts signed in, AC also writes its first-run state inside the container:
+                  onboarding is marked complete, and /workspace is marked as trusted, which
+                  answers the folder-trust safety prompt on your behalf. Your host config is not
+                  touched. Change this in Settings &gt; General.
                 </div>
               </Show>
               <Show when={containerImageMissing()}>
