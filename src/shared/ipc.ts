@@ -639,10 +639,23 @@ export function onSessionCoordinatorChanged(
   );
 }
 
+/// #943 B2 - `repoBranches` and `repoPaths` are parallel arrays of equal length,
+/// 1:1 by construction (ac_discovery.rs maps over `agent.repo_paths` and never
+/// filters, sorts or dedupes), with an explicit `null` for an unknown branch.
+/// Consumers must still merge BY PATH, not by position: this payload is stored and
+/// re-read against a later discovery snapshot. `branch` is the unchanged
+/// single-repo shorthand (null for a multi-repo replica).
+interface DiscoveryBranchUpdate {
+  replicaPath: string;
+  branch: string | null;
+  repoBranches: (string | null)[];
+  repoPaths: string[];
+}
+
 export function onDiscoveryBranchUpdated(
-  callback: (data: { replicaPath: string; branch: string | null }) => void
+  callback: (data: DiscoveryBranchUpdate) => void
 ): Promise<UnlistenFn> {
-  return transport.listen<{ replicaPath: string; branch: string | null }>(
+  return transport.listen<DiscoveryBranchUpdate>(
     "ac_discovery_branch_updated",
     callback
   );

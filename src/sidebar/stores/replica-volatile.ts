@@ -1,6 +1,6 @@
 import { batch } from "solid-js";
 import { createStore } from "solid-js/store";
-import type { AcAgentReplica } from "../../shared/types";
+import type { AcAgentReplica, RepoBranchByPath } from "../../shared/types";
 import { normalizeProjectPathForCompare } from "./project-refresh";
 
 /**
@@ -23,6 +23,9 @@ import { normalizeProjectPathForCompare } from "./project-refresh";
  */
 export interface ReplicaVolatileEntry {
   repoBranch?: string | null;
+  /** #943 B2 - per-repo branches keyed by repo source path. See RepoBranchByPath
+   *  (shared/types.ts) for the missing-key vs explicit-null semantics. */
+  repoBranchByPath?: RepoBranchByPath;
   lastUserMessageAt?: string;
   autoClosedAt?: string | null;
   manuallyClosedAt?: string | null;
@@ -43,9 +46,55 @@ function setField<K extends keyof ReplicaVolatileEntry>(
   setEntries(volatileKey(path), (prev) => ({ ...prev, [field]: value }));
 }
 
+/**
+ * #943 B2 - build the path -> branch map from the event's parallel arrays.
+ *
+ * A length mismatch could only come from a build that broke the backend's 1:1
+ * invariant. Pairing them anyway would attach a branch to the wrong repo, so the
+ * map is dropped instead and every repo falls back to "no branch": visible, inert,
+ * and self-healing on the next tick. No branch beats a wrong branch.
+ */
+function buildRepoBranchByPath(
+  repoPaths: string[] | undefined,
+  repoBranches: (string | null)[] | undefined
+): RepoBranchByPath {
+  const paths = repoPaths ?? [];
+  const branches = repoBranches ?? [];
+  if (paths.length !== branches.length) return {};
+  const map: RepoBranchByPath = {};
+  for (let i = 0; i < paths.length; i += 1) {
+    map[paths[i]] = branches[i] ?? null;
+  }
+  return map;
+}
+
 export const replicaVolatileStore = {
   setRepoBranch(replicaPath: string, branch: string | null) {
     setField(replicaPath, "repoBranch", branch);
+  },
+
+  /**
+   * #943 B2 - apply one `ac_discovery_branch_updated` event.
+   *
+   * Atomic on purpose: the single-repo shorthand and the path-keyed per-repo map
+   * always land together, so no reader can observe a half-updated pair (for a
+   * single-repo replica that would paint the previous branch for a frame).
+   *
+   * Repo paths are used as keys verbatim - the backend sends the same strings
+   * discovery already put on `AcAgentReplica.repoPaths` - unlike the REPLICA path,
+   * which is normalized because branch/clock events carry the session
+   * working_directory and can differ in slash/case (#552).
+   */
+  applyDiscoveryBranchUpdate(
+    replicaPath: string,
+    branch: string | null,
+    repoPaths?: string[],
+    repoBranches?: (string | null)[]
+  ) {
+    batch(() => {
+      setField(replicaPath, "repoBranch", branch);
+      setField(replicaPath, "repoBranchByPath", buildRepoBranchByPath(repoPaths, repoBranches));
+    });
   },
 
   setLastUserMessageAt(replicaPath: string, lastUserMessageAt: string) {
@@ -92,6 +141,15 @@ type ReplicaVolatileBase = Pick<AcAgentReplica, "path"> &
 export function effectiveRepoBranch(replica: ReplicaVolatileBase): string | undefined {
   const override = entries[volatileKey(replica.path)]?.repoBranch;
   return override === undefined ? replica.repoBranch : override ?? undefined;
+}
+
+/** #943 B2 - live per-repo branches for this replica, keyed by repo source path.
+ *  `undefined` when no branch event has landed yet, in which case the caller keeps
+ *  the pre-B2 single-repo `repoBranch` fallback. */
+export function effectiveRepoBranchByPath(
+  replica: ReplicaVolatileBase
+): RepoBranchByPath | undefined {
+  return entries[volatileKey(replica.path)]?.repoBranchByPath;
 }
 
 export function effectiveLastUserMessageAt(replica: ReplicaVolatileBase): string | undefined {

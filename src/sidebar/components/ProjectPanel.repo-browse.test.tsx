@@ -630,6 +630,49 @@ describe("ProjectPanel coordinator repo Browse submenu (#943)", () => {
     );
   });
 
+  // 18 [B2]
+  it("gives a cold multi-repo coordinator Browse Branch after a discovery branch event", async () => {
+    const fake = await setupPanel([], discoveryA([repoA1, repoA2]));
+
+    // Before the event: discovery detects a branch only for a single-repo replica,
+    // so a cold multi-repo coordinator has none and can only Browse Main. That is
+    // the up-to-15s window the user accepted when approving B2.
+    await openMenuWithArrow(rowA, 2);
+    mouseEnter(repoEntries()[0]);
+    await waitFor(() => expect(flyout()).not.toBeNull());
+    expect(flyoutLabels()).toEqual(["Browse Main"]);
+
+    keyDown(document.body, "Escape");
+    await waitFor(() => expect(menu()).toBeNull());
+
+    // The 15s watcher tick lands. repo 1's branch is an explicit null (unknown).
+    fake.emitFromBackend("ac_discovery_branch_updated", {
+      replicaPath: coordAPath,
+      branch: null, // multi-repo: the single-repo shorthand stays null
+      repoPaths: [repoA1, repoA2],
+      repoBranches: ["feature/cold", null],
+    });
+
+    await openMenuWithArrow(rowA, 2);
+    mouseEnter(repoEntries()[0]);
+
+    await waitFor(() =>
+      expect(target("replica.inactive.menu.repo.0.browse.branch")).not.toBeNull()
+    );
+    expect(flyoutLabels()).toEqual(["Browse Main", "Browse Branch"]);
+    expect(target("replica.inactive.menu.repo.0.browse.branch")!.getAttribute("title")).toBe(
+      "https://github.com/mblua/AgentsCommander/tree/feature/cold"
+    );
+
+    // repo 1: known to the watcher, no branch -> Browse Main only.
+    mouseLeave(repoEntries()[0]);
+    mouseEnter(repoEntries()[1]);
+    await waitFor(() =>
+      expect(target("replica.inactive.menu.repo.1.browse.flyout")).not.toBeNull()
+    );
+    expect(flyoutLabels()).toEqual(["Browse Main"]);
+  });
+
   // 17
   it("shows the arrow only on the repo that has a GitHub origin", async () => {
     await setupPanel(

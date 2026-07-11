@@ -27,6 +27,7 @@ import {
   effectiveLastUserMessageAt,
   effectiveManuallyClosedAt,
   effectiveRepoBranch,
+  effectiveRepoBranchByPath,
   replicaVolatileStore,
 } from "../stores/replica-volatile";
 import { normalizeProjectPathForCompare } from "../stores/project-refresh";
@@ -222,7 +223,12 @@ function configuredReplicaRepoBadgesLive(
   workgroup: Pick<AcWorkgroup, "repoPath">
 ): SessionRepo[] {
   return configuredReplicaRepoBadges(
-    { repoPaths: replica.repoPaths, repoBranch: effectiveRepoBranch(replica) },
+    {
+      repoPaths: replica.repoPaths,
+      repoBranch: effectiveRepoBranch(replica),
+      // #943 B2 - per-repo branches for cold multi-repo replicas, keyed by path.
+      repoBranchByPath: effectiveRepoBranchByPath(replica),
+    },
     workgroup
   );
 }
@@ -403,7 +409,14 @@ const ProjectPanel: Component = () => {
   onCleanup(registerCoordinatorCloseModalHost());
   onMount(async () => {
     unlistenBranch = await onDiscoveryBranchUpdated((data) => {
-      replicaVolatileStore.setRepoBranch(data.replicaPath, data.branch);
+      // #943 B2 - one atomic write: the single-repo shorthand plus the per-repo
+      // branches, merged BY PATH (never by index - see the store).
+      replicaVolatileStore.applyDiscoveryBranchUpdate(
+        data.replicaPath,
+        data.branch,
+        data.repoPaths,
+        data.repoBranches
+      );
     });
     // #552 coordinator idle badge + auto-closed pill. Discovery reload
     // supersedes these overrides on any path miss (clearForPaths).

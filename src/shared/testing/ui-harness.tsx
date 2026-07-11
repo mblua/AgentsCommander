@@ -11,6 +11,7 @@ import type {
 import { FakeTransport } from "./fake-transport";
 import { toastStore } from "../stores/toasts";
 import { projectStore } from "../../sidebar/stores/project";
+import { replicaVolatileStore } from "../../sidebar/stores/replica-volatile";
 import { autoUnarchiveStore } from "../../sidebar/stores/auto-unarchive";
 import { sessionsStore } from "../../sidebar/stores/sessions";
 import { bridgesStore } from "../../sidebar/stores/bridges";
@@ -231,6 +232,10 @@ export function bridge(overrides: Partial<BridgeInfo> = {}): BridgeInfo {
 
 export function resetUiStoresForTests(): void {
   projectStore.clear();
+  // #943 B2 - the volatile layer outlives a render, so without this a test that
+  // lands a branch event leaks its repoBranch/repoBranchByPath into the next test
+  // in the same file (order-dependent, and silently wrong rather than red).
+  replicaVolatileStore.clearAll();
   sessionsStore.setSessions([]);
   sessionsStore.setActiveId(null);
   sessionsStore.setTeams([]);
