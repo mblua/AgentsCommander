@@ -721,12 +721,16 @@ fn resume_probe_target(
     backend_kind: SessionBackendKind,
     container_map: Option<&ContainerPathMap>,
     resolved_spawn: Option<&AgentSpawnCommand>,
+    injected_claude_config_dir: Option<&str>,
     shell: &str,
     shell_args: &[String],
     cwd: &str,
 ) -> ResumeProbeTarget {
-    let claude_config_dir_override =
-        resolved_spawn.and_then(|s| s.effective_env_value(CLAUDE_CONFIG_DIR_KEY));
+    // #930 - an injected copy-in default (host path under the replica mount) wins
+    // only when the user set no CLAUDE_CONFIG_DIR; the caller enforces that
+    // precondition, so fall back to the user's effective value otherwise.
+    let claude_config_dir_override = injected_claude_config_dir
+        .or_else(|| resolved_spawn.and_then(|s| s.effective_env_value(CLAUDE_CONFIG_DIR_KEY)));
     resume_probe_target_for_config_dir(
         backend_kind,
         container_map,
@@ -735,6 +739,26 @@ fn resume_probe_target(
         shell_args,
         cwd,
     )
+}
+
+/// #930 - the CLAUDE_CONFIG_DIR value to inject for a container coding agent whose
+/// host credentials we will copy. Returns the copy directory (a host path under
+/// the replica mount, which the container env translation later maps to
+/// `/workspace/.claude`) ONLY when a copy plan exists AND the user configured no
+/// CLAUDE_CONFIG_DIR (`user_has_claude_config_dir == false`). `None` => inject
+/// nothing (host-login-reuse off, no host credentials, or an explicit user
+/// value/removal we must not override).
+fn injected_claude_config_dir_for_copy(
+    plan: Option<&crate::pty::container_credentials::ContainerCredentialPlan>,
+    user_has_claude_config_dir: bool,
+) -> Option<String> {
+    if user_has_claude_config_dir {
+        return None;
+    }
+    plan?
+        .dest
+        .parent()
+        .map(crate::path_utils::path_to_string_without_windows_verbatim_prefix)
 }
 
 fn resume_probe_target_for_config_dir(
@@ -1160,6 +1184,55 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     mgr.set_agent_kind(id, agent_kind).await;
     session.agent_kind = agent_kind;
 
+    // #930 - resolve the host-credential copy-in plan for container coding agents
+    // BEFORE the resume probe and the container env translation, so both consumers
+    // observe the CLAUDE_CONFIG_DIR we may inject below. Gated by the global setting
+    // (default on) and the per-agent profile descriptor; None when off,
+    // non-container, an unrecognized agent, or the host file is absent. The plan is
+    // pure (env read + file-exists check); the actual copy runs later in the
+    // container backend spawn (spawn_runtime_backed), preserving copy-after-seed.
+    let spawn_cwd = container_path_context
+        .as_ref()
+        .map(|context| context.host_root.clone())
+        .unwrap_or_else(|| cwd.clone());
+    let container_credential = if session.backend_kind == SessionBackendKind::ContainerTransport {
+        let copy_enabled = app
+            .state::<SettingsState>()
+            .read()
+            .await
+            .container_credentials_from_host;
+        if copy_enabled {
+            agent_kind
+                .and_then(|k| k.profile().container_credential)
+                .and_then(|src| crate::pty::container_credentials::resolve_plan(&src, &spawn_cwd))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    // #930 - when we WILL copy host creds and the user configured no
+    // CLAUDE_CONFIG_DIR (respecting an explicit value OR an explicit removal),
+    // default it to the copy directory so a default-on container authenticates with
+    // zero env rows. Injected as a host path; the container env translation maps it
+    // to /workspace/.claude and the resume probe then treats state as durable.
+    let user_has_claude_config_dir = resolved_spawn
+        .as_ref()
+        .map(|spawn| {
+            spawn.effective_env_value(CLAUDE_CONFIG_DIR_KEY).is_some()
+                || spawn.env_remove_keys.iter().any(|remove| {
+                    crate::config::settings::normalize_env_key_for_platform(remove)
+                        == crate::config::settings::normalize_env_key_for_platform(
+                            CLAUDE_CONFIG_DIR_KEY,
+                        )
+                })
+        })
+        .unwrap_or(false);
+    let injected_claude_config_dir = injected_claude_config_dir_for_copy(
+        container_credential.as_ref(),
+        user_has_claude_config_dir,
+    );
+
     // Auto-inject --continue for Claude agents when AC has reason to believe a prior
     // conversation exists for this session (issue #82: `is_dir()` alone is unsound;
     // call sites pass `skip_auto_resume = true` for fresh creates).
@@ -1172,6 +1245,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         session.backend_kind,
         container_path_context.as_ref().map(|context| &context.map),
         resolved_spawn.as_ref(),
+        injected_claude_config_dir.as_deref(),
         &shell,
         &shell_args,
         &cwd,
@@ -1374,6 +1448,12 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         .as_ref()
         .map(|spawn| spawn.child_env.clone())
         .unwrap_or_default();
+    // #930 - inject the copy directory as a host-path CLAUDE_CONFIG_DIR so the
+    // container env translation below maps it to /workspace/.claude and the copied
+    // token is actually read. Only present when we will copy and the user set none.
+    if let Some(dir) = injected_claude_config_dir.as_ref() {
+        configured_env.push((CLAUDE_CONFIG_DIR_KEY.to_string(), dir.clone()));
+    }
     let env_remove_keys: Vec<String> = resolved_spawn
         .as_ref()
         .map(|spawn| spawn.env_remove_keys.clone())
@@ -1469,10 +1549,6 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         let _ = crate::config::config_seed::perform_config_seed(seed, &id.to_string());
     }
 
-    let spawn_cwd = container_path_context
-        .as_ref()
-        .map(|context| context.host_root.clone())
-        .unwrap_or_else(|| cwd.clone());
     let spawn_spec = BackendSpawnSpec {
         id,
         cmd: shell.clone(),
@@ -1496,6 +1572,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         output_target: PtyOutputTarget::from_app_handle(app.clone()),
         resource_registration,
         logical_resource_slot,
+        container_credential,
     };
     let spawn_result = PtyManager::spawn(pty_mgr, session.backend_kind, spawn_spec).await;
     if let Err(e) = spawn_result {
@@ -3299,11 +3376,16 @@ mod tests {
         container_path_context_for_cwd, count_working_members, effective_restart_requested_profile,
         inject_codex_resume, resolve_actual_agent, resolve_agent_command, resolve_agent_from_shell,
         resolve_claude_projects_dir, resolve_restart_selected_agent_id, resolve_root_agent_command,
-        resume_probe_target_for_config_dir, should_inject_continue, ExistingRootAction,
+        injected_claude_config_dir_for_copy, resume_probe_target_for_config_dir,
+        should_inject_continue, ExistingRootAction,
     };
     use crate::config::settings::{AgentConfig, AppSettings, ProfileCellConfig};
     use crate::pty::backend::SessionBackendKind;
-    use crate::pty::container_paths::{ContainerPathMap, WARNING_KIND_NO_VALUE};
+    use crate::pty::container_backend::container_child_env;
+    use crate::pty::container_credentials::ContainerCredentialPlan;
+    use crate::pty::container_paths::{
+        ContainerPathMap, CLAUDE_CONFIG_DIR_KEY, WARNING_KIND_NO_VALUE,
+    };
     use crate::session::manager::SessionManager;
     use crate::session::session::{SessionInfo, SessionStatus};
     use std::collections::BTreeMap;
@@ -3510,6 +3592,73 @@ mod tests {
         assert_eq!(got.filesystem, "container-unreachable");
         assert!(got.host_probe_path.is_none());
         assert!(got.warning.is_none());
+    }
+
+    fn cred_host_root() -> &'static str {
+        if cfg!(windows) {
+            r"C:\Users\maria\repo\.ac\wg-1\__agent_x"
+        } else {
+            "/Users/maria/repo/.ac/wg-1/__agent_x"
+        }
+    }
+
+    fn cred_plan_map() -> ContainerPathMap {
+        ContainerPathMap::new(cred_host_root(), "/workspace").unwrap()
+    }
+
+    fn cred_plan() -> ContainerCredentialPlan {
+        let dest = std::path::Path::new(cred_host_root())
+            .join(".claude")
+            .join(".credentials.json");
+        ContainerCredentialPlan {
+            source: PathBuf::from("unused-host-source"),
+            dest,
+            first_run: None,
+        }
+    }
+
+    #[test]
+    fn injected_config_dir_defaults_to_copy_dir_and_maps_into_container() {
+        // #930 - host-login copy will happen (plan Some) and the user set no
+        // CLAUDE_CONFIG_DIR -> inject the copy dir (host path), which the container
+        // env translation maps to /workspace/.claude so the copied token is read.
+        let plan = cred_plan();
+        let injected = injected_claude_config_dir_for_copy(Some(&plan), false)
+            .expect("copy without a user value must inject the copy dir");
+        let expected_dir = format!("{}/.claude", cred_host_root().replace('\\', "/"));
+        assert_eq!(injected.replace('\\', "/"), expected_dir);
+
+        let translated = container_child_env(
+            vec![(CLAUDE_CONFIG_DIR_KEY.to_string(), injected)],
+            Vec::new(),
+            &cred_plan_map(),
+        );
+        assert_eq!(
+            translated.child_env,
+            vec![(
+                CLAUDE_CONFIG_DIR_KEY.to_string(),
+                "/workspace/.claude".to_string()
+            )]
+        );
+        assert!(translated.env_unset.is_empty());
+        assert!(translated.warnings.is_empty());
+    }
+
+    #[test]
+    fn injected_config_dir_respects_explicit_user_value() {
+        // #930 - the user already configured CLAUDE_CONFIG_DIR; never overwrite it,
+        // even though a copy plan exists.
+        assert_eq!(
+            injected_claude_config_dir_for_copy(Some(&cred_plan()), true),
+            None
+        );
+    }
+
+    #[test]
+    fn injected_config_dir_none_without_copy_plan() {
+        // #930 - host-login-reuse off or no host creds => no plan => inject nothing,
+        // even when the user set no CLAUDE_CONFIG_DIR.
+        assert_eq!(injected_claude_config_dir_for_copy(None, false), None);
     }
 
     #[test]

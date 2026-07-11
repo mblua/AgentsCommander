@@ -35,6 +35,9 @@ pub struct BackendSpawnSpec {
     pub output_target: PtyOutputTarget,
     pub resource_registration: Option<ResourceLaunchRegistration>,
     pub logical_resource_slot: Option<ResourceLogicalAgentSlot>,
+    /// #930 - resolved host-credential copy-in for container sessions. None for
+    /// local-process sessions and when copy-in is disabled/not applicable.
+    pub container_credential: Option<crate::pty::container_credentials::ContainerCredentialPlan>,
 }
 
 pub trait PtyBackend: Any + Send + Sync {

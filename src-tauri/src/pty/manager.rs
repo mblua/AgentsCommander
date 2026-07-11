@@ -414,6 +414,7 @@ mod tests {
             output_target: crate::pty::output::PtyOutputTarget::noop(),
             resource_registration: None,
             logical_resource_slot: None,
+            container_credential: None,
         }
     }
 
