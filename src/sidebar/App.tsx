@@ -161,10 +161,10 @@ export function createSidebarSelectionScrollReset(
 
       const projectPanel = projectPanelForPath(container, projectPath);
       if (projectPanel) {
-        const containerTop = container.getBoundingClientRect().top + container.clientTop;
-        // The header is the panel's first child. Include the panel border so
-        // bordered sidebar themes align the header itself, not the outer edge.
-        const projectTop = projectPanel.getBoundingClientRect().top + projectPanel.clientTop;
+        const containerTop = container.getBoundingClientRect().top;
+        // The panel starts at its sticky header. Measure the non-sticky panel
+        // because a pinned header's rect cannot reveal its logical scroll offset.
+        const projectTop = projectPanel.getBoundingClientRect().top;
         container.scrollTop = Math.max(0, container.scrollTop + projectTop - containerTop);
       }
 

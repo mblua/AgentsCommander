@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import ProjectPanel from "./ProjectPanel";
 import WorkgroupGroupRail from "./WorkgroupGroupRail";
 import { FakeTransport } from "../../shared/testing/fake-transport";
@@ -202,16 +202,14 @@ describe("ProjectPanel collapse state", () => {
     }
   });
 
-  it("preserves sub-section collapse of a project collapsed by #810 rail auto-focus", async () => {
-    // #810 cross-project case: owner A is auto-focused from the rail, other
+  it("preserves sub-section collapse when a rail selection collapses another project", async () => {
+    // Cross-project case: owner A is selected from the rail, other
     // project B gets its project-level collapsed by collapseAllExceptKnown,
     // but B's "Workgroups" sub-section collapse choice must survive (sub-
     // sections stay in ProjectPanel's local collapsedByKey signal and are NOT
-    // touched by the rail's auto-focus). Two backslash Windows paths (grinch
-    // F4) so the focus lookup exercises the real production code path.
+    // touched by the rail selection). Two backslash Windows paths exercise the
+    // production collapse-key normalization.
     const otherProjectPath = "C:\\ProjectB";
-    let scrollIntoViewMock: ReturnType<typeof vi.fn>;
-    const scrollCalls: HTMLElement[] = [];
 
     const fake = new FakeTransport();
     fake.onInvoke("new_project", (args) => ({
@@ -246,11 +244,6 @@ describe("ProjectPanel collapse state", () => {
       throw new Error(`unexpected discover_project path: ${path}`);
     });
     fake.resolve("get_project_groups", { ...defaultGroupsConfig() });
-
-    scrollIntoViewMock = vi.fn(function (this: HTMLElement) {
-      scrollCalls.push(this);
-    });
-    Element.prototype.scrollIntoView = scrollIntoViewMock as any;
 
     const rendered = renderWithFakeTransport(
       () => (
@@ -293,7 +286,7 @@ describe("ProjectPanel collapse state", () => {
       if (!allButton) throw new Error("All button not found in Project rail section");
       click(allButton);
 
-      // B's project-level chevron is collapsed by auto-focus...
+      // B's project-level chevron is collapsed by the rail selection...
       await waitFor(() => {
         const chev = projectBHeader.querySelector(".ac-discovery-chevron");
         expect(chev?.classList.contains("collapsed")).toBe(true);

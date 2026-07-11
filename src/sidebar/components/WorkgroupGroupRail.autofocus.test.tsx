@@ -258,16 +258,16 @@ describe("WorkgroupGroupRail selection focus (#810/#941)", () => {
         expect(headerCollapsed(findProjectHeader(rendered.root, projectPathA))).toBe(true)
       );
 
-      scrollable.scrollTop = 137;
+      const priorScrollTop = 137;
+      scrollable.scrollTop = priorScrollTop;
       click(railButton("ProjectA", "all"));
-      await waitFor(() =>
-        expect(headerCollapsed(findProjectHeader(rendered.root, projectPathA))).toBe(false)
-      );
-      await waitFor(() =>
-        expect(headerCollapsed(findProjectHeader(rendered.root, projectPathB))).toBe(true)
-      );
-      expect(scrollable.scrollTop).toBe(137);
-      expect(projectCollapseStore.focusTarget()).toBe(null);
+      // Assert the scroll position directly after both re-click side effects
+      // settle; this behavior must not depend on the focus-target plumbing.
+      await waitFor(() => {
+        expect(headerCollapsed(findProjectHeader(rendered.root, projectPathA))).toBe(false);
+        expect(headerCollapsed(findProjectHeader(rendered.root, projectPathB))).toBe(true);
+        expect(scrollable.scrollTop).toBe(priorScrollTop);
+      });
     } finally {
       rendered.cleanup();
     }
