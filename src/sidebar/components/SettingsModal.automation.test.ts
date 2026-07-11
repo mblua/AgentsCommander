@@ -1758,12 +1758,15 @@ describe("SettingsModal automation hooks", () => {
     expandAgentRow(0);
     await settle();
 
-    // Local runtime: neither credential hint is present.
+    // Local runtime: no credential hint, and no container caveat.
     expect(
       document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.hostLogin"]'),
     ).toBeNull();
     expect(
       document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.hostLoginOff"]'),
+    ).toBeNull();
+    expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.inProgress"]'),
     ).toBeNull();
 
     const runtime = byTestId<HTMLSelectElement>("settings.agentRow.0.runtimeKind");
@@ -1780,22 +1783,29 @@ describe("SettingsModal automation hooks", () => {
     expect(onHint).toContain("onboarding is marked complete");
     expect(onHint).toContain("/workspace is marked as trusted");
     expect(onHint).toContain("folder-trust safety prompt");
-    // #930 landing condition: the feature is in progress and a container agent still
-    // cannot reach the repos (#935). The setting is ON by default, so this is the one
-    // place a user learns it at the moment they pick the Container runtime.
-    expect(onHint).toContain("In progress");
-    expect(onHint).toContain("cannot reach your repos yet (#935)");
-    expect(onHint).toContain("Local runtime for repo work");
     expect(
       document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.hostLoginOff"]'),
     ).toBeNull();
 
-    // Switch back to local -> the credential hint disappears with the block.
+    // #930 landing condition: the feature is in progress and a container agent still
+    // cannot reach the repos (#935). The caveat is a property of the RUNTIME, not of
+    // credential reuse, so it lives outside the reuse Show - here it must render with
+    // reuse ON, and it must NOT be duplicated inside the reuse hint.
+    const caveat = byTestId("settings.agentRow.0.containerHint.inProgress").textContent ?? "";
+    expect(caveat).toContain("In progress");
+    expect(caveat).toContain("cannot reach your repos yet (#935)");
+    expect(caveat).toContain("Local runtime for repo work");
+    expect(onHint).not.toContain("#935");
+
+    // Switch back to local -> both the credential hint and the caveat die with the block.
     runtime.value = "localProcess";
     runtime.dispatchEvent(new Event("change", { bubbles: true }));
     await settle();
     expect(
       document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.hostLogin"]'),
+    ).toBeNull();
+    expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.inProgress"]'),
     ).toBeNull();
 
     dispose();
@@ -1837,6 +1847,13 @@ describe("SettingsModal automation hooks", () => {
     expect(
       document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.hostLogin"]'),
     ).toBeNull();
+
+    // The reason the caveat was hoisted out of the reuse Show: a user with reuse OFF is
+    // still picking the Container runtime, and must still be told it cannot reach repos.
+    const caveat = byTestId("settings.agentRow.0.containerHint.inProgress").textContent ?? "";
+    expect(caveat).toContain("In progress");
+    expect(caveat).toContain("cannot reach your repos yet (#935)");
+    expect(caveat).toContain("Local runtime for repo work");
 
     dispose();
   });

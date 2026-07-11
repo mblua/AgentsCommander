@@ -2094,6 +2094,15 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               </select>
             </label>
             <Show when={agentBackendKind() === "containerTransport"}>
+              <div
+                class="settings-hint settings-hint-warning"
+                data-ac-testid={`settings.agentRow.${i()}.containerHint.inProgress`}
+                data-ac-role="status"
+              >
+                In progress: a container agent cannot reach your repos yet (#935). It signs in
+                and messages peers, but it cannot check out, edit, build or commit them, so use
+                the Local runtime for repo work.
+              </div>
               <label class="settings-field">
                 <span class="settings-label">Docker image</span>
                 <input
@@ -2140,9 +2149,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                   data-ac-testid={`settings.agentRow.${i()}.containerHint.hostLogin`}
                   data-ac-role="status"
                 >
-                  In progress: a container agent cannot reach your repos yet (#935). It signs in
-                  and messages peers, but it cannot check out, edit, build or commit them, so use
-                  the Local runtime for repo work.
                   Host login reuse is on: AC copies your host credentials for this coding agent
                   into the container at launch and removes them when the session stops. So the
                   agent starts signed in, AC also writes its first-run state inside the container:
