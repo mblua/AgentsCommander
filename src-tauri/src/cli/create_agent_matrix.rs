@@ -2,7 +2,7 @@
 //!
 //! This command runs out of process, so it reads the persisted settings snapshot
 //! with `load_settings_for_cli()` and cannot share the GUI's in-memory
-//! `SettingsState` or RTK sweep lock. That matches the existing CLI mutation
+//! `SettingsState`. That matches the existing CLI mutation
 //! model: local disk creation is immediate, while launch requests are handed to
 //! the running GUI through the session-request mailbox.
 
@@ -11,8 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cli::create_agent;
 use crate::commands::entity_creation::{
-    apply_agent_matrix_settings_files, create_agent_matrix_on_disk, AgentMatrixSettingsFlags,
-    CreateAgentMatrixDiskArgs,
+    create_agent_matrix_on_disk, CreateAgentMatrixDiskArgs,
 };
 use crate::config::projects::resolve_project_reference;
 
@@ -120,11 +119,6 @@ pub(crate) fn execute_matrix_project_create(
             return 1;
         }
     };
-
-    let flags = AgentMatrixSettingsFlags::from_settings(&settings);
-    for warning in apply_agent_matrix_settings_files(&created.agent_dir, flags) {
-        eprintln!("Warning: {}", warning);
-    }
 
     let agent_path = created.agent_dir.to_string_lossy().to_string();
     let role_path = created.role_path.to_string_lossy().to_string();

@@ -86,10 +86,6 @@ A reusable agent definition (prompt + optional skills) that AC clones when you c
 
 A Project AC Root-level coordinator that can route messages between coordinators of different teams. Identity-verified WG coordinators see it as a synthetic `agentscommander://root-agent` peer.
 
-## RTK (Rust Token Killer)
-
-A CLI proxy that compresses verbose command outputs to cut LLM token consumption by 60–90%. AC auto-detects `rtk` on PATH and wires a Claude `PreToolUse` hook into managed agent directories. See [RTK integration](features/rtk-integration.md).
-
 ## Session
 
 A running process bound to one agent directory and one coding-agent CLI. Sessions live in the sidebar with status dots: green waiting (ready for your input), blue running, amber pending, red exited, gray idle.

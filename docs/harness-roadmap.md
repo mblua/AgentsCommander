@@ -27,7 +27,7 @@ Planned scope:
 
 Planned scope:
 
-- RTK-style command rewrites and optimization.
+- Command rewrites and optimization.
 - Safer alternatives for common expensive or fragile command patterns.
 - Token and output volume metrics.
 - Better policy explanations that help agents choose smaller commands.

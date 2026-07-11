@@ -11,8 +11,8 @@ use sha2::{Digest, Sha256};
 use crate::cli::session_safety::{find_live_sessions_under, LiveSessionBlocker};
 use crate::cli::workgroup;
 use crate::commands::entity_creation::{
-    agent_ref_bare_name, apply_agent_matrix_settings_files, create_agent_matrix_from_role,
-    resolve_agent_ref, sanitize_name, validate_existing_name, AgentMatrixSettingsFlags,
+    agent_ref_bare_name, create_agent_matrix_from_role,
+    resolve_agent_ref, sanitize_name, validate_existing_name,
     CreateAgentMatrixFromRoleArgs,
 };
 
@@ -625,9 +625,6 @@ fn init_for_project_path(
     }
     let role_sha = sha256_hex(&role_bytes);
     let now = chrono::Utc::now().to_rfc3339();
-    let settings = crate::config::settings::load_settings_for_cli();
-    let flags = AgentMatrixSettingsFlags::from_settings(&settings);
-
     map_err(
         std::fs::create_dir_all(experiment_dir.join("variants")),
         "experiment_metadata_write_failed",
@@ -657,14 +654,6 @@ fn init_for_project_path(
         })?;
 
         copy_source_skills(&source_matrix, &created.agent_dir, variant, &mut warnings);
-        for warning in apply_agent_matrix_settings_files(&created.agent_dir, flags) {
-            warnings.push(warn(
-                "variant_settings_warning",
-                warning,
-                Some(variant.to_string()),
-            ));
-        }
-
         let metadata = VariantMetadata {
             schema_version: 1,
             name: variant.clone(),

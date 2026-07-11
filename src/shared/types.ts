@@ -452,9 +452,6 @@ export interface AppSettings {
   onboardingDismissed: boolean;
   coordSortByActivity: boolean;
   alwaysShowSelectedWorkgroup?: boolean;
-  injectRtkHook: boolean;
-  rtkPromptDismissed: boolean;
-  informWhenRtkInstalled: boolean;
   autoGenerateTaskTitle: boolean;
   agentTemplatesPath: string | null;
   themeLight: boolean;

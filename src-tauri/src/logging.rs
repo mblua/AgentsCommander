@@ -698,7 +698,7 @@ mod tests {
     /// `#[serde(rename_all = "camelCase")]` rename is part of the contract with
     /// `src/shared/types.ts`. The four field names are single-word today, so the
     /// rename is a no-op — this test guards the contract against a future
-    /// field rename (mirrors `rtk_sweep_result_serializes_camel_case`).
+    /// field rename.
     #[test]
     fn error_log_entry_serializes_camel_case() {
         let json = serde_json::to_string(&entry("boom")).expect("serialize");

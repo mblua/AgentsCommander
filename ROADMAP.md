@@ -15,7 +15,6 @@ This file is a snapshot. The authoritative status for any item lives in its link
 - Portable instances (rename the `.exe` → isolated workspace, ports, mutex, config)
 - Embedded HTTP/WebSocket server (per-instance, opt-in)
 - Step-by-step PTY visibility per agent (xterm.js + WebGL + ConPTY)
-- RTK token-savings hook injection for Claude Code (auto-detect on PATH at startup)
 
 ## Planned
 
@@ -45,7 +44,7 @@ This file is a snapshot. The authoritative status for any item lives in its link
 
 ### Execution determinism
 
-- **AC Harness** - deterministic command-execution layer that complements RTK, plus extending RTK compatibility beyond Claude to Codex, Gemini, and future agents (today only Claude's `.claude/settings.local.json` hook is wired). ([#318](https://github.com/mblua/AgentsCommander/issues/318))
+- **AC Harness** - deterministic command-execution layer for coding-agent tool calls, extending beyond Claude to Codex, Gemini, and future agents (today only Claude's `.claude/settings.local.json` hook is wired). ([#318](https://github.com/mblua/AgentsCommander/issues/318))
 
 ### Interoperability
 

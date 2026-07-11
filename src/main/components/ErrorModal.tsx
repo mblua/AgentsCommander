@@ -41,7 +41,7 @@ const ErrorModal: Component = () => {
   onMount(async () => {
     if (!isTauri) return; // Web remote client: the error modal is desktop-only.
     // Subscribe BEFORE the initial drain so a ping fired mid-mount is not lost
-    // (same ordering rule as RtkBanner). A ping racing the drain just triggers
+    // (subscribe-before-drain ordering rule). A ping racing the drain just triggers
     // a second drain — harmless: read-and-clear returns [] when already empty.
     unlisteners.push(await onErrorLogEvent(drainAndEnqueue));
     await drainAndEnqueue();

@@ -10,7 +10,6 @@ For a coding agent with config seed active, at spawn AC:
 
 1. Picks the first source that qualifies, checking the [seed tiers](#seed-tiers-where-the-config-comes-from) from highest precedence to lowest.
 2. Copies it to `<replica root>/<dest>`, substituting AC path tokens in text files.
-3. For a `.claude` destination only, re-applies the RTK PreToolUse hook to match your global `injectRtkHook` setting.
 
 The destination is replaced atomically. AC renames any existing folder to a trash name first, then moves the new copy into place, so the destination is always either fully old or fully new, never half-written. If anything goes wrong, AC logs it and the spawn continues. A seed failure never stops your session from launching.
 
@@ -129,12 +128,10 @@ The tier in the message (`WorkspaceProfile`, `WorkspaceBase`, `MatrixProfile`, `
 
 ## What it does not do
 
-Config seed copies the template and, for `.claude`, re-applies the RTK hook. That is all. In particular:
+Config seed copies the template. That is all. In particular:
 
 - It does **not** write any claude.md exclude settings. The exclude subsystem was removed in [#590](https://github.com/mblua/AgentsCommander/issues/590); there is nothing to configure and nothing to document here.
-- For any destination other than `.claude`, there is **no** post-copy re-apply step. The folder is copied as-is, with token substitution, and nothing further is stamped.
-
-The only post-seed step is the RTK PreToolUse hook, and only for a `.claude` destination: AC re-applies it to match your global `injectRtkHook` setting, adding it when injection is on and removing it when off. See [RTK integration](rtk-integration.md).
+- There is **no** post-copy re-apply step for any destination, including `.claude`. The folder is copied as-is, with token substitution, and nothing further is stamped.
 
 ## Troubleshooting
 
@@ -150,4 +147,3 @@ The only post-seed step is the RTK PreToolUse hook, and only for a `.claude` des
 - [Coding Agent Profiles](coding-agent-profiles.md) - how the profile letter is resolved
 - [Portable instances](portable-instances.md#config-directory-rule) - where `<config_dir>` lives
 - [Agent Matrix conventions, section 5](../agent-matrix-conventions.md#5-profile-path-placeholders) - the three AC path tokens
-- [RTK integration](rtk-integration.md) - the post-seed `.claude` hook

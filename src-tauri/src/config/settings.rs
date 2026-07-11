@@ -419,23 +419,6 @@ pub struct AppSettings {
     /// Phase 2 (UI dropdown) and Phase 3 (live reload) are deferred per the issue.
     #[serde(default)]
     pub log_level: Option<String>,
-    /// When true, AC writes the RTK PreToolUse rewriter hook into every managed
-    /// agent dir's `.claude/settings.local.json` (matrices + workgroup replicas).
-    /// Toggled from Settings/General. See issue #120.
-    #[serde(default)]
-    pub inject_rtk_hook: bool,
-    /// When true, the startup banner offering to enable `inject_rtk_hook` is
-    /// suppressed for the lifetime of this settings file. Set by the `[Don't
-    /// ask again]` button on the banner. See issue #120.
-    #[serde(default)]
-    pub rtk_prompt_dismissed: bool,
-    /// When true, AC may surface the startup banner offering to enable
-    /// `inject_rtk_hook`, subject to the other gates: `rtk` on PATH,
-    /// `inject_rtk_hook == false`, and `rtk_prompt_dismissed == false`.
-    /// Defaults to `false` so the banner is opt-in and never appears unless the
-    /// user enables it in Settings → General → RTK. See issue #426.
-    #[serde(default)]
-    pub inform_when_rtk_installed: bool,
     /// When true, on Coordinator session spawn AC injects a prompt asking the
     /// agent to add a YAML frontmatter `title:` line to its workgroup
     /// `TASK.md` (only if the brief is non-empty and has no `title:` yet).
@@ -711,9 +694,6 @@ impl Default for AppSettings {
             coord_sort_by_activity: false,
             always_show_selected_workgroup: true,
             log_level: None,
-            inject_rtk_hook: false,
-            rtk_prompt_dismissed: false,
-            inform_when_rtk_installed: false,
             auto_generate_task_title: true,
             agent_templates_path: None,
             theme_light: false,
@@ -737,43 +717,6 @@ impl Default for AppSettings {
             auto_self_clear_by_agent: std::collections::BTreeMap::new(),
             container_credentials_from_host: true,
         }
-    }
-}
-
-/// Pure decision for the boot-time RTK banner/sweep mode (issue #120 §18,
-/// extended by issue #426). Maps the three persisted settings flags plus the
-/// runtime `rtk`-on-PATH probe to one of the four `RtkStartupMode` strings the
-/// frontend understands. Side-effect-free so the full truth table is unit
-/// testable without booting Tauri, spawning the setup task, probing PATH, or
-/// touching disk.
-///
-/// `inform_when_rtk_installed` is the issue #426 opt-in gate: the
-/// `prompt-enable` banner only appears when the user has explicitly turned it
-/// on. `rtk_prompt_dismissed` is retained as a secondary suppression gate (the
-/// banner's `[Don't ask again]` button) and still wins when set.
-pub fn compute_rtk_startup_mode(
-    rtk_present: bool,
-    inject_enabled: bool,
-    prompt_dismissed: bool,
-    inform_when_rtk_installed: bool,
-) -> &'static str {
-    match (
-        rtk_present,
-        inject_enabled,
-        prompt_dismissed,
-        inform_when_rtk_installed,
-    ) {
-        // Opt-in banner: rtk present, not yet injected, not dismissed, and the
-        // user asked to be informed. All four must hold (issue #426).
-        (true, false, false, true) => "prompt-enable",
-        // Already enabled: recover/refresh the hook. `inform` and `dismissed`
-        // are irrelevant once injection is on.
-        (true, true, _, _) => "active",
-        // Enabled but the binary vanished from PATH: auto-disable and clean up.
-        (false, true, _, _) => "auto-disabled",
-        // Everything else (inform=false, or dismissed=true, or rtk absent and
-        // not injected) is a no-op.
-        _ => "silent",
     }
 }
 
@@ -3743,17 +3686,6 @@ mod tests {
     }
 
     #[test]
-    fn inject_rtk_hook_round_trips_through_serde() {
-        let mut s = AppSettings::default();
-        assert!(!s.inject_rtk_hook);
-        s.inject_rtk_hook = true;
-        let json = serde_json::to_string(&s).expect("serialize");
-        assert!(json.contains("\"injectRtkHook\":true"));
-        let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
-        assert!(back.inject_rtk_hook);
-    }
-
-    #[test]
     fn main_resource_monitor_attached_round_trips_and_defaults_false() {
         // #587 - round-trips through serde as camelCase.
         let mut s = AppSettings::default();
@@ -3800,99 +3732,6 @@ mod tests {
         let from_old: AppSettings =
             serde_json::from_str(json_without).expect("deserialize old json");
         assert!(!from_old.main_resource_monitor_attached);
-    }
-
-    #[test]
-    fn rtk_prompt_dismissed_round_trips_through_serde() {
-        let mut s = AppSettings::default();
-        assert!(!s.rtk_prompt_dismissed);
-        s.rtk_prompt_dismissed = true;
-        let json = serde_json::to_string(&s).expect("serialize");
-        assert!(json.contains("\"rtkPromptDismissed\":true"));
-        let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
-        assert!(back.rtk_prompt_dismissed);
-    }
-
-    #[test]
-    fn inform_when_rtk_installed_round_trips_through_serde() {
-        let mut s = AppSettings::default();
-        assert!(!s.inform_when_rtk_installed);
-        s.inform_when_rtk_installed = true;
-        let json = serde_json::to_string(&s).expect("serialize");
-        assert!(json.contains("\"informWhenRtkInstalled\":true"));
-        let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
-        assert!(back.inform_when_rtk_installed);
-    }
-
-    #[test]
-    fn inform_when_rtk_installed_defaults_false_when_missing_from_json() {
-        // Old settings.json without the #426 field must deserialize to false so
-        // the startup banner stays opt-in (never appears after an upgrade).
-        let json = r#"{
-            "defaultShell": "bash",
-            "defaultShellArgs": [],
-            "agents": []
-        }"#;
-        let s: AppSettings = serde_json::from_str(json).expect("deserialize old json");
-        assert!(!s.inform_when_rtk_installed);
-    }
-
-    #[test]
-    fn compute_rtk_startup_mode_prompt_enable_requires_all_gates() {
-        // Opt-in banner: only when rtk present, injection off, not dismissed,
-        // AND the user opted in (#426).
-        assert_eq!(
-            super::compute_rtk_startup_mode(true, false, false, true),
-            "prompt-enable"
-        );
-    }
-
-    #[test]
-    fn compute_rtk_startup_mode_silent_when_inform_off() {
-        // Core #426 regression guard: rtk present, not injected, not dismissed,
-        // but inform=false => no banner (silent). This is the new default.
-        assert_eq!(
-            super::compute_rtk_startup_mode(true, false, false, false),
-            "silent"
-        );
-    }
-
-    #[test]
-    fn compute_rtk_startup_mode_dismissed_suppresses_even_when_inform_on() {
-        // rtk_prompt_dismissed remains a secondary gate (#426): a dismissed
-        // prompt stays suppressed even if inform was later enabled.
-        assert_eq!(
-            super::compute_rtk_startup_mode(true, false, true, true),
-            "silent"
-        );
-    }
-
-    #[test]
-    fn compute_rtk_startup_mode_active_when_injected_regardless_of_inform() {
-        assert_eq!(
-            super::compute_rtk_startup_mode(true, true, false, false),
-            "active"
-        );
-        assert_eq!(
-            super::compute_rtk_startup_mode(true, true, true, true),
-            "active"
-        );
-    }
-
-    #[test]
-    fn compute_rtk_startup_mode_auto_disabled_when_missing_but_injected() {
-        assert_eq!(
-            super::compute_rtk_startup_mode(false, true, false, false),
-            "auto-disabled"
-        );
-    }
-
-    #[test]
-    fn compute_rtk_startup_mode_silent_when_missing_and_not_injected() {
-        assert_eq!(
-            super::compute_rtk_startup_mode(false, false, false, true),
-            "silent"
-        );
     }
 
     // ── Issue #248 — legacy startOnlyCoordinators → restoreCoordinatorWakeState ──

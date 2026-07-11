@@ -1459,31 +1459,14 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         // delete spawn A's in-flight temp/trash mid-swap and lose the config
         // (breaking H1's "dest always fully-old or fully-new" + M3 isolation).
         // Under this lock any other-id scratch is truly stale, so the
-        // leak-reclaim sweep stays safe. The same lock also gives the `.claude`
-        // re-apply its M2 serialization vs sweep_rtk_hook's settings.local.json
-        // read-modify-write. Clone the Arc out of State first so the owned guard
-        // does not borrow a State temporary (E0716).
+        // leak-reclaim sweep stays safe. Clone the Arc out of State first so the
+        // owned guard does not borrow a State temporary (E0716).
         let _seed_guard = {
-            let lock = app.state::<crate::RtkSweepLockState>().inner().clone();
+            let lock = app.state::<crate::ConfigSeedLockState>().inner().clone();
             lock.lock_owned().await
         };
 
-        let report = crate::config::config_seed::perform_config_seed(seed, &id.to_string());
-
-        // M1: a `.claude` seed clean-replaces the dir, wiping the AC-managed
-        // settings.local.json. Re-stamp the rtk hook (per the global toggle).
-        // `cwd` is the replica root; the writer appends `.claude`, so this lands
-        // in the seeded dir.
-        if matches!(report, crate::config::config_seed::ConfigSeedReport::Seeded) {
-            if let Some(re) = &seed.claude_settings_reapply {
-                let dir = std::path::Path::new(&cwd);
-                if let Err(e) =
-                    crate::config::claude_settings::ensure_rtk_pretool_hook(dir, re.inject_rtk_hook)
-                {
-                    log::warn!("[config-seed] re-apply rtk hook failed: {}", e);
-                }
-            }
-        }
+        let _ = crate::config::config_seed::perform_config_seed(seed, &id.to_string());
     }
 
     let spawn_cwd = container_path_context

@@ -95,12 +95,11 @@ AC does not store coding-agent credentials. Each CLI manages its own:
 | Codex | `~/.codex/` |
 | Gemini | `~/.gemini/` |
 
-If you use the AC-managed agent directories, AC may write minimal `.claude/settings.local.json` files (for RTK integration); these contain configuration only, not credentials.
+If you use the AC-managed agent directories, any files AC writes into them contain configuration only, not credentials.
 
 ## See also
 
 - [Coding Agent Profiles](../features/coding-agent-profiles.md): lettered launch variants (A/B/C) per coding agent
 - [Creating agents](../agents/creating-agents.md) — make a new agent dir
 - [Settings reference](../reference/settings.md) — full schema for `agents[]`
-- [RTK integration](../features/rtk-integration.md) — Claude Code Bash-tool compression
 - [Roadmap: coding agents](../../ROADMAP.md): OpenCode first-class integration, Nvidia agent, more

@@ -202,17 +202,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   // in-progress key/value edits stable while the underlying Record<string,string>
   // is rebuilt on every keystroke. Keyed by `${agentId}:${letter}`.
   const [profileCellEnvRows, setProfileCellEnvRows] = createStore<Record<string, ProfileCellEnvRow[]>>({});
-  // Snapshot of injectRtkHook captured at modal open. handleSave compares it
-  // against the live form value to decide whether to fire sweepRtkHook.
-  // updateField is local-only (mutates the form draft), so the sweep only
-  // dispatches when the user actually clicks Save and the value changed.
-  const [initialInjectRtk, setInitialInjectRtk] = createSignal<boolean | null>(
-    seededSettings?.injectRtkHook ?? null,
-  );
-  // Disables the Save button and the rtk checkbox while the per-replica sweep
-  // is in flight, preventing a rapid double-Save from queuing two concurrent
-  // sweeps with opposite enabled values (silent partial state).
-  const [rtkSweepInFlight, setRtkSweepInFlight] = createSignal(false);
 
   const s = () => settings.data;
 
@@ -543,7 +532,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       setSettings("data", nextSettings);
       const loadedSeed = cloneSettings(loaded);
       setModalSeed(loadedSeed);
-      setInitialInjectRtk(loaded.injectRtkHook);
       // Seed the comparison pair from the loaded agents (left primary + right
       // comparison slot). Only when still unset, so a user's pick isn't clobbered.
       if (leftRailId() === null && loaded.agents[0]) setLeftRailId(loaded.agents[0].id);
@@ -1152,29 +1140,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         const { getCurrentWindow } = await import("@tauri-apps/api/window");
         await getCurrentWindow().setAlwaysOnTop(nextSettings.sidebarAlwaysOnTop);
       }
-      // RTK sweep — only when the toggle value changed during this modal session.
-      // Fired AFTER save_settings_draft persists, so a sweep failure cannot leave
-      // the persisted setting in disagreement with the on-disk replica state
-      // worse than the pre-save baseline.
-      const initial = initialInjectRtk();
-      const next = nextSettings.injectRtkHook;
-      if (initial !== null && initial !== next) {
-        setRtkSweepInFlight(true);
-        try {
-          const result = await SettingsAPI.sweepRtkHook(next);
-          if (result.errors.length > 0) {
-            console.error(
-              `[rtk] sweep partial failure: ${result.errors.length}/${result.total} dirs failed`,
-              result.errors,
-            );
-          }
-          setInitialInjectRtk(next);
-        } catch (err) {
-          console.error("[rtk] sweep failed:", err);
-        } finally {
-          setRtkSweepInFlight(false);
-        }
-      }
       // Refresh settings store so mic button visibility updates
       settingsStore.refresh();
       // Refresh repos (project_paths may have changed)
@@ -1451,37 +1416,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           credentials yourself (for example a CLAUDE_CODE_OAUTH_TOKEN env row). Host and
           containers share one login, so a token refresh in one place can require re-login in
           another.
-        </div>
-      </div>
-
-      <div class="settings-section">
-        <div class="settings-section-title">RTK Token Compression</div>
-        <label class="settings-checkbox-field">
-          <input
-            type="checkbox"
-            class="settings-checkbox"
-            checked={settings.data!.injectRtkHook}
-            disabled={saving() || rtkSweepInFlight()}
-            onChange={(e) => updateField("injectRtkHook", e.currentTarget.checked)}
-          />
-          <span>Inject RTK hook into agent replicas</span>
-        </label>
-        <label class="settings-checkbox-field">
-          <input
-            type="checkbox"
-            class="settings-checkbox"
-            checked={settings.data!.informWhenRtkInstalled}
-            disabled={saving()}
-            onChange={(e) =>
-              updateField("informWhenRtkInstalled", e.currentTarget.checked)
-            }
-          />
-          <span>Show the startup banner when RTK is installed but not enabled</span>
-        </label>
-        <div class="settings-hint">
-          Off by default. When on, AC offers to enable RTK injection via a sidebar
-          banner at startup. This banner setting is read once at launch, so changes
-          to it take effect the next time AC starts.
         </div>
       </div>
 
@@ -3198,12 +3132,12 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           <button
             class="modal-btn modal-btn-save"
             onClick={handleSave}
-            disabled={saving() || rtkSweepInFlight() || !!currentValidationError()}
+            disabled={saving() || !!currentValidationError()}
             data-ac-testid="settings.save"
             data-ac-role="button"
-            data-ac-state={saving() ? "saving" : rtkSweepInFlight() ? "sweeping" : "ready"}
+            data-ac-state={saving() ? "saving" : "ready"}
           >
-            {saving() ? "Saving..." : rtkSweepInFlight() ? "Sweeping..." : "Save"}
+            {saving() ? "Saving..." : "Save"}
           </button>
         </div>
       </div>

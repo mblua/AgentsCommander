@@ -361,7 +361,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     );
     // #609 npm update notification. Subscribe BEFORE snapshotting so a startup
     // emit fired during mount is never dropped; showUpdateToast dedups on
-    // version (mirrors RtkBanner's subscribe-then-snapshot order). The snapshot
+    // version (subscribe-then-snapshot order). The snapshot
     // is fire-and-forget so its IPC round-trip never delays the listener
     // registrations that follow in this onMount.
     unlisteners.push(
