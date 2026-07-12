@@ -512,7 +512,21 @@ describe("WorkgroupGroupRail favorites + collapsible rail (#965)", () => {
         vi.useFakeTimers();
         pointer(docs, "pointerdown", { clientY: 158 });
         vi.advanceTimersByTime(2000); // past REORDER_HOLD_MS -> dragging
+        expect(rail.classList.contains("reorder-active")).toBe(true);
+
         click(target("workgroupGroups.projectLabel.Project")); // fold mid-gesture
+
+        // ISOLATES G3, and it has to be asserted HERE, before the pointerup.
+        // `reorder-active` is bound to phase === "dragging" || "saving", so it is
+        // false only if cancelReorder() actually ran in the header's onClick.
+        //
+        // Without this line the test does NOT pin G3: `mockRect` installs its spy on
+        // the element OBJECT, so the folded-away siblings keep reporting height 30,
+        // the candidate list never empties, G1 cannot fire, and G2 silently catches
+        // the drop instead — the test stays green with G3 deleted. Same mirage the
+        // G1 test below sidesteps by mocking the siblings to zero height.
+        expect(rail.classList.contains("reorder-active")).toBe(false);
+
         pointer(window, "pointerup", { clientY: 84 });
         vi.useRealTimers();
 
