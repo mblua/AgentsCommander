@@ -457,9 +457,17 @@ const ProjectRailSection: Component<{
 
   const targetIndexForPointer = (clientY: number, groupId: string): number | null => {
     if (!projectEl) return null;
-    // #965 G2 — a collapsed section has no drop targets at all. Redundant given G1
-    // below, kept because it states the intent at the collapse site and covers a
-    // partially-unmounted frame.
+    // #965 G2 — a collapsed section has no drop targets at all.
+    //
+    // UNREACHABLE today, deliberately: RC-1 makes the header's onClick the only
+    // mutator of rail collapse, and G3 cancels the drag there BEFORE the toggle, so
+    // `collapsed()` is never true while a reorder is in flight. Nor is there a
+    // partially-unmounted frame in between — Solid disposes the <Show> synchronously
+    // inside the click task. G1 below is the guard that actually fires in production.
+    //
+    // Kept as the backstop for a future mutator that folds outside the header path.
+    // Deliberately pinned by NO test: reaching it requires manufacturing a state the
+    // design forbids, and a test for that would calcify it.
     if (collapsed()) return null;
     const projectRect = projectEl.getBoundingClientRect();
     if (clientY < projectRect.top || clientY > projectRect.bottom) return null;
