@@ -4,6 +4,7 @@ import type { AcWorkgroup, WorkgroupGroup } from "../../shared/types";
 import type { ProjectState } from "../stores/project";
 import { projectStore } from "../stores/project";
 import { projectCollapseStore } from "../stores/project-collapse";
+import { railCollapseStore } from "../stores/rail-collapse";
 import {
   MAX_GROUP_MATCH_ID_LENGTH,
   compileGroupRegex,
@@ -45,6 +46,15 @@ interface GroupButton {
   groupIndex: number | null;
 }
 
+/** #965 — the context menu and the groups modal live at the rail root (they are
+ *  shared by the project sections and the cross-project Favorites section), so a
+ *  target must be stored as IDENTITY, never as a captured `ProjectState` /
+ *  `WorkgroupGroup` object: `projectStore` replaces those objects on every reload,
+ *  and a capture goes stale the moment discovery refreshes. */
+type RailContextTarget =
+  | { kind: "project"; projectPath: string }
+  | { kind: "group"; projectPath: string; groupId: string };
+
 const REORDER_HOLD_MS = 2000;
 const REORDER_MOVE_CANCEL_PX = 6;
 const CONTEXT_MENU_VIEWPORT_MARGIN = 8;
@@ -78,7 +88,7 @@ function groupMatches(group: WorkgroupGroup, wg: AcWorkgroup): boolean {
   return !!regex?.test(id);
 }
 
-function tooltipFor(workgroups: AcWorkgroup[]): string {
+function tooltipFor(folderName: string, workgroups: AcWorkgroup[]): string {
   const rows = workgroups
     .flatMap((wg) =>
       wg.agents
@@ -91,7 +101,11 @@ function tooltipFor(workgroups: AcWorkgroup[]): string {
       return a.replica.name.localeCompare(b.replica.name, "en", { sensitivity: "base", numeric: true });
     })
     .map(({ wg, replica }) => `${wgTooltipLabel(wg.name)}:(${replica.name})`);
-  return rows.length > 0 ? rows.join("\n") : "No running agents";
+  const body = rows.length > 0 ? rows.join("\n") : "No running agents";
+  // #965 — the rail is 68px and the project header ellipsizes, so the native
+  // multi-line `title` is the only place the full project identity can live. It
+  // is what identifies a Favorites entry's owning project without a visible label.
+  return `${folderName}\n${body}`;
 }
 
 function buttonContent(
@@ -107,18 +121,238 @@ function buttonContent(
   };
 }
 
+/** #965 — the rail button markup carries THREE testids, all keyed on the group id.
+ *  A favorited group renders twice (Favorites + its project section), so all three
+ *  would duplicate. That is a hard break, not a wart: `automation-bridge.ts` THROWS
+ *  on a duplicate `data-ac-testid` rather than taking the first match, and the
+ *  suites' `railButtonOrder()` / `railDots()` do document-wide PREFIX scans
+ *  (`^workgroupGroups.button.` / `^workgroupGroups.dot.`) that a suffixed id would
+ *  still double. Hence a DISTINCT prefix for Favorites, not a namespaced suffix. */
+type RailButtonTestIds = { button: string; raiseHand: string; dot: string };
+
+function projectRailTestIds(key: string): RailButtonTestIds {
+  return {
+    button: `workgroupGroups.button.${key}`,
+    raiseHand: `workgroupGroups.raiseHand.${key}`,
+    dot: `workgroupGroups.dot.${key}`,
+  };
+}
+
+function favoriteRailTestIds(folderName: string, groupId: string): RailButtonTestIds {
+  const key = `${folderName}.${groupId}`;
+  return {
+    button: `workgroupGroups.favoriteButton.${key}`,
+    raiseHand: `workgroupGroups.favoriteRaiseHand.${key}`,
+    dot: `workgroupGroups.favoriteDot.${key}`,
+  };
+}
+
+/** #965 — lifted out of the `buttons` memo so the cross-project Favorites section
+ *  can build an identical button for a group it does not own. `reorderable` is a
+ *  parameter, and Favorites MUST pass `false` (see the reorder invariants). */
+function groupButtonFor(
+  project: ProjectState,
+  group: WorkgroupGroup,
+  groupIndex: number | null,
+  reorderable: boolean
+): GroupButton {
+  const workgroups = project.workgroups.filter((wg) => groupMatches(group, wg));
+  return {
+    key: group.id,
+    ...buttonContent(group.name, workgroups),
+    selection: { kind: "group", id: group.id },
+    workgroups,
+    title: tooltipFor(project.folderName, workgroups),
+    reorderable,
+    groupId: group.id,
+    groupIndex,
+  };
+}
+
+/** #965 — was a closure inside `ProjectRailSection`; both sections need it now.
+ *  Both copies of a favorited group highlight simultaneously, which is correct:
+ *  it is one group. */
+function isSelected(projectPath: string, button: GroupButton): boolean {
+  if (!workgroupGroupsStore.isActiveProject(projectPath)) return false;
+  const current = workgroupGroupsStore.selection(projectPath);
+  if (current.kind !== button.selection.kind) return false;
+  return current.kind !== "group" || button.selection.kind !== "group" || current.id === button.selection.id;
+}
+
+/** #965 — the existing group-button onClick body, parameterized by project so a
+ *  Favorites click behaves identically (you clicked a group of project B, so the
+ *  main panel focuses B).
+ *
+ *  RC-2: the two `projectCollapseStore` calls drive the **ProjectPanel** (#810
+ *  auto-focus) and are unchanged. They must NEVER touch `railCollapseStore`: the
+ *  rail folds only on an explicit header click. */
+function selectFromRail(project: ProjectState, selection: WorkgroupGroupSelection): void {
+  workgroupGroupsStore.select(project.path, selection);
+  // Collapse every other loaded project and expand this owner on every click. Use
+  // the live project list because a fresh session has no collapse-map entries.
+  // Scrolling is owned separately by SidebarApp's primitive semantic-key effect.
+  projectCollapseStore.collapseAllExceptKnown(
+    project.path,
+    projectStore.projects.map((p) => p.path)
+  );
+  projectCollapseStore.setProjectCollapsed(project.path, false);
+}
+
+/** #965 — the rail button markup, extracted verbatim so Favorites renders an
+ *  identical button. The pointer handlers and `onRef` are OPTIONAL: Favorites
+ *  passes none, so a favorite never enters a `groupButtonEls` map, never arms a
+ *  drag, and never gets the `reorderable` class (and its `cursor: grab`). */
+const RailButton: Component<{
+  button: GroupButton;
+  testIds: RailButtonTestIds;
+  selected: boolean;
+  reorderState?: ReorderState | null;
+  onRef?: (el: HTMLButtonElement) => void;
+  onPointerDown?: (event: PointerEvent & { currentTarget: HTMLButtonElement }) => void;
+  onPointerMove?: (event: PointerEvent) => void;
+  onPointerUp?: (event: PointerEvent) => void;
+  onPointerCancel?: (event: PointerEvent) => void;
+  onContextMenu: (event: MouseEvent) => void;
+  onClick: (event: MouseEvent) => void;
+}> = (props) => (
+  <button
+    ref={(el) => props.onRef?.(el)}
+    class="workgroup-group-rail-button"
+    classList={{
+      selected: props.selected,
+      reorderable: props.button.reorderable,
+      "reorder-arming":
+        props.reorderState?.phase === "arming" && props.reorderState?.groupId === props.button.groupId,
+      "reorder-dragging":
+        (props.reorderState?.phase === "dragging" || props.reorderState?.phase === "saving") &&
+        props.reorderState?.groupId === props.button.groupId,
+      "reorder-invalid":
+        props.reorderState?.phase === "dragging" &&
+        props.reorderState?.groupId === props.button.groupId &&
+        props.reorderState?.targetIndex === null,
+    }}
+    aria-pressed={props.selected}
+    aria-grabbed={
+      props.button.reorderable ? props.reorderState?.groupId === props.button.groupId : undefined
+    }
+    title={props.button.title}
+    onPointerDown={props.onPointerDown}
+    onPointerMove={props.onPointerMove}
+    onPointerUp={props.onPointerUp}
+    onPointerCancel={props.onPointerCancel}
+    onContextMenu={props.onContextMenu}
+    onClick={props.onClick}
+    data-ac-testid={props.testIds.button}
+  >
+    <span class="workgroup-group-rail-title-line">
+      <Show when={props.button.raiseHand}>
+        <span
+          class="workgroup-group-rail-raise-hand"
+          data-ac-testid={props.testIds.raiseHand}
+          title="A coordinator raised its hand"
+          aria-label="A coordinator raised its hand"
+        >
+          <RaiseHandIcon class="workgroup-group-rail-raise-hand-icon" />
+        </span>
+      </Show>
+      <span
+        class="workgroup-group-rail-title"
+        classList={{
+          // #775 — built-in/system groups (All, Ungrouped, …) render bold to stand
+          // out from user-created groups. Gated on the selection kind, not the
+          // display name, so a user group named "All" stays normal weight.
+          "workgroup-group-rail-title-system": props.button.selection.kind !== "group",
+        }}
+      >
+        {props.button.name}
+      </span>
+    </span>
+    <span class="workgroup-group-rail-counter-line">
+      <Show when={props.button.working}>
+        <span
+          class="session-item-status running workgroup-group-rail-dot"
+          data-ac-testid={props.testIds.dot}
+        />
+      </Show>
+      {props.button.counter}
+    </span>
+  </button>
+);
+
+/** #965 — the cross-project Favorites section. Pinned OUTSIDE
+ *  `.workgroup-group-rail-scroll` at the top, mirroring how #881 pinned Archive at
+ *  the bottom: that is what makes it permanently visible. */
+const FavoritesRailSection: Component<{
+  projects: ProjectState[];
+  onOpenContextMenu: (event: MouseEvent, target: RailContextTarget) => void;
+}> = (props) => {
+  const collapsed = () => railCollapseStore.isFavoritesCollapsed();
+
+  // Iterate `props.projects`, never a global list: an archived/hidden project has
+  // no rail section and must not contribute favorites. A project whose rail section
+  // is COLLAPSED still contributes, because `ensureLoaded` lives outside the
+  // collapse `<Show>` — that is what makes a collapsed project's favorites visible.
+  const entries = createMemo(() =>
+    props.projects.flatMap((project) =>
+      workgroupGroupsStore
+        .config(project.path)
+        .groups.filter((group) => group.favorite)
+        .map((group) => ({ project, group, button: groupButtonFor(project, group, null, false) }))
+    )
+  );
+
+  return (
+    <Show when={entries().length > 0}>
+      <div class="workgroup-group-rail-favorites" data-ac-testid="workgroupGroups.favorites">
+        <button
+          type="button"
+          class="workgroup-group-rail-project-label workgroup-group-rail-header"
+          aria-expanded={!collapsed()}
+          onClick={() => railCollapseStore.toggleFavoritesCollapsed()}
+          data-ac-testid="workgroupGroups.favorites.header"
+        >
+          Favorites
+        </button>
+        <Show when={!collapsed()}>
+          <div class="workgroup-group-rail-favorites-scroll">
+            <For each={entries()}>
+              {(entry) => (
+                <RailButton
+                  button={entry.button}
+                  testIds={favoriteRailTestIds(entry.project.folderName, entry.group.id)}
+                  selected={isSelected(entry.project.path, entry.button)}
+                  onContextMenu={(event) =>
+                    props.onOpenContextMenu(event, {
+                      kind: "group",
+                      projectPath: entry.project.path,
+                      groupId: entry.group.id,
+                    })
+                  }
+                  onClick={() => selectFromRail(entry.project, entry.button.selection)}
+                />
+              )}
+            </For>
+          </div>
+        </Show>
+      </div>
+    </Show>
+  );
+};
+
 const ProjectRailSection: Component<{
   project: ProjectState;
   showProjectLabel: boolean;
+  onOpenContextMenu: (event: MouseEvent, target: RailContextTarget) => void;
 }> = (props) => {
-  const [editing, setEditing] = createSignal(false);
-
   createEffect(() => {
     void workgroupGroupsStore.ensureLoaded(props.project.path);
   });
 
   const config = () => workgroupGroupsStore.config(props.project.path);
-  const selection = () => workgroupGroupsStore.selection(props.project.path);
+  // #965 — the RAIL's own collapse (RC-1), never the ProjectPanel's. The only
+  // `projectCollapseStore` reference left in this file is the #810 auto-focus pair
+  // inside `selectFromRail`, which drives the ProjectPanel and is unchanged.
+  const collapsed = () => railCollapseStore.isProjectCollapsed(props.project.path);
   const ungroupedWorkgroups = createMemo(() =>
     props.project.workgroups.filter(
       (wg) => !config().groups.some((group) => groupMatches(group, wg))
@@ -138,7 +372,7 @@ const ProjectRailSection: Component<{
         raiseHand: false,
         selection: { kind: "all" },
         workgroups: props.project.workgroups,
-        title: tooltipFor(props.project.workgroups),
+        title: tooltipFor(props.project.folderName, props.project.workgroups),
         reorderable: false,
         groupId: null,
         groupIndex: null,
@@ -151,7 +385,7 @@ const ProjectRailSection: Component<{
         ...buttonContent("Ungrouped", workgroups),
         selection: { kind: "ungrouped" },
         workgroups,
-        title: tooltipFor(workgroups),
+        title: tooltipFor(props.project.folderName, workgroups),
         reorderable: false,
         groupId: null,
         groupIndex: null,
@@ -171,41 +405,21 @@ const ProjectRailSection: Component<{
         ...buttonContent(nonStopDisplayName(nonStop.name), workgroups),
         selection: { kind: "nonstop" },
         workgroups,
-        title: tooltipFor(workgroups),
+        title: tooltipFor(props.project.folderName, workgroups),
         reorderable: false,
         groupId: null,
         groupIndex: null,
       });
     }
     for (const [groupIndex, group] of config().groups.entries()) {
-      const workgroups = props.project.workgroups.filter((wg) => groupMatches(group, wg));
-      result.push({
-        key: group.id,
-        ...buttonContent(group.name, workgroups),
-        selection: { kind: "group", id: group.id },
-        workgroups,
-        title: tooltipFor(workgroups),
-        reorderable: true,
-        groupId: group.id,
-        groupIndex,
-      });
+      result.push(groupButtonFor(props.project, group, groupIndex, true));
     }
     return result;
   });
-  const selected = (button: GroupButton) => {
-    if (!workgroupGroupsStore.isActiveProject(props.project.path)) return false;
-    const current = selection();
-    if (current.kind !== button.selection.kind) return false;
-    return current.kind !== "group" || button.selection.kind !== "group" || current.id === button.selection.id;
-  };
   const [reorderState, setReorderState] = createSignal<ReorderState | null>(null);
-  const [showContextMenu, setShowContextMenu] = createSignal(false);
-  const [contextMenuPos, setContextMenuPos] = createSignal({ x: 0, y: 0 });
   let holdTimer: number | null = null;
   let suppressClickGroupId: string | null = null;
   let projectEl: HTMLDivElement | undefined;
-  let contextMenuEl: HTMLDivElement | undefined;
-  let dismissContextMenu: ((ev?: Event) => void) | null = null;
   const groupButtonEls = new Map<string, HTMLButtonElement>();
 
   const clearHoldTimer = () => {
@@ -226,56 +440,12 @@ const ProjectRailSection: Component<{
     setReorderState(null);
   };
 
-  const cleanupContextMenu = () => {
-    if (!dismissContextMenu) return;
-    window.removeEventListener("click", dismissContextMenu);
-    window.removeEventListener("contextmenu", dismissContextMenu);
-    window.removeEventListener("keydown", dismissContextMenu as EventListener);
-    dismissContextMenu = null;
-  };
-
-  const positionContextMenu = (x: number, y: number) => {
-    if (!contextMenuEl) return;
-    const { width, height } = contextMenuEl.getBoundingClientRect();
-    const maxX = Math.max(
-      CONTEXT_MENU_VIEWPORT_MARGIN,
-      window.innerWidth - width - CONTEXT_MENU_VIEWPORT_MARGIN
-    );
-    const maxY = Math.max(
-      CONTEXT_MENU_VIEWPORT_MARGIN,
-      window.innerHeight - height - CONTEXT_MENU_VIEWPORT_MARGIN
-    );
-    setContextMenuPos({
-      x: Math.min(Math.max(CONTEXT_MENU_VIEWPORT_MARGIN, x), maxX),
-      y: Math.min(Math.max(CONTEXT_MENU_VIEWPORT_MARGIN, y), maxY),
-    });
-  };
-
-  const openContextMenu = (event: MouseEvent) => {
-    event.preventDefault();
-    event.stopPropagation();
+  // #965 — this section owns the reorder gesture, so it cancels the drag before
+  // delegating to the rail root (which owns the menu). preventDefault /
+  // stopPropagation live in the root's handler.
+  const openContextMenu = (event: MouseEvent, target: RailContextTarget) => {
     cancelReorder(true);
-    cleanupContextMenu();
-    setContextMenuPos({ x: event.clientX, y: event.clientY });
-    setShowContextMenu(true);
-    const dismiss = (ev?: Event) => {
-      if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
-      setShowContextMenu(false);
-      cleanupContextMenu();
-    };
-    dismissContextMenu = dismiss;
-    setTimeout(() => {
-      positionContextMenu(event.clientX, event.clientY);
-      window.addEventListener("click", dismiss);
-      window.addEventListener("contextmenu", dismiss);
-      window.addEventListener("keydown", dismiss as EventListener);
-    });
-  };
-
-  const openEditorFromContextMenu = () => {
-    setShowContextMenu(false);
-    cleanupContextMenu();
-    setEditing(true);
+    props.onOpenContextMenu(event, target);
   };
 
   createEffect(() => {
@@ -287,14 +457,30 @@ const ProjectRailSection: Component<{
 
   const targetIndexForPointer = (clientY: number, groupId: string): number | null => {
     if (!projectEl) return null;
+    // #965 G2 — a collapsed section has no drop targets at all. Redundant given G1
+    // below, kept because it states the intent at the collapse site and covers a
+    // partially-unmounted frame.
+    if (collapsed()) return null;
     const projectRect = projectEl.getBoundingClientRect();
     if (clientY < projectRect.top || clientY > projectRect.bottom) return null;
 
     const candidates = Array.from(groupButtonEls.entries())
       .filter(([id]) => id !== groupId)
+      // Solid does not null out `ref` callbacks on disposal, so this map retains
+      // detached elements whose getBoundingClientRect() is all zeros. Necessary,
+      // but NOT sufficient — see G1. Do not remove it.
       .map(([id, el]) => ({ id, rect: el.getBoundingClientRect() }))
       .filter(({ rect }) => rect.height > 0)
       .sort((a, b) => a.rect.top - b.rect.top);
+
+    // #965 G1 (root fix) — "no candidates" means "nothing to drop onto", NOT "drop
+    // at index 0". Falling through to `return candidates.length` (= 0) here would
+    // splice the dragged group to the front and PERSIST it: a drag in flight whose
+    // buttons unmount mid-gesture (a header click) would silently reorder the
+    // project. The only pre-existing empty case is a single-group project, where
+    // sourceIndex is 0 anyway and the reorder was already a no-op, so null is
+    // equally correct there.
+    if (candidates.length === 0) return null;
 
     for (let index = 0; index < candidates.length; index++) {
       const rect = candidates[index].rect;
@@ -428,7 +614,6 @@ const ProjectRailSection: Component<{
     window.removeEventListener("pointerup", onWindowPointerUp);
     window.removeEventListener("pointercancel", onWindowPointerCancel);
     clearHoldTimer();
-    cleanupContextMenu();
     suppressClickGroupId = null;
     groupButtonEls.clear();
   });
@@ -460,100 +645,70 @@ const ProjectRailSection: Component<{
       data-ac-testid={`workgroupGroups.rail.${props.project.folderName}`}
     >
       <Show when={props.showProjectLabel}>
-        <div
-          class="workgroup-group-rail-project-label"
+        <button
+          type="button"
+          class="workgroup-group-rail-project-label workgroup-group-rail-header"
           title={props.project.path}
-          onContextMenu={openContextMenu}
+          aria-expanded={!collapsed()}
+          onClick={() => {
+            // #965 G3 — cancel any in-flight drag BEFORE the toggle unmounts the
+            // buttons, so the trailing pointerup cannot resolve a drop against an
+            // empty candidate list. Same one-liner the context menu already uses.
+            // suppressClick=true is correct: the gesture was a drag, not a click.
+            cancelReorder(true);
+            railCollapseStore.toggleProjectCollapsed(props.project.path);
+          }}
+          onContextMenu={(event) =>
+            openContextMenu(event, { kind: "project", projectPath: props.project.path })
+          }
           data-ac-testid={`workgroupGroups.projectLabel.${props.project.folderName}`}
         >
           {props.project.folderName}
-        </div>
+        </button>
       </Show>
 
-      <For each={previewButtons()}>
-        {(button) => (
-          <button
-            ref={(el) => {
-              if (button.groupId) groupButtonEls.set(button.groupId, el);
-            }}
-            class="workgroup-group-rail-button"
-            classList={{
-              selected: selected(button),
-              reorderable: button.reorderable,
-              "reorder-arming": reorderState()?.phase === "arming" && reorderState()?.groupId === button.groupId,
-              "reorder-dragging":
-                (reorderState()?.phase === "dragging" || reorderState()?.phase === "saving") &&
-                reorderState()?.groupId === button.groupId,
-              "reorder-invalid":
-                reorderState()?.phase === "dragging" &&
-                reorderState()?.groupId === button.groupId &&
-                reorderState()?.targetIndex === null,
-            }}
-            aria-pressed={selected(button)}
-            aria-grabbed={button.reorderable ? reorderState()?.groupId === button.groupId : undefined}
-            title={button.title}
-            onPointerDown={(event) => startPress(event, button)}
-            onPointerMove={movePress}
-            onPointerUp={finishPress}
-            onPointerCancel={cancelPress}
-            onContextMenu={openContextMenu}
-            onClick={(event) => {
-              if (button.groupId && suppressClickGroupId === button.groupId) {
-                suppressClickGroupId = null;
-                event.preventDefault();
-                event.stopPropagation();
-                return;
+      <Show when={!collapsed()}>
+        <For each={previewButtons()}>
+          {(button) => (
+            <RailButton
+              button={button}
+              testIds={projectRailTestIds(button.key)}
+              selected={isSelected(props.project.path, button)}
+              reorderState={reorderState()}
+              onRef={(el) => {
+                if (button.groupId) groupButtonEls.set(button.groupId, el);
+              }}
+              onPointerDown={(event) => startPress(event, button)}
+              onPointerMove={movePress}
+              onPointerUp={finishPress}
+              onPointerCancel={cancelPress}
+              onContextMenu={(event) =>
+                openContextMenu(
+                  event,
+                  // Pseudo-entries (All / Ungrouped / Alert me!) have `groupId: null`
+                  // and cannot be favorited, so they open the project menu (Edit only).
+                  // Gated on the id, never on the display name.
+                  button.groupId
+                    ? { kind: "group", projectPath: props.project.path, groupId: button.groupId }
+                    : { kind: "project", projectPath: props.project.path }
+                )
               }
-              workgroupGroupsStore.select(props.project.path, button.selection);
-              // Collapse every other loaded project and expand this owner on
-              // every click. Use the live project list because a fresh session
-              // has no collapse-map entries. Scrolling is owned separately by
-              // SidebarApp's primitive semantic-key effect.
-              projectCollapseStore.collapseAllExceptKnown(
-                props.project.path,
-                projectStore.projects.map((p) => p.path)
-              );
-              projectCollapseStore.setProjectCollapsed(props.project.path, false);
-            }}
-            data-ac-testid={`workgroupGroups.button.${button.key}`}
-          >
-            <span class="workgroup-group-rail-title-line">
-              <Show when={button.raiseHand}>
-                <span
-                  class="workgroup-group-rail-raise-hand"
-                  data-ac-testid={`workgroupGroups.raiseHand.${button.key}`}
-                  title="A coordinator raised its hand"
-                  aria-label="A coordinator raised its hand"
-                >
-                  <RaiseHandIcon class="workgroup-group-rail-raise-hand-icon" />
-                </span>
-              </Show>
-              <span
-                class="workgroup-group-rail-title"
-                classList={{
-                  // #775 — built-in/system groups (All, Ungrouped, …) render bold
-                  // to stand out from user-created groups. Gated on the selection
-                  // kind, not the display name, so a user group named "All" stays
-                  // normal weight.
-                  "workgroup-group-rail-title-system": button.selection.kind !== "group",
-                }}
-              >
-                {button.name}
-              </span>
-            </span>
-            <span class="workgroup-group-rail-counter-line">
-              <Show when={button.working}>
-                <span
-                  class="session-item-status running workgroup-group-rail-dot"
-                  data-ac-testid={`workgroupGroups.dot.${button.key}`}
-                />
-              </Show>
-              {button.counter}
-            </span>
-          </button>
-        )}
-      </For>
+              onClick={(event) => {
+                if (button.groupId && suppressClickGroupId === button.groupId) {
+                  suppressClickGroupId = null;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  return;
+                }
+                selectFromRail(props.project, button.selection);
+              }}
+            />
+          )}
+        </For>
+      </Show>
 
+      {/* Deliberately OUTSIDE the collapse Show: a collapsed project must still
+          surface its config error. An error badge that hides itself is a bug. */}
       <Show when={workgroupGroupsStore.error(props.project.path)}>
         {(error) => (
           <div class="workgroup-group-rail-error" title={error()}>
@@ -561,53 +716,154 @@ const ProjectRailSection: Component<{
           </div>
         )}
       </Show>
-
-      <Show when={showContextMenu()}>
-        <Portal>
-          <div
-            ref={contextMenuEl}
-            class="session-context-menu"
-            style={{ left: `${contextMenuPos().x}px`, top: `${contextMenuPos().y}px` }}
-            onClick={(event) => event.stopPropagation()}
-            data-ac-testid="workgroupGroups.contextMenu"
-            data-ac-role="menu"
-          >
-            <button
-              class="session-context-option"
-              onClick={openEditorFromContextMenu}
-              data-ac-testid="workgroupGroups.contextMenu.edit"
-              data-ac-role="menuitem"
-            >
-              Edit
-            </button>
-          </div>
-        </Portal>
-      </Show>
-
-      <Show when={editing()}>
-        <WorkgroupGroupsModal
-          projectPath={props.project.path}
-          projectName={props.project.folderName}
-          onClose={() => setEditing(false)}
-        />
-      </Show>
     </div>
   );
 };
 
 const WorkgroupGroupRail: Component<WorkgroupGroupRailProps> = (props) => {
   const [showArchived, setShowArchived] = createSignal(false);
+  // #965 — the menu and the groups modal are hoisted here from ProjectRailSection:
+  // Favorites is cross-project and needs the same menu, and one <Portal> + one set
+  // of window dismiss listeners beats N of them.
+  const [contextTarget, setContextTarget] = createSignal<RailContextTarget | null>(null);
+  const [contextMenuPos, setContextMenuPos] = createSignal({ x: 0, y: 0 });
+  const [editingProjectPath, setEditingProjectPath] = createSignal<string | null>(null);
+  let contextMenuEl: HTMLDivElement | undefined;
+  let dismissContextMenu: ((ev?: Event) => void) | null = null;
 
   createEffect(() => {
     workgroupGroupsStore.reconcileActiveProject(props.projects.map((project) => project.path));
   });
 
+  // Resolved LIVE from props.projects, never from a capture, so the modal header
+  // cannot go stale after a discovery refresh (and it closes if the project dies).
+  const editingProject = createMemo(() => {
+    const path = editingProjectPath();
+    return path ? (props.projects.find((project) => project.path === path) ?? null) : null;
+  });
+
+  const cleanupContextMenu = () => {
+    if (!dismissContextMenu) return;
+    window.removeEventListener("click", dismissContextMenu);
+    window.removeEventListener("contextmenu", dismissContextMenu);
+    window.removeEventListener("keydown", dismissContextMenu as EventListener);
+    dismissContextMenu = null;
+  };
+
+  const positionContextMenu = (x: number, y: number) => {
+    if (!contextMenuEl) return;
+    const { width, height } = contextMenuEl.getBoundingClientRect();
+    const maxX = Math.max(
+      CONTEXT_MENU_VIEWPORT_MARGIN,
+      window.innerWidth - width - CONTEXT_MENU_VIEWPORT_MARGIN
+    );
+    const maxY = Math.max(
+      CONTEXT_MENU_VIEWPORT_MARGIN,
+      window.innerHeight - height - CONTEXT_MENU_VIEWPORT_MARGIN
+    );
+    setContextMenuPos({
+      x: Math.min(Math.max(CONTEXT_MENU_VIEWPORT_MARGIN, x), maxX),
+      y: Math.min(Math.max(CONTEXT_MENU_VIEWPORT_MARGIN, y), maxY),
+    });
+  };
+
+  const openContextMenu = (event: MouseEvent, target: RailContextTarget) => {
+    event.preventDefault();
+    event.stopPropagation();
+    cleanupContextMenu();
+    setContextMenuPos({ x: event.clientX, y: event.clientY });
+    setContextTarget(target);
+    const dismiss = (ev?: Event) => {
+      if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
+      setContextTarget(null);
+      cleanupContextMenu();
+    };
+    dismissContextMenu = dismiss;
+    // Deferred so the opening `contextmenu` event does not dismiss its own menu.
+    setTimeout(() => {
+      positionContextMenu(event.clientX, event.clientY);
+      window.addEventListener("click", dismiss);
+      window.addEventListener("contextmenu", dismiss);
+      window.addEventListener("keydown", dismiss as EventListener);
+    });
+  };
+
+  const closeContextMenu = () => {
+    setContextTarget(null);
+    cleanupContextMenu();
+  };
+
+  // #965 — the menu/modal now outlive the section that opened them (they live at the
+  // rail root). Drop a target whose project has left `props.projects`, OR whose group
+  // has left that project's config — a cross-window delete kills the group while the
+  // project lives, and that is the commoner case. Without this the menu offers
+  // "Favorite" on a dead group and the click is a silent no-op (the throw precedes
+  // any setEntries, so no `!` indicator ever appears). Mirrors the groupButtonEls
+  // prune effect in ProjectRailSection.
+  //
+  // NOT a write barrier: a `WorkgroupGroupsModal.save()` already in flight still
+  // lands. That is harmless (the store never evicts entries, so the modal seeded from
+  // the real config and rewrites the same groups), but nobody should believe otherwise.
+  createEffect(() => {
+    const live = new Set(props.projects.map((project) => project.path));
+    const target = contextTarget();
+    if (target) {
+      const projectGone = !live.has(target.projectPath);
+      const groupGone =
+        target.kind === "group" &&
+        !workgroupGroupsStore
+          .config(target.projectPath)
+          .groups.some((group) => group.id === target.groupId);
+      if (projectGone || groupGone) closeContextMenu();
+    }
+    const editing = editingProjectPath();
+    if (editing && !live.has(editing)) setEditingProjectPath(null);
+  });
+
+  onCleanup(cleanupContextMenu);
+
+  // Read from the store at render, never from a capture, so the label is correct
+  // after an external update (another window favoriting the same group).
+  const favoriteTargetIsFavorited = () => {
+    const target = contextTarget();
+    if (target?.kind !== "group") return false;
+    return !!workgroupGroupsStore
+      .config(target.projectPath)
+      .groups.find((group) => group.id === target.groupId)?.favorite;
+  };
+
+  const openEditorFromContextMenu = () => {
+    const target = contextTarget();
+    if (!target) return;
+    closeContextMenu();
+    setEditingProjectPath(target.projectPath);
+  };
+
+  const toggleFavoriteFromContextMenu = () => {
+    const target = contextTarget();
+    if (target?.kind !== "group") return;
+    const next = !favoriteTargetIsFavorited();
+    closeContextMenu();
+    void workgroupGroupsStore
+      .setGroupFavorite(target.projectPath, target.groupId, next)
+      .catch(() => {
+        // A save failure surfaces through workgroupGroupsStore.error(path), which the
+        // project section renders as the `!` badge.
+      });
+  };
+
   return (
     <aside class="workgroup-group-rail" data-ac-testid="workgroupGroups.rail">
+      <FavoritesRailSection projects={props.projects} onOpenContextMenu={openContextMenu} />
+
       <div class="workgroup-group-rail-scroll">
         <For each={props.projects}>
           {(project) => (
-            <ProjectRailSection project={project} showProjectLabel={true} />
+            <ProjectRailSection
+              project={project}
+              showProjectLabel={true}
+              onOpenContextMenu={openContextMenu}
+            />
           )}
         </For>
       </div>
@@ -626,6 +882,48 @@ const WorkgroupGroupRail: Component<WorkgroupGroupRailProps> = (props) => {
 
       <Show when={showArchived()}>
         <ArchivedProjectsModal onClose={() => setShowArchived(false)} />
+      </Show>
+
+      <Show when={contextTarget()}>
+        <Portal>
+          <div
+            ref={contextMenuEl}
+            class="session-context-menu"
+            style={{ left: `${contextMenuPos().x}px`, top: `${contextMenuPos().y}px` }}
+            onClick={(event) => event.stopPropagation()}
+            data-ac-testid="workgroupGroups.contextMenu"
+            data-ac-role="menu"
+          >
+            <button
+              class="session-context-option"
+              onClick={openEditorFromContextMenu}
+              data-ac-testid="workgroupGroups.contextMenu.edit"
+              data-ac-role="menuitem"
+            >
+              Edit
+            </button>
+            <Show when={contextTarget()?.kind === "group"}>
+              <button
+                class="session-context-option"
+                onClick={toggleFavoriteFromContextMenu}
+                data-ac-testid="workgroupGroups.contextMenu.favorite"
+                data-ac-role="menuitem"
+              >
+                {favoriteTargetIsFavorited() ? "Unfavorite" : "Favorite"}
+              </button>
+            </Show>
+          </div>
+        </Portal>
+      </Show>
+
+      <Show when={editingProject()}>
+        {(project) => (
+          <WorkgroupGroupsModal
+            projectPath={project().path}
+            projectName={project().folderName}
+            onClose={() => setEditingProjectPath(null)}
+          />
+        )}
       </Show>
     </aside>
   );

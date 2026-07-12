@@ -571,6 +571,24 @@ export const workgroupGroupsStore = {
     await this.save(projectPath, { ...config, groups });
   },
 
+  // #965 - pin/unpin a group into the rail's cross-project Favorites section. The
+  // flag lives on the group record, so it survives rename (`id` is stable), travels
+  // with reorder, and dies with the group. `save()` re-seeds the store from the
+  // SAVED config, so the flag is authoritative from the backend on the same tick
+  // and the toggle cannot visually revert.
+  async setGroupFavorite(projectPath: string, groupId: string, favorite: boolean): Promise<void> {
+    const config = this.config(projectPath);
+    const group = config.groups.find((candidate) => candidate.id === groupId);
+    if (!group) throw new Error("Group no longer exists.");
+    if (!!group.favorite === favorite) return;
+    await this.save(projectPath, {
+      ...config,
+      groups: config.groups.map((candidate) =>
+        candidate.id === groupId ? { ...candidate, favorite } : candidate
+      ),
+    });
+  },
+
   async addWorkgroupToGroup(projectPath: string, groupId: string, wgName: string): Promise<void> {
     if (charLength(wgName) > MAX_GROUP_MATCH_ID_LENGTH) {
       const message = `Workgroup id cannot exceed ${MAX_GROUP_MATCH_ID_LENGTH} characters.`;

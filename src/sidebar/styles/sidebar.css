@@ -3225,6 +3225,60 @@ html.light-theme .settings-hint-warning {
   white-space: nowrap;
 }
 
+/* #965 - the project header and the Favorites header are now click-to-collapse.
+   They are <button>s, so reset the UA chrome and re-inherit the label's type;
+   the label class alone no longer supplies font/box on a button element. */
+.workgroup-group-rail-header {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 9px;
+  line-height: 1.2;
+  text-align: left;
+  cursor: pointer;
+  user-select: none;
+  transition: color var(--transition-fast), text-shadow var(--transition-fast);
+}
+
+/* Hover glow: the rail's established accent idiom, so the header reads as
+   clickable. The glow is `currentColor`, NOT a hardcoded cyan: `--sidebar-accent`
+   is #00d4ff in dark and #0066cc under `html.light-theme` (variables.css:6, :58),
+   so a literal rgba(0, 212, 255, .) glow would fight the accent in light mode. */
+.workgroup-group-rail-header:hover {
+  color: var(--sidebar-accent);
+  text-shadow: 0 0 6px currentColor;
+}
+
+.workgroup-group-rail-header:focus-visible {
+  outline: 2px solid rgba(0, 212, 255, 0.65);
+  outline-offset: -2px;
+}
+
+/* #965 - Favorites is pinned OUTSIDE `.workgroup-group-rail-scroll`, at the TOP,
+   exactly mirroring how #881 pinned Archive at the bottom (`flex: 0 0 auto`).
+   That is what makes it permanently visible. `max-height` + its own scroll keeps a
+   long favorites list from eating the rail; the % resolves against the rail's
+   definite height (it is a flex column with `overflow: hidden`). */
+.workgroup-group-rail-favorites {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 40%;
+  padding: 6px 4px 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.workgroup-group-rail-favorites-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
 .workgroup-group-rail-button {
   position: relative;
   overflow: hidden;
