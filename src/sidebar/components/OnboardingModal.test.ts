@@ -128,10 +128,30 @@ async function settle(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
+function pressEscape(): void {
+  document
+    .querySelector('[data-ac-testid="onboarding.overlay"]')
+    ?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+}
+
 describe("OnboardingModal", () => {
   afterEach(() => {
     document.body.innerHTML = "";
     vi.clearAllMocks();
+  });
+
+  it("renders the Welcome title and intro message (#975)", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(() => OnboardingModal({ onClose: vi.fn() }), root);
+    await settle();
+
+    expect(document.querySelector(".agent-modal-title")?.textContent).toBe("Welcome");
+    expect(document.querySelector(".onboarding-welcome")?.textContent).toBe(
+      "Welcome to AgentsCommander! Let's set up your first Coding Agent.",
+    );
+
+    dispose();
   });
 
   it("persists dismissal when preset setup completes", async () => {
@@ -151,6 +171,8 @@ describe("OnboardingModal", () => {
     )?.click();
     await settle();
 
+    // #975 — dismissal still rides along in the single agent-persisting write.
+    expect(SettingsAPI.update).toHaveBeenCalledTimes(1);
     expect(SettingsAPI.update).toHaveBeenCalledWith(
       expect.objectContaining({
         onboardingDismissed: true,
@@ -172,14 +194,37 @@ describe("OnboardingModal", () => {
     dispose();
   });
 
-  it("continues to persist dismissal when skipped", async () => {
+  it("continues to persist dismissal when cancelled (#975)", async () => {
     const onClose = vi.fn();
     const root = document.createElement("div");
     document.body.append(root);
     const dispose = render(() => OnboardingModal({ onClose }), root);
     await settle();
 
-    document.querySelector<HTMLButtonElement>('[data-ac-testid="onboarding.skip"]')?.click();
+    const cancel = document.querySelector<HTMLButtonElement>('[data-ac-testid="onboarding.cancel"]');
+    expect(cancel?.textContent).toBe("Cancel");
+    cancel?.click();
+    await settle();
+
+    expect(SettingsAPI.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        onboardingDismissed: true,
+        agents: [],
+      }),
+    );
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    dispose();
+  });
+
+  it("persists dismissal when Escape cancels the Welcome flow (#975)", async () => {
+    const onClose = vi.fn();
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(() => OnboardingModal({ onClose }), root);
+    await settle();
+
+    pressEscape();
     await settle();
 
     expect(SettingsAPI.update).toHaveBeenCalledWith(

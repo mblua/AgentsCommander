@@ -13,7 +13,7 @@ This matrix seeds issue #497 acceptance coverage. It tracks user-visible screen/
 | Select custom preset | `onboarding.agentPreset.custom` | `click` |
 | Enter custom label | `onboarding.custom.label` | `setValue` |
 | Enter custom command | `onboarding.custom.command` | `setValue` |
-| Skip onboarding | `onboarding.skip` | `click` |
+| Cancel onboarding | `onboarding.cancel` | `click` |
 | Confirm selected agent | `onboarding.confirm` | `query`, `click` |
 | Detect done state | `onboarding.done` | `query`, `wait` |
 | Close done dialog | `onboarding.done.close` | `click` |
