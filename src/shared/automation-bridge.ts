@@ -627,11 +627,30 @@ type HoverDiagnostics = NonNullable<UiAutomationDiagnostics["hover"]>;
 
 const HOVER_POINTER_INIT = { pointerId: 1, pointerType: "mouse", isPrimary: true } as const;
 
-/** #944 - eight events, and deliberately NOT pointermove/mousemove: every move
- *  listener in src/ is a pointerdown-armed drag machine (main/App.tsx:78,
- *  screenshot-overlay:240, WorkgroupGroupRail:422 -> movePress reads event.pointerId
- *  and reorders groups by clientY), so a synthetic move is the one thing in this set
- *  that could mutate real state. Nothing that consumes hover needs it. Plan R1. */
+/** #944 - eight events, and deliberately NOT pointermove/mousemove.
+ *
+ *  src/ has FOUR move listeners (an earlier version of this comment said three and
+ *  called them all pointerdown-armed; two of those words were wrong):
+ *
+ *  - `main/App.tsx:78` (splitter) and `browser/App.tsx:101` (web-client splitter,
+ *    at DOCUMENT level) attach theirs INSIDE the pointerdown / mousedown handler and
+ *    remove it on release. No button, no listener.
+ *  - `WorkgroupGroupRail.tsx:422` is always on (`window`), but `movePress` (:346)
+ *    returns unless `reorderState()` is set, and only `startPress` - a pointerdown
+ *    handler - sets it. Chromium gives a real mouse `pointerId: 1`, which is exactly
+ *    what we would have hardcoded, so a synthetic move during a REAL user's group
+ *    drag would cancel it or retarget it by our clientY, and their pointerup would
+ *    commit that.
+ *  - `screenshot-overlay/App.tsx:240` is always on and armed by NOTHING: it sets the
+ *    crosshair from the event and repaints, on every move, with no button down. That
+ *    window runs a bridge like any other (`main.tsx:26` inits one for every window
+ *    root) and its canvas IS an automation target (`screenshotOverlay.canvas`), so a
+ *    synthetic move there would drag the capture crosshair of a live overlay.
+ *
+ *  Nothing that consumes hover needs a move event; the flyouts are driven by
+ *  enter/leave. Not dispatching one is what makes this action's inertness structural
+ *  rather than lucky - the fourth listener is proof that "no consumer would notice"
+ *  was never a safe bet. Plan R1. A2 pins it. */
 function dispatchHoverEnter(to: HTMLElement): HoverDiagnostics {
   const from = hoveredElement;
   const events: string[] = [];
