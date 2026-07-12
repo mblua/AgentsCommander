@@ -11,7 +11,7 @@ import {
 } from "../../shared/ipc";
 import { isBrowser, isTauri } from "../../shared/platform";
 import { terminalStore } from "../stores/terminal";
-import type { PtyOutputEvent } from "../../shared/types";
+import type { PtyOutputEvent, PtyScreenSnapshot } from "../../shared/types";
 import type { UnlistenFn } from "../../shared/transport";
 import { updatePromptCapture } from "./prompt-input-capture";
 import { createTerminalOptions } from "./terminal-options";
@@ -23,11 +23,19 @@ interface SessionTerminal {
   fitAddon: FitAddon;
   inputBuffer: string;
   snapshotReplayRequested: boolean;
+  /**
+   * A `get_screen_snapshot` round-trip is in flight AND the screen can still be
+   * rebuilt from it. Never gates rendering (#955) — it only says whether the
+   * retained live events are still complete enough to reconcile against.
+   */
   snapshotReplayPending: boolean;
   snapshotResizeSuppressed: boolean;
+  snapshotSettleTimer: ReturnType<typeof setTimeout> | null;
   hasRenderedOutput: boolean;
   replayStatus: HTMLDivElement;
+  /** Live events already written to xterm, retained only to rebuild (#955). */
   pendingSnapshotEvents: PtyOutputEvent[];
+  pendingSnapshotBytes: number;
   lastAppliedSequence: number | null;
 }
 
@@ -38,6 +46,28 @@ interface TerminalViewProps {
    */
   lockedSessionId?: string;
 }
+
+const SNAPSHOT_UNAVAILABLE_MESSAGE =
+  "Terminal buffer unavailable. Resize the window to request a repaint.";
+
+// #955: `get_screen_snapshot` is an IPC round-trip, and it used to gate every
+// byte a new terminal rendered. On a saturated webview main thread it was
+// measured taking seconds — and, in the capture on the issue, never settling at
+// all: the agent painted continuously into a permanently black tile.
+//
+// The gate is gone. Live bytes render on arrival, and the snapshot reconciles
+// afterwards. These two bounds are what remains of the round-trip:
+//
+// 1. A settle deadline, purely diagnostic. It gates nothing; it sizes the
+//    round-trip in the log and lets a terminal that has still shown *nothing*
+//    say so instead of sitting black.
+const SNAPSHOT_SETTLE_WARN_MS = 500;
+// 2. A retention budget. Live events are held (in addition to being rendered)
+//    so the screen can be rebuilt into the snapshot's frame of reference when
+//    the snapshot loses the race. Past this many bytes the live stream has
+//    repainted the screen many times over, the snapshot is worthless, and
+//    holding more would leak if the round-trip never settles.
+const SNAPSHOT_RECONCILE_LIMIT_BYTES = 2 * 1024 * 1024;
 
 // WebGL context budget: ~16 per document. Canvas fallback activates silently
 // when the budget is exhausted (e.g. after ~16 concurrent sessions in main).
@@ -80,12 +110,20 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     });
   };
 
+  const clearSnapshotSettleTimer = (entry: SessionTerminal) => {
+    if (entry.snapshotSettleTimer !== null) {
+      clearTimeout(entry.snapshotSettleTimer);
+      entry.snapshotSettleTimer = null;
+    }
+  };
+
   const disposeSessionTerminal = (sessionId: string) => {
     const entry = terminals.get(sessionId);
     if (!entry) {
       return;
     }
 
+    clearSnapshotSettleTimer(entry);
     entry.terminal.dispose();
     entry.container.remove();
     terminals.delete(sessionId);
@@ -147,12 +185,41 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
         : Math.max(entry.lastAppliedSequence, sequence);
   };
 
+  const abandonSnapshotReconcile = (entry: SessionTerminal) => {
+    entry.snapshotReplayPending = false;
+    entry.pendingSnapshotEvents = [];
+    entry.pendingSnapshotBytes = 0;
+  };
+
+  /**
+   * Retain a live event that has ALREADY been written to xterm, so the screen
+   * can be rebuilt from the snapshot's frame of reference once it lands. This
+   * buffer never withholds output (#955) — it exists only to reconcile.
+   */
+  const retainForSnapshotReconcile = (
+    entry: SessionTerminal,
+    event: PtyOutputEvent
+  ) => {
+    entry.pendingSnapshotEvents.push(event);
+    entry.pendingSnapshotBytes += event.data.length;
+
+    if (entry.pendingSnapshotBytes > SNAPSHOT_RECONCILE_LIMIT_BYTES) {
+      abandonSnapshotReconcile(entry);
+    }
+  };
+
+  /**
+   * #955: live PTY bytes are written the instant they arrive. They are NEVER
+   * gated on the snapshot round-trip — that gate was the defect: every newly
+   * created terminal stayed black for as long as `get_screen_snapshot` took to
+   * settle, which on a saturated IPC channel was forever, while the agent
+   * painted underneath and the bytes piled up in an array.
+   */
   const writeLivePtyOutput = (entry: SessionTerminal, event: PtyOutputEvent) => {
     const sequence = eventSequence(event);
 
     if (entry.snapshotReplayPending) {
-      entry.pendingSnapshotEvents.push(event);
-      return;
+      retainForSnapshotReconcile(entry, event);
     }
 
     if (shouldDropAlreadyAppliedEvent(entry, sequence)) {
@@ -161,20 +228,6 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
 
     writeTerminalBytes(entry, new Uint8Array(event.data));
     markAppliedSequence(entry, sequence);
-  };
-
-  const finishPendingSnapshotReplay = (
-    sessionId: string,
-    entry: SessionTerminal
-  ): PtyOutputEvent[] | null => {
-    if (terminals.get(sessionId) !== entry || !entry.snapshotReplayPending) {
-      return null;
-    }
-
-    entry.snapshotReplayPending = false;
-    const pendingEvents = entry.pendingSnapshotEvents;
-    entry.pendingSnapshotEvents = [];
-    return pendingEvents;
   };
 
   const flushPendingEvents = (
@@ -199,6 +252,130 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     }
   };
 
+  interface SnapshotSettle {
+    /** The retained live events were still complete: a rebuild is safe. */
+    reconcilable: boolean;
+    retainedEvents: PtyOutputEvent[];
+  }
+
+  /**
+   * Conclude the snapshot round-trip, whatever its outcome. Returns the live
+   * events retained while it was in flight, or null if the terminal was
+   * replaced/disposed underneath it.
+   */
+  const concludeSnapshotFetch = (
+    sessionId: string,
+    entry: SessionTerminal
+  ): SnapshotSettle | null => {
+    if (terminals.get(sessionId) !== entry) {
+      return null;
+    }
+
+    clearSnapshotSettleTimer(entry);
+
+    const settle: SnapshotSettle = {
+      reconcilable: entry.snapshotReplayPending,
+      retainedEvents: entry.pendingSnapshotEvents,
+    };
+
+    entry.snapshotReplayPending = false;
+    entry.pendingSnapshotEvents = [];
+    entry.pendingSnapshotBytes = 0;
+
+    return settle;
+  };
+
+  const logSnapshotSettle = (
+    sessionId: string,
+    requestedAt: number,
+    pendingEvents: number
+  ) => {
+    const elapsedMs = Math.round(performance.now() - requestedAt);
+    const line = `[terminal] snapshot ${sessionId} settled in ${elapsedMs}ms, pendingEvents=${pendingEvents}`;
+
+    if (elapsedMs > SNAPSHOT_SETTLE_WARN_MS) {
+      console.warn(line);
+      return;
+    }
+
+    console.debug(line);
+  };
+
+  /**
+   * Live output already painted this terminal, so the snapshot lost the race.
+   * A snapshot is a FULL-SCREEN repaint (`vt100::Screen::contents_formatted`),
+   * so writing it on top of live bytes would duplicate them. Rebuild instead:
+   * reset, lay down the snapshot (everything up to its sequence), then replay
+   * the live events that came after it. The sequence dedup drops the ones the
+   * snapshot already contains, so the result is exactly what the un-raced path
+   * renders — no duplicated and no missing output.
+   */
+  const rebuildFromSnapshot = (
+    entry: SessionTerminal,
+    snapshot: PtyScreenSnapshot,
+    retainedEvents: PtyOutputEvent[]
+  ) => {
+    entry.terminal.reset();
+    entry.hasRenderedOutput = false;
+    // Rewind, do not raise: the retained events after the snapshot's sequence
+    // must replay, and markAppliedSequence() only ever moves the watermark up.
+    entry.lastAppliedSequence = snapshot.sequence;
+
+    writeTerminalBytes(entry, new Uint8Array(snapshot.data));
+    flushPendingEvents(entry, retainedEvents);
+  };
+
+  const applySnapshot = (
+    sessionId: string,
+    entry: SessionTerminal,
+    snapshot: PtyScreenSnapshot | null,
+    settle: SnapshotSettle
+  ) => {
+    const { reconcilable, retainedEvents } = settle;
+
+    if (!snapshot || snapshot.data.length === 0) {
+      // Nothing to seed with. Whatever live output has arrived stands, and the
+      // dedup makes this flush a no-op for anything already on screen.
+      flushPendingEvents(entry, retainedEvents);
+      if (!entry.hasRenderedOutput) {
+        setReplayStatus(entry, SNAPSHOT_UNAVAILABLE_MESSAGE);
+      }
+      return;
+    }
+
+    if (entry.hasRenderedOutput && !reconcilable) {
+      // The retention budget was spent, so the live events after the snapshot's
+      // sequence are no longer held and a rebuild would drop them. The live
+      // stream has long since repainted the screen: keep it, drop the snapshot.
+      console.warn(
+        `[terminal] snapshot ${sessionId} discarded: live output outran the reconcile budget`
+      );
+      return;
+    }
+
+    if (
+      snapshot.rows !== null &&
+      snapshot.cols !== null &&
+      (entry.terminal.rows !== snapshot.rows || entry.terminal.cols !== snapshot.cols)
+    ) {
+      resizeTerminalForSnapshot(entry, snapshot.cols, snapshot.rows);
+    }
+
+    if (entry.hasRenderedOutput) {
+      rebuildFromSnapshot(entry, snapshot, retainedEvents);
+    } else {
+      // The snapshot won the race into a clean terminal: seed it and let the
+      // retained events (if any) land on top. This is the re-attach path.
+      writeTerminalBytes(entry, new Uint8Array(snapshot.data));
+      markAppliedSequence(entry, snapshot.sequence);
+      flushPendingEvents(entry, retainedEvents);
+    }
+
+    if (sessionId === activeSessionId) {
+      scheduleViewportSync(sessionId);
+    }
+  };
+
   const replayNativeSnapshot = (sessionId: string, entry: SessionTerminal) => {
     if (!isTauri || entry.snapshotReplayRequested) {
       return;
@@ -207,55 +384,52 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     entry.snapshotReplayRequested = true;
     entry.snapshotReplayPending = true;
     entry.pendingSnapshotEvents = [];
+    entry.pendingSnapshotBytes = 0;
+
+    // #955 diagnostic: size the round-trip. The gate is gone, but a slow settle
+    // still points straight at a saturated IPC channel / webview main thread.
+    const requestedAt = performance.now();
+
+    clearSnapshotSettleTimer(entry);
+    entry.snapshotSettleTimer = setTimeout(() => {
+      entry.snapshotSettleTimer = null;
+      if (terminals.get(sessionId) !== entry || !entry.snapshotReplayPending) {
+        return;
+      }
+
+      console.warn(
+        `[terminal] snapshot ${sessionId} still pending after ${SNAPSHOT_SETTLE_WARN_MS}ms, pendingEvents=${entry.pendingSnapshotEvents.length}`
+      );
+
+      // Live output keeps rendering regardless — that is the fix. Only a
+      // terminal that has shown nothing at all has anything to report.
+      if (!entry.hasRenderedOutput) {
+        setReplayStatus(entry, SNAPSHOT_UNAVAILABLE_MESSAGE);
+      }
+    }, SNAPSHOT_SETTLE_WARN_MS);
 
     void PtyAPI.getScreenSnapshot(sessionId)
       .then((snapshot) => {
-        const pendingEvents = finishPendingSnapshotReplay(sessionId, entry);
-        if (!pendingEvents) {
+        const settle = concludeSnapshotFetch(sessionId, entry);
+        if (!settle) {
           return;
         }
 
-        if (!snapshot || snapshot.data.length === 0) {
-          flushPendingEvents(entry, pendingEvents);
-          if (!entry.hasRenderedOutput) {
-            setReplayStatus(
-              entry,
-              "Terminal buffer unavailable. Resize the window to request a repaint."
-            );
-          }
-          return;
-        }
-
-        if (
-          snapshot.rows !== null &&
-          snapshot.cols !== null &&
-          (entry.terminal.rows !== snapshot.rows || entry.terminal.cols !== snapshot.cols)
-        ) {
-          resizeTerminalForSnapshot(entry, snapshot.cols, snapshot.rows);
-        }
-
-        writeTerminalBytes(entry, new Uint8Array(snapshot.data));
-        markAppliedSequence(entry, snapshot.sequence);
-        flushPendingEvents(entry, pendingEvents);
-
-        if (sessionId === activeSessionId) {
-          scheduleViewportSync(sessionId);
-        }
+        logSnapshotSettle(sessionId, requestedAt, settle.retainedEvents.length);
+        applySnapshot(sessionId, entry, snapshot, settle);
       })
       .catch((err) => {
-        const pendingEvents = finishPendingSnapshotReplay(sessionId, entry);
-        if (!pendingEvents) {
+        const settle = concludeSnapshotFetch(sessionId, entry);
+        if (!settle) {
           return;
         }
 
+        logSnapshotSettle(sessionId, requestedAt, settle.retainedEvents.length);
         console.warn("[terminal] snapshot replay failed:", err);
-        flushPendingEvents(entry, pendingEvents);
+        flushPendingEvents(entry, settle.retainedEvents);
 
         if (!entry.hasRenderedOutput) {
-          setReplayStatus(
-            entry,
-            "Terminal buffer unavailable. Resize the window to request a repaint."
-          );
+          setReplayStatus(entry, SNAPSHOT_UNAVAILABLE_MESSAGE);
         }
       });
   };
@@ -305,9 +479,11 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       snapshotReplayRequested: false,
       snapshotReplayPending: false,
       snapshotResizeSuppressed: false,
+      snapshotSettleTimer: null,
       hasRenderedOutput: false,
       replayStatus,
       pendingSnapshotEvents: [],
+      pendingSnapshotBytes: 0,
       lastAppliedSequence: null,
     };
 
