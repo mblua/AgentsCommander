@@ -180,6 +180,15 @@ impl UiAutomationAction {
         })
     }
 
+    /// Residual hole, stated so nobody trusts this further than it goes: the walk is
+    /// SEEDED by hand at `Self::Query`. A variant inserted at the HEAD (before `Query`,
+    /// wired `New => Query`) is compile-forced into `next_variant` and into
+    /// `action_wire_name`, and yet is never yielded here, so the parity test below would
+    /// not see it. It only bites a Rust-ONLY head-insertion: add the same member to the
+    /// types.ts union and the set comparison goes red at once. Appending a variant (the
+    /// normal case, and what #944 itself did) is fully covered. Closing the hole outright
+    /// needs a derive macro (strum) or a hand-written length, and a hand-written length is
+    /// the exact weakness this walk replaced.
     #[cfg(test)]
     fn all() -> impl Iterator<Item = Self> {
         std::iter::successors(Some(Self::Query), |action| action.next_variant())
@@ -786,7 +795,11 @@ pub fn execute_hover(args: UiHoverArgs) -> i32 {
         window: args.window,
         // Empty for the target-free leave form. The bridge intercepts `value == "leave"`
         // before it resolves any selector, and the frontend echoes the request's selector
-        // back, so `complete()`'s equality check (:317-321) still matches.
+        // back, so the window/action/selector equality check in `complete()` still matches.
+        // No line number on purpose: that pointer read :317-321, then :361-364, and rotted
+        // both times inside the very commit that wrote it (this file grew above it each
+        // time). `fn complete` is the stable anchor; a number here is a comment that lies
+        // on a schedule.
         selector: args.selector.unwrap_or_default(),
         action: UiAutomationAction::Hover,
         value: args.leave.then(|| "leave".to_string()),
@@ -1861,20 +1874,27 @@ mod tests {
         let start = types_ts
             .find("export type UiAutomationAction =")
             .expect("UiAutomationAction union not found in types.ts");
-        let body = &types_ts[start..];
-        let end = body.find(';').expect("unterminated UiAutomationAction union");
 
-        // Strip `//` comments before quote-splitting: a comment inside the union that
-        // carries a quote would inject a phantom member, and one carrying a `;` would
-        // truncate the parse. Both are false REDs, and a parity test that cries wolf is
-        // a parity test somebody deletes.
-        let union_src = body[..end]
+        // Strip `//` comments FIRST, before anything else reads this text. Two hazards,
+        // and the ORDER is what defuses them: a comment inside the union carrying a quote
+        // would inject a phantom member, and one carrying a `;` would truncate the union
+        // early. The first revision of this test stripped AFTER `find(';')`, which left the
+        // truncation hazard fully live while this comment claimed it was handled. That is
+        // precisely the defect #944 exists to kill (a comment asserting a protection the
+        // code does not have), so it is called out here rather than quietly repaired:
+        // strip, THEN find the terminator. Both are false REDs, and a parity test that
+        // cries wolf is a parity test somebody deletes.
+        let stripped: String = types_ts[start..]
             .lines()
             .map(|line| line.split("//").next().unwrap_or(""))
             .collect::<Vec<_>>()
             .join("\n");
 
-        let members: HashSet<String> = union_src
+        let end = stripped
+            .find(';')
+            .expect("unterminated UiAutomationAction union");
+
+        let members: HashSet<String> = stripped[..end]
             .split('"')
             .skip(1)
             .step_by(2)

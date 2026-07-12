@@ -506,7 +506,7 @@ fn fake_response_makes_ui_context_click_succeed() {
 }
 
 #[test]
-fn normal_binary_refuses_ui_hover_with_json_only_stdout() {
+fn normal_binary_refuses_ui_hover_with_json_stdout_and_silent_stderr() {
     let _guard = test_lock();
     let tmp = Tmp::new("ui-hover-non-testable");
     let bin = copy_binary_as(tmp.path(), "agentscommander.exe");
@@ -530,6 +530,62 @@ fn normal_binary_refuses_ui_hover_with_json_only_stdout() {
     assert_empty_output("stderr", &stderr);
     let parsed = first_json(&stdout);
     assert_eq!(parsed["error"], "refusing_non_testeable_binary");
+}
+
+/// #944 N5 - `--leave` is target-free (plan R5), and `conflicts_with = "selector"` is the
+/// only thing enforcing it. Drop that attribute later and `--selector X --leave` would
+/// SILENTLY IGNORE the selector: the bridge intercepts the leave form before it resolves
+/// any node, so the caller would get a successful un-hover of whatever happened to be
+/// hovered and never learn their selector was dead weight. Pin the intent, not just the
+/// behavior.
+#[test]
+fn ui_hover_rejects_selector_together_with_leave() {
+    let _guard = test_lock();
+    let tmp = Tmp::new("ui-hover-conflict");
+    let bin = copy_binary_as(tmp.path(), "agentscommander.exe");
+    let (code, stdout, stderr) = run(
+        &bin,
+        &[
+            "ui-hover",
+            "--window",
+            "main",
+            "--selector",
+            "onboarding.confirm",
+            "--leave",
+        ],
+    );
+    // clap rejects at parse time, before init_logger, so stderr carries the usage error
+    // and nothing else. Exit is 1, not clap's default 2: main.rs maps it.
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert_empty_output("stdout", &stdout);
+    assert!(
+        stderr.contains("cannot be used with"),
+        "clap must reject --selector together with --leave, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("--selector") && stderr.contains("--leave"),
+        "the conflict error must name both flags, got: {stderr}"
+    );
+}
+
+/// #944 N5 - the other half of the same contract. A hover with no target and no `--leave`
+/// is meaningless, so `required_unless_present = "leave"` must keep it un-runnable.
+#[test]
+fn ui_hover_requires_selector_unless_leave() {
+    let _guard = test_lock();
+    let tmp = Tmp::new("ui-hover-missing-selector");
+    let bin = copy_binary_as(tmp.path(), "agentscommander.exe");
+    let (code, stdout, stderr) = run(&bin, &["ui-hover", "--window", "main"]);
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert_empty_output("stdout", &stdout);
+    assert!(
+        stderr.contains("required arguments were not provided"),
+        "clap must require --selector unless --leave, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("--selector"),
+        "the error must name --selector, got: {stderr}"
+    );
 }
 
 #[test]
@@ -654,7 +710,9 @@ fn fake_response_makes_ui_hover_leave_succeed() {
                 // `value == "leave"` BEFORE it resolves any node, which is what makes the
                 // leave form incapable of returning missing_selector / target_hidden /
                 // target_obscured, and it echoes the selector back so `complete()`'s
-                // equality check (ui_automation.rs:317-321) still matches on "".
+                // window/action/selector equality check in `complete()` still matches on ""
+                // (grep `fn complete`; the line number is deliberately omitted, it rotted
+                // twice already: 317 -> 361 -> 370).
                 assert_eq!(request["selector"], "");
                 let request_id = request["requestId"].as_str().unwrap();
                 let response = json!({
