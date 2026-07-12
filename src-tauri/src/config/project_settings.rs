@@ -21,6 +21,11 @@ pub struct WorkgroupGroup {
     pub id: String,
     pub name: String,
     pub regex: String,
+    /// (#965) Pinned into the rail's cross-project `Favorites` section. Absent on
+    /// legacy configs => false. Lives on the group record so it survives rename
+    /// (`id` is a stable UUID), travels with reorder, and dies with the group.
+    #[serde(default)]
+    pub favorite: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -286,6 +291,7 @@ mod tests {
             id: id.to_string(),
             name: name.to_string(),
             regex: regex.to_string(),
+            favorite: false,
         }
     }
 
@@ -296,6 +302,37 @@ mod tests {
             show_ungrouped: true,
             non_stop: None,
         }
+    }
+
+    #[test]
+    fn legacy_group_json_defaults_favorite_false() {
+        let legacy = r#"{"groups":[{"id":"bots","name":"BOTS","regex":"^(wg-9)$"}]}"#;
+        let config: WorkgroupGroupsConfig = serde_json::from_str(legacy).expect("parse legacy");
+        assert!(!config.groups[0].favorite);
+    }
+
+    #[test]
+    fn favorite_flag_round_trips_through_save_load() {
+        let project = project_with_workspace();
+        let mut config = config_with_groups(vec![
+            group("bots", "BOTS", "^(wg-9)$"),
+            group("ui", "UI", "^(wg-1)$"),
+        ]);
+        config.groups[0].favorite = true;
+
+        save_workgroup_groups(project.path(), config.clone()).expect("save");
+        let reloaded = load_workgroup_groups(project.path()).expect("reload");
+
+        assert_eq!(reloaded, config);
+        let persisted: Value = serde_json::from_str(
+            &std::fs::read_to_string(settings_path(project.path())).expect("read"),
+        )
+        .expect("parse");
+        assert_eq!(persisted["groups"][0]["favorite"], true);
+        // (#965) A NON-favorited group must still emit `false` on disk. Guard against a
+        // `skip_serializing_if` creeping in later and handing the frontend `undefined`
+        // where it expects a concrete boolean.
+        assert_eq!(persisted["groups"][1]["favorite"], false);
     }
 
     fn populated_non_stop() -> NonStopGroupConfig {

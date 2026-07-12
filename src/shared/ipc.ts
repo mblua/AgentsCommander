@@ -316,6 +316,11 @@ export const SettingsAPI = {
   // round-trip racing SettingsModal.
   setMainResourceMonitorAttached: (value: boolean) =>
     transport.invoke<void>("set_main_resource_monitor_attached", { value }),
+  // #965 — one narrow setter for the whole rail-collapse snapshot (explicitly
+  // collapsed project paths + the Favorites section bit). Same write-lock pattern.
+  // Called once per header click; no debounce (plan §0.2).
+  setRailCollapse: (collapsedProjects: string[], favoritesCollapsed: boolean) =>
+    transport.invoke<void>("set_rail_collapse", { collapsedProjects, favoritesCollapsed }),
   // #612 — canonical command to change ONLY the log level: validates, persists
   // logLevel, applies live + broadcasts `log_level_changed`. The SettingsModal
   // uses the form Save path (save_settings_draft) instead; this is for

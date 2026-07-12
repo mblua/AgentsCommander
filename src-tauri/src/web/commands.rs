@@ -400,6 +400,33 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             Ok(json!(null))
         }
 
+        // #965 - the rail is live in the browser client (`src/browser/App.tsx`
+        // mounts `<SidebarApp embedded>`), so its collapse setter must be routed
+        // or every rail header click hits the `Unknown command` fallback at the
+        // bottom of this match. Same omission #859 had to fix for the profile
+        // commands below. Symptom if unrouted: SILENT non-persistence, not a
+        // console error - the frontend catch swallows the rejection.
+        "set_rail_collapse" => {
+            // (#965) STRICT parse. Deliberately NOT `unwrap_or_default()` / `unwrap_or(false)`:
+            // this setter writes a FULL snapshot, so a payload that is missing or malforms
+            // either half is not a partial update, it is a WIPE. A defaulted
+            // `collapsedProjects` erases every collapsed section; a defaulted
+            // `favoritesCollapsed` re-expands a section the user explicitly folded. BOTH args
+            // are therefore required: the desktop path takes them as non-Option typed args and
+            // errors when one is absent, and the two transports must not disagree about the
+            // same payload. `require_json` additionally rejects a non-string element instead of
+            // silently dropping it, which the previous `filter_map` did.
+            let collapsed_projects: Vec<String> = require_json(args, "collapsedProjects")?;
+            let favorites_collapsed: bool = require_json(args, "favoritesCollapsed")?;
+            crate::commands::config::set_rail_collapse_inner(
+                &state.settings,
+                collapsed_projects,
+                favorites_collapsed,
+            )
+            .await?;
+            Ok(json!(null))
+        }
+
         // --- Coding-agent profiles (#859 web transport parity) ---
         // Desktop registers these in the Tauri invoke_handler, but the browser
         // websocket router did not route them, so the CODING AGENT modal hit the
@@ -987,6 +1014,7 @@ mod tests {
                 id: "core".to_string(),
                 name: "Core".to_string(),
                 regex: "^wg-14$".to_string(),
+                favorite: false,
             }],
             show_all: false,
             show_ungrouped: true,
