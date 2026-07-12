@@ -185,6 +185,9 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                 Vec::new(),  // git_repos
                 true,        // skip_auto_resume = true → fresh create, no `--continue` injection
                 resolved_spawn,
+                // #973 - browser-mode create. The browser client pushes its fitted size after
+                // attach, not at create time, so this keeps AC's 120x30 for now.
+                None,
             )
             .await?;
 

@@ -377,6 +377,8 @@ async fn spawn_coordinator_session(
         Vec::<SessionRepo>::new(),
         loop_spawn_skip_auto_resume(had_existing_match),
         command.resolved_spawn,
+        // #973 - headless caller: no terminal to measure, keep 120x30.
+        None,
     )
     .await?;
     let session_id = Uuid::parse_str(&info.id)

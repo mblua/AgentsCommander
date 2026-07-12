@@ -18,6 +18,52 @@ pub enum SessionBackendKind {
     ContainerTransport,
 }
 
+/// #973 - the terminal size a session's PTY is opened at.
+///
+/// AC used to open every ConPTY at a hardcoded 120x30 and let the frontend correct it a few
+/// hundred milliseconds later. That correction lands in the middle of a coding agent's TUI
+/// startup, and a resize there makes Codex redraw its still-empty viewport and lose the
+/// wakeup for the content that becomes ready right after: the terminal stays blank, alive,
+/// until any key is pressed. Measured, outside AC: a resize burst at 250 ms hangs it 8/10;
+/// opening at the right size and never resizing hangs it 0/10.
+///
+/// So the size the view has already fitted to is handed down at spawn, and no resize has to
+/// happen at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PtyViewport {
+    pub cols: u16,
+    pub rows: u16,
+}
+
+impl PtyViewport {
+    /// What AC has always opened PTYs at. Used by every caller with no view of its own:
+    /// the startup-restore loop, the delivery loop, the phone mailbox, the CLI, tests.
+    /// Those sessions are not attached to a terminal, so nothing resizes them, so they were
+    /// never exposed to this bug (18/18 of them painted in the user's production log).
+    pub const DEFAULT: Self = Self {
+        cols: 120,
+        rows: 30,
+    };
+
+    /// A size the frontend fitted before the session existed.
+    ///
+    /// A zero dimension is not hypothetical: xterm's `fit()` really does return one while
+    /// its container is still being laid out. Opening a 0-column ConPTY is worse than the
+    /// bug we are fixing, so a degenerate size warns and falls back instead of failing the
+    /// spawn.
+    pub fn from_fit(cols: u16, rows: u16) -> Self {
+        if cols == 0 || rows == 0 {
+            log::warn!(
+                "[pty] ignoring degenerate fitted viewport {cols}x{rows}, opening at {}x{}",
+                Self::DEFAULT.cols,
+                Self::DEFAULT.rows
+            );
+            return Self::DEFAULT;
+        }
+        Self { cols, rows }
+    }
+}
+
 pub struct BackendSpawnSpec {
     pub id: Uuid,
     /// #942 - the configured coding-agent PROFILE id (`settings.agents[].id`, an

@@ -2897,6 +2897,8 @@ impl MailboxPoller {
             Vec::new(),       // git_repos
             skip_auto_resume, // see deliver_wake top
             resolved_spawn,
+            // #973 - headless caller: no terminal to measure, keep 120x30.
+            None,
         )
         .await
     }
@@ -6048,6 +6050,8 @@ impl MailboxPoller {
                 Vec::new(),  // git_repos
                 true,        // skip_auto_resume = true → CLI session-request is a fresh create
                 resolved_spawn,
+                // #973 - headless caller: no terminal to measure, keep 120x30.
+                None,
             )
             .await
             {

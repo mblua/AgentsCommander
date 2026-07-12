@@ -27,6 +27,37 @@ struct PtyInstance {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
     job: Option<crate::pty::job::JobObject>,
+    /// #973 (C) - the size the ConPTY is actually at, so a resize that changes nothing is
+    /// not sent to the child. Seeded from the size the PTY was opened at.
+    size: Mutex<(u16, u16)>,
+}
+
+impl PtyInstance {
+    /// #973 (C) - has the size actually moved?
+    ///
+    /// The frontend calls resize unconditionally (`TerminalView.tsx:85-95`, from a double
+    /// `requestAnimationFrame` plus a `ResizeObserver`), so one attach fires 5-20 identical
+    /// resizes, and ConPTY hands every one of them to the child as a real event.
+    fn size_changed(&self, cols: u16, rows: u16) -> bool {
+        Self::size_changed_in(&self.size, cols, rows)
+    }
+
+    /// Only after the ConPTY has actually accepted it: if `resize` failed, the cached size
+    /// must stay stale so the next attempt is not skipped as a no-op and the PTY is not
+    /// wedged at the wrong size forever.
+    fn remember_size(&self, cols: u16, rows: u16) {
+        Self::remember_size_in(&self.size, cols, rows);
+    }
+
+    // The two free functions above are the whole of C. Split out so they can be tested
+    // without a live ConPTY: a `PtyInstance` owns real `MasterPty` handles.
+    fn size_changed_in(size: &Mutex<(u16, u16)>, cols: u16, rows: u16) -> bool {
+        *size.lock().unwrap_or_else(|e| e.into_inner()) != (cols, rows)
+    }
+
+    fn remember_size_in(size: &Mutex<(u16, u16)>, cols: u16, rows: u16) {
+        *size.lock().unwrap_or_else(|e| e.into_inner()) = (cols, rows);
+    }
 }
 
 #[cfg(windows)]
@@ -595,6 +626,8 @@ impl LocalProcessBackend {
             writer: Arc::new(Mutex::new(writer)),
             child: Some(child),
             job,
+            // #973 - the size we actually opened the ConPTY at (see PtyViewport).
+            size: Mutex::new((cols, rows)),
         };
 
         self.ptys
@@ -866,15 +899,41 @@ impl PtyBackend for LocalProcessBackend {
             .get(&id)
             .ok_or_else(|| AppError::SessionNotFound(id.to_string()))?;
 
-        let master = instance.master.lock().unwrap();
-        master
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| AppError::PtyError(e.to_string()))?;
+        // #973 (C) - do not tell the child about a resize that is not a resize.
+        //
+        // ConPTY delivers even a same-size ResizePseudoConsole to the client as a real
+        // event, and the frontend fires 5-20 identical ones per attach, so today every
+        // attach shakes the child for nothing.
+        //
+        // This does NOT fix #973 by itself: a single resize that DOES change the size,
+        // landing in the child's startup window, still loses Codex's first content render
+        // 8 times in 10 (measured). The fix for that is opening the PTY at the right size
+        // in the first place (`PtyViewport`); this is what stops the frontend's follow-up
+        // fit from undoing it.
+        //
+        // Deliberately NOT skipped: `record_resize` above and the screen broadcast below.
+        // They drive the idle grace and the vt100 screen, and changing idle semantics is
+        // #954's business, not this issue's.
+        if !instance.size_changed(cols, rows) {
+            log::debug!("[pty] resize {id} skipped: already {cols}x{rows}");
+            drop(ptys);
+            self.fanout.resize_screen_and_broadcast(id, cols, rows);
+            return Ok(());
+        }
+
+        {
+            let master = instance.master.lock().unwrap_or_else(|e| e.into_inner());
+            master
+                .resize(PtySize {
+                    rows,
+                    cols,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .map_err(|e| AppError::PtyError(e.to_string()))?;
+        }
+        instance.remember_size(cols, rows);
+        drop(ptys);
 
         self.fanout.resize_screen_and_broadcast(id, cols, rows);
 
@@ -1227,5 +1286,57 @@ mod cancel_tests {
             "registered state should be cleaned up after cancellation"
         );
         assert_eq!(cleanup_count.load(Ordering::SeqCst), 2);
+    }
+}
+
+#[cfg(test)]
+mod resize_dedup_tests {
+    use super::PtyInstance;
+    use std::sync::Mutex;
+
+    /// A `PtyInstance` carries real ConPTY handles, so the tests below drive the one piece
+    /// that #973 (C) actually changes: the size cache and the decision it drives.
+    fn cache(cols: u16, rows: u16) -> Mutex<(u16, u16)> {
+        Mutex::new((cols, rows))
+    }
+
+    /// #973 (C) - the frontend calls resize unconditionally from a double
+    /// `requestAnimationFrame` and a `ResizeObserver`, so a single attach fires 5-20
+    /// identical resizes and ConPTY hands every one of them to the child as a real event.
+    /// A resize that changes nothing must not reach the child.
+    #[test]
+    fn a_resize_to_the_size_it_already_has_is_not_sent_to_the_child() {
+        let size = cache(74, 23);
+        assert!(
+            !PtyInstance::size_changed_in(&size, 74, 23),
+            "an identical resize must be skipped: today AC fires 5-20 of these per attach"
+        );
+    }
+
+    /// The other half: a real resize must still get through, or the terminal would never
+    /// follow the window.
+    #[test]
+    fn a_resize_that_moves_the_size_is_sent() {
+        let size = cache(74, 23);
+        assert!(PtyInstance::size_changed_in(&size, 74, 24), "one row is a real resize");
+        assert!(PtyInstance::size_changed_in(&size, 120, 30), "a real resize");
+    }
+
+    /// The trap in the dedup: if the cache were updated BEFORE the ConPTY accepted the new
+    /// size, a failed resize would leave the cache claiming a size the PTY never took, and
+    /// every retry would then be skipped as a no-op - the terminal would be wedged at the
+    /// wrong size forever. The cache is only written after `master.resize()` returns Ok.
+    #[test]
+    fn a_failed_resize_does_not_poison_the_cache_and_the_retry_still_fires() {
+        let size = cache(74, 23);
+        // resize to 100x40 "fails": remember_size is never reached, so the cache stays put
+        assert!(PtyInstance::size_changed_in(&size, 100, 40));
+        assert!(
+            PtyInstance::size_changed_in(&size, 100, 40),
+            "after a failed resize the retry must still be issued, not skipped as a no-op"
+        );
+        // now it succeeds
+        PtyInstance::remember_size_in(&size, 100, 40);
+        assert!(!PtyInstance::size_changed_in(&size, 100, 40));
     }
 }
