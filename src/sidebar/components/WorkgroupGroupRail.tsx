@@ -505,20 +505,15 @@ const ProjectRailSection: Component<{
                 return;
               }
               workgroupGroupsStore.select(props.project.path, button.selection);
-              // #810 - auto-focus: collapse other projects, expand owner,
-              // scroll owner into view. One-shot at click time; we do NOT
-              // re-collapse projects the user re-expands afterwards manually.
-              // Grinch F2: feed the live projectStore.projects list to the
-              // explicit-list overload so collapse-others works on a fresh
-              // session where the collapse map is still empty.
+              // Collapse every other loaded project and expand this owner on
+              // every click. Use the live project list because a fresh session
+              // has no collapse-map entries. Scrolling is owned separately by
+              // SidebarApp's primitive semantic-key effect.
               projectCollapseStore.collapseAllExceptKnown(
                 props.project.path,
                 projectStore.projects.map((p) => p.path)
               );
               projectCollapseStore.setProjectCollapsed(props.project.path, false);
-              // #941 — scroll positioning is driven only by SidebarApp's
-              // primitive semantic-key memo. An equal re-click still performs
-              // these collapse/expand writes, but the scroll effect stays idle.
             }}
             data-ac-testid={`workgroupGroups.button.${button.key}`}
           >
