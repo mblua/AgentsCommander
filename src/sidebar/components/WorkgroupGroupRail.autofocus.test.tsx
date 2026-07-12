@@ -18,7 +18,6 @@ import {
   exactGroupRegexForWorkgroup,
   workgroupGroupsStore,
 } from "../stores/workgroup-groups";
-import { projectCollapseStore } from "../stores/project-collapse";
 import {
   activeWorkgroupGroupSelectionKey,
   createSidebarSelectionScrollReset,
@@ -315,7 +314,6 @@ describe("WorkgroupGroupRail selection focus (#810/#941)", () => {
       await waitFor(() => expect(scrollable.scrollTop).toBe(240));
       expect(headerCollapsed(findProjectHeader(rendered.root, projectPathA))).toBe(true);
       expect(headerCollapsed(findProjectHeader(rendered.root, projectPathB))).toBe(false);
-      expect(projectCollapseStore.focusTarget()).toBe(null);
     } finally {
       rendered.cleanup();
     }

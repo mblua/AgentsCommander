@@ -504,7 +504,6 @@ const ProjectRailSection: Component<{
                 event.stopPropagation();
                 return;
               }
-              const selectionChanged = !selected(button);
               workgroupGroupsStore.select(props.project.path, button.selection);
               // #810 - auto-focus: collapse other projects, expand owner,
               // scroll owner into view. One-shot at click time; we do NOT
@@ -517,12 +516,9 @@ const ProjectRailSection: Component<{
                 projectStore.projects.map((p) => p.path)
               );
               projectCollapseStore.setProjectCollapsed(props.project.path, false);
-              // #941 — a semantic re-click keeps the existing collapse/expand
-              // behavior but must not move scroll. Real selection/project changes
-              // are positioned instantly by SidebarApp's scroll-owner effect.
-              if (selectionChanged) {
-                projectCollapseStore.requestProjectFocus(props.project.path);
-              }
+              // #941 — scroll positioning is driven only by SidebarApp's
+              // primitive semantic-key memo. An equal re-click still performs
+              // these collapse/expand writes, but the scroll effect stays idle.
             }}
             data-ac-testid={`workgroupGroups.button.${button.key}`}
           >

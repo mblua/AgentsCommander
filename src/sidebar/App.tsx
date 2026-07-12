@@ -48,7 +48,6 @@ import { sessionsStore } from "./stores/sessions";
 import { bridgesStore } from "./stores/bridges";
 import { projectStore } from "./stores/project";
 import { workgroupGroupsStore } from "./stores/workgroup-groups";
-import { projectCollapseStore } from "./stores/project-collapse";
 import { normalizeProjectPathForCompare } from "./stores/project-refresh";
 import { startTeamIdleWatcher } from "./stores/team-idle-watcher";
 import { primeAudio } from "../shared/sound";
@@ -169,10 +168,6 @@ export function createSidebarSelectionScrollReset(
         // because a pinned header's rect cannot reveal its logical scroll offset.
         const projectTop = projectPanel.getBoundingClientRect().top;
         container.scrollTop = Math.max(0, container.scrollTop + projectTop - containerTop);
-      }
-
-      if (projectCollapseStore.focusTarget() === projectPath) {
-        projectCollapseStore.consumeProjectFocus();
       }
     });
   }, { defer: true }));

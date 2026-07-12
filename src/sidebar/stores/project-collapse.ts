@@ -3,10 +3,9 @@ import { normalizeProjectPathForCompare } from "./project-refresh";
 
 // #810/#941 - Project-level (NOT sub-section) collapse state is hoisted into a
 // shared store so WorkgroupGroupRail can collapse others and expand the owner.
-// Its one-shot focus target coordinates the rail with App.tsx, which owns and
-// positions the shared scroll container. Sub-section collapse (workgroups/loops/agents/
-// teams/workgroup/team) STAYS in ProjectPanel's local collapsedByKey signal;
-// this store only owns the "project" section key. Session-only, no persistence
+// Sub-section collapse (workgroups/loops/agents/teams/workgroup/team) STAYS in
+// ProjectPanel's local collapsedByKey signal. This store only owns the "project"
+// section key. Session-only, no persistence
 // (consistent with Role.md: no localStorage for UI state).
 export const PROJECT_PANEL_COLLAPSE_KEY_SEP = "\u0000";
 
@@ -35,13 +34,6 @@ export function projectPanelCollapseKey(
 // Only the "project" section lives here. Keyed by the SAME composite string
 // ProjectPanel used locally (projectPath-normalized + "project" + "").
 const [collapsedProjects, setCollapsedProjects] = createSignal<Record<string, boolean>>({});
-
-// #810/#941 - one-shot focus target. Stored NORMALIZED (via
-// normalizeProjectPathForCompare) so the rail can pass the raw props.project.path
-// and SidebarApp can match it to the active semantic selection. SidebarApp
-// consumes it after positioning that project's header at the top of the shared
-// scrollport. It stays null when no focus is requested.
-const [focusTarget, setFocusTarget] = createSignal<string | null>(null);
 
 function projectKey(projectPath: string): string {
   return projectPanelCollapseKey(projectPath, "project");
@@ -92,25 +84,7 @@ export const projectCollapseStore = {
       return next;
     });
   },
-  // #810/#941 - focus target is stored NORMALIZED. The rail passes the raw
-  // props.project.path; SidebarApp matches rendered header paths using the
-  // same normalized form.
-  focusTarget(): string | null {
-    return focusTarget();
-  },
-  requestProjectFocus(projectPath: string): void {
-    setFocusTarget(normalizeProjectPathForCompare(projectPath));
-  },
-  // #810/#941 - one-shot consume: returns the current target and clears it.
-  // SidebarApp checks its captured semantic key after deferring, so a stale
-  // microtask from click A cannot consume click B's pending target.
-  consumeProjectFocus(): string | null {
-    const current = focusTarget();
-    if (current !== null) setFocusTarget(null);
-    return current;
-  },
   resetForTests(): void {
     setCollapsedProjects({});
-    setFocusTarget(null);
   },
 };
