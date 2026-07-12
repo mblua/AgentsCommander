@@ -649,6 +649,7 @@ export type UiAutomationAction =
   | "query"
   | "click"
   | "contextClick"
+  | "hover"
   | "setValue"
   | "typeText"
   | "backend";
@@ -692,6 +693,18 @@ export interface UiAutomationDiagnostics {
   topmost?: UiAutomationTarget | null;
   expiresAtUnixMs?: number | null;
   nowUnixMs?: number;
+  /** #944 - set only on `hover`. `from`/`to` are data-ac-testid values (null when the
+   *  pointer came from / went to nothing). `events` is the dispatched type sequence,
+   *  in order: it is the assertion surface for the ordering tests and the only way a
+   *  harness can tell "the hover moved nothing" (changed: false) from a real move. */
+  hover?: {
+    from: string | null;
+    to: string | null;
+    changed: boolean;
+    staleFrom?: boolean;
+    reason?: "not_hovered";
+    events: string[];
+  };
 }
 
 export type UiAutomationResponse =

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { executeAutomationRequest } from "./automation-bridge";
-import type { UiAutomationAction, UiAutomationRequest } from "./types";
+import { executeAutomationRequest, resetAutomationBridgeForTests } from "./automation-bridge";
+import type { UiAutomationAction, UiAutomationRequest, UiAutomationResponse } from "./types";
 
 vi.mock("./ipc", () => ({
   AutomationAPI: {
@@ -79,9 +79,68 @@ function addTarget<K extends keyof HTMLElementTagNameMap>(
   return element;
 }
 
+/** #944 - a visible automation target nested under `parent` (the chain tests need
+ *  ancestors, and `addTarget` always appends to <body>). */
+function nestTarget<K extends keyof HTMLElementTagNameMap>(
+  parent: HTMLElement,
+  tag: K,
+  testId: string,
+): HTMLElementTagNameMap[K] {
+  const element = makeVisible(document.createElement(tag));
+  element.setAttribute("data-ac-testid", testId);
+  parent.append(element);
+  return element;
+}
+
+/** #944 - the full ten-event superset: `pointermove` / `mousemove` are in here ON
+ *  PURPOSE even though `hover` must never dispatch them, so that re-adding the move
+ *  pair (plan R1) turns A1 / A3 / A12 red instead of passing silently. */
+const HOVER_EVENTS = [
+  "pointerout",
+  "pointerleave",
+  "mouseout",
+  "mouseleave",
+  "pointerover",
+  "pointerenter",
+  "mouseover",
+  "mouseenter",
+  "pointermove",
+  "mousemove",
+] as const;
+
+const listenerCleanups: Array<() => void> = [];
+
+/** Record dispatches in order. Listeners on document/body/html outlive
+ *  `document.body.innerHTML = ""`, so every one is tracked and removed in afterEach. */
+function recordOn(
+  element: HTMLElement,
+  log: string[],
+  types: readonly string[] = HOVER_EVENTS,
+  id?: string,
+): void {
+  for (const type of types) {
+    const handler = () => log.push(id ? `${type}:${id}` : type);
+    element.addEventListener(type, handler);
+    listenerCleanups.push(() => element.removeEventListener(type, handler));
+  }
+}
+
+function hoverOf(response: UiAutomationResponse) {
+  if (!response.ok) throw new Error(`${response.error}: ${response.message}`);
+  const hover = response.diagnostics?.hover;
+  if (!hover) throw new Error("expected hover diagnostics");
+  return hover;
+}
+
 describe("automation bridge", () => {
   beforeEach(() => {
     topmostElement = null;
+    // #944 - LOAD-BEARING, not hygiene. The sticky pointer is module scope and
+    // `document.body.innerHTML = ""` below detaches the hovered node without
+    // clearing it, so without this the next test's first hover sees a detached
+    // `from` and takes the staleFrom branch: A13 would fail on test ORDER alone.
+    // beforeEach (not afterEach) because it is self-defending.
+    resetAutomationBridgeForTests();
     Object.defineProperty(document, "elementFromPoint", {
       configurable: true,
       value: vi.fn(() => topmostElement),
@@ -89,6 +148,7 @@ describe("automation bridge", () => {
   });
 
   afterEach(() => {
+    while (listenerCleanups.length > 0) listenerCleanups.pop()!();
     document.body.innerHTML = "";
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -584,5 +644,447 @@ describe("automation bridge", () => {
     if (!response.ok) throw new Error(response.message);
     expect(response.target.testId).toBe("shadow.secret");
     expect(response.target.text).toBe("");
+  });
+
+  // #944 - hover. Eight events, sticky, focus-free, click-free, move-free.
+  describe("hover", () => {
+    // A1
+    it("dispatches the full boundary sequence, every leave before every enter", async () => {
+      const log: string[] = [];
+      const a = addTarget("button", "hover.a", "A");
+      const b = addTarget("button", "hover.b", "B");
+      const outs: MouseEvent[] = [];
+      const overs: MouseEvent[] = [];
+      a.addEventListener("mouseout", (event) => outs.push(event as MouseEvent));
+      b.addEventListener("mouseover", (event) => overs.push(event as MouseEvent));
+      recordOn(a, log);
+      recordOn(b, log);
+
+      topmostElement = a;
+      await executeAutomationRequest("main", request("hover", "hover.a"));
+      log.length = 0;
+
+      topmostElement = b;
+      const response = await executeAutomationRequest("main", request("hover", "hover.b"));
+
+      const expected = [
+        "pointerout",
+        "pointerleave",
+        "mouseout",
+        "mouseleave",
+        "pointerover",
+        "pointerenter",
+        "mouseover",
+        "mouseenter",
+      ];
+      expect(hoverOf(response).events).toEqual(expected);
+      expect(log).toEqual(expected); // what the DOM actually saw, in order
+      expect(hoverOf(response)).toMatchObject({ from: "hover.a", to: "hover.b", changed: true });
+      expect(outs[0]?.relatedTarget).toBe(b);
+      expect(overs[0]?.relatedTarget).toBe(a);
+    });
+
+    // A2
+    it("does not focus, does not click, and dispatches no move events", async () => {
+      const button = addTarget("button", "hover.inert", "Inert");
+      topmostElement = button;
+      const onClick = vi.fn();
+      const onMouseDown = vi.fn();
+      const onPointerMove = vi.fn();
+      const onMouseMove = vi.fn();
+      const focus = vi.spyOn(button, "focus");
+      button.addEventListener("click", onClick);
+      button.addEventListener("mousedown", onMouseDown);
+      button.addEventListener("pointermove", onPointerMove);
+      button.addEventListener("mousemove", onMouseMove);
+
+      const response = await executeAutomationRequest("main", request("hover", "hover.inert"));
+
+      expect(response.ok).toBe(true);
+      expect(onClick).not.toHaveBeenCalled();
+      expect(onMouseDown).not.toHaveBeenCalled();
+      expect(onPointerMove).not.toHaveBeenCalled();
+      expect(onMouseMove).not.toHaveBeenCalled();
+      expect(focus).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(document.body);
+    });
+
+    // A3
+    it("enters outermost-first and leaves innermost-first", async () => {
+      const log: string[] = [];
+      const outer = document.createElement("div");
+      document.body.append(outer);
+      const inner = document.createElement("div");
+      outer.append(inner);
+      const button = nestTarget(inner, "button", "hover.nested");
+
+      const boundary = ["mouseenter", "mouseleave"] as const;
+      recordOn(document.documentElement, log, boundary, "html");
+      recordOn(document.body, log, boundary, "body");
+      recordOn(outer, log, boundary, "outer");
+      recordOn(inner, log, boundary, "inner");
+      recordOn(button, log, boundary, "button");
+
+      topmostElement = button;
+      await executeAutomationRequest("main", request("hover", "hover.nested"));
+
+      expect(log).toEqual([
+        "mouseenter:html",
+        "mouseenter:body",
+        "mouseenter:outer",
+        "mouseenter:inner",
+        "mouseenter:button",
+      ]);
+
+      log.length = 0;
+      await executeAutomationRequest("main", request("hover", "", "leave"));
+
+      expect(log).toEqual([
+        "mouseleave:button",
+        "mouseleave:inner",
+        "mouseleave:outer",
+        "mouseleave:body",
+        "mouseleave:html",
+      ]);
+    });
+
+    // A4
+    it("dispatches nothing when re-hovering the element it is already on", async () => {
+      const log: string[] = [];
+      const button = addTarget("button", "hover.same", "Same");
+      topmostElement = button;
+      await executeAutomationRequest("main", request("hover", "hover.same"));
+      recordOn(button, log);
+
+      const response = await executeAutomationRequest("main", request("hover", "hover.same"));
+
+      const hover = hoverOf(response);
+      expect(hover.events).toEqual([]);
+      expect(hover.changed).toBe(false);
+      expect(log).toEqual([]);
+    });
+
+    // A5
+    it("--leave fires the chain up to <html> with a null relatedTarget and parks the pointer", async () => {
+      const button = addTarget("button", "hover.leave", "Leave");
+      const outs: MouseEvent[] = [];
+      const htmlLeaves: MouseEvent[] = [];
+      button.addEventListener("mouseout", (event) => outs.push(event as MouseEvent));
+      const onHtmlLeave = (event: Event) => htmlLeaves.push(event as MouseEvent);
+      document.documentElement.addEventListener("mouseleave", onHtmlLeave);
+      listenerCleanups.push(() =>
+        document.documentElement.removeEventListener("mouseleave", onHtmlLeave),
+      );
+
+      topmostElement = button;
+      await executeAutomationRequest("main", request("hover", "hover.leave"));
+
+      const left = await executeAutomationRequest("main", request("hover", "", "leave"));
+
+      const leftHover = hoverOf(left);
+      expect(leftHover).toMatchObject({ from: "hover.leave", to: null, changed: true });
+      // button + body + html
+      expect(leftHover.events).toEqual([
+        "pointerout",
+        "pointerleave",
+        "pointerleave",
+        "pointerleave",
+        "mouseout",
+        "mouseleave",
+        "mouseleave",
+        "mouseleave",
+      ]);
+      expect(outs[0]?.relatedTarget).toBeNull();
+      expect(htmlLeaves).toHaveLength(1);
+
+      // The pointer is parked nowhere, so the same element is a real transition
+      // again rather than a same-element no-op.
+      const again = await executeAutomationRequest("main", request("hover", "hover.leave"));
+      expect(hoverOf(again).changed).toBe(true);
+      expect(hoverOf(again).events).toContain("mouseenter");
+    });
+
+    // A6
+    it("--leave with nothing hovered is an idempotent no-op", async () => {
+      const response = await executeAutomationRequest("main", request("hover", "", "leave"));
+
+      expect(response.ok).toBe(true);
+      const hover = hoverOf(response);
+      expect(hover).toMatchObject({ from: null, to: null, changed: false, reason: "not_hovered" });
+      expect(hover.events).toEqual([]);
+    });
+
+    // A7
+    it("--leave on a detached sticky element still leaves its connected ancestors", async () => {
+      const log: string[] = [];
+      const container = document.createElement("div");
+      document.body.append(container);
+      const button = nestTarget(container, "button", "hover.detached");
+      recordOn(button, log, HOVER_EVENTS, "button");
+      recordOn(container, log, HOVER_EVENTS, "container");
+
+      topmostElement = button;
+      await executeAutomationRequest("main", request("hover", "hover.detached"));
+      log.length = 0;
+
+      button.remove(); // exactly what <For> does to a row under a stationary cursor
+
+      const response = await executeAutomationRequest("main", request("hover", "", "leave"));
+
+      const hover = hoverOf(response);
+      expect(hover).toMatchObject({ from: "hover.detached", to: null, changed: true, staleFrom: true });
+      // The dead node gets nothing; container + body + html still get theirs.
+      expect(hover.events).toEqual([
+        "pointerleave",
+        "pointerleave",
+        "pointerleave",
+        "mouseleave",
+        "mouseleave",
+        "mouseleave",
+      ]);
+      expect(log).toEqual(["pointerleave:container", "mouseleave:container"]);
+    });
+
+    // A8
+    it("--leave never returns missing_selector, target_hidden or target_obscured", async () => {
+      const button = addTarget("button", "hover.gauntlet", "Gauntlet");
+      topmostElement = button;
+      await executeAutomationRequest("main", request("hover", "hover.gauntlet"));
+
+      button.remove(); // missing_selector, if the leave path ran the query
+      topmostElement = null; // target_obscured, if it ran the hit test
+
+      const response = await executeAutomationRequest("main", request("hover", "", "leave"));
+
+      expect(response.ok).toBe(true);
+      expect(hoverOf(response).changed).toBe(true);
+    });
+
+    // A9
+    it("hovers a disabled target, and still refuses to click it", async () => {
+      const button = addTarget("button", "hover.disabled", "Disabled");
+      button.setAttribute("aria-disabled", "true");
+      topmostElement = button;
+      const onMouseEnter = vi.fn();
+      button.addEventListener("mouseenter", onMouseEnter);
+
+      const hovered = await executeAutomationRequest("main", request("hover", "hover.disabled"));
+
+      expect(hovered.ok).toBe(true);
+      expect(onMouseEnter).toHaveBeenCalledTimes(1);
+
+      const clicked = await executeAutomationRequest("main", request("click", "hover.disabled"));
+
+      expect(clicked.ok).toBe(false);
+      if (clicked.ok) throw new Error("expected target_disabled");
+      expect(clicked.error).toBe("target_disabled");
+    });
+
+    // A10
+    it("refuses hidden and obscured targets, dispatching nothing", async () => {
+      const log: string[] = [];
+      const hidden = addTarget("button", "hover.hidden", "Hidden");
+      hidden.style.visibility = "hidden";
+      recordOn(hidden, log);
+
+      const hiddenResponse = await executeAutomationRequest("main", request("hover", "hover.hidden"));
+
+      expect(hiddenResponse.ok).toBe(false);
+      if (hiddenResponse.ok) throw new Error("expected target_hidden");
+      expect(hiddenResponse.error).toBe("target_hidden");
+
+      const covered = addTarget("button", "hover.covered", "Covered");
+      recordOn(covered, log);
+      const blocker = addTarget("div", "hover.blocker", "Blocker");
+      topmostElement = blocker;
+
+      const obscured = await executeAutomationRequest("main", request("hover", "hover.covered"));
+
+      expect(obscured.ok).toBe(false);
+      if (obscured.ok) throw new Error("expected target_obscured");
+      expect(obscured.error).toBe("target_obscured");
+      expect(obscured.diagnostics?.topmost?.testId).toBe("hover.blocker");
+      expect(log).toEqual([]);
+    });
+
+    // A11
+    it("does not dispatch when the request expires before mutation", async () => {
+      const log: string[] = [];
+      const button = addTarget("button", "hover.expired", "Expired");
+      topmostElement = button;
+      recordOn(button, log);
+
+      const response = await executeAutomationRequest(
+        "main",
+        request("hover", "hover.expired", undefined, Date.now() - 1),
+      );
+
+      expect(response.ok).toBe(false);
+      if (response.ok) throw new Error("expected timeout");
+      expect(response.error).toBe("timeout");
+      expect(log).toEqual([]);
+    });
+
+    // A12
+    it("skips out/leave on a detached previous target and still enters the new one", async () => {
+      const log: string[] = [];
+      const container = document.createElement("div");
+      document.body.append(container);
+      const first = nestTarget(container, "button", "hover.stale");
+      const second = addTarget("button", "hover.fresh", "Fresh");
+      recordOn(first, log, HOVER_EVENTS, "first");
+      recordOn(container, log, HOVER_EVENTS, "container");
+      recordOn(second, log, HOVER_EVENTS, "second");
+
+      topmostElement = first;
+      await executeAutomationRequest("main", request("hover", "hover.stale"));
+      log.length = 0;
+      first.remove();
+
+      topmostElement = second;
+      const response = await executeAutomationRequest("main", request("hover", "hover.fresh"));
+
+      expect(hoverOf(response)).toMatchObject({
+        from: "hover.stale",
+        to: "hover.fresh",
+        changed: true,
+        staleFrom: true,
+      });
+      expect(hoverOf(response).events).toEqual([
+        "pointerleave",
+        "mouseleave",
+        "pointerover",
+        "pointerenter",
+        "mouseover",
+        "mouseenter",
+      ]);
+      expect(log).toEqual([
+        "pointerleave:container",
+        "mouseleave:container",
+        "pointerover:second",
+        "pointerenter:second",
+        "mouseover:second",
+        "mouseenter:second",
+      ]);
+    });
+
+    // A13
+    it("enters the chain from the document root on the first hover of a session", async () => {
+      const log: string[] = [];
+      recordOn(document.body, log, ["mouseenter"], "body");
+      const button = addTarget("button", "hover.first", "First");
+      topmostElement = button;
+
+      const response = await executeAutomationRequest("main", request("hover", "hover.first"));
+
+      const hover = hoverOf(response);
+      expect(hover.from).toBeNull();
+      expect(log).toEqual(["mouseenter:body"]);
+      // html + body + button
+      expect(hover.events).toEqual([
+        "pointerover",
+        "pointerenter",
+        "pointerenter",
+        "pointerenter",
+        "mouseover",
+        "mouseenter",
+        "mouseenter",
+        "mouseenter",
+      ]);
+    });
+
+    // A14
+    it("refuses an unrecognized value instead of silently hovering the target", async () => {
+      const log: string[] = [];
+      const button = addTarget("button", "hover.value", "Value");
+      topmostElement = button;
+      recordOn(button, log);
+
+      for (const value of ["Leave", "true"]) {
+        const response = await executeAutomationRequest(
+          "main",
+          request("hover", "hover.value", value),
+        );
+
+        expect(response.ok).toBe(false);
+        if (response.ok) throw new Error("expected value_not_supported");
+        expect(response.error).toBe("value_not_supported");
+      }
+      expect(log).toEqual([]);
+    });
+
+    // A16
+    it("never fires into a node an earlier handler detached, and never reports it", async () => {
+      const log: string[] = [];
+      const outer = document.createElement("div");
+      document.body.append(outer);
+      const inner = document.createElement("div");
+      outer.append(inner);
+      const button = nestTarget(inner, "button", "hover.torn");
+      recordOn(inner, log, HOVER_EVENTS, "inner");
+      recordOn(button, log, HOVER_EVENTS, "button");
+
+      // The enter chain runs outermost-first, so this ancestor handler fires BEFORE
+      // the events for `inner` and for the target itself - and it kills both.
+      outer.addEventListener("pointerenter", () => inner.remove());
+
+      topmostElement = button;
+      const response = await executeAutomationRequest("main", request("hover", "hover.torn"));
+
+      // html + body + outer are alive and get everything. `inner` and the target are
+      // dead from the moment outer's handler ran, so they get nothing more - and
+      // `events` reports exactly what landed, not what we intended to send.
+      expect(hoverOf(response).events).toEqual([
+        "pointerover", // the target was still connected for this one
+        "pointerenter",
+        "pointerenter",
+        "pointerenter",
+        "mouseenter",
+        "mouseenter",
+        "mouseenter",
+      ]);
+      // pointerover BUBBLES, so `inner` hears the target's - it is still connected at
+      // that instant. It hears nothing after outer's handler runs: no pointerenter, no
+      // mouseover (which would have bubbled), no mouseenter.
+      expect(log).toEqual(["pointerover:button", "pointerover:inner"]);
+    });
+
+    // A15
+    it("carries pointerId / pointerType / isPrimary on the pointer events in jsdom", async () => {
+      const button = addTarget("button", "hover.pointer", "Pointer");
+      topmostElement = button;
+      const pointerEvents: MouseEvent[] = [];
+      const mouseEvents: MouseEvent[] = [];
+      for (const type of ["pointerover", "pointerenter"]) {
+        button.addEventListener(type, (event) => pointerEvents.push(event as MouseEvent));
+      }
+      for (const type of ["mouseover", "mouseenter"]) {
+        button.addEventListener(type, (event) => mouseEvents.push(event as MouseEvent));
+      }
+
+      await executeAutomationRequest("main", request("hover", "hover.pointer"));
+
+      expect(pointerEvents).toHaveLength(2);
+      for (const event of pointerEvents) {
+        // jsdom 25 has no PointerEvent ctor and MouseEventInit DROPS these three, so
+        // they exist only because createHoverEvent defines them on the fallback event.
+        const pointer = event as unknown as {
+          pointerId: number;
+          pointerType: string;
+          isPrimary: boolean;
+        };
+        expect(pointer.pointerId).toBe(1);
+        expect(pointer.pointerType).toBe("mouse");
+        expect(pointer.isPrimary).toBe(true);
+        expect(event.button).toBe(-1);
+        expect(event.buttons).toBe(0);
+      }
+
+      expect(mouseEvents).toHaveLength(2);
+      for (const event of mouseEvents) {
+        expect(event.button).toBe(0);
+        expect(event.buttons).toBe(0); // a hover presses nothing
+      }
+    });
   });
 });

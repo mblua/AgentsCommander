@@ -191,6 +191,9 @@ pub enum Commands {
     /// Dispatch a WebView contextmenu event on an automation target by data-ac-testid
     #[command(hide = true)]
     UiContextClick(crate::testability::ui_automation::UiContextClickArgs),
+    /// Dispatch a WebView pointer hover transition on an automation target by data-ac-testid
+    #[command(hide = true)]
+    UiHover(crate::testability::ui_automation::UiHoverArgs),
     /// Set an input/select WebView automation target by data-ac-testid
     #[command(hide = true)]
     UiSet(crate::testability::ui_automation::UiSetArgs),
@@ -339,6 +342,7 @@ pub fn handle_cli(cmd: Commands) -> i32 {
         Commands::UiContextClick(args) => {
             crate::testability::ui_automation::execute_context_click(args)
         }
+        Commands::UiHover(args) => crate::testability::ui_automation::execute_hover(args),
         Commands::UiSet(args) => crate::testability::ui_automation::execute_set(args),
         Commands::UiType(args) => crate::testability::ui_automation::execute_type(args),
         Commands::UiBackend(args) => crate::testability::ui_automation::execute_backend(args),
@@ -424,6 +428,7 @@ mod tests {
             "ui-query",
             "ui-click",
             "ui-context-click",
+            "ui-hover",
             "ui-set",
             "ui-type",
             "ui-backend",
@@ -441,6 +446,20 @@ mod tests {
                 .find(|c| c.get_name() == name)
                 .unwrap_or_else(|| panic!("`{}` must still be a registered subcommand", name));
             assert!(sub.is_hide_set(), "`{}` should be marked hidden", name);
+        }
+
+        // #944 - the array above is a manual allowlist. A new ui-* verb that forgets
+        // BOTH `#[command(hide = true)]` and its entry here would ship visible in
+        // `--help` with no test failing. Make the invariant structural: every ui-*
+        // subcommand is internal, no exceptions, no maintenance.
+        for sub in cmd.get_subcommands() {
+            let name = sub.get_name();
+            if name.starts_with("ui-") {
+                assert!(
+                    sub.is_hide_set(),
+                    "`{name}` is a ui-* automation verb and must be hidden from --help"
+                );
+            }
         }
 
         for flag in [
