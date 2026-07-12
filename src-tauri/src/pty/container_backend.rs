@@ -606,6 +606,7 @@ impl ContainerTransportBackend {
             resource_registration: _,
             logical_resource_slot,
             container_credential,
+            container_repo_mounts,
         } = spec;
 
         let attach_notify = Arc::new(Notify::new());
@@ -685,6 +686,7 @@ impl ContainerTransportBackend {
             selected_cwd.as_deref(),
             ticket,
             &token,
+            container_repo_mounts,
         ) {
             Ok(request) => request,
             Err(err) => {
@@ -1187,6 +1189,7 @@ fn build_start_request(
     selected_cwd: Option<&str>,
     registration_ticket: String,
     token: &ContainerApiToken,
+    repo_mounts: Vec<crate::pty::container_repos::ContainerRepoMount>,
 ) -> Result<ContainerStartRequest, AppError> {
     let settings = crate::config::settings::load_settings();
     build_start_request_with_settings(
@@ -1204,6 +1207,7 @@ fn build_start_request(
         registration_ticket,
         token,
         &settings,
+        repo_mounts,
     )
 }
 
@@ -1223,6 +1227,7 @@ fn build_start_request_with_settings(
     registration_ticket: String,
     token: &ContainerApiToken,
     settings: &crate::config::settings::AppSettings,
+    repo_mounts: Vec<crate::pty::container_repos::ContainerRepoMount>,
 ) -> Result<ContainerStartRequest, AppError> {
     if !settings.api_server_enabled {
         return Err(AppError::Other(
@@ -1256,6 +1261,13 @@ fn build_start_request_with_settings(
             DEFAULT_CONTAINER_WORKDIR
         ),
     }
+    for mount in &repo_mounts {
+        log::info!(
+            "[container-transport] repo mount '{}' -> '{}'",
+            mount.host_path.display(),
+            mount.container_path
+        );
+    }
     Ok(ContainerStartRequest {
         session_id,
         image: resolve_container_image(container_image.as_deref())?,
@@ -1271,6 +1283,7 @@ fn build_start_request_with_settings(
         env_unset,
         cols,
         rows,
+        repo_mounts,
     })
 }
 
@@ -1442,6 +1455,7 @@ mod tests {
             resource_registration: None,
             logical_resource_slot: None,
             container_credential: None,
+            container_repo_mounts: Vec::new(),
         }
     }
 
@@ -1805,6 +1819,7 @@ mod tests {
             "ticket".to_string(),
             &token(),
             &api_enabled_settings(),
+            Vec::new(),
         )
         .unwrap();
 

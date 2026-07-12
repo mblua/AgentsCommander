@@ -47,6 +47,9 @@ pub struct BackendSpawnSpec {
     /// #930 - resolved host-credential copy-in for container sessions. None for
     /// local-process sessions and when copy-in is disabled/not applicable.
     pub container_credential: Option<crate::pty::container_credentials::ContainerCredentialPlan>,
+    /// #935 - read-write repo bind mounts for container sessions. Empty for
+    /// local-process sessions and when the replica has no admissible repos.
+    pub container_repo_mounts: Vec<crate::pty::container_repos::ContainerRepoMount>,
 }
 
 pub trait PtyBackend: Any + Send + Sync {

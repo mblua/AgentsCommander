@@ -417,6 +417,7 @@ impl LocalProcessBackend {
             mut resource_registration,
             logical_resource_slot: _,
             container_credential: _,
+            container_repo_mounts: _,
         } = spec;
         // #942 - how many sessions were spawned in the window just before this one,
         // and how many of them were the same CLI. Concurrent startups against shared

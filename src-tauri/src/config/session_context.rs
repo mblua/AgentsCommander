@@ -17,12 +17,13 @@ static CONTEXT_TEMPLATE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// deterministic filename based on the agent_root to prevent races between
 /// concurrent session launches.
 pub fn ensure_session_context(agent_root: &str) -> Result<String, String> {
-    ensure_session_context_with_config(agent_root, None)
+    ensure_session_context_with_config(agent_root, None, None)
 }
 
 fn ensure_session_context_with_config(
     agent_root: &str,
     config: Option<&serde_json::Value>,
+    repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
 ) -> Result<String, String> {
     let config_dir =
         super::config_dir().ok_or_else(|| "Could not resolve app config directory".to_string())?;
@@ -60,6 +61,7 @@ fn ensure_session_context_with_config(
         &skills_section,
         Path::new(agent_root),
         config,
+        repo_mounts,
     )?;
     std::fs::write(&file_path, content)
         .map_err(|e| format!("Failed to write per-agent AgentsCommanderContext.md: {}", e))?;
@@ -1247,7 +1249,15 @@ pub fn git_ceiling_directories_for_session_root(cwd: &str) -> Option<String> {
 fn render_workspace_repos_string(
     cwd_path: &std::path::Path,
     config: Option<&serde_json::Value>,
+    repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
 ) -> String {
+    // #935 - a containerized session renders CONTAINER paths from the ONE
+    // resolution session.rs already built (plan Sec 5), so the injected context
+    // and the Docker mounts cannot disagree. A local session (repo_mounts = None)
+    // keeps today's host-path rendering, byte-for-byte.
+    if let Some(resolution) = repo_mounts {
+        return render_workspace_repos_containerized(resolution);
+    }
     let repos = config
         .and_then(|config| config.get("repos"))
         .and_then(|v| v.as_array())
@@ -1298,6 +1308,59 @@ fn render_workspace_repos_string(
     md
 }
 
+/// #935 - render the injected "Workspace Repos" block for a CONTAINER session
+/// from the resolved mounts. Container paths (/repos/repo-X) are shown, never the
+/// Windows host path, which does not resolve inside the container (defect D2). The
+/// branch is still detected host-side from the canonical host path.
+fn render_workspace_repos_containerized(
+    resolution: &crate::pty::container_repos::RepoMountResolution,
+) -> String {
+    use crate::pty::container_repos::RepoOutcome;
+
+    if resolution.entries.is_empty() {
+        return "# Workspace Repos\n\nNo repos configured for this replica.\n".to_string();
+    }
+
+    let mut md = String::from(
+        "# Workspace Repos\n\n\
+         You are working inside a workgroup replica. Your working directory is your agent dir, \
+         but your code repos are listed below. You MUST change to the appropriate repo directory \
+         before doing any code work (git, file edits, builds, etc).\n\n\
+         ## Repos\n\n",
+    );
+
+    for entry in &resolution.entries {
+        match &entry.outcome {
+            RepoOutcome::Mounted {
+                name,
+                host_path,
+                container_path,
+            } => {
+                let branch = detect_git_branch(&host_path.to_string_lossy())
+                    .unwrap_or_else(|| "unknown".to_string());
+                md.push_str(&format!(
+                    "- **{}** — Path: `{}` — Branch: `{}`\n",
+                    name, container_path, branch
+                ));
+            }
+            RepoOutcome::NotFound => {
+                let name = std::path::Path::new(&entry.config_entry)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(&entry.config_entry);
+                md.push_str(&format!(
+                    "- **{}** — Path: `{}/{}` — **(NOT FOUND)**\n",
+                    name,
+                    crate::pty::container_repos::CONTAINER_REPOS_ROOT,
+                    name
+                ));
+            }
+        }
+    }
+
+    md
+}
+
 /// Detect git branch for a given directory path.
 fn detect_git_branch(dir: &str) -> Option<String> {
     #[cfg(windows)]
@@ -1339,7 +1402,10 @@ fn detect_git_branch(dir: &str) -> Option<String> {
 ///
 /// Returns Ok(Some(path)) with the combined temp file, Ok(None) if no context[] field,
 /// or Err with details about missing files.
-pub fn build_replica_context(cwd: &str) -> Result<Option<String>, String> {
+pub fn build_replica_context(
+    cwd: &str,
+    repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
+) -> Result<Option<String>, String> {
     let cwd_path = std::path::Path::new(cwd);
     let config_path = cwd_path.join("config.json");
 
@@ -1362,12 +1428,12 @@ pub fn build_replica_context(cwd: &str) -> Result<Option<String>, String> {
         match identity {
             Some(identity) => (config, identity),
             None => {
-                return build_replica_context_from_config(cwd, cwd_path, config, None);
+                return build_replica_context_from_config(cwd, cwd_path, config, None, repo_mounts);
             }
         }
     };
 
-    build_replica_context_from_config(cwd, cwd_path, config, Some(identity))
+    build_replica_context_from_config(cwd, cwd_path, config, Some(identity), repo_mounts)
 }
 
 fn build_replica_context_from_config(
@@ -1375,6 +1441,7 @@ fn build_replica_context_from_config(
     cwd_path: &Path,
     config: serde_json::Value,
     repaired_identity: Option<crate::config::replica_identity::WgReplicaIdentity>,
+    repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
 ) -> Result<Option<String>, String> {
     // No "context" field → no replica context
     let context_array = match config.get("context").and_then(|v| v.as_array()) {
@@ -1393,7 +1460,7 @@ fn build_replica_context_from_config(
         };
 
         if raw == CONTEXT_TOKEN_GLOBAL {
-            let global_path = ensure_session_context_with_config(cwd, Some(&config))?;
+            let global_path = ensure_session_context_with_config(cwd, Some(&config), repo_mounts)?;
             resolved_paths.push((
                 "AgentsCommanderContext.md".to_string(),
                 std::path::PathBuf::from(&global_path),
@@ -1464,7 +1531,10 @@ fn build_replica_context_from_config(
     Ok(Some(file_path))
 }
 
-fn build_direct_matrix_context(cwd: &str) -> Result<String, String> {
+fn build_direct_matrix_context(
+    cwd: &str,
+    repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
+) -> Result<String, String> {
     let cwd_path = Path::new(cwd);
     let role_path = Path::new(cwd).join(ROLE_MD_FILENAME);
     let config_path = cwd_path.join("config.json");
@@ -1478,7 +1548,7 @@ fn build_direct_matrix_context(cwd: &str) -> Result<String, String> {
     } else {
         None
     };
-    let global_context = ensure_session_context_with_config(cwd, config.as_ref())?;
+    let global_context = ensure_session_context_with_config(cwd, config.as_ref(), repo_mounts)?;
     let mut resolved_paths = vec![(
         "AgentsCommanderContext.md".to_string(),
         std::path::PathBuf::from(&global_context),
@@ -1562,9 +1632,10 @@ fn resolve_session_context_content(
     cwd: &str,
     is_coordinator: bool,
     auto_self_clear: bool,
+    repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
 ) -> Result<Option<String>, String> {
     let context_path = if is_replica_agent_dir(cwd) {
-        match build_replica_context(cwd) {
+        match build_replica_context(cwd, repo_mounts) {
             Ok(Some(combined_path)) => {
                 log::info!(
                     "Using replica combined context for agent session: {}",
@@ -1572,11 +1643,11 @@ fn resolve_session_context_content(
                 );
                 combined_path
             }
-            Ok(None) => ensure_session_context(cwd)?,
+            Ok(None) => ensure_session_context_with_config(cwd, None, repo_mounts)?,
             Err(e) => return Err(e),
         }
     } else if super::root_agent::is_root_agent_dir_name(cwd) {
-        match build_replica_context(cwd) {
+        match build_replica_context(cwd, repo_mounts) {
             Ok(Some(combined_path)) => {
                 log::info!(
                     "Using root-agent combined context for agent session: {}",
@@ -1589,11 +1660,11 @@ fn resolve_session_context_content(
             // normal path; this fallback (mirroring the replica branch) makes
             // sure the Root still flows into the strip+append below even in a
             // degenerate no-context[] setup, never silently losing the directive.
-            Ok(None) => ensure_session_context(cwd)?,
+            Ok(None) => ensure_session_context_with_config(cwd, None, repo_mounts)?,
             Err(e) => return Err(e),
         }
     } else if is_canonical_agent_matrix_dir(cwd) {
-        build_direct_matrix_context(cwd)?
+        build_direct_matrix_context(cwd, repo_mounts)?
     } else {
         return Ok(None);
     };
@@ -1650,8 +1721,9 @@ pub fn materialize_agent_context_file_with_filename(
     extra_managed_filenames: &[String],
     is_coordinator: bool,
     auto_self_clear: bool,
+    repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
 ) -> Result<Option<String>, String> {
-    let content = match resolve_session_context_content(cwd, is_coordinator, auto_self_clear)? {
+    let content = match resolve_session_context_content(cwd, is_coordinator, auto_self_clear, repo_mounts)? {
         Some(content) => content,
         None => return Ok(None),
     };
@@ -1779,7 +1851,7 @@ pub fn materialize_agent_context_file(
     // materialize_agent_context_file_with_filename in session.rs, which resolves
     // and passes the real auto_self_clear flag. Pass false here so no production
     // path loses the gated directive.
-    materialize_agent_context_file_with_filename(cwd, target.filename(), &[], is_coordinator, false)
+    materialize_agent_context_file_with_filename(cwd, target.filename(), &[], is_coordinator, false, None)
 }
 
 // ── Context-cache GC (#621) ───────────────────────────────────────────────
@@ -1936,6 +2008,7 @@ fn render_agent_context_template(
     skills_section: &str,
     cwd_path: &Path,
     config: Option<&serde_json::Value>,
+    repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
 ) -> String {
     let is_root_agent = super::root_agent::is_root_agent_path(agent_root);
     render_agent_context_template_inner(
@@ -1945,10 +2018,12 @@ fn render_agent_context_template(
         skills_section,
         cwd_path,
         config,
+        repo_mounts,
         is_root_agent,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_agent_context_template_inner(
     template: &str,
     agent_root: &str,
@@ -1956,6 +2031,7 @@ fn render_agent_context_template_inner(
     skills_section: &str,
     cwd_path: &Path,
     config: Option<&serde_json::Value>,
+    repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
     is_root_agent: bool,
 ) -> String {
     let rendered =
@@ -2020,7 +2096,7 @@ fn render_agent_context_template_inner(
         )
         .replace(
             "{{WORKSPACE_REPOS}}",
-            &render_workspace_repos_string(cwd_path, config),
+            &render_workspace_repos_string(cwd_path, config, repo_mounts),
         )
         .replace(
             "{{DELEGATED_TASK_REPORTING}}",
@@ -2034,6 +2110,7 @@ fn render_default_agent_context(
     skills_section: &str,
     cwd_path: &Path,
     config: Option<&serde_json::Value>,
+    repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
 ) -> String {
     render_agent_context_template(
         get_default_agent_template(),
@@ -2042,6 +2119,7 @@ fn render_default_agent_context(
         skills_section,
         cwd_path,
         config,
+        repo_mounts,
     )
 }
 
@@ -2051,6 +2129,7 @@ fn resolve_agent_context(
     skills_section: &str,
     cwd_path: &Path,
     config: Option<&serde_json::Value>,
+    repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
 ) -> Result<String, String> {
     let template = read_or_create_context_template(
         agent_root,
@@ -2074,6 +2153,7 @@ fn resolve_agent_context(
                 skills_section,
                 cwd_path,
                 config,
+                repo_mounts,
             ))
         }
         LegacyRenderedDefaultContext::NotLegacy => Ok(render_agent_context_template(
@@ -2083,6 +2163,7 @@ fn resolve_agent_context(
             skills_section,
             cwd_path,
             config,
+            repo_mounts,
         )),
     }
 }
@@ -2792,6 +2873,7 @@ fn default_context(agent_root: &str, matrix_root: Option<&str>, skills_section: 
         skills_section,
         Path::new(agent_root),
         None,
+        None,
     )
 }
 
@@ -2807,6 +2889,7 @@ fn default_context_as_root(
         matrix_root,
         skills_section,
         Path::new(agent_root),
+        None,
         None,
         true,
     )
@@ -3412,6 +3495,7 @@ Run list-peers-lean.
             &no_skill_section(),
             Path::new(agent_root),
             None,
+            None,
             is_root_agent,
         )
     }
@@ -3599,7 +3683,7 @@ For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List
                 ("{{SKILLS_SECTION}}", no_skill_section()),
                 (
                     "{{WORKSPACE_REPOS}}",
-                    render_workspace_repos_string(Path::new(agent_root), None),
+                    render_workspace_repos_string(Path::new(agent_root), None, None),
                 ),
                 (
                     "{{DELEGATED_TASK_REPORTING}}",
@@ -4303,6 +4387,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             &no_skill_section(),
             Path::new(&root),
             None,
+            None,
         );
         assert!(out.contains("Every registered AgentsCommander project folder"));
         assert!(out.contains("## Root Agent Authority and Chain of Command"));
@@ -4609,6 +4694,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             Some(&matrix_root),
             &no_skill_section(),
             &replica_root,
+            None,
             None,
         )
         .expect("resolve context");
@@ -5053,6 +5139,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             &no_skill_section(),
             &new_replica,
             None,
+            None,
         )
         .expect("resolve context");
         assert!(rendered.contains("### Incoming Message Notifications"));
@@ -5084,6 +5171,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             &no_skill_section(),
             &new_replica,
             None,
+            None,
         )
         .expect("resolve context again");
         assert_eq!(rendered_again, rendered);
@@ -5111,6 +5199,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             Some(&path_string(&matrix_root)),
             &no_skill_section(),
             &replica_root,
+            None,
             None,
         )
         .expect("resolve context");
@@ -5177,6 +5266,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             &no_skill_section(),
             &resolving_root,
             None,
+            None,
         )
         .expect("resolve context");
         let healed = std::fs::read_to_string(&template_path).expect("read healed root template");
@@ -5230,6 +5320,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             Some(&path_string(&new_matrix)),
             &no_skill_section(),
             &new_replica,
+            None,
             None,
         )
         .expect("resolve context");
@@ -5634,7 +5725,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         let cwd = path_string(&matrix_root);
 
-        let on = materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], false, true)
+        let on = materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], false, true, None)
             .expect("materialize ON")
             .expect("context path");
         let on_content = std::fs::read_to_string(&on).expect("read ON context");
@@ -5644,7 +5735,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(on_content.contains("closed background"));
 
         let off =
-            materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], false, false)
+            materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], false, false, None)
                 .expect("materialize OFF")
                 .expect("context path");
         let off_content = std::fs::read_to_string(&off).expect("read OFF context");
@@ -5670,7 +5761,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         .expect("write legacy coordinator template");
         let cwd = path_string(&matrix_root);
 
-        let on = materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], true, true)
+        let on = materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], true, true, None)
             .expect("materialize ON")
             .expect("context path");
         let on_content = std::fs::read_to_string(&on).expect("read ON context");
@@ -5692,7 +5783,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             "coordinator body preserved"
         );
 
-        let off = materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], true, false)
+        let off = materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], true, false, None)
             .expect("materialize OFF")
             .expect("context path");
         let off_content = std::fs::read_to_string(&off).expect("read OFF context");
@@ -5724,7 +5815,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         // Invariant: a Root with a non-empty context[] yields Some (the Some path
         // is the normal one; the Ok(None) fallback is defense-in-depth).
         assert!(
-            build_replica_context(&cwd)
+            build_replica_context(&cwd, None)
                 .expect("build root context")
                 .is_some(),
             "the canonical Root always has a non-empty context[]"
@@ -5732,7 +5823,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         // Sanity: the dir-name gate recognizes this as the Root.
         assert!(crate::config::root_agent::is_root_agent_dir_name(&cwd));
 
-        let on = resolve_session_context_content(&cwd, false, true)
+        let on = resolve_session_context_content(&cwd, false, true, None)
             .expect("resolve ON")
             .expect("root content");
         assert!(on.contains("## Self-Maintenance (auto self-handoff-and-clear)"));
@@ -5740,7 +5831,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(on.contains("closed background"));
         assert!(on.contains("ROOT BASE CONTEXT"), "base context preserved");
 
-        let off = resolve_session_context_content(&cwd, false, false)
+        let off = resolve_session_context_content(&cwd, false, false, None)
             .expect("resolve OFF")
             .expect("root content");
         assert!(!off.contains("## Self-Maintenance"));
@@ -6054,6 +6145,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             &["MyTeam.md".to_string()],
             false,
             false,
+            None,
         )
         .expect("materialize")
         .expect("context path");
@@ -6087,6 +6179,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             &[], // MyTeam.md intentionally not listed -> it survives.
             false,
             false,
+            None,
         )
         .expect("materialize")
         .expect("context path");
@@ -6115,6 +6208,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             &[],
             false,
             false,
+            None,
         )
         .expect_err("a filename with separators must be rejected by the writer");
         assert!(err.contains("separators"), "{err}");
@@ -6152,6 +6246,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             &[],
             false,
             false,
+            None,
         )
         .expect("materialize should succeed by replacing the link")
         .expect("context path");
@@ -6205,6 +6300,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             &[],
             false,
             false,
+            None,
         )
         .expect("materialize should replace the dir link, not brick the launch")
         .expect("context path");

@@ -199,12 +199,26 @@ impl DockerRuntime {
                 "type=bind,source={},target={}",
                 request.host_root, request.container_workdir
             ),
-            "--workdir".to_string(),
-            request.container_workdir.clone(),
-            "--".to_string(),
-            request.image.clone(),
-            DEFAULT_BRIDGE_ENTRYPOINT.to_string(),
         ];
+
+        // #935 - one read-write --mount per admissible repo, appended BEFORE the
+        // workdir/image/entrypoint tail. Pushing after the tail would place them
+        // after the image and turn them into container arguments (the image_idx
+        // assertions below guard exactly this).
+        for mount in &request.repo_mounts {
+            args.push("--mount".to_string());
+            args.push(format!(
+                "type=bind,source={},target={}",
+                mount.host_path.display(),
+                mount.container_path
+            ));
+        }
+
+        args.push("--workdir".to_string());
+        args.push(request.container_workdir.clone());
+        args.push("--".to_string());
+        args.push(request.image.clone());
+        args.push(DEFAULT_BRIDGE_ENTRYPOINT.to_string());
 
         args.retain(|arg| !arg.is_empty());
         Ok(DockerCommandSpec {
@@ -572,6 +586,7 @@ mod tests {
             env_unset: vec!["CLAUDE_CONFIG_DIR".to_string()],
             cols: 120,
             rows: 30,
+            repo_mounts: Vec::new(),
         }
     }
 
@@ -628,6 +643,73 @@ mod tests {
 
         assert_eq!(spec.args[image_idx - 1], "--");
         assert_eq!(spec.args[image_idx + 1], DEFAULT_BRIDGE_ENTRYPOINT);
+    }
+
+    #[test]
+    fn run_command_appends_read_write_repo_mounts_before_image() {
+        // #935 - each repo renders as its own --mount, AFTER the replica mount
+        // and BEFORE the -- / image / entrypoint tail. If the loop were appended
+        // after the tail, image_idx + 1 would be --mount and this test fails.
+        use crate::pty::container_repos::ContainerRepoMount;
+        let runtime = DockerRuntime::with_program("docker-test");
+        let mut req = request();
+        req.repo_mounts = vec![
+            ContainerRepoMount {
+                host_path: std::path::PathBuf::from(
+                    "C:/project/.ac/wg-1-team/repo-AgentsCommander",
+                ),
+                container_path: "/repos/repo-AgentsCommander".to_string(),
+            },
+            ContainerRepoMount {
+                host_path: std::path::PathBuf::from("C:/project/.ac/wg-1-team/repo-webpage"),
+                container_path: "/repos/repo-webpage".to_string(),
+            },
+        ];
+        let spec = runtime.build_run_command(&req).unwrap();
+        let joined = spec.args.join(" ");
+
+        // Replica mount plus the two repos = three --mount flags.
+        assert_eq!(spec.args.iter().filter(|a| *a == "--mount").count(), 3);
+        let replica = spec
+            .args
+            .iter()
+            .position(|a| a.contains("target=/workspace"))
+            .expect("replica mount");
+        let repo1 = spec
+            .args
+            .iter()
+            .position(|a| a.contains("target=/repos/repo-AgentsCommander"))
+            .expect("repo1 mount");
+        let repo2 = spec
+            .args
+            .iter()
+            .position(|a| a.contains("target=/repos/repo-webpage"))
+            .expect("repo2 mount");
+        // Order: replica first, then repos in config order.
+        assert!(replica < repo1 && repo1 < repo2);
+        assert!(joined.contains(
+            "type=bind,source=C:/project/.ac/wg-1-team/repo-AgentsCommander,target=/repos/repo-AgentsCommander"
+        ));
+        // Read-write: no readonly token on the repo mounts (Q2 = RW).
+        assert!(!joined.contains("readonly"));
+        // The workdir stays the replica.
+        let workdir_idx = spec
+            .args
+            .iter()
+            .position(|a| a == "--workdir")
+            .expect("workdir");
+        assert_eq!(spec.args[workdir_idx + 1], "/workspace");
+        // The repo mounts precede the image; the -- / entrypoint tail is intact.
+        let image_idx = spec
+            .args
+            .iter()
+            .position(|a| a == "ac-bridge:test")
+            .expect("image arg");
+        assert!(repo2 < image_idx, "repo mounts must precede the image");
+        assert_eq!(spec.args[image_idx - 1], "--");
+        assert_eq!(spec.args[image_idx + 1], DEFAULT_BRIDGE_ENTRYPOINT);
+        // S7 free regression guard, now exercised WITH repo mounts.
+        assert!(!joined.contains("messaging"));
     }
 
     #[test]
