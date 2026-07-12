@@ -17,6 +17,10 @@ interface FakeTerminalInstance {
   rows: number;
   element: HTMLElement | null;
   writes: unknown[];
+  /** What is actually visible now: reset() clears it, write() appends. */
+  screen: unknown[];
+  resets: number;
+  reset(): void;
   resizes: { cols: number; rows: number }[];
   emitData(data: string): void;
   emitResize(cols: number, rows: number): void;
@@ -38,6 +42,8 @@ vi.mock("@xterm/xterm", () => ({
     rows = 24;
     element: HTMLElement | null = null;
     writes: unknown[] = [];
+    screen: unknown[] = [];
+    resets = 0;
     resizes: { cols: number; rows: number }[] = [];
     private dataHandlers = new Set<(data: string) => void>();
     private resizeHandlers = new Set<(size: { cols: number; rows: number }) => void>();
@@ -63,6 +69,13 @@ vi.mock("@xterm/xterm", () => ({
 
     write(data: unknown): void {
       this.writes.push(data);
+      this.screen.push(data);
+    }
+
+    /** Real xterm RIS: clears the screen and the scrollback. */
+    reset(): void {
+      this.resets += 1;
+      this.screen.length = 0;
     }
 
     scrollToBottom(): void {}
@@ -358,8 +371,11 @@ describe("TerminalApp workflow", () => {
         sequence: 1,
       });
 
+      // #955: the live chunk is on screen the moment it arrives. It is NOT
+      // withheld until the snapshot round-trip settles.
       await flushPromises();
-      expect(terminal.writes).toHaveLength(0);
+      expect(terminal.writes).toHaveLength(1);
+      expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual(liveOutput);
 
       snapshot.resolve({
         sessionId: "session-1",
@@ -369,9 +385,14 @@ describe("TerminalApp workflow", () => {
         sequence: 0,
       });
 
-      await waitFor(() => expect(terminal.writes).toHaveLength(2));
-      expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual([83, 78, 65, 80]);
-      expect(Array.from(terminal.writes[1] as Uint8Array)).toEqual(liveOutput);
+      // A snapshot is a full-screen repaint and this one predates the live
+      // chunk (sequence 0 < 1), so the screen is rebuilt rather than appended
+      // to: snapshot first, then the live output it excludes. Final state is
+      // identical to the un-raced path — nothing duplicated, nothing missing.
+      await waitFor(() => expect(terminal.resets).toBe(1));
+      expect(terminal.screen).toHaveLength(2);
+      expect(Array.from(terminal.screen[0] as Uint8Array)).toEqual([83, 78, 65, 80]);
+      expect(Array.from(terminal.screen[1] as Uint8Array)).toEqual(liveOutput);
     } finally {
       rendered.cleanup();
     }
@@ -402,8 +423,9 @@ describe("TerminalApp workflow", () => {
         sequence: 1,
       });
 
+      // #955: rendered on arrival, not withheld.
       await flushPromises();
-      expect(terminal.writes).toHaveLength(0);
+      expect(terminal.writes).toHaveLength(1);
 
       snapshot.resolve({
         sessionId: "session-1",
@@ -413,8 +435,12 @@ describe("TerminalApp workflow", () => {
         sequence: 1,
       });
 
-      await waitFor(() => expect(terminal.writes).toHaveLength(1));
-      expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual([
+      // The snapshot's screen already contains the live chunk (sequence 1), so
+      // after the rebuild it appears exactly ONCE: the sequence dedup drops the
+      // replay instead of writing it a second time.
+      await waitFor(() => expect(terminal.resets).toBe(1));
+      expect(terminal.screen).toHaveLength(1);
+      expect(Array.from(terminal.screen[0] as Uint8Array)).toEqual([
         83, 78, 65, 80, 76, 73, 86, 69,
       ]);
     } finally {
@@ -584,13 +610,17 @@ describe("TerminalApp workflow", () => {
         sequence: 1,
       });
 
+      // #955: rendered on arrival, not withheld.
       await flushPromises();
-      expect(terminal.writes).toHaveLength(0);
+      expect(terminal.writes).toHaveLength(1);
 
       snapshot.resolve(null);
 
-      await waitFor(() => expect(terminal.writes).toHaveLength(1));
+      // Nothing to seed with: the live output already on screen stands, and is
+      // not written a second time.
+      await flushPromises();
       expect(terminal.writes).toHaveLength(1);
+      expect(terminal.resets).toBe(0);
       expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual(liveOutput);
       const replayStatus = rendered.root.querySelector<HTMLDivElement>(
         '[data-ac-testid="terminal.replay-status.session-1"]'
@@ -627,13 +657,17 @@ describe("TerminalApp workflow", () => {
         sequence: 1,
       });
 
+      // #955: rendered on arrival, not withheld.
       await flushPromises();
-      expect(terminal.writes).toHaveLength(0);
+      expect(terminal.writes).toHaveLength(1);
 
       snapshot.reject("missing parser");
 
-      await waitFor(() => expect(terminal.writes).toHaveLength(1));
+      // The round-trip failed; the live output already on screen stands, and is
+      // not written a second time.
+      await flushPromises();
       expect(terminal.writes).toHaveLength(1);
+      expect(terminal.resets).toBe(0);
       expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual(liveOutput);
       const replayStatus = rendered.root.querySelector<HTMLDivElement>(
         '[data-ac-testid="terminal.replay-status.session-1"]'

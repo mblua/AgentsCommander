@@ -75,28 +75,10 @@ describe("projectCollapseStore", () => {
     expect(projectCollapseStore.isProjectCollapsed(projectB)).toBe(true);
   });
 
-  it("requestProjectFocus / focusTarget / consumeProjectFocus: consume returns once then null", () => {
-    expect(projectCollapseStore.focusTarget()).toBe(null);
-    projectCollapseStore.requestProjectFocus(projectA);
-    // Stored normalized.
-    expect(projectCollapseStore.focusTarget()).toBe("c:/projecta");
-    expect(projectCollapseStore.consumeProjectFocus()).toBe("c:/projecta");
-    expect(projectCollapseStore.focusTarget()).toBe(null);
-    // Second consume is null (already consumed).
-    expect(projectCollapseStore.consumeProjectFocus()).toBe(null);
-  });
-
-  it("requestProjectFocus normalizes the path before storing", () => {
-    projectCollapseStore.requestProjectFocus("C:\\ProjectA\\");
-    expect(projectCollapseStore.focusTarget()).toBe("c:/projecta");
-  });
-
-  it("resetForTests clears collapse state and focus target", () => {
+  it("resetForTests clears collapse state", () => {
     projectCollapseStore.setProjectCollapsed(projectA, true);
-    projectCollapseStore.requestProjectFocus(projectB);
     projectCollapseStore.resetForTests();
     expect(projectCollapseStore.isProjectCollapsed(projectA)).toBe(false);
-    expect(projectCollapseStore.focusTarget()).toBe(null);
   });
 
   it("projectPanelCollapseKey joins normalized path + section + id with the separator", () => {
