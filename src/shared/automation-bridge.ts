@@ -38,7 +38,16 @@ let started = false;
  *  The CHAIN is stored, not recomputed: <For> re-mints rows (ProjectPanel :834-840,
  *  :3721-3725), so `hoveredElement` is routinely detached by the time we leave it,
  *  and a chain recomputed from a detached node stops at its detached root - which
- *  would strand `.sidebar-layout` in the pointer-inside state forever (plan C17). */
+ *  would strand `.sidebar-layout` in the pointer-inside state forever (plan C17).
+ *
+ *  ASSUMPTION, and the one hole `dispatchHoverEvent`'s isConnected guard cannot
+ *  close: a node that is still CONNECTED has not been RE-PARENTED since we captured
+ *  its chain. If it had, the old and the new ancestors would both be live, and we
+ *  would fire the leave chain at the ancestors it no longer has while the ones it
+ *  does have never hear a thing. Nothing detects that. It cannot happen today -
+ *  Solid's <For> reorders rows within one parent and never moves a node across
+ *  parents - so if you ever re-parent a live node under the pointer, this chain has
+ *  to be recomputed, not filtered. */
 let hoveredElement: HTMLElement | null = null;
 let hoveredChain: HTMLElement[] = [];
 
@@ -641,7 +650,7 @@ function dispatchHoverEnter(to: HTMLElement): HoverDiagnostics {
   const common = from ? firstCommonAncestor(hoveredChain, toChain) : null;
 
   if (from) {
-    dispatchLeaveGroup(from, to, leaveChainUpTo(hoveredChain, common), events);
+    dispatchLeaveGroup(from, to, takeUntil(hoveredChain, common), events);
   }
   dispatchEnterGroup(to, staleFrom ? null : from, takeUntil(toChain, common).reverse(), events);
 
@@ -666,10 +675,10 @@ function dispatchHoverLeave(): HoverDiagnostics {
 
   const staleFrom = !from.isConnected;
   // to === null: the pointer leaves the window. The chain runs all the way up
-  // (documentElement included) and relatedTarget is null. Connected nodes only: a
-  // detached row is gone, but `.sidebar-layout` above it is not, and it is still
-  // frozen (plan C17).
-  dispatchLeaveGroup(from, null, hoveredChain.filter((node) => node.isConnected), events);
+  // (documentElement included) and relatedTarget is null. The whole STORED chain is
+  // offered: a detached row is gone (dispatchHoverEvent drops it), but
+  // `.sidebar-layout` above it is not, and it is still frozen (plan C17).
+  dispatchLeaveGroup(from, null, hoveredChain, events);
 
   hoveredElement = null;
   hoveredChain = [];
@@ -685,28 +694,29 @@ function dispatchHoverLeave(): HoverDiagnostics {
 function dispatchLeaveGroup(
   from: HTMLElement,
   to: HTMLElement | null,
-  chain: HTMLElement[], // innermost first, connected only
+  chain: HTMLElement[], // innermost first; detached nodes are dropped on dispatch
   events: string[],
 ): void {
   const point = elementCenterPoint(to ?? from);
-  if (from.isConnected) {
-    dispatchHoverEvent(from, "pointerout", point, to, true, true, events);
-  }
+  dispatchHoverEvent(from, "pointerout", point, to, true, true, events);
   for (const node of chain) {
     dispatchHoverEvent(node, "pointerleave", point, to, false, false, events);
   }
-  if (from.isConnected) {
-    dispatchHoverEvent(from, "mouseout", point, to, true, true, events);
-  }
+  dispatchHoverEvent(from, "mouseout", point, to, true, true, events);
   for (const node of chain) {
     dispatchHoverEvent(node, "mouseleave", point, to, false, false, events);
   }
 }
 
+/** The enter chain runs OUTERMOST-FIRST, so an ancestor's handler runs before the
+ *  events for its own descendants - including `to` itself. An `onMouseEnter` that
+ *  tore down its own subtree would leave the rest of this function firing into dead
+ *  nodes. No handler in src/ does that today, and it is `dispatchHoverEvent`'s
+ *  isConnected guard, not that fact, that makes it safe. */
 function dispatchEnterGroup(
   to: HTMLElement,
   from: HTMLElement | null,
-  chain: HTMLElement[], // outermost first
+  chain: HTMLElement[], // outermost first; detached nodes are dropped on dispatch
   events: string[],
 ): void {
   const point = elementCenterPoint(to);
@@ -720,6 +730,20 @@ function dispatchEnterGroup(
   }
 }
 
+/** THE invariant, and the single place it is enforced: never dispatch into a node
+ *  that has left the document, and never report an event that did not land.
+ *  Dispatching into a removed node is a lie the DOM would not tell (plan §8.4), and
+ *  `diagnostics.events` is the harness's only evidence of what happened - a phantom
+ *  entry in it is worse than a missing one.
+ *
+ *  A node in a chain is dead by the time we reach it in two ways:
+ *  - it was already detached when the chain was captured. The routine case: <For>
+ *    re-mints a row under a stationary cursor, so `from` is gone by the time we
+ *    leave it, while its ancestors are still there and still owe us their leave.
+ *  - a handler EARLIER in the same dispatch detached it (see dispatchEnterGroup).
+ *
+ *  The chains are therefore passed WHOLE and filtered here, at dispatch time. A
+ *  pre-filter cannot see the second case. */
 function dispatchHoverEvent(
   target: HTMLElement,
   type: string,
@@ -729,6 +753,7 @@ function dispatchHoverEvent(
   cancelable: boolean,
   events: string[],
 ): void {
+  if (!target.isConnected) return;
   target.dispatchEvent(createHoverEvent(target, type, point, related, bubbles, cancelable));
   events.push(type);
 }
@@ -758,10 +783,6 @@ function firstCommonAncestor(
 function takeUntil(chain: HTMLElement[], stop: HTMLElement | null): HTMLElement[] {
   const index = stop ? chain.indexOf(stop) : -1;
   return index === -1 ? chain.slice() : chain.slice(0, index);
-}
-
-function leaveChainUpTo(chain: HTMLElement[], stop: HTMLElement | null): HTMLElement[] {
-  return takeUntil(chain, stop).filter((node) => node.isConnected);
 }
 
 function testIdOf(element: HTMLElement | null): string | null {

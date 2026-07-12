@@ -1013,6 +1013,42 @@ describe("automation bridge", () => {
       expect(log).toEqual([]);
     });
 
+    // A16
+    it("never fires into a node an earlier handler detached, and never reports it", async () => {
+      const log: string[] = [];
+      const outer = document.createElement("div");
+      document.body.append(outer);
+      const inner = document.createElement("div");
+      outer.append(inner);
+      const button = nestTarget(inner, "button", "hover.torn");
+      recordOn(inner, log, HOVER_EVENTS, "inner");
+      recordOn(button, log, HOVER_EVENTS, "button");
+
+      // The enter chain runs outermost-first, so this ancestor handler fires BEFORE
+      // the events for `inner` and for the target itself - and it kills both.
+      outer.addEventListener("pointerenter", () => inner.remove());
+
+      topmostElement = button;
+      const response = await executeAutomationRequest("main", request("hover", "hover.torn"));
+
+      // html + body + outer are alive and get everything. `inner` and the target are
+      // dead from the moment outer's handler ran, so they get nothing more - and
+      // `events` reports exactly what landed, not what we intended to send.
+      expect(hoverOf(response).events).toEqual([
+        "pointerover", // the target was still connected for this one
+        "pointerenter",
+        "pointerenter",
+        "pointerenter",
+        "mouseenter",
+        "mouseenter",
+        "mouseenter",
+      ]);
+      // pointerover BUBBLES, so `inner` hears the target's - it is still connected at
+      // that instant. It hears nothing after outer's handler runs: no pointerenter, no
+      // mouseover (which would have bubbled), no mouseenter.
+      expect(log).toEqual(["pointerover:button", "pointerover:inner"]);
+    });
+
     // A15
     it("carries pointerId / pointerType / isPrimary on the pointer events in jsdom", async () => {
       const button = addTarget("button", "hover.pointer", "Pointer");

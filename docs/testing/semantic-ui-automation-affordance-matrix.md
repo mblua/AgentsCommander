@@ -76,6 +76,7 @@ This matrix seeds issue #497 acceptance coverage. It tracks user-visible screen/
 - Inactive (gray) coordinators use the constant prefix `replica.inactive.menu.repo` instead of `replica.<sessionId>.menu.repo`, so two inactive coordinators share a prefix.
 - Bracket any hover-using script with `hover --leave` at both ends. The pointer is sticky **across CLI invocations**, and a script that starts with the pointer already on its target gets a same-element re-hover, which dispatches nothing (`diagnostics.hover.changed: false`).
 - `hover` drives JS handlers (`onMouseEnter` / `onPointerEnter` and their leave twins). It cannot drive the CSS `:hover` pseudo-class, and it deliberately dispatches no `pointermove` / `mousemove`, so no gesture state machine can see it.
+- `hover` runs the same visibility and **obscured** gates as `click`: a covered element genuinely receives no pointer, so it is refused with `target_obscured`, and `diagnostics.topmost` names what is on top of it. The one place this bites in practice: the Browse flyout flips to the **left** of its anchor when it would overflow the viewport, so on a narrow window it can land on top of the menu itself, and the next `hover` on another repo entry is refused. Recovery: widen the window, or `hover --leave` (which closes the flyout) and retry.
 
 ## Known Gaps For Follow-Up
 
