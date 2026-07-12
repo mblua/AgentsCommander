@@ -1,4 +1,6 @@
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
@@ -391,19 +393,47 @@ pub fn pty_resize(
         .map_err(|e| e.to_string())
 }
 
+/// #955/#956 - the backend half of the snapshot round-trip measurement.
+///
+/// The frontend logs the whole trip (`[terminal] snapshot <id> settled in Nms`). This logs
+/// what the backend spent inside it, and between them they say WHERE the time went. Read
+/// the three numbers together:
+///
+/// - `handler_ms` - everything this function did, including waiting for both mutexes. If
+///   this is milliseconds and the frontend says seconds, the backend is not the problem.
+/// - `lock_ms` - just the wait for the `PtyManager` mutex, so backend contention cannot
+///   hide inside the total.
+/// - **the timestamp of this line.** This is a SYNC tauri command, so it runs on the main
+///   thread: a line that appears late is a request that queued before the handler ever
+///   started, which is a different bug from a response that came back late. Compare it
+///   against the session's `[pty] Spawned session ...` line.
+///
+/// Fires once per terminal attach. Never on the PTY hot path.
 #[tauri::command]
 pub fn get_screen_snapshot(
     pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
     session_id: String,
 ) -> Result<Option<PtyScreenSnapshotPayload>, String> {
     let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
+    let started = Instant::now();
 
-    let snapshot = {
+    let (snapshot, lock_ms) = {
         let pty_mgr = pty_mgr
             .lock()
             .map_err(|_| "PtyManager lock poisoned".to_string())?;
-        pty_mgr.get_screen_snapshot(uuid)
+        let lock_ms = started.elapsed().as_secs_f64() * 1000.0;
+        (pty_mgr.get_screen_snapshot(uuid), lock_ms)
     };
+
+    log::info!(
+        "[pty] screen-snapshot session={} handler_ms={:.3} lock_ms={:.3} found={} bytes={} sequence={}",
+        session_id,
+        started.elapsed().as_secs_f64() * 1000.0,
+        lock_ms,
+        snapshot.is_some(),
+        snapshot.as_ref().map(|s| s.data.len()).unwrap_or(0),
+        snapshot.as_ref().map(|s| s.sequence).unwrap_or(0)
+    );
 
     let Some(snapshot) = snapshot else {
         return Ok(None);
