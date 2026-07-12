@@ -56,6 +56,27 @@ This matrix seeds issue #497 acceptance coverage. It tracks user-visible screen/
 | Save settings | `settings.save` | `click` |
 | Cancel settings | `settings.cancel` | `click` |
 
+## Coordinator Context Menu (#943 / #944)
+
+`hover` is a sticky pointer transition. The bridge remembers the last hovered element and fires the leave chain (element + ancestors) before entering the next one. `click` and `contextClick` do NOT move the pointer. `hover --leave` takes no selector: it parks the pointer nowhere and cannot fail.
+
+| Behavior | Selector | Action |
+|---|---|---|
+| Open a coordinator's context menu | `replica.row.<context>.<wg>.<agent>` | `contextClick` |
+| Wait for the Browse submenu to become available | `replica.<sessionId>.menu.repo.<index>.browse.arrow` | `wait` |
+| Open the Browse submenu | `replica.<sessionId>.menu.repo.<index>` | `hover` |
+| Detect the Browse submenu | `replica.<sessionId>.menu.repo.<index>.browse.flyout` | `query` |
+| Open the repo root on GitHub | `replica.<sessionId>.menu.repo.<index>.browse.main` | `hover`, `click` |
+| Open the current branch on GitHub (absent on main/master/HEAD) | `replica.<sessionId>.menu.repo.<index>.browse.branch` | `hover`, `click` |
+| Open the Add to Group flyout | `replica.<wg>.groups.trigger` | `hover` |
+| Detect the Add to Group flyout | `replica.<wg>.groups.flyout` | `query` |
+| Park the pointer nowhere (closes hover flyouts, releases the sidebar order freeze) | (none) | `hover --leave` |
+
+- The arrow wait must be re-run after **every** `contextClick`: opening a context menu clears the resolved-remote cache for all repos, so the previous menu's arrow disappears and the new one's has to resolve from scratch.
+- Inactive (gray) coordinators use the constant prefix `replica.inactive.menu.repo` instead of `replica.<sessionId>.menu.repo`, so two inactive coordinators share a prefix.
+- Bracket any hover-using script with `hover --leave` at both ends. The pointer is sticky **across CLI invocations**, and a script that starts with the pointer already on its target gets a same-element re-hover, which dispatches nothing (`diagnostics.hover.changed: false`).
+- `hover` drives JS handlers (`onMouseEnter` / `onPointerEnter` and their leave twins). It cannot drive the CSS `:hover` pseudo-class, and it deliberately dispatches no `pointermove` / `mousemove`, so no gesture state machine can see it.
+
 ## Known Gaps For Follow-Up
 
 | Surface | Missing action/selector family |
@@ -68,4 +89,4 @@ This matrix seeds issue #497 acceptance coverage. It tracks user-visible screen/
 | New Workgroup modal | Dialog root, team select, task-title input, create/cancel buttons, creation progress/error state |
 | Target-window evidence | HWND-surface screenshot support; for non-reserved monitors, foreground/unobscured assertion before screen-rectangle capture |
 | Terminal internals | xterm buffer inspection is out of DOM-selector scope for #497 |
-| Drag/hold gestures | Future pointer actions for splitters and hold-to-record |
+| Drag/hold gestures | Future pointer actions for splitters and hold-to-record. `hover` shipped in #944 and deliberately dispatches no `pointermove` |

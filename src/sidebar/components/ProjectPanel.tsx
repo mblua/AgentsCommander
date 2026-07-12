@@ -1939,7 +1939,12 @@ const ProjectPanel: Component = () => {
                       </svg>
                       <span class="session-context-repo-label">{repo.label}</span>
                       <Show when={browseItems().length > 0}>
-                        <span class="session-context-submenu-arrow">&rsaquo;</span>
+                        <span
+                          class="session-context-submenu-arrow"
+                          data-ac-testid={`${testIdPrefix()}.${index()}.browse.arrow`}
+                        >
+                          &rsaquo;
+                        </span>
                       </Show>
                     </button>
                   );

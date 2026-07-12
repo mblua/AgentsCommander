@@ -34,6 +34,14 @@ type UiAutomationErrorCode = Extract<UiAutomationResponse, { ok: false }>["error
 
 let started = false;
 
+/** #944 - the pointer is sticky and per-WebView. Only `hover` moves it (plan R2).
+ *  The CHAIN is stored, not recomputed: <For> re-mints rows (ProjectPanel :834-840,
+ *  :3721-3725), so `hoveredElement` is routinely detached by the time we leave it,
+ *  and a chain recomputed from a detached node stops at its detached root - which
+ *  would strand `.sidebar-layout` in the pointer-inside state forever (plan C17). */
+let hoveredElement: HTMLElement | null = null;
+let hoveredChain: HTMLElement[] = [];
+
 async function resolveAutomationWindowLabel(explicit?: string): Promise<string> {
   if (explicit) return explicit;
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
@@ -65,6 +73,8 @@ export async function initAutomationBridge(windowLabel?: string): Promise<void> 
 
 export function resetAutomationBridgeForTests(): void {
   started = false;
+  hoveredElement = null;
+  hoveredChain = [];
 }
 
 export async function executeAutomationRequest(
@@ -90,6 +100,35 @@ async function executeAutomationRequestInner(
   const diagnostics = baseDiagnostics();
   const expiredBeforeQuery = expiredRequestResponse(windowLabel, request, diagnostics);
   if (expiredBeforeQuery) return expiredBeforeQuery;
+
+  if (request.action === "hover") {
+    // #944 - `value` is the leave flag and nothing else. Silently treating an
+    // unrecognized value as a normal hover is a false green: the harness believes
+    // the pointer moved OFF the target while it actually moved ON to it. `backend`
+    // validates its own `value` the same way (ui_automation.rs:852-863).
+    if (request.value != null && request.value !== "leave") {
+      return errorResponse(
+        windowLabel,
+        request,
+        "value_not_supported",
+        `Automation action "hover" accepts no value other than "leave" (got "${request.value}").`,
+        availableTargets(),
+        diagnostics,
+      );
+    }
+
+    // #944 - the leave form is TARGET-FREE and must not run the selector gauntlet:
+    // the thing you want to release is normally gone (menu torn down) or re-minted
+    // (<For>), and a cleanup step that fails when the thing it cleans up is missing
+    // is not a cleanup step. It cannot return missing_selector / target_hidden /
+    // target_obscured, by construction (plan R5).
+    if (request.value === "leave") {
+      const target = hoveredElement ? snapshotTarget(hoveredElement) : emptyHoverTarget();
+      const hover = dispatchHoverLeave();
+      await settleAfterDomMutation();
+      return successResponse(windowLabel, request, target, { ...diagnostics, hover });
+    }
+  }
 
   const matches = await queryAutomationTargetsWithBriefRetry(request);
   const expiredAfterQuery = expiredRequestResponse(windowLabel, request, diagnostics);
@@ -133,7 +172,11 @@ async function executeAutomationRequestInner(
     return successResponse(windowLabel, request, snapshotTarget(element), diagnostics);
   }
 
-  if (isElementDisabled(element)) {
+  // #944 - a real pointer hovers disabled controls: a tooltip is exactly what you
+  // hover a disabled thing for. Only MUTATING actions are refused on a disabled
+  // target. (Load-bearing on `.session-context-option` having no `pointer-events:
+  // none`; see plan §8.)
+  if (request.action !== "hover" && isElementDisabled(element)) {
     return errorResponse(
       windowLabel,
       request,
@@ -154,6 +197,18 @@ async function executeAutomationRequestInner(
       availableTargets(),
       { ...diagnostics, topmost: topmost.element ? snapshotTarget(topmost.element) : null },
     );
+  }
+
+  if (request.action === "hover") {
+    const expired = expiredMutationResponse(windowLabel, request, diagnostics);
+    if (expired) return expired;
+
+    const hover = dispatchHoverEnter(element);
+    await settleAfterDomMutation();
+    return successResponse(windowLabel, request, snapshotTarget(element), {
+      ...diagnostics,
+      hover,
+    });
   }
 
   if (request.action === "click") {
@@ -557,6 +612,227 @@ function createContextMenuEvent(
     if (!String(error).includes("member view is not of type Window")) throw error;
     return new eventView.MouseEvent("contextmenu", eventInit);
   }
+}
+
+type HoverDiagnostics = NonNullable<UiAutomationDiagnostics["hover"]>;
+
+const HOVER_POINTER_INIT = { pointerId: 1, pointerType: "mouse", isPrimary: true } as const;
+
+/** #944 - eight events, and deliberately NOT pointermove/mousemove: every move
+ *  listener in src/ is a pointerdown-armed drag machine (main/App.tsx:78,
+ *  screenshot-overlay:240, WorkgroupGroupRail:422 -> movePress reads event.pointerId
+ *  and reorders groups by clientY), so a synthetic move is the one thing in this set
+ *  that could mutate real state. Nothing that consumes hover needs it. Plan R1. */
+function dispatchHoverEnter(to: HTMLElement): HoverDiagnostics {
+  const from = hoveredElement;
+  const events: string[] = [];
+
+  if (from === to) {
+    // A real pointer that has not moved fires nothing. `changed: false` is how a
+    // harness sees that its hover was a no-op (plan C13).
+    return { from: testIdOf(from), to: testIdOf(to), changed: false, events };
+  }
+
+  const staleFrom = !!from && !from.isConnected;
+  const toChain = hoverChain(to);
+  // Computed against the STORED chain: a detached `from` still shares body/html with
+  // `to`, so we do not re-enter ancestors we never left. null (no `from`) means the
+  // pointer arrived from outside the window: enter the whole chain, root first.
+  const common = from ? firstCommonAncestor(hoveredChain, toChain) : null;
+
+  if (from) {
+    dispatchLeaveGroup(from, to, leaveChainUpTo(hoveredChain, common), events);
+  }
+  dispatchEnterGroup(to, staleFrom ? null : from, takeUntil(toChain, common).reverse(), events);
+
+  hoveredElement = to;
+  hoveredChain = toChain;
+  return {
+    from: testIdOf(from),
+    to: testIdOf(to),
+    changed: true,
+    ...(staleFrom ? { staleFrom: true } : {}),
+    events,
+  };
+}
+
+/** #944 - target-free (plan R5). Cannot fail, cannot be given a selector. */
+function dispatchHoverLeave(): HoverDiagnostics {
+  const from = hoveredElement;
+  const events: string[] = [];
+  if (!from) {
+    return { from: null, to: null, changed: false, reason: "not_hovered", events };
+  }
+
+  const staleFrom = !from.isConnected;
+  // to === null: the pointer leaves the window. The chain runs all the way up
+  // (documentElement included) and relatedTarget is null. Connected nodes only: a
+  // detached row is gone, but `.sidebar-layout` above it is not, and it is still
+  // frozen (plan C17).
+  dispatchLeaveGroup(from, null, hoveredChain.filter((node) => node.isConnected), events);
+
+  hoveredElement = null;
+  hoveredChain = [];
+  return {
+    from: testIdOf(from),
+    to: null,
+    changed: true,
+    ...(staleFrom ? { staleFrom: true } : {}),
+    events,
+  };
+}
+
+function dispatchLeaveGroup(
+  from: HTMLElement,
+  to: HTMLElement | null,
+  chain: HTMLElement[], // innermost first, connected only
+  events: string[],
+): void {
+  const point = elementCenterPoint(to ?? from);
+  if (from.isConnected) {
+    dispatchHoverEvent(from, "pointerout", point, to, true, true, events);
+  }
+  for (const node of chain) {
+    dispatchHoverEvent(node, "pointerleave", point, to, false, false, events);
+  }
+  if (from.isConnected) {
+    dispatchHoverEvent(from, "mouseout", point, to, true, true, events);
+  }
+  for (const node of chain) {
+    dispatchHoverEvent(node, "mouseleave", point, to, false, false, events);
+  }
+}
+
+function dispatchEnterGroup(
+  to: HTMLElement,
+  from: HTMLElement | null,
+  chain: HTMLElement[], // outermost first
+  events: string[],
+): void {
+  const point = elementCenterPoint(to);
+  dispatchHoverEvent(to, "pointerover", point, from, true, true, events);
+  for (const node of chain) {
+    dispatchHoverEvent(node, "pointerenter", point, from, false, false, events);
+  }
+  dispatchHoverEvent(to, "mouseover", point, from, true, true, events);
+  for (const node of chain) {
+    dispatchHoverEvent(node, "mouseenter", point, from, false, false, events);
+  }
+}
+
+function dispatchHoverEvent(
+  target: HTMLElement,
+  type: string,
+  point: { clientX: number; clientY: number },
+  related: HTMLElement | null,
+  bubbles: boolean,
+  cancelable: boolean,
+  events: string[],
+): void {
+  target.dispatchEvent(createHoverEvent(target, type, point, related, bubbles, cancelable));
+  events.push(type);
+}
+
+/** [node, ...ancestors], innermost first, up to and including documentElement. */
+function hoverChain(node: HTMLElement): HTMLElement[] {
+  const chain: HTMLElement[] = [];
+  let current: HTMLElement | null = node;
+  while (current) {
+    chain.push(current);
+    current = parentElementOrHost(current);
+  }
+  return chain;
+}
+
+/** The first node of `fromChain` that is also on `toChain`. null = disjoint (a
+ *  detached `from`, or a document-less node): the caller then leaves / enters the
+ *  whole chain, which is what a pointer arriving from outside the window does. */
+function firstCommonAncestor(
+  fromChain: HTMLElement[],
+  toChain: HTMLElement[],
+): HTMLElement | null {
+  const toSet = new Set(toChain);
+  return fromChain.find((node) => toSet.has(node)) ?? null;
+}
+
+function takeUntil(chain: HTMLElement[], stop: HTMLElement | null): HTMLElement[] {
+  const index = stop ? chain.indexOf(stop) : -1;
+  return index === -1 ? chain.slice() : chain.slice(0, index);
+}
+
+function leaveChainUpTo(chain: HTMLElement[], stop: HTMLElement | null): HTMLElement[] {
+  return takeUntil(chain, stop).filter((node) => node.isConnected);
+}
+
+function testIdOf(element: HTMLElement | null): string | null {
+  return element?.getAttribute("data-ac-testid") ?? null;
+}
+
+/** `ok: true` requires a target, and a leave with nothing hovered has none. */
+function emptyHoverTarget(): UiAutomationTarget {
+  return {
+    testId: "",
+    role: null,
+    state: null,
+    metadata: {},
+    tag: "",
+    text: "",
+    visible: false,
+    disabled: false,
+    checked: null,
+    selected: null,
+    pressed: null,
+    expanded: null,
+    rect: null,
+  };
+}
+
+function createHoverEvent(
+  element: HTMLElement,
+  type: string,
+  point: { clientX: number; clientY: number },
+  related: HTMLElement | null,
+  bubbles: boolean,
+  cancelable: boolean,
+): MouseEvent {
+  const eventView = element.ownerDocument.defaultView ?? window;
+  const isPointer = type.startsWith("pointer");
+  const view = eventView as unknown as { PointerEvent?: typeof MouseEvent };
+  const hasPointerEvent = typeof view.PointerEvent === "function";
+  const Ctor = isPointer && hasPointerEvent ? view.PointerEvent! : eventView.MouseEvent;
+
+  const eventInit: MouseEventInit = {
+    bubbles,
+    cancelable,
+    composed: true,
+    button: isPointer ? -1 : 0,
+    buttons: 0,
+    relatedTarget: related,
+    clientX: point.clientX,
+    clientY: point.clientY,
+    screenX: Math.round(point.clientX),
+    screenY: Math.round(point.clientY),
+    ...(isPointer ? HOVER_POINTER_INIT : {}),
+  };
+
+  let event: MouseEvent;
+  try {
+    event = new Ctor(type, { ...eventInit, view: eventView });
+  } catch (error) {
+    if (!String(error).includes("member view is not of type Window")) throw error;
+    event = new Ctor(type, eventInit);
+  }
+
+  // jsdom 25 has no PointerEvent, and MouseEventInit SILENTLY DROPS pointerId /
+  // pointerType / isPrimary - so without this the suite would exercise
+  // `pointerId: undefined` while the GUI ships `1`. Same trick as
+  // WorkgroupGroupRail.test.tsx:120.
+  if (isPointer && !hasPointerEvent) {
+    for (const [key, value] of Object.entries(HOVER_POINTER_INIT)) {
+      Object.defineProperty(event, key, { value, configurable: true });
+    }
+  }
+  return event;
 }
 
 function topmostElementAtCenter(element: HTMLElement): { ok: true } | { ok: false; element: HTMLElement | null } {
