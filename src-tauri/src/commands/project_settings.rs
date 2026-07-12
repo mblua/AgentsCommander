@@ -67,6 +67,7 @@ mod tests {
                 id: "bots".to_string(),
                 name: "BOTS".to_string(),
                 regex: "^(wg-9)$".to_string(),
+                favorite: false,
             }],
             show_all: true,
             show_ungrouped: true,

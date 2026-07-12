@@ -235,6 +235,12 @@ fn build_protected_settings_candidate(
     candidate.project_paths = current.project_paths.clone();
     candidate.project_path = current.project_path.clone();
     candidate.archived_project_paths = current.archived_project_paths.clone();
+    // #965: rail collapse is mutated only by `set_rail_collapse`. A settings payload
+    // from the GUI, CLI, or API must never carry authority for it, so restore both
+    // fields from live memory. Same rule and same mechanism as the project lists
+    // above; this is not the prohibited disk re-read.
+    candidate.rail_collapsed_projects = current.rail_collapsed_projects.clone();
+    candidate.rail_favorites_collapsed = current.rail_favorites_collapsed;
     validate_and_repair_settings(&mut candidate)?;
     Ok(candidate)
 }
@@ -260,6 +266,12 @@ async fn persist_settings_draft_update_with_saver(
     draft.project_paths = current.project_paths.clone();
     draft.project_path = current.project_path.clone();
     draft.archived_project_paths = current.archived_project_paths.clone();
+    // #965: same protect as `build_protected_settings_candidate`. The SettingsModal
+    // Save path lands here, and so does every whole-object writer that reads
+    // `settingsStore.current` first (window geometry, zoom, titlebar...). Rail
+    // collapse is owned by `set_rail_collapse`; restore it from live memory.
+    draft.rail_collapsed_projects = current.rail_collapsed_projects.clone();
+    draft.rail_favorites_collapsed = current.rail_favorites_collapsed;
     validate_and_repair_settings(&mut draft)?;
     let events = settings_draft_update_events(&current, &draft);
     let written = save(&draft)?;
@@ -1669,6 +1681,37 @@ pub async fn set_main_resource_monitor_attached(
     .await
 }
 
+/// #965 narrow setter for the rail collapse snapshot. Same candidate-save-publish
+/// pattern as `set_theme_light`: holds the `SettingsState` write lock across
+/// `save_settings`, so it cannot lose an interleaved `update_settings`.
+/// ONE command for both fields: the rail always persists its whole snapshot, so a
+/// per-field setter would just double the writes. Called once per explicit header
+/// click (no auto-focus path writes here), so it is cold by construction.
+///
+/// The `_inner` split exists so the web/WS route (`web/commands.rs`) reaches the
+/// same read-modify-save instead of duplicating it; the browser client mounts the
+/// rail too. Precedent: `set_agent_default_profile_inner`.
+pub(crate) async fn set_rail_collapse_inner(
+    settings: &SettingsState,
+    collapsed_projects: Vec<String>,
+    favorites_collapsed: bool,
+) -> Result<(), String> {
+    persist_narrow_settings_update(settings, |candidate| {
+        candidate.rail_collapsed_projects = collapsed_projects;
+        candidate.rail_favorites_collapsed = favorites_collapsed;
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_rail_collapse(
+    settings: State<'_, SettingsState>,
+    collapsed_projects: Vec<String>,
+    favorites_collapsed: bool,
+) -> Result<(), String> {
+    set_rail_collapse_inner(settings.inner(), collapsed_projects, favorites_collapsed).await
+}
+
 /// #612 apply the runtime log level (no-op under RUST_LOG) and broadcast so
 /// every webview re-applies its own console gate. Single point that both the
 /// dedicated `set_log_level` command and the SettingsModal Save path reuse.
@@ -3030,6 +3073,103 @@ mod tests {
             remaining[0].working_directory,
             kept_workdir.to_string_lossy()
         );
+    }
+
+    #[tokio::test]
+    async fn set_rail_collapse_persists_both_fields_and_publishes_to_live_state() {
+        let mut original = settings_with_single_agent();
+        original.rail_collapsed_projects = vec!["c:/stale".to_string()];
+        original.rail_favorites_collapsed = false;
+        let state = state_for(original);
+
+        // The mutation `set_rail_collapse_inner` applies, exercised through the
+        // fake-saver hook. Calling the inner fn directly would reach the real
+        // `save_settings` -> `config::config_dir()`, a `OnceLock` that no test
+        // redirects, and would overwrite the developer's real settings.json.
+        let captured: Mutex<Option<AppSettings>> = Mutex::new(None);
+        persist_narrow_settings_update_with_saver(
+            &state,
+            |candidate| {
+                candidate.rail_collapsed_projects =
+                    vec!["c:/foo".to_string(), "d:/bar".to_string()];
+                candidate.rail_favorites_collapsed = true;
+            },
+            |candidate| {
+                *captured.lock().expect("capture lock") = Some(candidate.clone());
+                Ok(candidate.clone())
+            },
+        )
+        .await
+        .expect("persist rail collapse");
+
+        let written = captured
+            .lock()
+            .expect("capture lock")
+            .clone()
+            .expect("saver ran");
+        assert_eq!(
+            written.rail_collapsed_projects,
+            vec!["c:/foo".to_string(), "d:/bar".to_string()]
+        );
+        assert!(written.rail_favorites_collapsed);
+
+        let live = state.read().await;
+        assert_eq!(
+            live.rail_collapsed_projects,
+            vec!["c:/foo".to_string(), "d:/bar".to_string()]
+        );
+        assert!(live.rail_favorites_collapsed);
+    }
+
+    // (#965 F1) The two whole-object writers must not let a stale client payload
+    // revert the rail snapshot. Without these, `window-geometry.ts` alone (which
+    // fires a whole-object write on every window move/resize) would silently wipe
+    // a header click, and nothing re-persists it: the in-memory signal is never
+    // invalidated, so it does NOT self-heal.
+    #[tokio::test]
+    async fn update_settings_keeps_live_rail_collapse_when_payload_is_stale() {
+        let mut current = settings_with_single_agent();
+        current.rail_collapsed_projects = vec!["c:/foo".to_string()];
+        current.rail_favorites_collapsed = true;
+        let state = state_for(current);
+
+        let mut stale = settings_with_single_agent();
+        stale.rail_collapsed_projects = Vec::new();
+        stale.rail_favorites_collapsed = false;
+
+        let saved =
+            persist_protected_settings_update_with_saver(&state, stale, |c| Ok(c.clone()))
+                .await
+                .expect("persist");
+
+        assert_eq!(saved.rail_collapsed_projects, vec!["c:/foo".to_string()]);
+        assert!(saved.rail_favorites_collapsed);
+        let live = state.read().await;
+        assert_eq!(live.rail_collapsed_projects, vec!["c:/foo".to_string()]);
+        assert!(live.rail_favorites_collapsed);
+    }
+
+    #[tokio::test]
+    async fn save_settings_draft_keeps_live_rail_collapse_when_draft_is_stale() {
+        let mut current = settings_with_single_agent();
+        current.rail_collapsed_projects = vec!["c:/foo".to_string()];
+        current.rail_favorites_collapsed = true;
+        let state = state_for(current);
+
+        let mut draft = settings_with_single_agent();
+        draft.rail_collapsed_projects = Vec::new();
+        draft.rail_favorites_collapsed = false;
+
+        let (saved, _events) =
+            persist_settings_draft_update_with_saver(&state, draft, |c| Ok(c.clone()))
+                .await
+                .expect("persist");
+
+        assert_eq!(saved.rail_collapsed_projects, vec!["c:/foo".to_string()]);
+        assert!(saved.rail_favorites_collapsed);
+        let live = state.read().await;
+        assert_eq!(live.rail_collapsed_projects, vec!["c:/foo".to_string()]);
+        assert!(live.rail_favorites_collapsed);
     }
 
     #[tokio::test]

@@ -440,6 +440,22 @@ pub struct AppSettings {
     /// Defaults to `false` so fresh and missing values use dark mode.
     #[serde(default)]
     pub theme_light: bool,
+    /// #965 - rail project sections the user has explicitly collapsed by clicking
+    /// their header. This is the RAIL's own state; it is deliberately NOT the
+    /// ProjectPanel's collapse (which stays session-only and auto-focus driven).
+    /// Entries are FRONTEND-NORMALIZED project paths (lowercase, forward slashes,
+    /// no trailing slash: `normalizeProjectPathForCompare` in
+    /// `src/sidebar/stores/project-refresh.ts`).
+    /// WRITTEN ONLY BY `set_rail_collapse`. A whole-object settings payload from the
+    /// GUI/CLI/API carries no authority for this field: both whole-object writers
+    /// restore it from live memory (see `build_protected_settings_candidate`).
+    #[serde(default)]
+    pub rail_collapsed_projects: Vec<String>,
+    /// #965 - collapsed state of the rail's cross-project `Favorites` section.
+    /// Belongs to no project, which is why collapse cannot live in project-settings.json.
+    /// Same protection as `rail_collapsed_projects`.
+    #[serde(default)]
+    pub rail_favorites_collapsed: bool,
     /// When true, show the Spec Board toolbar button. Defaults off because the
     /// board is an opt-in feature enabled manually from settings.json.
     #[serde(default)]
@@ -703,6 +719,8 @@ impl Default for AppSettings {
             auto_generate_task_title: true,
             agent_templates_path: None,
             theme_light: false,
+            rail_collapsed_projects: Vec::new(),
+            rail_favorites_collapsed: false,
             spec_board_enabled: false,
             resource_monitor_enabled: default_resource_monitor_enabled(),
             max_concurrent_agent_processes: default_max_concurrent_agent_processes(),
@@ -3057,6 +3075,46 @@ mod tests {
         assert!(s.sounds_enabled);
         // Existing per-feature toggle is honored as-is.
         assert!(!s.team_idle_beep_enabled);
+    }
+
+    #[test]
+    fn rail_collapse_fields_round_trip_through_serde() {
+        let mut s = AppSettings::default();
+        assert!(s.rail_collapsed_projects.is_empty());
+        assert!(!s.rail_favorites_collapsed);
+
+        s.rail_collapsed_projects = vec!["c:/foo/bar".to_string(), "d:/baz".to_string()];
+        s.rail_favorites_collapsed = true;
+
+        let json = serde_json::to_string(&s).expect("serialize");
+        // (#965) camelCase guard. A broken `rename_all` would otherwise surface only as a
+        // silently dead frontend, since the TS side reads `railCollapsedProjects` /
+        // `railFavoritesCollapsed`.
+        assert!(
+            json.contains("\"railCollapsedProjects\":[\"c:/foo/bar\",\"d:/baz\"]"),
+            "{json}"
+        );
+        assert!(json.contains("\"railFavoritesCollapsed\":true"), "{json}");
+
+        let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.rail_collapsed_projects, s.rail_collapsed_projects);
+        assert!(back.rail_favorites_collapsed);
+    }
+
+    #[test]
+    fn rail_collapse_fields_default_when_missing_from_json() {
+        // A legacy settings.json carries neither key. Build one by round-tripping a
+        // default and deleting them, so every other field stays present and the test
+        // isolates exactly the `#[serde(default)]` behavior.
+        let mut value = serde_json::to_value(AppSettings::default()).expect("to_value");
+        let obj = value.as_object_mut().expect("settings object");
+        obj.remove("railCollapsedProjects");
+        obj.remove("railFavoritesCollapsed");
+
+        let s: AppSettings = serde_json::from_value(value).expect("deserialize legacy");
+
+        assert!(s.rail_collapsed_projects.is_empty());
+        assert!(!s.rail_favorites_collapsed);
     }
 
     #[test]
