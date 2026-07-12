@@ -358,11 +358,32 @@ struct ReplicaBranchEntry {
     session_name: String,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DiscoveryBranchPayload {
     replica_path: String,
+    /// Single-repo shorthand, semantics unchanged: `None` for a multi-repo replica,
+    /// so the AcDiscoveryPanel chip keeps hiding the branch there.
     branch: Option<String>,
+    /// #943 B2 - per-repo branches, positionally parallel to `repo_paths` below and
+    /// therefore to `AcAgentReplica.repo_paths` (`update_replicas_for_project` maps
+    /// 1:1 over that vec and never sorts or dedupes it). `None` = branch unknown
+    /// (detached HEAD, not a work tree, git missing, detection timed out).
+    ///
+    /// This is data `poll()` already computed for every replica, multi-repo included,
+    /// and then threw away: the single-repo `branch` above was all it kept. Module B2
+    /// stops discarding it. Zero new git spawns.
+    repo_branches: Vec<Option<String>>,
+    /// #943 B2 - the repo paths those branches belong to, byte-identical to the
+    /// `AcAgentReplica.repo_paths` strings discovery already sent the frontend.
+    ///
+    /// Emitted so the consumer can key the merge by path instead of by position. The
+    /// positional guarantee holds at emit time, but the consumer stores this payload
+    /// and re-reads it against a LATER discovery result: edit a replica's config.json
+    /// `repos` (reorder, remove) and for up to one 15s tick the stored branches belong
+    /// to the previous repo list. A positional merge would then paint repo A's branch
+    /// onto repo B, silently. Matching on the path cannot.
+    repo_paths: Vec<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -408,8 +429,12 @@ pub struct DiscoveryBranchWatcher {
     /// bug (Grinch #1) and (b) the double-registration that occurs when `project_paths`
     /// contains both a parent and a child (Grinch #12).
     replicas: Mutex<HashMap<String, Vec<ReplicaBranchEntry>>>,
-    /// Single-repo branch cache — gates `ac_discovery_branch_updated` emission (panel UI).
-    discovery_cache: Mutex<HashMap<String, Option<String>>>,
+    /// Last-emitted `ac_discovery_branch_updated` payload per replica, gating that
+    /// emission (panel UI + the #943 B2 per-repo branches). Holds the whole payload,
+    /// not just the single-repo branch it held before B2, so the gate fires on
+    /// per-repo drift and on a repo-set change: the same branch text under a
+    /// different repo list is not the same event.
+    discovery_cache: Mutex<HashMap<String, DiscoveryBranchPayload>>,
     /// Full per-repo state cache — gates `session_git_repos` emission. Independent from
     /// `discovery_cache` so multi-repo replicas re-emit on per-repo drift even when the
     /// single-branch view stays None.
@@ -626,31 +651,38 @@ impl DiscoveryBranchWatcher {
                     })
                     .collect();
 
-                // Gate A: emit ac_discovery_branch_updated (single-branch UI for AcDiscoveryPanel).
-                // Only single-repo replicas surface a branch here; multi-repo = None so the panel hides it.
-                let discovery_branch: Option<String> = if entry.repos.len() == 1 {
-                    refreshed[0].branch.clone()
-                } else {
-                    None
+                // Gate A: emit ac_discovery_branch_updated (AcDiscoveryPanel's branch
+                // chip, plus #943 B2's per-repo branches for cold replicas).
+                //
+                // `branch` keeps its exact old semantics (single-repo only, None for
+                // multi-repo, so the panel chip still hides there). `repo_branches` is
+                // the vec `refreshed` already holds and Gate A used to discard, which
+                // is the whole of Module B2: a cold multi-repo coordinator learns each
+                // repo's branch without a single new git spawn.
+                let payload = DiscoveryBranchPayload {
+                    replica_path: entry.replica_path.clone(),
+                    branch: if entry.repos.len() == 1 {
+                        refreshed[0].branch.clone()
+                    } else {
+                        None
+                    },
+                    repo_branches: refreshed.iter().map(|r| r.branch.clone()).collect(),
+                    repo_paths: refreshed.iter().map(|r| r.source_path.clone()).collect(),
                 };
+                // Gate on the whole payload. Comparing only the single-repo `branch`
+                // (what this did before B2) means a multi-repo replica whose repo just
+                // changed branch compares None against None and never re-emits.
                 let discovery_changed = {
                     let mut cache = self.discovery_cache.lock().unwrap();
-                    let prev = cache.get(&entry.replica_path).cloned();
-                    if prev.as_ref() != Some(&discovery_branch) {
-                        cache.insert(entry.replica_path.clone(), discovery_branch.clone());
+                    if cache.get(&entry.replica_path) != Some(&payload) {
+                        cache.insert(entry.replica_path.clone(), payload.clone());
                         true
                     } else {
                         false
                     }
                 };
                 if discovery_changed {
-                    let _ = self.app_handle.emit(
-                        "ac_discovery_branch_updated",
-                        DiscoveryBranchPayload {
-                            replica_path: entry.replica_path.clone(),
-                            branch: discovery_branch,
-                        },
-                    );
+                    let _ = self.app_handle.emit("ac_discovery_branch_updated", payload);
                 }
 
                 // Gate B: emit session_git_repos (full per-repo state for SessionItem).
@@ -3682,5 +3714,112 @@ mod tests {
             preferred_agent_id.is_none(),
             "invalid identity must not be used to read preferred coding agent"
         );
+    }
+
+    // --- #943 Module B2: the widened ac_discovery_branch_updated payload ---
+
+    fn b2_payload(branch: Option<&str>, repos: &[(&str, Option<&str>)]) -> DiscoveryBranchPayload {
+        DiscoveryBranchPayload {
+            replica_path: "C:/proj/.ac/wg-1-team/__agent_coord".to_string(),
+            branch: branch.map(str::to_string),
+            repo_branches: repos.iter().map(|(_, b)| b.map(str::to_string)).collect(),
+            repo_paths: repos.iter().map(|(p, _)| p.to_string()).collect(),
+        }
+    }
+
+    /// The wire contract the frontend codes against. `#[serde(rename_all =
+    /// "camelCase")]` must produce exactly these four keys, `None` must serialize
+    /// as `null` (not omitted: the consumer distinguishes "unknown branch" from
+    /// "missing entry"), and `repoBranches[i]` must line up with `repoPaths[i]`.
+    #[test]
+    fn discovery_branch_payload_wire_shape_is_camel_case_with_explicit_nulls() {
+        let payload = b2_payload(
+            None,
+            &[
+                ("C:/wg/repo-AgentsCommander", Some("feature/943")),
+                ("C:/wg/repo-webpage", None),
+            ],
+        );
+
+        let value = serde_json::to_value(&payload).expect("serialize");
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "replicaPath": "C:/proj/.ac/wg-1-team/__agent_coord",
+                "branch": null,
+                "repoBranches": ["feature/943", null],
+                "repoPaths": ["C:/wg/repo-AgentsCommander", "C:/wg/repo-webpage"],
+            })
+        );
+    }
+
+    /// The single-repo shorthand is untouched by B2: one repo still fills `branch`,
+    /// and `repo_branches` carries the same value so a consumer can read either.
+    #[test]
+    fn discovery_branch_payload_keeps_the_single_repo_shorthand() {
+        let payload = b2_payload(Some("main"), &[("C:/wg/repo-solo", Some("main"))]);
+        let value = serde_json::to_value(&payload).expect("serialize");
+
+        assert_eq!(value["branch"], serde_json::json!("main"));
+        assert_eq!(value["repoBranches"], serde_json::json!(["main"]));
+    }
+
+    /// The emission gate is `cache.get(path) != Some(&payload)`, so payload equality
+    /// IS the gate. This is the case B2 exists for: a multi-repo replica has
+    /// `branch: None` forever, so the pre-B2 gate (which compared only `branch`)
+    /// saw None == None and never re-emitted. A repo changing branch must now fire.
+    #[test]
+    fn discovery_branch_payload_gate_fires_on_per_repo_drift() {
+        let before = b2_payload(
+            None,
+            &[
+                ("C:/wg/repo-a", Some("main")),
+                ("C:/wg/repo-b", Some("main")),
+            ],
+        );
+        let after = b2_payload(
+            None,
+            &[
+                ("C:/wg/repo-a", Some("feature/943")),
+                ("C:/wg/repo-b", Some("main")),
+            ],
+        );
+
+        assert_eq!(before.branch, after.branch, "multi-repo: both stay None");
+        assert_ne!(before, after, "per-repo drift must re-emit");
+    }
+
+    /// A repo-set change with identical branch text must also fire: swapping a repo
+    /// for another one that happens to sit on `main` leaves the branch vec equal, and
+    /// gating on branches alone would leave the consumer holding the previous repo
+    /// list. Pinning this is why `repo_paths` is part of the payload and the gate.
+    #[test]
+    fn discovery_branch_payload_gate_fires_on_repo_set_change() {
+        let before = b2_payload(
+            None,
+            &[
+                ("C:/wg/repo-a", Some("main")),
+                ("C:/wg/repo-b", Some("main")),
+            ],
+        );
+        let swapped = b2_payload(
+            None,
+            &[
+                ("C:/wg/repo-a", Some("main")),
+                ("C:/wg/repo-c", Some("main")),
+            ],
+        );
+        let reordered = b2_payload(
+            None,
+            &[
+                ("C:/wg/repo-b", Some("main")),
+                ("C:/wg/repo-a", Some("main")),
+            ],
+        );
+
+        assert_eq!(before.repo_branches, swapped.repo_branches);
+        assert_ne!(before, swapped, "a swapped repo must re-emit");
+        assert_ne!(before, reordered, "a reordered repo list must re-emit");
     }
 }

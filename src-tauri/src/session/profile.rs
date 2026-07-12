@@ -75,6 +75,16 @@ impl CodingAgentKind {
         }
     }
 
+    /// Stable lowercase name of the CLI, for logs and for keying diagnostics by the
+    /// coding agent that is actually running (#942). Not the configured profile id.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            CodingAgentKind::Claude => "claude",
+            CodingAgentKind::Codex => "codex",
+            CodingAgentKind::Gemini => "gemini",
+        }
+    }
+
     /// Resolve the full behavior profile for this kind.
     pub const fn profile(self) -> CodingAgentProfile {
         match self {

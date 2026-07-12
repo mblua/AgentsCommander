@@ -1,7 +1,7 @@
-import { Component, For, Show, createEffect, createMemo, createSignal, onMount, onCleanup } from "solid-js";
+import { Component, For, Show, createEffect, createMemo, createSignal, on, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { AcWorkgroup, AcAgentReplica, AcTeam, AcLoopSummary, Session, SessionRepo, TelegramBotConfig, BlockerReport } from "../../shared/types";
-import { SessionAPI, WindowAPI, EntityAPI, LoopAPI, TelegramAPI, SettingsAPI, TaskAPI, onDiscoveryBranchUpdated, onCoordinatorClockUpdated, onCoordinatorAutoCloseChanged, onCoordinatorManualCloseChanged, emitOpenSettings } from "../../shared/ipc";
+import { SessionAPI, WindowAPI, EntityAPI, LoopAPI, TelegramAPI, SettingsAPI, TaskAPI, ReposAPI, onDiscoveryBranchUpdated, onCoordinatorClockUpdated, onCoordinatorAutoCloseChanged, onCoordinatorManualCloseChanged, emitOpenSettings } from "../../shared/ipc";
 import type { SessionRepoInput } from "../../shared/ipc";
 import {
   pendingCoordinatorClose,
@@ -11,6 +11,12 @@ import {
   registerCoordinatorCloseModalHost,
 } from "../stores/coordinator-close";
 import { isTauri } from "../../shared/platform";
+import {
+  githubBranchUrl,
+  githubRepoUrl,
+  parseGithubRemote,
+  type GithubRepoRef,
+} from "../../shared/github-url";
 import { stripFrontmatter } from "../../shared/markdown";
 import { launchErrorMessage } from "../../shared/launch-errors";
 import { focusOnMount } from "../../shared/focus-on-mount";
@@ -21,6 +27,7 @@ import {
   effectiveLastUserMessageAt,
   effectiveManuallyClosedAt,
   effectiveRepoBranch,
+  effectiveRepoBranchByPath,
   replicaVolatileStore,
 } from "../stores/replica-volatile";
 import { normalizeProjectPathForCompare } from "../stores/project-refresh";
@@ -216,7 +223,12 @@ function configuredReplicaRepoBadgesLive(
   workgroup: Pick<AcWorkgroup, "repoPath">
 ): SessionRepo[] {
   return configuredReplicaRepoBadges(
-    { repoPaths: replica.repoPaths, repoBranch: effectiveRepoBranch(replica) },
+    {
+      repoPaths: replica.repoPaths,
+      repoBranch: effectiveRepoBranch(replica),
+      // #943 B2 - per-repo branches for cold multi-repo replicas, keyed by path.
+      repoBranchByPath: effectiveRepoBranchByPath(replica),
+    },
     workgroup
   );
 }
@@ -397,7 +409,14 @@ const ProjectPanel: Component = () => {
   onCleanup(registerCoordinatorCloseModalHost());
   onMount(async () => {
     unlistenBranch = await onDiscoveryBranchUpdated((data) => {
-      replicaVolatileStore.setRepoBranch(data.replicaPath, data.branch);
+      // #943 B2 - one atomic write: the single-repo shorthand plus the per-repo
+      // branches, merged BY PATH (never by index - see the store).
+      replicaVolatileStore.applyDiscoveryBranchUpdate(
+        data.replicaPath,
+        data.branch,
+        data.repoPaths,
+        data.repoBranches
+      );
     });
     // #552 coordinator idle badge + auto-closed pill. Discovery reload
     // supersedes these overrides on any path miss (clearForPaths).
@@ -778,6 +797,92 @@ const ProjectPanel: Component = () => {
         let groupFlyoutEl: HTMLDivElement | undefined;
         let groupFlyoutAnchorEl: HTMLElement | undefined;
         let groupFlyoutCloseTimer: number | undefined;
+
+        // #943 - repo Browse submenu.
+        //
+        // The flyout is keyed by the repo's INDEX in the open menu plus its
+        // sourcePath, and never holds a SessionRepo object: <For> is keyed by
+        // reference and the cold path (configuredReplicaRepoBadges) maps into
+        // FRESH objects on every evaluation, so a captured entry goes stale (and
+        // its <button> gets detached) whenever GitWatcher or a discovery branch
+        // event lands. The live entry is re-derived by index, identity-checked on
+        // sourcePath. Index, not label: two repos can share a label.
+        const [repoFlyout, setRepoFlyout] = createSignal<{ index: number; sourcePath: string } | null>(null);
+        const [repoFlyoutPos, setRepoFlyoutPos] = createSignal({ x: 0, y: 0 });
+        let repoFlyoutEl: HTMLDivElement | undefined;
+        let repoFlyoutAnchorEl: HTMLElement | undefined;
+        let repoFlyoutCloseTimer: number | undefined;
+        // Set only while we programmatically return focus to the trigger after an
+        // Escape. Without it, `anchor.focus()` synchronously fires the trigger's
+        // onFocus, which re-opens the flyout we are trying to close.
+        let suppressRepoFocusOpen = false;
+
+        // #943 - GitHub remote per repo source path, resolved once when the
+        // context menu opens. Missing key = still resolving (no arrow yet);
+        // null = resolved, no GitHub remote (no arrow, ever). `repoRemotesGen`
+        // orphans in-flight results from a menu that has already been replaced,
+        // so a stale answer cannot paint an arrow on the NEXT menu.
+        const [repoRemotes, setRepoRemotes] = createSignal<Record<string, GithubRepoRef | null>>({});
+        let repoRemotesGen = 0;
+
+        // Web/WS clients: `open_external_url` is a no-op stub on the host and
+        // `git_remote_url` is too (web/commands.rs), so the whole feature is
+        // desktop-only. Hide it rather than ship dead menu items.
+        const browseSupported = () => isTauri;
+
+        const resolveRepoRemotes = (repos: SessionRepo[]) => {
+          const gen = ++repoRemotesGen;
+          setRepoRemotes({});
+          if (!browseSupported()) return;
+          const paths = Array.from(
+            new Set(repos.map((repo) => repo.sourcePath).filter((path) => !!path))
+          );
+          for (const path of paths) {
+            void ReposAPI.gitRemoteUrl(path)
+              .then((remote) => {
+                if (gen !== repoRemotesGen) return;
+                setRepoRemotes((prev) => ({ ...prev, [path]: parseGithubRemote(remote) }));
+              })
+              .catch((err) => {
+                // The command swallows every git failure into Ok(None), so a
+                // rejection here means an empty-path Err (unreachable) or a
+                // transport fault. Debug, not error: nothing is broken.
+                if (gen !== repoRemotesGen) return;
+                console.debug("[repo-browse] git_remote_url failed:", err);
+                setRepoRemotes((prev) => ({ ...prev, [path]: null }));
+              });
+          }
+        };
+
+        type RepoBrowseItem = { id: "main" | "branch"; label: string; url: string };
+
+        const repoBrowseItems = (repo: SessionRepo | null): RepoBrowseItem[] => {
+          if (!browseSupported() || !repo) return [];
+          const ref = repoRemotes()[repo.sourcePath];
+          if (!ref) return []; // undefined = resolving, null = no GitHub remote
+          const items: RepoBrowseItem[] = [
+            { id: "main", label: "Browse Main", url: githubRepoUrl(ref) },
+          ];
+          const branch = repo.branch?.trim();
+          // PRODUCT RULE (user, #943), not an accident: tolerate BOTH `main` and
+          // `master`. A repo whose default branch is `master` already lands on
+          // `master` at the repo-root URL, so a second item pointing at the same
+          // page is noise. Everything else gets Browse Branch. Do NOT "fix" this
+          // back to a literal `!== "main"`.
+          //
+          // Exact match, no casefold: git refs are case-sensitive, so a branch
+          // literally named `Master` is a different, real branch and DOES get the
+          // item. "HEAD" is the detached-HEAD sentinel (both git readers map it to
+          // null; this is belt for the volatile override layer).
+          if (branch && branch !== "main" && branch !== "master" && branch !== "HEAD") {
+            const url = githubBranchUrl(ref, branch);
+            // null = the branch text is not a usable ref (`..`, empty). Rather
+            // than build a URL the browser would normalize into another repo, we
+            // simply do not offer the item.
+            if (url) items.push({ id: "branch", label: "Browse Branch", url });
+          }
+          return items;
+        };
         const [agentCtxMenu, setAgentCtxMenu] = createSignal<{ agent: { name: string; path: string; preferredAgentId?: string }; x: number; y: number } | null>(null);
         const [agentsHeaderCtxMenu, setAgentsHeaderCtxMenu] = createSignal<{ x: number; y: number } | null>(null);
         const [workgroupsHeaderCtxMenu, setWorkgroupsHeaderCtxMenu] = createSignal<{ x: number; y: number } | null>(null);
@@ -1269,6 +1374,7 @@ const ProjectPanel: Component = () => {
         };
 
         const openGroupFlyout = (anchor: HTMLElement) => {
+          closeRepoFlyout(); // #943 - only one flyout at a time
           cancelGroupFlyoutClose();
           groupFlyoutAnchorEl = anchor;
           positionGroupFlyout(anchor);
@@ -1277,6 +1383,7 @@ const ProjectPanel: Component = () => {
         };
 
         const activateGroupFlyout = (anchor: HTMLElement) => {
+          closeRepoFlyout(); // #943 - the early-return path below skips openGroupFlyout
           if (groupFlyoutOpen() && groupFlyoutAnchorEl === anchor) {
             cancelGroupFlyoutClose();
             positionGroupFlyout(anchor);
@@ -1286,6 +1393,129 @@ const ProjectPanel: Component = () => {
           openGroupFlyout(anchor);
         };
         onCleanup(cancelGroupFlyoutClose);
+
+        const cancelRepoFlyoutClose = () => {
+          if (repoFlyoutCloseTimer === undefined) return;
+          window.clearTimeout(repoFlyoutCloseTimer);
+          repoFlyoutCloseTimer = undefined;
+        };
+        const closeRepoFlyout = () => {
+          cancelRepoFlyoutClose();
+          setRepoFlyout(null);
+          repoFlyoutAnchorEl = undefined;
+          repoFlyoutEl = undefined;
+        };
+        const scheduleRepoFlyoutClose = () => {
+          cancelRepoFlyoutClose();
+          repoFlyoutCloseTimer = window.setTimeout(() => {
+            repoFlyoutCloseTimer = undefined;
+            closeRepoFlyout();
+          }, 180);
+        };
+
+        const positionRepoFlyout = (anchor: HTMLElement) => {
+          const rect = anchor.getBoundingClientRect();
+          const width = repoFlyoutEl?.getBoundingClientRect().width ?? 220;
+          const height = repoFlyoutEl?.getBoundingClientRect().height ?? 88;
+          let x = rect.right + 4;
+          if (x + width + CONTEXT_MENU_VIEWPORT_MARGIN > window.innerWidth) {
+            x = rect.left - width - 4;
+          }
+          const maxX = Math.max(
+            CONTEXT_MENU_VIEWPORT_MARGIN,
+            window.innerWidth - width - CONTEXT_MENU_VIEWPORT_MARGIN
+          );
+          const maxY = Math.max(
+            CONTEXT_MENU_VIEWPORT_MARGIN,
+            window.innerHeight - height - CONTEXT_MENU_VIEWPORT_MARGIN
+          );
+          setRepoFlyoutPos({
+            x: Math.min(Math.max(CONTEXT_MENU_VIEWPORT_MARGIN, x), maxX),
+            y: Math.min(Math.max(CONTEXT_MENU_VIEWPORT_MARGIN, rect.top), maxY),
+          });
+        };
+
+        const reclampRepoFlyout = () => {
+          const anchor = repoFlyoutAnchorEl;
+          if (!anchor?.isConnected || !repoFlyout()) return;
+          // The re-check INSIDE the deferred callback is the load-bearing one, and
+          // it is not paranoia: <For> is reference-keyed and the cold path mints
+          // fresh entry objects on every evaluation, so a GitWatcher tick or a
+          // discovery refresh re-creates the row - and detaches this anchor -
+          // between scheduling the frame and running it, while the pointer has not
+          // moved. getBoundingClientRect on a detached node is all zeros, which
+          // would fling the flyout to the top-left viewport margin. Guarding only
+          // at schedule time (as this did) never fires on that path at all.
+          const clamp = () => {
+            if (anchor !== repoFlyoutAnchorEl || !anchor.isConnected || !repoFlyout()) return;
+            positionRepoFlyout(anchor);
+          };
+          if (typeof window.requestAnimationFrame === "function") {
+            window.requestAnimationFrame(clamp);
+            return;
+          }
+          window.setTimeout(clamp, 0);
+        };
+
+        const openRepoFlyout = (index: number, repo: SessionRepo, anchor: HTMLElement) => {
+          closeGroupFlyout(); // mutual exclusion: both flyouts are position:fixed
+          cancelRepoFlyoutClose();
+          repoFlyoutAnchorEl = anchor;
+          positionRepoFlyout(anchor);
+          setRepoFlyout({ index, sourcePath: repo.sourcePath });
+          reclampRepoFlyout();
+        };
+
+        const focusFirstRepoFlyoutItem = () => {
+          queueMicrotask(() => repoFlyoutEl?.querySelector("button")?.focus());
+        };
+
+        /// Return focus to the trigger WITHOUT re-opening the flyout: `focus()`
+        /// fires the trigger's onFocus synchronously, and onFocus opens the
+        /// flyout. Dropping the refocus instead would strand focus on <body> and
+        /// make the menu untabbable, which is worse.
+        const focusRepoTriggerQuietly = (anchor: HTMLElement | undefined) => {
+          if (!anchor?.isConnected) return;
+          suppressRepoFocusOpen = true;
+          anchor.focus();
+          queueMicrotask(() => {
+            suppressRepoFocusOpen = false;
+          });
+        };
+
+        const openRepoBrowse = async (url: string) => {
+          closeRepoFlyout();
+          setReplicaCtxMenu(null);
+          cleanupCtx();
+          try {
+            await WindowAPI.openExternal(url);
+          } catch (e) {
+            console.error("Failed to open repo in browser:", e);
+          }
+        };
+
+        // #943 - teardown on menu CLOSE. Covers the ~20 `setReplicaCtxMenu(null)`
+        // sites plus the window-level dismiss listener with one hook, and clears
+        // stale state so a reopened menu cannot inherit a flyout.
+        //
+        // It does NOT cover the menu -> menu switch (right-click A, then
+        // right-click B): the handlers overwrite the signal non-null -> non-null
+        // and `cleanupCtx()` has already removed the dismiss listener, so there is
+        // no null transition to observe. That case is handled in the handlers
+        // themselves (F.8), exactly as the group flyout already does it
+        // (`resetGroupMenuState()`). Both are required; neither is sufficient.
+        //
+        // Do NOT rewrite this as `createEffect(on(replicaCtxMenu, ...))`:
+        // `positionReplicaCtxMenu` rewrites the menu object on every reclamp, so
+        // an identity-keyed effect would close the flyout on churn.
+        createEffect(() => {
+          if (replicaCtxMenu()) return;
+          closeRepoFlyout();
+          repoRemotesGen++;
+          setRepoRemotes({});
+        });
+
+        onCleanup(cancelRepoFlyoutClose);
 
         const restartReplicaSession = async (
           sessionId: string,
@@ -1543,6 +1773,152 @@ const ProjectPanel: Component = () => {
             </button>
             {renderAddToGroupFlyout(wg)}
           </Show>
+        );
+
+        // #943 - coordinator repo entries. Click still opens the local folder
+        // (unchanged); hover additionally opens the Browse flyout when the repo
+        // has a GitHub origin. Shared by the active and inactive menu branches.
+        //
+        // BOTH PARAMS ARE ACCESSORS, ON PURPOSE. `{helper(repoEntries(), "...")}`
+        // in JSX compiles to a tracking computation over the args, which rebuilds
+        // this entire subtree (and re-creates the <Portal>) whenever the entry
+        // list or the menu object changes identity. Passing functions gives that
+        // computation zero dependencies, so it runs once and <For> / the
+        // attribute getters do the reactive work.
+        const renderRepoBrowseFlyout = (repos: () => SessionRepo[], testIdPrefix: () => string) => {
+          // The anchored entry can be re-created (cold path) or replaced
+          // (GitWatcher) while the flyout is open. Re-derive it by index every
+          // render and identity-check the sourcePath; null = it moved or vanished.
+          const liveRepo = (): SessionRepo | null => {
+            const fly = repoFlyout();
+            if (!fly) return null;
+            const candidate = repos()[fly.index];
+            return candidate && candidate.sourcePath === fly.sourcePath ? candidate : null;
+          };
+
+          // If the identity check breaks, the anchor node is gone too: close.
+          createEffect(
+            on(
+              () => (repoFlyout() ? liveRepo() : null),
+              (repo) => {
+                if (repoFlyout() && !repo) closeRepoFlyout();
+              },
+              { defer: true }
+            )
+          );
+
+          return (
+            <Portal>
+              <Show when={repoFlyout() && liveRepo()}>
+                {(repo) => (
+                  <div
+                    class="session-context-flyout"
+                    ref={repoFlyoutEl}
+                    style={{ left: `${repoFlyoutPos().x}px`, top: `${repoFlyoutPos().y}px` }}
+                    onMouseEnter={cancelRepoFlyoutClose}
+                    onMouseLeave={scheduleRepoFlyoutClose}
+                    // This Portal renders OUTSIDE .session-context-menu, so the
+                    // window-level dismiss listeners (bubble phase) would
+                    // otherwise see these events and kill the whole menu.
+                    onClick={(e) => e.stopPropagation()}
+                    onContextMenu={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => {
+                      if (e.key !== "Escape") return;
+                      e.preventDefault();
+                      e.stopPropagation(); // close the submenu only, keep the menu
+                      const anchor = repoFlyoutAnchorEl;
+                      closeRepoFlyout();
+                      focusRepoTriggerQuietly(anchor);
+                    }}
+                    data-ac-testid={`${testIdPrefix()}.${repoFlyout()?.index ?? 0}.browse.flyout`}
+                  >
+                    <For each={repoBrowseItems(repo())}>
+                      {(item) => (
+                        <button
+                          class="session-context-option"
+                          title={item.url}
+                          onClick={() => void openRepoBrowse(item.url)}
+                          data-ac-testid={`${testIdPrefix()}.${repoFlyout()?.index ?? 0}.browse.${item.id}`}
+                          data-ac-role="menuitem"
+                        >
+                          {item.label}
+                        </button>
+                      )}
+                    </For>
+                  </div>
+                )}
+              </Show>
+            </Portal>
+          );
+        };
+
+        const renderRepoMenuEntries = (repos: () => SessionRepo[], testIdPrefix: () => string) => (
+          <>
+            <Show when={repos().length > 0}>
+              <For each={repos()}>
+                {(repo, index) => {
+                  const browseItems = () => repoBrowseItems(repo);
+                  return (
+                    <button
+                      class="session-context-option session-context-repo-option"
+                      title={repo.sourcePath}
+                      onClick={() => void openRepoFolder(repo.sourcePath)}
+                      onMouseEnter={(e) => {
+                        if (browseItems().length > 0) {
+                          openRepoFlyout(index(), repo, e.currentTarget);
+                        } else {
+                          // Moving from a browsable repo onto a non-browsable one
+                          // must not leave the previous flyout hanging.
+                          closeRepoFlyout();
+                        }
+                      }}
+                      onMouseLeave={scheduleRepoFlyoutClose}
+                      onFocus={(e) => {
+                        if (suppressRepoFocusOpen) return; // Escape refocus, see F.5
+                        if (browseItems().length > 0) openRepoFlyout(index(), repo, e.currentTarget);
+                      }}
+                      onKeyDown={(e) => {
+                        // Enter/Space keep the native button activation (open the
+                        // folder). Only ArrowRight enters the submenu.
+                        if (e.key === "ArrowRight" && browseItems().length > 0) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          openRepoFlyout(index(), repo, e.currentTarget);
+                          focusFirstRepoFlyoutItem();
+                          return;
+                        }
+                        if (e.key === "Escape" && repoFlyout()) {
+                          e.preventDefault();
+                          e.stopPropagation(); // close the submenu only, keep the menu
+                          closeRepoFlyout();
+                        }
+                      }}
+                      data-ac-testid={`${testIdPrefix()}.${index()}`}
+                      data-ac-role="menuitem"
+                    >
+                      <svg
+                        class="session-context-repo-icon"
+                        viewBox="0 0 16 16"
+                        aria-hidden="true"
+                      >
+                        <path
+                          fill="currentColor"
+                          d="M1.75 4.25A1.75 1.75 0 0 1 3.5 2.5h3.1c.46 0 .9.18 1.22.5l.9.9h3.78A1.75 1.75 0 0 1 14.25 5.65v5.1a1.75 1.75 0 0 1-1.75 1.75h-9A1.75 1.75 0 0 1 1.75 10.75v-6.5Z"
+                        />
+                      </svg>
+                      <span class="session-context-repo-label">{repo.label}</span>
+                      <Show when={browseItems().length > 0}>
+                        <span class="session-context-submenu-arrow">&rsaquo;</span>
+                      </Show>
+                    </button>
+                  );
+                }}
+              </For>
+            </Show>
+            {/* Deliberately OUTSIDE the entry-count <Show>: a transient empty
+                list must not unmount the Portal while repoFlyout() is non-null. */}
+            {renderRepoBrowseFlyout(repos, testIdPrefix)}
+          </>
         );
 
         // Broom (clear task title) for a gray/red replica — reuses the
@@ -1866,6 +2242,7 @@ const ProjectPanel: Component = () => {
           setLoopsHeaderCtxMenu(null);
           setTeamsHeaderCtxMenu(null);
           resetGroupMenuState();
+          closeRepoFlyout(); // #943 - the A->B switch never nulls replicaCtxMenu()
           setReplicaCtxMenu({
             kind: "active",
             sessionId: session.id,
@@ -1878,6 +2255,7 @@ const ProjectPanel: Component = () => {
             x: e.clientX,
             y: e.clientY,
           });
+          resolveRepoRemotes(replicaRepoMenuEntries(wg, replica)); // #943 - one call per repo path
           const dismiss = (ev?: Event) => {
             if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
             setReplicaCtxMenu(null);
@@ -1910,7 +2288,9 @@ const ProjectPanel: Component = () => {
           setLoopsHeaderCtxMenu(null);
           setTeamsHeaderCtxMenu(null);
           resetGroupMenuState();
+          closeRepoFlyout(); // #943 - the A->B switch never nulls replicaCtxMenu()
           setReplicaCtxMenu({ kind: "inactive", wg, replica, x: e.clientX, y: e.clientY });
+          resolveRepoRemotes(replicaRepoMenuEntries(wg, replica)); // #943 - one call per repo path
           const dismiss = (ev?: Event) => {
             if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
             setReplicaCtxMenu(null);
@@ -3290,6 +3670,11 @@ const ProjectPanel: Component = () => {
                   ref={replicaCtxMenuEl}
                   style={{ left: `${replicaCtxMenu()!.x}px`, top: `${replicaCtxMenu()!.y}px` }}
                   onClick={(e) => e.stopPropagation()}
+                  // #943 - a <For> row re-created under a stationary cursor is a
+                  // detached node and can never fire its own mouseleave. This
+                  // guarantees the flyout cannot hang. The flyout's onMouseEnter
+                  // cancels the 180ms timer when crossing the 4px gap.
+                  onMouseLeave={scheduleRepoFlyoutClose}
                 >
                   <Show when={activeReplicaMenu()}>
                     {(menu) => {
@@ -3330,31 +3715,7 @@ const ProjectPanel: Component = () => {
                         >
                           &#x1F4C2; Open Replica's Folder
                         </button>
-                        <Show when={repoEntries().length > 0}>
-                          <For each={repoEntries()}>
-                            {(repo, index) => (
-                              <button
-                                class="session-context-option session-context-repo-option"
-                                title={repo.sourcePath}
-                                onClick={() => void openRepoFolder(repo.sourcePath)}
-                                data-ac-testid={`replica.${menu().sessionId}.menu.repo.${index()}`}
-                                data-ac-role="menuitem"
-                              >
-                                <svg
-                                  class="session-context-repo-icon"
-                                  viewBox="0 0 16 16"
-                                  aria-hidden="true"
-                                >
-                                  <path
-                                    fill="currentColor"
-                                    d="M1.75 4.25A1.75 1.75 0 0 1 3.5 2.5h3.1c.46 0 .9.18 1.22.5l.9.9h3.78A1.75 1.75 0 0 1 14.25 5.65v5.1a1.75 1.75 0 0 1-1.75 1.75h-9A1.75 1.75 0 0 1 1.75 10.75v-6.5Z"
-                                  />
-                                </svg>
-                                <span class="session-context-repo-label">{repo.label}</span>
-                              </button>
-                            )}
-                          </For>
-                        </Show>
+                        {renderRepoMenuEntries(repoEntries, () => `replica.${menu().sessionId}.menu.repo`)}
                         <Show when={matrixFolder()}>
                           {(path) => (
                             <button
@@ -3420,31 +3781,7 @@ const ProjectPanel: Component = () => {
                           >
                             &#x1F4C2; Open Replica's Folder
                           </button>
-                          <Show when={repoEntries().length > 0}>
-                            <For each={repoEntries()}>
-                              {(repo, index) => (
-                                <button
-                                  class="session-context-option session-context-repo-option"
-                                  title={repo.sourcePath}
-                                  onClick={() => void openRepoFolder(repo.sourcePath)}
-                                  data-ac-testid={`replica.inactive.menu.repo.${index()}`}
-                                  data-ac-role="menuitem"
-                                >
-                                  <svg
-                                    class="session-context-repo-icon"
-                                    viewBox="0 0 16 16"
-                                    aria-hidden="true"
-                                  >
-                                    <path
-                                      fill="currentColor"
-                                      d="M1.75 4.25A1.75 1.75 0 0 1 3.5 2.5h3.1c.46 0 .9.18 1.22.5l.9.9h3.78A1.75 1.75 0 0 1 14.25 5.65v5.1a1.75 1.75 0 0 1-1.75 1.75h-9A1.75 1.75 0 0 1 1.75 10.75v-6.5Z"
-                                    />
-                                  </svg>
-                                  <span class="session-context-repo-label">{repo.label}</span>
-                                </button>
-                              )}
-                            </For>
-                          </Show>
+                          {renderRepoMenuEntries(repoEntries, () => "replica.inactive.menu.repo")}
                           <Show when={matrixFolder()}>
                             {(path) => (
                               <button

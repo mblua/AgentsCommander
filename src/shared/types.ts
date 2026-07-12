@@ -4,6 +4,21 @@ export interface SessionRepo {
   branch: string | null;
 }
 
+/**
+ * #943 B2 - live per-repo branches, keyed by repo SOURCE PATH.
+ *
+ * A missing key = the live layer knows nothing about that repo (no event has
+ * landed yet, or it was added to `config.json` since the last watcher tick). An
+ * explicit `null` = the layer knows the repo and has no branch for it (detached
+ * HEAD, not a work tree, git missing, detection timed out).
+ *
+ * Keyed by path and NEVER by index, even though the backend emits the branches
+ * positionally: the payload is stored and re-read against a LATER discovery
+ * snapshot, so a reorder/removal in `config.json` `repos` would make a positional
+ * merge paint repo A's branch onto repo B for up to one 15s tick.
+ */
+export type RepoBranchByPath = Record<string, string | null>;
+
 export type SessionCommunicationKind = "raiseHand";
 
 export interface SessionCommunication {

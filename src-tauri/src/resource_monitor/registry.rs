@@ -473,6 +473,14 @@ impl ResourceMonitorState {
             )
         };
 
+        // #942 - we are committed to killing and have touched no process yet: tag the
+        // stop as AC-initiated so the PTY child-exit event can never read it as a child
+        // that died on its own. Deliberately AFTER the early returns above (a group that
+        // is not registered, already terminating or already terminated kills nothing, so
+        // it must not latch an attribution). No-op for sessions with no local spawn
+        // record. Taken with no resource-monitor lock held.
+        crate::pty::spawn_diagnostics::mark_ac_stop(session_id, reason.as_log_reason(), None);
+
         let mut targets = previous_targets;
         let mut current_cleanup_identities = BTreeSet::new();
         let mut pending_identity_errors = Vec::new();

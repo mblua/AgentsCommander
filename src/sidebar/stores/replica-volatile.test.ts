@@ -5,6 +5,7 @@ import {
   effectiveLastUserMessageAt,
   effectiveManuallyClosedAt,
   effectiveRepoBranch,
+  effectiveRepoBranchByPath,
   replicaVolatileStore,
 } from "./replica-volatile";
 
@@ -103,5 +104,103 @@ describe("replicaVolatileStore (#748)", () => {
 
       dispose();
     });
+  });
+});
+
+// #943 B2 - `ac_discovery_branch_updated` now also carries per-repo branches.
+describe("replicaVolatileStore per-repo branches (#943 B2)", () => {
+  const REPO_A = "C:\\proj\\.ac\\wg-1-team\\repo-AgentsCommander";
+  const REPO_B = "C:\\proj\\.ac\\wg-1-team\\repo-webpage";
+
+  beforeEach(() => {
+    replicaVolatileStore.clearAll();
+  });
+
+  it("keys the map by repo path and lands the shorthand in the same write", () => {
+    replicaVolatileStore.applyDiscoveryBranchUpdate(
+      COORD_A_EVENT, // event path: lower-cased, forward slashes (#552)
+      null,
+      [REPO_A, REPO_B],
+      ["feature/943", null]
+    );
+
+    // The REPLICA key is normalized; the REPO keys are verbatim.
+    expect(effectiveRepoBranchByPath({ path: COORD_A })).toEqual({
+      [REPO_A]: "feature/943",
+      [REPO_B]: null,
+    });
+    expect(effectiveRepoBranch({ path: COORD_A })).toBeUndefined();
+  });
+
+  it("drops the whole map when the arrays disagree in length", () => {
+    // Can only happen if a build breaks the backend's 1:1 invariant. Pairing them
+    // anyway would attach a branch to the wrong repo; no branch beats a wrong one.
+    replicaVolatileStore.applyDiscoveryBranchUpdate(COORD_A, null, [REPO_A, REPO_B], [
+      "only-one",
+    ]);
+
+    expect(effectiveRepoBranchByPath({ path: COORD_A })).toEqual({});
+  });
+
+  it("defaults to an empty map for a replica with no repos", () => {
+    replicaVolatileStore.applyDiscoveryBranchUpdate(COORD_A, null, [], []);
+
+    expect(effectiveRepoBranchByPath({ path: COORD_A })).toEqual({});
+  });
+
+  it("tolerates a payload from a backend that does not send the arrays", () => {
+    replicaVolatileStore.applyDiscoveryBranchUpdate(COORD_A, "feature/x");
+
+    expect(effectiveRepoBranchByPath({ path: COORD_A })).toEqual({});
+    expect(effectiveRepoBranch({ path: COORD_A })).toBe("feature/x");
+  });
+
+  // H1 (grinch): this test used to assert the OPPOSITE - that clearForPaths drops
+  // the map - and that made it the alibi for a HIGH bug. `projectStore` calls
+  // clearForPaths on every reload (loop tick, CLI refresh, entity creation, group
+  // edit...). The other volatile fields survive that because the discovery snapshot
+  // re-supplies them; `repoBranchByPath` has NO snapshot counterpart, so the wipe
+  // installed nothing, the badge fell back to the single-repo shorthand (null for a
+  // multi-repo replica), and the backend never re-emitted (Gate A: identical payload
+  // => no event). Browse Branch died on the first reload and never came back - not
+  // for 15s, forever.
+  it("PRESERVES the per-repo map across a discovery reload (H1)", () => {
+    replicaVolatileStore.applyDiscoveryBranchUpdate(COORD_A, null, [REPO_A], ["feature/943"]);
+
+    replicaVolatileStore.clearForPaths([COORD_A]);
+
+    expect(effectiveRepoBranchByPath({ path: COORD_A })).toEqual({ [REPO_A]: "feature/943" });
+  });
+
+  it("still clears the snapshot-backed fields on a reload, map or no map", () => {
+    // The "discovery wins on reload" contract must keep holding for every field the
+    // snapshot actually re-supplies - preserving the B2 map must not smuggle those
+    // back in.
+    replicaVolatileStore.applyDiscoveryBranchUpdate(COORD_A, "feature/943", [REPO_A], [
+      "feature/943",
+    ]);
+    replicaVolatileStore.setAutoClosedAt(COORD_A, "2026-06-19T18:05:00Z");
+    replicaVolatileStore.setLastUserMessageAt(COORD_A, "2026-06-19T18:00:00Z");
+
+    replicaVolatileStore.clearForPaths([COORD_A]);
+
+    expect(effectiveRepoBranch({ path: COORD_A })).toBeUndefined();
+    expect(effectiveAutoClosedAt({ path: COORD_A })).toBeUndefined();
+    expect(effectiveLastUserMessageAt({ path: COORD_A })).toBeUndefined();
+    expect(effectiveRepoBranchByPath({ path: COORD_A })).toEqual({ [REPO_A]: "feature/943" });
+  });
+
+  it("clearAll DOES drop the per-repo map (the replicas themselves are gone)", () => {
+    replicaVolatileStore.applyDiscoveryBranchUpdate(COORD_A, null, [REPO_A], ["feature/943"]);
+
+    replicaVolatileStore.clearAll();
+
+    expect(effectiveRepoBranchByPath({ path: COORD_A })).toBeUndefined();
+  });
+
+  it("does not leak one replica's per-repo branches to another", () => {
+    replicaVolatileStore.applyDiscoveryBranchUpdate(COORD_A, null, [REPO_A], ["feature/943"]);
+
+    expect(effectiveRepoBranchByPath({ path: COORD_B })).toBeUndefined();
   });
 });
