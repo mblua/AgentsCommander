@@ -37,6 +37,7 @@ fn main() {
                                 | agentscommander_lib::cli::Commands::UiQuery(_)
                                 | agentscommander_lib::cli::Commands::UiClick(_)
                                 | agentscommander_lib::cli::Commands::UiContextClick(_)
+                                | agentscommander_lib::cli::Commands::UiHover(_)
                                 | agentscommander_lib::cli::Commands::UiSet(_)
                                 | agentscommander_lib::cli::Commands::UiType(_)
                                 | agentscommander_lib::cli::Commands::UiBackend(_)

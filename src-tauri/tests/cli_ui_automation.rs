@@ -506,6 +506,200 @@ fn fake_response_makes_ui_context_click_succeed() {
 }
 
 #[test]
+fn normal_binary_refuses_ui_hover_with_json_only_stdout() {
+    let _guard = test_lock();
+    let tmp = Tmp::new("ui-hover-non-testable");
+    let bin = copy_binary_as(tmp.path(), "agentscommander.exe");
+    let (code, stdout, stderr) = run(
+        &bin,
+        &[
+            "ui-hover",
+            "--window",
+            "main",
+            "--selector",
+            "onboarding.confirm",
+        ],
+    );
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    // #944 - THIS is the assertion that catches a missing `Commands::UiHover(_)` arm in
+    // main.rs's AC_MACHINE_OUTPUT allowlist, and it is that arm's only guard. Without the
+    // arm the var stays unset and init_logger writes "[log] file logging to ..." plus
+    // every log::* line to stderr. stdout is clean either way, because cli_println!
+    // (cli/mod.rs:43-62) writes it unconditionally: it is a stderr contract, not a
+    // stdout one, whatever this test's inherited name says.
+    assert_empty_output("stderr", &stderr);
+    let parsed = first_json(&stdout);
+    assert_eq!(parsed["error"], "refusing_non_testeable_binary");
+}
+
+#[test]
+fn fake_response_makes_ui_hover_succeed() {
+    let _guard = test_lock();
+    let Some(pid) = fake_live_pid() else {
+        eprintln!("skip: no fake live pid available");
+        return;
+    };
+    let tmp = Tmp::new("ui-hover-fake-response");
+    let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
+    write_session(&bin, pid, &["main"]);
+    let automation_dir = config_dir_for(&bin).join("ui-automation");
+    let requests_dir = automation_dir.join("requests");
+    let responses_dir = automation_dir.join("responses");
+
+    let responder = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let entries: Vec<PathBuf> = std::fs::read_dir(&requests_dir)
+                .unwrap()
+                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("json"))
+                .collect();
+            if let Some(path) = entries.first() {
+                let raw = std::fs::read_to_string(path).unwrap();
+                let request: Value = serde_json::from_str(&raw).unwrap();
+                assert_eq!(request["window"], "main");
+                assert_eq!(request["action"], "hover");
+                assert_eq!(request["selector"], "replica.coord-a.menu.repo.0");
+                // `value` is `skip_serializing_if = "Option::is_none"` (ui_automation.rs
+                // :128-129), so a plain hover emits NO key at all. The bridge keys the
+                // leave form on `value === "leave"`, so a stray key here would silently
+                // invert the meaning of the verb.
+                assert!(
+                    request.get("value").is_none(),
+                    "a plain hover must emit no `value` key, got: {request}"
+                );
+                let request_id = request["requestId"].as_str().unwrap();
+                let response = json!({
+                    "ok": true,
+                    "requestId": request_id,
+                    "window": "main",
+                    "action": "hover",
+                    "selector": "replica.coord-a.menu.repo.0",
+                    "target": {
+                        "testId": "replica.coord-a.menu.repo.0",
+                        "role": "menuitem",
+                        "state": "ready",
+                        "tag": "button",
+                        "visible": true,
+                        "disabled": false,
+                        "checked": null,
+                        "selected": null,
+                        "pressed": null,
+                        "expanded": null,
+                        "rect": null
+                    }
+                });
+                std::fs::write(
+                    responses_dir.join(format!("{request_id}.json")),
+                    serde_json::to_string(&response).unwrap(),
+                )
+                .unwrap();
+                return;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for request");
+            thread::sleep(Duration::from_millis(25));
+        }
+    });
+
+    let (code, stdout, stderr) = run(
+        &bin,
+        &[
+            "ui-hover",
+            "--window",
+            "main",
+            "--selector",
+            "replica.coord-a.menu.repo.0",
+            "--timeout-ms",
+            "3000",
+        ],
+    );
+    responder.join().unwrap();
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert_empty_output("stderr", &stderr);
+    let parsed = first_json(&stdout);
+    assert_eq!(parsed["ok"], true);
+    assert_eq!(parsed["target"]["testId"], "replica.coord-a.menu.repo.0");
+}
+
+#[test]
+fn fake_response_makes_ui_hover_leave_succeed() {
+    let _guard = test_lock();
+    let Some(pid) = fake_live_pid() else {
+        eprintln!("skip: no fake live pid available");
+        return;
+    };
+    let tmp = Tmp::new("ui-hover-leave-fake-response");
+    let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
+    write_session(&bin, pid, &["main"]);
+    let automation_dir = config_dir_for(&bin).join("ui-automation");
+    let requests_dir = automation_dir.join("requests");
+    let responses_dir = automation_dir.join("responses");
+
+    let responder = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let entries: Vec<PathBuf> = std::fs::read_dir(&requests_dir)
+                .unwrap()
+                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("json"))
+                .collect();
+            if let Some(path) = entries.first() {
+                let raw = std::fs::read_to_string(path).unwrap();
+                let request: Value = serde_json::from_str(&raw).unwrap();
+                assert_eq!(request["window"], "main");
+                assert_eq!(request["action"], "hover");
+                assert_eq!(request["value"], "leave");
+                // Target-free (plan R5): --leave takes no --selector and conflicts with it
+                // at the CLI, so the emitted selector is empty. The bridge intercepts
+                // `value == "leave"` BEFORE it resolves any node, which is what makes the
+                // leave form incapable of returning missing_selector / target_hidden /
+                // target_obscured, and it echoes the selector back so `complete()`'s
+                // equality check (ui_automation.rs:317-321) still matches on "".
+                assert_eq!(request["selector"], "");
+                let request_id = request["requestId"].as_str().unwrap();
+                let response = json!({
+                    "ok": true,
+                    "requestId": request_id,
+                    "window": "main",
+                    "action": "hover",
+                    "selector": "",
+                    "target": {
+                        "testId": "",
+                        "role": null,
+                        "state": null,
+                        "tag": "",
+                        "visible": false,
+                        "disabled": false,
+                        "checked": null,
+                        "selected": null,
+                        "pressed": null,
+                        "expanded": null,
+                        "rect": null
+                    }
+                });
+                std::fs::write(
+                    responses_dir.join(format!("{request_id}.json")),
+                    serde_json::to_string(&response).unwrap(),
+                )
+                .unwrap();
+                return;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for request");
+            thread::sleep(Duration::from_millis(25));
+        }
+    });
+
+    let (code, stdout, stderr) = run(
+        &bin,
+        &["ui-hover", "--window", "main", "--leave", "--timeout-ms", "3000"],
+    );
+    responder.join().unwrap();
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert_empty_output("stderr", &stderr);
+    assert_eq!(first_json(&stdout)["ok"], true);
+}
+
+#[test]
 fn ui_query_timeout_reports_awaiting_gui_poller_phase() {
     let _guard = test_lock();
     let Some(pid) = fake_live_pid() else {

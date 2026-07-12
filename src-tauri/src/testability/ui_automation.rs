@@ -62,6 +62,24 @@ pub struct UiContextClickArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct UiHoverArgs {
+    #[arg(long, default_value = "main")]
+    pub window: String,
+    /// Required unless --leave.
+    #[arg(long, required_unless_present = "leave")]
+    pub selector: Option<String>,
+    /// Park the pointer nowhere: fire the leave chain on whatever is currently hovered
+    /// (up to <html>, relatedTarget null) and clear the sticky pointer. Target-free on
+    /// purpose: the thing you want to release is normally already gone (the menu was torn
+    /// down) or re-minted by <For>, and a cleanup step that fails when its subject is
+    /// missing is not a cleanup step. Never fails.
+    #[arg(long, conflicts_with = "selector")]
+    pub leave: bool,
+    #[arg(long, default_value_t = DEFAULT_TIMEOUT_MS)]
+    pub timeout_ms: u64,
+}
+
+#[derive(Debug, Args)]
 pub struct UiSetArgs {
     #[arg(long, default_value = "main")]
     pub window: String,
@@ -137,9 +155,35 @@ pub enum UiAutomationAction {
     Query,
     Click,
     ContextClick,
+    Hover,
     SetValue,
     TypeText,
     Backend,
+}
+
+impl UiAutomationAction {
+    /// #944 - exhaustive on purpose. A new variant is a COMPILE error here, and the
+    /// `None` terminator bounds the walk, so a variant cannot be silently left out of
+    /// the iteration the way a hand-written `[UiAutomationAction; N]` array lets it be
+    /// (name the variant in the forced match arm, forget the array, and the parity test
+    /// still passes).
+    #[cfg(test)]
+    fn next_variant(self) -> Option<Self> {
+        Some(match self {
+            Self::Query => Self::Click,
+            Self::Click => Self::ContextClick,
+            Self::ContextClick => Self::Hover,
+            Self::Hover => Self::SetValue,
+            Self::SetValue => Self::TypeText,
+            Self::TypeText => Self::Backend,
+            Self::Backend => return None,
+        })
+    }
+
+    #[cfg(test)]
+    fn all() -> impl Iterator<Item = Self> {
+        std::iter::successors(Some(Self::Query), |action| action.next_variant())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -733,6 +777,19 @@ pub fn execute_context_click(args: UiContextClickArgs) -> i32 {
         selector: args.selector,
         action: UiAutomationAction::ContextClick,
         value: None,
+        timeout_ms: args.timeout_ms,
+    })
+}
+
+pub fn execute_hover(args: UiHoverArgs) -> i32 {
+    execute_cli(CliRequest {
+        window: args.window,
+        // Empty for the target-free leave form. The bridge intercepts `value == "leave"`
+        // before it resolves any selector, and the frontend echoes the request's selector
+        // back, so `complete()`'s equality check (:317-321) still matches.
+        selector: args.selector.unwrap_or_default(),
+        action: UiAutomationAction::Hover,
+        value: args.leave.then(|| "leave".to_string()),
         timeout_ms: args.timeout_ms,
     })
 }
@@ -1757,27 +1814,85 @@ mod tests {
         }
     }
 
+    fn action_wire_name(action: UiAutomationAction) -> &'static str {
+        match action {
+            UiAutomationAction::Query => "query",
+            UiAutomationAction::Click => "click",
+            UiAutomationAction::ContextClick => "contextClick",
+            UiAutomationAction::Hover => "hover",
+            UiAutomationAction::SetValue => "setValue",
+            UiAutomationAction::TypeText => "typeText",
+            UiAutomationAction::Backend => "backend",
+        }
+    }
+
     #[test]
     fn action_serializes_camel_case() {
-        assert_eq!(
-            serde_json::to_string(&UiAutomationAction::Query).unwrap(),
-            "\"query\""
+        for action in UiAutomationAction::all() {
+            assert_eq!(
+                serde_json::to_string(&action).unwrap(),
+                format!("\"{}\"", action_wire_name(action))
+            );
+        }
+    }
+
+    /// #944 - the Rust enum and the `UiAutomationAction` union in `src/shared/types.ts`
+    /// are two closed lists that MUST agree. They are not generated from one another
+    /// (no ts-rs / typeshare / specta in this crate), so nothing but this test stops
+    /// them drifting.
+    ///
+    /// Drift is NOT a crash, and an earlier draft of this comment claimed it was: the
+    /// request file is written and read by the same Rust enum, so serde never sees an
+    /// action it does not know. What actually happens is worse in one way. A Rust-only
+    /// addition ships a verb that exists, is documented, and fails 100% of the time at
+    /// runtime, because the bridge's catch-all (automation-bridge.ts:181-188) answers
+    /// `unsupported_action`. Today that is caught only by a human running the acceptance
+    /// runbook. This test moves it to `cargo test`.
+    #[test]
+    fn ui_automation_action_wire_names_match_typescript_union() {
+        // First test in this crate to read OUTSIDE the crate root. `CARGO_MANIFEST_DIR`
+        // expands at COMPILE time to the absolute path of src-tauri, so the process cwd
+        // is irrelevant, and CI checks out the full tree (no sparse-checkout).
+        let types_ts = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/shared/types.ts"),
+        )
+        .expect("read src/shared/types.ts");
+
+        let start = types_ts
+            .find("export type UiAutomationAction =")
+            .expect("UiAutomationAction union not found in types.ts");
+        let body = &types_ts[start..];
+        let end = body.find(';').expect("unterminated UiAutomationAction union");
+
+        // Strip `//` comments before quote-splitting: a comment inside the union that
+        // carries a quote would inject a phantom member, and one carrying a `;` would
+        // truncate the parse. Both are false REDs, and a parity test that cries wolf is
+        // a parity test somebody deletes.
+        let union_src = body[..end]
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let members: HashSet<String> = union_src
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .map(|s| s.to_string())
+            .collect();
+
+        assert!(
+            !members.is_empty(),
+            "parsed zero members from the UiAutomationAction union; the parser or the union format changed"
         );
+
+        let rust: HashSet<String> = UiAutomationAction::all()
+            .map(|action| action_wire_name(action).to_string())
+            .collect();
+
         assert_eq!(
-            serde_json::to_string(&UiAutomationAction::ContextClick).unwrap(),
-            "\"contextClick\""
-        );
-        assert_eq!(
-            serde_json::to_string(&UiAutomationAction::SetValue).unwrap(),
-            "\"setValue\""
-        );
-        assert_eq!(
-            serde_json::to_string(&UiAutomationAction::TypeText).unwrap(),
-            "\"typeText\""
-        );
-        assert_eq!(
-            serde_json::to_string(&UiAutomationAction::Backend).unwrap(),
-            "\"backend\""
+            members, rust,
+            "UiAutomationAction is out of sync between src/shared/types.ts and ui_automation.rs"
         );
     }
 
