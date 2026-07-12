@@ -337,9 +337,24 @@ describe("TerminalApp workflow", () => {
       expect(terminal.resizes).toContainEqual({ cols: 120, rows: 30 });
       expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual([83, 78, 65, 80]);
       expect(hasPtyResizeCall(fake, "session-1", 120, 30)).toBe(false);
+
+      // #973. The snapshot resized xterm to the PTY's size in order to paint it,
+      // and the re-fit then puts xterm back to the tile's size. But the PTY was
+      // ALREADY told that size — by the mount fit, before `fake.clearCalls()` —
+      // and it never moved since. Re-sending it is exactly the redundant resize
+      // #973 removed: land one of those inside a coding agent's TUI startup and
+      // the tile stays blank (0/10 blank without it, 8/10 with).
+      //
+      // This assertion used to require that redundant call. It now requires the
+      // end state it was standing in for, which is the stronger claim: xterm is
+      // back at the fitted size, and the PTY was not spoken to for nothing.
       await waitFor(() =>
-        expect(hasPtyResizeCall(fake, "session-1", fitViewport.cols, fitViewport.rows)).toBe(true)
+        expect({ cols: terminal.cols, rows: terminal.rows }).toEqual({
+          cols: fitViewport.cols,
+          rows: fitViewport.rows,
+        })
       );
+      expect(fake.callsFor("pty_resize")).toHaveLength(0);
       expect(terminal.writes).toHaveLength(1);
     } finally {
       rendered.cleanup();
