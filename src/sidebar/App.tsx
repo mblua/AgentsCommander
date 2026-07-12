@@ -52,6 +52,7 @@ import { normalizeProjectPathForCompare } from "./stores/project-refresh";
 import { startTeamIdleWatcher } from "./stores/team-idle-watcher";
 import { primeAudio } from "../shared/sound";
 import { settingsStore } from "../shared/stores/settings";
+import { railCollapseStore } from "./stores/rail-collapse";
 import Titlebar from "./components/Titlebar";
 import ActionBar from "./components/ActionBar";
 import RootAgentBanner from "./components/RootAgentBanner";
@@ -504,6 +505,12 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     raiseTerminalEnabled = appSettings.raiseTerminalOnClick;
     sessionsStore.setCoordSortByActivity(appSettings.coordSortByActivity ?? false);
     sessionsStore.setAlwaysShowSelectedWorkgroup(appSettings.alwaysShowSelectedWorkgroup ?? true);
+    // #965 (RC-3) — restore the rail's collapse snapshot. MUST run before
+    // projectStore.initFromSettings() populates the rail: that ordering is the only
+    // thing preventing an expand-then-collapse flash, because onMount runs AFTER the
+    // first paint. Deliberately NOT inside the `!props.embedded` guard above — the
+    // rail is live in the browser client and in the unified main window too.
+    railCollapseStore.hydrateFromSettings(appSettings);
     // Apply sidebar style from settings (remap removed themes to default)
     const style = appSettings.sidebarStyle;
     const removedThemes = ["classic", "signal-grid"];
