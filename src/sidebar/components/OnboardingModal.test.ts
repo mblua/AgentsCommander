@@ -150,6 +150,11 @@ describe("OnboardingModal", () => {
     expect(document.querySelector(".onboarding-welcome")?.textContent).toBe(
       "Welcome to AgentsCommander! Let's set up your first Coding Agent.",
     );
+    // #975 — Welcome overrides the accessible name; it must not silently
+    // degrade to the title.
+    expect(
+      document.querySelector('[data-ac-testid="onboarding.modal"]')?.getAttribute("aria-label"),
+    ).toBe("Set up your first Coding Agent");
 
     dispose();
   });
@@ -234,6 +239,42 @@ describe("OnboardingModal", () => {
       }),
     );
     expect(onClose).toHaveBeenCalledTimes(1);
+
+    dispose();
+  });
+
+  it("closes on Escape in the success state with no second settings write (#975)", async () => {
+    const onClose = vi.fn();
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(() => OnboardingModal({ onClose }), root);
+    await settle();
+
+    document.querySelector<HTMLButtonElement>(
+      '[data-ac-testid="onboarding.agentPreset.codex"]',
+    )?.click();
+    await settle();
+
+    document.querySelector<HTMLButtonElement>('[data-ac-testid="onboarding.confirm"]')?.click();
+    await settle();
+    expect(document.querySelector('[data-ac-testid="onboarding.done"]')).toBeTruthy();
+
+    pressEscape();
+    await settle();
+
+    // #975 F1 — Escape on the "configured!" screen closes immediately. The
+    // whole flow performs exactly one get + one update: no redundant settings
+    // rewrite, session purge or global-hotkey re-registration, and no
+    // read-modify-write clobber window after the agent was already saved.
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(SettingsAPI.get).toHaveBeenCalledTimes(1);
+    expect(SettingsAPI.update).toHaveBeenCalledTimes(1);
+    expect(SettingsAPI.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        onboardingDismissed: true,
+        agents: [expect.objectContaining({ label: "Codex" })],
+      }),
+    );
 
     dispose();
   });

@@ -114,9 +114,16 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Escape") {
-      // #975 — Escape mirrors the Cancel affordance exactly. With no cancel
-      // callback there is no Cancel button, so Escape must not become a
-      // back-door dismissal path.
+      // #975 — Escape resolves to whatever dismissal affordance the footer
+      // actually renders. The success state renders only "Get started", so
+      // Escape closes there and must not re-enter the consumer's cancel path:
+      // that would be a second settings write after a completed save.
+      if (done()) {
+        props.onClose();
+        return;
+      }
+      // Selecting state: Cancel renders only when the consumer supplies the
+      // callback, so without one Escape stays inert — no back-door dismissal.
       props.onCancel?.();
       return;
     }

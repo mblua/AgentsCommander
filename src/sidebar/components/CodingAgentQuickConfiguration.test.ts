@@ -4,6 +4,7 @@ import { render } from "solid-js/web";
 import CodingAgentQuickConfiguration from "./CodingAgentQuickConfiguration";
 import type { AppSettings } from "../../shared/types";
 import { SettingsAPI } from "../../shared/ipc";
+import { settingsStore } from "../../shared/stores/settings";
 
 vi.mock("../../shared/ipc", () => ({
   SettingsAPI: {
@@ -134,6 +135,21 @@ function pressEscape(): void {
 
 function cancelButton(): HTMLButtonElement | null {
   return document.querySelector<HTMLButtonElement>('[data-ac-testid="onboarding.cancel"]');
+}
+
+function modalState(): string | null | undefined {
+  return document
+    .querySelector('[data-ac-testid="onboarding.modal"]')
+    ?.getAttribute("data-ac-state");
+}
+
+async function selectCodexAndConfirm(): Promise<void> {
+  document.querySelector<HTMLButtonElement>(
+    '[data-ac-testid="onboarding.agentPreset.codex"]',
+  )?.click();
+  await settle();
+  document.querySelector<HTMLButtonElement>('[data-ac-testid="onboarding.confirm"]')?.click();
+  await settle();
 }
 
 describe("CodingAgentQuickConfiguration", () => {
@@ -338,6 +354,66 @@ describe("CodingAgentQuickConfiguration", () => {
         agents: [expect.objectContaining({ label: "Codex" })],
       }),
     );
+
+    dispose();
+  });
+
+  it("closes on Escape in the success state without re-entering the cancel path (#975)", async () => {
+    const onCancel = vi.fn();
+    const onClose = vi.fn();
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () =>
+        CodingAgentQuickConfiguration({
+          title: "Add a Coding Agent",
+          message: "Pick a Coding Agent to configure.",
+          onCancel,
+          onClose,
+        }),
+      root,
+    );
+    await settle();
+
+    await selectCodexAndConfirm();
+    expect(document.querySelector('[data-ac-testid="onboarding.done"]')).toBeTruthy();
+
+    pressEscape();
+    await settle();
+
+    // #975 F1 — the success footer renders only "Get started", so Escape must
+    // resolve to onClose. Routing it to onCancel would re-run the consumer's
+    // cancel path and issue a second settings write after a completed save.
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(SettingsAPI.get).toHaveBeenCalledTimes(1);
+    expect(SettingsAPI.update).toHaveBeenCalledTimes(1);
+
+    dispose();
+  });
+
+  it("advances data-ac-state selecting -> done and refreshes the settings store", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () =>
+        CodingAgentQuickConfiguration({
+          title: "Add a Coding Agent",
+          message: "Pick a Coding Agent to configure.",
+          onClose: vi.fn(),
+        }),
+      root,
+    );
+    await settle();
+
+    expect(modalState()).toBe("selecting");
+
+    await selectCodexAndConfirm();
+
+    // Automation state contract: consumers wait on done/selecting.
+    expect(modalState()).toBe("done");
+    // Without this refresh the sidebar keeps showing zero agents after setup.
+    expect(settingsStore.refresh).toHaveBeenCalledTimes(1);
 
     dispose();
   });
