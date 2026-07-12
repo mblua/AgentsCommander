@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Component } from "solid-js";
 import type { AcDiscoveryResult, WorkgroupGroupsConfig } from "../../shared/types";
 import { FakeTransport } from "../../shared/testing/fake-transport";
@@ -12,8 +12,16 @@ import {
   waitFor,
 } from "../../shared/testing/ui-harness";
 import { projectStore } from "../stores/project";
-import { defaultGroupsConfig, workgroupGroupsStore } from "../stores/workgroup-groups";
-import { projectCollapseStore } from "../stores/project-collapse";
+import {
+  defaultGroupsConfig,
+  defaultNonStop,
+  exactGroupRegexForWorkgroup,
+  workgroupGroupsStore,
+} from "../stores/workgroup-groups";
+import {
+  activeWorkgroupGroupSelectionKey,
+  createSidebarSelectionScrollReset,
+} from "../App";
 import WorkgroupGroupRail from "./WorkgroupGroupRail";
 import ProjectPanel from "./ProjectPanel";
 
@@ -23,25 +31,25 @@ import ProjectPanel from "./ProjectPanel";
 const projectPathA = "C:\\ProjectA";
 const projectPathB = "C:\\ProjectB";
 
-function projectDiscovery(path: string, folderName: string): AcDiscoveryResult {
-  const wgPath = `${path}\\.ac\\wg-1-dev-team`;
+function projectDiscovery(path: string): AcDiscoveryResult {
   return discovery({
-    workgroups: [
-      {
-        name: "wg-1-dev-team",
+    workgroups: ["wg-1-dev-team", "wg-2-other-team"].map((name, index) => {
+      const wgPath = `${path}\\.ac\\${name}`;
+      return {
+        name,
         path: wgPath,
         task: null,
         taskTitle: null,
         agents: [
           {
-            name: "dev-webpage-ui",
-            path: `${wgPath}\\__agent_dev-webpage-ui`,
+            name: index === 0 ? "dev-webpage-ui" : "dev-rust",
+            path: `${wgPath}\\__agent_${index === 0 ? "dev-webpage-ui" : "dev-rust"}`,
             repoPaths: [],
             isCoordinator: true,
           },
         ],
-      },
-    ],
+      };
+    }),
     agents: [],
     teams: [],
     loops: [],
@@ -49,18 +57,26 @@ function projectDiscovery(path: string, folderName: string): AcDiscoveryResult {
 }
 
 function groupsConfig(): WorkgroupGroupsConfig {
-  return { ...defaultGroupsConfig() };
+  const groupedWorkgroup = "wg-1-dev-team";
+  return {
+    ...defaultGroupsConfig(),
+    groups: [
+      {
+        id: "dev",
+        name: "Dev",
+        regex: exactGroupRegexForWorkgroup(groupedWorkgroup),
+      },
+    ],
+    nonStop: {
+      ...defaultNonStop(),
+      show: true,
+      regex: exactGroupRegexForWorkgroup(groupedWorkgroup),
+    },
+  };
 }
 
-// #810 (grinch F1) - find the .project-header container by its title
-// ATTRIBUTE value via getAttribute, NOT via a CSS attribute selector. A CSS
-// selector like `[title="C:\ProjectA"]` would parse `\P` as `P` (CSS
-// string-token escape) and fail to match the real attribute - the exact bug
-// F1 fixed in the production code. The test must NOT use the broken pattern.
-// After main's restructure, .project-header is a <div> container holding a
-// <button class="project-header-main">. The ref-Map stores the .project-header
-// div (that's where the ref callback lives), so scrollIntoView is called on
-// it. The click-to-toggle target is the .project-header-main button inside.
+// Find the header by its raw title ATTRIBUTE value, not a CSS attribute
+// selector: Windows backslashes are CSS string escapes (#810).
 function findProjectHeader(root: ParentNode, projectPath: string): HTMLElement {
   const headers = Array.from(root.querySelectorAll<HTMLElement>(".project-header"));
   const header = headers.find((h) => h.getAttribute("title") === projectPath);
@@ -93,36 +109,78 @@ function railButton(projectFolder: string, buttonKey: string): HTMLElement {
   return btn;
 }
 
-// Component that renders both siblings the same way App.tsx does (rail +
-// scrollable ProjectPanel), so the rail's onClick can drive the shared
-// projectCollapseStore that ProjectPanel reads.
-const SidebarHarness: Component<{ projects: typeof projectStore.projects }> = () => {
+function rect(top: number, height = 40): DOMRect {
+  return {
+    x: 0,
+    y: top,
+    width: 320,
+    height,
+    top,
+    right: 320,
+    bottom: top + height,
+    left: 0,
+    toJSON: () => ({}),
+  };
+}
+
+function installScrollableLayout(
+  root: ParentNode,
+  projectTops: ReadonlyArray<readonly [string, number]>,
+): HTMLDivElement {
+  const scrollable = root.querySelector<HTMLDivElement>(".sidebar-scrollable");
+  if (!scrollable) throw new Error("sidebar-scrollable not found");
+  const viewportTop = 100;
+  scrollable.getBoundingClientRect = () => rect(viewportTop, 240);
+
+  for (const [projectPath, logicalTop] of projectTops) {
+    const panel = findProjectHeader(root, projectPath).closest<HTMLElement>(".project-panel");
+    if (!panel) throw new Error(`project-panel not found for ${projectPath}`);
+    panel.getBoundingClientRect = () => rect(viewportTop + logicalTop - scrollable.scrollTop, 180);
+  }
+  return scrollable;
+}
+
+function installScrollTopWriteTrap(scrollable: HTMLDivElement, initialValue: number) {
+  let currentValue = initialValue;
+  const writes: number[] = [];
+  Object.defineProperty(scrollable, "scrollTop", {
+    configurable: true,
+    get: () => currentValue,
+    set: (nextValue: number) => {
+      currentValue = nextValue;
+      writes.push(nextValue);
+    },
+  });
+  return { currentValue: () => currentValue, writes };
+}
+
+async function flushReactiveWork(): Promise<void> {
+  // Solid schedules the effect after the store update, and production adds a
+  // queueMicrotask inside it. Crossing a task boundary drains both layers.
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+
+// Component that renders the production rail/panel boundary and installs the
+// same scroll-owner primitive that SidebarApp uses.
+const SidebarHarness: Component = () => {
+  let scrollableEl: HTMLDivElement | undefined;
+  createSidebarSelectionScrollReset(() => scrollableEl);
   return (
     <div class="sidebar-body">
       <WorkgroupGroupRail projects={projectStore.projects} />
-      <div class="sidebar-scrollable">
+      <div class="sidebar-scrollable" ref={scrollableEl}>
         <ProjectPanel />
       </div>
     </div>
   );
 };
 
-describe("WorkgroupGroupRail autofocus (#810)", () => {
+describe("WorkgroupGroupRail selection focus (#810/#941)", () => {
   let cleanupDom: (() => void) | null = null;
-  let scrollIntoViewMock: ReturnType<typeof vi.fn>;
-  let scrollCalls: HTMLElement[] = [];
 
   beforeEach(() => {
     cleanupDom = installBrowserDomStubs();
     resetUiStoresForTests();
-    scrollCalls = [];
-    // #810 - jsdom throws "Not implemented: window.scrollIntoView" without a
-    // mock. Capture the `this` element of each call so we can assert the
-    // scroll targeted the owner's specific header element (grinch F4).
-    scrollIntoViewMock = vi.fn(function (this: HTMLElement, _options: ScrollIntoViewOptions) {
-      scrollCalls.push(this);
-    });
-    Element.prototype.scrollIntoView = scrollIntoViewMock as any;
   });
 
   afterEach(() => {
@@ -132,7 +190,43 @@ describe("WorkgroupGroupRail autofocus (#810)", () => {
     document.body.replaceChildren();
   });
 
-  it("collapses other projects, expands the owner, and scrolls the owner header into view", async () => {
+  it("uses a stable primitive key for equal selections and distinct keys for real changes", () => {
+    workgroupGroupsStore.applyExternalUpdate(projectPathA, groupsConfig());
+    workgroupGroupsStore.applyExternalUpdate(projectPathB, groupsConfig());
+
+    workgroupGroupsStore.select(projectPathA, { kind: "all" });
+    const projectAAllKey = activeWorkgroupGroupSelectionKey();
+    expect(typeof projectAAllKey).toBe("string");
+
+    // Rebuild the same selection object: the semantic key stays primitive and
+    // value-equal even though the store entry emitted a new object identity.
+    workgroupGroupsStore.select(projectPathA, { kind: "all" });
+    expect(activeWorkgroupGroupSelectionKey()).toBe(projectAAllKey);
+
+    workgroupGroupsStore.select(projectPathA, { kind: "group", id: "dev" });
+    const projectAGroupKey = activeWorkgroupGroupSelectionKey();
+    expect(projectAGroupKey).not.toBe(projectAAllKey);
+
+    workgroupGroupsStore.select(projectPathA, { kind: "all" });
+    const projectAAllAgainKey = activeWorkgroupGroupSelectionKey();
+    expect(projectAAllAgainKey).toBe(projectAAllKey);
+    expect(projectAAllAgainKey).not.toBe(projectAGroupKey);
+
+    workgroupGroupsStore.select(projectPathA, { kind: "ungrouped" });
+    const projectAUngroupedKey = activeWorkgroupGroupSelectionKey();
+    expect(projectAUngroupedKey).not.toBe(projectAAllAgainKey);
+
+    workgroupGroupsStore.select(projectPathA, { kind: "nonstop" });
+    const projectANonStopKey = activeWorkgroupGroupSelectionKey();
+    expect(projectANonStopKey).not.toBe(projectAUngroupedKey);
+
+    workgroupGroupsStore.select(projectPathB, { kind: "all" });
+    const projectBAllKey = activeWorkgroupGroupSelectionKey();
+    expect(projectBAllKey).not.toBe(projectANonStopKey);
+    expect(projectBAllKey).not.toBe(projectAAllKey);
+  });
+
+  it("does not write scrollTop when an equal selection object is emitted", async () => {
     const fake = new FakeTransport();
     fake.onInvoke("new_project", (args) => ({
       path: args.path as string,
@@ -141,54 +235,91 @@ describe("WorkgroupGroupRail autofocus (#810)", () => {
     }));
     fake.onInvoke("discover_project", (args) => {
       const path = args.path as string;
-      if (path === projectPathA) return projectDiscovery(path, "ProjectA");
-      if (path === projectPathB) return projectDiscovery(path, "ProjectB");
+      if (path === projectPathA) return projectDiscovery(path);
       throw new Error(`unexpected discover_project path: ${path}`);
     });
     fake.resolve("get_project_groups", groupsConfig());
 
-    const rendered = renderWithFakeTransport(() => <SidebarHarness projects={projectStore.projects} />, fake);
+    const rendered = renderWithFakeTransport(() => <SidebarHarness />, fake);
+    try {
+      await projectStore.createAndLoad(projectPathA);
+      await waitFor(() => expect(railButton("ProjectA", "all")).toBeTruthy());
+
+      const scrollable = installScrollableLayout(rendered.root, [[projectPathA, 0]]);
+      await flushReactiveWork();
+
+      const priorScrollTop = 137;
+      const scrollState = installScrollTopWriteTrap(scrollable, priorScrollTop);
+
+      // This deliberately rebuilds the entry and selection objects while
+      // preserving the exact active-project/selection semantics.
+      workgroupGroupsStore.select(projectPathA, { kind: "all" });
+      await flushReactiveWork();
+
+      expect(scrollState.writes).toEqual([]);
+      expect(scrollState.currentValue()).toBe(priorScrollTop);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("resets every real selection kind and aligns a non-first project header", async () => {
+    const fake = new FakeTransport();
+    fake.onInvoke("new_project", (args) => ({
+      path: args.path as string,
+      registered: true,
+      created: false,
+    }));
+    fake.onInvoke("discover_project", (args) => {
+      const path = args.path as string;
+      if (path === projectPathA) return projectDiscovery(path);
+      if (path === projectPathB) return projectDiscovery(path);
+      throw new Error(`unexpected discover_project path: ${path}`);
+    });
+    fake.resolve("get_project_groups", groupsConfig());
+
+    const rendered = renderWithFakeTransport(() => <SidebarHarness />, fake);
     try {
       await projectStore.createAndLoad(projectPathA);
       await projectStore.createAndLoad(projectPathB);
       await waitFor(() => {
         expect(findProjectHeader(rendered.root, projectPathA)).toBeTruthy();
         expect(findProjectHeader(rendered.root, projectPathB)).toBeTruthy();
+        expect(railButton("ProjectA", "dev")).toBeTruthy();
+        expect(railButton("ProjectA", "nonstop")).toBeTruthy();
       });
 
-      // Both start expanded (default).
-      expect(headerCollapsed(findProjectHeader(rendered.root, projectPathA))).toBe(false);
+      const scrollable = installScrollableLayout(rendered.root, [
+        [projectPathA, 0],
+        [projectPathB, 240],
+      ]);
+
+      // All -> custom -> All -> Ungrouped -> Alert me! are all real semantic
+      // changes and must discard a positive previous offset instantly.
+      for (const [buttonKey, oldOffset] of [
+        ["dev", 111],
+        ["all", 112],
+        ["ungrouped", 113],
+        ["nonstop", 114],
+      ] as const) {
+        scrollable.scrollTop = oldOffset;
+        click(railButton("ProjectA", buttonKey));
+        await waitFor(() => expect(scrollable.scrollTop).toBe(0));
+      }
+
+      // ProjectB remembers All, but changing the active project is still a real
+      // selection change. Its non-first panel must align to the scrollport top.
+      scrollable.scrollTop = 47;
+      click(railButton("ProjectB", "all"));
+      await waitFor(() => expect(scrollable.scrollTop).toBe(240));
+      expect(headerCollapsed(findProjectHeader(rendered.root, projectPathA))).toBe(true);
       expect(headerCollapsed(findProjectHeader(rendered.root, projectPathB))).toBe(false);
-
-      // Click the "All" group button in ProjectA's rail section.
-      click(railButton("ProjectA", "all"));
-
-      // Owner (A) stays/becomes expanded; other (B) is collapsed.
-      await waitFor(() => {
-        expect(headerCollapsed(findProjectHeader(rendered.root, projectPathA))).toBe(false);
-      });
-      await waitFor(() => {
-        expect(headerCollapsed(findProjectHeader(rendered.root, projectPathB))).toBe(true);
-      });
-
-      // scrollIntoView fired on ProjectA's specific .project-header element
-      // (the one whose title attr equals ProjectA's path), with the mandated
-      // options. This is the F1 regression guard: a CSS-selector-based lookup
-      // would have returned null on the backslash path and no-op'd.
-      await waitFor(() => expect(scrollCalls.length).toBeGreaterThanOrEqual(1));
-      const ownerHeader = findProjectHeader(rendered.root, projectPathA);
-      const ownerScrollCall = scrollCalls.find((el) => el === ownerHeader);
-      expect(ownerScrollCall).toBeTruthy();
-      expect(scrollIntoViewMock).toHaveBeenCalledWith({ block: "nearest", behavior: "smooth" });
-
-      // Focus target is consumed (one-shot).
-      expect(projectCollapseStore.focusTarget()).toBe(null);
     } finally {
       rendered.cleanup();
     }
   });
 
-  it("expands the owner even if it was manually collapsed beforehand (locked decision: expand owner always)", async () => {
+  it("keeps scroll fixed on a same-selection re-click while preserving collapse and expand", async () => {
     const fake = new FakeTransport();
     fake.onInvoke("new_project", (args) => ({
       path: args.path as string,
@@ -197,30 +328,40 @@ describe("WorkgroupGroupRail autofocus (#810)", () => {
     }));
     fake.onInvoke("discover_project", (args) => {
       const path = args.path as string;
-      if (path === projectPathA) return projectDiscovery(path, "ProjectA");
-      if (path === projectPathB) return projectDiscovery(path, "ProjectB");
+      if (path === projectPathA) return projectDiscovery(path);
+      if (path === projectPathB) return projectDiscovery(path);
       throw new Error(`unexpected discover_project path: ${path}`);
     });
     fake.resolve("get_project_groups", groupsConfig());
 
-    const rendered = renderWithFakeTransport(() => <SidebarHarness projects={projectStore.projects} />, fake);
+    const rendered = renderWithFakeTransport(() => <SidebarHarness />, fake);
     try {
       await projectStore.createAndLoad(projectPathA);
       await projectStore.createAndLoad(projectPathB);
       await waitFor(() => expect(findProjectHeader(rendered.root, projectPathA)).toBeTruthy());
 
-      // Manually collapse ProjectA first (click the .project-header-main
-      // button, which is the actual toggle target after main's restructure).
+      const scrollable = installScrollableLayout(rendered.root, [
+        [projectPathA, 0],
+        [projectPathB, 240],
+      ]);
+
+      // All is already the active selection. Manually collapse its owner first;
+      // ProjectB remains expanded, so the re-click has both side effects to do.
       click(findProjectHeaderButton(rendered.root, projectPathA));
       await waitFor(() =>
         expect(headerCollapsed(findProjectHeader(rendered.root, projectPathA))).toBe(true)
       );
 
-      // Auto-focus from the rail must override the manual collapse.
+      const priorScrollTop = 137;
+      scrollable.scrollTop = priorScrollTop;
       click(railButton("ProjectA", "all"));
-      await waitFor(() =>
-        expect(headerCollapsed(findProjectHeader(rendered.root, projectPathA))).toBe(false)
-      );
+      // Assert the scroll position directly after both re-click side effects
+      // settle; this behavior must not depend on the focus-target plumbing.
+      await waitFor(() => {
+        expect(headerCollapsed(findProjectHeader(rendered.root, projectPathA))).toBe(false);
+        expect(headerCollapsed(findProjectHeader(rendered.root, projectPathB))).toBe(true);
+        expect(scrollable.scrollTop).toBe(priorScrollTop);
+      });
     } finally {
       rendered.cleanup();
     }
@@ -235,13 +376,13 @@ describe("WorkgroupGroupRail autofocus (#810)", () => {
     }));
     fake.onInvoke("discover_project", (args) => {
       const path = args.path as string;
-      if (path === projectPathA) return projectDiscovery(path, "ProjectA");
-      if (path === projectPathB) return projectDiscovery(path, "ProjectB");
+      if (path === projectPathA) return projectDiscovery(path);
+      if (path === projectPathB) return projectDiscovery(path);
       throw new Error(`unexpected discover_project path: ${path}`);
     });
     fake.resolve("get_project_groups", groupsConfig());
 
-    const rendered = renderWithFakeTransport(() => <SidebarHarness projects={projectStore.projects} />, fake);
+    const rendered = renderWithFakeTransport(() => <SidebarHarness />, fake);
     try {
       await projectStore.createAndLoad(projectPathA);
       await projectStore.createAndLoad(projectPathB);
@@ -280,7 +421,7 @@ describe("WorkgroupGroupRail autofocus (#810)", () => {
     }
   });
 
-  it("does not throw on a single-project layout and still scrolls the owner into view", async () => {
+  it("resets an actual selection change in a single-project layout", async () => {
     const fake = new FakeTransport();
     fake.onInvoke("new_project", (args) => ({
       path: args.path as string,
@@ -289,22 +430,20 @@ describe("WorkgroupGroupRail autofocus (#810)", () => {
     }));
     fake.onInvoke("discover_project", (args) => {
       const path = args.path as string;
-      if (path === projectPathA) return projectDiscovery(path, "ProjectA");
+      if (path === projectPathA) return projectDiscovery(path);
       throw new Error(`unexpected discover_project path: ${path}`);
     });
     fake.resolve("get_project_groups", groupsConfig());
 
-    const rendered = renderWithFakeTransport(() => <SidebarHarness projects={projectStore.projects} />, fake);
+    const rendered = renderWithFakeTransport(() => <SidebarHarness />, fake);
     try {
       await projectStore.createAndLoad(projectPathA);
       await waitFor(() => expect(findProjectHeader(rendered.root, projectPathA)).toBeTruthy());
 
-      // Single project: collapse-others is a no-op (only owner in the list),
-      // but the click must not throw and the owner still scrolls into view.
-      click(railButton("ProjectA", "all"));
-      await waitFor(() => expect(scrollCalls.length).toBeGreaterThanOrEqual(1));
-      const ownerHeader = findProjectHeader(rendered.root, projectPathA);
-      expect(scrollCalls.find((el) => el === ownerHeader)).toBeTruthy();
+      const scrollable = installScrollableLayout(rendered.root, [[projectPathA, 0]]);
+      scrollable.scrollTop = 83;
+      click(railButton("ProjectA", "dev"));
+      await waitFor(() => expect(scrollable.scrollTop).toBe(0));
       expect(headerCollapsed(findProjectHeader(rendered.root, projectPathA))).toBe(false);
     } finally {
       rendered.cleanup();
