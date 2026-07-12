@@ -1696,10 +1696,33 @@ pub(crate) async fn set_rail_collapse_inner(
     collapsed_projects: Vec<String>,
     favorites_collapsed: bool,
 ) -> Result<(), String> {
-    persist_narrow_settings_update(settings, |candidate| {
-        candidate.rail_collapsed_projects = collapsed_projects;
-        candidate.rail_favorites_collapsed = favorites_collapsed;
-    })
+    set_rail_collapse_inner_with_saver(
+        settings,
+        collapsed_projects,
+        favorites_collapsed,
+        save_settings,
+    )
+    .await
+}
+
+/// Saver seam for `set_rail_collapse_inner`, mirroring the three existing
+/// `*_with_saver` pairs in this module. It exists so a unit test can drive the REAL
+/// mutation without reaching `save_settings` -> `config::config_dir()`, a `OnceLock`
+/// that no test redirects and that would overwrite the developer's own settings.json.
+async fn set_rail_collapse_inner_with_saver(
+    settings: &SettingsState,
+    collapsed_projects: Vec<String>,
+    favorites_collapsed: bool,
+    save: impl FnOnce(&AppSettings) -> Result<AppSettings, String>,
+) -> Result<(), String> {
+    persist_narrow_settings_update_with_saver(
+        settings,
+        |candidate| {
+            candidate.rail_collapsed_projects = collapsed_projects;
+            candidate.rail_favorites_collapsed = favorites_collapsed;
+        },
+        save,
+    )
     .await
 }
 
@@ -1813,7 +1836,7 @@ mod tests {
         persist_coding_agent_env_settings_update, persist_coding_agent_profiles_update,
         persist_narrow_settings_update_with_saver, persist_protected_settings_update_with_saver,
         persist_settings_draft_update_with_saver, purge_sessions_after_settings_update_in_dir,
-        start_api_server, WebServerOwnershipState,
+        set_rail_collapse_inner_with_saver, start_api_server, WebServerOwnershipState,
         MINT_API_CLIENT_DEFAULT_TTL_HOURS, MINT_API_CLIENT_MAX_TTL_DAYS, MINT_API_CLIENT_NOTE,
     };
     #[cfg(windows)]
@@ -3082,18 +3105,15 @@ mod tests {
         original.rail_favorites_collapsed = false;
         let state = state_for(original);
 
-        // The mutation `set_rail_collapse_inner` applies, exercised through the
-        // fake-saver hook. Calling the inner fn directly would reach the real
-        // `save_settings` -> `config::config_dir()`, a `OnceLock` that no test
-        // redirects, and would overwrite the developer's real settings.json.
+        // Drives the REAL `set_rail_collapse_inner` mutation through its saver seam, so
+        // dropping or swapping a field assignment inside that fn fails this test. The fake
+        // saver keeps it off disk: the real `save_settings` resolves `config::config_dir()`,
+        // a `OnceLock` no test redirects, which would overwrite the developer's settings.json.
         let captured: Mutex<Option<AppSettings>> = Mutex::new(None);
-        persist_narrow_settings_update_with_saver(
+        set_rail_collapse_inner_with_saver(
             &state,
-            |candidate| {
-                candidate.rail_collapsed_projects =
-                    vec!["c:/foo".to_string(), "d:/bar".to_string()];
-                candidate.rail_favorites_collapsed = true;
-            },
+            vec!["c:/foo".to_string(), "d:/bar".to_string()],
+            true,
             |candidate| {
                 *captured.lock().expect("capture lock") = Some(candidate.clone());
                 Ok(candidate.clone())
