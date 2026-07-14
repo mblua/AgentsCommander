@@ -235,6 +235,42 @@ impl SessionIoFanout {
         }
     }
 
+    /// #973 (B) - has the child painted anything a human could see?
+    ///
+    /// This is the startup gate's trigger, and it asks the REAL, STATEFUL vt100 parser that
+    /// `handle_output` has already fed every byte of every chunk. Call it after `handle_output`,
+    /// so the chunk that just arrived is in the screen.
+    ///
+    /// It replaced a per-chunk text predicate (`output_has_printable_activity`, which the idle
+    /// detector still uses), and it had to, because that predicate answers a different question
+    /// and got this one wrong two ways:
+    ///
+    /// - **Chunk boundaries.** `strip_ansi_csi` is stateless and carries no residue between
+    ///   calls, but the read loop hands it raw `read()` chunks. A chunk that ends mid-CSI or
+    ///   mid-OSC delivers the tail in the next chunk with NO leading `ESC`, and `1049h`, `2J` and
+    ///   `cmd.exe` are all printable. conhost really does split its output across writes.
+    /// - **Three-byte escapes.** It consumed `ESC` plus exactly ONE char. A charset designator is
+    ///   three (`ESC ( B`, which ncurses and half the TUI world emit on the way up, plus
+    ///   `ESC ) 0` and `ESC % G`), so the third byte survived and read as printable.
+    ///
+    /// Either one opens the gate on a child that has painted nothing, which is the bug this gate
+    /// exists to prevent. A real parser carries state across reads and knows what an escape is,
+    /// so both are closed by construction rather than by another special case.
+    ///
+    /// Returns false when the parser cannot be reached: an unfed parser can never show content
+    /// anyway (`handle_output` skips the same poisoned lock), so the gate simply stays shut,
+    /// which is the safe direction. It is never resized, and a child showing nothing does not
+    /// care what size it is.
+    pub fn has_rendered_visible_content(&self, id: Uuid) -> bool {
+        let Ok(parsers) = self.screen_parsers.lock() else {
+            return false;
+        };
+        let Some(state) = parsers.get(&id) else {
+            return false;
+        };
+        screen_shows_visible_content(state.parser.screen())
+    }
+
     pub fn get_screen_snapshot(&self, id: Uuid) -> Option<PtyScreenSnapshot> {
         let parsers = self.screen_parsers.lock().ok()?;
         let state = parsers.get(&id)?;
@@ -273,8 +309,45 @@ impl SessionIoFanout {
     }
 }
 
+/// #973 (B) - is there a cell on this screen a human could see?
+///
+/// "Visible" is deliberately not "the child wrote a byte", and not even "a cell has contents":
+///
+/// - A **space is not content.** `vt100::Cell::has_contents` is true for one (it only asks
+///   whether the cell was written), and a TUI painting its still-empty viewport writes plenty.
+///   That is the exact moment the gate must stay shut, so the glyph test ignores whitespace.
+/// - A **coloured space IS content.** TUIs draw status bars, boxes and selections with nothing
+///   but a background colour, and `Cell::clear` KEEPS the attributes, so `ESC[41m ESC[2J` is a
+///   red screen holding no contents at all. A human plainly sees it.
+/// - **Reverse video** does the same thing with the default colours: a space rendered inverse is
+///   a solid block.
+///
+/// Cost: the attribute scan is allocation-free and exits at the first visible cell.
+/// `Screen::contents` is one allocation for the whole grid, where `Cell::contents` would be one
+/// per cell. It runs only until the gate opens, and after that the caller's relaxed bool skips
+/// it entirely.
+fn screen_shows_visible_content(screen: &vt100::Screen) -> bool {
+    let (rows, cols) = screen.size();
+    for row in 0..rows {
+        for col in 0..cols {
+            if let Some(cell) = screen.cell(row, col) {
+                if cell.inverse() || cell.bgcolor() != vt100::Color::Default {
+                    return true;
+                }
+            }
+        }
+    }
+
+    screen.contents().chars().any(|c| !c.is_whitespace())
+}
+
 /// Strip ANSI escape sequences so marker detection ignores color, cursor,
 /// title, hyperlink, shell-integration, and device-control noise.
+///
+/// #973 - this is the IDLE DETECTOR's predicate, and the startup gate no longer uses it. It is
+/// stateless and consumes `ESC` plus exactly one char, which is fine for deciding whether a chunk
+/// looked busy and wrong for deciding whether a child has painted. See
+/// `SessionIoFanout::has_rendered_visible_content`.
 pub(crate) fn strip_ansi_csi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
@@ -438,6 +511,165 @@ mod tests {
             IdleDetector::new(|_| {}, |_| {}),
             None,
         )
+    }
+
+    /// A coding agent's TUI on the way up: hide the cursor, clear, switch to the alternate
+    /// screen, home, set the title, turn on mouse reporting, reset the attributes. Every byte of
+    /// it is an escape sequence. It paints NOTHING a human can see, and the gate must stay shut
+    /// through all of it.
+    ///
+    /// The charset designator a real TUI also emits here (`ESC ( B`) is deliberately NOT in this
+    /// constant: it fools the old predicate even UNSPLIT, so putting it here would let the
+    /// chunk-boundary test below pass for the wrong reason. It gets its own test.
+    const TUI_PROLOGUE: &[u8] =
+        b"\x1b[?25l\x1b[2J\x1b[?1049h\x1b[H\x1b]0;cmd.exe\x07\x1b[?1000h\x1b[?1006h\x1b[m";
+
+    fn feed(fanout: &SessionIoFanout, id: Uuid, chunks: &[&[u8]]) {
+        for chunk in chunks {
+            fanout.handle_output(
+                &PtyOutputTarget::noop(),
+                id,
+                &id.to_string(),
+                chunk.to_vec(),
+            );
+        }
+    }
+
+    fn session(fanout: &SessionIoFanout) -> Uuid {
+        let id = Uuid::new_v4();
+        fanout.register_session(id, IdleTuning::DEFAULT, 30, 120);
+        id
+    }
+
+    /// #973 (B), (a) - CHUNK BOUNDARIES. The trigger must survive the prologue arriving in two
+    /// reads, split anywhere.
+    ///
+    /// The old predicate could not. `strip_ansi_csi` is stateless and keeps no residue between
+    /// calls, but the read loop feeds it raw `read()` chunks, and conhost really does split its
+    /// output across writes. A chunk ending mid-CSI or mid-OSC hands the tail to the next call
+    /// with NO leading `ESC`, and `1049h`, `2J` and `cmd.exe` are all printable - so the gate
+    /// opened on a child that had painted nothing, which is the bug the gate exists to prevent.
+    ///
+    /// It is not an edge case. **43 of this prologue's 51 interior split points** fool the old
+    /// predicate: a boundary inside a CSI leaves the tail with no `ESC`, and the tail of nearly
+    /// every sequence here is printable - `l`, `2J`, `1049h`, `m`, and `cmd.exe` out of the OSC
+    /// title. Only a boundary that happens to land ON an `ESC` is safe.
+    ///
+    /// This asserts the hazard is REAL first (some split does fool the old predicate), or the
+    /// rest of the test would prove nothing, and then walks every interior split point through
+    /// the new trigger.
+    #[test]
+    fn the_gate_holds_a_prologue_split_at_any_chunk_boundary() {
+        let fanout = fanout();
+
+        // whole, in one chunk, the old predicate gets right
+        assert!(
+            !output_has_printable_activity(&String::from_utf8_lossy(TUI_PROLOGUE)),
+            "the prologue paints nothing, and unsplit even the old predicate saw that"
+        );
+
+        // split, it does not. These are the boundaries that would have opened the gate.
+        let fooled: Vec<usize> = (1..TUI_PROLOGUE.len())
+            .filter(|&at| {
+                let (head, tail) = TUI_PROLOGUE.split_at(at);
+                output_has_printable_activity(&String::from_utf8_lossy(head))
+                    || output_has_printable_activity(&String::from_utf8_lossy(tail))
+            })
+            .collect();
+        assert!(
+            !fooled.is_empty(),
+            "if no split fools the old predicate, this test is not testing the hazard"
+        );
+
+        // the new trigger, at every one of them
+        for at in 1..TUI_PROLOGUE.len() {
+            let id = session(&fanout);
+            let (head, tail) = TUI_PROLOGUE.split_at(at);
+            feed(&fanout, id, &[head, tail]);
+            assert!(
+                !fanout.has_rendered_visible_content(id),
+                "split at {at}: the child has painted nothing, so the gate must stay shut"
+            );
+        }
+
+        // ...and it is a gate, not a wall: the moment the child paints, it opens
+        let id = session(&fanout);
+        feed(&fanout, id, &[TUI_PROLOGUE]);
+        assert!(
+            !fanout.has_rendered_visible_content(id),
+            "still nothing to see"
+        );
+        feed(&fanout, id, &[b"> "]);
+        assert!(
+            fanout.has_rendered_visible_content(id),
+            "a glyph the user can see must open the gate"
+        );
+    }
+
+    /// #973 (B), (b) - THREE-BYTE ESCAPES. `ESC ( B` is what ncurses and half the TUI world emit
+    /// on the way up. The old stripper consumed `ESC` plus exactly ONE char, so the `B` survived
+    /// and read as printable, and the gate opened on a blank screen. Same for `ESC ) 0` (leaks
+    /// `0`) and `ESC % G` (leaks `G`).
+    ///
+    /// `ESC # 8` (DECALN) is deliberately not asserted here. It is the fourth three-byte escape
+    /// and it fools the old stripper too (leaks `8`), but it is the one that genuinely PAINTS: a
+    /// real terminal fills the screen with `E`. vt100 does not implement it, so our parser shows
+    /// nothing and this gate would stay shut - which is a limitation of the crate, not a property
+    /// worth pinning as correct. Pinning it would freeze the wrong answer.
+    #[test]
+    fn a_three_byte_charset_designator_does_not_open_the_gate() {
+        assert!(
+            output_has_printable_activity("\x1b(B"),
+            "the old predicate really is fooled by this - that is the whole defect"
+        );
+
+        let fanout = fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"\x1b(B", b"\x1b)0", b"\x1b%G"]);
+
+        assert!(
+            !fanout.has_rendered_visible_content(id),
+            "a charset designator paints nothing: the gate must stay shut"
+        );
+    }
+
+    /// What "a human can see" means, pinned. A space is not content, even though the cell was
+    /// written and `Cell::has_contents` says true. A COLOURED space is - TUIs draw status bars
+    /// and boxes with nothing else, and `Cell::clear` keeps the attributes, so a cleared screen
+    /// can be solid red while holding no contents at all.
+    #[test]
+    fn a_blank_viewport_is_not_content_but_a_coloured_one_is() {
+        let fanout = fanout();
+
+        // the TUI paints its still-empty viewport: spaces, and plenty of them. This is the exact
+        // moment the gate must stay shut - it is inside the danger window.
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"\x1b[2J\x1b[H", &[b' '; 240]]);
+        assert!(
+            !fanout.has_rendered_visible_content(id),
+            "a viewport of spaces is still a blank viewport"
+        );
+        feed(&fanout, id, &[b"ready"]);
+        assert!(
+            fanout.has_rendered_visible_content(id),
+            "a glyph is content"
+        );
+
+        // a red status bar: no glyph anywhere, and a human plainly sees it
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"\x1b[41m", &[b' '; 20]]);
+        assert!(
+            fanout.has_rendered_visible_content(id),
+            "a coloured space is content: it is how a TUI draws a status bar"
+        );
+
+        // reverse video does it with the default colours
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"\x1b[7m", &[b' '; 20]]);
+        assert!(
+            fanout.has_rendered_visible_content(id),
+            "an inverse space renders as a solid block"
+        );
     }
 
     /// #973 / #955 - a degenerate size must never reach the vt100 parser.

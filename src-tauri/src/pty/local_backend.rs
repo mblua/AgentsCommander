@@ -55,6 +55,24 @@ struct PtyInstance {
 /// inside the window, because the window is defined as the interval in which the child has
 /// rendered nothing. The trigger is immune to load, terminal height and frame count.
 ///
+/// **That argument only holds if the trigger actually tests rendering, so it does.** It asks the
+/// real, stateful vt100 parser - the one `handle_output` already feeds every byte of every chunk -
+/// whether the screen now holds a cell a human could see:
+/// `SessionIoFanout::has_rendered_visible_content`.
+///
+/// It is worth saying what it must NOT be, because the first version of this gate got it wrong and
+/// the mistake was invisible. It used the idle detector's text predicate
+/// (`output_has_printable_activity`), which asks whether a printable byte survives a STATELESS,
+/// per-chunk escape stripper. That is a different question, and it answers this one wrong twice:
+/// a chunk that ends mid-CSI or mid-OSC hands the tail to the next call with no leading `ESC`
+/// (`1049h`, `2J` and `cmd.exe` are all printable, and conhost really does split its writes), and
+/// a three-byte charset designator like `ESC ( B` - which ncurses and half the TUI world emit on
+/// the way up - outran a stripper that consumed `ESC` plus one char. Either one opens the gate on
+/// a child that has painted nothing, which is precisely the bug the gate exists to prevent, and
+/// it would have failed silently and intermittently inside an already intermittent bug. A parser
+/// carries state across reads and knows what an escape is, so both are closed by construction
+/// rather than by another special case.
+///
 /// **Why not #942's paint floor.** That floor is 256 bytes and the blank child sits at 345:
 /// it would fire for a child that is hung.
 ///
@@ -896,18 +914,31 @@ impl LocalProcessBackend {
                         // path: once the first byte is stamped and the head buffer is
                         // full this is two relaxed loads and one relaxed add.
                         record.note_output(&buf[..n]);
-                        // #973 (B) - has the child rendered anything yet? Once it has, this
-                        // is a single relaxed load per chunk and nothing else: no lock, no
-                        // allocation, no scan. Before it has, it is the same predicate the
-                        // idle detector runs on this chunk anyway.
+                        fanout.handle_output(
+                            &output_target,
+                            id,
+                            &session_id_str,
+                            buf[..n].to_vec(),
+                        );
+                        // #973 (B) - has the child PAINTED anything yet? Asked of the real vt100
+                        // parser that `handle_output` has just fed this chunk to, which is why it
+                        // is asked after it and not before.
+                        //
+                        // Once the child has painted, this is a single relaxed load per chunk and
+                        // nothing else: no lock, no scan, no allocation. Before it has, it is one
+                        // uncontended lock and a bounded scan of the grid - and it REPLACED a
+                        // second `from_utf8_lossy` + `strip_ansi_csi` over the whole chunk, which
+                        // `handle_output` was already paying for the idle detector on the very
+                        // same bytes. One less chunk-sized allocation per chunk, not one more.
+                        //
+                        // Locks: the query takes `screen_parsers` and RELEASES it before
+                        // `open_startup_gate` takes `ptys`. The two are sequential, never nested,
+                        // so the order stays `ptys -> startup_gate -> size -> master`.
                         if !rendered.load(Ordering::Relaxed)
-                            && crate::pty::output::output_has_printable_activity(
-                                &String::from_utf8_lossy(&buf[..n]),
-                            )
+                            && fanout.has_rendered_visible_content(id)
                         {
                             gate_backend.open_startup_gate(id);
                         }
-                        fanout.handle_output(&output_target, id, &session_id_str, buf[..n].to_vec())
                     }
                     Err(_) => break,
                 }
