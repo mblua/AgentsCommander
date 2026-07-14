@@ -857,4 +857,41 @@ describe("ProjectPanel coordinator repo Browse submenu (#943)", () => {
     mouseEnter(repoEntries()[1]);
     expect(flyout()).toBeNull();
   });
+
+  // 18 (#977)
+  it("keeps the menu open when the pointer crosses into the Browse flyout", async () => {
+    await setupPanel(
+      [coordASession([repo(repoA1, "AgentsCommander", "feature/x")])],
+      discoveryA()
+    );
+
+    await openMenuWithArrow(rowA);
+    mouseEnter(repoEntries()[0]);
+    await waitFor(() => expect(flyout()).not.toBeNull());
+
+    vi.useFakeTimers();
+    try {
+      // The flyout is a sibling <Portal>, NOT a descendant of the menu, so the
+      // pointer crossing the 4px gap into it fires the MENU's own mouseleave.
+      // #977 arms a menu close there; the flyout's mouseenter must cancel it,
+      // or the submenu would be unreachable.
+      mouseLeave(repoEntries()[0]);
+      mouseLeave(menu()!);
+      mouseEnter(flyout()!);
+
+      vi.advanceTimersByTime(1000);
+      await Promise.resolve();
+      expect(menu()).not.toBeNull();
+      expect(flyout()).not.toBeNull();
+
+      // Leaving the flyout for good takes the whole menu with it.
+      mouseLeave(flyout()!);
+      vi.advanceTimersByTime(1000);
+      await Promise.resolve();
+      expect(flyout()).toBeNull();
+      expect(menu()).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
