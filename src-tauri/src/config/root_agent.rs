@@ -14,12 +14,22 @@ pub const ROOT_AGENT_DIR_NAME: &str = "ac-root-agent";
 pub const ROOT_AGENT_SESSION_NAME: &str = "Root Agent";
 pub const ROOT_AGENT_SENDER: &str = "agentscommander://root-agent";
 pub const ROOT_AGENT_SHORT_NAME: &str = "root";
-const ROOT_AGENT_DEFAULT_CONTEXT: &[&str] = &[
-    "$AGENTSCOMMANDER_CONTEXT",
+/// #979: the canonical Root `context[]`. The global sentinel is gone: Root's
+/// governance is the code-owned runtime prologue that
+/// `session_context::build_root_agent_context` always prepends, never a file.
+const ROOT_AGENT_DEFAULT_CONTEXT: &[&str] = &["../Context.root-agent.md", "Role.md"];
+/// Frozen pre-979 default, kept for exact legacy recognition during migration.
+const ROOT_AGENT_PRE_979_DEFAULT_CONTEXT: &[&str] = &[
+    crate::config::session_context::CONTEXT_TOKEN_GLOBAL,
     "../Context.root-agent.md",
     "Role.md",
 ];
-const ROOT_AGENT_OLD_DEFAULT_CONTEXT: &[&str] = &["$AGENTSCOMMANDER_CONTEXT", "Role.md"];
+/// Older default, kept because it must still upgrade to the new default (and so
+/// gain the Root supplement) rather than degrade to a bare `["Role.md"]`.
+const ROOT_AGENT_OLD_DEFAULT_CONTEXT: &[&str] = &[
+    crate::config::session_context::CONTEXT_TOKEN_GLOBAL,
+    "Role.md",
+];
 const ROOT_AGENT_SKILLS_DIR: &str = "skills";
 const SKILL_MD_FILENAME: &str = "SKILL.md";
 /// #909: slack added to the cap in `max_migratable_len`, covering the leading and trailing
@@ -519,7 +529,35 @@ pub(crate) fn ensure_root_agent_dir_at(root_dir: &Path) -> Result<(), String> {
     let role_path = root_dir.join("Role.md");
     migrate_root_role(&role_path)?;
 
-    merge_root_agent_config(&root_dir.join("config.json"))
+    merge_root_agent_config(&root_dir.join("config.json"))?;
+
+    // #979: BEST-EFFORT, never `?`. `ensure_root_agent_dir` is fatal at
+    // commands/session.rs:2741 and :3276, so a retirement error here would make the
+    // Root Agent permanently uncreatable and unrestartable while the app itself
+    // starts fine (lib.rs:798-800 and :1283-1289 only log and continue). A
+    // surviving stale global is inert after this change: nothing reads it. The
+    // governance steps above stay fail-closed.
+    match root_dir.parent() {
+        Some(config_dir) => {
+            if let Err(e) =
+                crate::config::seeded_context_templates::retire_standalone_global_context(
+                    config_dir,
+                )
+            {
+                log::warn!(
+                    "[979] failed to retire standalone global context in {}: {}",
+                    config_dir.display(),
+                    e
+                );
+            }
+        }
+        None => log::warn!(
+            "[979] cannot derive the config directory from root agent dir {}; skipping retirement",
+            root_dir.display()
+        ),
+    }
+
+    Ok(())
 }
 
 pub(crate) fn ensure_default_root_agent_skills_at(root_dir: &Path) -> Result<(), String> {
@@ -655,7 +693,12 @@ fn migrate_root_role(role_path: &Path) -> Result<(), String> {
             role_path.display()
         )
     })?;
-    crate::config::session_context::create_default_context_templates(config_dir)?;
+    // #979: Root provisioning no longer seeds the project templates
+    // (`Context.AgentsCommander.md` / `Context.coordinator.md`). Only the Root
+    // supplement below is seeded. `create_default_context_templates` itself stays:
+    // project discovery (`commands/ac_discovery.rs`) and project registration
+    // (`config/projects.rs`) still call it, and `config_dir` is still needed here
+    // for the Root supplement path.
     let context_template_path =
         config_dir.join(crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
 
@@ -1588,14 +1631,48 @@ pub(crate) fn merge_root_agent_config(config_path: &Path) -> Result<(), String> 
         obj.entry("tooling".to_string())
             .or_insert_with(|| Value::Object(serde_json::Map::new()));
 
+        // #979: strip every exact global sentinel from the Root `context[]`.
+        // Compute the replacement from the immutable borrow FIRST so it ends
+        // before `obj.insert`. Exact-default recognition runs before the generic
+        // filter, so the oldest `[token, Role.md]` form gains the Root supplement
+        // instead of degrading to `[Role.md]`.
         let context = obj.get("context").and_then(|v| v.as_array());
-        let context_is_old_default =
-            context.is_some_and(|arr| context_array_matches(arr, ROOT_AGENT_OLD_DEFAULT_CONTEXT));
-        if context.is_none_or(|arr| arr.is_empty()) || context_is_old_default {
-            obj.insert(
-                "context".to_string(),
-                serde_json::json!(ROOT_AGENT_DEFAULT_CONTEXT),
-            );
+        let replacement = match context {
+            // Missing, non-array, or empty: the existing repair for an unusable
+            // canonical config.
+            None => Some(serde_json::json!(ROOT_AGENT_DEFAULT_CONTEXT)),
+            Some(arr) if arr.is_empty() => Some(serde_json::json!(ROOT_AGENT_DEFAULT_CONTEXT)),
+            Some(arr)
+                if context_array_matches(arr, ROOT_AGENT_PRE_979_DEFAULT_CONTEXT)
+                    || context_array_matches(arr, ROOT_AGENT_OLD_DEFAULT_CONTEXT) =>
+            {
+                Some(serde_json::json!(ROOT_AGENT_DEFAULT_CONTEXT))
+            }
+            Some(arr) => {
+                // Exact means case-sensitive and byte-for-byte: a near-token such
+                // as `"$AGENTSCOMMANDER_CONTEXT "` stays an ordinary custom entry
+                // and is later resolved as a path. Non-string values are preserved.
+                let filtered: Vec<Value> = arr
+                    .iter()
+                    .filter(|value| {
+                        value.as_str() != Some(crate::config::session_context::CONTEXT_TOKEN_GLOBAL)
+                    })
+                    .cloned()
+                    .collect();
+                if filtered.len() == arr.len() {
+                    None
+                } else if filtered.is_empty() {
+                    // Token-only array: converge straight to the default. Writing
+                    // `[]` here would be repaired to the default on the NEXT run,
+                    // which is not idempotent.
+                    Some(serde_json::json!(ROOT_AGENT_DEFAULT_CONTEXT))
+                } else {
+                    Some(Value::Array(filtered))
+                }
+            }
+        };
+        if let Some(replacement) = replacement {
+            obj.insert("context".to_string(), replacement);
         }
         Ok(())
     })?;
@@ -1733,9 +1810,18 @@ mod tests {
         let coordinator_template_path = temp
             .path()
             .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
+        // #979: Root provisioning seeds ONLY the Root supplement. It never creates a
+        // standalone global or coordinator template; the one editable global is
+        // project-scoped and lives in `<project>/.ac`.
         assert!(template_path.is_file());
-        assert!(global_template_path.is_file());
-        assert!(coordinator_template_path.is_file());
+        assert!(
+            !global_template_path.exists(),
+            "Root provisioning must not create a standalone global context template"
+        );
+        assert!(
+            !coordinator_template_path.exists(),
+            "Root provisioning must not create a coordinator context template"
+        );
         assert_eq!(
             std::fs::read_to_string(root.join("Role.md")).expect("read role"),
             MINIMAL_ROOT_ROLE_MD
@@ -1744,14 +1830,16 @@ mod tests {
             std::fs::read_to_string(template_path).expect("read template"),
             ROOT_ROLE_MD.as_str()
         );
-        let config: Value = serde_json::from_str(
-            &std::fs::read_to_string(root.join("config.json")).expect("read config"),
-        )
-        .expect("parse config");
+        let config_raw = std::fs::read_to_string(root.join("config.json")).expect("read config");
+        let config: Value = serde_json::from_str(&config_raw).expect("parse config");
         assert_eq!(config["tooling"], serde_json::json!({}));
         assert_eq!(
             config["context"],
             serde_json::json!(ROOT_AGENT_DEFAULT_CONTEXT)
+        );
+        assert!(
+            !config_raw.contains(crate::config::session_context::CONTEXT_TOKEN_GLOBAL),
+            "the canonical Root config must carry no global sentinel"
         );
     }
 
@@ -1786,14 +1874,83 @@ mod tests {
             std::fs::read_to_string(template_path).expect("read template"),
             custom_template
         );
-        assert_eq!(
-            std::fs::read_to_string(global_template_path).expect("read global template"),
-            custom_global
-        );
+        // #979: an unused custom coordinator file is outside this issue and is left
+        // exactly as it is.
         assert_eq!(
             std::fs::read_to_string(coordinator_template_path).expect("read coordinator template"),
             custom_coordinator
         );
+        // ...while the standalone global is retired: the ACTIVE name is gone, and the
+        // custom bytes survive in exactly one inert timestamped backup.
+        assert!(
+            !global_template_path.exists(),
+            "the active standalone global name must be retired"
+        );
+        let backups = retired_global_backups(temp.path());
+        assert_eq!(backups.len(), 1, "expected exactly one inert backup");
+        assert_eq!(
+            std::fs::read_to_string(&backups[0]).expect("read retired backup"),
+            custom_global,
+            "custom global bytes must survive byte-for-byte"
+        );
+    }
+
+    /// #979: the inert `Context.AgentsCommander.md.retired-<ts>[.<n>].bak` shapes.
+    fn retired_global_backups(config_dir: &Path) -> Vec<PathBuf> {
+        let prefix = format!(
+            "{}.retired-",
+            crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME
+        );
+        let mut found: Vec<PathBuf> = std::fs::read_dir(config_dir)
+            .expect("read config dir")
+            .filter_map(|entry| {
+                let path = entry.expect("dir entry").path();
+                let name = path.file_name()?.to_str()?.to_string();
+                (name.starts_with(&prefix) && name.ends_with(".bak")).then_some(path)
+            })
+            .collect();
+        found.sort();
+        found
+    }
+
+    #[test]
+    fn ensure_root_agent_dir_at_still_provisions_when_retirement_fails() {
+        // #979 G2: retirement is BEST-EFFORT. `ensure_root_agent_dir` is fatal at two
+        // of its four callers (commands/session.rs:2741 and :3276), so a retirement
+        // error must never make the Root Agent uncreatable or unrestartable. A
+        // directory at the live global path is the portable way to force that error.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+        let global_template_path = temp
+            .path()
+            .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::create_dir_all(&global_template_path).expect("create dir at the live global path");
+        std::fs::write(global_template_path.join("inner.md"), "KEEP_ME\n").expect("write inner");
+
+        ensure_root_agent_dir_at(&root).expect("provisioning must still succeed");
+
+        for sub in ["memory", "plans", "skills", "inbox", "outbox", "messaging"] {
+            assert!(root.join(sub).is_dir(), "missing {}", sub);
+        }
+        assert!(root.join("Role.md").is_file());
+        assert!(root.join("config.json").is_file());
+        assert!(root
+            .join(ROOT_AGENT_SKILLS_DIR)
+            .join("role-skill-boundary-audit")
+            .join(SKILL_MD_FILENAME)
+            .is_file());
+        assert!(temp
+            .path()
+            .join(crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME)
+            .is_file());
+
+        // The offending entry is untouched: never followed, moved, or deleted.
+        assert!(global_template_path.is_dir());
+        assert_eq!(
+            std::fs::read_to_string(global_template_path.join("inner.md")).expect("read inner"),
+            "KEEP_ME\n"
+        );
+        assert!(retired_global_backups(temp.path()).is_empty());
     }
 
     #[test]
@@ -2327,7 +2484,9 @@ mod tests {
     }
 
     #[test]
-    fn merge_root_agent_config_preserves_custom_context() {
+    fn merge_root_agent_config_strips_the_token_and_preserves_custom_context() {
+        // #979: the sentinel is removed from a custom array; every other entry keeps
+        // its value and its position.
         let temp = tempfile::tempdir().expect("tempdir");
         let config_path = temp.path().join("config.json");
         std::fs::write(
@@ -2343,8 +2502,146 @@ mod tests {
                 .expect("parse config");
         assert_eq!(
             config["context"],
-            serde_json::json!(["$AGENTSCOMMANDER_CONTEXT", "custom.md", "Role.md"])
+            serde_json::json!(["custom.md", "Role.md"])
         );
+    }
+
+    #[test]
+    fn merge_root_agent_config_migration_table() {
+        // #979 4.2.C. Every row: no exact token survives, other values and their order
+        // survive, `tooling` and unknown fields survive, and a SECOND merge yields an
+        // identical parsed value AND identical bytes (semantic + byte-stable
+        // idempotence; `update_config_json_object` always republishes, so mtime and
+        // inode are deliberately not asserted).
+        let token = crate::config::session_context::CONTEXT_TOKEN_GLOBAL;
+        let default_context = serde_json::json!(ROOT_AGENT_DEFAULT_CONTEXT);
+        let cases: Vec<(&str, Value, Value)> = vec![
+            (
+                "missing context",
+                serde_json::json!({"tooling":{"lastCodingAgent":"codex"},"unknown":{"keep":true}}),
+                default_context.clone(),
+            ),
+            (
+                "empty context",
+                serde_json::json!({"context":[],"unknown":{"keep":true}}),
+                default_context.clone(),
+            ),
+            (
+                "null context",
+                serde_json::json!({"context":Value::Null,"unknown":{"keep":true}}),
+                default_context.clone(),
+            ),
+            (
+                "object context",
+                serde_json::json!({"context":{"nope":1},"unknown":{"keep":true}}),
+                default_context.clone(),
+            ),
+            (
+                "pre-979 default",
+                serde_json::json!({"context":[token,"../Context.root-agent.md","Role.md"],"unknown":{"keep":true}}),
+                default_context.clone(),
+            ),
+            (
+                "older default without the supplement",
+                serde_json::json!({"context":[token,"Role.md"],"unknown":{"keep":true}}),
+                default_context.clone(),
+            ),
+            (
+                "token at the beginning",
+                serde_json::json!({"context":[token,"a.md","b.md"],"unknown":{"keep":true}}),
+                serde_json::json!(["a.md", "b.md"]),
+            ),
+            (
+                "token in the middle",
+                serde_json::json!({"context":["a.md",token,"b.md"],"unknown":{"keep":true}}),
+                serde_json::json!(["a.md", "b.md"]),
+            ),
+            (
+                "token at the end",
+                serde_json::json!({"context":["a.md","b.md",token],"unknown":{"keep":true}}),
+                serde_json::json!(["a.md", "b.md"]),
+            ),
+            (
+                "repeated token",
+                serde_json::json!({"context":[token,"a.md",token,"b.md",token],"unknown":{"keep":true}}),
+                serde_json::json!(["a.md", "b.md"]),
+            ),
+            (
+                "non-string values interleaved",
+                serde_json::json!({"context":["a.md",42,token,Value::Null,{"o":1},"b.md"],"unknown":{"keep":true}}),
+                serde_json::json!(["a.md",42,Value::Null,{"o":1},"b.md"]),
+            ),
+            (
+                "custom array with no token",
+                serde_json::json!({"context":["a.md","b.md"],"unknown":{"keep":true}}),
+                serde_json::json!(["a.md", "b.md"]),
+            ),
+            (
+                "near-token strings stay custom entries",
+                serde_json::json!({"context":["$AGENTSCOMMANDER_CONTEXT ","$agentscommander_context","Role.md"],"unknown":{"keep":true}}),
+                serde_json::json!([
+                    "$AGENTSCOMMANDER_CONTEXT ",
+                    "$agentscommander_context",
+                    "Role.md"
+                ]),
+            ),
+            (
+                "sentinel-only array",
+                serde_json::json!({"context":[token],"unknown":{"keep":true}}),
+                default_context.clone(),
+            ),
+            (
+                "repeated-sentinel-only array",
+                serde_json::json!({"context":[token,token],"unknown":{"keep":true}}),
+                default_context.clone(),
+            ),
+        ];
+
+        for (label, input, expected) in cases {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let config_path = temp.path().join("config.json");
+            std::fs::write(
+                &config_path,
+                serde_json::to_string_pretty(&input).expect("serialize input"),
+            )
+            .expect("write config");
+
+            merge_root_agent_config(&config_path).expect("merge config");
+            let first_bytes = std::fs::read(&config_path).expect("read config");
+            let first: Value = serde_json::from_slice(&first_bytes).expect("parse config");
+
+            assert_eq!(first["context"], expected, "case: {}", label);
+            assert!(
+                !String::from_utf8_lossy(&first_bytes).contains(&format!("\"{}\"", token)),
+                "case: {}: no exact token may survive",
+                label
+            );
+            assert!(first["tooling"].is_object(), "case: {}", label);
+            if input.get("unknown").is_some() {
+                assert_eq!(first["unknown"]["keep"], true, "case: {}", label);
+            }
+            if let Some(last) = input.get("tooling").and_then(|t| t.get("lastCodingAgent")) {
+                assert_eq!(
+                    &first["tooling"]["lastCodingAgent"], last,
+                    "case: {}",
+                    label
+                );
+            }
+
+            merge_root_agent_config(&config_path).expect("merge config again");
+            let second_bytes = std::fs::read(&config_path).expect("read config");
+            let second: Value = serde_json::from_slice(&second_bytes).expect("parse config");
+            assert_eq!(
+                second, first,
+                "case: {}: parsed value must be idempotent",
+                label
+            );
+            assert_eq!(
+                second_bytes, first_bytes,
+                "case: {}: bytes must be stable after the first canonical rewrite",
+                label
+            );
+        }
     }
 
     #[test]
