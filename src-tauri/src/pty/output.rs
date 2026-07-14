@@ -182,7 +182,29 @@ impl SessionIoFanout {
         self.idle_detector.record_resize(id);
     }
 
+    /// #973 - a degenerate size must never reach the vt100 parser, and this is the boundary
+    /// where that invariant actually breaks, so this is where it is enforced.
+    ///
+    /// `vt100::grid::set_size` computes `size.rows - 1` on a `u16` (grid.rs:73). With
+    /// `rows == 0` that UNDERFLOWS: it panics in a debug build and wraps to 65535 in a release
+    /// one, leaving a zero-row grid with a scroll region of 65535. And the panic fires while
+    /// this function is HOLDING `screen_parsers`, which poisons the mutex - after which
+    /// `handle_output`, `get_screen_snapshot` and `get_pty_size` all take the `if let Ok` /
+    /// `.ok()?` branch and silently do nothing, for every session, for the life of the process.
+    /// One `cols: 0` would take #955's screen snapshot down app-wide, without a single log line.
+    ///
+    /// The callers guard too (`local_backend` only moves the screen for a size the ConPTY
+    /// actually took), but they cannot be the only guard: `container_backend:1099` calls this
+    /// with whatever `pty_resize` was given, and there is no gate on that path at all.
+    ///
+    /// A refused resize did not happen, so the broadcast is skipped with it: clients must not
+    /// be told the terminal is 0 columns wide.
     pub fn resize_screen_and_broadcast(&self, id: Uuid, cols: u16, rows: u16) {
+        if cols == 0 || rows == 0 {
+            log::warn!("[pty] refusing to resize the screen of {id} to {cols}x{rows} (#973)");
+            return;
+        }
+
         if let Ok(mut parsers) = self.screen_parsers.lock() {
             if let Some(state) = parsers.get_mut(&id) {
                 state.parser.set_size(rows, cols);
@@ -409,6 +431,60 @@ fn write_response_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fanout() -> SessionIoFanout {
+        SessionIoFanout::new(
+            Arc::new(Mutex::new(HashMap::new())),
+            IdleDetector::new(|_| {}, |_| {}),
+            None,
+        )
+    }
+
+    /// #973 / #955 - a degenerate size must never reach the vt100 parser.
+    ///
+    /// Red before the guard, and not with an assertion - with a **panic**:
+    ///
+    /// ```text
+    /// panicked at vt100-0.15.2/src/grid.rs:74:34: attempt to subtract with overflow
+    /// ```
+    ///
+    /// `vt100::grid::set_size` computes `size.rows - 1` on a `u16`, so `rows == 0` underflows.
+    /// Debug panics; release wraps to 65535. Worse, the panic fires while
+    /// `resize_screen_and_broadcast` holds `screen_parsers`, poisoning it - and every reader of
+    /// that mutex swallows the poison silently (`if let Ok` / `.ok()?`), so #955's snapshot,
+    /// the output sequence numbering and `get_pty_size` would go dead for EVERY session, for
+    /// the life of the process, without a log line. A black tile on re-attach is what the user
+    /// would see: exactly the bug #955 shipped to kill.
+    #[test]
+    fn a_degenerate_resize_never_reaches_the_vt100_parser() {
+        let fanout = fanout();
+        let id = Uuid::new_v4();
+        fanout.register_session(id, IdleTuning::DEFAULT, 30, 120);
+        fanout.handle_output(
+            &PtyOutputTarget::noop(),
+            id,
+            &id.to_string(),
+            b"hello".to_vec(),
+        );
+
+        fanout.resize_screen_and_broadcast(id, 0, 0);
+
+        let after = fanout.get_screen_snapshot(id).expect("snapshot");
+        assert_eq!(
+            (after.rows, after.cols),
+            (30, 120),
+            "the screen must be untouched by a size the child was never given"
+        );
+        assert!(
+            String::from_utf8_lossy(&after.data).contains("hello"),
+            "and the child's output must still be in it: an empty snapshot is #955's black tile"
+        );
+
+        // a real size still moves the screen - the guard refuses the degenerate, not the resize
+        fanout.resize_screen_and_broadcast(id, 80, 24);
+        let resized = fanout.get_screen_snapshot(id).expect("snapshot");
+        assert_eq!((resized.rows, resized.cols), (24, 80));
+    }
 
     #[test]
     fn printable_activity_ignores_ansi_only_chunks() {
