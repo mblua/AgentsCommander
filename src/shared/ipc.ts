@@ -1,4 +1,8 @@
-import { isTauri } from "./platform";
+import { isBrowser, isTauri } from "./platform";
+import {
+  measurePtyViewport,
+  rememberSpawnViewport,
+} from "./terminal-viewport";
 import type { Transport, UnlistenFn } from "./transport";
 import { TauriTransport } from "./transport-tauri";
 import { WsTransport } from "./transport-ws";
@@ -170,8 +174,26 @@ export interface CodingAgentProfileSelectionUpdatedPayload {
 }
 
 export const SessionAPI = {
-  create: (opts?: CreateSessionOptions) =>
-    transport.invoke<Session>("create_session", {
+  /**
+   * #973 — the ONLY create path with a terminal tile to measure, and so the only
+   * one that hands the backend a size. Every other caller (startup restore, the
+   * delivery loop, the phone mailbox, the root agent, the CLI, tests) has no view
+   * and keeps AC's historical 120x30.
+   *
+   * The size is measured, not predicted: {@link measurePtyViewport} runs the same
+   * `FitAddon.proposeDimensions()` the terminal's own post-mount fit will run,
+   * against the tile already on screen. Null when there is nothing to measure —
+   * then no size is sent, and a wrong size is worse than no size.
+   */
+  create: async (opts?: CreateSessionOptions): Promise<Session> => {
+    // Browser mode is deliberately excluded. The web-mode `create_session`
+    // handler parses its args by hand and ignores cols/rows entirely: it always
+    // spawns at the 120x30 default. Recording a spawn size the PTY was never
+    // opened at would make the terminal's dedup skip the corrective resize and
+    // wedge that PTY at 120x30 forever.
+    const viewport = isBrowser ? null : measurePtyViewport();
+
+    const session = await transport.invoke<Session>("create_session", {
       shell: opts?.shell ?? null,
       shellArgs: opts?.shellArgs ?? null,
       cwd: opts?.cwd ?? null,
@@ -180,7 +202,17 @@ export const SessionAPI = {
       requestedProfile: opts?.requestedProfile ?? null,
       gitRepos: opts?.gitRepos ?? null,
       skipAutoResume: opts?.skipAutoResume ?? null,
-    }),
+      // Both or neither: the backend builds a viewport only when both arrive.
+      cols: viewport?.cols ?? null,
+      rows: viewport?.rows ?? null,
+    });
+
+    if (viewport) {
+      rememberSpawnViewport(session.id, viewport);
+    }
+
+    return session;
+  },
 
   destroy: (id: string) => transport.invoke<void>("destroy_session", { id }),
 

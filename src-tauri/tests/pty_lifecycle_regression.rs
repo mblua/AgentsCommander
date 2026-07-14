@@ -754,6 +754,7 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
             persisted_row.git_repos,
             false,
             None,
+            None, // #973 - no view in this test: 120x30
         )
         .await
         .unwrap_or_else(|e| {
@@ -852,6 +853,7 @@ fn claude_launch_materializes_context_without_prompt_file_arg() {
             Vec::new(),
             true,
             None,
+            None, // #973 - no view in this test: 120x30
         )
         .await
         .unwrap_or_else(|e| panic!("Claude launch failed: {e}"));
@@ -916,6 +918,7 @@ impl LifecycleFixture {
             Vec::new(),
             true,
             None,
+            None, // #973 - no view in this test: 120x30
         )
         .await
     }

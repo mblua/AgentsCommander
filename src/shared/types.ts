@@ -119,6 +119,18 @@ export interface PtyOutputEvent {
   sequence?: number;
 }
 
+/**
+ * #973 — the terminal size the view has already fitted to, handed to
+ * `create_session` so the PTY is OPENED at it and no resize has to reach a
+ * child that is still starting up. Mirrors the Rust `PtyViewport`
+ * (`pty/backend.rs`), which the command takes as two flat optional fields:
+ * both must arrive, and a zero dimension falls back to 120x30.
+ */
+export interface PtyViewport {
+  cols: number;
+  rows: number;
+}
+
 export interface PtyScreenSnapshot {
   sessionId: string;
   data: number[];

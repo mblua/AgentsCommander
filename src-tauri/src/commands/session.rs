@@ -10,7 +10,7 @@ use crate::config::agent_config::{self, AgentLocalConfig};
 use crate::config::coordinator_clocks::CoordinatorClocksState;
 use crate::config::sessions_persistence::persist_current_state;
 use crate::config::settings::{AppSettings, SettingsState};
-use crate::pty::backend::{BackendSpawnSpec, SessionBackendKind};
+use crate::pty::backend::{BackendSpawnSpec, PtyViewport, SessionBackendKind};
 use crate::pty::container_paths::{
     claude_config_dir_no_value_warning, container_config_dir, ContainerEnvWarning,
     ContainerPathMap, CLAUDE_CONFIG_DIR_KEY,
@@ -956,6 +956,9 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     git_repos: Vec<SessionRepo>,
     mut skip_auto_resume: bool,
     resolved_spawn: Option<AgentSpawnCommand>,
+    // #973 - the size the view has already fitted to, when the caller has a view at all.
+    // `None` keeps AC's historical 120x30. See `PtyViewport`.
+    viewport: Option<PtyViewport>,
 ) -> Result<SessionInfo, String> {
     let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
     let session_label = session_name.as_deref().unwrap_or(&shell).to_string();
@@ -1586,6 +1589,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         let _ = crate::config::config_seed::perform_config_seed(seed, &id.to_string());
     }
 
+    let viewport = viewport.unwrap_or(PtyViewport::DEFAULT);
     let spawn_spec = BackendSpawnSpec {
         id,
         agent_id: agent_id.clone(),
@@ -1602,8 +1606,12 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         } else {
             None
         },
-        cols: 120,
-        rows: 30,
+        // #973 - open the PTY at the size the terminal is actually going to be, so the
+        // frontend never has to resize a child that is still starting up. Callers with no
+        // view (restore loop, delivery loop, mailbox, CLI, tests) get PtyViewport::DEFAULT,
+        // which is the 120x30 AC always used.
+        cols: viewport.cols,
+        rows: viewport.rows,
         container_image: resolved_spawn
             .as_ref()
             .and_then(|spawn| spawn.backend.image.clone()),
@@ -1901,6 +1909,10 @@ pub async fn create_session(
     requested_profile: Option<String>,
     git_repos: Option<Vec<SessionRepo>>,
     skip_auto_resume: Option<bool>,
+    // #973 - the terminal size the view has already fitted to. Optional: an older frontend,
+    // or any caller that has no tile to measure, simply omits it and gets AC's 120x30.
+    cols: Option<u16>,
+    rows: Option<u16>,
 ) -> Result<SessionInfo, String> {
     let cfg = settings.read().await;
 
@@ -1960,6 +1972,11 @@ pub async fn create_session(
         // passes Some(false) so the prior conversation resumes.
         effective_create_skip_auto_resume(skip_auto_resume),
         resolved_spawn,
+        // #973 - the only caller that has a terminal to measure.
+        match (cols, rows) {
+            (Some(c), Some(r)) => Some(PtyViewport::from_fit(c, r)),
+            _ => None,
+        },
     )
     .await?;
 
@@ -2815,6 +2832,8 @@ pub async fn restart_session_inner_with_activation<R: tauri::Runtime>(
         git_repos,
         restart_start_fresh,
         resolved_spawn,
+        // #973 - headless caller: no terminal to measure, keep 120x30.
+        None,
     )
     .await?;
 
@@ -3395,6 +3414,8 @@ pub(crate) async fn create_root_agent_inner(
             skip_auto_resume_for_new_session
         },
         resolved_spawn,
+        // #973 - headless caller: no terminal to measure, keep 120x30.
+        None,
     )
     .await?;
 
@@ -3839,6 +3860,8 @@ mod tests {
     struct FailingSpawnBackend {
         spawned: Mutex<Vec<Uuid>>,
         killed: Mutex<Vec<Uuid>>,
+        /// #973 - every (cols, rows) a spawn was asked for.
+        sizes: Mutex<Vec<(u16, u16)>>,
     }
 
     impl FailingSpawnBackend {
@@ -3848,6 +3871,11 @@ mod tests {
 
         fn killed(&self) -> Vec<Uuid> {
             self.killed.lock().unwrap().clone()
+        }
+
+        /// #973 - the sizes the PTY would have been opened at.
+        fn sizes(&self) -> Vec<(u16, u16)> {
+            self.sizes.lock().unwrap().clone()
         }
     }
 
@@ -3862,6 +3890,8 @@ mod tests {
         ) -> futures::future::BoxFuture<'_, Result<(), crate::errors::AppError>> {
             Box::pin(async move {
                 self.spawned.lock().unwrap().push(spec.id);
+                // #973 - the size the ConPTY would have been opened at.
+                self.sizes.lock().unwrap().push((spec.cols, spec.rows));
                 Err(crate::errors::AppError::PtyError(
                     "synthetic spawn failure".to_string(),
                 ))
@@ -4047,6 +4077,8 @@ mod tests {
             Vec::new(),
             true,
             None,
+            // #973 - headless caller: no terminal to measure, keep 120x30.
+            None,
         )
         .await
         .expect_err("spawn should fail");
@@ -4055,6 +4087,140 @@ mod tests {
         assert!(session_mgr.read().await.list_sessions().await.is_empty());
         assert_eq!(backend.killed(), backend.spawned());
         assert_eq!(backend.killed().len(), 1);
+    }
+
+    /// #973 - THE REGRESSION. Red against main, which hardcodes `cols: 120, rows: 30`.
+    ///
+    /// AC used to open every ConPTY at 120x30 and let the frontend correct it 300-500 ms
+    /// later. That correction lands inside a coding agent's TUI startup, and a resize there
+    /// makes Codex redraw its still-empty viewport and lose the wakeup for the content that
+    /// becomes ready straight after: a blank terminal, alive, until any key is pressed.
+    ///
+    /// Measured outside AC, on a bare ConPTY: opened at 120x30 and then resized in the
+    /// window, Codex comes up blank 8 times in 10. Opened at the size the view actually
+    /// wants, and never resized, 0 times in 10.
+    ///
+    /// This pins the plumbing: the size the caller supplies is the size the PTY is opened
+    /// at. It does not, and cannot, prove Codex stops hanging - that needs a real child in a
+    /// real ConPTY inside a ~100 ms race. The harness is the proof of that.
+    #[tokio::test]
+    async fn create_session_opens_the_pty_at_the_size_the_view_supplied() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = session_test_app(test_settings());
+        let app_handle = app.handle().clone();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(FailingSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+
+        let _ = super::create_session_inner(
+            &app_handle,
+            &session_mgr,
+            &pty_mgr,
+            "missing-ac-test-command".to_string(),
+            Vec::new(),
+            temp.path().to_string_lossy().to_string(),
+            None,
+            None,
+            None,
+            true,
+            Vec::new(),
+            true,
+            None,
+            Some(crate::pty::backend::PtyViewport::from_fit(74, 23)),
+        )
+        .await;
+
+        assert_eq!(
+            backend.sizes(),
+            vec![(74, 23)],
+            "the PTY must be opened at the size the view fitted to, not at 120x30: \
+             opening at the wrong size is what forces the startup resize that loses \
+             Codex's first render (#973)"
+        );
+    }
+
+    /// #973 - backward compatibility. Every headless caller (startup restore, the delivery
+    /// loop, the phone mailbox, the CLI, tests) has no terminal to measure and must keep
+    /// AC's historical 120x30. Those sessions are never attached to a view, so nothing
+    /// resizes them, and none of them ever hit this bug.
+    #[tokio::test]
+    async fn create_session_without_a_view_keeps_the_historical_120x30() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = session_test_app(test_settings());
+        let app_handle = app.handle().clone();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(FailingSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+
+        let _ = super::create_session_inner(
+            &app_handle,
+            &session_mgr,
+            &pty_mgr,
+            "missing-ac-test-command".to_string(),
+            Vec::new(),
+            temp.path().to_string_lossy().to_string(),
+            None,
+            None,
+            None,
+            true,
+            Vec::new(),
+            true,
+            None,
+            None, // no view
+        )
+        .await;
+
+        assert_eq!(
+            backend.sizes(),
+            vec![(120, 30)],
+            "a caller with no view must behave exactly as it did before #973"
+        );
+    }
+
+    /// #973 - opening a 0-column ConPTY would be worse than the bug we are fixing, so a
+    /// degenerate fitted size must fall back rather than be honoured.
+    ///
+    /// It does not come from xterm: `fit()` clamps to MINIMUM_COLS = 2 / MINIMUM_ROWS = 1. It is
+    /// guarded because this is a `u16` boundary that anything upstream can hand a 0 to, and
+    /// because the cost of being wrong is a terminal with no screen at all.
+    #[tokio::test]
+    async fn a_degenerate_fitted_size_falls_back_instead_of_opening_a_zero_column_pty() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = session_test_app(test_settings());
+        let app_handle = app.handle().clone();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(FailingSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+
+        let _ = super::create_session_inner(
+            &app_handle,
+            &session_mgr,
+            &pty_mgr,
+            "missing-ac-test-command".to_string(),
+            Vec::new(),
+            temp.path().to_string_lossy().to_string(),
+            None,
+            None,
+            None,
+            true,
+            Vec::new(),
+            true,
+            None,
+            Some(crate::pty::backend::PtyViewport::from_fit(0, 0)),
+        )
+        .await;
+
+        assert_eq!(
+            backend.sizes(),
+            vec![(120, 30)],
+            "a 0x0 fit must fall back to the default, never open a 0-column ConPTY"
+        );
     }
 
     #[test]
@@ -4163,6 +4329,7 @@ mod tests {
                     Vec::new(),
                     true,
                     None,
+                    None, // #973 - no view in this test: 120x30
                 )
                 .await
             })
@@ -4240,6 +4407,7 @@ mod tests {
                     Vec::new(),
                     true,
                     None,
+                    None, // #973 - no view in this test: 120x30
                 )
                 .await
             })
