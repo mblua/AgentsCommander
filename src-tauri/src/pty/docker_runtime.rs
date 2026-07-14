@@ -300,14 +300,6 @@ impl DockerRuntime {
     }
 
     fn run_command_output(&self, spec: DockerCommandSpec) -> Result<DockerCommandOutput, AppError> {
-        self.run_command_output_with_timeout(spec, DOCKER_COMMAND_TIMEOUT)
-    }
-
-    fn run_command_output_with_timeout(
-        &self,
-        spec: DockerCommandSpec,
-        timeout: Duration,
-    ) -> Result<DockerCommandOutput, AppError> {
         #[cfg(test)]
         if let Some(recorded_commands) = &self.recorded_commands {
             recorded_commands.lock().unwrap().push(spec);
@@ -361,7 +353,7 @@ impl DockerRuntime {
             read_capped_to_end(&mut stderr, DOCKER_COMMAND_OUTPUT_BYTE_LIMIT)
         });
 
-        let deadline = Instant::now() + timeout;
+        let deadline = Instant::now() + DOCKER_COMMAND_TIMEOUT;
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break status,
@@ -373,7 +365,7 @@ impl DockerRuntime {
                         let _ = stderr_reader.join();
                         return Err(AppError::PtyError(format!(
                             "container runtime command timed out after {:?}",
-                            timeout
+                            DOCKER_COMMAND_TIMEOUT
                         )));
                     }
                     std::thread::sleep(DOCKER_COMMAND_POLL);
@@ -409,15 +401,7 @@ impl DockerRuntime {
     }
 
     fn run_command(&self, spec: DockerCommandSpec) -> Result<String, AppError> {
-        self.run_command_with_timeout(spec, DOCKER_COMMAND_TIMEOUT)
-    }
-
-    fn run_command_with_timeout(
-        &self,
-        spec: DockerCommandSpec,
-        timeout: Duration,
-    ) -> Result<String, AppError> {
-        let output = self.run_command_output_with_timeout(spec, timeout)?;
+        let output = self.run_command_output(spec)?;
         Ok(String::from_utf8_lossy(&output.stdout.bytes)
             .trim()
             .to_string())
@@ -554,13 +538,9 @@ impl ContainerRuntime for DockerRuntime {
     fn cleanup_labeled_orphans(
         &self,
         live_sessions: &HashSet<Uuid>,
-        stop_timeout: Duration,
-        list_timeout: Option<Duration>,
+        timeout: Duration,
     ) -> Result<ContainerCleanupReport, AppError> {
-        let stdout = self.run_command_with_timeout(
-            self.build_list_labeled_command(),
-            list_timeout.unwrap_or(DOCKER_COMMAND_TIMEOUT),
-        )?;
+        let stdout = self.run_command(self.build_list_labeled_command())?;
         let mut report = ContainerCleanupReport::default();
         let mut errors = Vec::new();
         for (container_id, label) in Self::parse_labeled_containers(&stdout) {
@@ -576,16 +556,13 @@ impl ContainerRuntime for DockerRuntime {
                 session_id,
                 container_id,
             };
-            match self.stop(&handle, stop_timeout) {
+            match self.stop(&handle, timeout) {
                 Ok(()) => report.stopped.push(session_id),
-                Err(err) => {
-                    log::warn!(
-                        "[container-runtime] failed to clean orphan container for session {}: {}",
-                        session_id,
-                        err
-                    );
-                    errors.push(format!("{}: {}", session_id, err));
-                }
+                // #992 - no warn! here on purpose. The same `session_id: err` string is
+                // returned in the aggregate Err below, which the backend logs at the
+                // severity its sweep posture calls for. Warning here as well would fire
+                // on every opportunistic pass, which is the noise #992 is about.
+                Err(err) => errors.push(format!("{}: {}", session_id, err)),
             }
         }
         if !errors.is_empty() {
@@ -831,47 +808,5 @@ mod tests {
         assert_eq!(state.running, Some(false));
         assert_eq!(state.exit_code, Some(127));
         assert_eq!(state.error.as_deref(), Some(""));
-    }
-
-    #[test]
-    fn run_command_with_timeout_reports_the_timeout_it_was_given() {
-        // The only coverage the timeout plumbing gets. It pins the substitution: the
-        // error must name the timeout it was ACTUALLY given, not DOCKER_COMMAND_TIMEOUT,
-        // or an opportunistic 5s probe would lie about waiting 30s.
-        // NOTE: it does NOT prove the list step gets the opportunistic timeout.
-        // DockerCommandSpec carries only program+args, so the recording fake cannot
-        // observe a timeout at all.
-        #[cfg(windows)]
-        let spec = DockerCommandSpec {
-            program: "powershell".to_string(),
-            args: vec![
-                "-NoProfile".to_string(),
-                "-Command".to_string(),
-                "Start-Sleep 30".to_string(),
-            ],
-        };
-        #[cfg(not(windows))]
-        let spec = DockerCommandSpec {
-            program: "sleep".to_string(),
-            args: vec!["30".to_string()],
-        };
-
-        let runtime = DockerRuntime {
-            program: "docker".to_string(),
-            recorded_commands: None,
-        };
-        let started = Instant::now();
-        let err = runtime
-            .run_command_with_timeout(spec, Duration::from_millis(200))
-            .expect_err("the child sleeps far past the timeout");
-
-        assert!(
-            err.to_string().contains("timed out after 200ms"),
-            "expected the given timeout in the message, got: {err}"
-        );
-        assert!(
-            started.elapsed() < Duration::from_secs(10),
-            "the timeout did not actually kill the child"
-        );
     }
 }
