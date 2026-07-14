@@ -2085,6 +2085,7 @@ pub fn run(
             commands::config::set_sounds_enabled,
             commands::config::set_theme_light,
             commands::config::set_main_resource_monitor_attached,
+            commands::config::set_rail_collapse,
             commands::config::set_log_level,
             commands::config::get_update_status,
             commands::repos::search_repos,

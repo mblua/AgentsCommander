@@ -23,11 +23,11 @@ Result summary:
 - Final settings showed a Codex coding-agent row, but `onboardingDismissed = false`; the target later returned to first-run onboarding during the longer journey.
 - OCA-001 currently verifies both configured-agent persistence and dismissed-onboarding persistence before it can pass.
 - Rerun evidence from `ui-regression-baseline-rerun-20260613-202450` reproduced the baseline acceptance failure: Codex row persisted and the main UI opened, but `onboardingDismissed` remained `false` after onboarding and after relaunch.
-- Product intent is tracked as GitHub issue #505. If `onboardingDismissed` is confirmed to mean only "user skipped onboarding", adjust OCA-001/003/004/005 expectations instead of treating the setup path as a product bug.
+- Product intent is tracked as GitHub issue #505. If `onboardingDismissed` is confirmed to mean only "user cancelled onboarding", adjust OCA-001/003/004/005 expectations instead of treating the setup path as a product bug.
 
 Known automation support:
 
-- First-run onboarding has semantic selectors for `onboarding.modal`, `onboarding.agentPreset.claude`, `onboarding.agentPreset.codex`, `onboarding.agentPreset.gemini`, `onboarding.agentPreset.custom`, `onboarding.custom.label`, `onboarding.custom.command`, `onboarding.skip`, `onboarding.confirm`, `onboarding.done`, and `onboarding.done.close`.
+- First-run onboarding has semantic selectors for `onboarding.modal`, `onboarding.agentPreset.claude`, `onboarding.agentPreset.codex`, `onboarding.agentPreset.gemini`, `onboarding.agentPreset.custom`, `onboarding.custom.label`, `onboarding.custom.command`, `onboarding.cancel`, `onboarding.confirm`, `onboarding.done`, and `onboarding.done.close`.
 - Settings has semantic selectors for `actionBar.settings`, `settings.modal`, `settings.tab.agents`, `settings.agentPreset.<presetKey>`, `settings.agent.addCustom`, `settings.agentRow.<index>.*`, `settings.save`, and `settings.cancel`.
 
 Known automation gaps:
@@ -41,20 +41,20 @@ First-run onboarding controls:
 
 - Preset buttons: `Claude Code`, `Codex`, `Gemini CLI`, `Custom Agent`.
 - Custom fields: agent name and command.
-- Footer actions: `Skip`, `Set up Coding Agent`, and done-state `Get started`.
+- Footer actions: `Cancel` (optional, supplied by the consumer), `Set up Coding Agent`, and done-state `Get started`.
 
 Required clean-state slices:
 
 - OCA-001 covers Codex as the default acceptance preset.
-- OCA-002 covers Skip and verifies the app remains usable with no coding agent configured.
+- OCA-002 covers Cancel and verifies the app remains usable with no coding agent configured.
 - OCA-003 covers Claude Code.
 - OCA-004 covers Gemini CLI.
 - OCA-005 covers Custom Agent with valid fields.
 - OCA-006 and OCA-007 cover the Coding Agents settings surface after onboarding.
 
-Each slice must start from a reset testable config unless the case explicitly says it is using an existing settings state. Do not use a passing Codex run as proof that Skip, Claude, Gemini, or Custom Agent works.
+Each slice must start from a reset testable config unless the case explicitly says it is using an existing settings state. Do not use a passing Codex run as proof that Cancel, Claude, Gemini, or Custom Agent works.
 
-Dismissal semantics note: until issue #505 is resolved, setup-path cases expect `onboardingDismissed = true` after `Get started` as a conservative acceptance contract. If product intent says the flag is skip-only, replace that assertion with the intended persistence signal.
+Dismissal semantics note: until issue #505 is resolved, setup-path cases expect `onboardingDismissed = true` after `Get started` as a conservative acceptance contract. If product intent says the flag is cancel-only, replace that assertion with the intended persistence signal.
 
 ### OCA-001: First-run onboarding selects Codex
 
@@ -97,11 +97,11 @@ Pass/Fail Criteria:
 
 Pass if onboarding completes through the GUI, Codex appears in Coding Agents settings, dismissal is persisted, and onboarding does not reappear after relaunch. Fail if onboarding cannot be completed, settings do not persist the preset, dismissal remains false, or the app does not reach normal UI. Partial if the flow completes but one transient state cannot be captured.
 
-### OCA-002: First-run onboarding Skip path
+### OCA-002: First-run onboarding Cancel path
 
 Purpose:
 
-Verify that a clean first-run user can skip coding-agent setup, reach the normal app UI, and keep onboarding dismissed without adding a coding agent.
+Verify that a clean first-run user can cancel coding-agent setup, reach the normal app UI, and keep onboarding dismissed without adding a coding agent.
 
 Preconditions:
 
@@ -112,7 +112,7 @@ Preconditions:
 Steps:
 
 1. Wait for `onboarding.modal`.
-2. Click `onboarding.skip`.
+2. Click `onboarding.cancel`.
 3. Wait for `main.root` and `sidebar.root`.
 4. Open settings and inspect the Coding Agents tab.
 5. Close and relaunch the testable app.
@@ -120,19 +120,19 @@ Steps:
 
 Expected Result:
 
-The onboarding dialog closes, the main app is usable, no coding agent row is added by the skip action, `onboardingDismissed` is persisted as `true`, and onboarding does not reappear after relaunch.
+The onboarding dialog closes, the main app is usable, no coding agent row is added by the cancel action, `onboardingDismissed` is persisted as `true`, and onboarding does not reappear after relaunch.
 
 Evidence Required:
 
-- Screenshot of onboarding before Skip.
-- Semantic click result for `onboarding.skip`.
+- Screenshot of onboarding before Cancel.
+- Semantic click result for `onboarding.cancel`.
 - Screenshot or semantic result showing normal main/sidebar UI.
-- Settings snapshot proving no preset row was created by Skip and `onboardingDismissed = true`.
+- Settings snapshot proving no preset row was created by Cancel and `onboardingDismissed = true`.
 - Post-relaunch screenshot or semantic query proving onboarding did not reappear.
 
 Pass/Fail Criteria:
 
-Pass if Skip dismisses onboarding persistently without adding an agent. Fail if onboarding reappears, the app is unusable after Skip, or Skip creates an unintended coding-agent row.
+Pass if Cancel dismisses onboarding persistently without adding an agent. Fail if onboarding reappears, the app is unusable after Cancel, or Cancel creates an unintended coding-agent row.
 
 ### OCA-003: First-run onboarding selects Claude Code
 

@@ -485,6 +485,14 @@ export interface AppSettings {
   autoGenerateTaskTitle: boolean;
   agentTemplatesPath: string | null;
   themeLight: boolean;
+  /** #965 - rail project sections the user explicitly collapsed (header click).
+   *  NOT the ProjectPanel's collapse. Normalized project paths (see
+   *  `normalizeProjectPathForCompare`). Written only by `setRailCollapse`; a
+   *  whole-object save cannot change it (Rust restores it from live memory).
+   *  Optional so existing partial-AppSettings fixtures keep compiling. */
+  railCollapsedProjects?: string[];
+  /** #965 - collapsed state of the rail's cross-project Favorites section. */
+  railFavoritesCollapsed?: boolean;
   specBoardEnabled: boolean;
   resourceMonitorEnabled: boolean;
   maxConcurrentAgentProcesses: number;
@@ -882,6 +890,9 @@ export interface WorkgroupGroup {
   id: string;
   name: string;
   regex: string;
+  /** #965 - pinned into the rail's cross-project Favorites section. Absent on
+   *  legacy configs (Rust `#[serde(default)]`). */
+  favorite?: boolean;
 }
 
 export interface NonStopTelegramConfig {

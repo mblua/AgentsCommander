@@ -17,6 +17,7 @@ import { sessionsStore } from "../../sidebar/stores/sessions";
 import { bridgesStore } from "../../sidebar/stores/bridges";
 import { workgroupGroupsStore } from "../../sidebar/stores/workgroup-groups";
 import { projectCollapseStore } from "../../sidebar/stores/project-collapse";
+import { railCollapseStore } from "../../sidebar/stores/rail-collapse";
 import { codingAgentsStore } from "../../sidebar/stores/coding-agents";
 import { terminalStore } from "../../terminal/stores/terminal";
 import { __resetHomeStoreForTests } from "../../main/stores/home";
@@ -245,6 +246,10 @@ export function resetUiStoresForTests(): void {
   sessionsStore.clearDetached();
   workgroupGroupsStore.resetForTests();
   projectCollapseStore.resetForTests();
+  // #965 - the rail's own collapse state is a module-level signal, so it outlives a
+  // render exactly like the stores above. Without this, a test that collapses a
+  // header leaks a folded rail into the next test in the same file.
+  railCollapseStore.resetForTests();
   codingAgentsStore.resetForTests();
   bridgesStore.setBridges([]);
   terminalStore.setActiveSession(null, "", "", null, "", null, false);
