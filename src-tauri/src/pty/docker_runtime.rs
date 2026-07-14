@@ -306,10 +306,29 @@ impl DockerRuntime {
             return Ok(DockerCommandOutput::empty());
         }
 
-        let mut child = Command::new(&spec.program)
-            .args(&spec.args)
+        // #992 - AC is a GUI-subsystem process and owns no console. A console-
+        // subsystem child spawned without CREATE_NO_WINDOW makes Windows allocate
+        // a NEW console for it, which Win11 delegates to Windows Terminal: a
+        // visible tab titled with docker.exe's resolved path, black because both
+        // pipes are captured. Same idiom as the other production spawn sites (see
+        // config/session_context.rs, commands/repos.rs, pty/local_backend.rs).
+        // The flag is a no-op when the parent already owns a console, which is why
+        // no `cargo test` process can observe it - see tests/spawn_no_window_guard.rs.
+        #[cfg(windows)]
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        let mut cmd = Command::new(&spec.program);
+        cmd.args(&spec.args)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+
+        let mut child = cmd
             .spawn()
             .map_err(|e| AppError::PtyError(format!("container runtime command failed: {e}")))?;
 
@@ -539,14 +558,11 @@ impl ContainerRuntime for DockerRuntime {
             };
             match self.stop(&handle, timeout) {
                 Ok(()) => report.stopped.push(session_id),
-                Err(err) => {
-                    log::warn!(
-                        "[container-runtime] failed to clean orphan container for session {}: {}",
-                        session_id,
-                        err
-                    );
-                    errors.push(format!("{}: {}", session_id, err));
-                }
+                // #992 - no warn! here on purpose. The same `session_id: err` string is
+                // returned in the aggregate Err below, which the backend logs at the
+                // severity its sweep posture calls for. Warning here as well would fire
+                // on every opportunistic pass, which is the noise #992 is about.
+                Err(err) => errors.push(format!("{}: {}", session_id, err)),
             }
         }
         if !errors.is_empty() {

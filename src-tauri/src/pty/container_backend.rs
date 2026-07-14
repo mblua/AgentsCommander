@@ -929,12 +929,53 @@ impl ContainerTransportBackend {
         });
     }
 
+    /// #992 - Is the startup sweep load-bearing for THIS config dir, or a courtesy
+    /// pass over containers another install left behind?
+    ///
+    /// SCOPED, and it is not a gate: the sweep runs either way. No container client
+    /// on record proves only that no orphan of OURS can exist; the machine-wide
+    /// label means another install's orphan still can, and we still clean it. This
+    /// only decides how long we are willing to wait for the list and how loudly we
+    /// complain when it fails.
+    ///
+    /// Fails LOAD-BEARING (no config dir, unreadable registry): an unknown answer
+    /// must never downgrade the sweep.
+    fn sweep_is_load_bearing(token_manager: Option<&ContainerApiTokenManager>) -> bool {
+        let Some(manager) = token_manager else {
+            return true;
+        };
+        match manager.has_container_clients() {
+            Ok(has_clients) => has_clients,
+            Err(err) => {
+                log::warn!(
+                    "[container-transport] {err}; treating the startup orphan sweep as load-bearing"
+                );
+                true
+            }
+        }
+    }
+
     pub fn cleanup_labeled_orphans_on_startup(&self) {
         let Some(runtime) = self.runtime.clone() else {
             return;
         };
         let token_manager = self.token_manager.clone();
         std::thread::spawn(move || {
+            // #992 - the registry read happens INSIDE the thread on purpose: the
+            // caller is the Tauri setup hook and must not pay a file read.
+            let load_bearing = Self::sweep_is_load_bearing(token_manager.as_ref());
+            // #992 - one line per start, at info, so the posture is observable. A
+            // design whose correct behavior is indistinguishable from its failure
+            // mode in the log is not verifiable. Do not lower this to debug.
+            log::info!(
+                "[container-transport] startup orphan sweep: {}",
+                if load_bearing {
+                    "load-bearing (this install has created containers)"
+                } else {
+                    "opportunistic (no container clients on record)"
+                }
+            );
+
             match runtime.cleanup_labeled_orphans(&HashSet::new(), CONTAINER_STOP_TIMEOUT) {
                 Ok(report) => {
                     if !report.stopped.is_empty() {
@@ -951,10 +992,22 @@ impl ContainerTransportBackend {
                     }
                 }
                 Err(err) => {
-                    log::warn!(
-                        "[container-transport] startup orphan cleanup failed: {}",
-                        err
-                    );
+                    if load_bearing {
+                        log::warn!(
+                            "[container-transport] startup orphan cleanup failed: {}",
+                            err
+                        );
+                    } else {
+                        // #992 - this install never created a container, so this
+                        // failure means only that a courtesy pass over someone
+                        // else's leftovers did not happen. That is not the user's
+                        // problem and must not warn on every start: it is exactly
+                        // the log noise #992 was reported from.
+                        log::debug!(
+                            "[container-transport] opportunistic startup orphan sweep failed: {}",
+                            err
+                        );
+                    }
                 }
             }
 
@@ -2121,5 +2174,99 @@ mod tests {
         assert_eq!(frame.version(), TRANSPORT_PROTOCOL_VERSION);
 
         assert!(b"x".repeat(MAX_TRANSPORT_FRAME_BYTES + 1).len() > MAX_TRANSPORT_FRAME_BYTES);
+    }
+
+    // #992 - the posture predicate. Never assert on the spawned thread; assert on the
+    // decision it makes.
+    fn token_manager_at(dir: &tempfile::TempDir) -> ContainerApiTokenManager {
+        ContainerApiTokenManager::new_for_path(dir.path().join("api-clients.json"))
+    }
+
+    #[test]
+    fn sweep_is_load_bearing_is_false_without_container_clients() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let manager = token_manager_at(&dir);
+        assert!(!ContainerTransportBackend::sweep_is_load_bearing(Some(
+            &manager
+        )));
+    }
+
+    #[test]
+    fn sweep_is_load_bearing_is_true_after_a_container_token_was_minted() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let manager = token_manager_at(&dir);
+        manager
+            .mint_for_session(Uuid::new_v4(), "C:/project/.ac/wg-1-team/__agent_dev")
+            .unwrap();
+        assert!(ContainerTransportBackend::sweep_is_load_bearing(Some(
+            &manager
+        )));
+    }
+
+    #[test]
+    fn sweep_is_load_bearing_is_true_for_an_expired_and_revoked_client() {
+        // The ex-container user's REAL steady state: the token expired after 24h AND a
+        // later startup revoked it. `mint_for_session` cannot build it, because it
+        // stamps expiry at +24h; the first cut of this test did exactly that and so
+        // never expired anything. A predicate such as
+        // `prefix && (!client.revoked || !is_expired(client))` survives every other test
+        // here and answers false for this state, downgrading the sweep for precisely the
+        // users whose orphans it exists to find.
+        use crate::api::auth::{self, MintRequest, SCOPE_SEND};
+        use chrono::{Duration as ChronoDuration, Utc};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let manager = token_manager_at(&dir);
+        let client_id = format!("container-{}", Uuid::new_v4());
+        auth::mint(
+            manager.path(),
+            MintRequest {
+                client_id: client_id.clone(),
+                secret: "expired-secret".to_string(),
+                label: format!("container:{}", Uuid::new_v4()),
+                bound_root: "C:/project/.ac/wg-1-team/__agent_dev".to_string(),
+                bound_fqn: "project:wg-1-team/dev".to_string(),
+                scopes: vec![SCOPE_SEND.to_string()],
+                issued_at: (Utc::now() - ChronoDuration::hours(72)).to_rfc3339(),
+                expires_at: Some((Utc::now() - ChronoDuration::hours(48)).to_rfc3339()),
+            },
+        )
+        .unwrap();
+        manager.revoke(&client_id);
+
+        // Prove the fixture is the state the test is named for, or it proves nothing.
+        let client = auth::list(manager.path())
+            .clients
+            .into_iter()
+            .find(|client| client.client_id == client_id)
+            .expect("the client the test minted");
+        let expiry = chrono::DateTime::parse_from_rfc3339(
+            client.expires_at.as_deref().expect("expires_at"),
+        )
+        .expect("rfc3339 expiry")
+        .with_timezone(&Utc);
+        assert!(expiry < Utc::now(), "this test must actually expire the client");
+        assert!(client.revoked, "this test must actually revoke the client");
+
+        assert!(ContainerTransportBackend::sweep_is_load_bearing(Some(
+            &manager
+        )));
+    }
+
+    #[test]
+    fn sweep_is_load_bearing_fails_load_bearing_without_a_token_manager() {
+        // An unknown answer must never downgrade the sweep.
+        assert!(ContainerTransportBackend::sweep_is_load_bearing(None));
+    }
+
+    #[test]
+    fn sweep_is_load_bearing_fails_load_bearing_on_a_malformed_registry() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("api-clients.json");
+        std::fs::write(&path, "{").unwrap();
+        let manager = ContainerApiTokenManager::new_for_path(path);
+        assert!(ContainerTransportBackend::sweep_is_load_bearing(Some(
+            &manager
+        )));
     }
 }
