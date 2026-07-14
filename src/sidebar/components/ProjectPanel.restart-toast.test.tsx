@@ -87,9 +87,17 @@ function seedLiveSession(): void {
   ]);
 }
 
+/** #977: replica-menu items now lead with an icon (Restart Session and Coding
+ *  Agent joined the folder/broom items), so match on the label with any leading
+ *  icon stripped - the same normalization menuButtonLabels uses in
+ *  ProjectPanel.context-menu.test.tsx. */
+function menuLabel(text: string): string {
+  return text.trim().replace(/^[^A-Za-z0-9]+/, "").trim();
+}
+
 function findButtonByText(label: string): HTMLButtonElement {
   const match = Array.from(document.body.querySelectorAll("button")).find(
-    (b) => b.textContent?.trim() === label,
+    (b) => menuLabel(b.textContent ?? "") === menuLabel(label),
   );
   if (!(match instanceof HTMLButtonElement)) throw new Error(`Button not found: ${label}`);
   return match;
