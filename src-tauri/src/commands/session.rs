@@ -4181,9 +4181,12 @@ mod tests {
         );
     }
 
-    /// #973 - xterm's `fit()` really does return a zero dimension while its container is
-    /// still being laid out. Opening a 0-column ConPTY would be worse than the bug we are
-    /// fixing, so a degenerate size must fall back rather than be honoured.
+    /// #973 - opening a 0-column ConPTY would be worse than the bug we are fixing, so a
+    /// degenerate fitted size must fall back rather than be honoured.
+    ///
+    /// It does not come from xterm: `fit()` clamps to MINIMUM_COLS = 2 / MINIMUM_ROWS = 1. It is
+    /// guarded because this is a `u16` boundary that anything upstream can hand a 0 to, and
+    /// because the cost of being wrong is a terminal with no screen at all.
     #[tokio::test]
     async fn a_degenerate_fitted_size_falls_back_instead_of_opening_a_zero_column_pty() {
         let temp = tempfile::tempdir().unwrap();

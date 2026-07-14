@@ -832,11 +832,18 @@ fn require_str(args: &Value, key: &str) -> Result<String, String> {
 /// contract, both transports. A value that is absent stays absent (the caller's default); only
 /// one that is PRESENT and cannot be a terminal dimension is an error.
 ///
-/// A zero is deliberately NOT an error here. It is what xterm's `fit()` genuinely returns while
-/// its container is being laid out, so a well-behaved client can send one, and the PTY backend
-/// already refuses it - once, in `resize_instance`, for every transport. Erroring here would
-/// hand a legitimate client a failure for doing nothing wrong, and would put the refusal in two
-/// places that could disagree.
+/// A zero is deliberately NOT an error here, and the reason is NOT that a legitimate client sends
+/// one - it cannot. xterm's `fit()` clamps to MINIMUM_COLS = 2 / MINIMUM_ROWS = 1, so a zero on
+/// this path means a client that is not xterm, or is broken, or is hostile. This function is what
+/// stands between such a client and the PTY.
+///
+/// It passes the zero down anyway, because refusing it HERE would be the second place that
+/// refuses it. `resize_instance` already does, once, for every transport, with a warn. Erroring
+/// here as well would make the same payload behave differently on the two transports - the Tauri
+/// command takes a typed `u16`, where serde accepts a 0 and passes it down exactly like this -
+/// and would put one rule in two places that can drift apart. One refusal, in the backend, shared.
+/// What this boundary is for is the value that cannot be a dimension at all, which is the one the
+/// old `as u16` cast turned into a plausible-looking lie.
 fn terminal_dimension(args: &Value, key: &str, default: u16) -> Result<u16, String> {
     let Some(value) = args.get(key) else {
         return Ok(default);
@@ -939,8 +946,9 @@ mod tests {
         );
 
         // ...and a zero passes through to the ONE guard that refuses it, in `resize_instance`,
-        // shared by both transports. xterm's `fit()` really does emit one mid-layout, and a
-        // client doing nothing wrong must not get an error for it.
+        // shared by both transports. Not because a zero is legitimate - xterm cannot produce one -
+        // but because refusing it twice, in two places that can drift apart, is worse than
+        // refusing it once where both transports meet.
         assert_eq!(
             dim(json!(0)).expect("a zero is refused downstream, not here"),
             0

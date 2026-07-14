@@ -109,9 +109,12 @@ fn resize_instance(
     // child behind a 74x23 terminal. A size that must never reach the child must never be
     // allowed to displace one that must.
     //
-    // Real, not hypothetical: xterm's `fit()` returns a zero dimension while its container is
-    // still being laid out (the same hazard `PtyViewport::from_fit` guards at spawn), and
-    // `pty_resize` hands us whatever the view computed.
+    // Where a zero comes from, since we got this wrong once: NOT from xterm. `fit()` clamps to
+    // its own MINIMUM_COLS = 2 / MINIMUM_ROWS = 1 (`@xterm/addon-fit`), and `CoreTerminal.resize`
+    // rejects NaN and clamps again - the worst it can produce is NaN, which the frontend's
+    // `Number.isInteger` check catches. The zero comes off the WIRE: `pty_resize` on the web
+    // transport takes cols/rows straight from a JSON payload (`web/commands.rs`), and a client
+    // that is not xterm, or is simply broken, can put a 0 in it.
     if cols == 0 || rows == 0 {
         log::warn!("[pty] refusing degenerate resize {id} to {cols}x{rows} (#973)");
         return Ok(false);
@@ -152,11 +155,14 @@ fn send_size_to_conpty(
     cols: u16,
     rows: u16,
 ) -> Result<bool, AppError> {
-    // #973 - refuse a degenerate size. `pty_resize` hands us whatever the view computed, and
-    // xterm's `fit()` really does return a zero dimension while its container is still being
-    // laid out (the same hazard `PtyViewport::from_fit` guards at spawn). ConPTY does NOT
-    // reject it: `master.resize(0x0)` returns Ok and the child is left with no screen at all.
-    // A stale size is recoverable; a zero-column terminal is not.
+    // #973 - refuse a degenerate size. Defence in depth: the request path is guarded ahead of
+    // the gate in `resize_instance`, and this is the last line before `master.resize()`, which
+    // is also what `hand_over_held_size` calls with a size that has been sitting in the gate.
+    //
+    // It has to be refused SOMEWHERE, because ConPTY does not refuse it: `master.resize(0x0)`
+    // returns Ok and the child is left with no screen at all. A stale size is recoverable; a
+    // zero-column terminal is not. The zero itself comes off the wire, not from xterm - see
+    // `resize_instance`.
     if cols == 0 || rows == 0 {
         log::warn!("[pty] refusing degenerate resize {id} to {cols}x{rows} (#973)");
         return Ok(false);
@@ -1768,8 +1774,9 @@ mod startup_gate_tests {
             "nothing may reach a child that has not rendered yet"
         );
 
-        // ...and now a zero dimension arrives, still inside the startup window: xterm's `fit()`
-        // mid-layout, or a web client (`web/commands.rs` takes cols/rows straight off the wire).
+        // ...and now a zero dimension arrives, still inside the startup window. It comes off the
+        // wire: `web/commands.rs` takes cols/rows straight from a JSON payload. (Not from xterm -
+        // `fit()` clamps to 2x1 and cannot produce a zero.)
         assert!(
             !resize_instance(&instance, id, 0, 0).expect("must not error"),
             "a zero dimension must never be sent to the ConPTY"
