@@ -59,6 +59,14 @@ interface SessionTerminal {
   lastSentViewport: PtyViewport | null;
   /** #973. One drift warning per terminal, not one per resize. */
   spawnDriftReported: boolean;
+  /**
+   * #973. The pending re-send of a resize the PTY never got, and how many times
+   * we have tried. Rolling the dedup back on failure is not enough on its own:
+   * after the dedup, the failed call is usually the ONLY one of its burst, so
+   * there is no subsequent resize for the rollback to un-suppress.
+   */
+  resizeRetryTimer: ReturnType<typeof setTimeout> | null;
+  resizeRetryAttempts: number;
 }
 
 interface TerminalViewProps {
@@ -90,6 +98,15 @@ const SNAPSHOT_SETTLE_WARN_MS = 500;
 //    repainted the screen many times over, the snapshot is worthless, and
 //    holding more would leak if the round-trip never settles.
 const SNAPSHOT_RECONCILE_LIMIT_BYTES = 2 * 1024 * 1024;
+
+// #973. A `pty_resize` that fails leaves the PTY at a size the terminal is not —
+// the exact bug class this issue exists to close, arrived at from the other end.
+// So a failed resize is re-sent, with a linear back-off, and bounded: a resize
+// that can never succeed (the session is gone, the backend is gone) must not
+// retry forever. Exhausting the budget is reported at error level, because a PTY
+// stranded at the wrong size must not look like a PTY that was resized.
+const PTY_RESIZE_RETRY_DELAY_MS = 120;
+const PTY_RESIZE_MAX_RETRIES = 3;
 
 // WebGL context budget: ~16 per document. Canvas fallback activates silently
 // when the budget is exhausted (e.g. after ~16 concurrent sessions in main).
@@ -133,6 +150,51 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     );
   };
 
+  const clearResizeRetryTimer = (entry: SessionTerminal) => {
+    if (entry.resizeRetryTimer !== null) {
+      clearTimeout(entry.resizeRetryTimer);
+      entry.resizeRetryTimer = null;
+    }
+  };
+
+  /**
+   * #973 — re-send a resize the PTY never got.
+   *
+   * It re-sends the size the terminal IS when the timer fires, not the size that
+   * failed. The view may have moved on in the meantime, and what has to be true at
+   * the end is that the PTY is where the terminal is now. That also makes the retry
+   * self-cancelling: if a later resize already landed on that size, `sendPtyResize`
+   * dedups this one away and nothing is sent.
+   */
+  const scheduleResizeRetry = (sessionId: string, entry: SessionTerminal) => {
+    if (entry.resizeRetryTimer !== null) {
+      return;
+    }
+
+    if (entry.resizeRetryAttempts >= PTY_RESIZE_MAX_RETRIES) {
+      console.error(
+        `[terminal] pty_resize ${sessionId} failed ${entry.resizeRetryAttempts} times: ` +
+          `giving up with the PTY at a size this terminal is not (#973)`
+      );
+      return;
+    }
+
+    entry.resizeRetryAttempts += 1;
+    const attempt = entry.resizeRetryAttempts;
+
+    entry.resizeRetryTimer = setTimeout(() => {
+      entry.resizeRetryTimer = null;
+
+      // Disposed, or replaced by a re-attach: that terminal's size is not this
+      // terminal's business any more.
+      if (terminals.get(sessionId) !== entry) {
+        return;
+      }
+
+      sendPtyResize(sessionId, entry, entry.terminal.cols, entry.terminal.rows);
+    }, PTY_RESIZE_RETRY_DELAY_MS * attempt);
+  };
+
   /**
    * #973 — the ONE place a resize reaches the PTY, and it only does so when the
    * size actually moved.
@@ -160,15 +222,24 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     const sent: PtyViewport = { cols, rows };
     entry.lastSentViewport = sent;
 
-    void PtyAPI.resize(sessionId, cols, rows).catch((err: unknown) => {
-      // A FAILED resize must not poison the cache: if it did, the retry would be
-      // deduped away as a no-op and the PTY would sit at the wrong size forever.
-      // (dev-rust hit exactly this trap in the backend's own dedup.)
-      if (entry.lastSentViewport === sent) {
-        entry.lastSentViewport = previous;
-      }
-      console.warn(`[terminal] pty_resize ${sessionId} failed:`, err);
-    });
+    void PtyAPI.resize(sessionId, cols, rows)
+      .then(() => {
+        // The channel works. Whatever budget an earlier failure burned is returned.
+        entry.resizeRetryAttempts = 0;
+      })
+      .catch((err: unknown) => {
+        // A FAILED resize must not poison the cache: if it did, the retry below
+        // would be deduped away as a no-op and the PTY would sit at the wrong size
+        // forever. (dev-rust hit exactly this trap in the backend's own dedup.)
+        if (entry.lastSentViewport === sent) {
+          entry.lastSentViewport = previous;
+        }
+        console.warn(`[terminal] pty_resize ${sessionId} failed:`, err);
+
+        // ...and un-suppressing a resize nobody is going to send again is not a
+        // retry. Send it again.
+        scheduleResizeRetry(sessionId, entry);
+      });
   };
 
   const syncViewport = (sessionId: string, skipPtyResize = false) => {
@@ -251,6 +322,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     }
 
     clearSnapshotSettleTimer(entry);
+    clearResizeRetryTimer(entry);
     entry.terminal.dispose();
     entry.container.remove();
     terminals.delete(sessionId);
@@ -627,6 +699,8 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       // post-mount fit is deduped against, and the reason it sends nothing at all.
       lastSentViewport: spawnViewport,
       spawnDriftReported: false,
+      resizeRetryTimer: null,
+      resizeRetryAttempts: 0,
     };
 
     // Per-terminal keyboard shortcuts. Match keys via event.key (layout-aware,

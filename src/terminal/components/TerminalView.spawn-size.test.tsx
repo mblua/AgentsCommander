@@ -340,18 +340,76 @@ describe("TerminalView PTY spawn size (#973)", () => {
     }
   });
 
-  it("retries a failed resize instead of deduping it away", async () => {
+  // The backend's plausibility floor (`PtyViewport::PLAUSIBLE_MIN`, 20x5). Below it,
+  // `from_fit` does NOT fail the spawn — it opens the PTY at 120x30 and warns. So a
+  // below-floor fit that this side sent AND recorded is the wedge: the PTY is at
+  // 120x30, the view believes it is at 2x1, and the resize that would correct it is
+  // deduped away as a no-op.
+  //
+  // And it is not a corner case. The probe is exact by construction — the same
+  // `proposeDimensions()`, against the same box — so a container that is collapsed
+  // at create time is still collapsed at attach time. The fit finds the terminal
+  // already at 2x1, never reflows, never fires onResize, and nothing ever tells the
+  // PTY the truth. Refusing to record is what keeps the resize path free.
+  it("sends no size for a collapsed tile, and still corrects the PTY afterwards", async () => {
+    const fake = new FakeTransport();
+    setupTerminalTransport(fake);
+
+    // A laid-out but collapsed box. xterm does not report a zero for this — it
+    // clamps to its own MINIMUM_COLS = 2 / MINIMUM_ROWS = 1 — so the fit is a
+    // perfectly well-formed 2x1 that a `> 0` check waves straight through.
+    fitViewport.cols = 2;
+    fitViewport.rows = 1;
+
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+
+    try {
+      const args = await createWhileOnScreen(fake);
+
+      // Below the floor: not sent, so the backend opens at its own 120x30 default —
+      // and, crucially, nothing is recorded on this side.
+      expect(args.cols).toBeNull();
+      expect(args.rows).toBeNull();
+
+      const spawned = await attachSpawnedSession();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // Nothing recorded, so the terminal starts at xterm's default, fits to the
+      // collapsed 2x1, and TELLS the PTY. The corrective resize goes out normally:
+      // the resize path has no floor, deliberately (a user really can drag a window
+      // down this far), and only the spawn path does.
+      expect({ cols: spawned.cols, rows: spawned.rows }).toEqual({ cols: 2, rows: 1 });
+
+      const resizes = resizesFor(fake, SPAWNED);
+      expect(resizes.length).toBeGreaterThan(0);
+      expect(resizes[0].args).toEqual({ sessionId: SPAWNED, cols: 2, rows: 1 });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // A failed resize rolls `lastSentViewport` back so that a SUBSEQUENT identical
+  // resize is not deduped away — but after the dedup, there usually is no subsequent
+  // one. The burst collapses to a single call, and when that one is the one that
+  // failed, the PTY just stays at the wrong size.
+  //
+  // So this test gives the failure nothing to hide behind. The terminal is fully
+  // settled — no pending rAF, no pending fit, no burst left — and then ONE resize is
+  // driven through xterm's onResize, exactly as a user dragging the window would.
+  // That one fails. Nothing else in this system will ever call `sendPtyResize` for
+  // this session again. A rollback that is not a real retry leaves it at one call.
+  it("re-sends a failed resize that is the only one of its burst", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const fake = new FakeTransport();
     setupTerminalTransport(fake);
 
-    // The trap dev-rust hit in the backend's own dedup: if a FAILED resize is
-    // cached as "sent", the retry is skipped as a no-op and the PTY stays at the
-    // wrong size forever.
-    let attempts = 0;
-    fake.onInvoke("pty_resize", () => {
-      attempts += 1;
-      if (attempts === 1) {
+    let spawnedAttempts = 0;
+    fake.onInvoke("pty_resize", (args) => {
+      if (args.sessionId !== SPAWNED) {
+        return undefined;
+      }
+      spawnedAttempts += 1;
+      if (spawnedAttempts === 1) {
         throw new Error("pty_resize failed");
       }
       return undefined;
@@ -360,18 +418,68 @@ describe("TerminalView PTY spawn size (#973)", () => {
     const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
 
     try {
-      await waitFor(() => expect(xterm.instances).toHaveLength(1));
-      await waitFor(() =>
-        expect(resizesFor(fake, ON_SCREEN).length).toBeGreaterThanOrEqual(2)
+      await createWhileOnScreen(fake);
+      const spawned = await attachSpawnedSession();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // Opened at the size the tile was already fitted to, so the attach sent
+      // nothing at all. There is no burst.
+      expect(resizesFor(fake, SPAWNED)).toHaveLength(0);
+
+      // The user drags the window. xterm reflows and fires onResize: one resize,
+      // long after every scheduled fit has run. It fails.
+      spawned.emitResize(74, 24);
+
+      await waitFor(
+        () => expect(resizesFor(fake, SPAWNED).length).toBeGreaterThanOrEqual(2),
+        2000
       );
 
-      // The retry carries the same size the failed attempt did — it was not
-      // suppressed as already-sent.
-      expect(resizesFor(fake, ON_SCREEN)[1].args).toEqual({
-        sessionId: ON_SCREEN,
-        cols: 74,
-        rows: 23,
-      });
+      // The attempt and the re-send both carry the size the terminal is actually at.
+      // Nothing but the retry could have produced that second call.
+      const resizes = resizesFor(fake, SPAWNED);
+      expect(resizes[0].args).toEqual({ sessionId: SPAWNED, cols: 74, rows: 24 });
+      expect(resizes[1].args).toEqual({ sessionId: SPAWNED, cols: 74, rows: 24 });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("gives up loudly, and boundedly, when the resize can never land", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const fake = new FakeTransport();
+    setupTerminalTransport(fake);
+
+    fake.onInvoke("pty_resize", (args) => {
+      if (args.sessionId !== SPAWNED) {
+        return undefined;
+      }
+      throw new Error("pty_resize failed");
+    });
+
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+
+    try {
+      await createWhileOnScreen(fake);
+      const spawned = await attachSpawnedSession();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      spawned.emitResize(74, 24);
+
+      // A PTY stranded at a size the terminal is not must never be mistaken for a
+      // PTY that was resized. When the budget runs out, it says so.
+      await waitFor(
+        () =>
+          expect(
+            error.mock.calls.some((call) => String(call[0]).includes("giving up"))
+          ).toBe(true),
+        3000
+      );
+
+      // And the budget is a budget: the first attempt plus a fixed number of
+      // re-sends, not an endless loop against a backend that is gone.
+      expect(resizesFor(fake, SPAWNED).length).toBeLessThanOrEqual(4);
     } finally {
       rendered.cleanup();
     }

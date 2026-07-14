@@ -55,27 +55,52 @@ const spawnViewports = new Map<string, PtyViewport>();
 const MAX_TRACKED_SPAWN_VIEWPORTS = 32;
 
 /**
+ * The smallest viewport the backend will actually open a PTY at.
+ *
+ * MIRRORS `PtyViewport::PLAUSIBLE_MIN` in `src-tauri/src/pty/backend.rs`. The two
+ * are not allowed to drift, and a comment cannot enforce that: `terminal-viewport
+ * .test.ts` reads the Rust source and fails if this constant stops matching it.
+ *
+ * Below the floor the backend does not fail the spawn — it opens the PTY at
+ * 120x30 and warns. So this side must never SEND a below-floor size, and above
+ * all never RECORD one. See `isHonouredByBackend`.
+ */
+export const BACKEND_SPAWN_FLOOR: PtyViewport = { cols: 20, rows: 5 };
+
+/** `u16` on the Rust side: a bigger number is not a viewport, it is a bug. */
+const MAX_VIEWPORT_DIMENSION = 65535;
+
+/**
  * True only when the backend will genuinely open the PTY at this size.
  *
  * This gate is load-bearing, not hygiene. Recording a size the PTY was NOT
  * opened at is the one way this fix can wedge a terminal: the dedup would treat
  * the corrective resize as a no-op and skip it, leaving the PTY at a size the
- * view never agreed to, forever. Two backend rules decide it:
+ * view never agreed to, forever. Three backend rules decide it:
  *
  *   - `create_session` builds a viewport only when BOTH cols and rows arrive.
- *   - `PtyViewport::from_fit` silently falls back to 120x30 on a zero dimension
- *     (xterm's fit really does return one while its container is being laid
- *     out), so a zero must never be sent, let alone recorded.
+ *   - `PtyViewport::from_fit` opens at 120x30 instead, for anything below
+ *     `BACKEND_SPAWN_FLOOR`. A collapsed-but-laid-out box does NOT measure zero:
+ *     xterm's fit clamps to its own MINIMUM_COLS = 2 / MINIMUM_ROWS = 1, so it
+ *     hands back a perfectly well-formed 2x1 that sails through a `> 0` check
+ *     and that the backend then silently declines to use. Recorded, that 2x1 is
+ *     the wedge — and it is not a corner case: the probe is exact by
+ *     construction, so a box that is collapsed at create time is still collapsed
+ *     at attach time, the fit finds the terminal already at 2x1, and the
+ *     corrective resize is deduped away before it is ever sent.
+ *   - `u16` on the Rust side, so the range is checked here too.
  *
- * `u16` on the Rust side, so the range is checked here too.
+ * The worst xterm itself can hand back is NaN (`CoreTerminal.resize` rejects it,
+ * `FitAddon` can propagate it), which `Number.isInteger` catches. A zero can only
+ * come off the WIRE, from a web-transport client that is not xterm.
  */
 const isHonouredByBackend = (viewport: PtyViewport): boolean =>
   Number.isInteger(viewport.cols) &&
   Number.isInteger(viewport.rows) &&
-  viewport.cols > 0 &&
-  viewport.rows > 0 &&
-  viewport.cols <= 65535 &&
-  viewport.rows <= 65535;
+  viewport.cols >= BACKEND_SPAWN_FLOOR.cols &&
+  viewport.rows >= BACKEND_SPAWN_FLOOR.rows &&
+  viewport.cols <= MAX_VIEWPORT_DIMENSION &&
+  viewport.rows <= MAX_VIEWPORT_DIMENSION;
 
 /** `TerminalView` publishes how it measures its own tile. Returns the unregister. */
 export const registerPtyViewportProbe = (next: PtyViewportProbe): (() => void) => {
