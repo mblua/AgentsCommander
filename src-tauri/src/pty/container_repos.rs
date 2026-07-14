@@ -181,7 +181,9 @@ pub fn resolve_repo_mounts(replica_root: &Path) -> Result<RepoMountResolution, S
                 config_entry: entry,
                 outcome: RepoOutcome::Mounted {
                     name,
-                    host_path: canonical,
+                    // #993 - dockerd rejects a verbatim \\?\ mount source. Strip it
+                    // AFTER the Sec 4.2 checks above, which run on the verbatim path.
+                    host_path: crate::path_utils::normalize_windows_verbatim_path_buf(&canonical),
                     container_path,
                 },
             });
@@ -194,7 +196,7 @@ pub fn resolve_repo_mounts(replica_root: &Path) -> Result<RepoMountResolution, S
                  admissible repo-* directory directly under the workgroup root \
                  (direct_wg_child={}, repo_prefix={}, is_dir={}, not_reserved={})",
                 entry,
-                canonical.display(),
+                crate::path_utils::path_to_string_without_windows_verbatim_prefix(&canonical),
                 parent_is_wg_root,
                 name_has_repo_prefix,
                 is_dir,
@@ -288,6 +290,25 @@ mod tests {
         let mounts: Vec<_> = resolution.mounts().collect();
         assert_eq!(mounts.len(), 1);
         assert_eq!(mounts[0].1, "/repos/repo-AgentsCommander");
+    }
+
+    #[test]
+    fn mounted_host_path_has_no_windows_verbatim_prefix() {
+        // #993 - std::fs::canonicalize yields \\?\C:\... on Windows and dockerd
+        // rejects that as a --mount source. make_workgroup canonicalizes the
+        // tempdir, so on Windows this fails without the normalize at the store.
+        let (_tmp, wg_root, replica) = make_workgroup("__agent_self");
+        mkdir(&wg_root, "repo-AgentsCommander");
+        write_repos(&replica, &["../repo-AgentsCommander"]);
+
+        let resolution = resolve_repo_mounts(&replica).expect("ok");
+        let mounts: Vec<_> = resolution.mounts().collect();
+        assert_eq!(mounts.len(), 1);
+        let host = mounts[0].0.to_string_lossy();
+        assert!(
+            !host.starts_with(r"\\?\"),
+            "mount source must not carry the verbatim prefix: {host}"
+        );
     }
 
     #[test]
