@@ -18,6 +18,71 @@ pub enum SessionBackendKind {
     ContainerTransport,
 }
 
+/// #973 - the terminal size a session's PTY is opened at.
+///
+/// AC used to open every ConPTY at a hardcoded 120x30 and let the frontend correct it a few
+/// hundred milliseconds later. That correction lands in the middle of a coding agent's TUI
+/// startup, and a resize there makes Codex redraw its still-empty viewport and lose the
+/// wakeup for the content that becomes ready right after: the terminal stays blank, alive,
+/// until any key is pressed. Measured, outside AC: a resize burst at 250 ms hangs it 8/10;
+/// opening at the right size and never resizing hangs it 0/10.
+///
+/// So the size the view has already fitted to is handed down at spawn, and no resize has to
+/// happen at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PtyViewport {
+    pub cols: u16,
+    pub rows: u16,
+}
+
+impl PtyViewport {
+    /// What AC has always opened PTYs at. Used by every caller with no view of its own:
+    /// the startup-restore loop, the delivery loop, the phone mailbox, the CLI, tests.
+    /// Those sessions are not attached to a terminal, so nothing resizes them, so they were
+    /// never exposed to this bug (18/18 of them painted in the user's production log).
+    pub const DEFAULT: Self = Self {
+        cols: 120,
+        rows: 30,
+    };
+
+    /// The smallest viewport that could plausibly be a terminal a human is looking at.
+    ///
+    /// A `> 0` check is not enough. xterm does not hand back a zero for a degenerate box - it
+    /// clamps to its own MINIMUM_COLS = 2 / MINIMUM_ROWS = 1 (`@xterm/addon-fit`) - so a
+    /// container that is laid out but collapsed yields a perfectly well-formed **2x1**, which
+    /// sails straight through a zero check and opens the ConPTY at 2x1. That is not a wedge: it
+    /// drifts, the view corrects it, and the drift is now warned about. But it is not a size any
+    /// real view asked for, and a TUI that comes up believing it has two columns lays itself out
+    /// around that before anyone can tell it otherwise.
+    ///
+    /// 20x5 is a floor, not a judgement about what is usable: it only has to be low enough that
+    /// no real terminal ever trips it and high enough that a collapsed box always does.
+    const PLAUSIBLE_MIN: Self = Self { cols: 20, rows: 5 };
+
+    /// A size the frontend fitted before the session existed.
+    ///
+    /// Anything below `PLAUSIBLE_MIN` warns and falls back to `DEFAULT` rather than failing the
+    /// spawn: a bad fit should cost the user a corrective resize, never a session.
+    ///
+    /// **Spawn only.** There is deliberately NO floor on the resize path. A user really can drag
+    /// a window down to a handful of columns, and refusing to follow them there would strand the
+    /// PTY at a size the terminal is not - which is the exact bug class #973 exists to close. The
+    /// resize path refuses a degenerate size and nothing else.
+    pub fn from_fit(cols: u16, rows: u16) -> Self {
+        if cols < Self::PLAUSIBLE_MIN.cols || rows < Self::PLAUSIBLE_MIN.rows {
+            log::warn!(
+                "[pty] ignoring implausible fitted viewport {cols}x{rows} (floor {}x{}), opening at {}x{}",
+                Self::PLAUSIBLE_MIN.cols,
+                Self::PLAUSIBLE_MIN.rows,
+                Self::DEFAULT.cols,
+                Self::DEFAULT.rows
+            );
+            return Self::DEFAULT;
+        }
+        Self { cols, rows }
+    }
+}
+
 pub struct BackendSpawnSpec {
     pub id: Uuid,
     /// #942 - the configured coding-agent PROFILE id (`settings.agents[].id`, an
@@ -85,4 +150,35 @@ pub trait PtyBackend: Any + Send + Sync {
     fn publish_stop_witness(&self, _id: Uuid, _source: &str) {}
 
     fn kill_all_jobs(&self) -> (usize, usize);
+}
+#[cfg(test)]
+mod pty_viewport_tests {
+    use super::PtyViewport;
+
+    /// #973 - the size a real view fitted is handed down untouched. That is the whole point of
+    /// the type: the PTY opens at the size the terminal already is, so nothing has to resize it
+    /// during the child's startup.
+    #[test]
+    fn a_real_fitted_size_is_handed_down_as_is() {
+        assert_eq!(
+            PtyViewport::from_fit(74, 23),
+            PtyViewport { cols: 74, rows: 23 }
+        );
+        // right on the floor, and still a real terminal
+        assert_eq!(
+            PtyViewport::from_fit(20, 5),
+            PtyViewport { cols: 20, rows: 5 }
+        );
+    }
+
+    /// #973 - the case a zero check misses. xterm clamps a collapsed container to 2x1 rather
+    /// than reporting a zero, so `2x1` is what a degenerate box actually looks like coming out
+    /// of `fit()` - well-formed, positive, and not a terminal anybody is looking at.
+    #[test]
+    fn a_collapsed_box_does_not_open_the_pty_at_two_by_one() {
+        assert_eq!(PtyViewport::from_fit(2, 1), PtyViewport::DEFAULT);
+        assert_eq!(PtyViewport::from_fit(19, 40), PtyViewport::DEFAULT);
+        assert_eq!(PtyViewport::from_fit(80, 4), PtyViewport::DEFAULT);
+        assert_eq!(PtyViewport::from_fit(0, 0), PtyViewport::DEFAULT);
+    }
 }

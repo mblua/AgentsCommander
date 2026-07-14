@@ -1442,6 +1442,8 @@ pub fn run(
                                         ps.git_repos.clone(),
                                         false,
                                         resolved_spawn,
+                                        // #973 - headless caller: no terminal to measure, keep 120x30.
+                                        None,
                                     )
                                     .await
                                     {
@@ -1812,6 +1814,8 @@ pub fn run(
                             ps.git_repos.clone(),
                             skip_auto_resume_for_restore(ps.start_fresh_on_restore), // (#630/#631) resume unless restarted fresh
                             resolved_spawn,
+                            // #973 - headless caller: no terminal to measure, keep 120x30.
+                            None,
                         ).await {
                             Ok(info) => {
                                 if ps.was_active {

@@ -185,6 +185,9 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                 Vec::new(),  // git_repos
                 true,        // skip_auto_resume = true → fresh create, no `--continue` injection
                 resolved_spawn,
+                // #973 - browser-mode create. The browser client pushes its fitted size after
+                // attach, not at create time, so this keeps AC's 120x30 for now.
+                None,
             )
             .await?;
 
@@ -304,8 +307,8 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
         // --- PTY commands ---
         "pty_resize" => {
             let session_id = require_str(args, "sessionId")?;
-            let cols = args.get("cols").and_then(|v| v.as_u64()).unwrap_or(120) as u16;
-            let rows = args.get("rows").and_then(|v| v.as_u64()).unwrap_or(30) as u16;
+            let cols = terminal_dimension(args, "cols", 120)?;
+            let rows = terminal_dimension(args, "rows", 30)?;
             let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
 
             state
@@ -844,6 +847,43 @@ fn require_str(args: &Value, key: &str) -> Result<String, String> {
         .ok_or_else(|| format!("Missing required field: {}", key))
 }
 
+/// #973 - a terminal dimension off the wire, for `pty_resize`.
+///
+/// This is a network-facing input path, and `as u16` SILENTLY TRUNCATES: `cols: 65536` arrives
+/// at the PTY as **0**, and `cols: 65537` as **1**. A zero-column ConPTY is precisely what #973
+/// exists to keep out, and a one-column one is not much better - both from a number that looked
+/// perfectly plausible on the wire.
+///
+/// `u16` is exactly what the Tauri `pty_resize` command takes, where serde rejects an
+/// out-of-range number for us. The web transport has no such boundary, so this is it: same
+/// contract, both transports. A value that is absent stays absent (the caller's default); only
+/// one that is PRESENT and cannot be a terminal dimension is an error.
+///
+/// A zero is deliberately NOT an error here, and the reason is NOT that a legitimate client sends
+/// one - it cannot. xterm's `fit()` clamps to MINIMUM_COLS = 2 / MINIMUM_ROWS = 1, so a zero on
+/// this path means a client that is not xterm, or is broken, or is hostile. This function is what
+/// stands between such a client and the PTY.
+///
+/// It passes the zero down anyway, because refusing it HERE would be the second place that
+/// refuses it. `resize_instance` already does, once, for every transport, with a warn. Erroring
+/// here as well would make the same payload behave differently on the two transports - the Tauri
+/// command takes a typed `u16`, where serde accepts a 0 and passes it down exactly like this -
+/// and would put one rule in two places that can drift apart. One refusal, in the backend, shared.
+/// What this boundary is for is the value that cannot be a dimension at all, which is the one the
+/// old `as u16` cast turned into a plausible-looking lie.
+fn terminal_dimension(args: &Value, key: &str, default: u16) -> Result<u16, String> {
+    let Some(value) = args.get(key) else {
+        return Ok(default);
+    };
+    if value.is_null() {
+        return Ok(default);
+    }
+    value
+        .as_u64()
+        .and_then(|n| u16::try_from(n).ok())
+        .ok_or_else(|| format!("Invalid field {}: not a terminal dimension: {}", key, value))
+}
+
 fn require_json<T>(args: &Value, key: &str) -> Result<T, String>
 where
     T: serde::de::DeserializeOwned,
@@ -888,6 +928,59 @@ mod tests {
     use crate::web::broadcast::{WsBroadcaster, WsOutMsg};
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
+
+    /// #973 - `pty_resize` is network-facing, and the old `as u16` cast SILENTLY TRUNCATED.
+    /// `cols: 65536` reached the PTY as **0** and `cols: 65537` as **1**: a zero-column ConPTY
+    /// (the very thing #973 exists to keep out) conjured from a number that looked fine on the
+    /// wire. Rejected at the boundary now, exactly as serde rejects it for the Tauri command.
+    #[test]
+    fn a_terminal_dimension_off_the_wire_is_never_truncated_into_a_degenerate_one() {
+        let dim = |v: serde_json::Value| terminal_dimension(&json!({ "cols": v }), "cols", 120);
+
+        assert_eq!(dim(json!(74)).expect("a plain size"), 74);
+        assert_eq!(dim(json!(65535)).expect("the largest there is"), 65535);
+
+        // 65536 -> 0 and 65537 -> 1 under `as u16`. This is the whole point.
+        assert!(
+            dim(json!(65536)).is_err(),
+            "65536 must not become a 0-column terminal"
+        );
+        assert!(
+            dim(json!(65537)).is_err(),
+            "65537 must not become a 1-column terminal"
+        );
+        assert!(
+            dim(json!(-1)).is_err(),
+            "a negative is not a terminal dimension"
+        );
+        assert!(
+            dim(json!("74")).is_err(),
+            "a string is not a terminal dimension"
+        );
+        assert!(
+            dim(json!(74.5)).is_err(),
+            "a float is not a terminal dimension"
+        );
+
+        // absent stays absent: the caller's default, unchanged
+        assert_eq!(
+            terminal_dimension(&json!({}), "cols", 120).expect("absent"),
+            120
+        );
+        assert_eq!(
+            terminal_dimension(&json!({ "cols": null }), "cols", 120).expect("null"),
+            120
+        );
+
+        // ...and a zero passes through to the ONE guard that refuses it, in `resize_instance`,
+        // shared by both transports. Not because a zero is legitimate - xterm cannot produce one -
+        // but because refusing it twice, in two places that can drift apart, is worse than
+        // refusing it once where both transports meet.
+        assert_eq!(
+            dim(json!(0)).expect("a zero is refused downstream, not here"),
+            0
+        );
+    }
 
     #[test]
     fn browser_project_commands_route_before_unknown_fallback() {

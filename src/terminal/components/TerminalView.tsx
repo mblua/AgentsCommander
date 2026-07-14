@@ -10,8 +10,16 @@ import {
   onTerminalDetached,
 } from "../../shared/ipc";
 import { isBrowser, isTauri } from "../../shared/platform";
+import {
+  registerPtyViewportProbe,
+  takeSpawnViewport,
+} from "../../shared/terminal-viewport";
 import { terminalStore } from "../stores/terminal";
-import type { PtyOutputEvent, PtyScreenSnapshot } from "../../shared/types";
+import type {
+  PtyOutputEvent,
+  PtyScreenSnapshot,
+  PtyViewport,
+} from "../../shared/types";
 import type { UnlistenFn } from "../../shared/transport";
 import { updatePromptCapture } from "./prompt-input-capture";
 import { createTerminalOptions } from "./terminal-options";
@@ -37,6 +45,28 @@ interface SessionTerminal {
   pendingSnapshotEvents: PtyOutputEvent[];
   pendingSnapshotBytes: number;
   lastAppliedSequence: number | null;
+  /**
+   * #973. The size the PTY was OPENED at, when this is the first terminal built
+   * for a session the view sized itself. Null for a re-attach, and for every
+   * session created with no tile to measure.
+   */
+  spawnViewport: PtyViewport | null;
+  /**
+   * #973. The size the PTY is at, as far as this view knows: the size it was
+   * opened at, then whatever resize we last sent. Null means "unknown", and the
+   * next resize is always sent.
+   */
+  lastSentViewport: PtyViewport | null;
+  /** #973. One drift warning per terminal, not one per resize. */
+  spawnDriftReported: boolean;
+  /**
+   * #973. The pending re-send of a resize the PTY never got, and how many times
+   * we have tried. Rolling the dedup back on failure is not enough on its own:
+   * after the dedup, the failed call is usually the ONLY one of its burst, so
+   * there is no subsequent resize for the rollback to un-suppress.
+   */
+  resizeRetryTimer: ReturnType<typeof setTimeout> | null;
+  resizeRetryAttempts: number;
 }
 
 interface TerminalViewProps {
@@ -69,6 +99,15 @@ const SNAPSHOT_SETTLE_WARN_MS = 500;
 //    holding more would leak if the round-trip never settles.
 const SNAPSHOT_RECONCILE_LIMIT_BYTES = 2 * 1024 * 1024;
 
+// #973. A `pty_resize` that fails leaves the PTY at a size the terminal is not —
+// the exact bug class this issue exists to close, arrived at from the other end.
+// So a failed resize is re-sent, with a linear back-off, and bounded: a resize
+// that can never succeed (the session is gone, the backend is gone) must not
+// retry forever. Exhausting the budget is reported at error level, because a PTY
+// stranded at the wrong size must not look like a PTY that was resized.
+const PTY_RESIZE_RETRY_DELAY_MS = 120;
+const PTY_RESIZE_MAX_RETRIES = 3;
+
 // WebGL context budget: ~16 per document. Canvas fallback activates silently
 // when the budget is exhausted (e.g. after ~16 concurrent sessions in main).
 // See plan §DW.9.
@@ -82,6 +121,127 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
 
   const terminals = new Map<string, SessionTerminal>();
 
+  /**
+   * #973 diagnostic. The PTY was opened at the size the view had already fitted
+   * to, so a later fit that disagrees means the two measurements drifted apart —
+   * a scrollbar, a font metric settling late, an extra layout pass, a DPI quirk.
+   * The resize still goes out (correctness first), but it lands inside the
+   * child's startup, which is the whole bug. This is the line that says it
+   * happened, on a real box, instead of us assuming it never does.
+   */
+  const reportSpawnSizeDrift = (
+    sessionId: string,
+    entry: SessionTerminal,
+    cols: number,
+    rows: number
+  ) => {
+    const spawn = entry.spawnViewport;
+    if (!spawn || entry.spawnDriftReported) {
+      return;
+    }
+    if (spawn.cols === cols && spawn.rows === rows) {
+      return;
+    }
+
+    entry.spawnDriftReported = true;
+    console.warn(
+      `[terminal] spawn-size drift ${sessionId}: PTY opened at ${spawn.cols}x${spawn.rows}, ` +
+        `view fitted to ${cols}x${rows} — a resize will reach the child during startup (#973)`
+    );
+  };
+
+  const clearResizeRetryTimer = (entry: SessionTerminal) => {
+    if (entry.resizeRetryTimer !== null) {
+      clearTimeout(entry.resizeRetryTimer);
+      entry.resizeRetryTimer = null;
+    }
+  };
+
+  /**
+   * #973 — re-send a resize the PTY never got.
+   *
+   * It re-sends the size the terminal IS when the timer fires, not the size that
+   * failed. The view may have moved on in the meantime, and what has to be true at
+   * the end is that the PTY is where the terminal is now. That also makes the retry
+   * self-cancelling: if a later resize already landed on that size, `sendPtyResize`
+   * dedups this one away and nothing is sent.
+   */
+  const scheduleResizeRetry = (sessionId: string, entry: SessionTerminal) => {
+    if (entry.resizeRetryTimer !== null) {
+      return;
+    }
+
+    if (entry.resizeRetryAttempts >= PTY_RESIZE_MAX_RETRIES) {
+      console.error(
+        `[terminal] pty_resize ${sessionId} failed ${entry.resizeRetryAttempts} times: ` +
+          `giving up with the PTY at a size this terminal is not (#973)`
+      );
+      return;
+    }
+
+    entry.resizeRetryAttempts += 1;
+    const attempt = entry.resizeRetryAttempts;
+
+    entry.resizeRetryTimer = setTimeout(() => {
+      entry.resizeRetryTimer = null;
+
+      // Disposed, or replaced by a re-attach: that terminal's size is not this
+      // terminal's business any more.
+      if (terminals.get(sessionId) !== entry) {
+        return;
+      }
+
+      sendPtyResize(sessionId, entry, entry.terminal.cols, entry.terminal.rows);
+    }, PTY_RESIZE_RETRY_DELAY_MS * attempt);
+  };
+
+  /**
+   * #973 — the ONE place a resize reaches the PTY, and it only does so when the
+   * size actually moved.
+   *
+   * A single attach used to fire 5-20 `pty_resize` calls: `syncViewport` sent one
+   * unconditionally, from a double `requestAnimationFrame` AND a `ResizeObserver`,
+   * and xterm's own `onResize` sent another. dev-rust measured that a redundant
+   * SAME-size burst is harmless (0/10 blank) while one row of real drift is not
+   * (6/10) — so both halves matter: send nothing when nothing changed, and when
+   * something did change, say it exactly once.
+   */
+  const sendPtyResize = (
+    sessionId: string,
+    entry: SessionTerminal,
+    cols: number,
+    rows: number
+  ) => {
+    const previous = entry.lastSentViewport;
+    if (previous && previous.cols === cols && previous.rows === rows) {
+      return;
+    }
+
+    reportSpawnSizeDrift(sessionId, entry, cols, rows);
+
+    const sent: PtyViewport = { cols, rows };
+    entry.lastSentViewport = sent;
+
+    void PtyAPI.resize(sessionId, cols, rows)
+      .then(() => {
+        // The channel works. Whatever budget an earlier failure burned is returned.
+        entry.resizeRetryAttempts = 0;
+      })
+      .catch((err: unknown) => {
+        // A FAILED resize must not poison the cache: if it did, the retry below
+        // would be deduped away as a no-op and the PTY would sit at the wrong size
+        // forever. (dev-rust hit exactly this trap in the backend's own dedup.)
+        if (entry.lastSentViewport === sent) {
+          entry.lastSentViewport = previous;
+        }
+        console.warn(`[terminal] pty_resize ${sessionId} failed:`, err);
+
+        // ...and un-suppressing a resize nobody is going to send again is not a
+        // retry. Send it again.
+        scheduleResizeRetry(sessionId, entry);
+      });
+  };
+
   const syncViewport = (sessionId: string, skipPtyResize = false) => {
     const entry = terminals.get(sessionId);
     if (!entry) {
@@ -90,9 +250,47 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
 
     entry.fitAddon.fit();
     if (!skipPtyResize) {
-      void PtyAPI.resize(sessionId, entry.terminal.cols, entry.terminal.rows);
+      sendPtyResize(sessionId, entry, entry.terminal.cols, entry.terminal.rows);
     }
   };
+
+  /**
+   * #973 — the size a terminal created RIGHT NOW would fit to, handed to
+   * `create_session` so the PTY is opened at it and nothing has to resize a child
+   * that is still starting up.
+   *
+   * This is not a prediction. `proposeDimensions()` is the exact computation the
+   * new terminal's own post-mount `fit()` will run, and it is run here against a
+   * tile that is already on screen in the same `.terminal-host`: every
+   * `.terminal-instance` is `position: absolute; inset: 0`, so a new one gets the
+   * identical box; `createTerminalOptions` is the same for all of them; and the
+   * font metrics are already resolved, because this terminal has been rendering
+   * with them. Same inputs, same computation, same answer.
+   *
+   * Null whenever any of that stops being true — nothing is active, the tile is
+   * `display: none` (a pre-warmed or backgrounded session measures a 0 box), or
+   * xterm itself reports it has not been laid out yet. The caller then sends no
+   * size, which is strictly better than sending a wrong one.
+   */
+  const measureFittedViewport = (): PtyViewport | null => {
+    if (!activeSessionId) {
+      return null;
+    }
+
+    const entry = terminals.get(activeSessionId);
+    if (!entry || entry.container.hidden) {
+      return null;
+    }
+
+    const proposed = entry.fitAddon.proposeDimensions();
+    if (!proposed) {
+      return null;
+    }
+
+    return { cols: proposed.cols, rows: proposed.rows };
+  };
+
+  onCleanup(registerPtyViewportProbe(measureFittedViewport));
 
   const scheduleViewportSync = (sessionId: string) => {
     requestAnimationFrame(() => {
@@ -124,6 +322,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     }
 
     clearSnapshotSettleTimer(entry);
+    clearResizeRetryTimer(entry);
     entry.terminal.dispose();
     entry.container.remove();
     terminals.delete(sessionId);
@@ -449,7 +648,17 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     container.hidden = true;
     hostRef.appendChild(container);
 
-    const terminal = new Terminal(createTerminalOptions(isTauri));
+    // #973. The PTY was opened at the size this view fitted to, so start xterm AT
+    // that size. Without this it would start at xterm's 80x24 default and the very
+    // first fit would resize it — firing, through `onResize`, exactly the resize
+    // into the child's startup that opening at the right size exists to avoid.
+    const spawnViewport = takeSpawnViewport(sessionId);
+    const terminal = new Terminal({
+      ...createTerminalOptions(isTauri),
+      ...(spawnViewport
+        ? { cols: spawnViewport.cols, rows: spawnViewport.rows }
+        : {}),
+    });
 
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
@@ -485,6 +694,13 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       pendingSnapshotEvents: [],
       pendingSnapshotBytes: 0,
       lastAppliedSequence: null,
+      spawnViewport,
+      // The PTY is already at the size it was opened at. That is the baseline the
+      // post-mount fit is deduped against, and the reason it sends nothing at all.
+      lastSentViewport: spawnViewport,
+      spawnDriftReported: false,
+      resizeRetryTimer: null,
+      resizeRetryAttempts: 0,
     };
 
     // Per-terminal keyboard shortcuts. Match keys via event.key (layout-aware,
@@ -574,7 +790,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
         return;
       }
 
-      void PtyAPI.resize(sessionId, cols, rows);
+      sendPtyResize(sessionId, entry, cols, rows);
     });
 
     terminals.set(sessionId, entry);
