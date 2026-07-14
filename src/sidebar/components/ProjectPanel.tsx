@@ -1829,6 +1829,7 @@ const ProjectPanel: Component = () => {
               }}
               data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.trigger`}
             >
+              <span class="session-context-option-icon" aria-hidden="true" />
               <span>Add to Group</span>
               <span class="session-context-submenu-arrow">&rsaquo;</span>
             </button>
@@ -1963,16 +1964,18 @@ const ProjectPanel: Component = () => {
                       data-ac-testid={`${testIdPrefix()}.${index()}`}
                       data-ac-role="menuitem"
                     >
-                      <svg
-                        class="session-context-repo-icon"
-                        viewBox="0 0 16 16"
-                        aria-hidden="true"
-                      >
-                        <path
-                          fill="currentColor"
-                          d="M1.75 4.25A1.75 1.75 0 0 1 3.5 2.5h3.1c.46 0 .9.18 1.22.5l.9.9h3.78A1.75 1.75 0 0 1 14.25 5.65v5.1a1.75 1.75 0 0 1-1.75 1.75h-9A1.75 1.75 0 0 1 1.75 10.75v-6.5Z"
-                        />
-                      </svg>
+                      <span class="session-context-option-icon" aria-hidden="true">
+                        <svg
+                          class="session-context-repo-icon"
+                          viewBox="0 0 16 16"
+                          aria-hidden="true"
+                        >
+                          <path
+                            fill="currentColor"
+                            d="M1.75 4.25A1.75 1.75 0 0 1 3.5 2.5h3.1c.46 0 .9.18 1.22.5l.9.9h3.78A1.75 1.75 0 0 1 14.25 5.65v5.1a1.75 1.75 0 0 1-1.75 1.75h-9A1.75 1.75 0 0 1 1.75 10.75v-6.5Z"
+                          />
+                        </svg>
+                      </span>
                       <span class="session-context-repo-label">{repo.label}</span>
                       <Show when={browseItems().length > 0}>
                         <span
@@ -3770,7 +3773,7 @@ const ProjectPanel: Component = () => {
                             await restartReplicaSession(menu().sessionId);
                           }}
                         >
-                          &#x21BA; Restart Session
+                          <span class="session-context-option-icon" aria-hidden="true">&#x21BA;</span> Restart Session
                         </button>
                         <button
                           class="session-context-option"
@@ -3782,14 +3785,14 @@ const ProjectPanel: Component = () => {
                             setReplicaCodingAgentTarget({ sessionId, sessionName });
                           }}
                         >
-                          &#x1F916; Coding Agent
+                          <span class="session-context-option-icon" aria-hidden="true">&#x1F916;</span> Coding Agent
                         </button>
                         <button
                           class="session-context-option"
                           title={menu().replica.path}
                           onClick={() => void openReplicaFolder(menu().replica.path)}
                         >
-                          &#x1F4C2; Open Replica's Folder
+                          <span class="session-context-option-icon" aria-hidden="true">&#x1F4C2;</span> Open Replica's Folder
                         </button>
                         {renderRepoMenuEntries(repoEntries, () => `replica.${menu().sessionId}.menu.repo`)}
                         <Show when={matrixFolder()}>
@@ -3799,7 +3802,7 @@ const ProjectPanel: Component = () => {
                               title={path()}
                               onClick={() => void openMatrixFolder(path())}
                             >
-                              <MatrixFolderIcon /> Open Matrix folder
+                              <span class="session-context-option-icon" aria-hidden="true"><MatrixFolderIcon /></span> Open Matrix folder
                             </button>
                           )}
                         </Show>
@@ -3808,6 +3811,10 @@ const ProjectPanel: Component = () => {
                           class="session-context-option"
                           onClick={() => toggleReplicaDetach(menu().sessionId)}
                         >
+                          {/* #987 - the two glyphs the session row's detach button uses. */}
+                          <span class="session-context-option-icon" aria-hidden="true">
+                            {sessionsStore.isDetached(menu().sessionId) ? "\u2934" : "\u29C9"}
+                          </span>{" "}
                           {sessionsStore.isDetached(menu().sessionId) ? "Re-attach to main" : "Open in new window"}
                         </button>
                         {renderAddToGroupItem(menu().wg, menu().replica)}
@@ -3819,7 +3826,7 @@ const ProjectPanel: Component = () => {
                           title={broomTitle()}
                           onClick={() => void clearReplicaTaskTitle(menu().wg)}
                         >
-                          &#x1F9F9; Clear task title
+                          <span class="session-context-option-icon" aria-hidden="true">&#x1F9F9;</span> Clear task title
                         </button>
                       </>
                       );
@@ -3848,14 +3855,14 @@ const ProjectPanel: Component = () => {
                               });
                             }}
                           >
-                            &#x1F916; Coding Agent
+                            <span class="session-context-option-icon" aria-hidden="true">&#x1F916;</span> Coding Agent
                           </button>
                           <button
                             class="session-context-option"
                             title={menu().replica.path}
                             onClick={() => void openReplicaFolder(menu().replica.path)}
                           >
-                            &#x1F4C2; Open Replica's Folder
+                            <span class="session-context-option-icon" aria-hidden="true">&#x1F4C2;</span> Open Replica's Folder
                           </button>
                           {renderRepoMenuEntries(repoEntries, () => "replica.inactive.menu.repo")}
                           <Show when={matrixFolder()}>
@@ -3865,7 +3872,7 @@ const ProjectPanel: Component = () => {
                                 title={path()}
                                 onClick={() => void openMatrixFolder(path())}
                               >
-                                <MatrixFolderIcon /> Open Matrix folder
+                                <span class="session-context-option-icon" aria-hidden="true"><MatrixFolderIcon /></span> Open Matrix folder
                               </button>
                             )}
                           </Show>
@@ -3877,7 +3884,7 @@ const ProjectPanel: Component = () => {
                             title={broomTitle()}
                             onClick={() => void clearReplicaTaskTitle(menu().wg)}
                           >
-                            &#x1F9F9; Clear task title
+                            <span class="session-context-option-icon" aria-hidden="true">&#x1F9F9;</span> Clear task title
                           </button>
                         </>
                       );

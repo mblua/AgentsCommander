@@ -2868,8 +2868,11 @@ html.light-theme .settings-api-client-warning {
   white-space: normal;
 }
 
+/* #987 - with the icon slot this is a 3-item row (slot, label, arrow), and
+   space-between would strand the label in the middle. The arrow's own
+   margin-left: auto keeps it pinned right. */
 .session-context-submenu-trigger {
-  justify-content: space-between;
+  justify-content: flex-start;
 }
 
 .session-context-submenu-arrow {
@@ -2896,6 +2899,22 @@ html.light-theme .settings-api-client-warning {
   width: 14px;
   flex: 0 0 14px;
   color: var(--sidebar-accent);
+}
+
+/* #987 - fixed-width gutter slot for context-menu glyphs. The menu mixes 14px
+   SVGs with entities and emoji, whose advance widths all differ, so an unwrapped
+   glyph starts every label at a different x. Centering each glyph in a 16px slot
+   (widest content is the 14px SVG; emoji run ~13px at this font-size) lands every
+   label on the same x. Rows with no icon (Add to Group) carry an empty slot. */
+.session-context-option-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  font-size: 13px;
+  line-height: 1;
 }
 
 .session-context-group-option span:last-child {
