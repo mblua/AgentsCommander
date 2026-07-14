@@ -10,6 +10,13 @@ pub const DEFAULT_CONTAINER_WORKDIR: &str = "/workspace";
 pub const DEFAULT_BRIDGE_ENTRYPOINT: &str = "session-bridge";
 pub const DEFAULT_API_HELPER_PATH: &str = "/usr/local/bin/agentscommander-api-helper";
 pub const CONTAINER_STOP_TIMEOUT: Duration = Duration::from_secs(5);
+/// #992 - List timeout for an OPPORTUNISTIC startup sweep: one where this config
+/// dir has never created a container, so the sweep can only find another install's
+/// leftovers. Caps the detached background thread instead of parking it for the
+/// full command timeout against a stopped or cold-starting Docker Desktop. A miss
+/// costs nothing that is ours, and the install that DID create the container sweeps
+/// it with the full timeout. Load-bearing sweeps pass `None` and keep the default.
+pub const CONTAINER_LIST_TIMEOUT_OPPORTUNISTIC: Duration = Duration::from_secs(5);
 const DIAGNOSTIC_UI_LOG_LIMIT: usize = 500;
 const REDACTED_SECRET: &str = "[REDACTED]";
 // Keep AGENTSCOMMANDER_* entries in sync with DockerRuntime::build_run_command.
@@ -183,10 +190,14 @@ pub trait ContainerRuntime: Send + Sync {
         ContainerDiagnostics::unavailable(handle, "container runtime diagnostics are not supported")
     }
 
+    /// `stop_timeout` is the container grace period handed to `docker stop --time`,
+    /// not a command timeout. `list_timeout` of `None` means the runtime's default
+    /// command timeout for the list step (#992).
     fn cleanup_labeled_orphans(
         &self,
         live_sessions: &HashSet<Uuid>,
-        timeout: Duration,
+        stop_timeout: Duration,
+        list_timeout: Option<Duration>,
     ) -> Result<ContainerCleanupReport, AppError>;
 }
 

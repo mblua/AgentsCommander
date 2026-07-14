@@ -17,8 +17,8 @@ use crate::pty::container_paths::{
 };
 use crate::pty::container_runtime::{
     api_url_for_container, resolve_container_image, ContainerDiagnostics, ContainerRuntime,
-    ContainerRuntimeHandle, ContainerStartRequest, CONTAINER_STOP_TIMEOUT,
-    DEFAULT_CONTAINER_WORKDIR,
+    ContainerRuntimeHandle, ContainerStartRequest, CONTAINER_LIST_TIMEOUT_OPPORTUNISTIC,
+    CONTAINER_STOP_TIMEOUT, DEFAULT_CONTAINER_WORKDIR,
 };
 use crate::pty::container_tokens::{ContainerApiToken, ContainerApiTokenManager};
 use crate::pty::idle_detector::IdleDetector;
@@ -929,13 +929,63 @@ impl ContainerTransportBackend {
         });
     }
 
+    /// #992 - Is the startup sweep load-bearing for THIS config dir, or a courtesy
+    /// pass over containers another install left behind?
+    ///
+    /// SCOPED, and it is not a gate: the sweep runs either way. No container client
+    /// on record proves only that no orphan of OURS can exist; the machine-wide
+    /// label means another install's orphan still can, and we still clean it. This
+    /// only decides how long we are willing to wait for the list and how loudly we
+    /// complain when it fails.
+    ///
+    /// Fails LOAD-BEARING (no config dir, unreadable registry): an unknown answer
+    /// must never downgrade the sweep.
+    fn sweep_is_load_bearing(token_manager: Option<&ContainerApiTokenManager>) -> bool {
+        let Some(manager) = token_manager else {
+            return true;
+        };
+        match manager.has_container_clients() {
+            Ok(has_clients) => has_clients,
+            Err(err) => {
+                log::warn!(
+                    "[container-transport] {err}; treating the startup orphan sweep as load-bearing"
+                );
+                true
+            }
+        }
+    }
+
     pub fn cleanup_labeled_orphans_on_startup(&self) {
         let Some(runtime) = self.runtime.clone() else {
             return;
         };
         let token_manager = self.token_manager.clone();
         std::thread::spawn(move || {
-            match runtime.cleanup_labeled_orphans(&HashSet::new(), CONTAINER_STOP_TIMEOUT) {
+            // #992 - the registry read happens INSIDE the thread on purpose: the
+            // caller is the Tauri setup hook and must not pay a file read.
+            let load_bearing = Self::sweep_is_load_bearing(token_manager.as_ref());
+            let list_timeout = if load_bearing {
+                None
+            } else {
+                Some(CONTAINER_LIST_TIMEOUT_OPPORTUNISTIC)
+            };
+            // #992 - one line per start, at info, so the posture is observable. A
+            // design whose correct behavior is indistinguishable from its failure
+            // mode in the log is not verifiable. Do not lower this to debug.
+            log::info!(
+                "[container-transport] startup orphan sweep: {}",
+                if load_bearing {
+                    "load-bearing (this install has created containers)"
+                } else {
+                    "opportunistic (no container clients on record)"
+                }
+            );
+
+            match runtime.cleanup_labeled_orphans(
+                &HashSet::new(),
+                CONTAINER_STOP_TIMEOUT,
+                list_timeout,
+            ) {
                 Ok(report) => {
                     if !report.stopped.is_empty() {
                         log::warn!(
@@ -951,10 +1001,22 @@ impl ContainerTransportBackend {
                     }
                 }
                 Err(err) => {
-                    log::warn!(
-                        "[container-transport] startup orphan cleanup failed: {}",
-                        err
-                    );
+                    if load_bearing {
+                        log::warn!(
+                            "[container-transport] startup orphan cleanup failed: {}",
+                            err
+                        );
+                    } else {
+                        // #992 - this install never created a container, so this
+                        // failure means only that a courtesy pass over someone
+                        // else's leftovers did not happen. That is not the user's
+                        // problem and must not warn on every start: it is exactly
+                        // the log noise #992 was reported from.
+                        log::debug!(
+                            "[container-transport] opportunistic startup orphan sweep failed: {}",
+                            err
+                        );
+                    }
                 }
             }
 
@@ -1407,7 +1469,8 @@ mod tests {
         fn cleanup_labeled_orphans(
             &self,
             _live_sessions: &HashSet<Uuid>,
-            _timeout: Duration,
+            _stop_timeout: Duration,
+            _list_timeout: Option<Duration>,
         ) -> Result<ContainerCleanupReport, AppError> {
             Ok(ContainerCleanupReport::default())
         }
@@ -2121,5 +2184,65 @@ mod tests {
         assert_eq!(frame.version(), TRANSPORT_PROTOCOL_VERSION);
 
         assert!(b"x".repeat(MAX_TRANSPORT_FRAME_BYTES + 1).len() > MAX_TRANSPORT_FRAME_BYTES);
+    }
+
+    // #992 - the posture predicate. Never assert on the spawned thread; assert on the
+    // decision it makes.
+    fn token_manager_at(dir: &tempfile::TempDir) -> ContainerApiTokenManager {
+        ContainerApiTokenManager::new_for_path(dir.path().join("api-clients.json"))
+    }
+
+    #[test]
+    fn sweep_is_load_bearing_is_false_without_container_clients() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let manager = token_manager_at(&dir);
+        assert!(!ContainerTransportBackend::sweep_is_load_bearing(Some(
+            &manager
+        )));
+    }
+
+    #[test]
+    fn sweep_is_load_bearing_is_true_after_a_container_token_was_minted() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let manager = token_manager_at(&dir);
+        manager
+            .mint_for_session(Uuid::new_v4(), "C:/project/.ac/wg-1-team/__agent_dev")
+            .unwrap();
+        assert!(ContainerTransportBackend::sweep_is_load_bearing(Some(
+            &manager
+        )));
+    }
+
+    #[test]
+    fn sweep_is_load_bearing_is_true_for_an_expired_and_revoked_client() {
+        // The realistic ex-container-user state: the token expired after 24h and the
+        // last startup revoked it. Their orphan must still be swept with the full
+        // timeout.
+        let dir = tempfile::TempDir::new().unwrap();
+        let manager = token_manager_at(&dir);
+        manager
+            .mint_for_session(Uuid::new_v4(), "C:/project/.ac/wg-1-team/__agent_dev")
+            .unwrap();
+        manager.revoke_all_container_clients().unwrap();
+        assert!(ContainerTransportBackend::sweep_is_load_bearing(Some(
+            &manager
+        )));
+    }
+
+    #[test]
+    fn sweep_is_load_bearing_fails_load_bearing_without_a_token_manager() {
+        // An unknown answer must never downgrade the sweep.
+        assert!(ContainerTransportBackend::sweep_is_load_bearing(None));
+    }
+
+    #[test]
+    fn sweep_is_load_bearing_fails_load_bearing_on_a_malformed_registry() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("api-clients.json");
+        std::fs::write(&path, "{").unwrap();
+        let manager = ContainerApiTokenManager::new_for_path(path);
+        assert!(ContainerTransportBackend::sweep_is_load_bearing(Some(
+            &manager
+        )));
     }
 }

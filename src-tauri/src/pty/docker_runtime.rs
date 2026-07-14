@@ -300,16 +300,43 @@ impl DockerRuntime {
     }
 
     fn run_command_output(&self, spec: DockerCommandSpec) -> Result<DockerCommandOutput, AppError> {
+        self.run_command_output_with_timeout(spec, DOCKER_COMMAND_TIMEOUT)
+    }
+
+    fn run_command_output_with_timeout(
+        &self,
+        spec: DockerCommandSpec,
+        timeout: Duration,
+    ) -> Result<DockerCommandOutput, AppError> {
         #[cfg(test)]
         if let Some(recorded_commands) = &self.recorded_commands {
             recorded_commands.lock().unwrap().push(spec);
             return Ok(DockerCommandOutput::empty());
         }
 
-        let mut child = Command::new(&spec.program)
-            .args(&spec.args)
+        // #992 - AC is a GUI-subsystem process and owns no console. A console-
+        // subsystem child spawned without CREATE_NO_WINDOW makes Windows allocate
+        // a NEW console for it, which Win11 delegates to Windows Terminal: a
+        // visible tab titled with docker.exe's resolved path, black because both
+        // pipes are captured. Same idiom as the other production spawn sites (see
+        // config/session_context.rs, commands/repos.rs, pty/local_backend.rs).
+        // The flag is a no-op when the parent already owns a console, which is why
+        // no `cargo test` process can observe it - see tests/spawn_no_window_guard.rs.
+        #[cfg(windows)]
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        let mut cmd = Command::new(&spec.program);
+        cmd.args(&spec.args)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+
+        let mut child = cmd
             .spawn()
             .map_err(|e| AppError::PtyError(format!("container runtime command failed: {e}")))?;
 
@@ -334,7 +361,7 @@ impl DockerRuntime {
             read_capped_to_end(&mut stderr, DOCKER_COMMAND_OUTPUT_BYTE_LIMIT)
         });
 
-        let deadline = Instant::now() + DOCKER_COMMAND_TIMEOUT;
+        let deadline = Instant::now() + timeout;
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break status,
@@ -346,7 +373,7 @@ impl DockerRuntime {
                         let _ = stderr_reader.join();
                         return Err(AppError::PtyError(format!(
                             "container runtime command timed out after {:?}",
-                            DOCKER_COMMAND_TIMEOUT
+                            timeout
                         )));
                     }
                     std::thread::sleep(DOCKER_COMMAND_POLL);
@@ -382,7 +409,15 @@ impl DockerRuntime {
     }
 
     fn run_command(&self, spec: DockerCommandSpec) -> Result<String, AppError> {
-        let output = self.run_command_output(spec)?;
+        self.run_command_with_timeout(spec, DOCKER_COMMAND_TIMEOUT)
+    }
+
+    fn run_command_with_timeout(
+        &self,
+        spec: DockerCommandSpec,
+        timeout: Duration,
+    ) -> Result<String, AppError> {
+        let output = self.run_command_output_with_timeout(spec, timeout)?;
         Ok(String::from_utf8_lossy(&output.stdout.bytes)
             .trim()
             .to_string())
@@ -519,9 +554,13 @@ impl ContainerRuntime for DockerRuntime {
     fn cleanup_labeled_orphans(
         &self,
         live_sessions: &HashSet<Uuid>,
-        timeout: Duration,
+        stop_timeout: Duration,
+        list_timeout: Option<Duration>,
     ) -> Result<ContainerCleanupReport, AppError> {
-        let stdout = self.run_command(self.build_list_labeled_command())?;
+        let stdout = self.run_command_with_timeout(
+            self.build_list_labeled_command(),
+            list_timeout.unwrap_or(DOCKER_COMMAND_TIMEOUT),
+        )?;
         let mut report = ContainerCleanupReport::default();
         let mut errors = Vec::new();
         for (container_id, label) in Self::parse_labeled_containers(&stdout) {
@@ -537,7 +576,7 @@ impl ContainerRuntime for DockerRuntime {
                 session_id,
                 container_id,
             };
-            match self.stop(&handle, timeout) {
+            match self.stop(&handle, stop_timeout) {
                 Ok(()) => report.stopped.push(session_id),
                 Err(err) => {
                     log::warn!(
@@ -792,5 +831,47 @@ mod tests {
         assert_eq!(state.running, Some(false));
         assert_eq!(state.exit_code, Some(127));
         assert_eq!(state.error.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn run_command_with_timeout_reports_the_timeout_it_was_given() {
+        // The only coverage the timeout plumbing gets. It pins the substitution: the
+        // error must name the timeout it was ACTUALLY given, not DOCKER_COMMAND_TIMEOUT,
+        // or an opportunistic 5s probe would lie about waiting 30s.
+        // NOTE: it does NOT prove the list step gets the opportunistic timeout.
+        // DockerCommandSpec carries only program+args, so the recording fake cannot
+        // observe a timeout at all.
+        #[cfg(windows)]
+        let spec = DockerCommandSpec {
+            program: "powershell".to_string(),
+            args: vec![
+                "-NoProfile".to_string(),
+                "-Command".to_string(),
+                "Start-Sleep 30".to_string(),
+            ],
+        };
+        #[cfg(not(windows))]
+        let spec = DockerCommandSpec {
+            program: "sleep".to_string(),
+            args: vec!["30".to_string()],
+        };
+
+        let runtime = DockerRuntime {
+            program: "docker".to_string(),
+            recorded_commands: None,
+        };
+        let started = Instant::now();
+        let err = runtime
+            .run_command_with_timeout(spec, Duration::from_millis(200))
+            .expect_err("the child sleeps far past the timeout");
+
+        assert!(
+            err.to_string().contains("timed out after 200ms"),
+            "expected the given timeout in the message, got: {err}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the timeout did not actually kill the child"
+        );
     }
 }
