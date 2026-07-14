@@ -708,6 +708,9 @@ mod tests {
         assert!(repo2 < image_idx, "repo mounts must precede the image");
         assert_eq!(spec.args[image_idx - 1], "--");
         assert_eq!(spec.args[image_idx + 1], DEFAULT_BRIDGE_ENTRYPOINT);
+        // #993 - the resolver strips the Windows verbatim prefix, so the
+        // rendered --mount args never carry \\?\ (dockerd rejects such a source).
+        assert!(!joined.contains(r"\\?\"), "{joined}");
         // S7 free regression guard, now exercised WITH repo mounts.
         assert!(!joined.contains("messaging"));
     }
