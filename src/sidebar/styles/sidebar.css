@@ -2868,8 +2868,11 @@ html.light-theme .settings-api-client-warning {
   white-space: normal;
 }
 
+/* #987 - with the icon slot this is a 3-item row (slot, label, arrow), and
+   space-between would strand the label in the middle. The arrow's own
+   margin-left: auto keeps it pinned right. */
 .session-context-submenu-trigger {
-  justify-content: space-between;
+  justify-content: flex-start;
 }
 
 .session-context-submenu-arrow {
@@ -2896,6 +2899,33 @@ html.light-theme .settings-api-client-warning {
   width: 14px;
   flex: 0 0 14px;
   color: var(--sidebar-accent);
+}
+
+/* #987 - fixed-width gutter slot for context-menu glyphs. The menu mixes 14px
+   SVGs with entities and emoji, whose advance widths all differ, so an unwrapped
+   glyph starts every label at a different x. Centering each glyph in this slot
+   lands every label on the same x. Rows with no icon (Add to Group) carry an
+   empty slot.
+
+   The 16px box is a CENTRING ANCHOR, NOT A FIT. Measured at the 13px this slot
+   sets: the emoji (U+1F916, U+1F4C2, U+1F9F9) advance 17.86px, so they overflow
+   the box by ~0.93px per side; the SVGs are 14px, U+29C9 is 13px, U+21BA is 10px.
+   The overflow is deliberate and harmless: the box does not clip, the bleed is
+   symmetric (every glyph's centre lands on the same axis) and it spills into the
+   row's 12px padding and 8px gap, where nothing is drawn.
+
+   So there is NO spare room here. Do not add anything that clips or paints this
+   box - overflow, background, border - and do not raise its font-size, without
+   first widening it past the widest glyph. Today that means >= 18px. */
+.session-context-option-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  font-size: 13px;
+  line-height: 1;
 }
 
 .session-context-group-option span:last-child {
