@@ -1337,15 +1337,25 @@ const ProjectPanel: Component = () => {
           setReplicaCtxMenu(null);
           cleanupCtx();
         };
+        // A failed group action pins the Add to Group flyout open on pointer-leave
+        // (scheduleGroupFlyoutClose bails so the message stays readable). Closing the
+        // MENU would dispose that flyout and its error with it, so the close bails
+        // while the error is ON SCREEN - and the flyout is the only thing that renders
+        // one, so on screen means the flyout is open.
+        //
+        // groupFlyoutHasError() ALONE IS NOT THAT CONDITION. workgroupGroupsStore.error
+        // is a sticky PROJECT-WIDE flag: any failed groups write (another workgroup, the
+        // Edit-groups modal) or an invalid groups.toml at load sets it, and only a LATER
+        // successful save clears it. Bailing on it bare disables the pointer-leave close
+        // for every replica menu in the project, with nothing on screen to explain it,
+        // which is #977 itself reintroduced through the back door.
+        const groupErrorPinned = () => groupFlyoutOpen() && groupFlyoutHasError();
         const scheduleReplicaCtxMenuClose = () => {
           cancelReplicaCtxMenuClose();
-          // A failed group action pins the Add to Group flyout open on pointer-leave
-          // (scheduleGroupFlyoutClose bails on the same predicate). Closing the menu
-          // would dispose that flyout and its error with it, so bail identically.
-          if (groupFlyoutHasError()) return;
+          if (groupErrorPinned()) return;
           replicaCtxMenuCloseTimer = window.setTimeout(() => {
             replicaCtxMenuCloseTimer = undefined;
-            if (groupFlyoutHasError()) return;
+            if (groupErrorPinned()) return;
             closeReplicaCtxMenu();
           }, CONTEXT_MENU_CLOSE_GRACE_MS);
         };

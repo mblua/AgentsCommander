@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ProjectPanel from "./ProjectPanel";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
+  click,
   contextMenu,
   discovery,
   installBrowserDomStubs,
@@ -13,7 +14,12 @@ import {
 } from "../../shared/testing/ui-harness";
 import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
-import { defaultGroupsConfig, workgroupGroupsStore } from "../stores/workgroup-groups";
+import {
+  defaultGroupsConfig,
+  exactGroupRegexForWorkgroup,
+  workgroupGroupsStore,
+} from "../stores/workgroup-groups";
+import type { WorkgroupGroupsConfig } from "../../shared/types";
 
 // #977 - the replica context menu closes when the pointer leaves it, after a
 // grace period that any re-entry cancels.
@@ -33,13 +39,18 @@ const projectPath = "C:\\Project";
 const wgPath = `${projectPath}\\.ac\\wg-1-dev-team`;
 const coordPath = `${wgPath}\\__agent_dev-webpage-ui`;
 const memberPath = `${wgPath}\\__agent_dev-rust`;
+const grayPath = `${wgPath}\\__agent_dev-docs`;
 
-// A live coordinator renders in the quick section; a non-coordinator member
-// renders under workgroups. Both open the full (active) replica menu.
+// A live coordinator renders in the quick section; the other replicas render
+// under workgroups. dev-docs has no session at all, so it opens the INACTIVE
+// (gray) branch of the menu; the other two open the active branch.
 const coordRowTestId = "replica.row.quick.wg-1-dev-team.dev-webpage-ui";
 const memberRowTestId = "replica.row.workgroups.wg-1-dev-team.dev-rust";
+const grayRowTestId = "replica.row.workgroups.wg-1-dev-team.dev-docs";
 const groupsTriggerTestId = "replica.wg-1-dev-team.groups.trigger";
 const groupsFlyoutTestId = "replica.wg-1-dev-team.groups.flyout";
+const groupsErrorTestId = "replica.groups.error";
+const groupOptionTestId = "replica.wg-1-dev-team.groups.frontend";
 
 function projectDiscovery() {
   return discovery({
@@ -61,6 +72,13 @@ function projectDiscovery() {
             name: "dev-rust",
             path: memberPath,
             identityPath: "../../_agent_dev-rust",
+            repoPaths: [],
+            isCoordinator: false,
+          },
+          {
+            name: "dev-docs",
+            path: grayPath,
+            identityPath: "../../_agent_dev-docs",
             repoPaths: [],
             isCoordinator: false,
           },
@@ -88,6 +106,21 @@ function liveSessions() {
   ];
 }
 
+/** A group the coordinator's workgroup matches by an EXACT token, so its menu
+ *  option is enabled and clicking it is a real (removing) groups write. */
+function removableGroupsConfig(): WorkgroupGroupsConfig {
+  return {
+    ...defaultGroupsConfig(),
+    groups: [
+      {
+        id: "frontend",
+        name: "Frontend",
+        regex: exactGroupRegexForWorkgroup("wg-1-dev-team"),
+      },
+    ],
+  };
+}
+
 function menu(): HTMLElement | null {
   // The menu and its flyouts render through a Portal, into document.body.
   return document.querySelector<HTMLElement>(".session-context-menu");
@@ -97,10 +130,28 @@ function target(testId: string): HTMLElement | null {
   return document.querySelector<HTMLElement>(`[data-ac-testid="${testId}"]`);
 }
 
+function menuLabels(root: HTMLElement): string[] {
+  return Array.from(root.querySelectorAll("button")).map((b) => (b.textContent ?? "").trim());
+}
+
 // Solid does not delegate mouseenter/mouseleave (they do not bubble); it binds
 // them directly, so a non-bubbling dispatch is exactly what the handler sees.
 function mouse(el: Element, type: "mouseenter" | "mouseleave"): void {
   el.dispatchEvent(new MouseEvent(type, { bubbles: false, cancelable: true }));
+}
+
+function domRect(left: number, top: number, width: number, height: number): DOMRect {
+  return {
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+    x: left,
+    y: top,
+    toJSON: () => ({}),
+  } as DOMRect;
 }
 
 /** Drain the macrotask queue. The menu registers its window-level dismiss
@@ -112,25 +163,28 @@ describe("ProjectPanel replica context menu - close on pointer leave (#977)", ()
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
 
-  async function setupPanel(): Promise<void> {
+  async function setupPanel(groups = defaultGroupsConfig()): Promise<FakeTransport> {
     const fake = new FakeTransport();
     fake.resolve("new_project", { path: projectPath, registered: true, created: false });
     fake.resolve("discover_project", projectDiscovery());
     fake.onInvoke("update_project_groups", (args) => args.config);
     sessionsStore.setSessions(liveSessions());
     rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
-    await workgroupGroupsStore.save(projectPath, defaultGroupsConfig());
+    await workgroupGroupsStore.save(projectPath, groups);
     await projectStore.createAndLoad(projectPath);
     await waitFor(() => expect(rendered!.root.textContent).toContain("dev-webpage-ui"));
+    return fake;
   }
 
-  async function openCoordinatorMenu(): Promise<HTMLElement> {
-    const row = rendered!.root.querySelector(`[data-ac-testid="${coordRowTestId}"]`);
+  async function openMenuOn(rowTestId: string): Promise<HTMLElement> {
+    const row = rendered!.root.querySelector(`[data-ac-testid="${rowTestId}"]`);
     contextMenu(row!);
     await waitFor(() => expect(menu()).not.toBeNull());
     await flush();
     return menu()!;
   }
+
+  const openCoordinatorMenu = () => openMenuOn(coordRowTestId);
 
   /** Hover the `Add to Group` trigger and wait for its portalled flyout. */
   async function openGroupFlyout(): Promise<HTMLElement> {
@@ -266,6 +320,60 @@ describe("ProjectPanel replica context menu - close on pointer leave (#977)", ()
     }
   });
 
+  // The close bails while the Add to Group flyout is showing an error, so the
+  // message stays readable (closing the menu would dispose the flyout with it).
+  // That bail is scoped to "the error is ON SCREEN", which means the flyout is
+  // open - NOT to the bare workgroupGroupsStore.error flag. The next test is why.
+  it("keeps the menu open while the Add to Group flyout is showing an error", async () => {
+    const fake = await setupPanel(removableGroupsConfig());
+    fake.reject("update_project_groups", "groups.toml changed on disk");
+
+    const open = await openCoordinatorMenu();
+    const flyout = await openGroupFlyout();
+    click(target(groupOptionTestId)!); // removes the workgroup: the write fails
+    await waitFor(() => {
+      expect(target(groupsErrorTestId)?.textContent).toContain("groups.toml changed on disk");
+    });
+
+    vi.useFakeTimers();
+    try {
+      mouse(open, "mouseleave"); // the pointer is in the flyout, which is a Portal
+      mouse(flyout, "mouseleave");
+      vi.advanceTimersByTime(GRACE * 4); // PAST the grace, not just up to it
+      await Promise.resolve();
+
+      expect(menu()).not.toBeNull();
+      expect(target(groupsFlyoutTestId)).not.toBeNull();
+      expect(target(groupsErrorTestId)).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // workgroupGroupsStore.error is a sticky PROJECT-WIDE flag: any failed groups
+  // write (another workgroup, the Edit-groups modal) or an invalid groups.toml at
+  // load sets it, and only a LATER successful save clears it. If the close bailed
+  // on that flag bare, one failed write anywhere would silently disable the
+  // pointer-leave close for every replica menu in the project - #977 all over again.
+  it("still closes after a failed groups write when the flyout was never opened", async () => {
+    const fake = await setupPanel();
+    fake.reject("update_project_groups", "groups.toml changed on disk");
+    await workgroupGroupsStore.save(projectPath, defaultGroupsConfig()).catch(() => {});
+    expect(workgroupGroupsStore.error(projectPath)).toBeTruthy();
+
+    const open = await openCoordinatorMenu(); // the flyout is never opened
+
+    vi.useFakeTimers();
+    try {
+      mouse(open, "mouseleave");
+      vi.advanceTimersByTime(GRACE * 4);
+      await Promise.resolve();
+      expect(menu()).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("still closes on Escape and on an outside click", async () => {
     await setupPanel();
 
@@ -278,14 +386,60 @@ describe("ProjectPanel replica context menu - close on pointer leave (#977)", ()
     await waitFor(() => expect(menu()).toBeNull());
   });
 
+  // The close depends on the pointer's hover chain reaching the LIVE menu node:
+  // mouseleave is only delivered to the element the pointer is actually inside.
+  // positionReplicaCtxMenu writes a NEW menu object ({...current, x, y}) ~0ms after
+  // every open and again on every reclamp, so if `{replicaCtxMenu() && <Portal>}`
+  // re-created the menu on that write, the cursor would be left hovering a detached
+  // node and no mouseleave would ever fire in a real browser. It does not: Solid's
+  // wrapConditionals memoizes the `&&` on the condition's TRUTHINESS, so an identity
+  // change to the object only re-runs the fine-grained style effect. Lock that in.
+  it("does not re-create the menu element when the reposition write lands", async () => {
+    // A tall menu against jsdom's 768px viewport: the y=96 open position is clamped
+    // up to 768 - 700 - 8 = 60, so the reposition write visibly MOVES the menu. That
+    // is the control - it proves the new object really did reach the DOM.
+    const rects = vi
+      .spyOn(Element.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: Element) {
+        if (this.classList?.contains("session-context-menu")) return domRect(0, 0, 400, 700);
+        return domRect(0, 0, 0, 0);
+      });
+    try {
+      await setupPanel();
+
+      const row = rendered!.root.querySelector(`[data-ac-testid="${coordRowTestId}"]`);
+      contextMenu(row!); // the harness dispatches clientX 80 / clientY 96
+      await waitFor(() => expect(menu()).not.toBeNull());
+
+      const first = menu()!;
+      expect(first.getAttribute("style")).toContain("top: 96px");
+
+      await flush(); // runs the queued positionReplicaCtxMenu
+
+      expect(menu()!.getAttribute("style")).toContain("top: 60px"); // the write landed
+      expect(menu()).toBe(first); // ...and the element survived it
+      expect(first.isConnected).toBe(true);
+    } finally {
+      rects.mockRestore();
+    }
+  });
+
   it("renders the restart and coding agent icons", async () => {
     await setupPanel();
     const open = await openCoordinatorMenu();
 
-    const labels = Array.from(open.querySelectorAll("button")).map((b) =>
-      (b.textContent ?? "").trim()
-    );
+    const labels = menuLabels(open);
     expect(labels).toContain("↺ Restart Session");
     expect(labels).toContain("\u{1F916} Coding Agent");
+  });
+
+  it("renders the coding agent icon on the inactive (gray) branch too", async () => {
+    await setupPanel();
+    const open = await openMenuOn(grayRowTestId);
+
+    const labels = menuLabels(open);
+    expect(labels).toContain("\u{1F916} Coding Agent");
+    // The gray branch has no Restart Session at all, so this really is that menu.
+    expect(labels.some((label) => label.includes("Restart Session"))).toBe(false);
   });
 });
