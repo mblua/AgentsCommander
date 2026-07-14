@@ -31,15 +31,33 @@ Project `.ac` creation seeds the editable global and coordinator context templat
 └── Context.coordinator.md
 ```
 
-`.ac/Context.AgentsCommander.md` is the base context used when AgentsCommander materializes managed context files such as `CLAUDE.md`, `AGENTS.md`, and `GEMINI.md` for matrix agents and workgroup replicas. `.ac/Context.coordinator.md` is appended only for coordinator sessions. The separator and `# Coordinator Context` heading are owned by AgentsCommander, so the coordinator file should contain only the body text.
+`.ac/Context.AgentsCommander.md` is **project-scoped**, and it is the base context used when AgentsCommander materializes managed context files such as `CLAUDE.md`, `AGENTS.md`, and `GEMINI.md` for **Agent Matrix agents and workgroup replicas only**. The `$AGENTSCOMMANDER_CONTEXT` token that resolves to it is likewise valid for matrix and workgroup context only. `.ac/Context.coordinator.md` is appended only for coordinator sessions. The separator and `# Coordinator Context` heading are owned by AgentsCommander, so the coordinator file should contain only the body text.
 
-`.ac/Context.root-agent.md` is appended only for the canonical `ac-root-agent` session. It is static supplemental root prose for identity, durable root state, and high-level coordination scope. It does not receive placeholder rendering or mandatory global fallback blocks; operational write restrictions, credentials, CLI usage, inter-agent messaging, workspace repo context, skills, and runtime safety blocks belong in `.ac/Context.AgentsCommander.md`.
+### The Root Agent does not use the global template (#979)
 
-Standalone/root AC directories and root-agent provisioning seed `Context.AgentsCommander.md`, `Context.coordinator.md`, and `Context.root-agent.md` next to `ac-root-agent`. Fresh root-agent creation seeds all three while preserving existing custom files.
+The canonical Root Agent (`ac-root-agent`) never reads `.ac/Context.AgentsCommander.md`, never resolves `$AGENTSCOMMANDER_CONTEXT`, and never falls back to the built-in global template. It receives an **unconditional, code-owned runtime prologue** instead, assembled directly in the backend and always placed first:
+
+```text
+Root Agent context
+├── code-owned runtime prologue   (heading, Core Concepts, write scope and Root
+│                                  authority, delegated-task reporting, skills,
+│                                  workspace repos, CLI rules, credentials,
+│                                  Root messaging)
+├── ../Context.root-agent.md      (raw supplemental Root prose)
+└── Role.md                       (raw)
+```
+
+Because the prologue is assembled from code rather than rendered from a template, **emptying, editing, or deleting any Root file cannot suppress mandatory Root governance**. There is no editable Root runtime template and no placeholder whose removal can erase a block.
+
+`.ac/Context.root-agent.md` is appended only for the canonical `ac-root-agent` session. It is static supplemental root prose for identity, durable root state, and high-level coordination scope. It does not receive placeholder rendering: operational write restrictions, credentials, CLI usage, inter-agent messaging, workspace repo context, and skills all come from the code-owned prologue above.
+
+Root provisioning seeds **only** Root-specific material (`Context.root-agent.md`, `Role.md`, Root skills, the Root messaging directory, and `config.json`). It never creates `Context.AgentsCommander.md` or `Context.coordinator.md`.
+
+A `Context.AgentsCommander.md` left in the app config directory by an older build is **retired conservatively and best-effort** on the next Root provisioning: bytes AgentsCommander provably generated itself are deleted, and every other byte sequence, including custom edits and non-UTF-8 content, is moved to an inert timestamped `Context.AgentsCommander.md.retired-<timestamp>.bak` backup and preserved. Retirement never blocks the Root Agent from starting: a failure is logged as a warning and the file is left where it is, inert. Project globals and project template state are never touched by it.
 
 Existing projects with a legacy `.ac/Context.agent.md` are migrated on demand to `.ac/Context.AgentsCommander.md` when the new file does not already exist. Existing projects that do not have these files keep using the built-in defaults. If the global template file exists and is empty, AgentsCommander still injects the mandatory safety and runtime blocks listed below. If a template exists but cannot be read, is not UTF-8, or is not a regular file, session context generation fails with a path-specific error instead of silently discarding the customization.
 
-The global template must preserve these mandatory runtime tokens. If any are missing, AgentsCommander appends them during rendering so critical safety and runtime data is not dropped:
+The global template must preserve these mandatory runtime tokens for matrix agents and workgroup replicas. If any are missing, AgentsCommander appends them during rendering so critical safety and runtime data is not dropped. (This append fallback governs matrix and workgroup rendering only; the Root Agent's blocks come from the code-owned prologue described above and cannot be dropped at all.)
 
 | Token | Meaning |
 |---|---|
@@ -268,7 +286,7 @@ Workgroups are isolated working environments created when a team needs to work o
 
 | Field | Description |
 |---|---|
-| `context` | Array of context sources. `$AGENTSCOMMANDER_CONTEXT` is the AC-injected global template. The Role.md entry defines this agent's personality. `$REPOS_WORKSPACE_INFO` is deprecated; repo context is rendered through `{{WORKSPACE_REPOS}}` inside `$AGENTSCOMMANDER_CONTEXT`. |
+| `context` | Array of context sources. `$AGENTSCOMMANDER_CONTEXT` is the AC-injected global template, and it is valid **only for Agent Matrix and workgroup context**; the Root Agent ignores it (see #979 above) and any occurrence is stripped from the Root `config.json` during provisioning. The Role.md entry defines this agent's personality. `$REPOS_WORKSPACE_INFO` is deprecated; repo context is rendered through `{{WORKSPACE_REPOS}}` inside `$AGENTSCOMMANDER_CONTEXT`. |
 | `identity` | Path to the parent agent folder. This is the canonical identity — the workgroup agent is a replica of this. |
 | `repos` | Relative paths to the repo clones inside this workgroup. |
 
