@@ -195,6 +195,10 @@ function deriveScopeContextFromSession(
 }
 
 const CONTEXT_MENU_VIEWPORT_MARGIN = 8;
+// #977 - grace period before a pointer-leave closes the replica context menu.
+// Longer than the 180ms flyout timer: leaving the menu INTO a submenu arms both,
+// and the submenu's mouseenter must be able to cancel this one first.
+const CONTEXT_MENU_CLOSE_GRACE_MS = 250;
 
 function workgroupCollapseId(wg: AcWorkgroup, rowContext: string): string {
   return [
@@ -1294,7 +1298,31 @@ const ProjectPanel: Component = () => {
         let replicaCtxMenuEl: HTMLDivElement | undefined;
         let dismissCtx: (() => void) | null = null;
 
+        // #977 - the menu closes when the pointer leaves it, after a grace period
+        // that any re-entry cancels (a quick cursor slip must not dismiss it).
+        //
+        // BOTH SUBMENUS RENDER IN THEIR OWN <Portal>, outside .session-context-menu:
+        // crossing from a submenu trigger into its flyout therefore fires the MENU's
+        // mouseleave, and a naive close would kill the menu (and the flyout with it,
+        // since the flyout Portal is a child of the menu's render block) exactly when
+        // the user reaches for it. The flyouts cancel this timer on mouseenter, so
+        // "pointer inside the menu OR inside an open submenu" reads as still-inside.
+        // Same schedule/cancel shape the flyouts already use for themselves, one
+        // level up. Click, click-outside and Escape are untouched.
+        let replicaCtxMenuCloseTimer: number | undefined;
+        const cancelReplicaCtxMenuClose = () => {
+          if (replicaCtxMenuCloseTimer === undefined) return;
+          window.clearTimeout(replicaCtxMenuCloseTimer);
+          replicaCtxMenuCloseTimer = undefined;
+        };
+
         const cleanupCtx = () => {
+          // #977 - a pending pointer-leave close belongs to the menu that armed it.
+          // Every menu open handler and every dismiss path calls cleanupCtx() first,
+          // so cancelling here is what stops a stale timer from dismissing the NEXT
+          // menu (right-click a row, slide off, right-click another row inside the
+          // grace period) or from tearing that menu's dismiss listeners off with it.
+          cancelReplicaCtxMenuClose();
           if (dismissCtx) {
             window.removeEventListener("click", dismissCtx);
             window.removeEventListener("contextmenu", dismissCtx);
@@ -1304,6 +1332,23 @@ const ProjectPanel: Component = () => {
         };
 
         onCleanup(cleanupCtx);
+
+        const closeReplicaCtxMenu = () => {
+          setReplicaCtxMenu(null);
+          cleanupCtx();
+        };
+        const scheduleReplicaCtxMenuClose = () => {
+          cancelReplicaCtxMenuClose();
+          // A failed group action pins the Add to Group flyout open on pointer-leave
+          // (scheduleGroupFlyoutClose bails on the same predicate). Closing the menu
+          // would dispose that flyout and its error with it, so bail identically.
+          if (groupFlyoutHasError()) return;
+          replicaCtxMenuCloseTimer = window.setTimeout(() => {
+            replicaCtxMenuCloseTimer = undefined;
+            if (groupFlyoutHasError()) return;
+            closeReplicaCtxMenu();
+          }, CONTEXT_MENU_CLOSE_GRACE_MS);
+        };
 
         const positionReplicaCtxMenu = (x: number, y: number) => {
           if (!replicaCtxMenuEl) return;
@@ -1634,8 +1679,14 @@ const ProjectPanel: Component = () => {
                 class="session-context-flyout"
                 ref={groupFlyoutEl}
                 style={{ left: `${groupFlyoutPos().x}px`, top: `${groupFlyoutPos().y}px` }}
-                onMouseEnter={cancelGroupFlyoutClose}
-                onMouseLeave={scheduleGroupFlyoutClose}
+                onMouseEnter={() => {
+                  cancelGroupFlyoutClose();
+                  cancelReplicaCtxMenuClose(); // #977 - still inside the menu
+                }}
+                onMouseLeave={() => {
+                  scheduleGroupFlyoutClose();
+                  scheduleReplicaCtxMenuClose(); // #977 - re-armed; the menu cancels it on re-entry
+                }}
                 onClick={(e) => e.stopPropagation()}
                 onContextMenu={(e) => e.stopPropagation()}
                 data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.flyout`}
@@ -1815,8 +1866,14 @@ const ProjectPanel: Component = () => {
                     class="session-context-flyout"
                     ref={repoFlyoutEl}
                     style={{ left: `${repoFlyoutPos().x}px`, top: `${repoFlyoutPos().y}px` }}
-                    onMouseEnter={cancelRepoFlyoutClose}
-                    onMouseLeave={scheduleRepoFlyoutClose}
+                    onMouseEnter={() => {
+                      cancelRepoFlyoutClose();
+                      cancelReplicaCtxMenuClose(); // #977 - still inside the menu
+                    }}
+                    onMouseLeave={() => {
+                      scheduleRepoFlyoutClose();
+                      scheduleReplicaCtxMenuClose(); // #977 - re-armed; the menu cancels it on re-entry
+                    }}
                     // This Portal renders OUTSIDE .session-context-menu, so the
                     // window-level dismiss listeners (bubble phase) would
                     // otherwise see these events and kill the whole menu.
@@ -3675,11 +3732,15 @@ const ProjectPanel: Component = () => {
                   ref={replicaCtxMenuEl}
                   style={{ left: `${replicaCtxMenu()!.x}px`, top: `${replicaCtxMenu()!.y}px` }}
                   onClick={(e) => e.stopPropagation()}
+                  onMouseEnter={cancelReplicaCtxMenuClose}
                   // #943 - a <For> row re-created under a stationary cursor is a
                   // detached node and can never fire its own mouseleave. This
                   // guarantees the flyout cannot hang. The flyout's onMouseEnter
                   // cancels the 180ms timer when crossing the 4px gap.
-                  onMouseLeave={scheduleRepoFlyoutClose}
+                  onMouseLeave={() => {
+                    scheduleRepoFlyoutClose();
+                    scheduleReplicaCtxMenuClose(); // #977
+                  }}
                 >
                   <Show when={activeReplicaMenu()}>
                     {(menu) => {
@@ -3699,7 +3760,7 @@ const ProjectPanel: Component = () => {
                             await restartReplicaSession(menu().sessionId);
                           }}
                         >
-                          Restart Session
+                          &#x21BA; Restart Session
                         </button>
                         <button
                           class="session-context-option"
@@ -3711,7 +3772,7 @@ const ProjectPanel: Component = () => {
                             setReplicaCodingAgentTarget({ sessionId, sessionName });
                           }}
                         >
-                          Coding Agent
+                          &#x1F916; Coding Agent
                         </button>
                         <button
                           class="session-context-option"
@@ -3777,7 +3838,7 @@ const ProjectPanel: Component = () => {
                               });
                             }}
                           >
-                            Coding Agent
+                            &#x1F916; Coding Agent
                           </button>
                           <button
                             class="session-context-option"
