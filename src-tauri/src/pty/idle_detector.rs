@@ -227,6 +227,27 @@ impl IdleDetector {
             .and_then(|&t| now.checked_duration_since(t))
     }
 
+    /// (#1001 PR1 / grinch G7) True iff this session's last PRINTABLE-output
+    /// instant is strictly after `t`. Compares the stored `activity` stamp to
+    /// `t` directly under a single lock, with NO synthesized `now`, so it avoids
+    /// the false-positive skew of a `now - activity_age` round-trip (a driver
+    /// `now` later than the accessor `now` would inflate the reconstructed
+    /// instant and read a stale echo as fresh). This is the timestamp-gate
+    /// candidate signal the wake-consumption harness evaluates; `activity_age`
+    /// (for B) is intentionally NOT reused here.
+    ///
+    /// CAVEAT (grinch G8): `activity` is frozen during `resize_grace`
+    /// (`record_activity_with_bytes` early-returns without stamping), so a
+    /// post-resize repaint does NOT count as activity here; callers needing
+    /// resize-awareness must consult `last_resize_age` (via `purge_readiness`).
+    pub fn has_printable_activity_since(&self, session_id: Uuid, t: Instant) -> bool {
+        self.activity
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&session_id)
+            .is_some_and(|&stamp| stamp > t)
+    }
+
     /// (#885) Sample readiness for `ids` under a SINGLE critical section.
     ///
     /// A PTY reader thread must take `activity` then `idle_set` to record activity
@@ -665,6 +686,31 @@ mod tests {
             readiness[0].activity_age.is_none(),
             "activity_age must be None for an unregistered session"
         );
+    }
+
+    #[test]
+    fn has_printable_activity_since_compares_stamp_to_reference() {
+        let detector = IdleDetector::new(|_| {}, |_| {});
+        let id = Uuid::new_v4();
+        detector.register_session(id, IdleTuning::DEFAULT);
+
+        // A reference that predates the recorded stamp: activity-since is true.
+        let before = Instant::now() - Duration::from_millis(50);
+        detector.record_activity_with_bytes(id, 5);
+        assert!(
+            detector.has_printable_activity_since(id, before),
+            "a recorded stamp is strictly after an earlier reference"
+        );
+
+        // A reference strictly after the last stamp: no newer activity.
+        let after = Instant::now() + Duration::from_millis(50);
+        assert!(
+            !detector.has_printable_activity_since(id, after),
+            "no activity after a future reference"
+        );
+
+        // Untracked session: never any activity.
+        assert!(!detector.has_printable_activity_since(Uuid::new_v4(), before));
     }
 
     #[test]
