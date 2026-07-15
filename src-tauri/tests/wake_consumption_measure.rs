@@ -384,10 +384,27 @@ impl SignalTally {
 
 // ─────────────────────────────── the harness ─────────────────────────────
 
-/// (#1001 PR2 P2) Faithfully replicate B's `live_settle_action` decision loop
-/// (busy fast-path, long-idle inject, fresh-idle wait, resize wait, cap) on real
-/// activity_age, so the post-fix number reflects the SHIPPED gate, not a proxy.
+/// (#1001 PR2 P2) Faithfully replicate B's live settle decision, so the post-fix
+/// number reflects the SHIPPED gate, not a proxy. Option-a first routes on
+/// `alive_age` (`live_wake_route`): a STARTING candidate takes the sustained-idle
+/// settle; an ESTABLISHED one runs `live_settle_action`'s activity_age loop (busy
+/// fast-path, long-idle inject, fresh-idle wait, resize wait, cap).
 async fn settle_like_b(ctx: &HarnessCtx, id: Uuid, max_wait: Duration) {
+    // (#1001 PR2 P2 option-a) Mirror prod: classify starting vs established by
+    // alive_age. Kept in sync with mailbox.rs STARTUP_SETTLE_THRESHOLD (pub(crate),
+    // unreachable from this integration-test crate, so hardcoded like FRESH_IDLE_GUARD).
+    const STARTUP_THRESHOLD: Duration = Duration::from_secs(20);
+    if ctx.idle.alive_age(id).is_some_and(|a| a < STARTUP_THRESHOLD) {
+        // Starting: route to the sustained-idle settle, mirroring prod's #611 path
+        // (cold-spawn params: 90s cap, 2s hold). wait_for_settle is a slightly
+        // STRICTER paste-ready proxy than prod's idle-set-only gate (it also
+        // requires rendered content), so it can only OVER-wait, never under-wait -
+        // it cannot hide a drop the shipped gate would take.
+        let deadline = Instant::now() + Duration::from_secs(90);
+        wait_for_settle(ctx, id, Duration::from_millis(2000), deadline).await;
+        return;
+    }
+    // Established: the real-time activity_age loop (unchanged).
     let start = Instant::now();
     let poll = Duration::from_millis(500);
     loop {
@@ -411,6 +428,105 @@ async fn settle_like_b(ctx: &HarnessCtx, id: Uuid, max_wait: Duration) {
             Some(_) => tokio::time::sleep(poll).await, // fresh-idle window
         }
     }
+}
+
+/// (#1001 PR2 P2 option-a) DERIVE the "starting" threshold from evidence. Spawns
+/// the agent and records `alive_age` at the instant it FIRST holds sustained
+/// paste-ready - `wait_for_settle`'s definition (watcher idle AND rendered
+/// content held for `settle_hold`), the same paste-ready notion B's live settle
+/// targets. `wait_for_settle` returns AFTER the hold, so first-ready alive_age =
+/// alive_age - settle_hold (up to a 200ms poll of slack). Prints per-trial and
+/// min/mean/max so the startup threshold is set to max + margin, not a guess. No
+/// production code path runs here; this only measures the boot timing that feeds
+/// the `STARTUP_SETTLE_THRESHOLD` constant.
+async fn run_startup_probe(cfg: &HarnessConfig, ctx: &HarnessCtx) {
+    println!(
+        "\n=== startup-probe (agent='{}', settle_hold={:?}) ===",
+        cfg.agent_label, cfg.settle_hold
+    );
+    let mut first_ready: Vec<Duration> = Vec::new();
+    let mut raw_ready: Vec<Duration> = Vec::new();
+    for trial in 0..cfg.trials {
+        let trial_dir = ctx._temp.path().join(format!("probe{trial}"));
+        std::fs::create_dir_all(&trial_dir).expect("trial dir");
+
+        let info = match create_session_inner(
+            ctx.app.handle(),
+            &ctx.session_mgr,
+            &ctx.pty_mgr,
+            cfg.shell.clone(),
+            cfg.args.clone(),
+            trial_dir.to_string_lossy().to_string(),
+            Some(format!("wake-probe-{trial}")),
+            None,
+            Some(cfg.agent_label.clone()),
+            true,
+            Vec::new(),
+            true,
+            None,
+            None,
+        )
+        .await
+        {
+            Ok(info) => info,
+            Err(e) => {
+                println!("trial {trial}: spawn failed: {e}");
+                continue;
+            }
+        };
+        let id = Uuid::parse_str(&info.id).expect("uuid");
+
+        let deadline = Instant::now() + Duration::from_secs(60);
+        if wait_for_settle(ctx, id, cfg.settle_hold, deadline).await {
+            // alive_age is measured from registered_at (set at PTY spawn), so it
+            // is the authoritative "alive since"; subtract the hold to recover the
+            // instant the session BECAME ready.
+            let raw = ctx.idle.alive_age(id).unwrap_or_default();
+            let fr = raw.checked_sub(cfg.settle_hold).unwrap_or(raw);
+            raw_ready.push(raw);
+            first_ready.push(fr);
+            println!(
+                "trial {trial}: first sustained-ready alive_age={:?} (raw held-ready alive_age={:?}, hold={:?})",
+                fr, raw, cfg.settle_hold
+            );
+        } else {
+            println!("trial {trial}: never reached sustained paste-ready within 60s");
+        }
+        let _ = destroy_session_inner(ctx.app.handle(), id).await;
+    }
+
+    println!("\n--- STARTUP-PROBE RESULT (agent='{}') ---", cfg.agent_label);
+    if first_ready.is_empty() {
+        println!("no samples (no session reached sustained paste-ready)");
+    } else {
+        let stat = |v: &[Duration]| {
+            let min = v.iter().min().copied().unwrap_or_default();
+            let max = v.iter().max().copied().unwrap_or_default();
+            let mean = v.iter().sum::<Duration>() / v.len() as u32;
+            (min, mean, max)
+        };
+        let (fmin, fmean, fmax) = stat(&first_ready);
+        let (rmin, rmean, rmax) = stat(&raw_ready);
+        println!(
+            "first-ready alive_age: n={} min={:?} mean={:?} max={:?}",
+            first_ready.len(),
+            fmin,
+            fmean,
+            fmax
+        );
+        println!(
+            "held-ready alive_age:  n={} min={:?} mean={:?} max={:?}",
+            raw_ready.len(),
+            rmin,
+            rmean,
+            rmax
+        );
+        println!(
+            "suggested STARTUP_SETTLE_THRESHOLD >= max first-ready ({:?}) + margin",
+            fmax
+        );
+    }
+    println!("=== end ===\n");
 }
 
 /// (#1001 PR2 P2, the grinch-P2 gate) Live-path drop baseline. Reuses an
@@ -558,6 +674,10 @@ async fn measure_wake_consumption_signals() {
     let repo_root = std::env::current_dir().expect("cwd");
     let ctx = make_ctx(&repo_root);
 
+    if cfg.inject_mode == "startup_probe" {
+        run_startup_probe(&cfg, &ctx).await;
+        return;
+    }
     if cfg.inject_mode == "live_reuse" {
         run_live_reuse(&cfg, &ctx).await;
         return;
