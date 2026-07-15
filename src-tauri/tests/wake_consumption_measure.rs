@@ -86,6 +86,7 @@ struct HarnessConfig {
     immediate_delay: Duration,
     redeliver_mode: String,
     settle_hold: Duration,
+    live_settle: String,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -116,6 +117,7 @@ impl HarnessConfig {
         );
         let inject_mode = env_or("AC_WAKE_HARNESS_INJECT_MODE", "ready");
         let redeliver_mode = env_or("AC_WAKE_HARNESS_REDELIVER_MODE", "immediate");
+        let live_settle = env_or("AC_WAKE_HARNESS_LIVE_SETTLE", "on");
         let settle_hold = Duration::from_millis(
             env_or("AC_WAKE_HARNESS_SETTLE_HOLD_MS", "3500")
                 .parse()
@@ -137,6 +139,7 @@ impl HarnessConfig {
             immediate_delay,
             redeliver_mode,
             settle_hold,
+            live_settle,
         }
     }
 }
@@ -378,6 +381,155 @@ impl SignalTally {
 
 // ─────────────────────────────── the harness ─────────────────────────────
 
+/// (#1001 PR2 P2) Wait until the session's real-time activity_age reaches
+/// `target` (mirrors the fix's settle: inject only once activity_age crosses
+/// idle_threshold + guard). Returns true if reached, false on deadline.
+async fn wait_activity_age_at_least(
+    ctx: &HarnessCtx,
+    id: Uuid,
+    target: Duration,
+    deadline: Instant,
+) -> bool {
+    while Instant::now() < deadline {
+        let age = ctx
+            .idle
+            .purge_readiness(&[id])
+            .into_iter()
+            .next()
+            .and_then(|r| r.activity_age);
+        if age.is_some_and(|a| a >= target) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+    false
+}
+
+/// (#1001 PR2 P2, the grinch-P2 gate) Live-path drop baseline. Reuses an
+/// ALREADY-LIVE session: spawn, run a settled warm-up turn (so it is used, not a
+/// fresh cold-spawn), let it return to fresh-idle after that turn, then wake it
+/// AGAIN in the `[idle_threshold, idle_threshold + guard]` window and measure the
+/// drop via the echo-immune GT. `AC_WAKE_HARNESS_LIVE_SETTLE`:
+///  - "off": PRE-fix behaviour - fire wake #2 at fresh-idle, no settle.
+///  - "on":  POST-fix - apply the fix's settle (wait activity_age >=
+///    idle_threshold + guard) before wake #2.
+///
+/// The live Inject path (`deliver_wake` is pub(crate), `settle_live_before_inject`
+/// is private) is unreachable from an integration test, so this replicates the
+/// fix's exact timing gate on real `activity_age` rather than routing through it.
+/// The measured quantity - does a fresh-idle live wake drop, with vs without the
+/// settle - is identical.
+async fn run_live_reuse(cfg: &HarnessConfig, ctx: &HarnessCtx) {
+    println!(
+        "\n=== live-reuse baseline (agent='{}', live_settle='{}') ===",
+        cfg.agent_label, cfg.live_settle
+    );
+    let mut measured = 0usize;
+    let mut dropped = 0usize;
+    let mut warmup_failed = 0usize;
+
+    for trial in 0..cfg.trials {
+        let trial_dir = ctx._temp.path().join(format!("reuse{trial}"));
+        std::fs::create_dir_all(&trial_dir).expect("trial dir");
+        let gt_file = trial_dir.join("marks.txt");
+
+        let info = match create_session_inner(
+            ctx.app.handle(),
+            &ctx.session_mgr,
+            &ctx.pty_mgr,
+            cfg.shell.clone(),
+            cfg.args.clone(),
+            trial_dir.to_string_lossy().to_string(),
+            Some(format!("wake-reuse-{trial}")),
+            None,
+            Some(cfg.agent_label.clone()),
+            true,
+            Vec::new(),
+            true,
+            None,
+            None,
+        )
+        .await
+        {
+            Ok(info) => info,
+            Err(e) => {
+                println!("trial {trial}: spawn failed: {e}");
+                continue;
+            }
+        };
+        let id = Uuid::parse_str(&info.id).expect("uuid");
+
+        // Warm-up turn (wake #1), settled so it reliably runs: makes this an
+        // already-live, already-used session rather than a fresh cold-spawn.
+        let boot = Instant::now() + Duration::from_secs(45);
+        wait_for_settle(ctx, id, Duration::from_millis(3500), boot).await;
+        let _ =
+            inject_text_into_session(ctx.app.handle(), id, &wake_body(&gt_file, trial, 0)).await;
+        let warm_deadline = Instant::now() + cfg.gt_timeout;
+        while gt_marker_count(&gt_file) < 1 && Instant::now() < warm_deadline {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        if gt_marker_count(&gt_file) < 1 {
+            warmup_failed += 1;
+            println!("trial {trial}: warm-up turn did not run; skipping");
+            let _ = destroy_session_inner(ctx.app.handle(), id).await;
+            continue;
+        }
+        let warm_count = gt_marker_count(&gt_file);
+
+        // Return to FRESH-idle after the warm-up turn (watcher_idle just true).
+        let fi_deadline = Instant::now() + Duration::from_secs(30);
+        while !watcher_idle(&ctx.idle, id) && Instant::now() < fi_deadline {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        // POST-fix applies the settle; PRE-fix ("off") injects here, in the
+        // fresh-idle danger window.
+        if cfg.live_settle == "on" {
+            let idle_threshold = ctx
+                .idle
+                .purge_readiness(&[id])
+                .into_iter()
+                .next()
+                .map(|r| r.idle_threshold)
+                .unwrap_or(Duration::from_millis(2500));
+            let target = idle_threshold + Duration::from_millis(1000); // FRESH_IDLE_GUARD
+            let sd = Instant::now() + Duration::from_secs(10);
+            wait_activity_age_at_least(ctx, id, target, sd).await;
+        }
+
+        // Measured wake #2.
+        let _ =
+            inject_text_into_session(ctx.app.handle(), id, &wake_body(&gt_file, trial, 1)).await;
+        let m_deadline = Instant::now() + cfg.gt_timeout;
+        while gt_marker_count(&gt_file) <= warm_count && Instant::now() < m_deadline {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        let consumed = gt_marker_count(&gt_file) > warm_count;
+        measured += 1;
+        if !consumed {
+            dropped += 1;
+        }
+        println!("trial {trial}: live-reuse wake#2 (settle={}) consumed={consumed}", cfg.live_settle);
+        let _ = destroy_session_inner(ctx.app.handle(), id).await;
+    }
+
+    let pct = if measured == 0 {
+        0.0
+    } else {
+        dropped as f64 / measured as f64 * 100.0
+    };
+    println!(
+        "\n--- LIVE-REUSE RESULT (agent='{}', live_settle='{}') ---",
+        cfg.agent_label, cfg.live_settle
+    );
+    println!(
+        "fresh-idle live-path wake#2 drop rate: {}/{} ({:.0}%); warm-up-failed skipped: {}",
+        dropped, measured, pct, warmup_failed
+    );
+    println!("=== end ===\n");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "on-demand real-agent measurement; needs an installed+authed coding agent on Windows/ConPTY"]
 async fn measure_wake_consumption_signals() {
@@ -399,6 +551,11 @@ async fn measure_wake_consumption_signals() {
 
     let repo_root = std::env::current_dir().expect("cwd");
     let ctx = make_ctx(&repo_root);
+
+    if cfg.inject_mode == "live_reuse" {
+        run_live_reuse(&cfg, &ctx).await;
+        return;
+    }
 
     let mut bare = SignalTally::default();
     let mut ts_gate = SignalTally::default();
