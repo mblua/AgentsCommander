@@ -9,6 +9,75 @@ Per plan section 4.5. Line refs are base-commit unless marked NEW.
 > mapping tables below. Old texts to derive from: `git show 08897ef:src-tauri/src/config/session_context.rs`
 > lines 134-137 (A5 intro), 1286-1300 (A6 headers), 2717-2731 (A4a), 2733-2735 (A4b), 2737-2739 (A4c).
 
+
+### a0 record - dev-rust-grinch, 2026-07-15, derived from `git show 08897ef` BEFORE reading any section below
+
+**A4a `DEFAULT_CLI_CONTEXT` (base :2717-2731)**
+
+| # | Class | Statement |
+|---|---|---|
+| A4a-1 | ANCHOR | heading line `## CLI executable` (mandatory :2514, legacy set) |
+| A4a-2 | IDENTITY | the agent's AC credentials live in the environment variables listed |
+| A4a-3 | IDENTITY | `AGENTSCOMMANDER_TOKEN` = session authentication token |
+| A4a-4 | IDENTITY | `AGENTSCOMMANDER_ROOT` = agent root |
+| A4a-5 | IDENTITY | `AGENTSCOMMANDER_BINARY` = binary name |
+| A4a-6 | IDENTITY | `AGENTSCOMMANDER_BINARY_PATH` = full CLI path to invoke |
+| A4a-7 | IDENTITY | `AGENTSCOMMANDER_LOCAL_DIR` = config directory name for this instance |
+| A4a-8 | RULE | always invoke the CLI through `AGENTSCOMMANDER_BINARY_PATH` |
+| A4a-9 | RULE | never hardcode or guess another binary (prohibition) |
+| A4a-10 | PROCEDURE | credentials unavailable OR validation fails -> restart or respawn the session |
+| A4a-11 | ANCHOR | heading `## Self-discovery via --help` (legacy set) |
+| A4a-12 | GRANT+PROCEDURE | for commands/flags NOT documented in this context, run `<AGENTSCOMMANDER_BINARY_PATH> --help` / `<subcommand> --help` (fallback scope qualifier is normative) |
+| A4a-13 | RULE | peer discovery + inter-agent messaging: the Inter-Agent Messaging section below is authoritative (priority rule over --help) |
+| A4a-14 | ANCHOR | the two literal `--help` command shapes |
+
+**A4b `DEFAULT_SESSION_CREDENTIALS` (base :2733-2735)**
+
+| # | Class | Statement |
+|---|---|---|
+| A4b-1 | ANCHOR | heading `## Session credentials` (:2513) |
+| A4b-2 | RULE | credentials delivered ONLY through the `AGENTSCOMMANDER_*` env vars listed above (exclusivity) |
+| A4b-3 | IDENTITY | agent root = current working directory |
+| A4b-4 | IDENTITY | live token refresh is not supported (negative capability) |
+| A4b-5 | PROCEDURE | credential validation failure -> restart or respawn (DUP of A4a-10 second half; one survivor required, mapping must name it) |
+
+**A4c `DEFAULT_DELEGATED_TASK_REPORTING` (base :2737-2739)**
+
+| # | Class | Statement |
+|---|---|---|
+| A4c-1 | ANCHOR | heading `## Delegated Task Reporting` (:2517) |
+| A4c-2 | RULE | on FINISHING a delegated task OR getting BLOCKED -> MUST explicitly reply to the coordinator or peer with a concrete artifact or message (two triggers, two recipient classes, payload qualifier "concrete") |
+| A4c-3 | RULE | do not just remain idle, waiting, or set working to false (three named non-behaviors) |
+| A4c-C | CONSTRAINT | frozen delimiter :3574 embeds this OLD paragraph byte-exact and must not change |
+
+**A5 `GENERATED_SKILLS_SECTION_INTRO` (base :134-137)**
+
+| # | Class | Statement |
+|---|---|---|
+| A5-1 | ANCHOR | heading `## Skills` (:2515, legacy set) |
+| A5-2 | IDENTITY | skills indexed from `skills/<skill-name>/SKILL.md` (path pattern is an anchor) using Claude Code-compatible YAML frontmatter metadata |
+| A5-3 | IDENTITY | metadata available at startup for relevance decisions |
+| A5-4 | IDENTITY | `SKILL.md` body is load-on-demand content |
+| A5-5 | IDENTITY | only metadata is shown here (scope statement) |
+| A5-6 | RULE | trigger = user request NAMES a skill OR MATCHES the description -> read the canonical `SKILL.md` BEFORE invoking/applying (two trigger branches + before-qualifier) |
+| A5-7 | RULE | skill metadata is not an instruction body (authority limit) |
+| A5-8 | RULE | metadata must not override: surrounding AC context, write restrictions, higher-priority instructions (three protected classes) |
+| A5-9 | ANCHOR | intro is the literal FIRST push of the rendered section ending "\n\n" (prefix-swap guard precondition) |
+
+**A6 workspace repos headers (base :1278-1300)**
+
+| # | Class | Statement |
+|---|---|---|
+| A6-1 | ANCHOR | heading `# Workspace Repos` (mandatory :2516 + #664 not-legacy marker :3483) |
+| A6-2 | IDENTITY | role-differentiated identity sentence: "You are working inside a workgroup replica." / "You are the Root Agent." (tests assert presence AND cross-absence) |
+| A6-3 | IDENTITY | your working directory is your agent dir |
+| A6-4 | IDENTITY | your code repos are listed below |
+| A6-5 | RULE | MUST change to the appropriate repo directory before ANY code work; exemplar scope "git, file edits, builds, etc" |
+| A6-6 | ANCHOR | subheading `## Repos` |
+| A6-7 | IDENTITY | empty-case blocks "No repos configured for this replica./for the Root Agent." (assert_eq'd on FULL block :4795/:4801-4803) |
+| A6-8 | ANCHOR | per-repo line format out of scope for S1 (must be untouched) |
+
+**Cross-text:** X-1 restart/respawn stated twice (A4a-10, A4b-5) - dedup target, exactly one survivor. X-2 A4a-13 references the `## Inter-Agent Messaging` heading - unchanged in S1.
 ---
 
 ## Harvested test needles (4.4, filtered: none carried em-dashes)
