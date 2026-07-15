@@ -1020,40 +1020,49 @@ pub(crate) fn next_sustained_idle_state(
 /// FRESH_IDLE_GUARD]` window where a just-idle TUI may not be paste-ready yet.
 pub(crate) const FRESH_IDLE_GUARD: std::time::Duration = std::time::Duration::from_millis(1000);
 
-/// (#1001 PR2 / B) Whether a wake should bypass the settle and inject at once
-/// because the session is busy / mid-turn. `busy_means_inject` is true ONLY on
-/// the live-inject arm, where a busy session must deliver immediately to preserve
-/// bias-to-deliver (`wake_action_for` -> Inject regardless). The cold-spawn path
-/// passes false, so "busy" there keeps meaning "still starting, keep waiting".
-/// Pure (grinch G3 fix).
-pub(crate) fn live_busy_fast_inject(waiting_for_input: bool, busy_means_inject: bool) -> bool {
-    busy_means_inject && !waiting_for_input
-}
-
-/// (#1001 PR2 / B) Seed the live settle from the session's REAL idle age so a
-/// genuinely-ready (long-idle) session injects with no added latency and B only
-/// gates the fresh-idle window. Returns the idle age to CREDIT - the caller seeds
-/// `idle_since = now - credited` - clamped to `settle` so a long-idle session is
-/// immediately settled and the `Instant` subtraction stays bounded; `None` seeds
-/// a fresh settle (credit nothing).
+/// (#1001 PR2 / B, grinch P1) Pure per-tick decision for the LIVE-inject settle,
+/// sourced ENTIRELY from the real-time `activity_age` snapshot - never the lagged
+/// `SessionManager.waiting_for_input`, which the watcher flips idle up to ~500ms
+/// after `activity_age` crosses `idle_threshold` (watcher granularity + on_idle +
+/// spawned `mark_idle`). Reading `waiting_for_input` in the loop re-opened the
+/// fresh-idle drop during `activity_age ∈ [idle_threshold, T_flip]` (grinch P1);
+/// `activity_age` is stamped synchronously (`idle_detector.rs`), so it has no lag
+/// in either direction.
 ///
-/// Resize fallback (grinch G8): inside `resize_grace` after a resize,
-/// `activity_age` is FROZEN and untrustworthy (`record_activity_with_bytes`
-/// early-returns without stamping; see `PurgeReadiness.last_resize_age` doc), so
-/// credit nothing and let the settle run fresh rather than read a repaint as
-/// long-idle. Pure.
-pub(crate) fn live_settle_seed(
+/// - `elapsed >= max_wait`: InjectNow (cap first - never drop a delivery).
+/// - recent resize (`last_resize_age < resize_grace`): `activity_age` is FROZEN
+///   and untrustworthy and the TUI is repainting - Wait (never inject a repaint;
+///   grinch G8). See `PurgeReadiness.last_resize_age` doc.
+/// - `activity_age` unknown (untracked / just destroyed): InjectNow best-effort;
+///   the inject then surfaces the real state.
+/// - `activity_age < idle_threshold`: busy / mid-turn - InjectNow (bias-to-deliver).
+/// - `activity_age >= settle` (`idle_threshold + FRESH_IDLE_GUARD`): long-idle -
+///   InjectNow (no added latency for a genuinely-ready wake).
+/// - otherwise (the `[idle_threshold, settle)` fresh-idle window): Wait.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn live_settle_action(
     activity_age: Option<std::time::Duration>,
     last_resize_age: Option<std::time::Duration>,
     resize_grace: std::time::Duration,
+    idle_threshold: std::time::Duration,
     settle: std::time::Duration,
-) -> Option<std::time::Duration> {
+    elapsed: std::time::Duration,
+    max_wait: std::time::Duration,
+) -> SettleAction {
+    if elapsed >= max_wait {
+        return SettleAction::InjectNow;
+    }
     if let Some(resize_age) = last_resize_age {
         if resize_age < resize_grace {
-            return None;
+            return SettleAction::Wait;
         }
     }
-    activity_age.map(|age| age.min(settle))
+    match activity_age {
+        None => SettleAction::InjectNow,
+        Some(age) if age < idle_threshold => SettleAction::InjectNow,
+        Some(age) if age >= settle => SettleAction::InjectNow,
+        Some(_) => SettleAction::Wait,
+    }
 }
 
 /// (#1001 PR2 / B) The action `settle_until_ready` takes on one tick.
@@ -1066,23 +1075,19 @@ pub(crate) enum SettleAction {
     Wait,
 }
 
-/// (#1001 PR2 / B) Pure per-tick decision for the shared settle loop, so the whole
-/// policy - busy fast-path, sustained-idle settle, and the inject-anyway cap - is
-/// unit-testable without timers, locks, or a PTY. Returns the next `idle_since`
-/// and the action.
+/// (#1001 PR2 / B) Pure per-tick decision for the COLD-SPAWN settle loop, so the
+/// sustained-idle + inject-anyway-cap policy is unit-testable without timers. The
+/// cold-spawn path gates on `SessionManager.waiting_for_input` (a freshly spawned
+/// session has no meaningful `activity_age` during startup churn); the live path
+/// uses `live_settle_action` on real-time `activity_age` instead (grinch P1).
 pub(crate) fn settle_tick(
     waiting_for_input: bool,
-    busy_means_inject: bool,
     idle_since: Option<std::time::Instant>,
     now: std::time::Instant,
     settle: std::time::Duration,
     elapsed: std::time::Duration,
     max_wait: std::time::Duration,
 ) -> (Option<std::time::Instant>, SettleAction) {
-    // Live-path busy fast-path: deliver immediately (bias-to-deliver).
-    if live_busy_fast_inject(waiting_for_input, busy_means_inject) {
-        return (idle_since, SettleAction::InjectNow);
-    }
     let (next_idle_since, settled) =
         next_sustained_idle_state(waiting_for_input, idle_since, now, settle);
     if settled {
@@ -3081,7 +3086,6 @@ impl MailboxPoller {
             std::time::Duration::from_millis(2000),
             std::time::Duration::from_millis(500),
             None,
-            false,
         )
         .await
     }
@@ -3095,7 +3099,6 @@ impl MailboxPoller {
     /// the session was destroyed mid-settle. It reads and decides BEFORE sleeping,
     /// so a seeded already-ready session injects with zero added latency; the
     /// cold-spawn sustained-idle requirement is unchanged.
-    #[allow(clippy::too_many_arguments)]
     async fn settle_until_ready<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -3104,7 +3107,6 @@ impl MailboxPoller {
         settle: std::time::Duration,
         poll: std::time::Duration,
         initial_idle_since: Option<std::time::Instant>,
-        busy_means_inject: bool,
     ) -> Result<(), String> {
         let start = std::time::Instant::now();
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
@@ -3130,7 +3132,6 @@ impl MailboxPoller {
             let was_settling = idle_since.is_some();
             let (next_idle_since, action) = settle_tick(
                 waiting,
-                busy_means_inject,
                 idle_since,
                 std::time::Instant::now(),
                 settle,
@@ -3162,14 +3163,17 @@ impl MailboxPoller {
         }
     }
 
-    /// (#1001 PR2 / B) Settle a LIVE session to paste-ready before a wake inject.
-    /// The live-inject arm used to go straight to inject with no gate, so a wake
-    /// landing in the fresh-idle window dropped (~75%, PR1). Seeds the settle from
-    /// the session's real idle age via `purge_readiness` - one atomic snapshot that
-    /// also carries the per-session `idle_threshold` and the resize-freeze
-    /// `last_resize_age` - so a long-idle or busy session injects immediately and
-    /// only a freshly-idle one waits out `FRESH_IDLE_GUARD`. Best-effort: any
-    /// missing state falls through to the inject, which surfaces the real state.
+    /// (#1001 PR2 / B, grinch P1) Settle a LIVE session to paste-ready before a
+    /// wake inject. The live-inject arm used to go straight to inject with no gate,
+    /// so a wake in the fresh-idle window dropped (~75%, PR1). Every tick reads ONE
+    /// atomic `purge_readiness` snapshot and decides from the real-time
+    /// `activity_age` (plus the per-session `idle_threshold` and the resize-freeze
+    /// `last_resize_age`) via `live_settle_action` - NOT from the lagged
+    /// `SessionManager.waiting_for_input`, whose ~500ms idle-flip lag would let a
+    /// busy fast-path fire inside the fresh-idle window (grinch P1). A busy
+    /// (mid-turn) or long-idle session injects at once; only a freshly-idle one
+    /// waits out `FRESH_IDLE_GUARD`. Best-effort: any missing state falls through
+    /// to the inject, which surfaces the real state.
     async fn settle_live_before_inject<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -3185,32 +3189,36 @@ impl MailboxPoller {
         else {
             return;
         };
-        let readiness = idle.purge_readiness(&[session_id]);
-        let Some(r) = readiness.first() else {
-            return;
-        };
-        let settle_live = r.idle_threshold + FRESH_IDLE_GUARD;
-        let initial_idle_since =
-            live_settle_seed(r.activity_age, r.last_resize_age, r.resize_grace, settle_live)
-                .and_then(|age| std::time::Instant::now().checked_sub(age));
+        let max_wait = std::time::Duration::from_secs(10);
+        let poll = std::time::Duration::from_millis(500);
+        let start = std::time::Instant::now();
 
-        if let Err(e) = self
-            .settle_until_ready(
-                app,
-                session_id,
-                std::time::Duration::from_secs(10),
+        loop {
+            let Some(r) = idle.purge_readiness(&[session_id]).into_iter().next() else {
+                return; // no snapshot: proceed to inject (best-effort)
+            };
+            let settle_live = r.idle_threshold + FRESH_IDLE_GUARD;
+            match live_settle_action(
+                r.activity_age,
+                r.last_resize_age,
+                r.resize_grace,
+                r.idle_threshold,
                 settle_live,
-                std::time::Duration::from_millis(500),
-                initial_idle_since,
-                true,
-            )
-            .await
-        {
-            log::debug!(
-                "[mailbox] wake: live settle for {} ended early ({}); proceeding to inject",
-                session_id,
-                e
-            );
+                start.elapsed(),
+                max_wait,
+            ) {
+                SettleAction::InjectNow => {
+                    if start.elapsed() >= max_wait {
+                        log::warn!(
+                            "[mailbox] wake: live settle for {} hit the {}s cap; injecting anyway",
+                            session_id,
+                            max_wait.as_secs()
+                        );
+                    }
+                    return;
+                }
+                SettleAction::Wait => tokio::time::sleep(poll).await,
+            }
         }
     }
 
@@ -7913,77 +7921,12 @@ mod tests {
         assert!(is_viable_wake_candidate(&SessionStatus::Running, true));
     }
 
-    // ── (#1001 PR2 / B) live-inject settle: busy fast-path, seed, cap ──
-
-    #[test]
-    fn live_busy_fast_inject_only_on_live_busy() {
-        // Live arm (busy_means_inject = true): a busy/mid-turn session injects now.
-        assert!(live_busy_fast_inject(false, true));
-        // Live arm idle: not a fast-path (the settle decides).
-        assert!(!live_busy_fast_inject(true, true));
-        // Cold-spawn arm (false): busy never fast-paths (keep waiting to start).
-        assert!(!live_busy_fast_inject(false, false));
-        assert!(!live_busy_fast_inject(true, false));
-    }
-
-    #[test]
-    fn live_settle_seed_credits_idle_age_and_falls_back_on_resize() {
-        let settle = Duration::from_millis(3500);
-        let grace = Duration::from_millis(4000);
-        // Long-idle: credited age clamped to settle -> immediately settled.
-        assert_eq!(
-            live_settle_seed(Some(Duration::from_secs(60)), None, grace, settle),
-            Some(settle)
-        );
-        // Fresh-idle: credited age is the real sub-settle value -> waits remainder.
-        assert_eq!(
-            live_settle_seed(Some(Duration::from_millis(2600)), None, grace, settle),
-            Some(Duration::from_millis(2600))
-        );
-        // Recent resize (activity_age frozen): credit nothing, settle fresh (G8).
-        assert_eq!(
-            live_settle_seed(
-                Some(Duration::from_secs(60)),
-                Some(Duration::from_millis(10)),
-                grace,
-                settle
-            ),
-            None
-        );
-        // Old resize (past grace): trust activity_age again.
-        assert_eq!(
-            live_settle_seed(
-                Some(Duration::from_secs(60)),
-                Some(Duration::from_secs(30)),
-                grace,
-                settle
-            ),
-            Some(settle)
-        );
-        // Untracked session: credit nothing.
-        assert_eq!(live_settle_seed(None, None, grace, settle), None);
-    }
-
-    #[test]
-    fn settle_tick_live_busy_injects_immediately() {
-        let now = std::time::Instant::now();
-        let (_, action) = settle_tick(
-            false,
-            true,
-            None,
-            now,
-            Duration::from_millis(3500),
-            Duration::from_millis(0),
-            Duration::from_secs(10),
-        );
-        assert_eq!(action, SettleAction::InjectNow);
-    }
+    // ── (#1001 PR2 / B) cold-spawn settle_tick + live_settle_action (grinch P1) ──
 
     #[test]
     fn settle_tick_cold_spawn_busy_keeps_waiting_and_resets_clock() {
         let now = std::time::Instant::now();
         let (idle_since, action) = settle_tick(
-            false,
             false,
             Some(now),
             now,
@@ -7996,72 +7939,142 @@ mod tests {
     }
 
     #[test]
-    fn settle_tick_long_idle_seed_injects_without_waiting() {
+    fn settle_tick_sustained_idle_injects() {
         let now = std::time::Instant::now();
-        let seeded = now.checked_sub(Duration::from_millis(3500)).unwrap();
+        let since = now.checked_sub(Duration::from_millis(2000)).unwrap();
         let (_, action) = settle_tick(
             true,
-            true,
-            Some(seeded),
+            Some(since),
             now,
-            Duration::from_millis(3500),
+            Duration::from_millis(2000),
             Duration::from_millis(0),
-            Duration::from_secs(10),
+            Duration::from_secs(90),
         );
-        assert_eq!(
-            action,
-            SettleAction::InjectNow,
-            "a genuinely-ready (long-idle) wake injects at once, no added latency"
-        );
-    }
-
-    #[test]
-    fn settle_tick_fresh_idle_waits_then_settles() {
-        let now = std::time::Instant::now();
-        // Idle for only 1s of a 3.5s settle: keep waiting.
-        let seeded = now.checked_sub(Duration::from_millis(1000)).unwrap();
-        let (carried, action) = settle_tick(
-            true,
-            true,
-            Some(seeded),
-            now,
-            Duration::from_millis(3500),
-            Duration::from_millis(1000),
-            Duration::from_secs(10),
-        );
-        assert_eq!(action, SettleAction::Wait);
-        // Same clock, now past the settle window: injects.
-        let later = seeded + Duration::from_millis(3600);
-        let (_, action2) = settle_tick(
-            true,
-            true,
-            carried,
-            later,
-            Duration::from_millis(3500),
-            Duration::from_millis(3600),
-            Duration::from_secs(10),
-        );
-        assert_eq!(action2, SettleAction::InjectNow);
+        assert_eq!(action, SettleAction::InjectNow, "idle held >= settle -> inject");
     }
 
     #[test]
     fn settle_tick_caps_and_injects_anyway() {
         let now = std::time::Instant::now();
-        // Still short of settle, but max_wait exceeded -> inject anyway (no drop).
+        // Not yet settled, but max_wait exceeded -> inject anyway (never drop).
         let (_, action) = settle_tick(
-            true,
             true,
             Some(now),
             now,
-            Duration::from_millis(3500),
+            Duration::from_millis(2000),
+            Duration::from_secs(91),
+            Duration::from_secs(90),
+        );
+        assert_eq!(action, SettleAction::InjectNow, "cap must never drop a delivery");
+    }
+
+    // live_settle_action gates the LIVE path on real-time activity_age (grinch P1),
+    // never the lagged waiting_for_input. idle_threshold 2500ms, settle 3500ms.
+    const LSA_IDLE_THRESHOLD: Duration = Duration::from_millis(2500);
+    const LSA_SETTLE: Duration = Duration::from_millis(3500);
+    const LSA_RESIZE_GRACE: Duration = Duration::from_millis(4000);
+    const LSA_MAX_WAIT: Duration = Duration::from_secs(10);
+
+    #[test]
+    fn live_settle_action_busy_mid_turn_injects_immediately() {
+        // activity_age < idle_threshold: the agent is actively producing output.
+        let action = live_settle_action(
+            Some(Duration::from_millis(1000)),
+            None,
+            LSA_RESIZE_GRACE,
+            LSA_IDLE_THRESHOLD,
+            LSA_SETTLE,
+            Duration::from_millis(0),
+            LSA_MAX_WAIT,
+        );
+        assert_eq!(action, SettleAction::InjectNow, "busy/mid-turn injects at once");
+    }
+
+    #[test]
+    fn live_settle_action_fresh_idle_window_waits() {
+        // The exact lagged-flag hole (grinch P1): activity_age past idle_threshold
+        // but < settle. waiting_for_input may still be false here; we must WAIT.
+        for age_ms in [2501u64, 2800, 3499] {
+            let action = live_settle_action(
+                Some(Duration::from_millis(age_ms)),
+                None,
+                LSA_RESIZE_GRACE,
+                LSA_IDLE_THRESHOLD,
+                LSA_SETTLE,
+                Duration::from_millis(0),
+                LSA_MAX_WAIT,
+            );
+            assert_eq!(action, SettleAction::Wait, "fresh-idle window must settle (age={age_ms})");
+        }
+    }
+
+    #[test]
+    fn live_settle_action_long_idle_injects_without_waiting() {
+        let action = live_settle_action(
+            Some(Duration::from_secs(60)),
+            None,
+            LSA_RESIZE_GRACE,
+            LSA_IDLE_THRESHOLD,
+            LSA_SETTLE,
+            Duration::from_millis(0),
+            LSA_MAX_WAIT,
+        );
+        assert_eq!(action, SettleAction::InjectNow, "long-idle (ready) injects at once");
+    }
+
+    #[test]
+    fn live_settle_action_recent_resize_waits_even_when_activity_looks_idle() {
+        // activity_age is frozen-large during a repaint; must NOT read it as idle.
+        let action = live_settle_action(
+            Some(Duration::from_secs(60)),
+            Some(Duration::from_millis(10)),
+            LSA_RESIZE_GRACE,
+            LSA_IDLE_THRESHOLD,
+            LSA_SETTLE,
+            Duration::from_millis(0),
+            LSA_MAX_WAIT,
+        );
+        assert_eq!(action, SettleAction::Wait, "repaint in flight -> wait (G8)");
+        // Once the resize is past grace, trust activity_age again.
+        let action_after = live_settle_action(
+            Some(Duration::from_secs(60)),
+            Some(Duration::from_secs(30)),
+            LSA_RESIZE_GRACE,
+            LSA_IDLE_THRESHOLD,
+            LSA_SETTLE,
+            Duration::from_millis(0),
+            LSA_MAX_WAIT,
+        );
+        assert_eq!(action_after, SettleAction::InjectNow);
+    }
+
+    #[test]
+    fn live_settle_action_untracked_injects_best_effort() {
+        let action = live_settle_action(
+            None,
+            None,
+            LSA_RESIZE_GRACE,
+            LSA_IDLE_THRESHOLD,
+            LSA_SETTLE,
+            Duration::from_millis(0),
+            LSA_MAX_WAIT,
+        );
+        assert_eq!(action, SettleAction::InjectNow, "untracked/gone -> best-effort inject");
+    }
+
+    #[test]
+    fn live_settle_action_caps_in_fresh_idle_window() {
+        // Still in the fresh-idle window, but max_wait exceeded -> inject anyway.
+        let action = live_settle_action(
+            Some(Duration::from_millis(2800)),
+            None,
+            LSA_RESIZE_GRACE,
+            LSA_IDLE_THRESHOLD,
+            LSA_SETTLE,
             Duration::from_secs(11),
-            Duration::from_secs(10),
+            LSA_MAX_WAIT,
         );
-        assert_eq!(
-            action,
-            SettleAction::InjectNow,
-            "cap must never drop a delivery"
-        );
+        assert_eq!(action, SettleAction::InjectNow, "cap must never drop a delivery");
     }
 
     // ── next_sustained_idle_state tests (#611 sustained-idle gate) ──
