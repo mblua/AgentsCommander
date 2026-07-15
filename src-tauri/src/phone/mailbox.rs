@@ -2574,11 +2574,16 @@ impl MailboxPoller {
             match wake_action_for(status) {
                 WakeAction::Inject => {
                     // (#1001 PR2 / B) Settle the live session to paste-ready before
-                    // injecting: the fresh-idle window is where a live wake drops
-                    // (~75%, PR1). Busy/mid-turn and long-idle sessions inject at
-                    // once (bias-to-deliver); only a freshly-idle one waits the
-                    // guard. Best-effort - a vanished session just falls through to
-                    // the inject's own race handling below.
+                    // injecting. The MEASURED live-path drop is the still-starting
+                    // case (100% here / 83% baseline, P2), which the alive_age
+                    // Starting route closes via the #611 settle. The established
+                    // fresh-idle guard is DEFENSIVE retention (bias-to-deliver, cannot
+                    // drop - the cap always injects), not a measured-drop closer; the
+                    // ~75% figure was PR1's COLD-SPAWN fresh-idle measurement, not this
+                    // established path. Busy/mid-turn and long-idle sessions inject at
+                    // once; only a freshly-idle established one waits the guard.
+                    // Best-effort - a vanished session just falls through to the
+                    // inject's own race handling below.
                     self.settle_live_before_inject(app, session_id).await;
                     match self
                         .inject_wake_into_pty(app, session_id, msg, origin)
@@ -3215,8 +3220,11 @@ impl MailboxPoller {
     }
 
     /// (#1001 PR2 / B, grinch P1) Settle a LIVE session to paste-ready before a
-    /// wake inject. The live-inject arm used to go straight to inject with no gate,
-    /// so a wake in the fresh-idle window dropped (~75%, PR1). Every tick reads ONE
+    /// wake inject. The live-inject arm used to go straight to inject with no gate.
+    /// The MEASURED live-path drop is the still-starting case (P2), closed by the
+    /// alive_age Starting route below; the established fresh-idle guard here is
+    /// DEFENSIVE retention (bias-to-deliver, cannot drop), NOT a measured-drop gate
+    /// (the ~75% was PR1's cold-spawn measurement, not this path). Every tick reads ONE
     /// atomic `purge_readiness` snapshot and decides from the real-time
     /// `activity_age` (plus the per-session `idle_threshold` and the resize-freeze
     /// `last_resize_age`) via `live_settle_action` - NOT from the lagged

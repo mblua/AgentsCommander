@@ -396,10 +396,14 @@ async fn settle_like_b(ctx: &HarnessCtx, id: Uuid, max_wait: Duration) {
     const STARTUP_THRESHOLD: Duration = Duration::from_secs(20);
     if ctx.idle.alive_age(id).is_some_and(|a| a < STARTUP_THRESHOLD) {
         // Starting: route to the sustained-idle settle, mirroring prod's #611 path
-        // (cold-spawn params: 90s cap, 2s hold). wait_for_settle is a slightly
-        // STRICTER paste-ready proxy than prod's idle-set-only gate (it also
-        // requires rendered content), so it can only OVER-wait, never under-wait -
-        // it cannot hide a drop the shipped gate would take.
+        // (cold-spawn params: 90s cap, 2s hold). FIDELITY CAVEAT (grinch F2): this
+        // wait_for_settle proxy is STRICTER than prod's idle-only settle_until_ready
+        // (it also requires rendered content), so it injects LATER and is LESS likely
+        // to drop. It can therefore HIDE a drop the earlier-injecting shipped gate
+        // would take; it does NOT prove the shipped Starting gate drop-free. The
+        // Starting gate's real validation is #611's production track record - it is
+        // the same idle-only sustained settle already shipped for cold-spawn - not
+        // this harness arm.
         let deadline = Instant::now() + Duration::from_secs(90);
         wait_for_settle(ctx, id, Duration::from_millis(2000), deadline).await;
         return;
