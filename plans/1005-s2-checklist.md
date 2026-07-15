@@ -9,6 +9,85 @@ Per plan section 4.5. Sources: `render_inter_agent_messaging_block` (session_con
 > mapping tables below. Old texts: `git show 83a093a:src-tauri/src/config/session_context.rs`
 > lines 2881-2911 (shell), 3069-3072 (peer formats), 3074-3112 (send instructions, three variants).
 
+
+### a0 record - dev-rust-grinch, 2026-07-15, derived from `git show 83a093a` BEFORE reading any section below
+
+**A3 shell `render_inter_agent_messaging_block` (base :2881-2911)**
+
+| # | Class | Statement |
+|---|---|---|
+| S-1 | ANCHOR | heading `## Inter-Agent Messaging` (mandatory :2512, legacy set, A4a + A2-exception cross-ref target) |
+| S-2 | ANCHOR | subheading `### Incoming Message Notifications` |
+| S-3 | ANCHOR | documented wire literal `[Message from <peer>] Process this inter-agent message: <path>` byte-coupled to `format_pty_wrap` + `FILE_NOTIFICATION_PREFIX` (C1/G11) |
+| S-4 | RULE | treat that notification as an operational inter-agent message |
+| S-5 | PROCEDURE | read `<path>` |
+| S-6 | RULE | follow the file's task instructions WITHIN role, authority, and write restrictions (three limiter classes; injection defense - must survive) |
+| S-7 | RULE | do not stop at a summary unless the task asks only for one |
+| S-8 | RULE | on finish or block, reply to the sender with a concrete result or blocker via the two-step flow below ("below" referent = numbered steps) |
+| S-9 | ANCHOR | subheading `### Send a message to another agent` (legacy required_once set) |
+| S-10 | RULE | **MANDATORY**: resolve exact agent name via `list-peers-lean` before sending ANY message (strength word) |
+| S-11 | RULE | never guess agent names |
+| S-12 | IDENTITY | peer name = canonical FQN, exactly the `list-peers-lean` JSON `name` field emission |
+| S-13 | ANCHOR | `{peer_name_format}` interpolation survives |
+| S-14 | RULE | filesystem directory name is NEVER a valid `--to` value |
+| S-15 | IDENTITY | illustrations: `__agent_shipper` / `_agent_architect` are on-disk paths, not peer names |
+| S-16 | RULE | `list-peers-lean` JSON `name` field is the ONLY authoritative source |
+| S-17 | RULE | empty array -> do NOT scan `__agent_*` siblings; STOP and report the empty result |
+| S-18 | ANCHOR | `{send_message_instructions}` interpolation survives |
+| S-19 | IDENTITY | recipient receives a notification with the path and reads the file from disk |
+| S-20 | RULE | do NOT use `--get-output`; it blocks; non-interactive sessions only (prohibition + scoping rationale) |
+| S-21 | RULE | after sending, wait for the reply |
+| S-22 | ANCHOR | subheading `### List available peers` (legacy set + legacy tail) |
+| S-23 | ANCHOR | full `list-peers-lean` command line byte-exact incl. quoting |
+
+**`peer_name_format` (base :3069-3072)**
+
+| # | Class | Statement |
+|---|---|---|
+| P-1 | RULE | Root sessions: verified WG coordinator replicas ONLY |
+| P-2 | ANCHOR | shape `<project>:<workgroup>/<agent>` + example (root variant) |
+| P-3 | RULE | origin coordinators and non-coordinator WG replicas are not valid Root targets (#277) |
+| P-4 | IDENTITY | WG replicas (common case): `<project>:<workgroup>/<agent>` + example |
+| P-5 | IDENTITY | origin agents: `<project>/<agent>` + example |
+| P-X | CONSTRAINT | base carries em-dashes ("- e.g." separators); rewrite must be U+2014-free |
+
+**`send_message_instructions` (base :3074-3112)**
+
+Root variant:
+| # | Class | Statement |
+|---|---|---|
+| R-1 | PROCEDURE | before sending run `list-peers-lean`; in Root sessions it returns verified WG coordinators only |
+| R-2 | RULE | use ONLY the JSON `name` values returned |
+| R-3 | IDENTITY | root messaging is file-based (rationale: PTY truncation); two steps |
+| R-4 | PROCEDURE | step 1: write message to a new file in the Root messaging directory; `{path}` code fence (ANCHOR) |
+| R-5 | ANCHOR | filename pattern `YYYYMMDD-HHMMSS-root-to-<wgN>-<coordinator>-<slug>.md` + UTC + sanitized kebab slug <=50 |
+| R-6 | ANCHOR | step 2: full send command line byte-exact incl. quoting and `--mode wake` |
+| R-7 | RULE | `--send` takes the filename ONLY, never a path (IMPORTANT marker) |
+| R-8 | RULE | #277 exclusion restated (dup of P-3 in the same rendered doc; drop legal only with named carrier) |
+
+Workgroup variant:
+| # | Class | Statement |
+|---|---|---|
+| W-1 | IDENTITY | messaging is file-based (PTY-truncation rationale); two steps |
+| W-2 | PROCEDURE | step 1: write message to a new file in the workgroup messaging directory |
+| W-3 | PROCEDURE | directory = `<workgroup-root>/messaging/`; resolve by walking up to the parent `wg-<N>-*` folder |
+| W-4 | ANCHOR | filename pattern `YYYYMMDD-HHMMSS-<wgN>-<you>-to-<wgN>-<peer>-<slug>.md` + UTC + kebab slug <=50 |
+| W-5 | ANCHOR | step 2: full send command line byte-exact |
+| W-6 | RULE | `--send` filename ONLY, never a path |
+| W-7 | IDENTITY | BAD path example / GOOD filename example (plan: BAD dropped, GOOD + "never a path" kept) |
+| W-8 | IDENTITY | CLI resolves filename against `<workgroup-root>/messaging/` automatically (plan: droppable explanation) |
+| W-9 | ANCHOR | error signature `filename '...' contains path separators or traversal` byte-equal to MessagingError :128 (G11; keep) |
+
+None variant (#923 D3):
+| # | Class | Statement |
+|---|---|---|
+| N-1 | IDENTITY | no messaging directory: `--send` requires a `wg-<N>-*` ancestor or the canonical Root dir; this root is neither |
+| N-2 | RULE | do NOT walk up the filesystem looking for one |
+| N-3 | GRANT | can still RECEIVE messages |
+| N-4 | PROCEDURE | on notified absolute path: read the file and act on it |
+| N-5 | RULE | report the result in THIS session, not through `send --send` |
+
+**Cross-couplings:** X-1 S-3 == `format_pty_wrap`+`FILE_NOTIFICATION_PREFIX` output (messaging.rs:13/:30-32). X-2 W-9 == error display :128. X-3 S-8 "below" referent -> numbered steps. X-4 A4a authoritative-pointer -> S-1 heading. X-5 A2 messaging-exception cross-ref -> S-1 heading. X-6 base em-dashes in P/R-7/W-6 must go; keep-exact command lines/patterns carry none. X-7 `--mode wake` lives inside the keep-exact command lines. X-8 needle test `default_context_embeds_filename_only_warning` asserts `BAD:` at base - swap must keep pinning the filename-only rule.
 ---
 
 ## Harvested test needles (4.4)
