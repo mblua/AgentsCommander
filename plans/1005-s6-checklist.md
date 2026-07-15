@@ -10,6 +10,31 @@ Per plan Stage 6 + 6.7 + G3/G12/E2.2. Sources at base: `get_default_agent_templa
 > (template fn + the two consts), `git show ec660c17:src-tauri/src/config/seeded_context_templates.rs`
 > (recognizers + spec).
 
+
+### Grinch a0 record (derived blind from `git show ec660c17`, BEFORE reading the tables below)
+
+Derived 2026-07-15 from base artifacts only (session_context.rs :2113-2137 template fn, :2621-2623 prologue header, :2633-2636 CORE_CONCEPTS_SECTION; seeded_context_templates.rs recognizers/spec). Independent G3 recompute (python raw-literal extraction, no head const consulted): **A1 template = 611 bytes, sha256 `c9de5b80ad99a5743ad20c3344e7dd03888792f4da175943bee72e3d7d91fb88`**; CORE_CONCEPTS_SECTION = 302 bytes (`5dc5b05f...c6b3`); ROOT_RUNTIME_PROLOGUE_HEADER = 155 bytes (`67666ffb...1e62c`). All LF, no CR, no U+2014 (preamble dash is hyphen-minus). Base couplings verified: CORE_CONCEPTS_SECTION is byte-contained in the template; the prologue header's second line == the template preamble sentence.
+
+Base machinery: `is_known_generated_global_template` (:270-272) = 1 entry (current fn only); `is_known_generated_standalone_global_template` (:285-288) = 2 entries (current + 307-byte STANDALONE_GLOBAL_CONTEXT_BEFORE_CORE_CONCEPTS); global spec `current_version: 1`, `suppress_unknown_without_state: true`, `project_actionable: true`; retirement path (:260 area) consumes the STANDALONE recognizer - missing the standalone extension silently strands retirement-eligible files as UNKNOWN (backed up, never deleted, no error).
+
+#### A1 global template - rows T-1..6
+
+- T-1 ANCHOR (keep-exact): title `# AgentsCommander Context` (legacy required_once marker).
+- T-2 IDENTITY: preamble "You are running inside an AgentsCommander session - a terminal session manager that coordinates multiple AI agents." (shared verbatim with ROOT_RUNTIME_PROLOGUE_HEADER line 3).
+- T-3 ANCHOR (keep-exact): heading `## Core Concepts`.
+- T-4 DEFINITION: "**Team**: the logical capability and organization. It defines who can work together, who coordinates, and which repos are available." (3 defining functions: membership, coordinator choice, repo access).
+- T-5 DEFINITION: "**Workgroup**: an operational runtime replica instance of a team for a specific task. It contains replica agents and `repo-*` working repositories." (instance-of-team, task-scoped, 2 contents; `repo-*` naming anchor couples to A2 GOLDEN RULE grants).
+- T-6 ANCHOR (keep-exact): seven placeholders, exact order and shape: `{{WRITE_RESTRICTIONS}}`, `{{DELEGATED_TASK_REPORTING}}`, `{{SKILLS_SECTION}}`, `{{WORKSPACE_REPOS}}`, `{{CLI_CONTEXT}}`, `{{SESSION_CREDENTIALS}}`, `{{INTER_AGENT_MESSAGING}}` - each its own paragraph, trailing newline after the last. `{{WORKSPACE_REPOS}}` is the #664 not-legacy `# Workspace Repos` token carrier (:3483-class markers).
+
+#### CORE_CONCEPTS_SECTION - row C-1
+
+- C-1 COUPLING (drift pair): byte-copy of T-3+T-4+T-5 (no trailing newline). Must stay byte-identical to the template's section (drift test :4770-class); template is deliberately NOT refactored to interpolate it (template bytes pinned by recognizer + legacy classifier + seeded SHA state). Any T-4/T-5 rewrite MUST land in BOTH, same commit.
+
+#### ROOT_RUNTIME_PROLOGUE_HEADER - row H-1
+
+- H-1 COUPLING: `# AgentsCommander Root Runtime Context` + blank + T-2 preamble sentence verbatim. Root-only title differs by design; the SHARED bytes are the preamble sentence. A T-2 rewrite must land here too, same commit.
+
+Danger rows (dropped-qualifier hunt on the new side): T-4's three defining functions (esp. "which repos are available" - the repo-access scoping); T-5's "for a specific task" (task-scoping) + "replica agents" + `repo-*` anchor; T-2's "terminal session manager that coordinates multiple AI agents" identity; declared rename "an operational runtime replica instance" -> "a runtime replica of a team" (adjudicate: "operational"/"instance" carry no independent force if replica-of-team + task-scope survive); placeholder order byte-stability (any reorder changes every rendered doc).
 ---
 
 ## G3 freeze provenance
@@ -40,11 +65,11 @@ Not needles but verified: frozen fixtures carrying the OLD preamble stay untouch
 | # | Class | Old | New carrier |
 |---|---|---|---|
 | 1 | ANCHOR | `# AgentsCommander Context` | byte-identical |
-| 2 | IDENTITY | preamble "...a terminal session manager that coordinates multiple AI agents." | "...a terminal session manager coordinating multiple AI agents." (prefix + full meaning kept; -6) |
+| 2 | IDENTITY | preamble "...a terminal session manager that coordinates multiple AI agents." | "...a terminal session manager coordinating multiple AI agents." (prefix + full meaning kept; -4) |
 | 3 | RULE | Team def clause 1 "the logical capability and organization." | verbatim (needle incl. period) |
 | 4 | RULE | Team def clause 2 "It defines who can work together, who coordinates, and which repos are available." | "It defines membership, who coordinates, and which repos are available." ("who can work together" -> "membership": the established term from B1's "Team creation defines membership and repo access"; all three defined aspects kept; -11) |
-| 5 | RULE | Workgroup def clause 1 "an operational runtime replica instance of a team for a specific task" | "a runtime replica of a team for a specific task" ("operational" carried by "runtime"; "instance" carried by "replica"; declared rename above; -27) |
-| 6 | RULE | Workgroup def clause 2 "It contains replica agents and `repo-*` working repositories." | "...working repos." (A6's established short form; -8) |
+| 5 | RULE | Workgroup def clause 1 "an operational runtime replica instance of a team for a specific task" | "a runtime replica of a team for a specific task" ("operational" carried by "runtime"; "instance" carried by "replica"; declared rename above; -22) |
+| 6 | RULE | Workgroup def clause 2 "It contains replica agents and `repo-*` working repositories." | "...working repos." (A6's established short form; -7) |
 | 7 | ANCHOR | seven placeholders + blank-line layout | byte-identical, same order |
 
 Drift pair discipline: CORE_CONCEPTS_SECTION and ROOT_RUNTIME_PROLOGUE_HEADER updated byte-identically in the SAME edit set and commit (`3f7aa1f`); drift test :4749 (containment) green across the commit boundary; containment re-verified mechanically post-commit.
