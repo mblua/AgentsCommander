@@ -37,6 +37,44 @@ const OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND: &str = "You are the co
      - Sandboxed harness coordinator: CopyFromScreen may return all-zero/black pixels. In that case ask the user to capture with Greenshot, use latest file from C:\\Users\\maria\\0_greenshot\\, and visually inspect the image content before sending.\n\
      - Do not judge Greenshot screenshot relevance by filename; names can be misleading.\n";
 
+/// #1005 S4: `get_default_coordinator_template()` exactly as it shipped from
+/// #684 (raise-hand) through base commit 1dd0b58, frozen as the second legacy
+/// snapshot so a pristine v2 `Context.coordinator.md` on disk keeps being
+/// recognized and auto-upgraded after the v3 token-minimization rewrite.
+/// Never edit. Provenance (G3): one-off run of the shipped accessor at
+/// 1dd0b58 printed len 2403, sha256
+/// 92f3abfc108147b07f1c4a49e7062c0f4d0d9aae570b7e5195852c31bb8b0d02; pinned by
+/// `coordinator_pre_token_minimization_snapshot_is_byte_exact` against those
+/// externally captured values, never against this const itself.
+const COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION: &str =
+    "You are the coordinator for your team. You must:\n\
+     - Keep your base role; coordination is an additional assignment, not a replacement.\n\
+     - Receive team work requests.\n\
+     - Clarify scope, outcome, constraints, and acceptance criteria.\n\
+     - Always route work to the team member best prepared for each part of the request based on role, skills, and current assignment.\n\
+     - Delegate work instead of absorbing technical work when a more specialized agent is available.\n\
+     - Sequence work, track progress, surface blockers, and keep ownership clear.\n\
+     - Follow up after assignment to verify the assigned agent is active and working.\n\
+     - Contact silent or inactive assigned agents up to three total attempts.\n\
+     - Require assigned agents to explicitly report completion, outcome, blockers, and verification before treating delegated work as complete.\n\
+     - Not infer completion solely from files/logs/artifacts/status flags when the assigned agent has not reported the outcome.\n\
+     - Give recommendations to help an agent work better without removing or overriding that agent's role/scope.\n\n\
+     ## Sending Screenshots\n\
+     As a coordinator, you may need to send screenshots. Use the CLI subcommand:\n\
+         telegram-send-image --path <PATH> [--caption <CAPTION>] [--bot-id <ID> | --bot-label <LABEL>]\n\
+     - --path is required. --caption is optional and limited to 1024 UTF-16 units.\n\
+     - If multiple Telegram bots are configured, use --bot-id or --bot-label.\n\
+     - jpg/jpeg/png/webp up to 10 MB use sendPhoto; other formats including GIF use sendDocument up to 50 MB.\n\
+     - Symlinks/junctions are rejected.\n\n\
+     **Screenshot Capture Paths:**\n\
+     - Interactive desktop coordinator: PowerShell System.Drawing / CopyFromScreen can work. Important: cast Measure-Object results to [int] before passing dimensions to Bitmap.\n\
+     - Sandboxed harness coordinator: CopyFromScreen may return all-zero/black pixels. In that case ask the user to capture with Greenshot, use latest file from C:\\Users\\maria\\0_greenshot\\, and visually inspect the image content before sending.\n\
+     - Do not judge Greenshot screenshot relevance by filename; names can be misleading.\n\n\
+     ## Raising Your Hand\n\
+     When you are blocked, need a user decision, or are waiting for user attention, run:\n\
+         \"<AGENTSCOMMANDER_BINARY_PATH>\" raise-hand --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\"\n\
+     This shows the Sidebar raised-hand indicator for your coordinator row; it clears when the user interacts with your session.\n";
+
 /// #979: the standalone global context template that older builds seeded into the
 /// APP CONFIG directory (307 bytes; it predates `## Core Concepts`). Retirement may
 /// delete only bytes AgentsCommander provably generated itself, so this snapshot is
@@ -225,7 +263,7 @@ fn project_specs() -> [SeededContextTemplateSpec; 2] {
             id: "coordinator",
             filename: crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
             label: "Coordinator context",
-            current_version: 2,
+            current_version: 3,
             current_content: crate::config::session_context::get_default_coordinator_template,
             is_known_generated: is_known_generated_coordinator_template,
             project_actionable: true,
@@ -289,6 +327,7 @@ fn is_known_generated_standalone_global_template(content: &str) -> bool {
 
 fn is_known_generated_coordinator_template(content: &str) -> bool {
     content == crate::config::session_context::get_default_coordinator_template()
+        || content == COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
         || content == OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND
 }
 
@@ -1402,6 +1441,55 @@ mod tests {
         assert!(is_known_generated_coordinator_template(
             OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND
         ));
+    }
+
+    /// #1005 S4 / G3: the frozen v2 snapshot must stay byte-identical to what the
+    /// #684..1dd0b58 builds shipped. Expected values captured by a one-off run of
+    /// the shipped accessor AT base commit 1dd0b58, never from this const.
+    #[test]
+    fn coordinator_pre_token_minimization_snapshot_is_byte_exact() {
+        assert_eq!(
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION.len(),
+            2403,
+            "frozen v2 coordinator snapshot must be the 1dd0b58 bytes"
+        );
+        assert_eq!(
+            hash_text(COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION),
+            "92f3abfc108147b07f1c4a49e7062c0f4d0d9aae570b7e5195852c31bb8b0d02",
+            "frozen v2 coordinator snapshot changed; it must stay byte-identical to what shipped"
+        );
+    }
+
+    /// #1005 S4 failing-first migration proof: the assert_ne fails while the live
+    /// template still equals the frozen v2 bytes (pre-rewrite), and the sync half
+    /// proves a pristine v2 file on disk auto-upgrades to the current default.
+    #[test]
+    fn read_sync_updates_pre_token_minimization_coordinator_template() {
+        assert_ne!(
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION,
+            get_default_coordinator_template(),
+            "v3 rewrite must actually change the template or the freeze is pointless"
+        );
+        assert!(is_known_generated_coordinator_template(
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
+        ));
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join(".ac");
+        std::fs::create_dir(&workspace).expect("create workspace");
+        std::fs::write(
+            workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION,
+        )
+        .expect("write pristine v2 coordinator");
+
+        sync_project_context_template_for_read(&workspace, COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+            .expect("sync for read");
+
+        let content =
+            std::fs::read_to_string(workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read coordinator");
+        assert_eq!(content, get_default_coordinator_template());
     }
 
     #[test]
