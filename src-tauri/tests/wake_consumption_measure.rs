@@ -87,6 +87,7 @@ struct HarnessConfig {
     redeliver_mode: String,
     settle_hold: Duration,
     live_settle: String,
+    live_warmup: String,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -118,6 +119,7 @@ impl HarnessConfig {
         let inject_mode = env_or("AC_WAKE_HARNESS_INJECT_MODE", "ready");
         let redeliver_mode = env_or("AC_WAKE_HARNESS_REDELIVER_MODE", "immediate");
         let live_settle = env_or("AC_WAKE_HARNESS_LIVE_SETTLE", "on");
+        let live_warmup = env_or("AC_WAKE_HARNESS_LIVE_WARMUP", "on");
         let settle_hold = Duration::from_millis(
             env_or("AC_WAKE_HARNESS_SETTLE_HOLD_MS", "3500")
                 .parse()
@@ -140,6 +142,7 @@ impl HarnessConfig {
             redeliver_mode,
             settle_hold,
             live_settle,
+            live_warmup,
         }
     }
 }
@@ -381,28 +384,33 @@ impl SignalTally {
 
 // ─────────────────────────────── the harness ─────────────────────────────
 
-/// (#1001 PR2 P2) Wait until the session's real-time activity_age reaches
-/// `target` (mirrors the fix's settle: inject only once activity_age crosses
-/// idle_threshold + guard). Returns true if reached, false on deadline.
-async fn wait_activity_age_at_least(
-    ctx: &HarnessCtx,
-    id: Uuid,
-    target: Duration,
-    deadline: Instant,
-) -> bool {
-    while Instant::now() < deadline {
-        let age = ctx
-            .idle
-            .purge_readiness(&[id])
-            .into_iter()
-            .next()
-            .and_then(|r| r.activity_age);
-        if age.is_some_and(|a| a >= target) {
-            return true;
+/// (#1001 PR2 P2) Faithfully replicate B's `live_settle_action` decision loop
+/// (busy fast-path, long-idle inject, fresh-idle wait, resize wait, cap) on real
+/// activity_age, so the post-fix number reflects the SHIPPED gate, not a proxy.
+async fn settle_like_b(ctx: &HarnessCtx, id: Uuid, max_wait: Duration) {
+    let start = Instant::now();
+    let poll = Duration::from_millis(500);
+    loop {
+        let Some(r) = ctx.idle.purge_readiness(&[id]).into_iter().next() else {
+            return;
+        };
+        if start.elapsed() >= max_wait {
+            return;
         }
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        if let Some(rz) = r.last_resize_age {
+            if rz < r.resize_grace {
+                tokio::time::sleep(poll).await;
+                continue;
+            }
+        }
+        let settle = r.idle_threshold + Duration::from_millis(1000); // FRESH_IDLE_GUARD
+        match r.activity_age {
+            None => return,
+            Some(a) if a < r.idle_threshold => return, // busy fast-path
+            Some(a) if a >= settle => return,          // long-idle
+            Some(_) => tokio::time::sleep(poll).await, // fresh-idle window
+        }
     }
-    false
 }
 
 /// (#1001 PR2 P2, the grinch-P2 gate) Live-path drop baseline. Reuses an
@@ -460,22 +468,29 @@ async fn run_live_reuse(cfg: &HarnessConfig, ctx: &HarnessCtx) {
         let id = Uuid::parse_str(&info.id).expect("uuid");
 
         // Warm-up turn (wake #1), settled so it reliably runs: makes this an
-        // already-live, already-used session rather than a fresh cold-spawn.
-        let boot = Instant::now() + Duration::from_secs(45);
-        wait_for_settle(ctx, id, Duration::from_millis(3500), boot).await;
-        let _ =
-            inject_text_into_session(ctx.app.handle(), id, &wake_body(&gt_file, trial, 0)).await;
-        let warm_deadline = Instant::now() + cfg.gt_timeout;
-        while gt_marker_count(&gt_file) < 1 && Instant::now() < warm_deadline {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
-        if gt_marker_count(&gt_file) < 1 {
-            warmup_failed += 1;
-            println!("trial {trial}: warm-up turn did not run; skipping");
-            let _ = destroy_session_inner(ctx.app.handle(), id).await;
-            continue;
-        }
-        let warm_count = gt_marker_count(&gt_file);
+        // already-live, already-used session rather than a fresh cold-spawn. With
+        // AC_WAKE_HARNESS_LIVE_WARMUP=off it is skipped, so wake #2 lands in the
+        // session's STARTUP fresh-idle (an existing-but-still-starting candidate,
+        // the not-paste-ready case B actually protects).
+        let warm_count = if cfg.live_warmup == "on" {
+            let boot = Instant::now() + Duration::from_secs(45);
+            wait_for_settle(ctx, id, Duration::from_millis(3500), boot).await;
+            let _ =
+                inject_text_into_session(ctx.app.handle(), id, &wake_body(&gt_file, trial, 0)).await;
+            let warm_deadline = Instant::now() + cfg.gt_timeout;
+            while gt_marker_count(&gt_file) < 1 && Instant::now() < warm_deadline {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            if gt_marker_count(&gt_file) < 1 {
+                warmup_failed += 1;
+                println!("trial {trial}: warm-up turn did not run; skipping");
+                let _ = destroy_session_inner(ctx.app.handle(), id).await;
+                continue;
+            }
+            gt_marker_count(&gt_file)
+        } else {
+            0
+        };
 
         // Return to FRESH-idle after the warm-up turn (watcher_idle just true).
         let fi_deadline = Instant::now() + Duration::from_secs(30);
@@ -486,16 +501,7 @@ async fn run_live_reuse(cfg: &HarnessConfig, ctx: &HarnessCtx) {
         // POST-fix applies the settle; PRE-fix ("off") injects here, in the
         // fresh-idle danger window.
         if cfg.live_settle == "on" {
-            let idle_threshold = ctx
-                .idle
-                .purge_readiness(&[id])
-                .into_iter()
-                .next()
-                .map(|r| r.idle_threshold)
-                .unwrap_or(Duration::from_millis(2500));
-            let target = idle_threshold + Duration::from_millis(1000); // FRESH_IDLE_GUARD
-            let sd = Instant::now() + Duration::from_secs(10);
-            wait_activity_age_at_least(ctx, id, target, sd).await;
+            settle_like_b(ctx, id, Duration::from_secs(10)).await;
         }
 
         // Measured wake #2.
