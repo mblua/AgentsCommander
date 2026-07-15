@@ -1,14 +1,12 @@
 ---
 name: role-skill-boundary-audit
-description: Audit where governance instructions belong (Role.md, skill, global policy, workflow docs, memory, or an agent-boundary change) and enforce minimal verbosity in roles and skills. Diagnostic by default.
+description: Audit where governance instructions belong (Role.md, skill, global policy, workflow docs, memory, or an agent-boundary change); enforce minimal verbosity in roles and skills. Diagnostic by default.
 when_to_use: Before creating, modifying, approving, or auditing agents, Role.md files, skills, role templates, workflow instructions, or Agent Matrix structure. Also for matrix hygiene, oversized or bloated roles, authority language inside skills, duplicated instructions, and split/merge proposals.
 ---
 
 # role-skill-boundary-audit
 
 ## Purpose
-
-Audit the boundary between roles, skills, policies, process docs, memory, and agent shape.
 
 ```
 Roles define who is responsible.
@@ -19,9 +17,9 @@ Diagnostic by default: recommend, do not rewrite, unless the user or active work
 
 ## Conciseness mandate (always)
 
-Roles and skills spend context budget every time they load, so write the minimum that changes behavior. This mandate applies to every Role.md and skill you write, recommend, or rewrite.
+Write the minimum that changes behavior; roles and skills spend context budget every time they load. This applies to every Role.md and skill you write, recommend, or rewrite.
 
-- Add only what adds value; cut the rest. Every line must earn its place.
+- Add only what adds value; cut the rest.
 - Keep rationale to one line, and only where it guides a judgment the rule itself does not cover.
 - No restatement: drop "Why" / "How to apply" / examples that repeat a rule without adding information.
 - `Role.md` is the tightest surface (always loaded). Load-on-demand skills may hold more detail, but still no padding.
