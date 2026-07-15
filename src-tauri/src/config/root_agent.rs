@@ -2207,10 +2207,11 @@ mod tests {
             default_root_context_template(),
             "pristine v4 Context.root-agent.md must auto-upgrade (recognizer list)"
         );
-        let state = std::fs::read_to_string(temp.path().join(
-            crate::config::seeded_context_templates::SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME,
-        ))
-        .expect("read seeded state");
+        let state =
+            std::fs::read_to_string(temp.path().join(
+                crate::config::seeded_context_templates::SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME,
+            ))
+            .expect("read seeded state");
         let parsed: Value = serde_json::from_str(&state).expect("parse seeded state");
         assert_eq!(
             parsed["templates"]["rootAgent"]["currentVersion"], 5,
@@ -2997,7 +2998,11 @@ mod tests {
     fn role_skill_boundary_audit_before_token_minimization_snapshot_is_byte_exact() {
         use sha2::{Digest, Sha256};
         let lf = ROLE_SKILL_BOUNDARY_AUDIT_BEFORE_TOKEN_MINIMIZATION.replace("\r\n", "\n");
-        assert_eq!(lf.len(), 3199, "snapshot must be the 409b7f90 blob, byte for byte");
+        assert_eq!(
+            lf.len(),
+            3199,
+            "snapshot must be the 409b7f90 blob, byte for byte"
+        );
         assert_eq!(
             format!("{:x}", Sha256::digest(lf.as_bytes())),
             "b3237843e2a6e9ac3cb014735ab398ee552711b0c017f8858758c619b3344c3f",
@@ -3023,7 +3028,11 @@ mod tests {
     fn agency_agents_roles_before_token_minimization_snapshot_is_byte_exact() {
         use sha2::{Digest, Sha256};
         let lf = AGENCY_AGENTS_ROLES_BEFORE_TOKEN_MINIMIZATION.replace("\r\n", "\n");
-        assert_eq!(lf.len(), 2578, "snapshot must be the 409b7f90 blob, byte for byte");
+        assert_eq!(
+            lf.len(),
+            2578,
+            "snapshot must be the 409b7f90 blob, byte for byte"
+        );
         assert_eq!(
             format!("{:x}", Sha256::digest(lf.as_bytes())),
             "9bc8a2cd565357bfeb85efac224917331e52821aba0b36ae2b831da6aaf657e5",
@@ -3058,8 +3067,7 @@ mod tests {
             .join(ROOT_AGENT_SKILLS_DIR)
             .join("role-skill-boundary-audit")
             .join(SKILL_MD_FILENAME);
-        std::fs::create_dir_all(skill.parent().expect("skill parent"))
-            .expect("create skill dir");
+        std::fs::create_dir_all(skill.parent().expect("skill parent")).expect("create skill dir");
         std::fs::write(&skill, ROLE_SKILL_BOUNDARY_AUDIT_BEFORE_TOKEN_MINIMIZATION)
             .expect("seed old skill");
 
@@ -3087,8 +3095,7 @@ mod tests {
             .join(ROOT_AGENT_SKILLS_DIR)
             .join("agency-agents-roles")
             .join(SKILL_MD_FILENAME);
-        std::fs::create_dir_all(skill.parent().expect("skill parent"))
-            .expect("create skill dir");
+        std::fs::create_dir_all(skill.parent().expect("skill parent")).expect("create skill dir");
         std::fs::write(&skill, AGENCY_AGENTS_ROLES_BEFORE_TOKEN_MINIMIZATION)
             .expect("seed old skill");
 
@@ -3168,7 +3175,10 @@ mod tests {
                 "{dir}: shipped bytes changed; freeze the old bytes as a new snapshot first"
             );
             assert_eq!(
-                format!("{:x}", Sha256::digest(normalize_role_text(content).as_bytes())),
+                format!(
+                    "{:x}",
+                    Sha256::digest(normalize_role_text(content).as_bytes())
+                ),
                 normalized_sha,
                 "{dir}: normalized shipped bytes changed; freeze a new snapshot first"
             );
