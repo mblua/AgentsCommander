@@ -6470,9 +6470,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(content.contains("# AgentsCommander Context"));
         assert!(content.contains("## Core Concepts"));
         assert!(content.contains("**Team**: the logical capability and organization"));
-        assert!(content.contains(
-            "**Workgroup**: a runtime replica of a team for a specific task"
-        ));
+        assert!(content.contains("**Workgroup**: a runtime replica of a team for a specific task"));
         assert!(content.contains("When finishing a delegated task or getting blocked"));
         assert!(content.contains("# Coordinator Context"));
         assert!(content.contains("You are the coordinator for your team"));
