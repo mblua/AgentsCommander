@@ -37,6 +37,39 @@ const OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND: &str = "You are the co
      - Sandboxed harness coordinator: CopyFromScreen may return all-zero/black pixels. In that case ask the user to capture with Greenshot, use latest file from C:\\Users\\maria\\0_greenshot\\, and visually inspect the image content before sending.\n\
      - Do not judge Greenshot screenshot relevance by filename; names can be misleading.\n";
 
+/// #1005 S6: `get_default_agent_template()` exactly as it shipped from #658
+/// (mandatory placeholders) through base commit ec660c17, frozen so a
+/// pristine v1 `Context.AgentsCommander.md` on disk keeps being recognized
+/// (project auto-update AND standalone root retirement) after the v2
+/// token-minimization rewrite. Never edit. Provenance (G3): one-off run of
+/// the shipped accessor at ec660c17 printed len 611, sha256
+/// c9de5b80ad99a5743ad20c3344e7dd03888792f4da175943bee72e3d7d91fb88; pinned
+/// by `global_pre_token_minimization_snapshot_is_byte_exact` against those
+/// externally captured values, never against this const itself.
+const GLOBAL_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION: &str = r#"# AgentsCommander Context
+
+You are running inside an AgentsCommander session - a terminal session manager that coordinates multiple AI agents.
+
+## Core Concepts
+
+- **Team**: the logical capability and organization. It defines who can work together, who coordinates, and which repos are available.
+- **Workgroup**: an operational runtime replica instance of a team for a specific task. It contains replica agents and `repo-*` working repositories.
+
+{{WRITE_RESTRICTIONS}}
+
+{{DELEGATED_TASK_REPORTING}}
+
+{{SKILLS_SECTION}}
+
+{{WORKSPACE_REPOS}}
+
+{{CLI_CONTEXT}}
+
+{{SESSION_CREDENTIALS}}
+
+{{INTER_AGENT_MESSAGING}}
+"#;
+
 /// #1005 S4: `get_default_coordinator_template()` exactly as it shipped from
 /// #684 (raise-hand) through base commit 1dd0b58, frozen as the second legacy
 /// snapshot so a pristine v2 `Context.coordinator.md` on disk keeps being
@@ -253,7 +286,7 @@ fn project_specs() -> [SeededContextTemplateSpec; 2] {
             id: "global",
             filename: crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME,
             label: "AgentsCommander shared context",
-            current_version: 1,
+            current_version: 2,
             current_content: crate::config::session_context::get_default_agent_template,
             is_known_generated: is_known_generated_global_template,
             project_actionable: true,
@@ -307,6 +340,7 @@ fn actionable_project_spec_by_filename(
 
 fn is_known_generated_global_template(content: &str) -> bool {
     content == crate::config::session_context::get_default_agent_template()
+        || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
 }
 
 /// #979: exact recognition of a STANDALONE (app-config) generated global context.
@@ -322,6 +356,7 @@ fn is_known_generated_global_template(content: &str) -> bool {
 /// widen that.
 fn is_known_generated_standalone_global_template(content: &str) -> bool {
     content == crate::config::session_context::get_default_agent_template()
+        || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
         || content == STANDALONE_GLOBAL_CONTEXT_BEFORE_CORE_CONCEPTS
 }
 
@@ -1490,6 +1525,75 @@ mod tests {
             std::fs::read_to_string(workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read coordinator");
         assert_eq!(content, get_default_coordinator_template());
+    }
+
+    /// #1005 S6 / G3: the frozen v1 global snapshot must stay byte-identical to
+    /// what the #658..ec660c17 builds shipped. Expected values captured by a
+    /// one-off run of the shipped accessor AT base commit ec660c17, never from
+    /// this const.
+    #[test]
+    fn global_pre_token_minimization_snapshot_is_byte_exact() {
+        assert_eq!(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION.len(),
+            611,
+            "frozen v1 global snapshot must be the ec660c17 bytes"
+        );
+        assert_eq!(
+            hash_text(GLOBAL_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION),
+            "c9de5b80ad99a5743ad20c3344e7dd03888792f4da175943bee72e3d7d91fb88",
+            "frozen v1 global snapshot changed; it must stay byte-identical to what shipped"
+        );
+    }
+
+    /// #1005 S6 failing-first proof for ALL of: the v2 rewrite (assert_ne), BOTH
+    /// recognizers (project auto-update :308 and standalone root retirement
+    /// :323 - missing either strands installs silently, :260 suppresses
+    /// stateless unknowns), the version bump, and the old-v1-on-disk
+    /// auto-upgrade through the seeded-state SHA flow.
+    #[test]
+    fn read_sync_updates_pre_token_minimization_global_template() {
+        assert_ne!(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION,
+            crate::config::session_context::get_default_agent_template(),
+            "v2 rewrite must actually change the template or the freeze is pointless"
+        );
+        assert!(
+            is_known_generated_global_template(GLOBAL_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION),
+            "project recognizer must accept the frozen v1 bytes"
+        );
+        assert!(
+            is_known_generated_standalone_global_template(
+                GLOBAL_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
+            ),
+            "standalone (retirement) recognizer must accept the frozen v1 bytes"
+        );
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join(".ac");
+        std::fs::create_dir(&workspace).expect("create workspace");
+        std::fs::write(
+            workspace.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION,
+        )
+        .expect("write pristine v1 global");
+
+        sync_project_context_template_for_read(&workspace, GLOBAL_CONTEXT_TEMPLATE_FILENAME)
+            .expect("sync for read");
+
+        let content = std::fs::read_to_string(workspace.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
+            .expect("read global");
+        assert_eq!(
+            content,
+            crate::config::session_context::get_default_agent_template(),
+            "pristine v1 Context.AgentsCommander.md must auto-upgrade"
+        );
+        let state = std::fs::read_to_string(workspace.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
+            .expect("read seeded state");
+        let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
+        assert_eq!(
+            parsed["templates"]["global"]["currentVersion"], 2,
+            "global current_version must be bumped to 2 by the S6 rewrite"
+        );
     }
 
     #[test]
