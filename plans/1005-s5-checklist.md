@@ -10,6 +10,64 @@ Per plan Stage 5 + 6.3/6.4/6.5 + G3/G4/G8 + E5.x. Sources at base: `ROOT_ROLE_MD
 > (ROOT_ROLE_MD + lists), `git show 409b7f90:src-tauri/src/config/root_agent_defaults/<skill>/SKILL.md`
 > (both skills), `git show 409b7f90:src-tauri/src/commands/entity_creation.rs` (B3 fn + golden).
 
+### Grinch a0 record (derived blind from `git show 409b7f90`, BEFORE reading the tables below)
+
+Derived 2026-07-15 from base artifacts only: root_agent.rs (:356-409 ROOT_ROLE_MD, :415-425 recognizer, :683-738 migrate_root_role, :57-71 DEFAULT_ROOT_SKILLS, ~:2759 anti-drift test), both SKILL.md blobs, entity_creation.rs (:346-389 build_role_content). Independent G3 recomputes (python, no head consts consulted), all LF-only, no CR, no U+2014 in B1/B2:
+
+- B1 ROOT_ROLE_MD raw-literal content: **2516 bytes, sha256 `f100cfcf4df40c0ce1e81b6bebc89f7eca79eb1d4cfef9298e8abd3da53c1e73`**
+- B2 audit SKILL.md blob: **3199 bytes, sha256 `b3237843e2a6e9ac3cb014735ab398ee552711b0c017f8858758c619b3344c3f`**
+- B2 agency SKILL.md blob: **2578 bytes, sha256 `9bc8a2cd565357bfeb85efac224917331e52821aba0b36ae2b831da6aaf657e5`**
+
+Base machinery state: recognizer `is_known_generated_root_context_template` = 5 entries (OLD_ROOT_ROLE_MD, OLD_ROOT_CONTEXT_WITH_COORDINATION_MD, BEFORE_BOUNDARY_AUDIT, BEFORE_AGENCY_SKILL, current); `migrate_root_role` pristine list = 4 entries (same minus WITH_COORDINATION - recognizer-only, E5.4); ROOT_ROLE_MD is `LazyLock<String>` (E5.3 target); DEFAULT_ROOT_SKILLS legacy_snapshots: audit = EMPTY (never repair), agency = [PRE_YAML_FIX]; anti-drift test `shipped_agency_skill_is_the_snapshot_with_a_quoted_description` asserts shipped agency == PRE_YAML_FIX modulo quoted description (must be REPLACED when shipped text changes, E5.6).
+
+#### B1 ROOT_ROLE_MD - rows R-1..13
+
+- R-1 ANCHOR: frontmatter `name: 'agents-commander'` / `description: 'Static supplemental root context for AgentsCommander.'` / `type: agent`.
+- R-2 ANCHOR: heading `# Agents Commander`.
+- R-3 IDENTITY: "You are the AgentsCommander Root Agent. You are the top-level coordinator for this AgentsCommander binary."
+- R-4 `## Responsibility` PROCEDURE: top-level planning/oversight for sessions, workgroups, agents of THIS instance; help user inspect available work, plan delegation, track status, synthesize results (4 duties).
+- R-5 `## State` GRANT: durable state in canonical `ac-root-agent` dir; 4-bullet list memory/ plans/ skills/ Role.md.
+- R-6 IDENTITY+RULE: NOT a workgroup replica, NO origin Agent Matrix; use canonical root dir for own durable state.
+- R-7 `## Coordination` PROCEDURE: coordinate across workgroups at high level; delegate specialized implementation to appropriate team coordinators; synthesize their results for user.
+- R-8 `## Team and workgroup setup` PROCEDURE (ordered): 1. create missing agents `create-agent-matrix`; 2. `team create` choosing ONE coordinator + worker agents; 3. `workgroup add` using ONLY `--project`, `--team`, `--title` (flag-restriction qualifier).
+- R-9 RULE: agents must exist BEFORE team creation; team creation defines membership and repo access; workgroup activation uses the existing team definition.
+- R-10 `## Governance Boundary Audits` RULE (trigger set 1): before finalizing any work that creates, modifies, approves, or audits agents, Role.md files, skills, role templates, workflow instructions, or Agent Matrix structure (4 verbs x 6 objects) -> load and apply `skills/role-skill-boundary-audit/SKILL.md`.
+- R-11 RULE (trigger set 2): also when role grows unusually large; role contains repeatable operational procedure; skill contains authority/ownership language; similar instructions in multiple roles; another agent proposed for a bounded capability; periodic matrix hygiene requested (6 triggers).
+- R-12 RULE: audit is a review lens; structured recommendation BEFORE any refactor; NOT silently rewrite roles, skills, or agent boundaries.
+- R-13 `## Agency Agents Roles` RULE: before creating ANY new specialist agent (any role-defined `create-agent-matrix`) -> load and apply `skills/agency-agents-roles/SKILL.md`; names its 4 content areas (mandatory offer, real-local-data-never-invented, bounded skip exceptions, `agency-templates` CLI flow).
+
+Plan-named directive to check: the two trigger paragraphs (R-10+R-11) compress into one sentence + trigger list WITHOUT dropping any of the 4 verbs, 6 objects, or 6 triggers.
+
+#### B2a role-skill-boundary-audit SKILL.md - rows A-1..7
+
+- A-1 frontmatter: name; description = audit where governance instructions belong (Role.md, skill, global policy, workflow docs, memory, agent-boundary change = 6 destinations) + enforce minimal verbosity + "Diagnostic by default."; when_to_use = before creating/modifying/approving/auditing agents, Role.md files, skills, role templates, workflow instructions, Agent Matrix structure; also matrix hygiene, oversized/bloated roles, authority language inside skills, duplicated instructions, split/merge proposals.
+- A-2 `## Purpose`: boundary audit across roles/skills/policies/process docs/memory/agent shape + fenced couplet "Roles define who is responsible. / Skills define how to perform a reusable capability." (ANCHOR).
+- A-3 RULE: diagnostic by default - recommend, do NOT rewrite, UNLESS the user or active workflow asked for the refactor.
+- A-4 `## Conciseness mandate (always)` RULE: context-budget rationale; minimum that changes behavior; applies to EVERY Role.md and skill you write, recommend, or rewrite; 5 bullets (earn its place; rationale one line only where it guides judgment beyond the rule; no restatement of Why/How-to-apply/examples; Role.md tightest surface always loaded vs load-on-demand skills more detail but no padding; smallest least-verbose change preserving operative meaning).
+- A-5 `## Classification`: 10 categories with definitions (Keep in Role: identity/ownership/authority/responsibilities/escalation/durable boundaries; Move to Skill: repeatable workflow/checklist/tool procedure/implementation pattern/domain method; Global Policy: constrains every agent or session regardless of role; Workflow Docs: team process/operator-onboarding/durable human docs; Memory: project fact/decision/preference/status, persists but not standing instruction; Duplicate-Consolidate: one source of truth; Trim-Compress: right place but bloated; Split Agent: unrelated accountability surfaces; Merge Agent: differ mostly by wording/minor variants; Needs Owner Decision: authority/access/team structure/policy).
+- A-6 `## Workflow`: 6 ordered steps incl. step-4 check list (authority language, reusable procedure, duplicated guidance, agent-boundary drift, verbosity) and step-6 STOP rule (stop at recommendation if change would rewrite files or split/merge agents, unless the user asked).
+- A-7 `## Output`: fenced md template (## Boundary Audit / Verdict: categories / Findings: / Recommended Changes: / Risk / Notes:) - shape ANCHOR.
+
+#### B2b agency-agents-roles SKILL.md - rows G-1..8
+
+- G-1 frontmatter: name; quoted description (mandatory offer; identifying from real local data - source repo and cached templates, never invented; bounded skip exceptions; agency-templates CLI flow; missing-cache handling); when_to_use (before any role-defined create-agent-matrix; also when user asks to add/create/set up new specialist role or agent).
+- G-2 RULE: MUST first offer Agency Agents role templates before creating any new specialist agent; "mandatory, not discretionary".
+- G-3 RULE (bounded skip): ONLY if IN THIS SESSION the user already declined Agency templates OR explicitly asked for custom/from-scratch role (session-scope qualifier + 2 exceptions).
+- G-4 RULE: say what Agency Agents is stating ONLY what real local data supports; never invent a description or recall one from memory.
+- G-5 RULE bullets: tested shareable role templates in a source repository; real source = `repo` value from `agency-templates status` (and cache manifest), NOT a guessed URL; no local one-line description exists - describe by source repo + actual templates (real names + 1-line descriptions from `agency-templates list`), not invented prose; cache absent -> say so + offer fetch + ASK before downloading/updating BECAUSE it writes to the local cache (consent qualifier).
+- G-6 PROCEDURE+ANCHOR: three exact command lines (`agency-templates update --ref main` / `status --pretty` / `list --pretty`) via `"<AGENTSCOMMANDER_BINARY_PATH>"`.
+- G-7 RULE: command semantics (update refreshes cache from source repo, `--ref` selects git ref default main; status reports cache presence + repo/ref/commit; list prints each cached template's real `id` + 1-line `description`).
+- G-8 PROCEDURE+RULE: present candidate template(s); create with `create-agent-matrix --role-template <id>`; use ONLY IDs and descriptions that command returns; never invent template IDs or descriptions.
+
+#### B3 build_role_content scaffold - rows S-1..4
+
+- S-1 shape: frontmatter `name`/`description` (single-quote-escaped)/`type: agent` + `# {name}` + description + optional fenced `## Role Profile` (HTML-comment delimiters, provenance id, "mandatory sections stay last").
+- S-2 `## Source of Truth` RULE: "This role is defined in Role.md of your Agent Matrix at: .ac/_agent_{name}/"; if running as a replica, this file was generated from that source; ALWAYS use memory/, plans/, skills/ from your Agent Matrix, treat Role.md there as canonical; "Never use external memory systems."
+- S-3 `## Agent Memory Rule` RULE (replica-CONDITIONAL at base): IF running as a replica, single source of truth for persistent knowledge = Matrix memory/plans/skills/Role.md; replica folder ONLY for replica-local scratch, inbox/outbox, session artifacts; "NEVER use external memory systems from the coding agent (e.g., ~/.claude/projects/memory/)". Declared S5 widening drops the replica conditional - adjudication: check the unconditional rewrite stays TRUE for matrix-origin agents (no phantom "replica folder"/"your Agent Matrix" references that are false outside replicas) and keeps all three verbatim needles.
+- S-4 keep-exact: the `<!-- ac:role-profile source="{}" - imported template body ... -->` delimiter comment contains a REAL U+2014 em-dash (keep-exact, provenance-commented); ordering guarantees (mandatory sections last; template body cannot push them off) pinned by existing tests :4980-:5110.
+
+Danger rows (dropped-qualifier hunt on the new side): R-8 "using only --project --team --title"; R-12 "before any refactor" + "not silently rewrite"; A-3 + A-6 step 6 unless-asked stop conditions; A-4 "(always)" + "every Role.md and skill"; G-3 "in this session" scope; G-5 ask-before-download consent + never-invented triple; G-8 "use only ... never invent"; S-3 conditional-drop truth check.
+
 ---
 
 ## G3 freeze provenance (five mechanical parts)
