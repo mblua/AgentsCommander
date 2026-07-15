@@ -17,9 +17,19 @@ async fn wss_connection_starts_tls_handshake() {
         Ok::<_, std::io::Error>(record_header)
     });
 
-    let error = match connect_async(format!("wss://{address}/")).await {
-        Ok(_) => panic!("plain probe unexpectedly completed a WSS handshake"),
-        Err(error) => error,
+    let error = match tokio::time::timeout(
+        Duration::from_secs(5),
+        connect_async(format!("wss://{address}/")),
+    )
+    .await
+    {
+        Ok(Ok(_)) => panic!("plain probe unexpectedly completed a WSS handshake"),
+        Ok(Err(error)) => error,
+        Err(_) => {
+            server.abort();
+            let _ = server.await;
+            panic!("WSS client TLS handshake timed out");
+        }
     };
     let record_header = tokio::time::timeout(Duration::from_secs(5), server)
         .await
