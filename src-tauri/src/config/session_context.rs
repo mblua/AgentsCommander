@@ -8038,3 +8038,169 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert_defaults_index_and_render_cleanly(&root);
     }
 }
+
+/// #1005 token-accounting harness (plan section 7). Renders the three boot
+/// profiles from FIXED synthetic inputs so the numbers are deterministic across
+/// machines and stages, plus two supplement rows (B1/B3) that no boot profile
+/// can see (B1 reaches Root boots through the `context[]` array, B3 is a
+/// durable file that never boots). Profile numbers EXCLUDE the Role.md
+/// passthrough and the `# Context: <label>` glue, matching the #1005 inventory
+/// baseline. chars/4 is the declared token estimate (number of record).
+///
+/// Run (ignored; never gates CI):
+/// `cargo test --manifest-path src-tauri/Cargo.toml token_accounting_report -- --ignored --nocapture`
+#[cfg(test)]
+mod token_accounting {
+    use std::path::Path;
+
+    // Pure-string fake paths: `workgroup_root` is an ancestor NAME walk with no
+    // fs check and `display_path` does not canonicalize, so these render
+    // byte-identically on every machine.
+    const FAKE_REPLICA_ROOT: &str = "C:/fake/wg-1-team/__agent_dev";
+    const FAKE_MATRIX_ROOT: &str = "C:/fake/.ac/_agent_dev";
+    const FAKE_ROOT_AGENT: &str = "C:/fake/ac-root-agent";
+
+    fn print_row(label: &str, chars: usize) {
+        println!("| {} | {} | {} |", label, chars, chars / 4);
+    }
+
+    fn synthetic_replica_skills_section() -> String {
+        let index = super::SkillIndex {
+            matrix_root: Some(FAKE_MATRIX_ROOT.to_string()),
+            skills_root: Some(format!("{}/skills", FAKE_MATRIX_ROOT)),
+            skills: vec![
+                super::SkillMetadata {
+                    folder_name: "alpha-skill".to_string(),
+                    name: "alpha-skill".to_string(),
+                    entrypoint_path: format!("{}/skills/alpha-skill/SKILL.md", FAKE_MATRIX_ROOT),
+                    description: Some(
+                        "Fixed synthetic description used only by the token-accounting harness."
+                            .to_string(),
+                    ),
+                    when_to_use: Some("When measuring the skills block size.".to_string()),
+                    metadata_warnings: Vec::new(),
+                },
+                super::SkillMetadata {
+                    folder_name: "beta-skill".to_string(),
+                    name: "beta-skill".to_string(),
+                    entrypoint_path: format!("{}/skills/beta-skill/SKILL.md", FAKE_MATRIX_ROOT),
+                    description: Some("Second fixed synthetic skill.".to_string()),
+                    when_to_use: None,
+                    metadata_warnings: Vec::new(),
+                },
+            ],
+            warnings: Vec::new(),
+        };
+        super::render_skills_section(&index)
+    }
+
+    /// Root skills section from the REAL shipped SKILL.md files (so a stage-5
+    /// frontmatter shrink shows up here automatically), with the tempdir prefix
+    /// replaced by a fixed fake path before counting.
+    fn root_skills_section_fixed() -> String {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join(crate::config::root_agent::ROOT_AGENT_DIR_NAME);
+        for (dir, content) in [
+            (
+                "role-skill-boundary-audit",
+                include_str!("root_agent_defaults/role-skill-boundary-audit/SKILL.md"),
+            ),
+            (
+                "agency-agents-roles",
+                include_str!("root_agent_defaults/agency-agents-roles/SKILL.md"),
+            ),
+        ] {
+            let skill_dir = root.join("skills").join(dir);
+            std::fs::create_dir_all(&skill_dir).expect("create skill dir");
+            std::fs::write(skill_dir.join("SKILL.md"), content).expect("write skill");
+        }
+        let index = super::discover_skill_index(root.to_str());
+        let rendered = super::render_skills_section(&index);
+        rendered.replace(&super::display_path(&root), FAKE_ROOT_AGENT)
+    }
+
+    #[test]
+    #[ignore]
+    fn token_accounting_report() {
+        let skills = synthetic_replica_skills_section();
+
+        // Per-block rows (replica-shaped inputs).
+        let values =
+            super::default_context_dynamic_values(FAKE_REPLICA_ROOT, Some(FAKE_MATRIX_ROOT), &skills, false);
+        let write_restrictions = super::render_write_restrictions_block(FAKE_REPLICA_ROOT, &values);
+        let messaging = super::render_inter_agent_messaging_block(&values);
+        let workspace_repos =
+            super::render_workspace_repos_string(Path::new(FAKE_REPLICA_ROOT), None, None, false);
+
+        println!();
+        println!("## #1005 token accounting (chars, chars/4)");
+        println!();
+        println!("| item | chars | ~tokens |");
+        println!("|---|---|---|");
+        print_row("block: write restrictions (A2, replica)", write_restrictions.len());
+        print_row("block: inter-agent messaging (A3, replica)", messaging.len());
+        print_row("block: CLI context (A4a)", super::DEFAULT_CLI_CONTEXT.len());
+        print_row("block: session credentials (A4b)", super::DEFAULT_SESSION_CREDENTIALS.len());
+        print_row(
+            "block: delegated task reporting (A4c)",
+            super::DEFAULT_DELEGATED_TASK_REPORTING.len(),
+        );
+        print_row("block: skills section (A5, synthetic 2 skills)", skills.len());
+        print_row("block: workspace repos (A6, empty)", workspace_repos.len());
+        print_row(
+            "block: self-maintenance (A8)",
+            super::SELF_MAINTENANCE_AUTO_SECTION.len(),
+        );
+        print_row(
+            "block: coordinator template (A9)",
+            super::get_default_coordinator_template().len(),
+        );
+
+        // Profiles.
+        let replica = super::default_context(FAKE_REPLICA_ROOT, Some(FAKE_MATRIX_ROOT), &skills);
+        let coordinator = format!(
+            "{}\n\n---\n\n# Coordinator Context\n\n{}",
+            replica,
+            super::get_default_coordinator_template()
+        );
+        let coordinator_auto_clear =
+            format!("{}{}", coordinator, super::SELF_MAINTENANCE_AUTO_SECTION);
+        let root_skills = root_skills_section_fixed();
+        let root = super::render_root_runtime_prologue_inner(
+            FAKE_ROOT_AGENT,
+            &root_skills,
+            Path::new(FAKE_ROOT_AGENT),
+            None,
+            None,
+            true,
+        );
+        let root_auto_clear = format!("{}{}", root, super::SELF_MAINTENANCE_AUTO_SECTION);
+
+        print_row("profile: WG replica", replica.len());
+        print_row("profile: coordinator", coordinator.len());
+        print_row("profile: coordinator + auto_self_clear", coordinator_auto_clear.len());
+        print_row("profile: Root Agent", root.len());
+        print_row("profile: Root Agent + auto_self_clear", root_auto_clear.len());
+
+        // Supplement rows (G4): boot-invisible durables.
+        let b1 = crate::config::root_agent::default_root_context_template();
+        let b3 = crate::commands::entity_creation::build_role_content(
+            "dev-rust",
+            "Fixed description used only by the token-accounting harness.",
+            None,
+        );
+        print_row("supplement: B1 root context template", b1.len());
+        print_row("supplement: B3 created-agent Role.md scaffold", b3.len());
+        println!();
+
+        for (label, value) in [
+            ("replica", replica.as_str()),
+            ("coordinator", coordinator.as_str()),
+            ("root", root.as_str()),
+            ("b1", b1),
+            ("b3", b3.as_str()),
+        ] {
+            assert!(!value.is_empty(), "{} profile must not be empty", label);
+        }
+    }
+}

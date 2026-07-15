@@ -343,7 +343,7 @@ fn build_task_content(task_title: &str) -> String {
 /// land last so a template body cannot push them off, and Role-Profile content
 /// inherits the picker's display order (the section header makes the source of
 /// the imported text obvious to a human reader of Role.md).
-fn build_role_content(
+pub(crate) fn build_role_content(
     safe_name: &str,
     description: &str,
     template: Option<&crate::commands::role_templates::ResolvedRoleTemplate>,
