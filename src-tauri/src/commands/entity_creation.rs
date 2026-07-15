@@ -373,14 +373,13 @@ pub(crate) fn build_role_content(
          {profile}\n\
          ## Source of Truth\n\n\
          This role is defined in Role.md of your Agent Matrix at: .ac/_agent_{name}/\n\
-         If you are running as a replica, this file was generated from that source.\n\
-         Always use memory/, plans/, and skills/ from your Agent Matrix, and treat Role.md \
-         there as the canonical role definition. Never use external memory systems.\n\n\
+         If you are running as a replica, this file was generated from that source; the \
+         Agent Matrix is canonical.\n\n\
          ## Agent Memory Rule\n\n\
-         If you are running as a replica, the single source of truth for persistent knowledge \
-         is your Agent Matrix's memory/, plans/, skills/, and Role.md. Use your replica folder \
-         only for replica-local scratch, inbox/outbox, and session artifacts. NEVER use \
-         external memory systems from the coding agent (e.g., ~/.claude/projects/memory/).\n",
+         Your Agent Matrix's memory/, plans/, skills/, and Role.md are the single source \
+         of persistent knowledge. Use your replica folder only for replica-local scratch, \
+         inbox/outbox, and session artifacts. NEVER use external memory systems from the \
+         coding agent (e.g., ~/.claude/projects/memory/).\n",
         name = safe_name,
         desc_yaml = desc_yaml,
         description = description,
@@ -4971,24 +4970,25 @@ mod tests {
 
     // ── #271 — build_role_content (Role.md template merge) ──
 
-    /// Test #21 — byte-for-byte parity with the pre-#271 inline `format!`
-    /// so callers that pass no template see the legacy file. The legacy
-    /// format string is reproduced verbatim here (NOT imported from the
-    /// helper) so the two transcriptions can cross-check each other —
-    /// any drift in `build_role_content` instantly fails this test.
+    /// Test #21 — byte-for-byte golden for the no-template scaffold. Baseline
+    /// since #1005 S5: the token-minimized Source of Truth / Agent Memory Rule
+    /// bodies (before that, the pre-#271 format). The format string is
+    /// reproduced verbatim here (NOT imported from the helper) so the two
+    /// transcriptions can cross-check each other — any drift in
+    /// `build_role_content` instantly fails this test.
     #[test]
     fn build_role_content_no_template_matches_legacy() {
         let safe_name = "alpha";
         let description = "Test agent description.";
         let desc_yaml = description.replace('\'', "''");
-        let legacy = format!(
-            "---\nname: '{}'\ndescription: '{}'\ntype: agent\n---\n\n# {}\n\n{}\n\n## Source of Truth\n\nThis role is defined in Role.md of your Agent Matrix at: .ac/_agent_{}/\nIf you are running as a replica, this file was generated from that source.\nAlways use memory/, plans/, and skills/ from your Agent Matrix, and treat Role.md there as the canonical role definition. Never use external memory systems.\n\n## Agent Memory Rule\n\nIf you are running as a replica, the single source of truth for persistent knowledge is your Agent Matrix's memory/, plans/, skills/, and Role.md. Use your replica folder only for replica-local scratch, inbox/outbox, and session artifacts. NEVER use external memory systems from the coding agent (e.g., ~/.claude/projects/memory/).\n",
+        let golden = format!(
+            "---\nname: '{}'\ndescription: '{}'\ntype: agent\n---\n\n# {}\n\n{}\n\n## Source of Truth\n\nThis role is defined in Role.md of your Agent Matrix at: .ac/_agent_{}/\nIf you are running as a replica, this file was generated from that source; the Agent Matrix is canonical.\n\n## Agent Memory Rule\n\nYour Agent Matrix's memory/, plans/, skills/, and Role.md are the single source of persistent knowledge. Use your replica folder only for replica-local scratch, inbox/outbox, and session artifacts. NEVER use external memory systems from the coding agent (e.g., ~/.claude/projects/memory/).\n",
             safe_name, desc_yaml, safe_name, description, safe_name
         );
         let actual = build_role_content(safe_name, description, None);
         assert_eq!(
-            actual, legacy,
-            "no-template Role.md must be byte-identical to the pre-#271 format"
+            actual, golden,
+            "no-template Role.md must be byte-identical to the #1005 S5 golden"
         );
     }
 
