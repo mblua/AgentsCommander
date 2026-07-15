@@ -30,6 +30,9 @@
 //!   AC_WAKE_HARNESS_TRIALS (default "5")
 //!   AC_WAKE_HARNESS_SIGNAL_WINDOW_MS (default "6000")
 //!   AC_WAKE_HARNESS_GT_TIMEOUT_MS    (default "60000")
+//!   AC_WAKE_HARNESS_INJECT_MODE      (ready | first_idle | immediate; default ready)
+//!   AC_WAKE_HARNESS_REDELIVER_MODE   (immediate | settled; default immediate)
+//!   AC_WAKE_HARNESS_SETTLE_HOLD_MS   (sustained paste-ready hold; default "3500")
 //! Never fabricated: if the agent binary is absent, the harness prints a SKIP
 //! line and returns (it does not assert), so a run on a box without that agent
 //! is an honest no-op, not a fake pass.
@@ -81,6 +84,8 @@ struct HarnessConfig {
     gt_timeout: Duration,
     inject_mode: String,
     immediate_delay: Duration,
+    redeliver_mode: String,
+    settle_hold: Duration,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -110,6 +115,12 @@ impl HarnessConfig {
                 .unwrap_or(60000),
         );
         let inject_mode = env_or("AC_WAKE_HARNESS_INJECT_MODE", "ready");
+        let redeliver_mode = env_or("AC_WAKE_HARNESS_REDELIVER_MODE", "immediate");
+        let settle_hold = Duration::from_millis(
+            env_or("AC_WAKE_HARNESS_SETTLE_HOLD_MS", "3500")
+                .parse()
+                .unwrap_or(3500),
+        );
         let immediate_delay = Duration::from_millis(
             env_or("AC_WAKE_HARNESS_IMMEDIATE_DELAY_MS", "1500")
                 .parse()
@@ -124,6 +135,8 @@ impl HarnessConfig {
             gt_timeout,
             inject_mode,
             immediate_delay,
+            redeliver_mode,
+            settle_hold,
         }
     }
 }
@@ -289,6 +302,26 @@ fn nonblank_lines(text: &str) -> usize {
     text.lines().filter(|l| !l.trim().is_empty()).count()
 }
 
+/// Wait until the session is SUSTAINED paste-ready (watcher idle AND rendered
+/// content, held continuously for `hold`), mirroring B's live-path settle.
+/// Returns true if it settled, false if `deadline` passed first.
+async fn wait_for_settle(ctx: &HarnessCtx, id: Uuid, hold: Duration, deadline: Instant) -> bool {
+    let mut ready_since: Option<Instant> = None;
+    while Instant::now() < deadline {
+        let ready = watcher_idle(&ctx.idle, id) && nonblank_lines(&screen_text(&ctx.app, id)) > 0;
+        if ready {
+            let since = *ready_since.get_or_insert_with(Instant::now);
+            if Instant::now().duration_since(since) >= hold {
+                return true;
+            }
+        } else {
+            ready_since = None;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    false
+}
+
 /// Signal 3: the body token is no longer visible in the input-box region (last
 /// few non-blank lines) AND the transcript grew vs the pre-inject snapshot.
 fn screen_consumed(pre_lines: usize, post: &str, body_token: &str) -> bool {
@@ -351,8 +384,8 @@ async fn measure_wake_consumption_signals() {
     let cfg = HarnessConfig::from_env();
     println!("\n=== #1001 wake-consumption measurement harness ===");
     println!(
-        "agent='{}' shell='{}' args={:?} trials={} inject_mode='{}' signal_window={:?} gt_timeout={:?}",
-        cfg.agent_label, cfg.shell, cfg.args, cfg.trials, cfg.inject_mode, cfg.signal_window, cfg.gt_timeout
+        "agent='{}' shell='{}' args={:?} trials={} inject_mode='{}' redeliver_mode='{}' signal_window={:?} gt_timeout={:?}",
+        cfg.agent_label, cfg.shell, cfg.args, cfg.trials, cfg.inject_mode, cfg.redeliver_mode, cfg.signal_window, cfg.gt_timeout
     );
 
     if !agent_available(&cfg.shell) {
@@ -371,8 +404,9 @@ async fn measure_wake_consumption_signals() {
     let mut ts_gate = SignalTally::default();
     let mut screen = SignalTally::default();
     let mut cold_drops = 0usize; // GT-not-consumed on first attempt (the raw bug)
-    let mut linger_dupes = 0usize; // redeliver produced a 2nd marker (F7/G4)
-    let mut linger_measured = 0usize;
+    let mut redeliver_measured = 0usize; // drops where we redelivered
+    let mut redeliver_recovered = 0usize; // GT marker appeared after redeliver
+    let mut redeliver_duplicated = 0usize; // >1 markers: body double-submitted (F7/G4)
 
     for trial in 0..cfg.trials {
         let trial_dir = ctx._temp.path().join(format!("trial{trial}"));
@@ -481,23 +515,40 @@ async fn measure_wake_consumption_signals() {
              bare_flip={s1} ts_gate={s2} screen={s3}"
         );
 
-        // ── F7/G4: redeliver the SAME turn (no clear) and see if a lingering
-        // unsent body causes a duplicate submission. Only meaningful to measure
-        // when attempt 1 did NOT consume (the bug case). ──
+        // ── F7/G4 + settled-redeliver: on a drop, redeliver and measure whether
+        // the turn RECOVERS (a GT marker appears) and whether it DUPLICATES (>1
+        // markers = a lingering body double-submitted). `immediate` (default)
+        // re-injects at once (the baseline dev-rust already measured); `settled`
+        // first waits for SUSTAINED paste-ready (mirroring B's settle), to learn
+        // whether a settled redeliver is inherently safe or still needs the
+        // Ctrl-U clear. Only meaningful when attempt 1 dropped. ──
         if !gt1 {
-            linger_measured += 1;
-            let before = gt_marker_count(&gt_file);
+            redeliver_measured += 1;
+            if cfg.redeliver_mode == "settled" {
+                let settle_deadline = Instant::now() + Duration::from_secs(30);
+                if !wait_for_settle(&ctx, id, cfg.settle_hold, settle_deadline).await {
+                    println!("trial {trial}: redeliver(settled) gave up waiting for paste-ready");
+                }
+            }
             let body2 = wake_body(&gt_file, trial, 2);
             let _ = inject_text_into_session(ctx.app.handle(), id, &body2).await;
-            let dup_deadline = Instant::now() + cfg.gt_timeout;
-            while gt_marker_count(&gt_file) <= before && Instant::now() < dup_deadline {
+            let deadline = Instant::now() + cfg.gt_timeout;
+            while gt_marker_count(&gt_file) < 1 && Instant::now() < deadline {
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
-            // A duplicate is >1 total markers: attempt 1 lingered and later
-            // submitted, and attempt 2 also submitted.
-            if gt_marker_count(&gt_file) > 1 {
-                linger_dupes += 1;
+            let count = gt_marker_count(&gt_file);
+            if count >= 1 {
+                redeliver_recovered += 1;
             }
+            if count > 1 {
+                redeliver_duplicated += 1;
+            }
+            println!(
+                "trial {trial}: redeliver({}) -> markers={count} recovered={} duplicated={}",
+                cfg.redeliver_mode,
+                count >= 1,
+                count > 1
+            );
         }
 
         let _ = destroy_session_inner(ctx.app.handle(), id).await;
@@ -525,8 +576,8 @@ async fn measure_wake_consumption_signals() {
         cold_drops, cfg.trials
     );
     println!(
-        "F7 lingering-body duplicate on redeliver-without-clear: {}/{} measured drops",
-        linger_dupes, linger_measured
+        "redeliver mode '{}': recovered {}/{} drops, duplicated {}/{} drops",
+        cfg.redeliver_mode, redeliver_recovered, redeliver_measured, redeliver_duplicated, redeliver_measured
     );
     println!("=== end ===\n");
 }
