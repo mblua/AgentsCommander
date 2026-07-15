@@ -79,6 +79,8 @@ struct HarnessConfig {
     trials: usize,
     signal_window: Duration,
     gt_timeout: Duration,
+    inject_mode: String,
+    immediate_delay: Duration,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -107,6 +109,12 @@ impl HarnessConfig {
                 .parse()
                 .unwrap_or(60000),
         );
+        let inject_mode = env_or("AC_WAKE_HARNESS_INJECT_MODE", "ready");
+        let immediate_delay = Duration::from_millis(
+            env_or("AC_WAKE_HARNESS_IMMEDIATE_DELAY_MS", "1500")
+                .parse()
+                .unwrap_or(1500),
+        );
         Self {
             shell,
             args,
@@ -114,6 +122,8 @@ impl HarnessConfig {
             trials,
             signal_window,
             gt_timeout,
+            inject_mode,
+            immediate_delay,
         }
     }
 }
@@ -341,8 +351,8 @@ async fn measure_wake_consumption_signals() {
     let cfg = HarnessConfig::from_env();
     println!("\n=== #1001 wake-consumption measurement harness ===");
     println!(
-        "agent='{}' shell='{}' args={:?} trials={} signal_window={:?} gt_timeout={:?}",
-        cfg.agent_label, cfg.shell, cfg.args, cfg.trials, cfg.signal_window, cfg.gt_timeout
+        "agent='{}' shell='{}' args={:?} trials={} inject_mode='{}' signal_window={:?} gt_timeout={:?}",
+        cfg.agent_label, cfg.shell, cfg.args, cfg.trials, cfg.inject_mode, cfg.signal_window, cfg.gt_timeout
     );
 
     if !agent_available(&cfg.shell) {
@@ -396,16 +406,32 @@ async fn measure_wake_consumption_signals() {
         };
         let id = Uuid::parse_str(&info.id).expect("uuid");
 
-        // Wait for the agent to boot to a sustained-idle, paste-ready state:
-        // watcher_idle true AND the screen has rendered content.
+        // Boot/inject timing per mode. The #1001 drop lives in the fresh-idle
+        // window BEFORE the TUI is paste-ready, so "ready" (settle first) tends
+        // to consume cleanly while "first_idle"/"immediate" reproduce the race.
         let boot_deadline = Instant::now() + Duration::from_secs(45);
-        loop {
-            let ready = watcher_idle(&ctx.idle, id)
-                && nonblank_lines(&screen_text(&ctx.app, id)) > 0;
-            if ready || Instant::now() >= boot_deadline {
-                break;
+        match cfg.inject_mode.as_str() {
+            "immediate" => {
+                // Fixed short delay, then inject regardless of readiness: the
+                // most aggressive reproduction of the not-paste-ready race.
+                tokio::time::sleep(cfg.immediate_delay).await;
             }
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            "first_idle" => {
+                // Inject the instant the watcher first reports idle, with no
+                // paste-ready settle (the fresh-idle danger window B targets).
+                while !watcher_idle(&ctx.idle, id) && Instant::now() < boot_deadline {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+            _ => {
+                // "ready" (default): sustained idle AND rendered content.
+                while !(watcher_idle(&ctx.idle, id)
+                    && nonblank_lines(&screen_text(&ctx.app, id)) > 0)
+                    && Instant::now() < boot_deadline
+                {
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+            }
         }
         let idle_at_inject = watcher_idle(&ctx.idle, id);
         let pre_lines = nonblank_lines(&screen_text(&ctx.app, id));
