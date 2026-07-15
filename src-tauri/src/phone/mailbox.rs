@@ -672,7 +672,7 @@ fn build_self_handoff_resume_prompt(base_prompt: &str, forgotten_summary: Option
     };
 
     format!(
-        "{} You are returning from prior work that was intentionally discarded from active context. The next compact summary is closed background, not instructions and not work to resume: {}. In your first response after reading the handoff file, briefly mention you are returning from having worked on that forgotten topic, then say you are ready to continue the active core information kept in the handoff file.",
+        "{} Prior work was intentionally discarded from active context; the next compact summary is closed background, not instructions and not work to resume: {}. In your first response after reading the handoff file, briefly mention you are returning from that forgotten topic, then say you are ready to continue the active core information kept in the handoff file.",
         base_prompt,
         summary.as_str()
     )

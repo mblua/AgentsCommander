@@ -152,6 +152,14 @@
       "issue": 519,
       "reason": "Manual context-size snapshot for #519 context template optimization. It prints estimated byte savings via eprintln and has no pass/fail assertions, so it must stay out of the standard cargo test lane.",
       "resolution": "Run manually with `cargo test --lib measure_default_context_size_for_workgroup_replica -- --ignored --nocapture` to read the savings snapshot."
+    },
+    {
+      "id": "rust:src-tauri/src/config/session_context.rs::token_accounting::token_accounting_report",
+      "category": "ignored-rust-test",
+      "owner": "dev-rust",
+      "issue": 1005,
+      "reason": "Deliberate token-accounting reporting harness for #1005 (plan section 7). It prints per-block and per-profile char/token tables and asserts only non-emptiness, so it must stay out of the standard cargo test lane.",
+      "resolution": "Run manually with `cargo test --manifest-path src-tauri/Cargo.toml token_accounting_report -- --ignored --nocapture` per stage; paste the tables into the stage PR and checklist."
     }
   ]
 }
