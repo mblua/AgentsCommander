@@ -92,9 +92,9 @@ Rule -> carrier, per render mode. Modes: WG replica (matrix+messaging), plain re
 
 **Root forbidden write/read:** connective tissue cut; every exclusion class, both read grants, and all needles verbatim. settings.json-read grant now has its SINGLE carrier here (dropped from scope entry).
 
-**ROOT_PROJECT_SCOPE_ENTRY (2,333 -> 1,782):** every rule kept as one clause incl. the G1 qualifier "always identified as the registered `settings.projectPaths` entry". DROPPED rows: "(you may edit source and run state-changing Git there)" (carrier: root git clarification); "reading that file to enumerate the current set is always allowed" (carrier: root FORBIDDEN-read); "(the portable directory next to the binary ...)" locator parenthetical (identity detail of the exclusion, kept as "app config directory itself (holding the global `settings.json` and the Agency template cache)"); "(as it does in dev and workgroup layouts)" (example); "non-root agents stay confined to `repo-*` working repos and their own replica directories" (describes OTHER agents' rules; their carrier is their own rendered document; the root-side sole-writer claim "You are the only agent permitted to write ..." KEPT); "as the user's task requires" (rationale); "Inside the `.ac` tree the Golden Rule does NOT confine you" reframed as the covers-list ("Inside each project it covers ... everything beneath, including other agents' canonical state").
+**ROOT_PROJECT_SCOPE_ENTRY (2,333 -> 1,782; root git clarification +62 for the F2 grant clause):** every rule kept as one clause incl. the G1 qualifier "always identified as the registered `settings.projectPaths` entry". DROPPED rows: "(you may edit source and run state-changing Git there)" (carrier: root git clarification AFFIRMATIVE clause "run Git there, including commits, branches, and other state-changing operations" - restored per grinch F2; the first S3 cut left only the prohibition side); "reading that file to enumerate the current set is always allowed" (carrier: root FORBIDDEN-read); "(the portable directory next to the binary ...)" locator parenthetical (identity detail of the exclusion, kept as "app config directory itself (holding the global `settings.json` and the Agency template cache)"); "(as it does in dev and workgroup layouts)" (example); "non-root agents stay confined to `repo-*` working repos and their own replica directories" (describes OTHER agents' rules; their carrier is their own rendered document; the root-side sole-writer claim "You are the only agent permitted to write ..." KEPT); "as the user's task requires" (rationale); "Inside the `.ac` tree the Golden Rule does NOT confine you" reframed as the covers-list ("Inside each project it covers ... everything beneath, including other agents' canonical state").
 
-**ROOT_AUTHORITY_SECTION (1,984 -> 1,713):** all seven rules kept; DROPPED: "This guardrail is deliberate." (rationale marker; the consequence clause itself kept); "(the app's prompt and dispatch interface)" (parenthetical restating "app UI"); "across many projects" tail merged.
+**ROOT_AUTHORITY_SECTION (1,984 -> 1,721 post-F1):** all seven rules kept; DROPPED: "This guardrail is deliberate." (rationale marker; the consequence clause itself kept); "across many projects" tail merged. RESTORED per grinch F1 (HIGH): the prompt-and-dispatch scoping qualifier in bullet 2 - without it, PTY-injected peer messages also arrive "through your own session" and the sentence read as authenticating them; bullet 2 now grants user-directness to the app prompt/dispatch interface specifically.
 
 **agency guidance:** "You may offer to manage" -> "Manage ... only through" (obligation equal-or-stronger); needles verbatim. G10 line: `legacy_rendered_default_context_for_compat` interpolates THIS live fn (:3281 at base); defused by the Root name gate (:2304-2309 guard + name-gated empty for non-root), so the rewrite needs no freeze; do not move those guards.
 
@@ -121,12 +121,12 @@ Head @ dee5caa:
 | profile: WG replica | 9105 | 2276 | -1033 |
 | profile: coordinator | 11538 | 2884 | -1033 |
 | profile: coordinator + auto_self_clear | 14357 | 3589 | -1033 |
-| profile: Root Agent | 14269 | 3567 | -2387 |
-| profile: Root Agent + auto_self_clear | 17088 | 4272 | -2387 |
+| profile: Root Agent | 14339 | 3584 | -2317 |
+| profile: Root Agent + auto_self_clear | 17158 | 4289 | -2317 |
 | (A3/A4/A5/A6/A8/A9/B1/B3 rows unchanged) | | | 0 |
 
-Net: -258 tok per replica/coordinator boot; -597 tok per Root boot.
-Cumulative #1005 so far (from 08897ef): replica 2688 -> 2276 (-412 tok), Root 4301 -> 3567 (-734 tok).
+Net: -258 tok per replica/coordinator boot; -580 tok per Root boot (post F1/F2 restorations, +70 chars root-only).
+Cumulative #1005 so far (from 08897ef): replica 2688 -> 2276 (-412 tok), Root 4301 -> 3584 (-717 tok).
 
 ## Deviations / flags for tech-lead
 
