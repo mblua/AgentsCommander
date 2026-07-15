@@ -13,6 +13,7 @@ use crate::config::agent_config::AgentLocalConfig;
 use crate::config::sessions_persistence::RaiseHandPersistOutcome;
 use crate::config::settings::{AgentConfig, AppSettings, SettingsState};
 use crate::config::teams;
+use crate::phone::consumption::{verdict_to_result, ConsumptionVerdict};
 use crate::phone::types::OutboxMessage;
 use crate::pty::backend::SessionBackendKind;
 use crate::pty::manager::PtyManager;
@@ -1507,6 +1508,11 @@ type MailboxAttachCalls = Arc<Mutex<Vec<(Uuid, Option<String>)>>>;
 struct MailboxTestHooks {
     pty_presence: Arc<Mutex<HashMap<Uuid, bool>>>,
     inject_results: Arc<Mutex<VecDeque<Result<(), String>>>>,
+    /// (#1001 PR1 / G6) Scripted consumption verdicts, mirroring
+    /// `inject_results`. When non-empty, the `inject_wake_into_pty` hook arm
+    /// pops one after a successful inject and runs the SHARED `verdict_to_result`
+    /// - so the AC3 hooked test exercises the real conversion, not a copy.
+    consumption_results: Arc<Mutex<VecDeque<ConsumptionVerdict>>>,
     inject_calls: Arc<Mutex<Vec<Uuid>>>,
     destroy_calls: Arc<Mutex<Vec<Uuid>>>,
     spawn_calls: Arc<Mutex<Vec<MailboxSpawnCall>>>,
@@ -2760,11 +2766,22 @@ impl MailboxPoller {
                 let mut events = hooks.events.lock().unwrap();
                 events.push(MailboxTestEvent::Inject(session_id));
             }
-            let result = {
+            let inject_result = {
                 let mut results = hooks.inject_results.lock().unwrap();
                 results.pop_front()
+            }
+            .unwrap_or(Ok(()));
+            // (#1001 PR1 / G6) On a successful inject, if a consumption
+            // verdict is scripted, run the SAME verdict_to_result the
+            // production path uses so AC3 covers the real conversion. No
+            // scripted verdict => Ok (existing hooked tests unchanged).
+            return match inject_result {
+                Ok(()) => match hooks.consumption_results.lock().unwrap().pop_front() {
+                    Some(verdict) => verdict_to_result(verdict),
+                    None => Ok(()),
+                },
+                Err(e) => Err(e),
             };
-            return result.unwrap_or(Ok(()));
         }
 
         let result = self
@@ -2783,7 +2800,16 @@ impl MailboxPoller {
                 idle.touch_silence(session_id);
             }
         }
-        result
+        // (#1001 PR1 / G6) Route the successful-inject return through the
+        // shared verdict_to_result so this production site runs the exact
+        // conversion the AC3 hooked test exercises. PR1 wires no oracle yet,
+        // so the verdict is NotApplicable => Ok(()): today's write-receipt
+        // semantics, unchanged. A (PR3) replaces NotApplicable with the
+        // observed verdict from the oracle driver.
+        match result {
+            Ok(()) => verdict_to_result(ConsumptionVerdict::NotApplicable),
+            Err(e) => Err(e),
+        }
     }
 
     async fn destroy_exited_wake_session<R: tauri::Runtime>(
@@ -11279,6 +11305,127 @@ mod tests {
         assert!(hooks.spawn_calls.lock().unwrap().is_empty());
         assert_no_spawn_or_destroy_events(&hooks);
         assert_inject_results_consumed(&hooks);
+    }
+
+    // ── (#1001 PR1) consumption-verdict wiring: AC3 deterministic hooked tests ──
+    //
+    // These prove the shared `verdict_to_result` (G6) is what
+    // `inject_wake_into_pty` runs, so the conversion A (PR3) changes has real,
+    // deterministic coverage instead of a hook-local copy. A live Idle candidate
+    // takes the WakeAction::Inject arm; the inject itself is scripted Ok, and the
+    // scripted ConsumptionVerdict drives the returned Result.
+
+    /// Build a well-formed wake OutboxMessage targeting the fixture's dev-rust
+    /// replica. `deliver_wake_with_origin` does not re-validate token/routing
+    /// (that is `process_message`'s job), so a direct call is the tightest way to
+    /// assert the Ok/Err the verdict produces.
+    fn wake_message_to_target() -> OutboxMessage {
+        OutboxMessage {
+            id: "consume-verdict".into(),
+            token: None,
+            from: CANONICAL_WAKE_FROM.into(),
+            to: CANONICAL_WAKE_TO.into(),
+            body: WAKE_BODY.into(),
+            mode: "wake".into(),
+            get_output: false,
+            request_id: None,
+            sender_agent: Some("codex".into()),
+            preferred_agent: "codex".into(),
+            priority: "normal".into(),
+            timestamp: "2026-07-15T00:00:00Z".into(),
+            command: None,
+            action: None,
+            target: None,
+            force: None,
+            timeout_secs: None,
+            switch_coding_agent: None,
+            switch_profile: None,
+            dry_run: None,
+            quiet_period_ms: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn deliver_wake_terminal_pending_verdict_yields_err_after_inject() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let live_id =
+            add_mailbox_session(&app, &fixture.target_cwd, "live", SessionStatus::Idle, None).await;
+        let hooks = MailboxTestHooks::default();
+        hooks.pty_presence.lock().unwrap().insert(live_id, true);
+        hooks.inject_results.lock().unwrap().push_back(Ok(()));
+        hooks
+            .consumption_results
+            .lock()
+            .unwrap()
+            .push_back(ConsumptionVerdict::Pending);
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+        let msg = wake_message_to_target();
+
+        let result = poller
+            .deliver_wake_with_origin(&app, &msg, WakeDeliveryOrigin::FilesystemPoller)
+            .await;
+
+        assert!(
+            result.is_err(),
+            "a terminal Pending verdict must convert to Err (drives redelivery), got {:?}",
+            result
+        );
+        // The inject ran exactly once, against the live candidate.
+        assert_eq!(*hooks.inject_calls.lock().unwrap(), vec![live_id]);
+        assert_inject_results_consumed(&hooks);
+        assert!(
+            hooks.consumption_results.lock().unwrap().is_empty(),
+            "the scripted verdict must be consumed by the hook arm"
+        );
+    }
+
+    #[tokio::test]
+    async fn deliver_wake_observed_verdict_yields_ok_single_delivery() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let live_id =
+            add_mailbox_session(&app, &fixture.target_cwd, "live", SessionStatus::Idle, None).await;
+        let hooks = MailboxTestHooks::default();
+        hooks.pty_presence.lock().unwrap().insert(live_id, true);
+        hooks.inject_results.lock().unwrap().push_back(Ok(()));
+        hooks
+            .consumption_results
+            .lock()
+            .unwrap()
+            .push_back(ConsumptionVerdict::Observed);
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+        let msg = wake_message_to_target();
+
+        let result = poller
+            .deliver_wake_with_origin(&app, &msg, WakeDeliveryOrigin::FilesystemPoller)
+            .await;
+
+        assert!(result.is_ok(), "Observed must convert to Ok, got {:?}", result);
+        assert_eq!(*hooks.inject_calls.lock().unwrap(), vec![live_id]);
+        assert_no_spawn_or_destroy_events(&hooks);
+    }
+
+    #[tokio::test]
+    async fn deliver_wake_without_scripted_verdict_stays_ok_unchanged() {
+        // Back-compat: existing hooked tests script no consumption_results, so
+        // the hook arm must default to Ok(()) (write-receipt), unchanged.
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let live_id =
+            add_mailbox_session(&app, &fixture.target_cwd, "live", SessionStatus::Idle, None).await;
+        let hooks = MailboxTestHooks::default();
+        hooks.pty_presence.lock().unwrap().insert(live_id, true);
+        hooks.inject_results.lock().unwrap().push_back(Ok(()));
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+        let msg = wake_message_to_target();
+
+        let result = poller
+            .deliver_wake_with_origin(&app, &msg, WakeDeliveryOrigin::FilesystemPoller)
+            .await;
+
+        assert!(result.is_ok());
+        assert_eq!(*hooks.inject_calls.lock().unwrap(), vec![live_id]);
     }
 
     #[tokio::test]
