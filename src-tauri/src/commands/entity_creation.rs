@@ -2139,7 +2139,13 @@ fn build_session_repo(replica_dir: &Path, rel: &str) -> Option<SessionRepo> {
     Some(SessionRepo {
         label,
         source_path,
+        // #1028 - undetected, like `branch` above. This literal is emitted straight to
+        // the UI by `sync_workgroup_repos_inner`, so a user-initiated sync shows a
+        // violet badge until the next GitWatcher tick (<=5s, forced by the
+        // `invalidate_session_cache` call beside that emit). Same bound `branch`
+        // already has there.
         branch: None,
+        dirty: None,
     })
 }
 
