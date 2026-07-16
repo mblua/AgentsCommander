@@ -284,6 +284,22 @@ impl SessionIoFanout {
         })
     }
 
+    /// #1032 - the live grid's rows, plain text, for the context scrape.
+    ///
+    /// TWO-state on purpose. The fanout knows nothing about children, so `None` here means
+    /// "no parser for this id" and says NOTHING about whether the session is over: only a
+    /// backend holds the liveness oracle, so only a backend can make that call.
+    ///
+    /// Sync, and the rows are cloned out: the guard is a local and is released at the
+    /// return, so no caller can hold it across an await.
+    pub fn get_screen_rows(&self, id: Uuid) -> Option<Vec<String>> {
+        let parsers = self.screen_parsers.lock().ok()?;
+        let state = parsers.get(&id)?;
+        let screen = state.parser.screen();
+        let (_rows, cols) = screen.size();
+        Some(screen.rows(0, cols).collect())
+    }
+
     pub fn get_pty_size(&self, id: Uuid) -> Option<(u16, u16)> {
         let parsers = self.screen_parsers.lock().ok()?;
         let state = parsers.get(&id)?;
@@ -749,5 +765,107 @@ mod tests {
         assert!(json.contains("\"requestId\": \"r1\""));
         assert!(json.contains("\"content\": \"{\\\"ok\\\": true}\""));
         assert!(watchers.lock().unwrap().is_empty());
+    }
+
+    // ---- #1032: the rows accessor, against the real parser -------------------------
+
+    /// The whole transfer claim of the round-1 capture rests on this: the capture read its
+    /// bytes with `contents_between`, and the engine reads them with `rows`. If those two
+    /// ever disagree, every measured fact about the statusline is about a screen this
+    /// accessor does not return.
+    ///
+    /// Valid rows only: the `Equal` branch of `contents_between` ends in
+    /// `.unwrap_or_default()`, so an out-of-range row answers `""` where `rows()` simply
+    /// has no index - comparing those would pin the crate's error handling, not the claim.
+    #[test]
+    fn get_screen_rows_matches_contents_between() {
+        let fanout = fanout();
+        let id = session(&fanout);
+        feed(
+            &fanout,
+            id,
+            &[
+                "  Context \u{2591}\u{2591}\u{2588} 42% \u{2502} Usage\r\nprose above it\r\n"
+                    .as_bytes(),
+            ],
+        );
+
+        let rows = fanout
+            .get_screen_rows(id)
+            .expect("rows for a registered session");
+
+        let parsers = fanout.screen_parsers.lock().unwrap();
+        let screen = parsers.get(&id).expect("parser").parser.screen();
+        let (row_count, cols) = screen.size();
+        assert_eq!(rows.len(), row_count as usize);
+        for r in 0..row_count {
+            assert_eq!(
+                rows[r as usize],
+                screen.contents_between(r, 0, r, cols),
+                "row {r} disagrees with the accessor the capture measured"
+            );
+        }
+    }
+
+    /// The column-2 anchor is the engine's only defence against single-row input-box prose,
+    /// and it is worth exactly as much as this: that the two leading spaces of a row painted
+    /// at column 2 survive the round trip out of the grid.
+    #[test]
+    fn leading_spaces_survive_so_the_column_two_anchor_works() {
+        let fanout = fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"  Context 7% and a tail"]);
+
+        let rows = fanout.get_screen_rows(id).expect("rows");
+        assert_eq!(rows[0], "  Context 7% and a tail");
+        assert!(
+            rows[0].starts_with("  Context"),
+            "the anchor rests on these two spaces: {:?}",
+            rows[0]
+        );
+    }
+
+    /// Criterion 1. The mirror is keyed by session id and so is the scraper's map; two
+    /// concurrent agents must never read each other's number.
+    #[test]
+    fn two_sessions_never_cross_rows() {
+        let fanout = fanout();
+        let a = session(&fanout);
+        let b = session(&fanout);
+
+        feed(&fanout, a, &[b"  Context 11%"]);
+        feed(&fanout, b, &[b"  Context 88%"]);
+
+        assert_eq!(
+            fanout.get_screen_rows(a).expect("rows a")[0],
+            "  Context 11%"
+        );
+        assert_eq!(
+            fanout.get_screen_rows(b).expect("rows b")[0],
+            "  Context 88%"
+        );
+    }
+
+    /// The fanout's two-state contract: absent parser is `None`, and that is all it means.
+    /// Whether the session is OVER is a question this type cannot answer and does not try to.
+    #[test]
+    fn get_screen_rows_is_none_for_an_unknown_session() {
+        let fanout = fanout();
+        assert!(fanout.get_screen_rows(Uuid::new_v4()).is_none());
+    }
+
+    /// Criterion 2. The reading comes off the mirror, which AC feeds from the PTY read loop
+    /// whether or not a terminal was ever mounted: `PtyOutputTarget::noop()`, never resized,
+    /// still reads back.
+    #[test]
+    fn rows_are_readable_for_a_session_with_no_terminal() {
+        let fanout = fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"  Context 5%"]);
+
+        let rows = fanout
+            .get_screen_rows(id)
+            .expect("a never-mounted session still reads");
+        assert_eq!(rows[0], "  Context 5%");
     }
 }
