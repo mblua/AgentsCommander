@@ -59,15 +59,146 @@ const DEFAULT_ROOT_SKILLS: &[DefaultRootSkill] = &[
         dir_name: "role-skill-boundary-audit",
         file_name: SKILL_MD_FILENAME,
         content: include_str!("root_agent_defaults/role-skill-boundary-audit/SKILL.md"),
-        legacy_snapshots: &[],
+        legacy_snapshots: &[ROLE_SKILL_BOUNDARY_AUDIT_BEFORE_TOKEN_MINIMIZATION],
     },
     DefaultRootSkill {
         dir_name: "agency-agents-roles",
         file_name: SKILL_MD_FILENAME,
         content: include_str!("root_agent_defaults/agency-agents-roles/SKILL.md"),
-        legacy_snapshots: &[AGENCY_AGENTS_ROLES_SKILL_PRE_YAML_FIX],
+        legacy_snapshots: &[
+            AGENCY_AGENTS_ROLES_SKILL_PRE_YAML_FIX,
+            AGENCY_AGENTS_ROLES_BEFORE_TOKEN_MINIMIZATION,
+        ],
     },
 ];
+
+/// #1005 S5: `role-skill-boundary-audit/SKILL.md` exactly as it shipped from
+/// #654 through base commit 409b7f90, frozen so a pristine copy on disk keeps
+/// self-repairing after the token-minimization rewrite. This makes the audit
+/// skill's `legacy_snapshots` non-empty for the first time. Never edit.
+///
+/// Generated, never transcribed (G3):
+///     git show 409b7f90:src-tauri/src/config/root_agent_defaults/role-skill-boundary-audit/SKILL.md
+/// printed len 3199, sha256
+/// b3237843e2a6e9ac3cb014735ab398ee552711b0c017f8858758c619b3344c3f. Raw string
+/// literal, never `include_str!` (#914): LF everywhere. Pinned by
+/// `role_skill_boundary_audit_before_token_minimization_snapshot_is_byte_exact`
+/// against those externally captured values, never against this const itself.
+const ROLE_SKILL_BOUNDARY_AUDIT_BEFORE_TOKEN_MINIMIZATION: &str = r#"---
+name: role-skill-boundary-audit
+description: Audit where governance instructions belong (Role.md, skill, global policy, workflow docs, memory, or an agent-boundary change) and enforce minimal verbosity in roles and skills. Diagnostic by default.
+when_to_use: Before creating, modifying, approving, or auditing agents, Role.md files, skills, role templates, workflow instructions, or Agent Matrix structure. Also for matrix hygiene, oversized or bloated roles, authority language inside skills, duplicated instructions, and split/merge proposals.
+---
+
+# role-skill-boundary-audit
+
+## Purpose
+
+Audit the boundary between roles, skills, policies, process docs, memory, and agent shape.
+
+```
+Roles define who is responsible.
+Skills define how to perform a reusable capability.
+```
+
+Diagnostic by default: recommend, do not rewrite, unless the user or active workflow asked for the refactor.
+
+## Conciseness mandate (always)
+
+Roles and skills spend context budget every time they load, so write the minimum that changes behavior. This mandate applies to every Role.md and skill you write, recommend, or rewrite.
+
+- Add only what adds value; cut the rest. Every line must earn its place.
+- Keep rationale to one line, and only where it guides a judgment the rule itself does not cover.
+- No restatement: drop "Why" / "How to apply" / examples that repeat a rule without adding information.
+- `Role.md` is the tightest surface (always loaded). Load-on-demand skills may hold more detail, but still no padding.
+- When recommending or rewriting, target the smallest, least-verbose change that restores the boundary and preserves operative meaning.
+
+## Classification
+
+- Keep in Role: identity, ownership, authority, responsibilities, escalation, durable boundaries for one agent.
+- Move to Skill: repeatable workflow, checklist, tool procedure, implementation pattern, domain method.
+- Move to Global Policy: must constrain every agent or session regardless of role.
+- Move to Workflow Docs: team process, operator/onboarding guide, durable docs humans browse outside startup context.
+- Move to Memory: project fact, decision, preference, or status that persists but is not a standing instruction.
+- Duplicate / Consolidate: same guidance in multiple places; pick one source of truth.
+- Trim / Compress: content is in the right place but bloated; cut to the operative minimum.
+- Split Agent: one role owns unrelated accountability surfaces.
+- Merge Agent: agents differ mostly by wording or minor task variants.
+- Needs Owner Decision: placement touches authority, access, team structure, or policy.
+
+## Workflow
+
+1. Identify the instruction or proposed change.
+2. Name current vs proposed location.
+3. Classify it.
+4. Check for authority language, reusable procedure, duplicated guidance, agent-boundary drift, and verbosity.
+5. Recommend the smallest, least-verbose change that restores a clear boundary and preserves meaning.
+6. Stop at the recommendation if the change would rewrite files or split/merge agents, unless the user asked for the refactor.
+
+## Output
+
+```md
+## Boundary Audit
+
+Verdict: <one or more categories above>
+
+Findings:
+1. ...
+
+Recommended Changes:
+- ...
+
+Risk / Notes:
+- ...
+```
+"#;
+
+/// #1005 S5: `agency-agents-roles/SKILL.md` exactly as it shipped from #909
+/// (the quoted-description fix) through base commit 409b7f90, frozen so a
+/// pristine copy on disk keeps self-repairing after the token-minimization
+/// rewrite. Never edit.
+///
+/// Generated, never transcribed (G3):
+///     git show 409b7f90:src-tauri/src/config/root_agent_defaults/agency-agents-roles/SKILL.md
+/// printed len 2578, sha256
+/// 9bc8a2cd565357bfeb85efac224917331e52821aba0b36ae2b831da6aaf657e5. Raw string
+/// literal, never `include_str!` (#914): LF everywhere. Pinned by
+/// `agency_agents_roles_before_token_minimization_snapshot_is_byte_exact`
+/// against those externally captured values, never against this const itself.
+const AGENCY_AGENTS_ROLES_BEFORE_TOKEN_MINIMIZATION: &str = r#"---
+name: agency-agents-roles
+description: "How the Root Agent offers Agency Agents role templates before creating any specialist agent: the mandatory offer, identifying Agency Agents from real local data (its source repo and cached templates, never invented), the bounded skip exceptions, the agency-templates CLI flow, and handling a missing local template cache."
+when_to_use: Load before creating any new specialist agent, i.e. before any role-defined create-agent-matrix. Also whenever the user asks to add, create, or set up a new specialist role or agent.
+---
+
+# agency-agents-roles
+
+## Mandatory offer before creating a specialist agent
+
+Before you create any new specialist agent (any role-defined `create-agent-matrix`), you MUST first offer Agency Agents role templates. This is mandatory, not discretionary.
+
+Skip the offer ONLY if, in this session, the user already declined Agency templates or explicitly asked for a custom or from-scratch role.
+
+## Say what Agency Agents is, from real data only
+
+When you offer, briefly say what Agency Agents is, but state ONLY what real local data supports. Never invent a description or recall one from memory.
+
+- Agency Agents is a collection of tested, shareable role templates published in a source repository. The real source is the `repo` value reported by `agency-templates status` (and stored in the cache manifest), not a URL you guess.
+- There is no local one-line project description to quote. Describe Agency Agents concretely by its source repo plus the actual templates available (their real names and 1-line descriptions from `agency-templates list`), not with invented prose.
+- If the template cache is absent (status reports it unavailable), say so and offer to fetch it. Ask before downloading or updating, because it writes to the local template cache.
+
+## On acceptance, use the CLI
+
+Use the AgentsCommander CLI from `AGENTSCOMMANDER_BINARY_PATH`:
+
+    "<AGENTSCOMMANDER_BINARY_PATH>" agency-templates update --ref main
+    "<AGENTSCOMMANDER_BINARY_PATH>" agency-templates status --pretty
+    "<AGENTSCOMMANDER_BINARY_PATH>" agency-templates list --pretty
+
+`update` refreshes the local cache from the source repo (`--ref` selects the git ref, default `main`). `status` reports whether a cache is present and its repo, ref, and commit. `list` prints each cached template's real `id` and 1-line `description`.
+
+Then present the candidate template(s) and create with `create-agent-matrix --role-template <id>`. Use only the IDs and descriptions that command returns; never invent template IDs or descriptions.
+"#;
 
 /// #909: the `agency-agents-roles/SKILL.md` we shipped from `00eca16` (PR #682) through
 /// `646aeac`. Its `description` is an unquoted YAML plain scalar containing an inner
@@ -353,8 +484,16 @@ You may offer to download tested role templates from Agency Agents when the user
 Use only IDs returned by `agency-templates list` when creating agents with `create-agent-matrix --role-template <id>`. Do not invent Agency template IDs.
 "#;
 
-static ROOT_ROLE_MD: LazyLock<String> = LazyLock::new(|| {
-    r#"---
+/// #1005 S5: `ROOT_ROLE_MD` exactly as it shipped from #698 (agency skill
+/// pointer) through base commit 409b7f90, frozen as the fifth legacy snapshot
+/// so pristine copies on disk (Role.md and Context.root-agent.md) keep being
+/// recognized and migrated after the v5 token-minimization rewrite.
+/// Never edit. Provenance (G3): one-off run of the shipped accessor
+/// `default_root_context_template()` at 409b7f90 printed len 2516, sha256
+/// f100cfcf4df40c0ce1e81b6bebc89f7eca79eb1d4cfef9298e8abd3da53c1e73; pinned by
+/// `root_context_before_token_minimization_snapshot_is_byte_exact` against
+/// those externally captured values, never against this const itself.
+const ROOT_CONTEXT_BEFORE_TOKEN_MINIMIZATION_MD: &str = r#"---
 name: 'agents-commander'
 description: 'Static supplemental root context for AgentsCommander.'
 type: agent
@@ -404,12 +543,60 @@ The audit is a review lens. It should produce a structured recommendation before
 ## Agency Agents Roles
 
 Before creating any new specialist agent (any role-defined `create-agent-matrix`), load and apply `skills/agency-agents-roles/SKILL.md`. It defines the mandatory offer of tested Agency Agents role templates, what to state about Agency Agents from real local data (never invented), the bounded skip exceptions, and the `agency-templates` CLI flow.
-"#
-    .to_string()
-});
+"#;
+
+const ROOT_ROLE_MD: &str = r#"---
+name: 'agents-commander'
+description: 'Static supplemental root context for AgentsCommander.'
+type: agent
+---
+
+# Agents Commander
+
+You are the AgentsCommander Root Agent, the top-level coordinator for this AgentsCommander binary.
+
+## Responsibility
+
+Act as the top-level planning and oversight agent for sessions, workgroups, and agents available to this AgentsCommander instance: help the user inspect available work, plan delegation, track status, and synthesize results.
+
+## State
+
+Your own durable state lives in the canonical `ac-root-agent` directory:
+
+- `memory/`
+- `plans/`
+- `skills/`
+- `Role.md`
+
+You are not a workgroup replica and you have no origin Agent Matrix; use the canonical root directory for your durable state.
+
+## Coordination
+
+Coordinate across workgroups at a high level: delegate specialized implementation work to the appropriate team coordinators and synthesize their results for the user.
+
+## Team and workgroup setup
+
+When asked to set up a new team for automation, use this order:
+
+1. Create any missing agents with `create-agent-matrix`.
+2. Create the team with `team create`, choosing one coordinator and the worker agents.
+3. Activate a task workspace with `workgroup add` using only `--project`, `--team`, and `--title`.
+
+Agents must exist before team creation. Team creation defines membership and repo access; workgroup activation uses the existing team definition.
+
+## Governance Boundary Audits
+
+Load and apply `skills/role-skill-boundary-audit/SKILL.md` before finalizing any work that creates, modifies, approves, or audits agents, `Role.md` files, skills, role templates, workflow instructions, or Agent Matrix structure, and when a role grows unusually large, a role contains repeatable operational procedure, a skill contains authority or ownership language, similar instructions appear in multiple roles, someone proposes another agent for a bounded capability, or periodic matrix hygiene is requested.
+
+The audit is a review lens: produce a structured recommendation before any refactor, never silently rewrite roles, skills, or agent boundaries.
+
+## Agency Agents Roles
+
+Before creating any new specialist agent (any role-defined `create-agent-matrix`), load and apply `skills/agency-agents-roles/SKILL.md`. It defines the mandatory offer of tested Agency Agents role templates, what to state about Agency Agents from real local data (never invented), the bounded skip exceptions, and the `agency-templates` CLI flow.
+"#;
 
 pub(crate) fn default_root_context_template() -> &'static str {
-    ROOT_ROLE_MD.as_str()
+    ROOT_ROLE_MD
 }
 
 pub(crate) fn is_known_generated_root_context_template(content: &str) -> bool {
@@ -419,7 +606,8 @@ pub(crate) fn is_known_generated_root_context_template(content: &str) -> bool {
         normalize_role_text(&OLD_ROOT_CONTEXT_WITH_COORDINATION_MD),
         normalize_role_text(ROOT_CONTEXT_BEFORE_BOUNDARY_AUDIT_MD),
         normalize_role_text(ROOT_CONTEXT_BEFORE_AGENCY_SKILL_MD),
-        normalize_role_text(ROOT_ROLE_MD.as_str()),
+        normalize_role_text(ROOT_CONTEXT_BEFORE_TOKEN_MINIMIZATION_MD),
+        normalize_role_text(ROOT_ROLE_MD),
     ];
     old_generated.contains(&normalized)
 }
@@ -714,7 +902,8 @@ fn migrate_root_role(role_path: &Path) -> Result<(), String> {
     let migrated = if existing_normalized == normalize_role_text(OLD_ROOT_ROLE_MD)
         || existing_normalized == normalize_role_text(ROOT_CONTEXT_BEFORE_BOUNDARY_AUDIT_MD)
         || existing_normalized == normalize_role_text(ROOT_CONTEXT_BEFORE_AGENCY_SKILL_MD)
-        || existing_normalized == normalize_role_text(&ROOT_ROLE_MD)
+        || existing_normalized == normalize_role_text(ROOT_CONTEXT_BEFORE_TOKEN_MINIMIZATION_MD)
+        || existing_normalized == normalize_role_text(ROOT_ROLE_MD)
     {
         if existing_normalized != normalize_role_text(MINIMAL_ROOT_ROLE_MD) {
             Some(MINIMAL_ROOT_ROLE_MD.to_string())
@@ -1828,7 +2017,7 @@ mod tests {
         );
         assert_eq!(
             std::fs::read_to_string(template_path).expect("read template"),
-            ROOT_ROLE_MD.as_str()
+            ROOT_ROLE_MD
         );
         let config_raw = std::fs::read_to_string(root.join("config.json")).expect("read config");
         let config: Value = serde_json::from_str(&config_raw).expect("parse config");
@@ -1953,6 +2142,83 @@ mod tests {
         assert!(retired_global_backups(temp.path()).is_empty());
     }
 
+    /// #1005 S5 / G3: the frozen v4 root snapshot must stay byte-identical to what
+    /// the #698..409b7f90 builds shipped. Expected values captured by a one-off run
+    /// of `default_root_context_template()` AT base commit 409b7f90, never from
+    /// this const.
+    #[test]
+    fn root_context_before_token_minimization_snapshot_is_byte_exact() {
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            ROOT_CONTEXT_BEFORE_TOKEN_MINIMIZATION_MD.len(),
+            2516,
+            "frozen v4 root snapshot must be the 409b7f90 bytes"
+        );
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(ROOT_CONTEXT_BEFORE_TOKEN_MINIMIZATION_MD.as_bytes())
+            ),
+            "f100cfcf4df40c0ce1e81b6bebc89f7eca79eb1d4cfef9298e8abd3da53c1e73",
+            "frozen v4 root snapshot changed; it must stay byte-identical to what shipped"
+        );
+    }
+
+    /// #1005 S5 failing-first proof for ALL of: the v5 rewrite (assert_ne), the
+    /// recognizer list (E5.4 path 1), the `migrate_root_role` pristine list
+    /// (E5.4 path 2), and the root_spec version bump. ONE fixture (the frozen v4
+    /// bytes) drives both migration paths so a missed list cannot pass silently:
+    /// a pristine v4 Role.md must reduce to MINIMAL, and a pristine v4
+    /// Context.root-agent.md must auto-upgrade to the current default.
+    #[test]
+    fn frozen_v4_root_context_is_recognized_and_migrated_on_both_paths() {
+        assert_ne!(
+            ROOT_CONTEXT_BEFORE_TOKEN_MINIMIZATION_MD,
+            default_root_context_template(),
+            "v5 rewrite must actually change the template or the freeze is pointless"
+        );
+        assert!(is_known_generated_root_context_template(
+            ROOT_CONTEXT_BEFORE_TOKEN_MINIMIZATION_MD
+        ));
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+        std::fs::create_dir_all(&root).expect("create root");
+        std::fs::write(
+            root.join("Role.md"),
+            ROOT_CONTEXT_BEFORE_TOKEN_MINIMIZATION_MD,
+        )
+        .expect("write pristine v4 role");
+        let template_path = temp
+            .path()
+            .join(crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&template_path, ROOT_CONTEXT_BEFORE_TOKEN_MINIMIZATION_MD)
+            .expect("write pristine v4 template");
+
+        ensure_root_agent_dir_at(&root).expect("ensure root");
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("Role.md")).expect("read role"),
+            MINIMAL_ROOT_ROLE_MD,
+            "pristine v4 Role.md must reduce to the minimal role (migrate_root_role list)"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&template_path).expect("read template"),
+            default_root_context_template(),
+            "pristine v4 Context.root-agent.md must auto-upgrade (recognizer list)"
+        );
+        let state =
+            std::fs::read_to_string(temp.path().join(
+                crate::config::seeded_context_templates::SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME,
+            ))
+            .expect("read seeded state");
+        let parsed: Value = serde_json::from_str(&state).expect("parse seeded state");
+        assert_eq!(
+            parsed["templates"]["rootAgent"]["currentVersion"], 5,
+            "root_spec current_version must be bumped to 5 by the S5 rewrite"
+        );
+    }
+
     #[test]
     fn ensure_root_agent_dir_at_migrates_old_root_template_defaults() {
         for old_default in [
@@ -1960,6 +2226,7 @@ mod tests {
             OLD_ROOT_CONTEXT_WITH_COORDINATION_MD.to_string(),
             ROOT_CONTEXT_BEFORE_BOUNDARY_AUDIT_MD.to_string(),
             ROOT_CONTEXT_BEFORE_AGENCY_SKILL_MD.to_string(),
+            ROOT_CONTEXT_BEFORE_TOKEN_MINIMIZATION_MD.to_string(),
         ] {
             let temp = tempfile::tempdir().expect("tempdir");
             let root = temp.path().join(ROOT_AGENT_DIR_NAME);
@@ -1972,7 +2239,7 @@ mod tests {
 
             assert_eq!(
                 std::fs::read_to_string(template_path).expect("read template"),
-                ROOT_ROLE_MD.as_str()
+                ROOT_ROLE_MD
             );
         }
     }
@@ -2014,7 +2281,7 @@ mod tests {
         ensure_root_agent_dir_at(&root).expect("ensure root");
 
         let migrated = std::fs::read_to_string(template_path).expect("read template");
-        assert_eq!(migrated, ROOT_ROLE_MD.as_str());
+        assert_eq!(migrated, ROOT_ROLE_MD);
         assert!(migrated.contains("role-skill-boundary-audit"));
     }
 
@@ -2130,7 +2397,7 @@ mod tests {
         ensure_root_agent_dir_at(&root).expect("ensure root");
 
         let migrated = std::fs::read_to_string(template_path).expect("read template");
-        assert_eq!(migrated, ROOT_ROLE_MD.as_str());
+        assert_eq!(migrated, ROOT_ROLE_MD);
         assert!(migrated.contains("skills/agency-agents-roles/SKILL.md"));
         assert!(!migrated.contains("agency-templates update"));
     }
@@ -2276,7 +2543,7 @@ mod tests {
         let custom_template = "# Custom Root Template\n\nReplace built-in text.\n";
         std::fs::write(&template_path, custom_template).expect("write template");
         std::fs::create_dir_all(&root).expect("create root");
-        std::fs::write(root.join("Role.md"), ROOT_ROLE_MD.as_str()).expect("write current role");
+        std::fs::write(root.join("Role.md"), ROOT_ROLE_MD).expect("write current role");
 
         ensure_root_agent_dir_at(&root).expect("ensure root");
 
@@ -2724,6 +2991,123 @@ mod tests {
             .expect("default skill must be in the table")
     }
 
+    /// #1005 S5 / G3: expected values captured from the BASE-COMMIT blob
+    /// (`git show 409b7f90:...role-skill-boundary-audit/SKILL.md`), never from
+    /// this const. LF-folded first (G8) so the pin is checkout-invariant.
+    #[test]
+    fn role_skill_boundary_audit_before_token_minimization_snapshot_is_byte_exact() {
+        use sha2::{Digest, Sha256};
+        let lf = ROLE_SKILL_BOUNDARY_AUDIT_BEFORE_TOKEN_MINIMIZATION.replace("\r\n", "\n");
+        assert_eq!(
+            lf.len(),
+            3199,
+            "snapshot must be the 409b7f90 blob, byte for byte"
+        );
+        assert_eq!(
+            format!("{:x}", Sha256::digest(lf.as_bytes())),
+            "b3237843e2a6e9ac3cb014735ab398ee552711b0c017f8858758c619b3344c3f",
+            "the frozen audit snapshot changed; it must stay byte-identical to what shipped"
+        );
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(
+                    normalize_role_text(ROLE_SKILL_BOUNDARY_AUDIT_BEFORE_TOKEN_MINIMIZATION)
+                        .as_bytes()
+                )
+            ),
+            "b27e1a9ae8aa8ce6febbdee89b95a07b99be18114cb627d6337356fd566607c3",
+            "the normalized audit snapshot changed; it is what on-disk copies hash to"
+        );
+    }
+
+    /// #1005 S5 / G3: expected values captured from the BASE-COMMIT blob
+    /// (`git show 409b7f90:...agency-agents-roles/SKILL.md`), never from this
+    /// const. LF-folded first (G8) so the pin is checkout-invariant.
+    #[test]
+    fn agency_agents_roles_before_token_minimization_snapshot_is_byte_exact() {
+        use sha2::{Digest, Sha256};
+        let lf = AGENCY_AGENTS_ROLES_BEFORE_TOKEN_MINIMIZATION.replace("\r\n", "\n");
+        assert_eq!(
+            lf.len(),
+            2578,
+            "snapshot must be the 409b7f90 blob, byte for byte"
+        );
+        assert_eq!(
+            format!("{:x}", Sha256::digest(lf.as_bytes())),
+            "9bc8a2cd565357bfeb85efac224917331e52821aba0b36ae2b831da6aaf657e5",
+            "the frozen agency v2 snapshot changed; it must stay byte-identical to what shipped"
+        );
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(
+                    normalize_role_text(AGENCY_AGENTS_ROLES_BEFORE_TOKEN_MINIMIZATION).as_bytes()
+                )
+            ),
+            "2bcb95d2b57e9ff39f212e487f98195bbc66a0949b86b015bcfb1a2022445a3a",
+            "the normalized agency v2 snapshot changed; it is what on-disk copies hash to"
+        );
+    }
+
+    /// #1005 S5 failing-first proof for the audit skill's `legacy_snapshots`
+    /// entry (the list is non-empty for the first time). Goes through
+    /// `ensure_root_agent_dir_at` so the REAL `DEFAULT_ROOT_SKILLS` table is on
+    /// trial, not a caller-supplied list.
+    #[test]
+    fn frozen_audit_skill_is_repaired_to_current() {
+        assert_ne!(
+            normalize_role_text(ROLE_SKILL_BOUNDARY_AUDIT_BEFORE_TOKEN_MINIMIZATION),
+            normalize_role_text(default_root_skill("role-skill-boundary-audit").content),
+            "S5 rewrite must change the shipped audit skill or the freeze is pointless"
+        );
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+        let skill = root
+            .join(ROOT_AGENT_SKILLS_DIR)
+            .join("role-skill-boundary-audit")
+            .join(SKILL_MD_FILENAME);
+        std::fs::create_dir_all(skill.parent().expect("skill parent")).expect("create skill dir");
+        std::fs::write(&skill, ROLE_SKILL_BOUNDARY_AUDIT_BEFORE_TOKEN_MINIMIZATION)
+            .expect("seed old skill");
+
+        ensure_root_agent_dir_at(&root).expect("ensure root");
+
+        assert_eq!(
+            std::fs::read_to_string(&skill).expect("read skill"),
+            default_root_skill("role-skill-boundary-audit").content,
+            "pristine pre-minimization audit skill must self-repair (legacy_snapshots)"
+        );
+    }
+
+    /// #1005 S5 failing-first proof for the agency skill's SECOND
+    /// `legacy_snapshots` entry, through the REAL table like the audit twin.
+    #[test]
+    fn frozen_agency_v2_skill_is_repaired_to_current() {
+        assert_ne!(
+            normalize_role_text(AGENCY_AGENTS_ROLES_BEFORE_TOKEN_MINIMIZATION),
+            normalize_role_text(default_root_skill("agency-agents-roles").content),
+            "S5 rewrite must change the shipped agency skill or the freeze is pointless"
+        );
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+        let skill = root
+            .join(ROOT_AGENT_SKILLS_DIR)
+            .join("agency-agents-roles")
+            .join(SKILL_MD_FILENAME);
+        std::fs::create_dir_all(skill.parent().expect("skill parent")).expect("create skill dir");
+        std::fs::write(&skill, AGENCY_AGENTS_ROLES_BEFORE_TOKEN_MINIMIZATION)
+            .expect("seed old skill");
+
+        ensure_root_agent_dir_at(&root).expect("ensure root");
+
+        assert_eq!(
+            std::fs::read_to_string(&skill).expect("read skill"),
+            default_root_skill("agency-agents-roles").content,
+            "pristine pre-minimization agency skill must self-repair (legacy_snapshots)"
+        );
+    }
+
     #[test]
     fn agency_agents_roles_pre_yaml_fix_snapshot_is_byte_exact() {
         use sha2::{Digest, Sha256};
@@ -2752,23 +3136,53 @@ mod tests {
         );
     }
 
-    /// Anti-drift. If anyone edits the shipped `SKILL.md` without adding a new snapshot, this fails
-    /// loudly instead of silently orphaning the migration. Only valid because `when_to_use` stays an
-    /// unquoted plain scalar (decision (a)); it has no inner `": "`.
+    /// Anti-drift (#1005 S5, E5.6; replaces
+    /// `shipped_agency_skill_is_the_snapshot_with_a_quoted_description`, whose
+    /// old==new-minus-one-quote derivation could not survive a real rewrite).
+    /// If anyone edits a shipped `SKILL.md` without freezing a new snapshot and
+    /// extending that skill's `legacy_snapshots`, this fails loudly instead of
+    /// silently orphaning the migration. Pins the LF-folded form plus the
+    /// normalized form (G8): shipped content is `include_str!` and
+    /// `.gitattributes` has no `*.md` rule, so raw bytes differ CRLF/LF per
+    /// checkout.
     #[test]
-    fn shipped_agency_skill_is_the_snapshot_with_a_quoted_description() {
-        let snapshot = normalize_role_text(AGENCY_AGENTS_ROLES_SKILL_PRE_YAML_FIX);
-        let mut lines: Vec<String> = snapshot.lines().map(str::to_string).collect();
-        // `.to_string()` is mandatory, not stylistic: `strip_prefix` borrows `lines[2]`, and the
-        // next line takes a mutable borrow of `lines` while that borrow is live inside `format!`.
-        let value = lines[2]
-            .strip_prefix("description: ")
-            .expect("snapshot line 3 is the description")
-            .to_string();
-        lines[2] = format!("description: \"{}\"", value);
-
-        let agency = default_root_skill("agency-agents-roles");
-        assert_eq!(lines.join("\n"), normalize_role_text(agency.content));
+    fn shipped_skills_are_the_pinned_bytes() {
+        use sha2::{Digest, Sha256};
+        for (dir, len, lf_sha, normalized_sha) in [
+            (
+                "role-skill-boundary-audit",
+                3061,
+                "af3e86a69e9a3608843242e666993fcd64a21bf53d4f45a087f421f5a1e36de7",
+                "005e72afcfdf6431a8e165c426e6d27aed751c5f56a41534adfef647088acf3a",
+            ),
+            (
+                "agency-agents-roles",
+                2464,
+                "30431b8b39ba27835210d4fdc78e286a2c590329877ee4d5899e8f560071fb75",
+                "ebe59fd5e6607a76cb47d71349473066a448b699e92bfbaca0056c8203f44313",
+            ),
+        ] {
+            let content = default_root_skill(dir).content;
+            let lf = content.replace("\r\n", "\n");
+            assert_eq!(
+                lf.len(),
+                len,
+                "{dir}: shipped bytes changed; freeze the old bytes as a new snapshot first"
+            );
+            assert_eq!(
+                format!("{:x}", Sha256::digest(lf.as_bytes())),
+                lf_sha,
+                "{dir}: shipped bytes changed; freeze the old bytes as a new snapshot first"
+            );
+            assert_eq!(
+                format!(
+                    "{:x}",
+                    Sha256::digest(normalize_role_text(content).as_bytes())
+                ),
+                normalized_sha,
+                "{dir}: normalized shipped bytes changed; freeze a new snapshot first"
+            );
+        }
     }
 
     // ---------------------------------------------------------------------------------------
