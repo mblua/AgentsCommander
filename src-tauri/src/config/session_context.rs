@@ -2113,12 +2113,12 @@ fn simple_hash(s: &str) -> u64 {
 pub fn get_default_agent_template() -> &'static str {
     r#"# AgentsCommander Context
 
-You are running inside an AgentsCommander session - a terminal session manager that coordinates multiple AI agents.
+You are running inside an AgentsCommander session - a terminal session manager coordinating multiple AI agents.
 
 ## Core Concepts
 
-- **Team**: the logical capability and organization. It defines who can work together, who coordinates, and which repos are available.
-- **Workgroup**: an operational runtime replica instance of a team for a specific task. It contains replica agents and `repo-*` working repositories.
+- **Team**: the logical capability and organization. It defines membership, who coordinates, and which repos are available.
+- **Workgroup**: a runtime replica of a team for a specific task. It contains replica agents and `repo-*` working repos.
 
 {{WRITE_RESTRICTIONS}}
 
@@ -2620,7 +2620,7 @@ fn coarse_section_dedup_safe(
 /// that no longer reads any global template.
 const ROOT_RUNTIME_PROLOGUE_HEADER: &str = r#"# AgentsCommander Root Runtime Context
 
-You are running inside an AgentsCommander session - a terminal session manager that coordinates multiple AI agents."#;
+You are running inside an AgentsCommander session - a terminal session manager coordinating multiple AI agents."#;
 
 /// #979 G4: Root is the agent that creates and coordinates teams and workgroups,
 /// so it keeps the Core Concepts prose it receives today through
@@ -2632,8 +2632,8 @@ You are running inside an AgentsCommander session - a terminal session manager t
 /// machinery.
 const CORE_CONCEPTS_SECTION: &str = r#"## Core Concepts
 
-- **Team**: the logical capability and organization. It defines who can work together, who coordinates, and which repos are available.
-- **Workgroup**: an operational runtime replica instance of a team for a specific task. It contains replica agents and `repo-*` working repositories."#;
+- **Team**: the logical capability and organization. It defines membership, who coordinates, and which repos are available.
+- **Workgroup**: a runtime replica of a team for a specific task. It contains replica agents and `repo-*` working repos."#;
 
 /// #979: assemble the Root Agent's unconditional, code-owned runtime prologue.
 ///
@@ -4729,7 +4729,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(out.contains("you may create, modify, and delete files anywhere under ANY project folder registered"));
         assert!(out.contains("## Root Agent Authority and Chain of Command"));
         assert!(out.contains("**Team**: the logical capability and organization."));
-        assert!(out.contains("**Workgroup**: an operational runtime replica instance"));
+        assert!(out.contains("**Workgroup**: a runtime replica of a team"));
 
         // Every placeholder is resolved by construction: the prologue is assembled
         // from rendered blocks, never from a template with tokens.
@@ -6470,9 +6470,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(content.contains("# AgentsCommander Context"));
         assert!(content.contains("## Core Concepts"));
         assert!(content.contains("**Team**: the logical capability and organization"));
-        assert!(content.contains(
-            "**Workgroup**: an operational runtime replica instance of a team for a specific task"
-        ));
+        assert!(content.contains("**Workgroup**: a runtime replica of a team for a specific task"));
         assert!(content.contains("When finishing a delegated task or getting blocked"));
         assert!(content.contains("# Coordinator Context"));
         assert!(content.contains("You are the coordinator for your team"));
