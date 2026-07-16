@@ -691,6 +691,7 @@ fn load_sessions_from_path(path: &Path) -> Vec<PersistedSession> {
                                 label: prefix,
                                 source_path: source,
                                 branch: None,
+                                dirty: None,
                             });
                         }
                         (Some(source), None) => {
@@ -712,6 +713,7 @@ fn load_sessions_from_path(path: &Path) -> Vec<PersistedSession> {
                                 label,
                                 source_path: source,
                                 branch: None,
+                                dirty: None,
                             });
                         }
                         (None, Some(prefix)) if prefix == "multi-repo" => {
@@ -3462,6 +3464,7 @@ mod tests {
                         label: prefix,
                         source_path: source,
                         branch: None,
+                        dirty: None,
                     });
                 }
                 _ => {}
@@ -3601,6 +3604,7 @@ mod tests {
                         label: prefix,
                         source_path: source,
                         branch: None,
+                        dirty: None,
                     });
                 }
                 _ => {}

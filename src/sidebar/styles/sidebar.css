@@ -5514,6 +5514,33 @@ html.light-theme .settings-hint-warning {
   text-transform: none;
 }
 
+/* #1028 worktree-dirty repo badge — LETTERS ONLY go red; the violet background is
+   inherited untouched from `.branch` above, which is what "letters only" means and
+   why this rule sets `color` and nothing else.
+
+   ADDITIVE variant, deliberately not an edit to `.branch`: that rule also paints
+   AcDiscoveryPanel's chip, so recolouring it in place would repaint a surface this
+   issue does not touch (AC 3).
+
+   Three-class specificity (0,3,0) beats `.ac-discovery-badge.branch` (0,2,0) above,
+   so source order is not what carries it — the same rationale already documented for
+   `.coord-idle.red`, a red badge that ships on this very row.
+
+   `--status-exited` reuses the app's existing alarm red (#ff3b5c dark / #dc2626
+   light), no new hex.
+
+   Contrast, re-measured for this change (WCAG 2.x, #ff3b5c over the badge's own
+   rgba(139,92,246,0.15) composited on each real row background): 4.97:1 base,
+   4.57:1 hover, 4.35:1 active. The active row is under the 4.5:1 AA floor for text
+   this size — but `.coord-idle.red`, a red badge ALREADY SHIPPING on this same row,
+   measures 4.89 / 4.51 / 4.32 by the identical method, so the dirty badge is equal
+   or better in every state and introduces no new contrast debt. Raising the floor
+   for both is a separate concern, and light-theme `.branch` is worse still (no
+   light override exists) — see the issue's out-of-scope list. */
+.ac-discovery-badge.branch.dirty {
+  color: var(--status-exited);
+}
+
 .ac-discovery-badge.agent {
   background: rgba(16, 185, 129, 0.14);
   color: #34d399;
