@@ -238,7 +238,7 @@ export function resetUiStoresForTests(): void {
   // in the same file (order-dependent, and silently wrong rather than red).
   replicaVolatileStore.clearAll();
   sessionsStore.setSessions([]);
-  sessionsStore.setActiveId(null);
+  sessionsStore.resetSelectionForTests();
   sessionsStore.setTeams([]);
   sessionsStore.setRepos([]);
   sessionsStore.setAlwaysShowSelectedWorkgroup(true);
@@ -252,7 +252,7 @@ export function resetUiStoresForTests(): void {
   railCollapseStore.resetForTests();
   codingAgentsStore.resetForTests();
   bridgesStore.setBridges([]);
-  terminalStore.setActiveSession(null, "", "", null, "", null, false);
+  terminalStore.resetForTests();
   terminalStore.setActiveWorkgroupTask(null);
   autoUnarchiveStore.acknowledge();
   toastStore.clear();

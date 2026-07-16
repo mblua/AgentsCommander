@@ -1,4 +1,4 @@
-import type { Transport, UnlistenFn } from "../transport";
+import type { Transport, TransportConnectionState, UnlistenFn } from "../transport";
 
 export interface InvokeCall {
   cmd: string;
@@ -20,6 +20,8 @@ export class FakeTransport implements Transport {
 
   private readonly handlers = new Map<string, InvokeHandler>();
   private readonly listeners = new Map<string, Set<(payload: unknown) => void>>();
+  private readonly connectionListeners = new Set<(state: TransportConnectionState) => void>();
+  private connection: TransportConnectionState = { state: "connected", generation: 0 };
 
   constructor(opts?: FakeTransportOptions) {
     if (opts?.binaryPty) {
@@ -83,6 +85,20 @@ export class FakeTransport implements Transport {
       cmd: "broadcast_event",
       args: { event, payload },
     });
+  }
+
+  connectionState(): TransportConnectionState {
+    return { ...this.connection };
+  }
+
+  onConnectionState(callback: (state: TransportConnectionState) => void): UnlistenFn {
+    this.connectionListeners.add(callback);
+    return () => this.connectionListeners.delete(callback);
+  }
+
+  setConnectionState(state: TransportConnectionState): void {
+    this.connection = { ...state };
+    for (const callback of Array.from(this.connectionListeners)) callback({ ...state });
   }
 
   emitFromBackend<T>(event: string, payload: T): void {

@@ -61,6 +61,73 @@ export interface Session {
 
 export type SessionStatus = "active" | "running" | "idle" | { exited: number };
 
+export type SessionSelectionMode = "none" | "live" | "dormant";
+
+export type SessionSelectionCause =
+  | { source: "initialHydration"; userInitiated: false; mode: "none" }
+  | { source: "sessionCreated"; userInitiated: boolean; mode: "live" }
+  | { source: "userSwitch"; userInitiated: true; mode: "live" }
+  | { source: "userSwitch"; userInitiated: true; mode: "dormant" }
+  | { source: "manualClose"; userInitiated: true; mode: "live" }
+  | { source: "manualClose"; userInitiated: true; mode: "none" }
+  | { source: "autoClose"; userInitiated: false; mode: "none" }
+  | { source: "restart"; userInitiated: boolean; mode: "live" }
+  | { source: "restart"; userInitiated: boolean; mode: "none" }
+  | { source: "restore"; userInitiated: false; mode: "live" }
+  | { source: "restore"; userInitiated: false; mode: "dormant" }
+  | { source: "restore"; userInitiated: false; mode: "none" }
+  | { source: "detach"; userInitiated: true; mode: "live" }
+  | { source: "detach"; userInitiated: true; mode: "none" }
+  | { source: "attach"; userInitiated: true; mode: "live" }
+  | { source: "attach"; userInitiated: true; mode: "dormant" }
+  | { source: "spawnRollback"; userInitiated: false; mode: "none" }
+  | { source: "resourceMonitor"; userInitiated: boolean; mode: "none" }
+  | { source: "backgroundCleanup"; userInitiated: false; mode: "none" }
+  | { source: "livenessReconcile"; userInitiated: false; mode: "dormant" }
+  | { source: "livenessReconcile"; userInitiated: false; mode: "none" };
+
+export type SessionSelectionSource = SessionSelectionCause["source"];
+
+interface SessionSelectionOrder {
+  epoch: string;
+  revision: number;
+}
+
+type SessionSelectionBase = SessionSelectionOrder & SessionSelectionCause;
+
+type SessionSelectionData =
+  | {
+      mode: "none";
+      id: null;
+      status: null;
+      hasPty: false;
+      detached: false;
+      displayable: false;
+    }
+  | {
+      mode: "live";
+      id: string;
+      status: "active";
+      hasPty: true;
+      detached: false;
+      displayable: true;
+    }
+  | {
+      mode: "dormant";
+      id: string;
+      status: { exited: number };
+      hasPty: boolean;
+      detached: false;
+      displayable: false;
+    };
+
+/**
+ * The authoritative central selection. The intersection deliberately rejects
+ * impossible source/mode/user-intent and mode/liveness combinations at compile
+ * time; untrusted transport values enter through decodeSessionSelection.
+ */
+export type SessionSelection = SessionSelectionBase & SessionSelectionData;
+
 export type CodingAgentKind = "claude" | "codex" | "gemini";
 
 export interface SessionGroup {
@@ -785,6 +852,14 @@ export interface Team {
 export interface SessionsState {
   sessions: Session[];
   activeId: string | null;
+  selection: SessionSelection | null;
+  selectionEpoch: string | null;
+  selectionRevision: number;
+  selectionConnectionGeneration: number | null;
+  retiredSelectionEpochs: string[];
+  connectionGeneration: number;
+  transportConnected: boolean;
+  awaitingHydrationGeneration: number | null;
   teams: Team[];
   teamFilter: string | null;
   showInactive: boolean;

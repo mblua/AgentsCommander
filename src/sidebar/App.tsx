@@ -1,11 +1,13 @@
 import { Component, createSignal, createEffect, createMemo, on, onMount, onCleanup, Show } from "solid-js";
 import { isTauri } from "../shared/platform";
 import type { UnlistenFn } from "../shared/transport";
+import type { TransportConnectionState } from "../shared/transport";
 import type {
   SessionStatus,
   ContextTemplateUpdate,
   MainSidebarSide,
   SessionWarning,
+  SessionSelection,
 } from "../shared/types";
 import {
   SessionAPI,
@@ -38,6 +40,9 @@ import {
   onProjectGroupsUpdated,
   onProjectArchiveChanged,
   onNpmUpdateAvailable,
+  getTransportConnectionState,
+  isSelectionCoordinatorBusyError,
+  onTransportConnectionState,
 } from "../shared/ipc";
 import { taskFirstLine } from "../shared/markdown";
 import { registerShortcuts, unregisterShortcuts } from "../shared/shortcuts";
@@ -51,6 +56,7 @@ import { workgroupGroupsStore } from "./stores/workgroup-groups";
 import { normalizeProjectPathForCompare } from "./stores/project-refresh";
 import { startTeamIdleWatcher } from "./stores/team-idle-watcher";
 import { primeAudio } from "../shared/sound";
+import { voiceRecorder } from "../shared/voice-recorder";
 import { settingsStore } from "../shared/stores/settings";
 import { railCollapseStore } from "./stores/rail-collapse";
 import Titlebar from "./components/Titlebar";
@@ -79,6 +85,8 @@ interface SidebarAppProps {
   embedded?: boolean;
   railSide?: MainSidebarSide;
 }
+
+const HYDRATION_RETRY_DELAYS = [50, 100, 250, 500, 1000] as const;
 
 function isExitedStatus(status: SessionStatus): boolean {
   return typeof status === "object" && status !== null && "exited" in status;
@@ -368,6 +376,145 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
   const liveWarningsDuringInitialDrain = new Map<string, number>();
   let initialWarningDrainActive = false;
   let disposed = false;
+  let hydrationRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let hydrationRetryAttempt = 0;
+  let hydrationInFlightGeneration: number | null = null;
+  let observedConnection: TransportConnectionState = {
+    state: "disconnected",
+    generation: -1,
+  };
+  const mountDisposed = Symbol("sidebarAppMountDisposed");
+
+  const addUnlistener = (unlisten: UnlistenFn): void => {
+    if (disposed) {
+      unlisten();
+      return;
+    }
+    unlisteners.push(unlisten);
+  };
+
+  const register = async (registration: Promise<UnlistenFn>): Promise<void> => {
+    const unlisten = await registration;
+    if (disposed) {
+      unlisten();
+      throw mountDisposed;
+    }
+    unlisteners.push(unlisten);
+  };
+
+  const cancelHydrationRetry = (): void => {
+    if (!hydrationRetryTimer) return;
+    clearTimeout(hydrationRetryTimer);
+    hydrationRetryTimer = null;
+  };
+
+  const applyAuthoritativeSelection = (
+    selection: SessionSelection,
+    generation: number,
+    allowEqualReconnect: boolean,
+  ): boolean => {
+    if (disposed) return false;
+    const accepted = sessionsStore.applySelection(
+      selection,
+      generation,
+      allowEqualReconnect,
+    );
+    if (!accepted) return false;
+    cancelHydrationRetry();
+    hydrationRetryAttempt = 0;
+    voiceRecorder.revokeLiveBinding();
+    if (selection.mode === "live" && sessionsStore.activeId !== selection.id) {
+      voiceRecorder.revokeSession(selection.id);
+    }
+    return true;
+  };
+
+  const scheduleHydrationRetry = (generation: number): void => {
+    if (
+      disposed ||
+      hydrationRetryTimer ||
+      observedConnection.state !== "connected" ||
+      observedConnection.generation !== generation ||
+      sessionsStore.awaitingHydrationGeneration !== generation
+    ) {
+      return;
+    }
+    const delay = HYDRATION_RETRY_DELAYS[
+      Math.min(hydrationRetryAttempt, HYDRATION_RETRY_DELAYS.length - 1)
+    ];
+    hydrationRetryAttempt += 1;
+    hydrationRetryTimer = setTimeout(() => {
+      hydrationRetryTimer = null;
+      void requestSelectionHydration(generation);
+    }, delay);
+  };
+
+  const requestSelectionHydration = async (generation: number): Promise<void> => {
+    if (
+      disposed ||
+      observedConnection.state !== "connected" ||
+      observedConnection.generation !== generation ||
+      hydrationInFlightGeneration === generation ||
+      !sessionsStore.beginHydration(generation)
+    ) {
+      return;
+    }
+    hydrationInFlightGeneration = generation;
+    try {
+      const selection = await SessionAPI.getSelection();
+      if (
+        disposed ||
+        observedConnection.state !== "connected" ||
+        observedConnection.generation !== generation ||
+        sessionsStore.awaitingHydrationGeneration !== generation
+      ) {
+        return;
+      }
+      applyAuthoritativeSelection(selection, generation, true);
+    } catch (error) {
+      if (
+        disposed ||
+        observedConnection.state !== "connected" ||
+        observedConnection.generation !== generation ||
+        sessionsStore.awaitingHydrationGeneration !== generation
+      ) {
+        return;
+      }
+      if (isSelectionCoordinatorBusyError(error)) {
+        scheduleHydrationRetry(generation);
+      } else {
+        sessionsStore.cancelHydration(generation);
+        console.error("[selection] Sidebar selection hydration failed:", error);
+      }
+    } finally {
+      if (hydrationInFlightGeneration === generation) {
+        hydrationInFlightGeneration = null;
+      }
+    }
+  };
+
+  const applyConnectionState = (connection: TransportConnectionState): void => {
+    if (disposed) return;
+    if (connection.generation < observedConnection.generation) return;
+    if (
+      connection.generation === observedConnection.generation &&
+      connection.state === observedConnection.state
+    ) {
+      return;
+    }
+    const generationChanged = connection.generation !== observedConnection.generation;
+    observedConnection = { ...connection };
+    sessionsStore.observeConnection(connection);
+    cancelHydrationRetry();
+    hydrationRetryAttempt = 0;
+    if (connection.state === "disconnected" || generationChanged) {
+      voiceRecorder.revokeLiveBinding();
+    }
+    if (connection.state === "disconnected") {
+      return;
+    }
+    void requestSelectionHydration(connection.generation);
+  };
 
   const surfaceSessionWarning = (warning: SessionWarning) => {
     if (disposed) return;
@@ -401,6 +548,35 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
   };
 
   onMount(async () => {
+    try {
+    // Selection authority and transport lifecycle are registered before every
+    // hydration/list await so an event cannot lose a race to an older snapshot.
+    await register(
+      onSessionSwitched((selection, deliveryGeneration) => {
+        applyAuthoritativeSelection(selection, deliveryGeneration, false);
+      }),
+    );
+    if (disposed) return;
+    await register(onTransportConnectionState(applyConnectionState));
+    if (disposed) return;
+    await register(
+      onSessionCreated((session) => {
+        sessionsStore.addSession(session);
+        if (isExitedStatus(session.status)) voiceRecorder.revokeSession(session.id);
+        scheduleProfileOutdatedRefresh();
+      }),
+    );
+    if (disposed) return;
+    await register(
+      onSessionDestroyed(({ id }) => {
+        voiceRecorder.revokeSession(id);
+        sessionsStore.removeSession(id);
+        sessionsStore.setDetached(id, false);
+      }),
+    );
+    if (disposed) return;
+    applyConnectionState(getTransportConnectionState());
+
     // #289 / dark-default — dark is the base CSS, so first paint is dark with
     // no optimistic class; the persisted-preference check after
     // SettingsAPI.get() below opts into light only for users who chose it last
@@ -409,21 +585,21 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     // — same pattern as zoom/geometry.
     // #912: subscribe before the startup warning drain. The backend appends
     // before live emit, so exact live/drained duplicates are collapsed below.
-    unlisteners.push(await onSessionEnvWarning(handleLiveSessionWarning));
+    await register(onSessionEnvWarning(handleLiveSessionWarning));
     void drainBufferedSessionWarnings();
 
-    unlisteners.push(
-      await onAcProjectRefreshRequested((data) => {
+    await register(
+      onAcProjectRefreshRequested((data) => {
         handleProjectRefreshRequested(data);
       })
     );
-    unlisteners.push(
-      await onProjectGroupsUpdated((data) => {
+    await register(
+      onProjectGroupsUpdated((data) => {
         workgroupGroupsStore.applyExternalUpdate(data.projectPath, data.config);
       })
     );
-    unlisteners.push(
-      await onProjectArchiveChanged((data) => {
+    await register(
+      onProjectArchiveChanged((data) => {
         void projectStore.applyArchiveChange(data).catch((error) => {
           console.error("[archive] Failed to apply project_archive_changed:", error);
         });
@@ -432,8 +608,8 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
         }
       })
     );
-    unlisteners.push(
-      await onCodingAgentProfilesUpdated(() => {
+    await register(
+      onCodingAgentProfilesUpdated(() => {
         settingsStore.refresh();
         void refreshProfileOutdated();
       })
@@ -443,26 +619,27 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     // version (subscribe-then-snapshot order). The snapshot
     // is fire-and-forget so its IPC round-trip never delays the listener
     // registrations that follow in this onMount.
-    unlisteners.push(
-      await onNpmUpdateAvailable((info) => showUpdateToast(info))
+    await register(
+      onNpmUpdateAvailable((info) => showUpdateToast(info))
     );
     void SettingsAPI.getUpdateStatus()
       .then((pending) => {
-        if (pending) showUpdateToast(pending);
+        if (!disposed && pending) showUpdateToast(pending);
       })
       .catch((err) => {
         console.error("[update-check] getUpdateStatus failed:", err);
       });
     // #714 screenshot capture saved/failed toasts + startup hotkey-status warning.
-    unlisteners.push(...(await wireScreenshotListeners()));
-    unlisteners.push(
-      await onCodingAgentEnvSettingsUpdated(() => {
+    for (const unlisten of await wireScreenshotListeners()) addUnlistener(unlisten);
+    if (disposed) return;
+    await register(
+      onCodingAgentEnvSettingsUpdated(() => {
         settingsStore.refresh();
         void refreshProfileOutdated();
       })
     );
-    unlisteners.push(
-      await onCodingAgentProfileSelectionUpdated((data) => {
+    await register(
+      onCodingAgentProfileSelectionUpdated((data) => {
         settingsStore.refresh();
         void refreshProfileOutdated();
         if (data.agentPath) {
@@ -477,8 +654,8 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
         }
       })
     );
-    unlisteners.push(
-      await onLoopEvent((data) => {
+    await register(
+      onLoopEvent((data) => {
         if (data.summary) {
           projectStore.upsertLoop(data.projectPath, data.summary);
         } else if (data.kind === "deleted") {
@@ -493,11 +670,22 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     shortcutHandler = registerShortcuts();
     if (!props.embedded) {
       cleanupZoom = await initZoom("sidebar");
+      if (disposed) {
+        cleanupZoom();
+        cleanupZoom = null;
+        return;
+      }
       cleanupGeometry = await initWindowGeometry("sidebar");
+      if (disposed) {
+        cleanupGeometry();
+        cleanupGeometry = null;
+        return;
+      }
     }
 
     // Apply window settings
     const appSettings = await SettingsAPI.get();
+    if (disposed) return;
     setSettingsRailSide(appSettings.mainSidebarSide === "left" ? "left" : "right");
     if (!props.embedded) {
       document.documentElement.classList.toggle("light-theme", appSettings.themeLight);
@@ -518,6 +706,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     if (!props.embedded && appSettings.sidebarAlwaysOnTop && isTauri) {
       const { getCurrentWindow } = await import("@tauri-apps/api/window");
       await getCurrentWindow().setAlwaysOnTop(true);
+      if (disposed) return;
     }
     if (!props.embedded) {
       document.addEventListener("mousedown", handleRaiseTerminal);
@@ -531,10 +720,12 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       try {
         await applyWindowLayout("right");
       } catch {}
+      if (disposed) return;
     }
 
     // Load settings into reactive store (for voice-to-text visibility etc.)
     await settingsStore.load();
+    if (disposed) return;
 
     // Feature #110 — start watching for team busy→all-idle transitions.
     // Mounted after settingsStore.load() so the very first effect run
@@ -559,25 +750,25 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       appSettings.projectPath ?? null,
       appSettings.archivedProjectPaths ?? [],
     );
+    if (disposed) return;
 
     // Load all repos for inactive agent display
     try {
       const allRepos = await ReposAPI.search("");
-      sessionsStore.setRepos(allRepos.filter((r) => r.agents.length > 0));
+      if (!disposed) sessionsStore.setRepos(allRepos.filter((r) => r.agents.length > 0));
     } catch {}
+    if (disposed) return;
 
-    unlisteners.push(
-      await onSessionCommunicationChanged(({ sessionId, communication }) => {
+    await register(
+      onSessionCommunicationChanged(({ sessionId, communication }) => {
         sessionsStore.setCommunication(sessionId, communication);
       })
     );
 
     // Load initial sessions
     const sessions = await SessionAPI.list();
+    if (disposed) return;
     sessionsStore.setSessions(sessions);
-
-    const activeId = await SessionAPI.getActive();
-    sessionsStore.setActiveId(activeId);
 
     // #592 - surface profile drift edited OUTSIDE the app (a hand edit to
     // settings.json, or any path that does not emit coding_agent_profiles_updated)
@@ -587,43 +778,14 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     document.addEventListener("visibilitychange", handleWindowFocusDriftRefresh);
 
     // Listen for events
-    unlisteners.push(
-      await onSessionCreated((session) => {
-        sessionsStore.addSession(session);
-        // New session is auto-activated if it's the first one
-        if (
-          sessionsStore.sessions.length === 1 &&
-          !isExitedStatus(session.status)
-        ) {
-          sessionsStore.setActiveId(session.id);
-        }
-        // #592 - session_created carries profileOutdated=false (From<&Session>
-        // cannot compute drift). A session restored at boot with pre-existing
-        // drift must re-derive it from list_sessions, which would otherwise be
-        // clobbered to false by the addSession upsert. Debounced so a workgroup
-        // spawn burst collapses into one re-list.
-        scheduleProfileOutdatedRefresh();
-      })
-    );
-
-    unlisteners.push(
-      await onSessionDestroyed(({ id }) => {
-        sessionsStore.removeSession(id);
-        // Detached-window cleanup: if the session had a detached window,
-        // its destroy also closes that window. Clear the store flag so
-        // UI (icons, menu items) doesn't linger in detached state.
-        sessionsStore.setDetached(id, false);
-      })
-    );
-
-    unlisteners.push(
-      await onTerminalDetached(({ sessionId }) =>
+    await register(
+      onTerminalDetached(({ sessionId }) =>
         sessionsStore.setDetached(sessionId, true)
       )
     );
 
-    unlisteners.push(
-      await onTerminalAttached(({ sessionId }) =>
+    await register(
+      onTerminalAttached(({ sessionId }) =>
         sessionsStore.setDetached(sessionId, false)
       )
     );
@@ -634,44 +796,39 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     // SidebarApp re-mount in the unified window).
     try {
       const ids = await WindowAPI.listDetached();
-      ids.forEach((id) => sessionsStore.setDetached(id, true));
+      if (!disposed) ids.forEach((id) => sessionsStore.setDetached(id, true));
     } catch (e) {
       console.warn("[sidebar] listDetached hydration failed:", e);
     }
+    if (disposed) return;
 
-    unlisteners.push(
-      await onSessionSwitched(({ id }) => {
-        sessionsStore.setActiveId(id);
-      })
-    );
-
-    unlisteners.push(
-      await onSessionRenamed(({ id, name }) => {
+    await register(
+      onSessionRenamed(({ id, name }) => {
         sessionsStore.renameSession(id, name);
       })
     );
 
-    unlisteners.push(
-      await onSessionIdle(({ id }) => {
+    await register(
+      onSessionIdle(({ id }) => {
         sessionsStore.markActivity(id);
         sessionsStore.setSessionWaiting(id, true);
       })
     );
 
-    unlisteners.push(
-      await onSessionBusy(({ id }) => {
+    await register(
+      onSessionBusy(({ id }) => {
         sessionsStore.setSessionWaiting(id, false);
       })
     );
 
-    unlisteners.push(
-      await onSessionGitRepos(({ sessionId, repos }) => {
+    await register(
+      onSessionGitRepos(({ sessionId, repos }) => {
         sessionsStore.setGitRepos(sessionId, repos);
       })
     );
 
-    unlisteners.push(
-      await onWorkgroupTaskUpdated((data) => {
+    await register(
+      onWorkgroupTaskUpdated((data) => {
         const wgPath = data.workgroupRoot;
         if (wgPath) {
           projectStore.updateWorkgroupTask(wgPath, taskFirstLine(data.task), data.taskTitle);
@@ -679,39 +836,44 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       })
     );
 
-    unlisteners.push(
-      await onSessionCoordinatorChanged(({ sessionId, isCoordinator }) => {
+    await register(
+      onSessionCoordinatorChanged(({ sessionId, isCoordinator }) => {
         sessionsStore.setIsCoordinator(sessionId, isCoordinator);
       })
     );
 
     // Load initial bridge state
     const bridges = await TelegramAPI.listBridges();
+    if (disposed) return;
     bridgesStore.setBridges(bridges);
 
     // Telegram bridge events
-    unlisteners.push(
-      await onTelegramBridgeAttached((info) => {
+    await register(
+      onTelegramBridgeAttached((info) => {
         bridgesStore.addBridge(info);
       })
     );
 
-    unlisteners.push(
-      await onTelegramBridgeDetached(({ sessionId }) => {
+    await register(
+      onTelegramBridgeDetached(({ sessionId }) => {
         bridgesStore.removeBridge(sessionId);
       })
     );
 
-    unlisteners.push(
-      await onTelegramBridgeError(({ sessionId, error }) => {
+    await register(
+      onTelegramBridgeError(({ sessionId, error }) => {
         console.error(`Bridge error for ${sessionId}: ${error}`);
       })
     );
-
+    } catch (error) {
+      if (error !== mountDisposed) throw error;
+    }
   });
 
   onCleanup(() => {
     disposed = true;
+    cancelHydrationRetry();
+    sessionsStore.cancelHydration();
     unlisteners.forEach((unlisten) => unlisten());
     if (shortcutHandler) unregisterShortcuts(shortcutHandler);
     if (cleanupZoom) cleanupZoom();

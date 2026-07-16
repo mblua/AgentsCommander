@@ -1,7 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import TerminalApp from "./App";
+import { terminalStore } from "./stores/terminal";
+import { __setTransportForTests } from "../shared/ipc";
 import { FakeTransport } from "../shared/testing/fake-transport";
+import type { TransportConnectionState, UnlistenFn } from "../shared/transport";
 import type { PtyScreenSnapshot, Session } from "../shared/types";
 import {
   baseSettings,
@@ -11,6 +14,27 @@ import {
   session,
   waitFor,
 } from "../shared/testing/ui-harness";
+import {
+  liveSelection,
+  initialSelection,
+  dormantSelection,
+  noneSelection,
+  ROOT_SESSION,
+  SESSION_A,
+  SESSION_B,
+  TEST_EPOCH,
+  TEST_EPOCH_2,
+  userLiveSelection,
+} from "../shared/testing/session-selection";
+
+const tauriWindow = vi.hoisted(() => ({
+  destroy: vi.fn(() => Promise.resolve()),
+  onCloseRequested: vi.fn(() => Promise.resolve(() => undefined)),
+}));
+
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => tauriWindow,
+}));
 
 interface FakeTerminalInstance {
   cols: number;
@@ -155,7 +179,10 @@ vi.mock("../shared/platform", () => ({
 
 function setupTerminalTransport(fake: FakeTransport, sessions = [session()]): void {
   fake.resolve("get_settings", baseSettings());
-  fake.resolve("get_active_session", sessions[0]?.id ?? null);
+  fake.resolve(
+    "get_active_session",
+    sessions[0] ? liveSelection(sessions[0].id) : initialSelection(),
+  );
   fake.onInvoke("list_sessions", () => sessions);
   fake.resolve("pty_write", undefined);
   fake.resolve("pty_resize", undefined);
@@ -175,6 +202,36 @@ function deferred<T>(): {
     reject = nextReject;
   });
   return { promise, resolve, reject };
+}
+
+class TrackingTerminalTransport extends FakeTransport {
+  readonly selectionUnlisten = vi.fn();
+  readonly connectionUnlisten = vi.fn();
+  selectionRegistrationGate: Promise<void> | null = null;
+
+  override async listen<T>(
+    event: string,
+    callback: (payload: T) => void,
+  ): Promise<UnlistenFn> {
+    if (event === "session_switched" && this.selectionRegistrationGate) {
+      await this.selectionRegistrationGate;
+    }
+    const unlisten = await super.listen(event, callback);
+    return () => {
+      if (event === "session_switched") this.selectionUnlisten();
+      unlisten();
+    };
+  }
+
+  override onConnectionState(
+    callback: (state: TransportConnectionState) => void,
+  ): UnlistenFn {
+    const unlisten = super.onConnectionState(callback);
+    return () => {
+      this.connectionUnlisten();
+      unlisten();
+    };
+  }
 }
 
 async function flushPromises(): Promise<void> {
@@ -202,6 +259,8 @@ describe("TerminalApp workflow", () => {
     cleanupDom = installBrowserDomStubs();
     resetUiStoresForTests();
     xterm.instances.length = 0;
+    tauriWindow.destroy.mockClear();
+    tauriWindow.onCloseRequested.mockClear();
   });
 
   afterEach(() => {
@@ -209,13 +268,14 @@ describe("TerminalApp workflow", () => {
     cleanupDom = null;
     resetUiStoresForTests();
     xterm.instances.length = 0;
+    vi.useRealTimers();
   });
 
   it("wires active-session PTY input, prompt capture, and PTY output", async () => {
     const fake = new FakeTransport();
     setupTerminalTransport(fake, [
       session({
-        id: "session-1",
+        id: SESSION_A,
         name: "wg-1-dev-team/architect",
         workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_architect",
       }),
@@ -229,7 +289,7 @@ describe("TerminalApp workflow", () => {
       terminal.emitData("hello");
       await waitFor(() =>
         expect(fake.lastCall("pty_write")?.args).toEqual({
-          sessionId: "session-1",
+          sessionId: SESSION_A,
           data: [104, 101, 108, 108, 111],
         })
       );
@@ -237,20 +297,20 @@ describe("TerminalApp workflow", () => {
       terminal.emitData("\r");
       await waitFor(() =>
         expect(fake.lastCall("set_last_prompt")?.args).toEqual({
-          id: "session-1",
+          id: SESSION_A,
           text: "hello",
         })
       );
 
       terminal.emitResize(100, 32);
       expect(fake.lastCall("pty_resize")?.args).toEqual({
-        sessionId: "session-1",
+        sessionId: SESSION_A,
         cols: 100,
         rows: 32,
       });
 
       fake.emitFromBackend("pty_output", {
-        sessionId: "session-1",
+        sessionId: SESSION_A,
         data: [111, 107],
       });
 
@@ -264,12 +324,12 @@ describe("TerminalApp workflow", () => {
   it("follows session_switched events through backend state", async () => {
     const sessions = [
       session({
-        id: "session-1",
+        id: SESSION_A,
         name: "wg-1-dev-team/architect",
         workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_architect",
       }),
       session({
-        id: "session-2",
+        id: SESSION_B,
         name: "wg-1-dev-team/dev-webpage-ui",
         workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_dev-webpage-ui",
       }),
@@ -282,7 +342,7 @@ describe("TerminalApp workflow", () => {
       await waitFor(() => expect(xterm.instances).toHaveLength(1));
 
       fake.clearCalls();
-      fake.emitFromBackend("session_switched", { id: "session-2" });
+      fake.emitFromBackend("session_switched", userLiveSelection(SESSION_B, 2));
 
       await waitFor(() => expect(xterm.instances).toHaveLength(2));
       expect(fake.callsFor("list_sessions").length).toBeGreaterThan(0);
@@ -290,7 +350,7 @@ describe("TerminalApp workflow", () => {
       xterm.instances[1].emitData("z");
       await waitFor(() =>
         expect(fake.lastCall("pty_write")?.args).toEqual({
-          sessionId: "session-2",
+          sessionId: SESSION_B,
           data: [122],
         })
       );
@@ -304,7 +364,7 @@ describe("TerminalApp workflow", () => {
     const snapshot = deferred<PtyScreenSnapshot | null>();
     setupTerminalTransport(fake, [
       session({
-        id: "session-1",
+        id: SESSION_A,
         name: "wg-1-dev-team/architect",
         workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_architect",
       }),
@@ -316,7 +376,7 @@ describe("TerminalApp workflow", () => {
       await waitFor(() => expect(xterm.instances).toHaveLength(1));
       await waitFor(() =>
         expect(fake.callsFor("get_screen_snapshot")[0]?.args).toEqual({
-          sessionId: "session-1",
+          sessionId: SESSION_A,
         })
       );
 
@@ -324,7 +384,7 @@ describe("TerminalApp workflow", () => {
       fake.clearCalls();
 
       snapshot.resolve({
-        sessionId: "session-1",
+        sessionId: SESSION_A,
         data: [83, 78, 65, 80],
         rows: 30,
         cols: 120,
@@ -336,7 +396,7 @@ describe("TerminalApp workflow", () => {
 
       expect(terminal.resizes).toContainEqual({ cols: 120, rows: 30 });
       expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual([83, 78, 65, 80]);
-      expect(hasPtyResizeCall(fake, "session-1", 120, 30)).toBe(false);
+      expect(hasPtyResizeCall(fake, SESSION_A, 120, 30)).toBe(false);
 
       // #973. The snapshot resized xterm to the PTY's size in order to paint it,
       // and the re-fit then puts xterm back to the tile's size. But the PTY was
@@ -366,7 +426,7 @@ describe("TerminalApp workflow", () => {
     const snapshot = deferred<PtyScreenSnapshot | null>();
     setupTerminalTransport(fake, [
       session({
-        id: "session-1",
+        id: SESSION_A,
         name: "wg-1-dev-team/architect",
         workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_architect",
       }),
@@ -381,7 +441,7 @@ describe("TerminalApp workflow", () => {
       const terminal = xterm.instances[0];
       const liveOutput = [76, 73, 86, 69];
       fake.emitFromBackend("pty_output", {
-        sessionId: "session-1",
+        sessionId: SESSION_A,
         data: liveOutput,
         sequence: 1,
       });
@@ -393,7 +453,7 @@ describe("TerminalApp workflow", () => {
       expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual(liveOutput);
 
       snapshot.resolve({
-        sessionId: "session-1",
+        sessionId: SESSION_A,
         data: [83, 78, 65, 80],
         rows: null,
         cols: null,
@@ -418,7 +478,7 @@ describe("TerminalApp workflow", () => {
     const snapshot = deferred<PtyScreenSnapshot | null>();
     setupTerminalTransport(fake, [
       session({
-        id: "session-1",
+        id: SESSION_A,
         name: "wg-1-dev-team/architect",
         workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_architect",
       }),
@@ -433,7 +493,7 @@ describe("TerminalApp workflow", () => {
       const terminal = xterm.instances[0];
       const liveOutput = [76, 73, 86, 69];
       fake.emitFromBackend("pty_output", {
-        sessionId: "session-1",
+        sessionId: SESSION_A,
         data: liveOutput,
         sequence: 1,
       });
@@ -443,7 +503,7 @@ describe("TerminalApp workflow", () => {
       expect(terminal.writes).toHaveLength(1);
 
       snapshot.resolve({
-        sessionId: "session-1",
+        sessionId: SESSION_A,
         data: [83, 78, 65, 80, 76, 73, 86, 69],
         rows: null,
         cols: null,
@@ -468,7 +528,7 @@ describe("TerminalApp workflow", () => {
     const snapshot = deferred<PtyScreenSnapshot | null>();
     setupTerminalTransport(fake, [
       session({
-        id: "session-1",
+        id: SESSION_A,
         name: "wg-1-dev-team/architect",
         workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_architect",
       }),
@@ -482,7 +542,7 @@ describe("TerminalApp workflow", () => {
 
       const terminal = xterm.instances[0];
       snapshot.resolve({
-        sessionId: "session-1",
+        sessionId: SESSION_A,
         data: [83, 78, 65, 80, 76, 73, 86, 69],
         rows: null,
         cols: null,
@@ -492,7 +552,7 @@ describe("TerminalApp workflow", () => {
       await waitFor(() => expect(terminal.writes).toHaveLength(1));
 
       fake.emitFromBackend("pty_output", {
-        sessionId: "session-1",
+        sessionId: SESSION_A,
         data: [76, 73, 86, 69],
         sequence: 1,
       });
@@ -501,7 +561,7 @@ describe("TerminalApp workflow", () => {
       expect(terminal.writes).toHaveLength(1);
 
       fake.emitFromBackend("pty_output", {
-        sessionId: "session-1",
+        sessionId: SESSION_A,
         data: [78, 69, 87],
         sequence: 2,
       });
@@ -518,7 +578,7 @@ describe("TerminalApp workflow", () => {
     const snapshot = deferred<PtyScreenSnapshot | null>();
     setupTerminalTransport(fake, [
       session({
-        id: "session-1",
+        id: SESSION_A,
         name: "wg-1-dev-team/architect",
         workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_architect",
       }),
@@ -532,7 +592,7 @@ describe("TerminalApp workflow", () => {
 
       const terminal = xterm.instances[0];
       snapshot.resolve({
-        sessionId: "session-1",
+        sessionId: SESSION_A,
         data: [83, 78, 65, 80],
         rows: null,
         cols: null,
@@ -542,7 +602,7 @@ describe("TerminalApp workflow", () => {
       await waitFor(() => expect(terminal.writes).toHaveLength(1));
 
       fake.emitFromBackend("pty_output", {
-        sessionId: "session-1",
+        sessionId: SESSION_A,
         data: [79, 75],
       });
 
@@ -556,12 +616,12 @@ describe("TerminalApp workflow", () => {
   it("does not request another snapshot when switching away and back to an existing terminal", async () => {
     const sessions = [
       session({
-        id: "session-1",
+        id: SESSION_A,
         name: "wg-1-dev-team/architect",
         workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_architect",
       }),
       session({
-        id: "session-2",
+        id: SESSION_B,
         name: "wg-1-dev-team/dev-webpage-ui",
         workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_dev-webpage-ui",
       }),
@@ -570,7 +630,7 @@ describe("TerminalApp workflow", () => {
     setupTerminalTransport(fake, sessions);
     fake.onInvoke("get_screen_snapshot", ({ sessionId }) => ({
       sessionId,
-      data: sessionId === "session-1" ? [49] : [50],
+      data: sessionId === SESSION_A ? [49] : [50],
       rows: null,
       cols: null,
       sequence: 0,
@@ -581,16 +641,16 @@ describe("TerminalApp workflow", () => {
       await waitFor(() => expect(xterm.instances).toHaveLength(1));
       await waitFor(() => expect(fake.callsFor("get_screen_snapshot")).toHaveLength(1));
 
-      fake.emitFromBackend("session_switched", { id: "session-2" });
+      fake.emitFromBackend("session_switched", userLiveSelection(SESSION_B, 2));
 
       await waitFor(() => expect(xterm.instances).toHaveLength(2));
       await waitFor(() => expect(fake.callsFor("get_screen_snapshot")).toHaveLength(2));
 
-      fake.emitFromBackend("session_switched", { id: "session-1" });
+      fake.emitFromBackend("session_switched", userLiveSelection(SESSION_A, 3));
 
       await waitFor(() => {
         const sessionOne = rendered.root.querySelector<HTMLElement>(
-          '[data-ac-testid="terminal.session.session-1"]'
+          '[data-ac-testid="terminal.session.11111111-1111-4111-8111-111111111111"]'
         );
         expect(sessionOne?.hidden).toBe(false);
       });
@@ -605,7 +665,7 @@ describe("TerminalApp workflow", () => {
     const snapshot = deferred<PtyScreenSnapshot | null>();
     setupTerminalTransport(fake, [
       session({
-        id: "session-1",
+        id: SESSION_A,
         name: "wg-1-dev-team/architect",
         workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_architect",
       }),
@@ -620,7 +680,7 @@ describe("TerminalApp workflow", () => {
       const terminal = xterm.instances[0];
       const liveOutput = [76, 73, 86, 69];
       fake.emitFromBackend("pty_output", {
-        sessionId: "session-1",
+        sessionId: SESSION_A,
         data: liveOutput,
         sequence: 1,
       });
@@ -638,7 +698,7 @@ describe("TerminalApp workflow", () => {
       expect(terminal.resets).toBe(0);
       expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual(liveOutput);
       const replayStatus = rendered.root.querySelector<HTMLDivElement>(
-        '[data-ac-testid="terminal.replay-status.session-1"]'
+        '[data-ac-testid="terminal.replay-status.11111111-1111-4111-8111-111111111111"]'
       );
       expect(replayStatus?.hidden).toBe(true);
     } finally {
@@ -652,7 +712,7 @@ describe("TerminalApp workflow", () => {
     const snapshot = deferred<PtyScreenSnapshot | null>();
     setupTerminalTransport(fake, [
       session({
-        id: "session-1",
+        id: SESSION_A,
         name: "wg-1-dev-team/architect",
         workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_architect",
       }),
@@ -667,7 +727,7 @@ describe("TerminalApp workflow", () => {
       const terminal = xterm.instances[0];
       const liveOutput = [76, 73, 86, 69];
       fake.emitFromBackend("pty_output", {
-        sessionId: "session-1",
+        sessionId: SESSION_A,
         data: liveOutput,
         sequence: 1,
       });
@@ -685,7 +745,7 @@ describe("TerminalApp workflow", () => {
       expect(terminal.resets).toBe(0);
       expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual(liveOutput);
       const replayStatus = rendered.root.querySelector<HTMLDivElement>(
-        '[data-ac-testid="terminal.replay-status.session-1"]'
+        '[data-ac-testid="terminal.replay-status.11111111-1111-4111-8111-111111111111"]'
       );
       expect(replayStatus?.hidden).toBe(true);
     } finally {
@@ -696,12 +756,12 @@ describe("TerminalApp workflow", () => {
 
   it("recovers output dropped during the async session switch list gap by replaying a snapshot", async () => {
     const sessionOne = session({
-      id: "session-1",
+      id: SESSION_A,
       name: "wg-1-dev-team/architect",
       workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_architect",
     });
     const sessionTwo = session({
-      id: "session-2",
+      id: SESSION_B,
       name: "wg-1-dev-team/dev-webpage-ui",
       workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_dev-webpage-ui",
     });
@@ -716,9 +776,9 @@ describe("TerminalApp workflow", () => {
       const listSessions = deferred<Session[]>();
       fake.onInvoke("list_sessions", () => listSessions.promise);
 
-      fake.emitFromBackend("session_switched", { id: "session-2" });
+      fake.emitFromBackend("session_switched", userLiveSelection(SESSION_B, 2));
       fake.emitFromBackend("pty_output", {
-        sessionId: "session-2",
+        sessionId: SESSION_B,
         data: [68, 82, 79, 80],
         sequence: 1,
       });
@@ -731,9 +791,9 @@ describe("TerminalApp workflow", () => {
       ).toBe(false);
 
       fake.onInvoke("get_screen_snapshot", ({ sessionId }) =>
-        sessionId === "session-2"
+        sessionId === SESSION_B
           ? {
-              sessionId: "session-2",
+              sessionId: SESSION_B,
               data: [82, 69, 80, 76, 65, 89],
               rows: null,
               cols: null,
@@ -747,7 +807,7 @@ describe("TerminalApp workflow", () => {
       await waitFor(() =>
         expect(
           fake.callsFor("get_screen_snapshot").some((call) =>
-            call.args.sessionId === "session-2"
+            call.args.sessionId === SESSION_B
           )
         ).toBe(true)
       );
@@ -766,7 +826,7 @@ describe("TerminalApp workflow", () => {
     const fake = new FakeTransport();
     setupTerminalTransport(fake, [
       session({
-        id: "session-1",
+        id: SESSION_A,
         name: "wg-1-dev-team/architect",
         workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_architect",
       }),
@@ -786,13 +846,13 @@ describe("TerminalApp workflow", () => {
 
       await waitFor(() =>
         expect(fake.lastCall("pty_write")?.args).toEqual({
-          sessionId: "session-1",
+          sessionId: SESSION_A,
           data: [115, 116, 97, 116, 117, 115, 13],
         })
       );
       await waitFor(() =>
         expect(fake.lastCall("set_last_prompt")?.args).toEqual({
-          id: "session-1",
+          id: SESSION_A,
           text: "status",
         })
       );
@@ -808,7 +868,7 @@ describe("TerminalApp workflow", () => {
     const fake = new FakeTransport();
     setupTerminalTransport(fake, [
       session({
-        id: "root-1",
+        id: ROOT_SESSION,
         name: "Agent's Commander",
         workingDirectory: "C:\\Project\\.ac\\ac-root-agent",
         isRootAgent: true,
@@ -831,7 +891,7 @@ describe("TerminalApp workflow", () => {
     const fake = new FakeTransport();
     setupTerminalTransport(fake, [
       session({
-        id: "session-1",
+        id: SESSION_A,
         name: "wg-1-dev-team/architect",
         workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_architect",
         isRootAgent: false,
@@ -853,13 +913,13 @@ describe("TerminalApp workflow", () => {
   it("hides TASK on switch to the Root Agent and restores it on switch back", async () => {
     const sessions = [
       session({
-        id: "session-1",
+        id: SESSION_A,
         name: "wg-1-dev-team/architect",
         workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_architect",
         isRootAgent: false,
       }),
       session({
-        id: "root-1",
+        id: ROOT_SESSION,
         name: "Agent's Commander",
         workingDirectory: "C:\\Project\\.ac\\ac-root-agent",
         isRootAgent: true,
@@ -875,13 +935,13 @@ describe("TerminalApp workflow", () => {
       expect(rendered.root.querySelector(".workgroup-task-panel")).not.toBeNull();
 
       // Switch to the Root Agent → TASK hidden.
-      fake.emitFromBackend("session_switched", { id: "root-1" });
+      fake.emitFromBackend("session_switched", userLiveSelection(ROOT_SESSION, 2));
       await waitFor(() =>
         expect(rendered.root.querySelector(".workgroup-task-panel")).toBeNull()
       );
 
       // Switch back to the non-root agent → TASK restored.
-      fake.emitFromBackend("session_switched", { id: "session-1" });
+      fake.emitFromBackend("session_switched", userLiveSelection(SESSION_A, 3));
       await waitFor(() =>
         expect(rendered.root.querySelector(".workgroup-task-panel")).not.toBeNull()
       );
@@ -890,6 +950,404 @@ describe("TerminalApp workflow", () => {
       expect(rendered.root.querySelector(".last-prompt-panel")).not.toBeNull();
     } finally {
       rendered.cleanup();
+    }
+  });
+
+  it("clears every live route and metadata field on authoritative none", async () => {
+    const fake = new FakeTransport();
+    setupTerminalTransport(fake, [
+      session({
+        id: SESSION_A,
+        name: "wg/architect",
+        shell: "pwsh",
+        workingDirectory: "C:\\Project",
+        workgroupTask: "Ship it",
+      }),
+    ]);
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await waitFor(() => expect(xterm.instances).toHaveLength(1));
+      fake.clearCalls();
+      fake.emitFromBackend("session_switched", noneSelection(2));
+      await waitFor(() =>
+        expect(rendered.root.querySelector("[data-ac-testid='terminal.empty']")?.textContent)
+          .toContain("No active session"),
+      );
+      expect(fake.callsFor("list_sessions")).toHaveLength(0);
+      expect(terminalStore.activeSessionId).toBeNull();
+      expect(terminalStore.activeSessionName).toBe("");
+      expect(terminalStore.activeShell).toBe("");
+      expect(terminalStore.activeWorkingDirectory).toBe("");
+      expect(terminalStore.activeWorkgroupTask).toBeNull();
+      xterm.instances[0].emitData("x");
+      expect(fake.callsFor("pty_write")).toHaveLength(0);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("renders dormant wake guidance and performs no live PTY operation", async () => {
+    const fake = new FakeTransport();
+    setupTerminalTransport(fake, [
+      session({ id: ROOT_SESSION, status: "active", isRootAgent: true }),
+    ]);
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await waitFor(() => expect(xterm.instances).toHaveLength(1));
+      fake.clearCalls();
+      fake.emitFromBackend("session_switched", dormantSelection(ROOT_SESSION, 2, 17));
+      await waitFor(() =>
+        expect(rendered.root.textContent).toContain("Session exited. Wake it from the sidebar."),
+      );
+      xterm.instances[0].emitData("x");
+      expect(fake.callsFor("list_sessions")).toHaveLength(0);
+      expect(fake.callsFor("pty_write")).toHaveLength(0);
+      expect(fake.callsFor("pty_resize")).toHaveLength(0);
+      expect(fake.callsFor("get_screen_snapshot")).toHaveLength(0);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("suspends A synchronously while B metadata is pending", async () => {
+    const rows = [
+      session({ id: SESSION_A, status: "active" }),
+      session({ id: SESSION_B, status: "running" }),
+    ];
+    const fake = new FakeTransport();
+    setupTerminalTransport(fake, rows);
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await waitFor(() => expect(terminalStore.activeSessionId).toBe(SESSION_A));
+      const pending = deferred<Session[]>();
+      fake.onInvoke("list_sessions", () => pending.promise);
+      fake.clearCalls();
+      fake.emitFromBackend("session_switched", userLiveSelection(SESSION_B, 2));
+      expect(terminalStore.activeSessionId).toBeNull();
+      xterm.instances[0].emitData("stale");
+      expect(fake.callsFor("pty_write")).toHaveLength(0);
+      await waitFor(() =>
+        expect(rendered.root.querySelector("[data-ac-testid='terminal.pending']")).not.toBeNull(),
+      );
+      pending.resolve(rows);
+      await waitFor(() => expect(terminalStore.activeSessionId).toBe(SESSION_B));
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("rejects a stale list completion after a newer revision binds", async () => {
+    const rows = [
+      session({ id: SESSION_A, status: "active" }),
+      session({ id: SESSION_B, status: "running" }),
+    ];
+    const fake = new FakeTransport();
+    setupTerminalTransport(fake, rows);
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await waitFor(() => expect(terminalStore.activeSessionId).toBe(SESSION_A));
+      const stale = deferred<Session[]>();
+      fake.onInvoke("list_sessions", () => stale.promise);
+      fake.emitFromBackend("session_switched", userLiveSelection(SESSION_B, 2));
+      fake.onInvoke("list_sessions", () => rows);
+      fake.emitFromBackend("session_switched", userLiveSelection(SESSION_A, 3));
+      await waitFor(() => expect(terminalStore.activeSessionId).toBe(SESSION_A));
+      stale.resolve(rows);
+      await flushPromises();
+      expect(terminalStore.activeSessionId).toBe(SESSION_A);
+      expect(terminalStore.appliedRevision).toBe(3);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("makes a missing or exited live row unavailable without retaining A", async () => {
+    const fake = new FakeTransport();
+    setupTerminalTransport(fake, [session({ id: SESSION_A, status: "active" })]);
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await waitFor(() => expect(terminalStore.activeSessionId).toBe(SESSION_A));
+      fake.onInvoke("list_sessions", () => [
+        session({ id: SESSION_B, status: { exited: 9 } }),
+      ]);
+      fake.emitFromBackend("session_switched", userLiveSelection(SESSION_B, 2));
+      await waitFor(() => expect(terminalStore.bindingState).toBe("unavailable"));
+      expect(terminalStore.activeSessionId).toBeNull();
+      expect(rendered.root.textContent).toContain("Session unavailable");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("safety-suspends a destroyed route without requerying or deriving a fallback", async () => {
+    const fake = new FakeTransport();
+    setupTerminalTransport(fake, [session({ id: SESSION_A, status: "active" })]);
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await waitFor(() => expect(terminalStore.activeSessionId).toBe(SESSION_A));
+      fake.clearCalls();
+      fake.emitFromBackend("session_destroyed", { id: SESSION_A });
+      expect(terminalStore.activeSessionId).toBeNull();
+      xterm.instances[0].emitData("stale");
+      expect(fake.callsFor("pty_write")).toHaveLength(0);
+      expect(fake.callsFor("list_sessions")).toHaveLength(0);
+      expect(fake.callsFor("get_active_session")).toHaveLength(0);
+      fake.emitFromBackend("session_switched", noneSelection(2));
+      await waitFor(() => expect(terminalStore.selectionMode).toBe("none"));
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("clears routing on disconnect and equal-revision hydration rebinds once", async () => {
+    const fake = new FakeTransport();
+    setupTerminalTransport(fake, [session({ id: SESSION_A, status: "active" })]);
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await waitFor(() => expect(terminalStore.activeSessionId).toBe(SESSION_A));
+      fake.setConnectionState({ state: "disconnected", generation: 0 });
+      expect(terminalStore.activeSessionId).toBeNull();
+      fake.setConnectionState({ state: "connected", generation: 1 });
+      await waitFor(() => expect(terminalStore.activeSessionId).toBe(SESSION_A));
+      const hydrationCalls = fake.callsFor("get_active_session").length;
+      const listCalls = fake.callsFor("list_sessions").length;
+      fake.emitFromBackend("session_switched", liveSelection(SESSION_A, 1));
+      fake.setConnectionState({ state: "connected", generation: 1 });
+      await flushPromises();
+      expect(fake.callsFor("get_active_session")).toHaveLength(hydrationCalls);
+      expect(fake.callsFor("list_sessions")).toHaveLength(listCalls);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("lets a new process epoch revision 0 replace revision 500 and rejects the retired epoch", async () => {
+    const fake = new FakeTransport();
+    setupTerminalTransport(fake, [session({ id: SESSION_A, status: "active" })]);
+    fake.resolve("get_active_session", liveSelection(SESSION_A, 500, TEST_EPOCH));
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await waitFor(() => expect(terminalStore.activeSessionId).toBe(SESSION_A));
+      fake.setConnectionState({ state: "disconnected", generation: 0 });
+      fake.resolve("get_active_session", initialSelection(TEST_EPOCH_2));
+      fake.setConnectionState({ state: "connected", generation: 1 });
+      await waitFor(() => expect(terminalStore.selectionEpoch).toBe(TEST_EPOCH_2));
+      expect(terminalStore.appliedRevision).toBe(0);
+      expect(terminalStore.activeSessionId).toBeNull();
+
+      fake.emitFromBackend(
+        "session_switched",
+        liveSelection(SESSION_A, 501, TEST_EPOCH),
+      );
+      await flushPromises();
+      expect(terminalStore.selectionEpoch).toBe(TEST_EPOCH_2);
+      expect(terminalStore.appliedRevision).toBe(0);
+      expect(terminalStore.activeSessionId).toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("rejects an older-generation hydration even when its epoch was never applied", async () => {
+    const fake = new FakeTransport();
+    setupTerminalTransport(fake, [session({ id: SESSION_A, status: "active" })]);
+    const oldHydration = deferred<ReturnType<typeof liveSelection>>();
+    let hydrationCalls = 0;
+    fake.onInvoke("get_active_session", () => {
+      hydrationCalls += 1;
+      return hydrationCalls === 1
+        ? oldHydration.promise
+        : initialSelection(TEST_EPOCH_2);
+    });
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await waitFor(() => expect(fake.callsFor("get_active_session")).toHaveLength(1));
+      fake.setConnectionState({ state: "disconnected", generation: 0 });
+      fake.setConnectionState({ state: "connected", generation: 1 });
+      await waitFor(() => expect(terminalStore.selectionEpoch).toBe(TEST_EPOCH_2));
+      oldHydration.resolve(liveSelection(SESSION_A, 500, TEST_EPOCH));
+      await flushPromises();
+      expect(terminalStore.selectionEpoch).toBe(TEST_EPOCH_2);
+      expect(terminalStore.activeSessionId).toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("uses one capped busy-retry chain and restores only the current generation", async () => {
+    vi.useFakeTimers();
+    const fake = new FakeTransport();
+    setupTerminalTransport(fake, [session({ id: SESSION_A, status: "active" })]);
+    let attempts = 0;
+    fake.onInvoke("get_active_session", () => {
+      attempts += 1;
+      if (attempts < 7) throw "selectionCoordinatorBusy";
+      return liveSelection(SESSION_A, 1);
+    });
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fake.callsFor("get_active_session")).toHaveLength(1);
+      for (const delay of [50, 100, 250, 500, 1000, 1000]) {
+        await vi.advanceTimersByTimeAsync(delay - 1);
+        expect(fake.callsFor("get_active_session")).toHaveLength(attempts);
+        await vi.advanceTimersByTimeAsync(1);
+      }
+      expect(fake.callsFor("get_active_session")).toHaveLength(7);
+      expect(terminalStore.activeSessionId).toBe(SESSION_A);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("does not resurrect a busy retry after a newer event cancels in-flight hydration", async () => {
+    vi.useFakeTimers();
+    const fake = new FakeTransport();
+    setupTerminalTransport(fake, [session({ id: SESSION_A, status: "active" })]);
+    const hydration = deferred<ReturnType<typeof liveSelection>>();
+    fake.onInvoke("get_active_session", () => hydration.promise);
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fake.callsFor("get_active_session")).toHaveLength(1);
+      fake.emitFromBackend("session_switched", userLiveSelection(SESSION_A, 2));
+      hydration.reject("selectionCoordinatorBusy");
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(fake.callsFor("get_active_session")).toHaveLength(1);
+      expect(terminalStore.appliedRevision).toBe(2);
+      expect(terminalStore.activeSessionId).toBe(SESSION_A);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("cancels busy retry timers on disconnect, generation replacement, and unmount", async () => {
+    vi.useFakeTimers();
+    const fake = new FakeTransport();
+    setupTerminalTransport(fake, [session({ id: SESSION_A, status: "active" })]);
+    fake.reject("get_active_session", "selectionCoordinatorBusy");
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fake.callsFor("get_active_session")).toHaveLength(1);
+
+    fake.setConnectionState({ state: "disconnected", generation: 0 });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(fake.callsFor("get_active_session")).toHaveLength(1);
+
+    fake.setConnectionState({ state: "connected", generation: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fake.callsFor("get_active_session")).toHaveLength(2);
+    rendered.cleanup();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(fake.callsFor("get_active_session")).toHaveLength(2);
+  });
+
+  it("keeps missing and rejected live metadata safely unavailable", async () => {
+    const fake = new FakeTransport();
+    setupTerminalTransport(fake, [session({ id: SESSION_A, status: "active" })]);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await waitFor(() => expect(terminalStore.activeSessionId).toBe(SESSION_A));
+      fake.onInvoke("list_sessions", () => []);
+      fake.emitFromBackend("session_switched", userLiveSelection(SESSION_B, 2));
+      await waitFor(() => expect(terminalStore.bindingState).toBe("unavailable"));
+      expect(terminalStore.activeSessionId).toBeNull();
+
+      fake.onInvoke("list_sessions", () => { throw "list-failed"; });
+      fake.emitFromBackend("session_switched", userLiveSelection(SESSION_A, 3));
+      await waitFor(() => expect(error).toHaveBeenCalled());
+      expect(terminalStore.bindingState).toBe("unavailable");
+      expect(terminalStore.activeSessionId).toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("keeps a locked detached route exact and ignores central selection events", async () => {
+    const fake = new FakeTransport();
+    setupTerminalTransport(fake, [session({ id: SESSION_A, status: "active" })]);
+    const rendered = renderWithFakeTransport(
+      () => <TerminalApp embedded lockedSessionId={SESSION_A} detached />,
+      fake,
+    );
+    try {
+      await waitFor(() => expect(terminalStore.activeSessionId).toBe(SESSION_A));
+      fake.clearCalls();
+      fake.emitFromBackend("session_switched", noneSelection(2));
+      fake.emitFromBackend("session_switched", dormantSelection(SESSION_B, 3, 4));
+      await flushPromises();
+      expect(terminalStore.activeSessionId).toBe(SESSION_A);
+      expect(fake.callsFor("get_active_session")).toHaveLength(0);
+      fake.emitFromBackend("session_destroyed", { id: SESSION_B });
+      expect(tauriWindow.destroy).not.toHaveBeenCalled();
+      fake.emitFromBackend("session_destroyed", { id: SESSION_A });
+      await waitFor(() => expect(tauriWindow.destroy).toHaveBeenCalledOnce());
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("does not auto-select created rows and LastPrompt does not add a selection relist", async () => {
+    const fake = new FakeTransport();
+    setupTerminalTransport(fake, []);
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await waitFor(() => expect(terminalStore.appliedRevision).toBe(0));
+      fake.emitFromBackend("session_created", session({ id: SESSION_A, status: "running" }));
+      await flushPromises();
+      expect(terminalStore.activeSessionId).toBeNull();
+
+      fake.onInvoke("list_sessions", () => [session({ id: SESSION_A, status: "running" })]);
+      fake.clearCalls();
+      fake.emitFromBackend("session_switched", userLiveSelection(SESSION_A, 1));
+      await waitFor(() => expect(terminalStore.activeSessionId).toBe(SESSION_A));
+      expect(fake.callsFor("list_sessions")).toHaveLength(1);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("drops a live-list completion after unmount", async () => {
+    const fake = new FakeTransport();
+    const list = deferred<Session[]>();
+    setupTerminalTransport(fake, [session({ id: SESSION_A, status: "active" })]);
+    fake.onInvoke("list_sessions", () => list.promise);
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    await waitFor(() => expect(terminalStore.bindingState).toBe("pending"));
+    rendered.cleanup();
+    list.resolve([session({ id: SESSION_A, status: "active" })]);
+    await flushPromises();
+    expect(terminalStore.activeSessionId).toBeNull();
+    expect(terminalStore.bindingState).toBe("pending");
+  });
+
+  it("disposes central selection and connection listeners exactly once", async () => {
+    const fake = new TrackingTerminalTransport();
+    setupTerminalTransport(fake, [session({ id: SESSION_A, status: "active" })]);
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    await waitFor(() => expect(terminalStore.activeSessionId).toBe(SESSION_A));
+    rendered.cleanup();
+    expect(fake.selectionUnlisten).toHaveBeenCalledOnce();
+    expect(fake.connectionUnlisten).toHaveBeenCalledOnce();
+  });
+
+  it("immediately disposes a selection listener that resolves after terminal unmount", async () => {
+    const fake = new TrackingTerminalTransport();
+    const gate = deferred<void>();
+    fake.selectionRegistrationGate = gate.promise;
+    setupTerminalTransport(fake, [session({ id: SESSION_A, status: "active" })]);
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    rendered.cleanup();
+    const restoreLateTransport = __setTransportForTests(fake);
+    try {
+      gate.resolve(undefined);
+      await waitFor(() => expect(fake.selectionUnlisten).toHaveBeenCalledOnce());
+      expect(fake.connectionUnlisten).not.toHaveBeenCalled();
+      expect(fake.callsFor("get_active_session")).toHaveLength(0);
+      expect(terminalStore.activeSessionId).toBeNull();
+    } finally {
+      restoreLateTransport();
     }
   });
 });

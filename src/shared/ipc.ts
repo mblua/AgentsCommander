@@ -3,7 +3,7 @@ import {
   measurePtyViewport,
   rememberSpawnViewport,
 } from "./terminal-viewport";
-import type { Transport, UnlistenFn } from "./transport";
+import type { Transport, TransportConnectionState, UnlistenFn } from "./transport";
 import { TauriTransport } from "./transport-tauri";
 import { WsTransport } from "./transport-ws";
 import type {
@@ -72,7 +72,9 @@ import type {
   WebServerOwnedStatus,
   ApiClientMintRequest,
   ApiClientMintResponse,
+  SessionSelection,
 } from "./types";
+import { decodeSessionSelection } from "./session-selection";
 
 export interface SessionRepoInput {
   label: string;
@@ -237,7 +239,10 @@ export const SessionAPI = {
 
   list: () => transport.invoke<Session[]>("list_sessions"),
 
-  getActive: () => transport.invoke<string | null>("get_active_session"),
+  getSelection: async (): Promise<SessionSelection> => {
+    const value = await transport.invoke<unknown>("get_active_session");
+    return decodeSessionSelection(value);
+  },
 
   drainWarnings: (sessionId?: string | null) =>
     transport.invoke<SessionWarning[]>("drain_session_warnings", {
@@ -444,12 +449,34 @@ export function onSessionDestroyed(
 }
 
 export function onSessionSwitched(
-  callback: (data: { id: string | null; userInitiated?: boolean }) => void
+  callback: (data: SessionSelection, deliveryGeneration: number) => void
 ): Promise<UnlistenFn> {
-  return transport.listen<{ id: string | null; userInitiated?: boolean }>(
-    "session_switched",
-    callback
-  );
+  return transport.listen<unknown>("session_switched", (value) => {
+    let selection: SessionSelection;
+    try {
+      selection = decodeSessionSelection(value);
+    } catch (error) {
+      console.error("[selection] Dropped malformed session_switched payload:", error);
+      return;
+    }
+    const generation = currentTransport().connectionState().generation;
+    callback(selection, generation);
+  });
+}
+
+export function getTransportConnectionState(): TransportConnectionState {
+  return currentTransport().connectionState();
+}
+
+export function onTransportConnectionState(
+  callback: (state: TransportConnectionState) => void,
+): Promise<UnlistenFn> {
+  const subscribe = currentTransport().onConnectionState;
+  return Promise.resolve(subscribe ? subscribe.call(currentTransport(), callback) : () => undefined);
+}
+
+export function isSelectionCoordinatorBusyError(error: unknown): boolean {
+  return error === "selectionCoordinatorBusy";
 }
 
 export function onSessionRenamed(

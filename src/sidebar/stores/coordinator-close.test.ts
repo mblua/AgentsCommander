@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { __setTransportForTests } from "../../shared/ipc";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import { session } from "../../shared/testing/ui-harness";
@@ -44,6 +44,7 @@ describe("coordinator-close helper (#588)", () => {
     restoreTransport();
     sessionsStore.setSessions([]);
     setPendingCoordinatorClose(null);
+    vi.restoreAllMocks();
   });
 
   it("routes a non-coordinator close straight to destroy_session (no close_coordinator, no modal)", async () => {
@@ -140,6 +141,45 @@ describe("coordinator-close helper (#588)", () => {
       { cmd: "close_coordinator", args: { id: "s-coord", confirmed: false } },
     ]);
     expect(fake.callsFor("destroy_session").map((c) => c.args)).toEqual([{ id: "s-coord" }]);
+    expect(pendingCoordinatorClose()).toBeNull();
+  });
+
+  it("catches a direct non-coordinator destroy failure exactly once", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const s = session({ id: "s-plain", isCoordinator: false });
+    fake.reject("destroy_session", "destroy-failed");
+
+    await requestCoordinatorClose(s);
+
+    expect(fake.callsFor("destroy_session")).toHaveLength(1);
+    expect(fake.callsFor("close_coordinator")).toHaveLength(0);
+    expect(error).toHaveBeenCalledOnce();
+    expect(pendingCoordinatorClose()).toBeNull();
+  });
+
+  it("catches an initial coordinator close failure without opening a modal or dispatching again", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const s = session({ id: "s-coord", isCoordinator: true });
+    sessionsStore.setSessions([s]);
+    fake.reject("close_coordinator", "close-failed");
+
+    await requestCoordinatorClose(s);
+
+    expect(fake.callsFor("close_coordinator")).toHaveLength(1);
+    expect(fake.callsFor("destroy_session")).toHaveLength(0);
+    expect(error).toHaveBeenCalledOnce();
+    expect(pendingCoordinatorClose()).toBeNull();
+  });
+
+  it("consumes a confirmed cascade before catching its failure", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    setPendingCoordinatorClose({ sessionId: "s-coord", name: "x", workingCount: 2 });
+    fake.reject("close_coordinator", "cascade-failed");
+
+    await confirmPendingCoordinatorClose();
+
+    expect(fake.callsFor("close_coordinator")).toHaveLength(1);
+    expect(error).toHaveBeenCalledOnce();
     expect(pendingCoordinatorClose()).toBeNull();
   });
 });

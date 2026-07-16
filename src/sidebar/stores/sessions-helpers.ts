@@ -1,17 +1,62 @@
-import type { Session, SessionStatus } from "../../shared/types";
+import type { Session, SessionSelection, SessionStatus } from "../../shared/types";
 
 /**
  * True when `status` is one of the runtime string states ("active" | "running"
  * | "idle"). False when it is an Exited({ exited: N }) object.
  *
- * Used by sessionsStore.setActiveId to skip Exited sessions when promoting
- * the selected session to "active": a dormant root must keep its
+ * Used by authoritative selection projection to skip Exited sessions when
+ * applying a stored live payload: a dormant root must keep its
  * { exited: N } status so RootAgentBanner's wake path
  * (typeof status !== "string") still fires and chooses
  * restart(..., { skipAutoResume: false }) — i.e. wake-with-provider-resume.
  */
 export function isRuntimeStringStatus(status: SessionStatus): boolean {
   return typeof status === "string";
+}
+
+export interface AppliedSessionSelection {
+  sessions: Session[];
+  activeId: string | null;
+}
+
+/** Pure sidebar projection of one already-decoded authoritative selection. */
+export function applySelectionToSessionList(
+  sessions: Session[],
+  selection: SessionSelection,
+): AppliedSessionSelection {
+  const target = selection.id
+    ? sessions.find((session) => session.id === selection.id)
+    : undefined;
+  const targetCanBeLive =
+    selection.mode === "live" &&
+    !!target &&
+    typeof target.status === "string";
+  const activeId = selection.mode === "dormant"
+    ? target?.id ?? null
+    : targetCanBeLive
+      ? selection.id
+      : null;
+
+  return {
+    activeId,
+    sessions: sessions.map((session) => {
+      let status = session.status;
+      if (session.id === selection.id) {
+        if (selection.mode === "dormant") status = { ...selection.status };
+        else if (selection.mode === "live" && typeof session.status === "string") status = "active";
+      } else if (status === "active") {
+        status = "running";
+      }
+      if (status === session.status && (session.id !== selection.id || !session.pendingReview)) {
+        return session;
+      }
+      return {
+        ...session,
+        status,
+        pendingReview: session.id === selection.id ? false : session.pendingReview,
+      };
+    }),
+  };
 }
 
 /**

@@ -35,6 +35,7 @@ import {
   session,
   waitFor,
 } from "../../shared/testing/ui-harness";
+import { liveSelection, SESSION_A, SESSION_B } from "../../shared/testing/session-selection";
 
 interface FakeTerminalInstance {
   cols: number;
@@ -164,12 +165,12 @@ vi.mock("../../shared/platform", () => ({
   isBrowser: false,
 }));
 
-const ON_SCREEN = "session-on-screen";
-const SPAWNED = "session-spawned";
+const ON_SCREEN = SESSION_A;
+const SPAWNED = SESSION_B;
 
 function setupTerminalTransport(fake: FakeTransport): void {
   fake.resolve("get_settings", baseSettings());
-  fake.resolve("get_active_session", ON_SCREEN);
+  fake.resolve("get_active_session", liveSelection(ON_SCREEN));
   fake.onInvoke("list_sessions", () => [
     session({ id: ON_SCREEN }),
     session({ id: SPAWNED }),
@@ -196,7 +197,7 @@ async function createWhileOnScreen(fake: FakeTransport) {
 }
 
 async function attachSpawnedSession() {
-  terminalStore.setActiveSession(SPAWNED);
+  terminalStore.setActiveSessionForTests(SPAWNED);
   await waitFor(() => expect(xterm.instances).toHaveLength(2));
   return xterm.instances[1];
 }
@@ -218,7 +219,7 @@ describe("TerminalView PTY spawn size (#973)", () => {
     cleanupDom = null;
     resetUiStoresForTests();
     resetPtyViewportForTests();
-    terminalStore.setActiveSession(null);
+    terminalStore.setActiveSessionForTests(null);
     vi.restoreAllMocks();
   });
 

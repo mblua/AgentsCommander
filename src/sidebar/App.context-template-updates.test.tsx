@@ -13,6 +13,7 @@ import {
 import { projectStore } from "./stores/project";
 import { toastStore } from "../shared/stores/toasts";
 import type { ContextTemplateUpdate } from "../shared/types";
+import { initialSelection } from "../shared/testing/session-selection";
 
 const projectPath = "C:\\Project";
 
@@ -40,7 +41,7 @@ function setupTransport(fake: FakeTransport, updates: ContextTemplateUpdate[]): 
   fake.resolve("get_project_groups", { groups: [], showAll: true, showUngrouped: true });
   fake.resolve("search_repos", []);
   fake.resolve("list_sessions", []);
-  fake.resolve("get_active_session", null);
+  fake.resolve("get_active_session", initialSelection());
   fake.resolve("list_detached_sessions", []);
   fake.resolve("telegram_list_bridges", []);
 }

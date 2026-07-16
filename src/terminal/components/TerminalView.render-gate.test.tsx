@@ -27,6 +27,7 @@ import {
   session,
   waitFor,
 } from "../../shared/testing/ui-harness";
+import { initialSelection, liveSelection, SESSION_A } from "../../shared/testing/session-selection";
 
 interface FakeTerminalInstance {
   cols: number;
@@ -164,7 +165,10 @@ const NEXT = [78, 69, 88, 84]; // "NEXT"
 
 function setupTerminalTransport(fake: FakeTransport, sessions = [session()]): void {
   fake.resolve("get_settings", baseSettings());
-  fake.resolve("get_active_session", sessions[0]?.id ?? null);
+  fake.resolve(
+    "get_active_session",
+    sessions[0] ? liveSelection(sessions[0].id) : initialSelection(),
+  );
   fake.onInvoke("list_sessions", () => sessions);
   fake.resolve("pty_write", undefined);
   fake.resolve("pty_resize", undefined);
@@ -193,7 +197,7 @@ async function flushPromises(): Promise<void> {
 
 function onlySession() {
   return session({
-    id: "session-1",
+    id: SESSION_A,
     name: "wg-1-dev-team/architect",
     workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_architect",
   });
@@ -242,7 +246,7 @@ describe("TerminalView snapshot render gate (#955)", () => {
 
       const terminal = xterm.instances[0];
       fake.emitFromBackend("pty_output", {
-        sessionId: "session-1",
+        sessionId: SESSION_A,
         data: LIVE,
         sequence: 1,
       });
@@ -270,7 +274,7 @@ describe("TerminalView snapshot render gate (#955)", () => {
       const terminal = xterm.instances[0];
       for (let index = 0; index < 5; index += 1) {
         fake.emitFromBackend("pty_output", {
-          sessionId: "session-1",
+          sessionId: SESSION_A,
           data: [65 + index],
           sequence: index + 1,
         });
@@ -298,7 +302,7 @@ describe("TerminalView snapshot render gate (#955)", () => {
 
       await waitFor(() => {
         const status = rendered.root.querySelector<HTMLDivElement>(
-          '[data-ac-testid="terminal.replay-status.session-1"]'
+          '[data-ac-testid="terminal.replay-status.11111111-1111-4111-8111-111111111111"]'
         );
         expect(status?.hidden).toBe(false);
       }, 3000);
@@ -324,7 +328,7 @@ describe("TerminalView snapshot render gate (#955)", () => {
       const terminal = xterm.instances[0];
 
       fake.emitFromBackend("pty_output", {
-        sessionId: "session-1",
+        sessionId: SESSION_A,
         data: LIVE,
         sequence: 1,
       });
@@ -333,7 +337,7 @@ describe("TerminalView snapshot render gate (#955)", () => {
       await new Promise((resolve) => setTimeout(resolve, 700));
 
       const status = rendered.root.querySelector<HTMLDivElement>(
-        '[data-ac-testid="terminal.replay-status.session-1"]'
+        '[data-ac-testid="terminal.replay-status.11111111-1111-4111-8111-111111111111"]'
       );
       expect(status?.hidden).toBe(true);
       expect(bytes(terminal.screen)).toEqual([LIVE]);
@@ -360,7 +364,7 @@ describe("TerminalView snapshot render gate (#955)", () => {
 
       const terminal = xterm.instances[0];
       fake.emitFromBackend("pty_output", {
-        sessionId: "session-1",
+        sessionId: SESSION_A,
         data: LIVE,
         sequence: 1,
       });
@@ -369,7 +373,7 @@ describe("TerminalView snapshot render gate (#955)", () => {
       await waitFor(() => expect(terminal.writes).toHaveLength(1));
 
       snapshot.resolve({
-        sessionId: "session-1",
+        sessionId: SESSION_A,
         data: [...SNAP, ...LIVE],
         rows: null,
         cols: null,
@@ -406,12 +410,12 @@ describe("TerminalView snapshot render gate (#955)", () => {
 
       const terminal = xterm.instances[0];
       fake.emitFromBackend("pty_output", {
-        sessionId: "session-1",
+        sessionId: SESSION_A,
         data: LIVE,
         sequence: 1,
       });
       fake.emitFromBackend("pty_output", {
-        sessionId: "session-1",
+        sessionId: SESSION_A,
         data: NEXT,
         sequence: 2,
       });
@@ -419,7 +423,7 @@ describe("TerminalView snapshot render gate (#955)", () => {
       await waitFor(() => expect(terminal.writes).toHaveLength(2));
 
       snapshot.resolve({
-        sessionId: "session-1",
+        sessionId: SESSION_A,
         data: SNAP,
         rows: null,
         cols: null,
@@ -452,7 +456,7 @@ describe("TerminalView snapshot render gate (#955)", () => {
 
       const terminal = xterm.instances[0];
       snapshot.resolve({
-        sessionId: "session-1",
+        sessionId: SESSION_A,
         data: SNAP,
         rows: null,
         cols: null,
@@ -462,7 +466,7 @@ describe("TerminalView snapshot render gate (#955)", () => {
       await waitFor(() => expect(terminal.writes).toHaveLength(1));
 
       fake.emitFromBackend("pty_output", {
-        sessionId: "session-1",
+        sessionId: SESSION_A,
         data: NEXT,
         sequence: 2,
       });
@@ -495,12 +499,12 @@ describe("TerminalView snapshot render gate (#955)", () => {
       // One chunk larger than the 2 MiB retention budget.
       const flood = new Array<number>(2 * 1024 * 1024 + 1).fill(65);
       fake.emitFromBackend("pty_output", {
-        sessionId: "session-1",
+        sessionId: SESSION_A,
         data: flood,
         sequence: 1,
       });
       fake.emitFromBackend("pty_output", {
-        sessionId: "session-1",
+        sessionId: SESSION_A,
         data: NEXT,
         sequence: 2,
       });
@@ -508,7 +512,7 @@ describe("TerminalView snapshot render gate (#955)", () => {
       await waitFor(() => expect(terminal.writes).toHaveLength(2));
 
       snapshot.resolve({
-        sessionId: "session-1",
+        sessionId: SESSION_A,
         data: SNAP,
         rows: null,
         cols: null,

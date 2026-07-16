@@ -13,6 +13,7 @@ import {
 } from "../shared/testing/ui-harness";
 import { sessionsStore } from "./stores/sessions";
 import type { Session } from "../shared/types";
+import { initialSelection } from "../shared/testing/session-selection";
 
 const projectPath = "C:\\Project";
 const wgName = "wg-2-dev-team";
@@ -74,7 +75,7 @@ function setupRaiseHandTransport(fake: FakeTransport, sessions: Session[]): void
   fake.resolve("get_project_groups", { groups: [], showAll: true, showUngrouped: true });
   fake.resolve("search_repos", []);
   fake.resolve("list_sessions", sessions);
-  fake.resolve("get_active_session", null);
+  fake.resolve("get_active_session", initialSelection());
   fake.resolve("list_detached_sessions", []);
   fake.resolve("telegram_list_bridges", []);
 }

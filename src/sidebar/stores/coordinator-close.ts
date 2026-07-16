@@ -48,12 +48,12 @@ export function __resetCoordinatorCloseModalHostForTests(): void {
  *  lives in ProjectPanel). */
 export async function requestCoordinatorCloseById(id: string): Promise<void> {
   const s = sessionsStore.sessions.find((x) => x.id === id);
-  // Known non-coordinator -> identical net effect to destroy_session.
-  if (s && !s.isCoordinator) {
-    await SessionAPI.destroy(id);
-    return;
-  }
   try {
+    // Known non-coordinator -> identical net effect to destroy_session.
+    if (s && !s.isCoordinator) {
+      await SessionAPI.destroy(id);
+      return;
+    }
     const outcome = await SessionAPI.closeCoordinator(id, false);
     if (!outcome.closed) {
       if (coordinatorCloseModalHostAvailable()) {
@@ -81,7 +81,11 @@ export async function requestCoordinatorCloseById(id: string): Promise<void> {
  *  coordinator -> delegate to the by-id helper (one implementation). */
 export async function requestCoordinatorClose(session: Session): Promise<void> {
   if (!session.isCoordinator) {
-    await SessionAPI.destroy(session.id);
+    try {
+      await SessionAPI.destroy(session.id);
+    } catch (error) {
+      console.error("destroy_session failed:", error);
+    }
     return;
   }
   await requestCoordinatorCloseById(session.id);

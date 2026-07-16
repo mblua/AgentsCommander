@@ -1,12 +1,13 @@
 import { createMemo, createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 import { NO_TEAM } from "../../shared/constants";
-import type { RepoMatch, Session, SessionCommunication, SessionRepo, SessionsState, Team, TeamSessionGroup } from "../../shared/types";
+import type { RepoMatch, Session, SessionCommunication, SessionRepo, SessionSelection, SessionsState, Team, TeamSessionGroup } from "../../shared/types";
+import type { TransportConnectionState } from "../../shared/transport";
 import { projectStore } from "./project";
 import { normalizeProjectPathForCompare } from "./project-refresh";
 import { SettingsAPI } from "../../shared/ipc";
 import { settingsStore } from "../../shared/stores/settings";
-import { isRuntimeStringStatus, reconcileVisibleOrderKeys, upsertSessionList } from "./sessions-helpers";
+import { applySelectionToSessionList, reconcileVisibleOrderKeys, upsertSessionList } from "./sessions-helpers";
 
 const [toggleInFlight, setToggleInFlight] = createSignal(false);
 const [sidebarPointerInside, setSidebarPointerInside] = createSignal(false);
@@ -16,6 +17,14 @@ const [frozenCoordinatorVisibleOrderByProject, setFrozenCoordinatorVisibleOrderB
 const [state, setState] = createStore<SessionsState>({
   sessions: [],
   activeId: null,
+  selection: null,
+  selectionEpoch: null,
+  selectionRevision: -1,
+  selectionConnectionGeneration: null,
+  retiredSelectionEpochs: [],
+  connectionGeneration: -1,
+  transportConnected: false,
+  awaitingHydrationGeneration: null,
   teams: [],
   teamFilter: null,
   showInactive: false,
@@ -26,6 +35,25 @@ const [state, setState] = createStore<SessionsState>({
   lastActivityBySessionId: {},
   hydrated: false,
 });
+
+function projectStoredSelection(sessions: Session[]): void {
+  if (
+    !state.transportConnected ||
+    !state.selection ||
+    state.selectionConnectionGeneration !== state.connectionGeneration
+  ) {
+    setState("sessions", sessions.map((session) =>
+      session.status === "active"
+        ? { ...session, status: "running" as const }
+        : session,
+    ));
+    setState("activeId", null);
+    return;
+  }
+  const applied = applySelectionToSessionList(sessions, state.selection);
+  setState("sessions", applied.sessions);
+  setState("activeId", applied.activeId);
+}
 
 function normalizePath(p: string): string {
   return p.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
@@ -287,6 +315,27 @@ export const sessionsStore = {
   get activeId() {
     return state.activeId;
   },
+  get selection() {
+    return state.selection;
+  },
+  get selectionEpoch() {
+    return state.selectionEpoch;
+  },
+  get selectionRevision() {
+    return state.selectionRevision;
+  },
+  get selectionConnectionGeneration() {
+    return state.selectionConnectionGeneration;
+  },
+  get connectionGeneration() {
+    return state.connectionGeneration;
+  },
+  get transportConnected() {
+    return state.transportConnected;
+  },
+  get awaitingHydrationGeneration() {
+    return state.awaitingHydrationGeneration;
+  },
   get teams() {
     return state.teams;
   },
@@ -316,38 +365,123 @@ export const sessionsStore = {
   },
 
   setSessions(sessions: Session[]) {
-    setState("sessions", sessions);
+    projectStoredSelection(sessions);
   },
 
   addSession(session: Session) {
-    setState("sessions", (prev) => upsertSessionList(prev, session));
+    projectStoredSelection(upsertSessionList(state.sessions, session));
   },
 
   removeSession(id: string) {
-    setState("sessions", (prev) => prev.filter((s) => s.id !== id));
+    projectStoredSelection(state.sessions.filter((session) => session.id !== id));
+    if (state.activeId === id) setState("activeId", null);
   },
 
-  setActiveId(id: string | null) {
-    const prev = state.activeId;
-    console.debug(`[idle-fe] setActiveId: ${id?.slice(0,8)} (prev: ${prev?.slice(0,8)})`);
+  observeConnection(connection: TransportConnectionState): boolean {
+    if (connection.generation < state.connectionGeneration) return false;
+    const connected = connection.state === "connected";
+    const generationChanged = connection.generation !== state.connectionGeneration;
+    const changed =
+      generationChanged ||
+      connected !== state.transportConnected;
+    setState("connectionGeneration", connection.generation);
+    setState("transportConnected", connected);
+    if (!connected || generationChanged) {
+      setState("awaitingHydrationGeneration", null);
+      setState("activeId", null);
+      setState("sessions", (sessions) =>
+        sessions.map((session) =>
+          session.status === "active"
+            ? { ...session, status: "running" as const }
+            : session,
+        ),
+      );
+    }
+    return changed;
+  },
+
+  beginHydration(generation: number): boolean {
+    if (
+      generation !== state.connectionGeneration ||
+      !state.transportConnected
+    ) {
+      return false;
+    }
+    setState("awaitingHydrationGeneration", generation);
+    return true;
+  },
+
+  cancelHydration(generation?: number): void {
+    if (
+      generation === undefined ||
+      state.awaitingHydrationGeneration === generation
+    ) {
+      setState("awaitingHydrationGeneration", null);
+    }
+  },
+
+  applySelection(
+    selection: SessionSelection,
+    generation: number,
+    allowEqualReconnect = false,
+  ): boolean {
+    if (
+      generation !== state.connectionGeneration ||
+      !state.transportConnected
+    ) {
+      return false;
+    }
+    if (state.selectionEpoch === selection.epoch) {
+      if (selection.revision < state.selectionRevision) return false;
+      if (selection.revision === state.selectionRevision) {
+        if (
+          !allowEqualReconnect ||
+          state.awaitingHydrationGeneration !== generation
+        ) {
+          return false;
+        }
+      }
+    } else {
+      if (state.retiredSelectionEpochs.includes(selection.epoch)) return false;
+      const previousEpoch = state.selectionEpoch;
+      if (previousEpoch) {
+        setState("retiredSelectionEpochs", (epochs) => [
+          ...epochs,
+          previousEpoch,
+        ]);
+      }
+    }
+    setState("selection", selection);
+    setState("selectionEpoch", selection.epoch);
+    setState("selectionRevision", selection.revision);
+    setState("selectionConnectionGeneration", generation);
+    setState("awaitingHydrationGeneration", null);
+    const applied = applySelectionToSessionList(state.sessions, selection);
+    setState("sessions", applied.sessions);
+    setState("activeId", applied.activeId);
+    return true;
+  },
+
+  setVisibleActiveIdForTests(id: string | null): void {
+    if (import.meta.env.MODE !== "test") {
+      throw new Error("setVisibleActiveIdForTests is test-only");
+    }
     setState("activeId", id);
-    // Promote selected session to "active" only when its status is a runtime
-    // string. Exited({ exited: N }) is preserved so dormant roots keep the
-    // status the banner reads (typeof status !== "string") to choose
-    // restart(..., { skipAutoResume: false }).
-    setState(
-      "sessions",
-      (s) => s.id === id && isRuntimeStringStatus(s.status),
-      "status",
-      "active"
-    );
-    setState("sessions", (s) => s.id === id, "pendingReview", false);
-    setState(
-      "sessions",
-      (s) => s.id !== id && s.status === "active",
-      "status",
-      "running"
-    );
+  },
+
+  resetSelectionForTests(): void {
+    if (import.meta.env.MODE !== "test") {
+      throw new Error("resetSelectionForTests is test-only");
+    }
+    setState("selection", null);
+    setState("selectionEpoch", null);
+    setState("selectionRevision", -1);
+    setState("selectionConnectionGeneration", null);
+    setState("retiredSelectionEpochs", []);
+    setState("connectionGeneration", -1);
+    setState("transportConnected", false);
+    setState("awaitingHydrationGeneration", null);
+    setState("activeId", null);
   },
 
   renameSession(id: string, name: string) {
