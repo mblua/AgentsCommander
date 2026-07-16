@@ -202,9 +202,11 @@ export const replicaVolatileStore = {
   },
 
   /**
-   * Full wipe, `repoBranchByPath` included. For when the replicas themselves go
-   * away (`projectStore.clear`) and for test isolation — unlike `clearForPaths`,
-   * there is no surviving replica whose per-repo branches would be worth keeping.
+   * Full wipe, both by-path maps included (`repoBranchByPath` #943 B2 and
+   * `repoDirtyByPath` #1028). For when the replicas themselves go away
+   * (`projectStore.clear`) and for test isolation — unlike `clearForPaths`, there is
+   * no surviving replica whose per-repo branches or dirty state would be worth
+   * keeping, so the argument for preserving them there does not apply here.
    */
   clearAll() {
     batch(() => {
