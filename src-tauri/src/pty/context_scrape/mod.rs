@@ -9,3 +9,22 @@
 
 pub mod pattern;
 pub mod rows;
+
+/// What a backend can say about one session's rows.
+///
+/// THREE states, because the oracle behind it has three. A two-state channel here would
+/// make `None` mean four different things - session unknown, parser poisoned, child dead,
+/// child unqueryable - of which "stop sampling" is right for three and destroys the fourth:
+/// a live child whose handle could not be queried for one tick would be deregistered for
+/// the rest of its life. `ChildLiveness::Unqueryable` exists precisely so "we could not
+/// ask" is never confused with a definite answer, and this enum is what carries that the
+/// rest of the way.
+pub enum ScreenRowsRead {
+    /// The live grid's rows.
+    Rows(Vec<String>),
+    /// No reading this tick. Says NOTHING about whether the session is over: retry next
+    /// tick, keep the entry. (Child alive but unqueryable; parser missing or poisoned.)
+    Unavailable,
+    /// The session is over. Emit null once, then stop sampling it.
+    SessionOver,
+}

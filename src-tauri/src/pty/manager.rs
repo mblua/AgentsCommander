@@ -7,6 +7,7 @@ use crate::errors::AppError;
 use crate::pty::backend::{BackendSpawnSpec, PtyBackend, SessionBackendKind};
 use crate::pty::container_backend::ContainerTransportBackend;
 use crate::pty::container_tokens::ContainerApiTokenManager;
+use crate::pty::context_scrape::ScreenRowsRead;
 use crate::pty::docker_runtime::DockerRuntime;
 use crate::pty::git_watcher::GitWatcher;
 use crate::pty::idle_detector::IdleDetector;
@@ -269,6 +270,15 @@ impl PtyManager {
         self.backend_for_kind(kind).get_pty_size(id)
     }
 
+    /// #1032 - forwards to the routed backend. A missing route is not "we could not read":
+    /// every route removal is preceded by parser removal, so the session really is over.
+    pub fn get_screen_rows(&self, id: Uuid) -> ScreenRowsRead {
+        let Ok(kind) = self.kind_for_session(id) else {
+            return ScreenRowsRead::SessionOver;
+        };
+        self.backend_for_kind(kind).get_screen_rows(id)
+    }
+
     pub fn register_response_watcher(
         &self,
         session_id: Uuid,
@@ -373,6 +383,10 @@ mod tests {
             Some((30, 120))
         }
 
+        fn get_screen_rows(&self, _id: Uuid) -> ScreenRowsRead {
+            ScreenRowsRead::SessionOver
+        }
+
         fn register_response_watcher(
             &self,
             session_id: Uuid,
@@ -461,6 +475,10 @@ mod tests {
 
         fn get_pty_size(&self, _id: Uuid) -> Option<(u16, u16)> {
             None
+        }
+
+        fn get_screen_rows(&self, _id: Uuid) -> ScreenRowsRead {
+            ScreenRowsRead::SessionOver
         }
 
         fn register_response_watcher(

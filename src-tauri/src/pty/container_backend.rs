@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::pty::backend::{BackendSpawnSpec, PtyBackend};
+use crate::pty::context_scrape::ScreenRowsRead;
 use crate::pty::container_credentials::CopyOutcome;
 use crate::pty::container_paths::{
     canonical_host_path_env_key, container_config_dir, host_path_env_unmappable_warning,
@@ -1179,6 +1180,16 @@ impl PtyBackend for ContainerTransportBackend {
 
     fn get_pty_size(&self, id: Uuid) -> Option<(u16, u16)> {
         self.fanout.get_pty_size(id)
+    }
+
+    fn get_screen_rows(&self, id: Uuid) -> ScreenRowsRead {
+        // No liveness gate here, and none is needed: this backend already tears down on a
+        // natural exit, and `close_transport` drops the parser before anyone could read it.
+        // Parser-absent IS the container's liveness oracle.
+        match self.fanout.get_screen_rows(id) {
+            Some(rows) => ScreenRowsRead::Rows(rows),
+            None => ScreenRowsRead::SessionOver,
+        }
     }
 
     fn register_response_watcher(

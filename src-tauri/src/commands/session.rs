@@ -3923,6 +3923,10 @@ mod tests {
             None
         }
 
+        fn get_screen_rows(&self, _id: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
+            crate::pty::context_scrape::ScreenRowsRead::SessionOver
+        }
+
         fn register_response_watcher(
             &self,
             _session_id: Uuid,
@@ -4023,6 +4027,10 @@ mod tests {
 
         fn get_pty_size(&self, _id: Uuid) -> Option<(u16, u16)> {
             None
+        }
+
+        fn get_screen_rows(&self, _id: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
+            crate::pty::context_scrape::ScreenRowsRead::SessionOver
         }
 
         fn register_response_watcher(
