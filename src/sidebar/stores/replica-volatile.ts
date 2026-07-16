@@ -1,6 +1,6 @@
 import { batch } from "solid-js";
 import { createStore } from "solid-js/store";
-import type { AcAgentReplica, RepoBranchByPath } from "../../shared/types";
+import type { AcAgentReplica, RepoBranchByPath, RepoDirtyByPath } from "../../shared/types";
 import { normalizeProjectPathForCompare } from "./project-refresh";
 
 /**
@@ -26,6 +26,10 @@ export interface ReplicaVolatileEntry {
   /** #943 B2 - per-repo branches keyed by repo source path. See RepoBranchByPath
    *  (shared/types.ts) for the missing-key vs explicit-null semantics. */
   repoBranchByPath?: RepoBranchByPath;
+  /** #1028 - per-repo worktree-dirty keyed by repo source path. Same missing-key vs
+   *  explicit-null semantics as `repoBranchByPath` above; see RepoDirtyByPath
+   *  (shared/types.ts). Like that map, this one is PRESERVED by `clearForPaths`. */
+  repoDirtyByPath?: RepoDirtyByPath;
   lastUserMessageAt?: string;
   autoClosedAt?: string | null;
   manuallyClosedAt?: string | null;
@@ -47,23 +51,35 @@ function setField<K extends keyof ReplicaVolatileEntry>(
 }
 
 /**
- * #943 B2 - build the path -> branch map from the event's parallel arrays.
+ * #943 B2 - build a path -> value map from the event's parallel arrays.
+ * #1028 - generalised over the value type: `T = string` gives RepoBranchByPath,
+ * `T = boolean` gives RepoDirtyByPath.
  *
  * A length mismatch could only come from a build that broke the backend's 1:1
- * invariant. Pairing them anyway would attach a branch to the wrong repo, so the
- * map is dropped instead and every repo falls back to "no branch": visible, inert,
- * and self-healing on the next tick. No branch beats a wrong branch.
+ * invariant. Pairing them anyway would attach a value to the wrong repo, so the
+ * map is dropped instead and every repo falls back to "unknown": visible, inert,
+ * and self-healing on the next tick. No branch beats a wrong branch, and an
+ * unknown-dirty (violet) beats a red badge on the wrong repo.
+ *
+ * The guard is applied PER CALL, not once for both arrays: a malformed `repoDirty`
+ * must not be able to drop the branch map with it.
  */
-function buildRepoBranchByPath(
+function zipByPath<T>(
   repoPaths: string[] | undefined,
-  repoBranches: (string | null)[] | undefined
-): RepoBranchByPath {
+  values: (T | null)[] | undefined
+): Record<string, T | null> {
   const paths = repoPaths ?? [];
-  const branches = repoBranches ?? [];
-  if (paths.length !== branches.length) return {};
-  const map: RepoBranchByPath = {};
+  const vals = values ?? [];
+  if (paths.length !== vals.length) return {};
+  const map: Record<string, T | null> = {};
   for (let i = 0; i < paths.length; i += 1) {
-    map[paths[i]] = branches[i] ?? null;
+    // `?? null`, NEVER `|| null`. With T = string this looks like dead syntax an
+    // implementer would "simplify". With T = boolean it is load-bearing and the
+    // difference is INVISIBLE on the badge: `false ?? null` is `false` (detected
+    // clean, correct), but `false || null` is `null` ("never detected"), and both
+    // render violet. Only the badge title exposes the slip, which is why
+    // `repoDirty: [false]` has its own test.
+    map[paths[i]] = vals[i] ?? null;
   }
   return map;
 }
@@ -89,11 +105,16 @@ export const replicaVolatileStore = {
     replicaPath: string,
     branch: string | null,
     repoPaths?: string[],
-    repoBranches?: (string | null)[]
+    repoBranches?: (string | null)[],
+    repoDirty?: (boolean | null)[]
   ) {
     batch(() => {
       setField(replicaPath, "repoBranch", branch);
-      setField(replicaPath, "repoBranchByPath", buildRepoBranchByPath(repoPaths, repoBranches));
+      setField(replicaPath, "repoBranchByPath", zipByPath<string>(repoPaths, repoBranches));
+      // #1028 - inside the SAME batch: dirty and branch come from one payload and
+      // must land together, or a reader observes a row whose branch has ticked and
+      // whose colour has not.
+      setField(replicaPath, "repoDirtyByPath", zipByPath<boolean>(repoPaths, repoDirty));
     });
   },
 
@@ -119,20 +140,29 @@ export const replicaVolatileStore = {
    * truth and a pre-reload override must not mask it — the "discovery wins on
    * reload, events re-patch after" contract the old in-place patches had.
    *
-   * `repoBranchByPath` (#943 B2) is deliberately PRESERVED, because it has no
-   * counterpart: we did not widen `AcAgentReplica`, so wiping it installs nothing.
-   * It would fall back to the single-repo `repoBranch` shorthand — `null` for a
-   * multi-repo replica — and the backend would never re-send it: the discovery
-   * branch watcher only emits when the payload CHANGES (`ac_discovery.rs` Gate A),
-   * and an unchanged repo set with unchanged branches is an identical payload. So
-   * the map would be gone until a branch changed on disk or the app restarted, and
-   * reloads are routine (every loop tick, every CLI-driven refresh, every entity
-   * creation). "Discovery wins on reload" is meaningless for a field discovery
-   * never sends.
+   * `repoBranchByPath` (#943 B2) and `repoDirtyByPath` (#1028) are deliberately
+   * PRESERVED, because neither has a counterpart: we did not widen
+   * `AcAgentReplica`, so wiping either installs nothing. The backend would never
+   * re-send it either: the discovery branch watcher only emits when the payload
+   * CHANGES (`ac_discovery.rs` Gate A), and an unchanged repo set with unchanged
+   * branches and unchanged dirty is an identical payload. So a wiped map would be
+   * gone until something changed on disk or the app restarted, and reloads are
+   * routine (every loop tick, every CLI-driven refresh, every entity creation).
+   * "Discovery wins on reload" is meaningless for a field discovery never sends.
    *
-   * Preserving it is safe precisely BECAUSE it is keyed by path: a repo dropped
-   * from config.json simply never matches again, a repo added since the last tick
-   * has no entry until the watcher emits one, and a real branch change re-emits.
+   * What each map falls back to when wiped is NOT the same, and the dirty half is
+   * the worse one:
+   *   - `repoBranchByPath` degrades to the single-repo `repoBranch` shorthand —
+   *     `null` for a multi-repo replica — which is how Browse Branch died on the
+   *     first reload and stayed dead, "not for 15s, forever" (H1, a HIGH bug).
+   *   - `repoDirtyByPath` has NO shorthand to degrade to (discovery never sent a
+   *     scalar dirty), so every repo silently reverts to `null` = violet = "clean,
+   *     as far as you can see" — a false CLEAN on a passively-read surface, which is
+   *     the one direction #1028 is built never to assert.
+   *
+   * Preserving them is safe precisely BECAUSE they are keyed by path: a repo
+   * dropped from config.json simply never matches again, a repo added since the last
+   * tick has no entry until the watcher emits one, and a real change re-emits.
    *
    * Use `clearAll` when the replicas themselves are gone.
    */
@@ -141,20 +171,31 @@ export const replicaVolatileStore = {
       for (const path of replicaPaths) {
         const key = volatileKey(path);
         if (entries[key] === undefined) continue;
-        // Delete the entry, then restore ONLY the B2 map. Returning a smaller
+        // Delete the entry, then restore ONLY the two by-path maps. Returning a smaller
         // object instead would not clear anything: a Solid store setter MERGES a
         // wrappable value into the existing node (mergeStoreNode), so the snapshot-
         // backed fields would survive the reload and mask discovery forever - a
         // worse bug than the one this method is fixing. The function form is used
         // to read `prev` RAW (untracked); both writes sit inside the batch above,
         // so readers only ever observe the final state.
-        let preserved: RepoBranchByPath | undefined;
+        let preservedBranch: RepoBranchByPath | undefined;
+        let preservedDirty: RepoDirtyByPath | undefined;
         setEntries(key, (prev) => {
-          preserved = prev?.repoBranchByPath;
+          preservedBranch = prev?.repoBranchByPath;
+          preservedDirty = prev?.repoDirtyByPath;
           return undefined; // deleting the key notifies its readers
         });
-        if (preserved !== undefined) {
-          setEntries(key, { repoBranchByPath: preserved });
+        // `||`, not `&&`. Today the two are always written together (the only
+        // writer is applyDiscoveryBranchUpdate, whose batch sets both, and a
+        // length-mismatch stores `{}` rather than leaving the field undefined), so
+        // `&&` would behave identically and no test can tell them apart. It is `||`
+        // because it is the condition that stays CORRECT if that ever stops holding:
+        // with `&&`, a single one-sided entry silently drops the map that IS there,
+        // and the symptom would be a badge quietly losing its red on reload - the
+        // exact failure this preserve exists to prevent, re-entering by the back
+        // door. The cost of the safe operator here is zero.
+        if (preservedBranch !== undefined || preservedDirty !== undefined) {
+          setEntries(key, { repoBranchByPath: preservedBranch, repoDirtyByPath: preservedDirty });
         }
       }
     });
@@ -191,6 +232,16 @@ export function effectiveRepoBranchByPath(
   replica: ReplicaVolatileBase
 ): RepoBranchByPath | undefined {
   return entries[volatileKey(replica.path)]?.repoBranchByPath;
+}
+
+/** #1028 - live per-repo worktree-dirty for this replica, keyed by repo source path.
+ *  `undefined` until the first discovery branch event lands, which the caller maps to
+ *  `dirty: null` (violet, "status unknown"): the normal state for the first <=15s
+ *  after launch, not an error. There is no single-repo shorthand to fall back to. */
+export function effectiveRepoDirtyByPath(
+  replica: ReplicaVolatileBase
+): RepoDirtyByPath | undefined {
+  return entries[volatileKey(replica.path)]?.repoDirtyByPath;
 }
 
 export function effectiveLastUserMessageAt(replica: ReplicaVolatileBase): string | undefined {

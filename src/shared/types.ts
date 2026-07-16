@@ -2,6 +2,23 @@ export interface SessionRepo {
   label: string;
   sourcePath: string;
   branch: string | null;
+  /**
+   * #1028 - worktree dirty: untracked, unstaged, or staged-but-uncommitted changes.
+   * `true` paints the badge letters red; `false` = backend says clean; `null` = never
+   * successfully detected for this path since the backend process started. A failed
+   * detection HOLDS the last known answer (git_watcher::remember_dirty), so `null`
+   * means "no first answer yet", not "flaked once". Both `false` and `null` render
+   * violet - only the badge `title` distinguishes them.
+   *
+   * REQUIRED, not `dirty?:`, deliberately. `SessionRepo` has no `Default` in Rust, so
+   * every backend construction site is compile-forced to state a value; a `?` throws
+   * that guarantee away on the TS side at `configuredReplicaRepoBadges`
+   * (components/replica-repo-badges.ts), the one production builder of this type on
+   * the cold path, where omitting the `dirty:` line would raise no tsc error and ship
+   * a permanently violet feed. `branch` above is the same shape against a Rust
+   * `Option<String>`. Cost is a `dirty: null` in test literals; that is the trade.
+   */
+  dirty: boolean | null;
 }
 
 /**
@@ -18,6 +35,27 @@ export interface SessionRepo {
  * merge paint repo A's branch onto repo B for up to one 15s tick.
  */
 export type RepoBranchByPath = Record<string, string | null>;
+
+/**
+ * #1028 - live per-repo worktree-dirty, keyed by repo SOURCE PATH.
+ *
+ * A missing key = the live layer knows nothing about that repo (no event has
+ * landed yet, or it was added to `config.json` since the last watcher tick), and
+ * the caller resolves it to `null`: there is no single-repo shorthand for dirty to
+ * fall back to, unlike `RepoBranchByPath`. An explicit `null` = the layer knows the
+ * repo and the backend has never successfully detected its dirty state. Both miss
+ * and explicit-null render violet, so the two collapse on screen by design.
+ *
+ * `false` is a THIRD, distinct value and must survive the trip: it means "detected,
+ * clean". It renders identically to `null`, so a `??`-to-`||` slip that turns it
+ * into `null` is invisible on the badge and only the `title` exposes it.
+ *
+ * Keyed by path and NEVER by index, for the same reason as `RepoBranchByPath`: the
+ * payload is stored and re-read against a LATER discovery snapshot, so a
+ * reorder/removal in `config.json` `repos` would make a positional merge paint repo
+ * A's dirty state onto repo B for up to one 15s tick.
+ */
+export type RepoDirtyByPath = Record<string, boolean | null>;
 
 export type SessionCommunicationKind = "raiseHand";
 

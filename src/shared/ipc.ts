@@ -687,6 +687,11 @@ interface DiscoveryBranchUpdate {
   branch: string | null;
   repoBranches: (string | null)[];
   repoPaths: string[];
+  /** #1028 - per-repo worktree-dirty, parallel to `repoPaths` exactly as
+   *  `repoBranches` is, and merged BY PATH for the same reason. `null` = the backend
+   *  has never successfully detected that path. Gate A emits for every replica,
+   *  session or not, which is what carries dirty to DORMANT coordinator rows. */
+  repoDirty: (boolean | null)[];
 }
 
 export function onDiscoveryBranchUpdated(
