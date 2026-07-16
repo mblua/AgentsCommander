@@ -51,7 +51,7 @@ impl PtyManager {
         idle_detector: Arc<IdleDetector>,
         git_watcher: Arc<GitWatcher>,
         ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
-        session_mgr: Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>,
+        lifecycle_sender: Option<crate::session::selection::ContainerLifecycleSender>,
     ) -> Self {
         let local_backend = Arc::new(LocalProcessBackend::new(
             output_senders.clone(),
@@ -63,7 +63,7 @@ impl PtyManager {
             output_senders,
             idle_detector,
             ws_broadcaster,
-            session_mgr,
+            lifecycle_sender,
             Arc::new(DockerRuntime::new()),
             ContainerApiTokenManager::at_config_dir(),
         ));
@@ -78,9 +78,6 @@ impl PtyManager {
     pub(crate) fn new_for_test(local_backend: Arc<dyn PtyBackend>) -> Self {
         let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
         let idle_detector = IdleDetector::new(|_| {}, |_| {});
-        let session_mgr = Arc::new(tokio::sync::RwLock::new(
-            crate::session::manager::SessionManager::new(),
-        ));
         Self {
             registry: Arc::new(Mutex::new(SpawnRegistry::default())),
             local_backend,
@@ -88,7 +85,7 @@ impl PtyManager {
                 output_senders,
                 idle_detector,
                 None,
-                session_mgr,
+                None,
             )),
         }
     }

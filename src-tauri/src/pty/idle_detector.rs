@@ -216,6 +216,24 @@ impl IdleDetector {
             .insert(session_id, Instant::now());
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_auto_close_ages_for_test(
+        &self,
+        session_id: Uuid,
+        silence_age: Duration,
+        alive_age: Duration,
+    ) {
+        let now = Instant::now();
+        self.silence
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(session_id, now.checked_sub(silence_age).unwrap_or(now));
+        self.registered_at
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(session_id, now.checked_sub(alive_age).unwrap_or(now));
+    }
+
     /// #552 Time since last silence-reset for a session, or None if untracked.
     /// Read by the auto-close evaluator.
     pub fn silence_age(&self, session_id: Uuid) -> Option<Duration> {

@@ -51,7 +51,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use agentscommander_lib::commands::pty::get_screen_snapshot;
-use agentscommander_lib::commands::session::{create_session_inner, destroy_session_inner};
+use agentscommander_lib::commands::session::{
+    create_session_inner, destroy_session_inner, CreateSelectionIntent,
+};
 use agentscommander_lib::config::settings::{AppSettings, SettingsState};
 use agentscommander_lib::pty::git_watcher::GitWatcher;
 use agentscommander_lib::pty::idle_detector::IdleDetector;
@@ -59,6 +61,7 @@ use agentscommander_lib::pty::inject::inject_text_into_session;
 use agentscommander_lib::pty::manager::PtyManager;
 use agentscommander_lib::resource_monitor::ResourceMonitorState;
 use agentscommander_lib::session::manager::SessionManager;
+use agentscommander_lib::session::selection::SelectionCoordinator;
 use agentscommander_lib::shutdown::ShutdownSignal;
 use agentscommander_lib::telegram::manager::{
     OutputSenderMap, TelegramBridgeManager, TelegramBridgeState,
@@ -209,7 +212,7 @@ fn make_ctx(repo_root: &Path) -> HarnessCtx {
         Arc::clone(&idle),
         Arc::clone(&git_watcher),
         None,
-        Arc::clone(&session_mgr),
+        None,
     )));
 
     let detached: DetachedSessionsState = Arc::new(Mutex::new(HashSet::new()));
@@ -219,6 +222,8 @@ fn make_ctx(repo_root: &Path) -> HarnessCtx {
     ));
     let config_seed_lock: ConfigSeedLockState = Arc::new(tokio::sync::Mutex::new(()));
     let shutdown = ShutdownSignal::new();
+    let selection_coordinator =
+        SelectionCoordinator::new(Arc::clone(&session_mgr), shutdown.token().clone());
 
     let app = tauri::Builder::default()
         .any_thread()
@@ -228,6 +233,7 @@ fn make_ctx(repo_root: &Path) -> HarnessCtx {
         ))
         .manage(settings)
         .manage(Arc::clone(&session_mgr))
+        .manage(selection_coordinator.clone())
         .manage(tg_mgr)
         .manage(detached)
         .manage(voice)
@@ -244,6 +250,22 @@ fn make_ctx(repo_root: &Path) -> HarnessCtx {
         .manage(Arc::clone(&idle))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build harness app");
+
+    selection_coordinator
+        .start(app.handle().clone())
+        .expect("start selection coordinator");
+    let bootstrap = selection_coordinator.clone();
+    std::thread::spawn(move || {
+        tauri::async_runtime::block_on(async move {
+            bootstrap
+                .submit_restore_first()
+                .await
+                .expect("open selection coordinator")
+                .finish();
+        });
+    })
+    .join()
+    .expect("join selection bootstrap");
 
     idle.start(shutdown.clone());
 
@@ -469,6 +491,7 @@ async fn run_startup_probe(cfg: &HarnessConfig, ctx: &HarnessCtx) {
             true,
             None,
             None,
+            CreateSelectionIntent::User,
         )
         .await
         {
@@ -576,6 +599,7 @@ async fn run_live_reuse(cfg: &HarnessConfig, ctx: &HarnessCtx) {
             true,
             None,
             None,
+            CreateSelectionIntent::User,
         )
         .await
         {
@@ -716,6 +740,7 @@ async fn measure_wake_consumption_signals() {
             true,
             None,
             None,
+            CreateSelectionIntent::User,
         )
         .await
         {

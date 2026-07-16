@@ -177,7 +177,10 @@ pub fn register_configured_hotkey(app: &AppHandle, configured: &str) -> Result<(
 /// unit-testable: on failure `registered` is false and `error` is set even when an
 /// internal fallback shortcut is still alive, which is what lets the sidebar's
 /// `!registered && error` check warn that the configured combo does nothing.
-fn hotkey_status_after_attempt(configured: &str, outcome: Result<(), &str>) -> ScreenshotHotkeyStatus {
+fn hotkey_status_after_attempt(
+    configured: &str,
+    outcome: Result<(), &str>,
+) -> ScreenshotHotkeyStatus {
     match outcome {
         Ok(()) => ScreenshotHotkeyStatus {
             configured: configured.to_string(),
@@ -264,17 +267,19 @@ pub async fn begin_capture(app: AppHandle) -> Result<BeginOutcome, String> {
     }
 
     // 1. Resolve the active session and its owning replica root.
+    let selection = app
+        .state::<crate::session::selection::SelectionCoordinator>()
+        .snapshot()
+        .await?;
     let session_mgr = app.state::<std::sync::Arc<tokio::sync::RwLock<SessionManager>>>();
-    let active_id = {
-        let mgr = session_mgr.read().await;
-        mgr.get_active().await
-    }
-    .ok_or_else(|| "No active session is selected in AgentsCommander".to_string())?;
-    let session = {
-        let mgr = session_mgr.read().await;
-        mgr.get_session(active_id).await
-    }
-    .ok_or_else(|| "The active session could not be found".to_string())?;
+    let sessions = session_mgr.read().await.list_sessions().await;
+    let active_id = resolve_live_capture_session(&selection, &sessions)?;
+    let session = session_mgr
+        .read()
+        .await
+        .get_session(active_id)
+        .await
+        .ok_or_else(|| "The active session could not be found".to_string())?;
 
     let target_directory = resolve_session_replica_root(&session.working_directory)?;
     let session_id = session.id;
@@ -355,6 +360,25 @@ pub async fn begin_capture(app: AppHandle) -> Result<BeginOutcome, String> {
     Ok(BeginOutcome::Started)
 }
 
+fn resolve_live_capture_session(
+    selection: &crate::session::selection::SessionSelection,
+    sessions: &[crate::session::session::SessionInfo],
+) -> Result<Uuid, String> {
+    if selection.mode() != crate::session::selection::SelectionMode::Live
+        || !selection.displayable()
+    {
+        return Err("No active session is selected in AgentsCommander".to_string());
+    }
+    let id = selection
+        .id()
+        .ok_or_else(|| "No active session is selected in AgentsCommander".to_string())?;
+    sessions
+        .iter()
+        .any(|session| session.id == id.to_string())
+        .then_some(id)
+        .ok_or_else(|| "The active session could not be found".to_string())
+}
+
 /// Busy pre-gate for [`begin_capture`]: lock the lifecycle and return
 /// `Some(BeginOutcome::Busy)` when a capture is already in flight (any non-Idle
 /// state: `Starting`/`Active`/`Finishing`). Returns `None` only for `Idle`, so
@@ -425,7 +449,11 @@ async fn capture_all_monitors() -> Result<Vec<CapturedMonitor>, String> {
 }
 
 /// PNG-encode the RGBA buffer (no extra clone of the image) into a data URL.
-fn encode_preview_data_url(image: &image::RgbaImage, width: u32, height: u32) -> Result<String, String> {
+fn encode_preview_data_url(
+    image: &image::RgbaImage,
+    width: u32,
+    height: u32,
+) -> Result<String, String> {
     let mut png_bytes: Vec<u8> = Vec::new();
     PngEncoder::new(&mut png_bytes)
         .write_image(image.as_raw(), width, height, ExtendedColorType::Rgba8)
@@ -451,7 +479,11 @@ struct OverlayPlacement {
 /// position/size + per-monitor scale) matched to the xcap monitor by name, then
 /// by nearest origin; fall back to the xcap geometry if no Tauri monitor matches.
 /// Placement is decoupled from xcap coordinate semantics this way (plan §C).
-fn build_placements(app: &AppHandle, capture_id: Uuid, monitors: &[CapturedMonitor]) -> Vec<OverlayPlacement> {
+fn build_placements(
+    app: &AppHandle,
+    capture_id: Uuid,
+    monitors: &[CapturedMonitor],
+) -> Vec<OverlayPlacement> {
     let tauri_monitors = app.available_monitors().unwrap_or_default();
     monitors
         .iter()
@@ -719,7 +751,12 @@ async fn save_selection(
         .monitors
         .into_iter()
         .find(|m| m.monitor_id == selection.monitor_id)
-        .ok_or_else(|| (None, format!("monitor {} not in capture", selection.monitor_id)))?;
+        .ok_or_else(|| {
+            (
+                None,
+                format!("monitor {} not in capture", selection.monitor_id),
+            )
+        })?;
 
     let (iw, ih) = (monitor.image.width(), monitor.image.height());
     validate_selection(selection, iw, ih).map_err(|e| (None, e))?;
@@ -729,43 +766,59 @@ async fn save_selection(
     let image = monitor.image;
     let (sx, sy, sw, sh) = (selection.x, selection.y, selection.width, selection.height);
 
-    let saved_path = tokio::task::spawn_blocking(move || -> Result<PathBuf, (Option<PathBuf>, String)> {
-        // Revalidate the destination immediately before creating the file.
-        revalidate_replica_target(&target).map_err(|e| (None, e))?;
-        let (path, file) = create_png_file(&target, &filename).map_err(|e| (None, e))?;
+    let saved_path =
+        tokio::task::spawn_blocking(move || -> Result<PathBuf, (Option<PathBuf>, String)> {
+            // Revalidate the destination immediately before creating the file.
+            revalidate_replica_target(&target).map_err(|e| (None, e))?;
+            let (path, file) = create_png_file(&target, &filename).map_err(|e| (None, e))?;
 
-        let cropped = image::imageops::crop_imm(&image, sx, sy, sw, sh).to_image();
-        let mut writer = std::io::BufWriter::new(file);
-        if let Err(e) = image::DynamicImage::ImageRgba8(cropped)
-            .write_to(&mut writer, image::ImageFormat::Png)
-        {
-            return Err((Some(path), format!("PNG encode/write failed: {e}")));
-        }
-        if let Err(e) = writer.flush() {
-            return Err((Some(path), format!("PNG flush failed: {e}")));
-        }
-        drop(writer);
+            let cropped = image::imageops::crop_imm(&image, sx, sy, sw, sh).to_image();
+            let mut writer = std::io::BufWriter::new(file);
+            if let Err(e) = image::DynamicImage::ImageRgba8(cropped)
+                .write_to(&mut writer, image::ImageFormat::Png)
+            {
+                return Err((Some(path), format!("PNG encode/write failed: {e}")));
+            }
+            if let Err(e) = writer.flush() {
+                return Err((Some(path), format!("PNG flush failed: {e}")));
+            }
+            drop(writer);
 
-        // Final containment check: the canonical saved file must live directly
-        // inside the canonical replica root.
-        let canonical = std::fs::canonicalize(&path)
-            .map_err(|e| (Some(path.clone()), format!("canonicalize saved file failed: {e}")))?;
-        let canonical_target = std::fs::canonicalize(&target)
-            .map_err(|e| (Some(canonical.clone()), format!("canonicalize target failed: {e}")))?;
-        let parent_ok = canonical.parent().map(|p| p == canonical_target).unwrap_or(false);
-        if !parent_ok {
-            return Err((Some(canonical), "saved file escaped the replica root".to_string()));
-        }
-        Ok(canonical)
-    })
-    .await
-    .map_err(|e| (None, format!("save task panicked: {e}")))??;
+            // Final containment check: the canonical saved file must live directly
+            // inside the canonical replica root.
+            let canonical = std::fs::canonicalize(&path).map_err(|e| {
+                (
+                    Some(path.clone()),
+                    format!("canonicalize saved file failed: {e}"),
+                )
+            })?;
+            let canonical_target = std::fs::canonicalize(&target).map_err(|e| {
+                (
+                    Some(canonical.clone()),
+                    format!("canonicalize target failed: {e}"),
+                )
+            })?;
+            let parent_ok = canonical
+                .parent()
+                .map(|p| p == canonical_target)
+                .unwrap_or(false);
+            if !parent_ok {
+                return Err((
+                    Some(canonical),
+                    "saved file escaped the replica root".to_string(),
+                ));
+            }
+            Ok(canonical)
+        })
+        .await
+        .map_err(|e| (None, format!("save task panicked: {e}")))??;
 
     // `saved_path` is canonical (verbatim `\\?\` on Windows). Every containment
     // check above ran on the raw canonical PathBuf; only the user-facing string
     // (clipboard, saved event, result payload, log) is normalized via the shared
     // #730 helper so it matches the clean paths the rest of the app now emits.
-    let path_string = crate::path_utils::path_to_string_without_windows_verbatim_prefix(&saved_path);
+    let path_string =
+        crate::path_utils::path_to_string_without_windows_verbatim_prefix(&saved_path);
     log::info!(
         "[screenshot] saved {} for session '{}'",
         path_string,
@@ -778,7 +831,11 @@ async fn save_selection(
     })
 }
 
-fn validate_selection(selection: &ScreenshotSelection, image_w: u32, image_h: u32) -> Result<(), String> {
+fn validate_selection(
+    selection: &ScreenshotSelection,
+    image_w: u32,
+    image_h: u32,
+) -> Result<(), String> {
     if selection.width < 2 || selection.height < 2 {
         return Err("Selection is too small".to_string());
     }
@@ -1035,6 +1092,39 @@ fn revalidate_replica_target(target: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn live_capture_resolution_rejects_none_and_dormant_before_accepting_live() {
+        let manager = crate::session::manager::SessionManager::new();
+        let session = manager
+            .create_session(
+                "shell".to_string(),
+                Vec::new(),
+                "C:/work".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("capture session fixture");
+        let rows = manager.list_sessions().await;
+        let none = crate::session::selection::SessionSelection::none_for_test();
+        let dormant =
+            crate::session::selection::SessionSelection::dormant_for_test(session.id, 7);
+        let live = crate::session::selection::SessionSelection::live_for_test(session.id);
+
+        assert_eq!(
+            resolve_live_capture_session(&none, &rows).unwrap_err(),
+            "No active session is selected in AgentsCommander"
+        );
+        assert_eq!(
+            resolve_live_capture_session(&dormant, &rows).unwrap_err(),
+            "No active session is selected in AgentsCommander"
+        );
+        assert_eq!(resolve_live_capture_session(&live, &rows).unwrap(), session.id);
+    }
 
     #[test]
     fn shortcut_conversion_maps_modifier_and_code() {

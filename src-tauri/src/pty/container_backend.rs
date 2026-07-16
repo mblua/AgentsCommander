@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -24,7 +25,7 @@ use crate::pty::container_tokens::{ContainerApiToken, ContainerApiTokenManager};
 use crate::pty::idle_detector::IdleDetector;
 use crate::pty::output::{PtyOutputTarget, PtyScreenSnapshot, SessionIoFanout};
 use crate::resource_monitor::ResourceLogicalAgentSlot;
-use crate::session::manager::SessionManager;
+use crate::session::selection::ContainerLifecycleSender;
 use crate::telegram::manager::OutputSenderMap;
 
 pub const TRANSPORT_PROTOCOL_VERSION: u32 = 2;
@@ -161,6 +162,51 @@ struct RemovedSessionResources {
     container_credential_path: Option<PathBuf>,
 }
 
+struct ContainerSpawnCancellationGuard<'a> {
+    backend: &'a ContainerTransportBackend,
+    session_id: Uuid,
+    canceled: Arc<AtomicBool>,
+    late_handle: Arc<Mutex<Option<ContainerRuntimeHandle>>>,
+    armed: bool,
+}
+
+impl ContainerSpawnCancellationGuard<'_> {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ContainerSpawnCancellationGuard<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.canceled.store(true, Ordering::Release);
+        if let Some(handle) = self
+            .late_handle
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
+            if let Some(runtime) = self.backend.runtime.clone() {
+                std::thread::spawn(move || {
+                    if let Err(error) = runtime.stop(&handle, CONTAINER_STOP_TIMEOUT) {
+                        log::warn!(
+                            "[container-transport] canceled late runtime stop failed session={}: {}",
+                            handle.session_id,
+                            error
+                        );
+                    }
+                });
+            }
+        }
+        if let Some(resources) = self.backend.remove_session_state(self.session_id) {
+            self.backend
+                .cleanup_removed_resources_async(resources, "spawn-canceled");
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TransportTicketError {
     Invalid,
@@ -174,11 +220,13 @@ pub(crate) enum TransportAttachError {
 pub struct ContainerTransportBackend {
     sessions: Arc<Mutex<HashMap<Uuid, ContainerSessionState>>>,
     fanout: SessionIoFanout,
-    session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+    lifecycle_sender: Option<ContainerLifecycleSender>,
     route_remover: Arc<Mutex<Option<RouteRemover>>>,
     tuning: ContainerTransportTuning,
     runtime: Option<Arc<dyn ContainerRuntime>>,
     token_manager: Option<ContainerApiTokenManager>,
+    #[cfg(test)]
+    runtime_settings_override: Option<crate::config::settings::AppSettings>,
     #[cfg(test)]
     issued_tickets_for_test: Arc<Mutex<HashMap<Uuid, String>>>,
 }
@@ -188,13 +236,13 @@ impl ContainerTransportBackend {
         output_senders: OutputSenderMap,
         idle_detector: Arc<IdleDetector>,
         ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
-        session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+        lifecycle_sender: Option<ContainerLifecycleSender>,
     ) -> Self {
         Self::with_tuning(
             output_senders,
             idle_detector,
             ws_broadcaster,
-            session_mgr,
+            lifecycle_sender,
             ContainerTransportTuning::default(),
         )
     }
@@ -203,17 +251,19 @@ impl ContainerTransportBackend {
         output_senders: OutputSenderMap,
         idle_detector: Arc<IdleDetector>,
         ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
-        session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+        lifecycle_sender: Option<ContainerLifecycleSender>,
         tuning: ContainerTransportTuning,
     ) -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             fanout: SessionIoFanout::new(output_senders, idle_detector, ws_broadcaster),
-            session_mgr,
+            lifecycle_sender,
             route_remover: Arc::new(Mutex::new(None)),
             tuning,
             runtime: None,
             token_manager: None,
+            #[cfg(test)]
+            runtime_settings_override: None,
             #[cfg(test)]
             issued_tickets_for_test: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -223,7 +273,7 @@ impl ContainerTransportBackend {
         output_senders: OutputSenderMap,
         idle_detector: Arc<IdleDetector>,
         ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
-        session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+        lifecycle_sender: Option<ContainerLifecycleSender>,
         runtime: Arc<dyn ContainerRuntime>,
         token_manager: Option<ContainerApiTokenManager>,
     ) -> Self {
@@ -231,7 +281,7 @@ impl ContainerTransportBackend {
             output_senders,
             idle_detector,
             ws_broadcaster,
-            session_mgr,
+            lifecycle_sender,
             ContainerTransportTuning::default(),
         );
         backend.runtime = Some(runtime);
@@ -441,9 +491,20 @@ impl ContainerTransportBackend {
         self.cleanup_removed_resources_async(resources, "transport-close");
         self.remove_route(session_id);
         if let Some(code) = exit_code {
-            let mgr = self.session_mgr.read().await;
-            let _ = mgr.mark_exited(session_id, code).await;
-            crate::config::sessions_persistence::persist_current_state(&mgr).await;
+            if let Some(sender) = self.lifecycle_sender.as_ref() {
+                if let Err(error) = sender.route_lost(session_id, code).await {
+                    log::warn!(
+                        "[container-transport] route-loss reconciliation failed session={}: {}",
+                        session_id,
+                        error
+                    );
+                }
+            } else {
+                log::debug!(
+                    "[container-transport] no lifecycle sender installed session={}",
+                    session_id
+                );
+            }
         }
     }
 
@@ -454,12 +515,21 @@ impl ContainerTransportBackend {
         };
 
         self.cleanup_removed_resources_async(resources, "transport-sync-close");
-        self.remove_route(session_id);
-        let session_mgr = self.session_mgr.clone();
+        let remover = self.route_remover.lock().unwrap().clone();
+        let lifecycle_sender = self.lifecycle_sender.clone();
         tauri::async_runtime::spawn(async move {
-            let mgr = session_mgr.read().await;
-            let _ = mgr.mark_exited(session_id, exit_code).await;
-            crate::config::sessions_persistence::persist_current_state(&mgr).await;
+            if let Some(remove) = remover {
+                remove(session_id);
+            }
+            if let Some(sender) = lifecycle_sender {
+                if let Err(error) = sender.route_lost(session_id, exit_code).await {
+                    log::warn!(
+                        "[container-transport] deferred sync route-loss reconciliation failed session={}: {}",
+                        session_id,
+                        error
+                    );
+                }
+            }
         });
     }
 
@@ -621,6 +691,15 @@ impl ContainerTransportBackend {
             Some(attach_notify.clone()),
             container_credential.as_ref().map(|p| p.dest.clone()),
         )?;
+        let canceled = Arc::new(AtomicBool::new(false));
+        let late_handle = Arc::new(Mutex::new(None));
+        let mut cancellation_guard = ContainerSpawnCancellationGuard {
+            backend: self,
+            session_id: id,
+            canceled: Arc::clone(&canceled),
+            late_handle: Arc::clone(&late_handle),
+            armed: true,
+        };
 
         if let Some(plan) = container_credential.as_ref() {
             match crate::pty::container_credentials::copy_in(plan) {
@@ -687,6 +766,8 @@ impl ContainerTransportBackend {
             ticket,
             &token,
             container_repo_mounts,
+            #[cfg(test)]
+            self.runtime_settings_override.as_ref(),
         ) {
             Ok(request) => request,
             Err(err) => {
@@ -698,9 +779,41 @@ impl ContainerTransportBackend {
             }
         };
         let start_runtime = runtime.clone();
-        let start_result = tokio::task::spawn_blocking(move || start_runtime.start(request)).await;
+        let canceled_for_start = Arc::clone(&canceled);
+        let late_handle_for_start = Arc::clone(&late_handle);
+        let start_result = tokio::task::spawn_blocking(move || {
+            let handle = start_runtime.start(request)?;
+            let canceled_handle = {
+                let mut slot = late_handle_for_start
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                *slot = Some(handle);
+                if canceled_for_start.load(Ordering::Acquire) {
+                    slot.take()
+                } else {
+                    None
+                }
+            };
+            if let Some(handle) = canceled_handle {
+                if let Err(error) = start_runtime.stop(&handle, CONTAINER_STOP_TIMEOUT) {
+                    log::warn!(
+                        "[container-transport] canceled runtime start cleanup failed session={}: {}",
+                        handle.session_id,
+                        error
+                    );
+                }
+            }
+            Ok::<(), AppError>(())
+        })
+        .await;
         let handle = match start_result {
-            Ok(Ok(handle)) => handle,
+            Ok(Ok(())) => late_handle
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take()
+                .ok_or_else(|| {
+                    AppError::Other("container runtime start was canceled".to_string())
+                })?,
             Ok(Err(err)) => {
                 if let Some(resources) = self.remove_session_state(id) {
                     self.cleanup_removed_resources_offloaded(resources, "runtime-start-failure")
@@ -734,10 +847,14 @@ impl ContainerTransportBackend {
         }
 
         if self.has_session(id) {
+            cancellation_guard.disarm();
             return Ok(());
         }
         match tokio::time::timeout(self.tuning.handshake_timeout, attach_notify.notified()).await {
-            Ok(_) if self.has_session(id) => Ok(()),
+            Ok(_) if self.has_session(id) => {
+                cancellation_guard.disarm();
+                Ok(())
+            }
             _ => {
                 if let Some(resources) = self.remove_session_state(id) {
                     let diagnostics = if let (Some(runtime), Some(handle)) =
@@ -898,9 +1015,18 @@ impl ContainerTransportBackend {
             if let Some(resources) = self.remove_session_state(session_id) {
                 self.cleanup_removed_resources_async(resources, "pending-reaper");
                 self.remove_route(session_id);
-                let mgr = self.session_mgr.read().await;
-                let _ = mgr.mark_exited(session_id, TRANSPORT_LOST_EXIT_CODE).await;
-                crate::config::sessions_persistence::persist_current_state(&mgr).await;
+                if let Some(sender) = self.lifecycle_sender.as_ref() {
+                    if let Err(error) = sender
+                        .route_lost(session_id, TRANSPORT_LOST_EXIT_CODE)
+                        .await
+                    {
+                        log::warn!(
+                            "[container-transport] pending-reaper reconciliation failed session={}: {}",
+                            session_id,
+                            error
+                        );
+                    }
+                }
                 reaped += 1;
             }
         }
@@ -1243,8 +1369,14 @@ fn build_start_request(
     registration_ticket: String,
     token: &ContainerApiToken,
     repo_mounts: Vec<crate::pty::container_repos::ContainerRepoMount>,
+    #[cfg(test)] settings_override: Option<&crate::config::settings::AppSettings>,
 ) -> Result<ContainerStartRequest, AppError> {
+    #[cfg(not(test))]
     let settings = crate::config::settings::load_settings();
+    #[cfg(test)]
+    let settings = settings_override
+        .cloned()
+        .unwrap_or_else(crate::config::settings::load_settings);
     build_start_request_with_settings(
         session_id,
         cmd,
@@ -1424,6 +1556,7 @@ mod tests {
     use crate::pty::backend::SessionBackendKind;
     use crate::pty::container_paths::CLAUDE_CONFIG_DIR_KEY;
     use crate::pty::container_runtime::ContainerCleanupReport;
+    use crate::session::manager::SessionManager;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Default)]
@@ -1466,6 +1599,49 @@ mod tests {
         }
     }
 
+    struct GatedStartRuntime {
+        started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        release: Mutex<std::sync::mpsc::Receiver<()>>,
+        stopped: Arc<Mutex<Vec<Uuid>>>,
+    }
+
+    impl ContainerRuntime for GatedStartRuntime {
+        fn start(
+            &self,
+            request: ContainerStartRequest,
+        ) -> Result<ContainerRuntimeHandle, AppError> {
+            if let Some(started) = self.started.lock().unwrap().take() {
+                let _ = started.send(());
+            }
+            self.release
+                .lock()
+                .unwrap()
+                .recv()
+                .map_err(|error| AppError::Other(error.to_string()))?;
+            Ok(ContainerRuntimeHandle {
+                session_id: request.session_id,
+                container_id: format!("container-{}", request.session_id),
+            })
+        }
+
+        fn stop(
+            &self,
+            handle: &ContainerRuntimeHandle,
+            _timeout: Duration,
+        ) -> Result<(), AppError> {
+            self.stopped.lock().unwrap().push(handle.session_id);
+            Ok(())
+        }
+
+        fn cleanup_labeled_orphans(
+            &self,
+            _live_sessions: &HashSet<Uuid>,
+            _timeout: Duration,
+        ) -> Result<ContainerCleanupReport, AppError> {
+            Ok(ContainerCleanupReport::default())
+        }
+    }
+
     fn backend_with_tuning(
         tuning: ContainerTransportTuning,
     ) -> (
@@ -1480,7 +1656,7 @@ mod tests {
                 output_senders,
                 idle_detector,
                 None,
-                session_mgr.clone(),
+                None,
                 tuning,
             ),
             session_mgr,
@@ -1539,7 +1715,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn expired_pending_reaper_marks_session_exited_and_removes_route() {
+    async fn expired_pending_reaper_removes_route_and_transport_state() {
         let id_root = "C:/repo/.ac/wg-1/__agent_dev";
         let tuning = ContainerTransportTuning {
             ticket_ttl: Duration::from_millis(1),
@@ -1575,16 +1751,7 @@ mod tests {
         assert_eq!(backend.reap_expired_pending_sessions().await, 1);
 
         assert_eq!(removed.load(Ordering::SeqCst), 1);
-        let stored = session_mgr
-            .read()
-            .await
-            .get_session(session.id)
-            .await
-            .expect("stored");
-        assert!(matches!(
-            stored.status,
-            crate::session::session::SessionStatus::Exited(TRANSPORT_LOST_EXIT_CODE)
-        ));
+        assert!(!backend.has_session(session.id));
     }
 
     #[test]
@@ -1636,6 +1803,102 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         panic!("runtime stop was not called");
+    }
+
+    #[tokio::test]
+    async fn canceled_blocking_runtime_start_stops_late_handle_and_removes_pending_state() {
+        let id = Uuid::new_v4();
+        let root = "C:/repo/.ac/wg-1/__agent_dev";
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let stopped = Arc::new(Mutex::new(Vec::new()));
+        let runtime = Arc::new(GatedStartRuntime {
+            started: Mutex::new(Some(started_tx)),
+            release: Mutex::new(release_rx),
+            stopped: Arc::clone(&stopped),
+        });
+        let token_dir = tempfile::TempDir::new().unwrap();
+        let token_manager =
+            ContainerApiTokenManager::new_for_path(token_dir.path().join("api-clients.json"));
+        let (mut backend, _manager) = backend_with_tuning(ContainerTransportTuning::default());
+        backend.runtime = Some(runtime);
+        backend.token_manager = Some(token_manager);
+        backend.runtime_settings_override = Some(api_enabled_settings());
+        let backend = Arc::new(backend);
+        let task_backend = Arc::clone(&backend);
+        let mut spec = test_spec(id, root, PtyOutputTarget::noop());
+        spec.container_image = Some("agentscommander/test:latest".to_string());
+        let mut task = tokio::spawn(async move {
+            task_backend.spawn(spec).await
+        });
+
+        tokio::select! {
+            result = &mut task => panic!("container spawn ended before runtime start: {result:?}"),
+            started = tokio::time::timeout(Duration::from_secs(5), started_rx) => {
+                started
+                    .expect("runtime start reached blocking section before timeout")
+                    .expect("runtime start witness sender");
+            }
+        }
+        task.abort();
+        let _ = task.await;
+        release_tx.send(()).expect("release runtime start");
+
+        for _ in 0..100 {
+            if stopped.lock().unwrap().contains(&id) && !backend.has_session(id) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("canceled container start leaked its pending state or late runtime handle");
+    }
+
+    #[tokio::test]
+    async fn canceled_handshake_stops_installed_runtime_handle_and_removes_pending_state() {
+        let id = Uuid::new_v4();
+        let root = "C:/repo/.ac/wg-1/__agent_dev";
+        let runtime = Arc::new(RecordingRuntime::default());
+        let token_dir = tempfile::TempDir::new().unwrap();
+        let token_manager =
+            ContainerApiTokenManager::new_for_path(token_dir.path().join("api-clients.json"));
+        let (mut backend, _manager) = backend_with_tuning(ContainerTransportTuning {
+            handshake_timeout: Duration::from_secs(30),
+            ..ContainerTransportTuning::default()
+        });
+        backend.runtime = Some(runtime.clone());
+        backend.token_manager = Some(token_manager);
+        backend.runtime_settings_override = Some(api_enabled_settings());
+        let backend = Arc::new(backend);
+        let task_backend = Arc::clone(&backend);
+        let mut spec = test_spec(id, root, PtyOutputTarget::noop());
+        spec.container_image = Some("agentscommander/test:latest".to_string());
+        let task = tokio::spawn(async move { task_backend.spawn(spec).await });
+
+        let mut installed = false;
+        for _ in 0..100 {
+            installed = matches!(
+                backend.sessions.lock().unwrap().get(&id),
+                Some(ContainerSessionState::Pending(pending))
+                    if pending.runtime_handle.is_some()
+            );
+            if installed {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(installed, "runtime handle was not installed before handshake wait");
+        task.abort();
+        let _ = task.await;
+
+        for _ in 0..100 {
+            if runtime.stopped().contains(&id)
+                && !backend.sessions.lock().unwrap().contains_key(&id)
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("canceled handshake leaked its runtime handle or pending state");
     }
 
     // #930 plan section 9.a - a teardown funnel (kill -> remove_session_state ->
@@ -2086,7 +2349,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exit_and_disconnect_cleanup_mark_session_exited_and_remove_route() {
+    async fn exit_and_disconnect_cleanup_remove_route_and_transport_state() {
         let root = "C:/repo/.ac/wg-1/__agent_dev";
         for code in [7, TRANSPORT_LOST_EXIT_CODE] {
             let (backend, session_mgr) = backend_with_tuning(ContainerTransportTuning::default());
@@ -2125,17 +2388,70 @@ mod tests {
 
             assert_eq!(removed.load(Ordering::SeqCst), 1);
             assert!(!backend.has_session(session.id));
-            let stored = session_mgr
-                .read()
-                .await
-                .get_session(session.id)
-                .await
-                .expect("stored");
-            assert!(matches!(
-                stored.status,
-                crate::session::session::SessionStatus::Exited(observed) if observed == code
-            ));
+            assert!(!backend.has_session(session.id));
         }
+    }
+
+    #[tokio::test]
+    async fn synchronous_queue_full_cleanup_defers_outer_route_removal_past_pty_lock() {
+        let id = Uuid::new_v4();
+        let root = "C:/repo/.ac/wg-1/__agent_dev";
+        let output_senders = Arc::new(Mutex::new(HashMap::new()));
+        let idle = IdleDetector::new(|_| {}, |_| {});
+        let dummy_local = Arc::new(ContainerTransportBackend::new(
+            output_senders,
+            idle,
+            None,
+            None,
+        ));
+        let pty = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            dummy_local,
+        )));
+        let backend = pty.lock().unwrap().container_backend();
+        backend
+            .spawn(test_spec(id, root, PtyOutputTarget::noop()))
+            .await
+            .expect("spawn pending transport");
+        let ticket = backend.last_issued_ticket_for_test(id).unwrap();
+        let _receiver = attach(&backend, id, root, &ticket);
+        pty.lock()
+            .unwrap()
+            .record_route(id, SessionBackendKind::ContainerTransport);
+
+        let weak_pty = Arc::downgrade(&pty);
+        let (removed_tx, removed_rx) = std::sync::mpsc::channel();
+        backend.set_route_remover(Arc::new(move |session_id| {
+            if let Some(pty) = weak_pty.upgrade() {
+                pty.lock().unwrap().remove_route_if_kind(
+                    session_id,
+                    SessionBackendKind::ContainerTransport,
+                );
+            }
+            let _ = removed_tx.send(());
+        }));
+
+        let guard = pty.lock().unwrap();
+        for _ in 0..8 {
+            backend.write(id, b"x").expect("fill outbound queue");
+        }
+        let started = Instant::now();
+        let error = backend
+            .write(id, b"overflow")
+            .expect_err("ninth frame must close a full queue");
+        assert!(error.to_string().contains("outbound queue full"));
+        assert!(started.elapsed() < Duration::from_millis(250));
+        assert!(removed_rx.try_recv().is_err());
+        assert_eq!(
+            guard.backend_kind(id),
+            Some(SessionBackendKind::ContainerTransport)
+        );
+        drop(guard);
+
+        removed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("deferred outer route removal");
+        assert_eq!(pty.lock().unwrap().backend_kind(id), None);
+        assert!(!backend.has_session(id));
     }
 
     #[tokio::test]
@@ -2240,12 +2556,14 @@ mod tests {
             .into_iter()
             .find(|client| client.client_id == client_id)
             .expect("the client the test minted");
-        let expiry = chrono::DateTime::parse_from_rfc3339(
-            client.expires_at.as_deref().expect("expires_at"),
-        )
-        .expect("rfc3339 expiry")
-        .with_timezone(&Utc);
-        assert!(expiry < Utc::now(), "this test must actually expire the client");
+        let expiry =
+            chrono::DateTime::parse_from_rfc3339(client.expires_at.as_deref().expect("expires_at"))
+                .expect("rfc3339 expiry")
+                .with_timezone(&Utc);
+        assert!(
+            expiry < Utc::now(),
+            "this test must actually expire the client"
+        );
         assert!(client.revoked, "this test must actually revoke the client");
 
         assert!(ContainerTransportBackend::sweep_is_load_bearing(Some(

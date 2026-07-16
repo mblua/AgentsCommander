@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
 use crate::config::settings::SettingsState;
@@ -10,6 +10,11 @@ use crate::resource_monitor::types::{
     ResourceLimits, ResourceSnapshot,
 };
 use crate::resource_monitor::ResourceMonitorState;
+use crate::session::manager::{CommitDecision, LifecycleMutations};
+use crate::session::selection::{
+    SelectionCause, SelectionCoordinator, SelectionSource, SelectionTransaction,
+    TrustedResourceIntent,
+};
 
 #[tauri::command]
 pub async fn get_resource_snapshot(
@@ -40,19 +45,46 @@ pub async fn get_resource_snapshot(
 pub async fn kill_resource_group(
     app: AppHandle,
     request: ResourceKillRequest,
-    monitor: State<'_, Arc<ResourceMonitorState>>,
-    pty_mgr: State<'_, Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>>,
-    session_mgr: State<'_, Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>,
+    _monitor: State<'_, Arc<ResourceMonitorState>>,
+    _pty_mgr: State<'_, Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>>,
+    _session_mgr: State<'_, Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>,
 ) -> Result<ResourceKillResult, String> {
     let session_id = Uuid::parse_str(&request.session_id).map_err(|e| e.to_string())?;
-    let reason = request.reason;
+    if request.reason != ResourceKillReason::User {
+        return Err("resourceMonitor user command requires reason=user".to_string());
+    }
+    let coordinator = app
+        .try_state::<SelectionCoordinator>()
+        .ok_or_else(|| "selectionCoordinatorUnavailable".to_string())?;
+    coordinator
+        .resource_kill(session_id, TrustedResourceIntent::User)
+        .await
+}
+
+pub(crate) async fn execute_resource_kill_transaction<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    session_id: Uuid,
+    intent: TrustedResourceIntent,
+) -> Result<ResourceKillResult, String> {
+    let reason = match intent {
+        TrustedResourceIntent::User => ResourceKillReason::User,
+        TrustedResourceIntent::Watchdog => ResourceKillReason::Watchdog,
+    };
+    let pty_mgr = transaction
+        .app()
+        .state::<Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>>();
+    let monitor = transaction
+        .app()
+        .state::<Arc<ResourceMonitorState>>()
+        .inner()
+        .clone();
 
     // Fire the Job Object FIRST (pure: keeps the instance/job for a Retry). The
     // std-Mutex guard is dropped before any await.
     let job_fired = {
         pty_mgr
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .terminate_job_for_session(session_id)
     };
     log::info!(
@@ -76,26 +108,62 @@ pub async fn kill_resource_group(
         // backstop, reaps the child, tears down idle/git/watchers/parser), then flip
         // the tile to Exited. This is the only path that consumes the job.
         {
-            let _ = pty_mgr.lock().unwrap().kill(session_id);
+            if let Err(error) = pty_mgr
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .kill(session_id)
+            {
+                log::warn!(
+                    "[resource-monitor] PTY teardown failed after verified kill session={}: {}",
+                    session_id,
+                    error
+                );
+            }
         }
-        let mgr = session_mgr.read().await;
-        let cleared_raise_hand = mgr.mark_exited(session_id, 0).await;
-        if cleared_raise_hand {
-            let _ = tauri::Emitter::emit(
-                &app,
-                "session_communication_changed",
-                serde_json::json!({
-                    "sessionId": session_id.to_string(),
-                    "communication": null,
-                }),
-            );
+        transaction
+            .app()
+            .state::<crate::DetachedSessionsState>()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&session_id);
+        let window_label = format!("terminal-{}", session_id.to_string().replace('-', ""));
+        if let Some(window) = transaction.app().get_webview_window(&window_label) {
+            if let Err(error) = window.destroy() {
+                log::warn!(
+                    "[resource-monitor] detached window close failed session={}: {}",
+                    session_id,
+                    error
+                );
+            }
         }
-        mgr.clear_active_if(session_id).await;
-        if let Some(updated) = mgr.get_session(session_id).await {
-            let info = crate::session::session::SessionInfo::from(&updated);
-            let _ = tauri::Emitter::emit(&app, "session_created", info);
+        let snapshot = transaction.aggregate_snapshot().await;
+        let decision = if snapshot.selection.id() == Some(session_id) {
+            CommitDecision::Clear
+        } else {
+            CommitDecision::Keep
+        };
+        let mut mutations = LifecycleMutations::default();
+        mutations.mark_exited(session_id, 0);
+        let committed = transaction
+            .commit(decision, SelectionCause::ResourceMonitor(intent), mutations)
+            .await?;
+        if !committed.changed_rows.is_empty() {
+            transaction
+                .persist(SelectionSource::ResourceMonitor, Some(session_id))
+                .await;
+            transaction.publish_destroyed(session_id);
+            for row in &committed.changed_rows {
+                if row.id == session_id.to_string() {
+                    transaction.publish_created(row);
+                }
+            }
+            for cleared in &committed.cleared_raise_hand_ids {
+                transaction.publish_communication_cleared(*cleared);
+            }
+            if let Some(selection) = committed.selection.as_ref() {
+                transaction.publish_selection(selection);
+            }
         }
-        crate::config::sessions_persistence::persist_current_state(&mgr).await;
         result.finalized = true;
     } else {
         // NOT verified dead (kernel-AV residual, no job, or a concurrent kill that did

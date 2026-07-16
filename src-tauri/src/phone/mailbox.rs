@@ -2838,14 +2838,7 @@ impl MailboxPoller {
                     .await
             };
             if cleared {
-                let _ = tauri::Emitter::emit(
-                    app,
-                    "session_communication_changed",
-                    serde_json::json!({
-                        "sessionId": orphan_id.to_string(),
-                        "communication": null,
-                    }),
-                );
+                crate::session::selection::publish_session_communication(app, orphan_id, None);
             }
         }
 
@@ -2861,13 +2854,10 @@ impl MailboxPoller {
                     .await
             };
             if restored {
-                let _ = tauri::Emitter::emit(
+                crate::session::selection::publish_session_communication(
                     app,
-                    "session_communication_changed",
-                    serde_json::json!({
-                        "sessionId": session_id.to_string(),
-                        "communication": communication,
-                    }),
+                    session_id,
+                    Some(&communication),
                 );
             }
         }
@@ -2987,7 +2977,7 @@ impl MailboxPoller {
                 .map_err(|e| e.to_string());
         }
 
-        crate::commands::session::destroy_session_inner(app, session_id).await
+        crate::commands::session::background_destroy_session_inner(app, session_id).await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3076,6 +3066,7 @@ impl MailboxPoller {
             resolved_spawn,
             // #973 - headless caller: no terminal to measure, keep 120x30.
             None,
+            crate::commands::session::CreateSelectionIntent::Background,
         )
         .await
     }
@@ -4946,13 +4937,10 @@ impl MailboxPoller {
         };
 
         if let Some(communication) = changed_communication {
-            let _ = tauri::Emitter::emit(
+            crate::session::selection::publish_session_communication(
                 app,
-                "session_communication_changed",
-                serde_json::json!({
-                    "sessionId": session_id.to_string(),
-                    "communication": communication,
-                }),
+                session_id,
+                Some(&communication),
             );
         }
 
@@ -5384,7 +5372,7 @@ impl MailboxPoller {
                         .await
                         .and_then(|s| s.communication.clone())
                 };
-                let result = crate::commands::session::restart_session_inner_with_activation(
+                let result = crate::commands::session::restart_session_inner_with_intent(
                     &app,
                     session_mgr.inner(),
                     pty_mgr.inner(),
@@ -5394,27 +5382,10 @@ impl MailboxPoller {
                     Some(profile),
                     Some(true),
                     true,
+                    crate::session::selection::TrustedRestartIntent::Background,
+                    carried_communication,
                 )
                 .await;
-                if let (Ok(info), Some(communication)) = (&result, carried_communication) {
-                    if let Ok(new_uuid) = Uuid::parse_str(&info.id) {
-                        let restored = {
-                            let mgr = session_mgr.read().await;
-                            mgr.restore_communication(new_uuid, communication.clone())
-                                .await
-                        };
-                        if restored {
-                            let _ = tauri::Emitter::emit(
-                                &app,
-                                "session_communication_changed",
-                                serde_json::json!({
-                                    "sessionId": info.id.clone(),
-                                    "communication": communication,
-                                }),
-                            );
-                        }
-                    }
-                }
                 result.map(|info| info.id)
             }
         };
@@ -5782,7 +5753,7 @@ impl MailboxPoller {
 
         #[cfg(not(test))]
         {
-            match crate::commands::session::destroy_session_inner(app, sid).await {
+            match crate::commands::session::background_destroy_session_inner(app, sid).await {
                 Ok(()) => {
                     log::info!("[mailbox] close-session: force-destroyed session {}", sid);
                     true
@@ -6357,6 +6328,7 @@ impl MailboxPoller {
                 resolved_spawn,
                 // #973 - headless caller: no terminal to measure, keep 120x30.
                 None,
+                crate::commands::session::CreateSelectionIntent::Background,
             )
             .await
             {

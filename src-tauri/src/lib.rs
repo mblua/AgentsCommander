@@ -443,6 +443,10 @@ pub fn run(
 
     let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let shutdown_signal = ShutdownSignal::new();
+    let selection_coordinator = crate::session::selection::SelectionCoordinator::new(
+        Arc::clone(&session_mgr),
+        shutdown_signal.token().clone(),
+    );
 
     let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
 
@@ -503,7 +507,6 @@ pub fn run(
     let session_mgr_for_git = Arc::clone(&session_mgr);
     let session_mgr_for_discovery = Arc::clone(&session_mgr);
     let session_mgr_for_web = Arc::clone(&session_mgr);
-    let session_mgr_for_pty = Arc::clone(&session_mgr);
     let session_mgr_for_api = Arc::clone(&session_mgr);
     let session_mgr_for_exit = Arc::clone(&session_mgr);
     let output_senders_for_pty = output_senders.clone();
@@ -569,6 +572,8 @@ pub fn run(
 
     let shutdown_for_setup = shutdown_signal.clone();
     let shutdown_for_exit = shutdown_signal.clone();
+    let selection_coordinator_for_setup = selection_coordinator.clone();
+    let selection_coordinator_for_exit = selection_coordinator.clone();
     let tg_mgr_for_exit = tg_mgr.clone();
     let resource_monitor_for_setup = Arc::clone(&resource_monitor_state);
     let resource_monitor_for_exit = Arc::clone(&resource_monitor_state);
@@ -597,6 +602,7 @@ pub fn run(
         .manage(master_token)
         .manage(app_outbox)
         .manage(session_mgr)
+        .manage(selection_coordinator)
         .manage(tg_mgr)
         .manage(network::OutboundNetwork::new().expect("failed to build shared network clients"))
         .manage(Arc::clone(&resource_monitor_state))
@@ -637,12 +643,6 @@ pub fn run(
             // `drain_error_logs` call collects them.
             crate::logging::spawn_error_emit_task(app.handle().clone());
 
-            resource_monitor::watchdog::start(
-                (*resource_monitor_for_setup).clone(),
-                app.state::<SettingsState>().inner().clone(),
-                shutdown_for_setup.clone(),
-            );
-
             // #271 — seed `<config_dir>/agent-templates/` + README on startup.
             crate::commands::role_templates::ensure_default_templates_dir_at_config();
 
@@ -674,7 +674,7 @@ pub fn run(
                 idle_detector_for_pty,
                 git_watcher,
                 Some(broadcaster_for_pty),
-                session_mgr_for_pty,
+                Some(selection_coordinator_for_setup.container_lifecycle_sender()),
             )));
             {
                 let weak_pty_mgr = Arc::downgrade(&pty_mgr);
@@ -688,29 +688,22 @@ pub fn run(
                     }
                 }));
             }
-            {
-                let guard = pty_mgr.lock().unwrap();
-                guard.cleanup_container_orphans_on_startup();
-                guard.start_container_pending_reaper(shutdown_for_setup.clone());
-            }
+            pty_mgr
+                .lock()
+                .unwrap()
+                .cleanup_container_orphans_on_startup();
             app.manage(pty_mgr.clone());
 
-            // #714 register the configured global screenshot hotkey. Windows-only
-            // effect; on other targets register_configured_hotkey records an
-            // unsupported status and returns Ok so startup does not warn.
-            {
-                let screenshot_hotkey = {
-                    let s = app.state::<SettingsState>();
-                    tauri::async_runtime::block_on(async {
-                        s.read().await.screenshot_capture_hotkey.clone()
-                    })
-                };
-                if let Err(e) =
-                    crate::screenshot::register_configured_hotkey(app.handle(), &screenshot_hotkey)
-                {
-                    log::warn!("[screenshot] global hotkey registration failed: {}", e);
-                }
-            }
+            selection_coordinator_for_setup
+                .start(app.handle().clone())
+                .map_err(|error| error.to_string())?;
+            let restore_barrier = tauri::async_runtime::block_on(
+                selection_coordinator_for_setup.submit_restore_first(),
+            )?;
+            let restore_transaction = restore_barrier.transaction(app.handle().clone());
+            app.state::<Arc<RestoreInProgress>>()
+                .0
+                .store(true, std::sync::atomic::Ordering::SeqCst);
 
             // Start web server if enabled in settings
             {
@@ -845,27 +838,6 @@ pub fn run(
             restore_flag
                 .0
                 .store(true, std::sync::atomic::Ordering::SeqCst);
-
-            // Start the mailbox poller for inter-agent message delivery
-            let mailbox_poller = phone::mailbox::MailboxPoller::new();
-            mailbox_poller.start(app.handle().clone(), shutdown_for_setup.clone());
-
-            loop_scheduler_for_setup
-                .clone()
-                .start(app.handle().clone(), shutdown_for_setup.clone());
-
-            // #552 auto-close watcher: terminates teams idle past the configured
-            // timeout (reads SettingsState each tick) and flushes the badge store.
-            crate::session::auto_close::start(app.handle().clone(), shutdown_for_setup.clone());
-
-            // #777 Non-stop watchdog: times reported working-vs-total disparities
-            // and fires the enabled measures (Win32 beep + Telegram) after the
-            // per-group tolerance window.
-            crate::loops::non_stop_watchdog::start(
-                app.handle().clone(),
-                non_stop_state_for_setup.clone(),
-                shutdown_for_setup.clone(),
-            );
 
             let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))
                 .expect("Failed to load app icon");
@@ -1215,8 +1187,6 @@ pub fn run(
                 let _ = main_win.set_always_on_top(true);
             }
 
-            ui_automation_state_for_setup.start(app.handle().clone(), shutdown_for_setup.clone());
-
             // Suppress unused variable warning
             let _ = &main_win;
 
@@ -1229,7 +1199,6 @@ pub fn run(
                 use tauri::Manager;
                 let session_mgr_clone = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>().inner().clone();
                 let pty_mgr_clone = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
-                let tg_mgr_clone = app.state::<TelegramBridgeState>().inner().clone();
                 let settings_state_clone = app.state::<SettingsState>().inner().clone();
                 let app_handle = app.handle().clone();
 
@@ -1261,8 +1230,9 @@ pub fn run(
                     .state::<Arc<RestoreInProgress>>()
                     .inner()
                     .clone();
+                let restore_transaction_for_task = restore_transaction.clone();
 
-                tauri::async_runtime::spawn(async move {
+                tauri::async_runtime::block_on(async move {
                     struct RestoreGuard(Arc<RestoreInProgress>);
                     impl Drop for RestoreGuard {
                         fn drop(&mut self) {
@@ -1311,18 +1281,17 @@ pub fn run(
                                 };
 
                                 if should_auto_create {
-                                    match commands::session::create_root_agent_inner(
-                                        &app_handle,
-                                        &session_mgr_clone,
-                                        &pty_mgr_clone,
-                                        &tg_mgr_clone,
-                                        &settings_state_clone,
-                                        None,
-                                        None,
-                                        true,
+                                    match commands::session::execute_root_transaction(
+                                        &restore_transaction_for_task,
+                                        commands::session::RootJobRequest {
+                                            requested_agent_id: None,
+                                            requested_profile: None,
+                                            skip_auto_resume_for_new_session: true,
+                                            intent: crate::session::selection::TrustedCreateIntent::Background,
+                                            select_after: false,
+                                        },
                                     )
-                                    .await
-                                    {
+                                    .await {
                                         Ok(_) => n_woken += 1,
                                         Err(e) => log::error!(
                                             "[root-agent] Failed to auto-create root session: {}",
@@ -1338,8 +1307,6 @@ pub fn run(
                             Some(ps)
                                 if should_wake_root_agent_on_restore(ps.status.as_ref()) =>
                             {
-                                let _root_guard =
-                                    commands::session::root_agent_session_lock().lock().await;
                                 let existing_root = {
                                     let mgr = session_mgr_clone.read().await;
                                     mgr.list_sessions().await.into_iter().find(|s| {
@@ -1356,13 +1323,22 @@ pub fn run(
                                         crate::session::session::SessionStatus::Exited(_)
                                     ) {
                                         if let Ok(uuid) = uuid::Uuid::parse_str(&existing.id) {
-                                            if let Err(e) =
-                                                commands::session::force_destroy_session_inner(
-                                                    &app_handle,
-                                                    uuid,
-                                                )
-                                                .await
-                                            {
+                                            let stale_destroy = commands::session::execute_destroy_transaction(
+                                                &restore_transaction_for_task,
+                                                commands::session::DestroyRequest {
+                                                    ids: vec![uuid],
+                                                    source: commands::session::DestructionSource::BackgroundCleanup,
+                                                    force_destroy_root: true,
+                                                },
+                                            )
+                                            .await
+                                            .and_then(|outcome| {
+                                                outcome
+                                                    .succeeded(uuid)
+                                                    .then_some(())
+                                                    .ok_or_else(|| "stale dormant Root was not destroyed".to_string())
+                                            });
+                                            if let Err(e) = stale_destroy {
                                                 log::warn!(
                                                     "[root-agent] Failed to force-destroy stale dormant root during restore: {}",
                                                     e
@@ -1428,8 +1404,8 @@ pub fn run(
                                                 ps.agent_label.clone(),
                                             )
                                         };
-                                    match commands::session::create_session_inner(
-                                        &app_handle,
+                                    match commands::session::create_session_inner_for_restore(
+                                        &restore_transaction_for_task,
                                         &session_mgr_clone,
                                         &pty_mgr_clone,
                                         shell,
@@ -1443,6 +1419,8 @@ pub fn run(
                                         false,
                                         resolved_spawn,
                                         // #973 - headless caller: no terminal to measure, keep 120x30.
+                                        None,
+                                        Some(ps.start_fresh_on_restore),
                                         None,
                                     )
                                     .await
@@ -1472,7 +1450,6 @@ pub fn run(
                                                 if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
                                                     {
                                                         let mgr = session_mgr_clone.read().await;
-                                                        mgr.set_was_detached(uuid, true).await;
                                                         if let Some(ref geo) = ps.detached_geometry
                                                         {
                                                             mgr.set_detached_geometry(
@@ -1483,14 +1460,10 @@ pub fn run(
                                                         }
                                                     }
 
-                                                    let detached_state =
-                                                        app_handle.state::<DetachedSessionsState>();
                                                     let detached_result =
-                                                        commands::window::detach_terminal_inner(
-                                                            &app_handle,
-                                                            &session_mgr_clone,
-                                                            detached_state.inner(),
-                                                            &info.id,
+                                                        commands::window::execute_detach_transaction(
+                                                            &restore_transaction_for_task,
+                                                            uuid,
                                                             ps.detached_geometry.clone(),
                                                             true,
                                                         )
@@ -1501,9 +1474,6 @@ pub fn run(
                                                             ps.name,
                                                             e
                                                         );
-                                                    } else {
-                                                        let mgr = session_mgr_clone.read().await;
-                                                        mgr.clear_active_if(uuid).await;
                                                     }
                                                 }
                                             }
@@ -1521,8 +1491,6 @@ pub fn run(
                                 }
                             }
                             Some(ps) => {
-                                let _root_guard =
-                                    commands::session::root_agent_session_lock().lock().await;
                                 let existing_root = {
                                     let mgr = session_mgr_clone.read().await;
                                     mgr.list_sessions().await.into_iter().find(|s| {
@@ -1552,60 +1520,20 @@ pub fn run(
                                     }
                                     n_deferred += 1;
                                 } else {
-                                    let mgr = session_mgr_clone.read().await;
-                                    match mgr
-                                        .create_session(
-                                            ps.shell.clone(),
-                                            ps.shell_args.clone(),
-                                            root_path,
-                                            ps.agent_id.clone(),
-                                            ps.agent_label.clone(),
-                                            ps.git_repos.clone(),
-                                            false,
-                                            crate::pty::backend::SessionBackendKind::LocalProcess,
+                                    match restore_transaction_for_task
+                                        .restore_dormant_inline(
+                                            crate::session::selection::DormantRestoreRequest {
+                                                persisted: ps.clone(),
+                                                working_directory: root_path,
+                                                is_coordinator: false,
+                                                is_root_agent: true,
+                                            },
                                         )
                                         .await
                                     {
-                                        Ok(session) => {
-                                            mgr.rename_session(session.id, ps.name.clone())
-                                                .await
-                                                .ok();
-                                            mgr.set_is_root_agent(session.id, true).await;
-                                            if ps.was_detached {
-                                                mgr.set_was_detached(session.id, true).await;
-                                            }
-                                            if let Some(ref geo) = ps.detached_geometry {
-                                                mgr.set_detached_geometry(session.id, geo.clone())
-                                                    .await;
-                                            }
-                                            if let Some(ref prompt) = ps.last_prompt {
-                                                mgr.set_last_prompt(session.id, prompt.clone()).await;
-                                            }
-                                            commands::session::preserve_deferred_telegram_intent_if_valid(
-                                                &mgr,
-                                                &settings_state_clone,
-                                                session.id,
-                                                &ps.name,
-                                                ps.telegram_bot_id.as_deref(),
-                                            )
-                                            .await;
-                                            mgr.mark_exited(session.id, 0).await;
-                                            mgr.clear_active_if(session.id).await;
-                                            if let Some(updated) =
-                                                mgr.get_session(session.id).await
-                                            {
-                                                let info =
-                                                    crate::session::session::SessionInfo::from(
-                                                        &updated,
-                                                    );
-                                                let _ = tauri::Emitter::emit(
-                                                    &app_handle,
-                                                    "session_created",
-                                                    info,
-                                                );
-                                            }
+                                        Ok(info) => {
                                             if ps.was_active {
-                                                active_id = Some(session.id.to_string());
+                                                active_id = Some(info.id);
                                             }
                                             n_deferred += 1;
                                         }
@@ -1672,65 +1600,18 @@ pub fn run(
 
                         if !wake {
                             // Defer: create a dormant Session record (no PTY, status = Exited(0)).
-                            let mgr = session_mgr_clone.read().await;
-                            match mgr.create_session(
-                                ps.shell.clone(),
-                                ps.shell_args.clone(),
-                                ps.working_directory.clone(),
-                                ps.agent_id.clone(),
-                                ps.agent_label.clone(),
-                                ps.git_repos.clone(),
-                                is_coord, // #248 — pass live is_coord so dormant coords stay coords (Z7).
-                                crate::pty::backend::SessionBackendKind::LocalProcess,
-                            ).await {
-                                Ok(session) => {
-                                    mgr.rename_session(session.id, ps.name.clone()).await.ok();
-
-                                    // Grinch Z2 — preserve detach state across the defer lifecycle.
-                                    // Must be applied BEFORE mark_exited so the next snapshot_sessions
-                                    // event (whether triggered by failed_recoverable, user action, or
-                                    // shutdown) writes was_detached=true to disk. Without this, the
-                                    // first persist after defer silently drops the user's detach intent
-                                    // (manager.rs defaults was_detached to false on create_session).
-                                    if ps.was_detached {
-                                        mgr.set_was_detached(session.id, true).await;
-                                    }
-                                    if let Some(ref geo) = ps.detached_geometry {
-                                        mgr.set_detached_geometry(session.id, geo.clone()).await;
-                                    }
-                                    if let Some(ref prompt) = ps.last_prompt {
-                                        mgr.set_last_prompt(session.id, prompt.clone()).await;
-                                    }
-                                    // (#630/#631) Carry the durable fresh intent onto the dormant
-                                    // record so a "Restart Session"-then-app-restart member keeps it
-                                    // while deferred, and the Branch-A reopen (restart path) honors
-                                    // it. Order vs mark_exited is irrelevant (different field).
-                                    if ps.start_fresh_on_restore {
-                                        mgr.set_start_fresh_on_restore(session.id, true).await;
-                                    }
-                                    commands::session::preserve_deferred_telegram_intent_if_valid(
-                                        &mgr,
-                                        &settings_state_clone,
-                                        session.id,
-                                        &ps.name,
-                                        ps.telegram_bot_id.as_deref(),
-                                    )
-                                    .await;
-
-                                    mgr.mark_exited(session.id, 0).await;
-                                    mgr.clear_active_if(session.id).await;
-                                    // (#747) Re-apply a persisted raised hand onto the dormant
-                                    // placeholder. Must run AFTER mark_exited (which clears
-                                    // communication) and BEFORE the get_session below, so the
-                                    // emitted session_created event carries the restored hand.
-                                    if let Some(communication) = ps.communication.clone() {
-                                        mgr.restore_communication(session.id, communication).await;
-                                    }
-                                    // Read updated session so emitted event reflects Exited status
-                                    if let Some(updated) = mgr.get_session(session.id).await {
-                                        let info = crate::session::session::SessionInfo::from(&updated);
-                                        let _ = tauri::Emitter::emit(&app_handle, "session_created", info);
-                                    }
+                            match restore_transaction_for_task
+                                .restore_dormant_inline(
+                                    crate::session::selection::DormantRestoreRequest {
+                                        persisted: ps.clone(),
+                                        working_directory: ps.working_directory.clone(),
+                                        is_coordinator: is_coord,
+                                        is_root_agent: false,
+                                    },
+                                )
+                                .await
+                            {
+                                Ok(info) => {
                                     // Grinch Z5 — debug, not info: under the new default every
                                     // persisted session lands here, and an info-level line per
                                     // session creates a "mass defer" wall in startup logs that
@@ -1750,7 +1631,7 @@ pub fn run(
                                         ps.was_active,
                                         archived_session,
                                     ) {
-                                        active_id = Some(session.id.to_string());
+                                        active_id = Some(info.id);
                                     }
                                 }
                                 Err(e) => {
@@ -1799,9 +1680,9 @@ pub fn run(
                                 )
                             };
 
-                        // Wake: full PTY restore via the existing create_session_inner call.
-                        match commands::session::create_session_inner(
-                            &app_handle,
+                        // Wake: full PTY restore inside the restore transaction.
+                        match commands::session::create_session_inner_for_restore(
+                            &restore_transaction_for_task,
                             &session_mgr_clone,
                             &pty_mgr_clone,
                             shell,
@@ -1816,58 +1697,19 @@ pub fn run(
                             resolved_spawn,
                             // #973 - headless caller: no terminal to measure, keep 120x30.
                             None,
+                            Some(ps.start_fresh_on_restore),
+                            is_coord.then(|| {
+                                crate::commands::session::carry_communication_for_restart(
+                                    ps.communication.clone(),
+                                    ps.start_fresh_on_restore,
+                                )
+                            }).flatten(),
                         ).await {
                             Ok(info) => {
                                 if ps.was_active {
                                     active_id = Some(info.id.clone());
                                 }
                                 n_woken += 1;
-                                // (#630/#631) Re-inherit the durable fresh intent onto the woken
-                                // live session so it persists again across further restarts until
-                                // the user engages (note_user_message_to_session re-arms it). The
-                                // create_session_inner above does not persist, so this lands before
-                                // any write (no false-then-true crash window).
-                                if ps.start_fresh_on_restore {
-                                    if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
-                                        let mgr = session_mgr_clone.read().await;
-                                        mgr.set_start_fresh_on_restore(uuid, true).await;
-                                    }
-                                }
-                                // (#747) Re-apply a persisted raised hand onto the woken live
-                                // session. create_session_inner already emitted session_created
-                                // with communication: None, so emit the change event after
-                                // applying. Gated like the reopen carry (change 4): a stored
-                                // unconsumed fresh intent means this wake spawned a FRESH
-                                // conversation (skip_auto_resume_for_restore(true) above), so
-                                // the hand drops with the conversation it belonged to.
-                                // Applied as early as possible in this branch: an
-                                // idle/busy persist racing in between would transiently write
-                                // communication: None to disk; the persist_merging_failed at the
-                                // end of the restore task reconciles it (accepted window, see
-                                // plan #747 §7).
-                                if let Some(communication) =
-                                    crate::commands::session::carry_communication_for_restart(
-                                        ps.communication.clone(),
-                                        ps.start_fresh_on_restore,
-                                    )
-                                {
-                                    if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
-                                        let restored = {
-                                            let mgr = session_mgr_clone.read().await;
-                                            mgr.restore_communication(uuid, communication.clone()).await
-                                        };
-                                        if restored {
-                                            let _ = tauri::Emitter::emit(
-                                                &app_handle,
-                                                "session_communication_changed",
-                                                serde_json::json!({
-                                                    "sessionId": info.id,
-                                                    "communication": communication,
-                                                }),
-                                            );
-                                        }
-                                    }
-                                }
                                 // (#630/#631) Restore-decision trace (INFO during stabilization).
                                 log::info!(
                                     "[restore] woke '{}' (is_coord={}, live_is_coord={}, start_fresh_on_restore={})",
@@ -1895,31 +1737,19 @@ pub fn run(
                                 // guard is enforced structurally by this code path.
                                 if ps.was_detached {
                                     if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
-                                        // Sync Session::was_detached BEFORE calling
-                                        // detach_terminal_inner. detach_terminal_inner also sets
-                                        // it true idempotently, but setting up-front guards the
-                                        // persistence-correctness invariant even if
-                                        // detach_terminal_inner fails (WebView2 init error, etc.):
-                                        // the session stays marked detached → next launch retries.
+                                        // Restore geometry independently. The detach transaction
+                                        // commits persisted intent only after the window and PTY
+                                        // rechecks pass.
                                         {
                                             let mgr = session_mgr_clone.read().await;
-                                            mgr.set_was_detached(uuid, true).await;
                                             if let Some(ref geo) = ps.detached_geometry {
                                                 mgr.set_detached_geometry(uuid, geo.clone()).await;
                                             }
                                         }
 
-                                        // PB-4: pass `&info.id` (the newly-live session's UUID),
-                                        // NOT `ps.id` (the stale prior-run UUID).
-                                        // skip_switch=true per R.10 / A3.3 so this per-session
-                                        // detach does not race the post-loop active_id switch.
-                                        let detached_state =
-                                            app_handle.state::<DetachedSessionsState>();
-                                        let detached_result = commands::window::detach_terminal_inner(
-                                            &app_handle,
-                                            &session_mgr_clone,
-                                            detached_state.inner(),
-                                            &info.id,
+                                        let detached_result = commands::window::execute_detach_transaction(
+                                            &restore_transaction_for_task,
+                                            uuid,
                                             ps.detached_geometry.clone(),
                                             true,
                                         )
@@ -1930,9 +1760,6 @@ pub fn run(
                                                 ps.name,
                                                 e
                                             );
-                                        } else {
-                                            let mgr = session_mgr_clone.read().await;
-                                            mgr.clear_active_if(uuid).await;
                                         }
                                     }
                                 }
@@ -1954,82 +1781,18 @@ pub fn run(
                         n_woken, n_deferred, setting_on, persisted.len()
                     );
 
-                    // Switch to the session that was active when the app closed. Plan §A2.2.G3
-                    // filter: if the persisted-active session is now detached (respawned with
-                    // `was_detached=true` above), do NOT switch main to it — main + detached
-                    // would both render the same session. Walk the list for the first non-
-                    // detached candidate; emit `session_switched` with null if none.
-                    if let Some(id) = active_id {
-                        if let Ok(uuid) = uuid::Uuid::parse_str(&id) {
-                            let is_detached = {
-                                let detached = app_handle.state::<DetachedSessionsState>();
-                                let set = detached.lock().unwrap();
-                                set.contains(&uuid)
-                            };
-                            let mgr: tokio::sync::RwLockReadGuard<'_, SessionManager> =
-                                session_mgr_clone.read().await;
-                            if is_detached {
-                                let sessions = mgr.list_sessions().await;
-                                let fallback = {
-                                    let detached = app_handle.state::<DetachedSessionsState>();
-                                    let set = detached.lock().unwrap();
-                                    sessions.iter().find_map(|s| {
-                                        uuid::Uuid::parse_str(&s.id)
-                                            .ok()
-                                            .filter(|u| !set.contains(u))
-                                    })
-                                };
-                                if let Some(fb) = fallback {
-                                    let _ = mgr.switch_session(fb).await;
-                                    let _ = tauri::Emitter::emit(
-                                        &app_handle,
-                                        "session_switched",
-                                        serde_json::json!({ "id": fb.to_string() }),
-                                    );
-                                } else {
-                                    mgr.clear_active().await;
-                                    let _ = tauri::Emitter::emit(
-                                        &app_handle,
-                                        "session_switched",
-                                        serde_json::json!({ "id": serde_json::Value::Null }),
-                                    );
-                                }
-                            } else {
-                                // #248 Fix A — preserve dormant status for the persisted-active
-                                // session. Read the candidate's current status from the live
-                                // manager (it was just set by either the defer arm or
-                                // create_session_inner upstream).
-                                let candidate_status =
-                                    mgr.get_session(uuid).await.map(|s| s.status.clone());
-                                let dormant = matches!(
-                                    candidate_status,
-                                    Some(crate::session::session::SessionStatus::Exited(_))
-                                );
-
-                                let result = if dormant {
-                                    mgr.set_active_only(uuid).await
-                                } else {
-                                    mgr.switch_session(uuid).await
-                                };
-                                if let Err(e) = result {
-                                    log::error!(
-                                        "Failed to select persisted-active session {} (dormant={}): {}",
-                                        id, dormant, e
-                                    );
-                                }
-
-                                // `session_switched` payload is unchanged — sidebar uses it for
-                                // the selection highlight; dot color is driven by `status` from
-                                // the next `list_sessions` refresh (which now correctly returns
-                                // `Exited(0)` for the dormant case thanks to set_active_only).
-                                let _ = tauri::Emitter::emit(
-                                    &app_handle,
-                                    "session_switched",
-                                    serde_json::json!({ "id": id }),
-                                );
-                            }
-                            drop(mgr);
-                        }
+                    let persisted_target = active_id
+                        .as_deref()
+                        .and_then(|id| uuid::Uuid::parse_str(id).ok());
+                    if let Err(error) = restore_transaction_for_task
+                        .restore_selection_inline(persisted_target)
+                        .await
+                    {
+                        log::error!(
+                            "[restore] final canonical selection failed target={:?}: {}",
+                            persisted_target,
+                            error
+                        );
                     }
 
                     // Persist restored sessions + failed-but-recoverable entries
@@ -2044,6 +1807,44 @@ pub fn run(
                         );
                     }
                 });
+            }
+
+            restore_barrier.finish();
+
+            resource_monitor::watchdog::start(
+                (*resource_monitor_for_setup).clone(),
+                app.state::<SettingsState>().inner().clone(),
+                selection_coordinator_for_setup.clone(),
+                shutdown_for_setup.clone(),
+            );
+            pty_mgr
+                .lock()
+                .unwrap()
+                .start_container_pending_reaper(shutdown_for_setup.clone());
+
+            let mailbox_poller = phone::mailbox::MailboxPoller::new();
+            mailbox_poller.start(app.handle().clone(), shutdown_for_setup.clone());
+            loop_scheduler_for_setup
+                .clone()
+                .start(app.handle().clone(), shutdown_for_setup.clone());
+            crate::session::auto_close::start(app.handle().clone(), shutdown_for_setup.clone());
+            crate::loops::non_stop_watchdog::start(
+                app.handle().clone(),
+                non_stop_state_for_setup.clone(),
+                shutdown_for_setup.clone(),
+            );
+            ui_automation_state_for_setup.start(app.handle().clone(), shutdown_for_setup.clone());
+
+            let screenshot_hotkey = {
+                let settings = app.state::<SettingsState>();
+                tauri::async_runtime::block_on(async {
+                    settings.read().await.screenshot_capture_hotkey.clone()
+                })
+            };
+            if let Err(error) =
+                crate::screenshot::register_configured_hotkey(app.handle(), &screenshot_hotkey)
+            {
+                log::warn!("[screenshot] global hotkey registration failed: {}", error);
             }
 
             Ok(())
@@ -2284,6 +2085,9 @@ pub fn run(
                     // Terminating/Terminated idempotency guard, not on trigger().)
                     log::info!("[shutdown] Triggering background task shutdown (async, not awaited)...");
                     shutdown_for_exit.trigger();
+
+                    tauri::async_runtime::block_on(selection_coordinator_for_exit.close_and_join());
+                    log::info!("[shutdown] selection coordinator joined before global cleanup");
 
                     // #632 A - kill every agent's Job Object: atomically terminates
                     // each jobbed session's whole descendant tree via the job handle.

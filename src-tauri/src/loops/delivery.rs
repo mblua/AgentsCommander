@@ -88,7 +88,8 @@ pub async fn deliver_loop_prompt(
         Some(session) => session,
         None => {
             for stale_id in lookup.stale_session_ids {
-                if let Err(e) = crate::commands::session::destroy_session_inner(app, stale_id).await
+                if let Err(e) =
+                    crate::commands::session::background_destroy_session_inner(app, stale_id).await
                 {
                     log::warn!(
                         "[loops] Failed to clear stale coordinator session {} before wake: {}",
@@ -379,6 +380,7 @@ async fn spawn_coordinator_session(
         command.resolved_spawn,
         // #973 - headless caller: no terminal to measure, keep 120x30.
         None,
+        crate::commands::session::CreateSelectionIntent::Background,
     )
     .await?;
     let session_id = Uuid::parse_str(&info.id)

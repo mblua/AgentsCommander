@@ -153,10 +153,7 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
     }
 
     if cleared.cleared_raise_hand {
-        let _ = app.emit(
-            "session_communication_changed",
-            serde_json::json!({ "sessionId": session_id.to_string(), "communication": null }),
-        );
+        crate::session::selection::publish_session_communication(app, session_id, None);
     }
 
     // (b) badge: reset only when the typed-to session is a coordinator.

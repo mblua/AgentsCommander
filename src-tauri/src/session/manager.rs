@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -12,13 +12,113 @@ use super::session::{
 use crate::config::settings::WindowGeometry;
 use crate::errors::AppError;
 use crate::pty::backend::SessionBackendKind;
+use crate::session::selection::{
+    CommitCapability, DormantRuntimeWitness, LiveRuntimeWitness, SelectionCause, SelectionMode,
+    SessionSelection,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct PendingCreateBinding {
+    session_id: Uuid,
+    nonce: Uuid,
+}
+
+impl PendingCreateBinding {
+    pub(super) const fn new(session_id: Uuid, nonce: Uuid) -> Self {
+        Self { session_id, nonce }
+    }
+
+    pub const fn session_id(self) -> Uuid {
+        self.session_id
+    }
+}
 
 #[derive(Clone)]
 pub struct SessionManager {
-    sessions: Arc<RwLock<HashMap<Uuid, Session>>>,
-    active_session: Arc<RwLock<Option<Uuid>>>,
-    order: Arc<RwLock<Vec<Uuid>>>,
-    next_number: Arc<RwLock<u32>>,
+    state: Arc<RwLock<SessionManagerState>>,
+}
+
+struct SessionManagerState {
+    sessions: HashMap<Uuid, Session>,
+    order: Vec<Uuid>,
+    pending_create: HashMap<Uuid, Uuid>,
+    next_number: u32,
+    epoch: Uuid,
+    revision: u64,
+    selection: SessionSelection,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ManagerAggregateSnapshot {
+    pub sessions: Vec<Session>,
+    pub order: Vec<Uuid>,
+    pub pending_ids: HashSet<Uuid>,
+    pub selection: SessionSelection,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum CommitDecision {
+    Keep,
+    Clear,
+    Live(LiveRuntimeWitness),
+    Dormant(DormantRuntimeWitness),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum FinalizeMutation {
+    Live(PendingCreateBinding, LiveRuntimeWitness),
+    Dormant(PendingCreateBinding, DormantRuntimeWitness, i32),
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct LifecycleMutations {
+    removals: Vec<Uuid>,
+    mark_exited: Vec<(Uuid, i32)>,
+    detached_intent: Vec<(Uuid, bool)>,
+    finalizations: Vec<FinalizeMutation>,
+}
+
+impl LifecycleMutations {
+    pub(crate) fn remove(&mut self, session_id: Uuid) {
+        self.removals.push(session_id);
+    }
+
+    pub(crate) fn mark_exited(&mut self, session_id: Uuid, exit_code: i32) {
+        self.mark_exited.push((session_id, exit_code));
+    }
+
+    pub(crate) fn set_detached_intent(&mut self, session_id: Uuid, value: bool) {
+        self.detached_intent.push((session_id, value));
+    }
+
+    pub(crate) fn finalize_live(
+        &mut self,
+        binding: PendingCreateBinding,
+        witness: LiveRuntimeWitness,
+    ) {
+        self.finalizations
+            .push(FinalizeMutation::Live(binding, witness));
+    }
+
+    pub(crate) fn finalize_dormant(
+        &mut self,
+        binding: PendingCreateBinding,
+        witness: DormantRuntimeWitness,
+        exit_code: i32,
+    ) {
+        self.finalizations
+            .push(FinalizeMutation::Dormant(binding, witness, exit_code));
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct CommitResult {
+    pub removed_rows: Vec<SessionInfo>,
+    pub missing_ids: Vec<Uuid>,
+    pub changed_rows: Vec<SessionInfo>,
+    pub finalized_rows: Vec<SessionInfo>,
+    pub cleared_raise_hand_ids: Vec<Uuid>,
+    pub selection: Option<SessionSelection>,
 }
 
 impl Default for SessionManager {
@@ -29,19 +129,26 @@ impl Default for SessionManager {
 
 impl SessionManager {
     pub fn new() -> Self {
+        let epoch = Uuid::new_v4();
         Self {
-            sessions: Arc::new(RwLock::new(HashMap::new())),
-            active_session: Arc::new(RwLock::new(None)),
-            order: Arc::new(RwLock::new(Vec::new())),
-            next_number: Arc::new(RwLock::new(1)),
+            state: Arc::new(RwLock::new(SessionManagerState {
+                sessions: HashMap::new(),
+                order: Vec::new(),
+                pending_create: HashMap::new(),
+                next_number: 1,
+                epoch,
+                revision: 0,
+                selection: SessionSelection::initial(epoch),
+            })),
         }
     }
 
     // Session record is created with the full set of fields up front; splitting
     // into a builder would just defer the same parameter list.
     #[allow(clippy::too_many_arguments)]
-    pub async fn create_session(
+    pub(crate) async fn create_pending_session(
         &self,
+        ticket: &mut crate::session::selection::CreateFinalizationTicket,
         shell: String,
         shell_args: Vec<String>,
         working_directory: String,
@@ -52,10 +159,70 @@ impl SessionManager {
         backend_kind: SessionBackendKind,
     ) -> Result<Session, AppError> {
         let id = Uuid::new_v4();
+        let binding = ticket.bind(id);
+        self.insert_new_pending_session(
+            binding,
+            shell,
+            shell_args,
+            working_directory,
+            agent_id,
+            agent_label,
+            git_repos,
+            is_coordinator,
+            backend_kind,
+        )
+        .await
+    }
 
-        let mut num = self.next_number.write().await;
-        let name = format!("Session {}", *num);
-        *num += 1;
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn create_transaction_pending_session(
+        &self,
+        shell: String,
+        shell_args: Vec<String>,
+        working_directory: String,
+        agent_id: Option<String>,
+        agent_label: Option<String>,
+        git_repos: Vec<SessionRepo>,
+        is_coordinator: bool,
+        backend_kind: SessionBackendKind,
+    ) -> Result<(Session, PendingCreateBinding), AppError> {
+        let binding = PendingCreateBinding::new(Uuid::new_v4(), Uuid::new_v4());
+        let session = self
+            .insert_new_pending_session(
+                binding,
+                shell,
+                shell_args,
+                working_directory,
+                agent_id,
+                agent_label,
+                git_repos,
+                is_coordinator,
+                backend_kind,
+            )
+            .await?;
+        Ok((session, binding))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_new_pending_session(
+        &self,
+        binding: PendingCreateBinding,
+        shell: String,
+        shell_args: Vec<String>,
+        working_directory: String,
+        agent_id: Option<String>,
+        agent_label: Option<String>,
+        git_repos: Vec<SessionRepo>,
+        is_coordinator: bool,
+        backend_kind: SessionBackendKind,
+    ) -> Result<Session, AppError> {
+        let id = binding.session_id;
+        let mut state = self.state.write().await;
+        let name = format!("Session {}", state.next_number);
+        state.next_number = state
+            .next_number
+            .checked_add(1)
+            .ok_or_else(|| AppError::Other("session number overflow".to_string()))?;
 
         let session = Session {
             id,
@@ -91,194 +258,93 @@ impl SessionManager {
             detached_geometry: None,
             start_fresh_on_restore: false,
         };
-
-        self.sessions.write().await.insert(id, session.clone());
-        self.order.write().await.push(id);
-
-        // Auto-activate if no active session
-        let mut active = self.active_session.write().await;
-        if active.is_none() {
-            *active = Some(id);
-            let mut sessions = self.sessions.write().await;
-            if let Some(s) = sessions.get_mut(&id) {
-                s.status = SessionStatus::Active;
-            }
-        }
+        state.sessions.insert(id, session.clone());
+        state.order.push(id);
+        state.pending_create.insert(id, binding.nonce);
 
         Ok(session)
     }
 
-    pub async fn destroy_session(&self, id: Uuid) -> Result<Option<Uuid>, AppError> {
-        let mut sessions = self.sessions.write().await;
-        if sessions.remove(&id).is_none() {
-            return Err(AppError::SessionNotFound(id.to_string()));
-        }
-
-        let mut order = self.order.write().await;
-        order.retain(|&oid| oid != id);
-
-        let mut active = self.active_session.write().await;
-        let mut new_active = None;
-
-        if *active == Some(id) {
-            // Switch to the next available session
-            *active = order.first().copied();
-            new_active = *active;
-
-            if let Some(next_id) = *active {
-                if let Some(s) = sessions.get_mut(&next_id) {
-                    s.status = SessionStatus::Active;
-                }
-            }
-        }
-
-        Ok(new_active)
-    }
-
-    pub async fn switch_session(&self, id: Uuid) -> Result<(), AppError> {
-        let mut sessions = self.sessions.write().await;
-        if !sessions.contains_key(&id) {
-            return Err(AppError::SessionNotFound(id.to_string()));
-        }
-
-        let mut active = self.active_session.write().await;
-
-        // Deactivate the current session
-        if let Some(old_id) = *active {
-            if let Some(old) = sessions.get_mut(&old_id) {
-                if old.status == SessionStatus::Active {
-                    log::info!(
-                        "[session-state] {} '{}': Active → Running (deactivated)",
-                        &old_id.to_string()[..8],
-                        old.name
-                    );
-                    old.status = SessionStatus::Running;
-                }
-            }
-        }
-
-        // Activate the new session
-        if let Some(s) = sessions.get_mut(&id) {
-            log::info!(
-                "[session-state] {} '{}': {:?} → Active (switched to)",
-                &id.to_string()[..8],
-                s.name,
-                s.status
-            );
-            s.status = SessionStatus::Active;
-        }
-        *active = Some(id);
-
-        Ok(())
-    }
-
-    /// Set the active session WITHOUT mutating its status. Use when the target
-    /// session is dormant (`Exited(_)`) and we want it "selected but not running"
-    /// — e.g. the persisted-active session was deferred at startup under the
-    /// issue #248 policy. The previously-active session (if any) is demoted
-    /// Active → Running per the standard `switch_session` semantics. The newly-
-    /// active session's status is left untouched.
-    ///
-    /// Use `switch_session` for the live-selection case (status flips to
-    /// `Active`); use `set_active_only` for the dormant-selection case (status
-    /// preserved).
-    pub async fn set_active_only(&self, id: Uuid) -> Result<(), AppError> {
-        let mut sessions = self.sessions.write().await;
-        if !sessions.contains_key(&id) {
-            return Err(AppError::SessionNotFound(id.to_string()));
-        }
-
-        let mut active = self.active_session.write().await;
-
-        // Deactivate the current session — same demotion logic as switch_session.
-        if let Some(old_id) = *active {
-            if let Some(old) = sessions.get_mut(&old_id) {
-                if old.status == SessionStatus::Active {
-                    log::info!(
-                        "[session-state] {} '{}': Active → Running (deactivated for set_active_only)",
-                        &old_id.to_string()[..8],
-                        old.name
-                    );
-                    old.status = SessionStatus::Running;
-                }
-            }
-        }
-
-        // Set active WITHOUT touching the new candidate's status.
-        *active = Some(id);
-        if let Some(s) = sessions.get_mut(&id) {
-            log::info!(
-                "[session-state] {} '{}': {:?} (status preserved) → selected via set_active_only",
-                &id.to_string()[..8],
-                s.name,
-                s.status
-            );
-        }
-
-        Ok(())
-    }
-
     pub async fn rename_session(&self, id: Uuid, name: String) -> Result<(), AppError> {
-        let mut sessions = self.sessions.write().await;
-        let session = sessions
+        let mut state = self.state.write().await;
+        if state.pending_create.contains_key(&id) {
+            return Err(AppError::SessionNotFound(id.to_string()));
+        }
+        let session = state
+            .sessions
             .get_mut(&id)
             .ok_or_else(|| AppError::SessionNotFound(id.to_string()))?;
         session.name = name;
         Ok(())
     }
 
-    pub async fn list_sessions(&self) -> Vec<SessionInfo> {
-        let sessions = self.sessions.read().await;
-        let order = self.order.read().await;
+    pub(crate) async fn rename_pending_session(
+        &self,
+        binding: PendingCreateBinding,
+        name: String,
+    ) -> Result<(), AppError> {
+        self.update_pending(binding, |session| session.name = name)
+            .await
+    }
 
-        order
+    pub async fn list_sessions(&self) -> Vec<SessionInfo> {
+        let state = self.state.read().await;
+        state
+            .order
             .iter()
-            .filter_map(|id| sessions.get(id).map(SessionInfo::from))
+            .filter(|id| !state.pending_create.contains_key(id))
+            .filter_map(|id| state.sessions.get(id).map(SessionInfo::from))
             .collect()
     }
 
     pub async fn set_is_root_agent(&self, id: Uuid, value: bool) {
-        let mut sessions = self.sessions.write().await;
-        if let Some(session) = sessions.get_mut(&id) {
-            session.is_root_agent = value;
-        }
-    }
-
-    pub async fn get_active(&self) -> Option<Uuid> {
-        *self.active_session.read().await
-    }
-
-    /// Clear the active session and demote the previously-active session back
-    /// to Running if it is still present.
-    pub async fn clear_active(&self) {
-        let old_id = {
-            let mut active = self.active_session.write().await;
-            active.take()
-        };
-        if let Some(old_id) = old_id {
-            let mut sessions = self.sessions.write().await;
-            if let Some(old) = sessions.get_mut(&old_id) {
-                if old.status == SessionStatus::Active {
-                    old.status = SessionStatus::Running;
-                }
+        let mut state = self.state.write().await;
+        if !state.pending_create.contains_key(&id) {
+            if let Some(session) = state.sessions.get_mut(&id) {
+                session.is_root_agent = value;
             }
         }
     }
 
+    pub(crate) async fn set_pending_is_root_agent(
+        &self,
+        binding: PendingCreateBinding,
+        value: bool,
+    ) -> Result<(), AppError> {
+        self.update_pending(binding, |session| {
+            session.is_root_agent = value;
+        })
+        .await
+    }
+
     pub async fn get_session(&self, id: Uuid) -> Option<Session> {
-        self.sessions.read().await.get(&id).cloned()
+        let state = self.state.read().await;
+        (!state.pending_create.contains_key(&id))
+            .then(|| state.sessions.get(&id).cloned())
+            .flatten()
+    }
+
+    pub(crate) async fn get_pending_session(
+        &self,
+        binding: PendingCreateBinding,
+    ) -> Option<Session> {
+        let state = self.state.read().await;
+        binding_matches(&state, binding)
+            .then(|| state.sessions.get(&binding.session_id).cloned())?
     }
 
     pub async fn get_shell(&self, id: Uuid) -> Option<String> {
-        self.sessions.read().await.get(&id).map(|s| s.shell.clone())
+        self.get_session(id).await.map(|s| s.shell)
     }
 
     /// Return the working_directory iff the session exists AND is a coordinator.
     /// Cheap (no full Session clone) for the user-message hot path. (#552)
     pub async fn coordinator_cwd(&self, id: Uuid) -> Option<String> {
-        let sessions = self.sessions.read().await;
-        sessions
+        let state = self.state.read().await;
+        state
+            .sessions
             .get(&id)
+            .filter(|_| !state.pending_create.contains_key(&id))
             .filter(|s| s.is_coordinator)
             .map(|s| s.working_directory.clone())
     }
@@ -288,9 +354,11 @@ impl SessionManager {
     /// shells (no agent_id, not a coordinator) are excluded so they are never
     /// auto-closed. Sessions whose cwd does not yield a `/`-bearing FQN are skipped.
     pub async fn agent_team_members(&self) -> Vec<(Uuid, String)> {
-        let sessions = self.sessions.read().await;
-        sessions
+        let state = self.state.read().await;
+        state
+            .sessions
             .values()
+            .filter(|s| !state.pending_create.contains_key(&s.id))
             .filter(|s| s.is_coordinator || s.agent_id.is_some())
             .filter_map(|s| {
                 // agent_fqn_from_path returns String (teams.rs:80), not Option,
@@ -316,10 +384,14 @@ impl SessionManager {
     pub async fn coordinator_refs_by_team(
         &self,
     ) -> std::collections::HashMap<String, (String, String)> {
-        let sessions = self.sessions.read().await;
+        let state = self.state.read().await;
         let mut out: std::collections::HashMap<String, (String, String)> =
             std::collections::HashMap::new();
-        for s in sessions.values() {
+        for s in state
+            .sessions
+            .values()
+            .filter(|s| !state.pending_create.contains_key(&s.id))
+        {
             if !s.is_coordinator {
                 continue;
             }
@@ -338,9 +410,13 @@ impl SessionManager {
     /// member was reaped while the coordinator survived. One coordinator per team;
     /// on the unlikely duplicate, last writer wins (mirrors `coordinator_refs_by_team`).
     pub async fn coordinator_ids_by_team(&self) -> std::collections::HashMap<String, Uuid> {
-        let sessions = self.sessions.read().await;
+        let state = self.state.read().await;
         let mut out: std::collections::HashMap<String, Uuid> = std::collections::HashMap::new();
-        for s in sessions.values() {
+        for s in state
+            .sessions
+            .values()
+            .filter(|s| !state.pending_create.contains_key(&s.id))
+        {
             if !s.is_coordinator {
                 continue;
             }
@@ -352,53 +428,12 @@ impl SessionManager {
         out
     }
 
-    pub async fn mark_exited(&self, id: Uuid, code: i32) -> bool {
-        let mut sessions = self.sessions.write().await;
-        if let Some(s) = sessions.get_mut(&id) {
-            log::info!(
-                "[session-state] {} '{}': {:?} → Exited({})",
-                &id.to_string()[..8],
-                s.name,
-                s.status,
-                code
-            );
-            let cleared_raise_hand = s.communication.as_ref().is_some_and(|communication| {
-                communication.kind == SessionCommunicationKind::RaiseHand && communication.visible
-            });
-            if cleared_raise_hand {
-                s.communication = None;
-            }
-            s.status = SessionStatus::Exited(code);
-            return cleared_raise_hand;
-        }
-        false
-    }
-
-    /// Clear the active session if it matches the given ID.
-    /// Used during restore to prevent deferred (Exited) sessions from
-    /// blocking auto-activation of subsequent sessions.
-    pub async fn clear_active_if(&self, id: Uuid) {
-        let cleared_id = {
-            let mut active = self.active_session.write().await;
-            if *active == Some(id) {
-                active.take()
-            } else {
-                None
-            }
-        };
-        if let Some(old_id) = cleared_id {
-            let mut sessions = self.sessions.write().await;
-            if let Some(old) = sessions.get_mut(&old_id) {
-                if old.status == SessionStatus::Active {
-                    old.status = SessionStatus::Running;
-                }
-            }
-        }
-    }
-
     pub async fn mark_idle(&self, id: Uuid) {
-        let mut sessions = self.sessions.write().await;
-        if let Some(s) = sessions.get_mut(&id) {
+        let mut state = self.state.write().await;
+        if state.pending_create.contains_key(&id) {
+            return;
+        }
+        if let Some(s) = state.sessions.get_mut(&id) {
             log::info!(
                 "[session-state] {} '{}': waiting_for_input {} → true",
                 &id.to_string()[..8],
@@ -413,8 +448,11 @@ impl SessionManager {
     }
 
     pub async fn mark_busy(&self, id: Uuid) {
-        let mut sessions = self.sessions.write().await;
-        if let Some(s) = sessions.get_mut(&id) {
+        let mut state = self.state.write().await;
+        if state.pending_create.contains_key(&id) {
+            return;
+        }
+        if let Some(s) = state.sessions.get_mut(&id) {
             log::info!(
                 "[session-state] {} '{}': waiting_for_input {} → false",
                 &id.to_string()[..8],
@@ -429,8 +467,11 @@ impl SessionManager {
     }
 
     pub async fn set_last_prompt(&self, id: Uuid, prompt: String) {
-        let mut sessions = self.sessions.write().await;
-        if let Some(s) = sessions.get_mut(&id) {
+        let mut state = self.state.write().await;
+        if state.pending_create.contains_key(&id) {
+            return;
+        }
+        if let Some(s) = state.sessions.get_mut(&id) {
             s.last_prompt = Some(prompt);
         }
     }
@@ -440,8 +481,11 @@ impl SessionManager {
         id: Uuid,
         updated_at: chrono::DateTime<chrono::Utc>,
     ) -> Option<(bool, SessionCommunication)> {
-        let mut sessions = self.sessions.write().await;
-        let session = sessions.get_mut(&id)?;
+        let mut state = self.state.write().await;
+        if state.pending_create.contains_key(&id) {
+            return None;
+        }
+        let session = state.sessions.get_mut(&id)?;
         if !session.is_coordinator || matches!(session.status, SessionStatus::Exited(_)) {
             return None;
         }
@@ -466,8 +510,11 @@ impl SessionManager {
         id: Uuid,
         kind: SessionCommunicationKind,
     ) -> bool {
-        let mut sessions = self.sessions.write().await;
-        let Some(session) = sessions.get_mut(&id) else {
+        let mut state = self.state.write().await;
+        if state.pending_create.contains_key(&id) {
+            return false;
+        }
+        let Some(session) = state.sessions.get_mut(&id) else {
             return false;
         };
         let should_clear = session
@@ -496,8 +543,11 @@ impl SessionManager {
         if communication.kind != SessionCommunicationKind::RaiseHand || !communication.visible {
             return false;
         }
-        let mut sessions = self.sessions.write().await;
-        let Some(session) = sessions.get_mut(&id) else {
+        let mut state = self.state.write().await;
+        if state.pending_create.contains_key(&id) {
+            return false;
+        }
+        let Some(session) = state.sessions.get_mut(&id) else {
             return false;
         };
         if !session.is_coordinator {
@@ -510,18 +560,46 @@ impl SessionManager {
     /// (#630/#631) Stamp the durable resume intent. Used by the restart path and
     /// the restore wake/defer paths.
     pub async fn set_start_fresh_on_restore(&self, id: Uuid, value: bool) {
-        let mut sessions = self.sessions.write().await;
-        if let Some(s) = sessions.get_mut(&id) {
+        let mut state = self.state.write().await;
+        if state.pending_create.contains_key(&id) {
+            return;
+        }
+        if let Some(s) = state.sessions.get_mut(&id) {
             s.start_fresh_on_restore = value;
         }
+    }
+
+    pub(crate) async fn set_pending_start_fresh_on_restore(
+        &self,
+        binding: PendingCreateBinding,
+        value: bool,
+    ) -> Result<(), AppError> {
+        self.update_pending(binding, |session| {
+            session.start_fresh_on_restore = value;
+        })
+        .await
+    }
+
+    pub(crate) async fn set_pending_communication(
+        &self,
+        binding: PendingCreateBinding,
+        communication: SessionCommunication,
+    ) -> Result<(), AppError> {
+        self.update_pending(binding, |session| {
+            session.communication = Some(communication);
+        })
+        .await
     }
 
     /// (#630/#631) Re-arm on first real user message: clear the fresh intent.
     /// Returns true ONLY on the `true -> false` transition, so the caller persists
     /// exactly once (not on every subsequent keystroke).
     pub async fn clear_start_fresh_on_restore_if_set(&self, id: Uuid) -> bool {
-        let mut sessions = self.sessions.write().await;
-        if let Some(s) = sessions.get_mut(&id) {
+        let mut state = self.state.write().await;
+        if state.pending_create.contains_key(&id) {
+            return false;
+        }
+        if let Some(s) = state.sessions.get_mut(&id) {
             if s.start_fresh_on_restore {
                 log::info!(
                     "[session-state] {} '{}': start_fresh_on_restore true -> false (re-armed)",
@@ -540,8 +618,11 @@ impl SessionManager {
     /// persists exactly once. Missing id -> false. Counterpart of
     /// `clear_start_fresh_on_restore_if_set` (re-arm direction).
     pub async fn set_start_fresh_on_restore_if_unset(&self, id: Uuid) -> bool {
-        let mut sessions = self.sessions.write().await;
-        if let Some(s) = sessions.get_mut(&id) {
+        let mut state = self.state.write().await;
+        if state.pending_create.contains_key(&id) {
+            return false;
+        }
+        if let Some(s) = state.sessions.get_mut(&id) {
             if !s.start_fresh_on_restore {
                 log::info!(
                     "[session-state] {} '{}': start_fresh_on_restore false -> true (AC clear boundary, #756)",
@@ -567,8 +648,11 @@ impl SessionManager {
     /// half-applied state (`start_fresh_on_restore` already cleared while the hand
     /// was still raised). Mutating both fields atomically removes that window.
     pub async fn clear_user_input_transitions(&self, id: Uuid, clear_fresh: bool) -> (bool, bool) {
-        let mut sessions = self.sessions.write().await;
-        let Some(s) = sessions.get_mut(&id) else {
+        let mut state = self.state.write().await;
+        if state.pending_create.contains_key(&id) {
+            return (false, false);
+        }
+        let Some(s) = state.sessions.get_mut(&id) else {
             return (false, false);
         };
 
@@ -598,10 +682,22 @@ impl SessionManager {
     /// Set the resolved coding-agent identity. Called once by
     /// `create_session_inner` immediately after `CodingAgentKind::detect`.
     pub async fn set_agent_kind(&self, id: Uuid, kind: Option<CodingAgentKind>) {
-        let mut sessions = self.sessions.write().await;
-        if let Some(s) = sessions.get_mut(&id) {
+        let mut state = self.state.write().await;
+        if state.pending_create.contains_key(&id) {
+            return;
+        }
+        if let Some(s) = state.sessions.get_mut(&id) {
             s.agent_kind = kind;
         }
+    }
+
+    pub(crate) async fn set_pending_agent_kind(
+        &self,
+        binding: PendingCreateBinding,
+        kind: Option<CodingAgentKind>,
+    ) -> Result<(), AppError> {
+        self.update_pending(binding, |session| session.agent_kind = kind)
+            .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -615,8 +711,11 @@ impl SessionManager {
         effective_codex_home: Option<String>,
         profile_content_hash: Option<String>,
     ) {
-        let mut sessions = self.sessions.write().await;
-        if let Some(s) = sessions.get_mut(&id) {
+        let mut state = self.state.write().await;
+        if state.pending_create.contains_key(&id) {
+            return;
+        }
+        if let Some(s) = state.sessions.get_mut(&id) {
             s.requested_profile = requested_profile;
             s.effective_profile = effective_profile;
             s.profile_fallback_chain = profile_fallback_chain;
@@ -626,18 +725,57 @@ impl SessionManager {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn set_pending_profile_metadata(
+        &self,
+        binding: PendingCreateBinding,
+        requested_profile: Option<String>,
+        effective_profile: Option<String>,
+        profile_fallback_chain: Vec<String>,
+        profile_fallback_applied: bool,
+        effective_codex_home: Option<String>,
+        profile_content_hash: Option<String>,
+    ) -> Result<(), AppError> {
+        self.update_pending(binding, |session| {
+            session.requested_profile = requested_profile;
+            session.effective_profile = effective_profile;
+            session.profile_fallback_chain = profile_fallback_chain;
+            session.profile_fallback_applied = profile_fallback_applied;
+            session.effective_codex_home = effective_codex_home;
+            session.profile_content_hash = profile_content_hash;
+        })
+        .await
+    }
+
     pub async fn set_resolved_claude_projects_dir(&self, id: Uuid, path: Option<PathBuf>) {
-        let mut sessions = self.sessions.write().await;
-        if let Some(s) = sessions.get_mut(&id) {
+        let mut state = self.state.write().await;
+        if state.pending_create.contains_key(&id) {
+            return;
+        }
+        if let Some(s) = state.sessions.get_mut(&id) {
             s.resolved_claude_projects_dir = path;
         }
+    }
+
+    pub(crate) async fn set_pending_resolved_claude_projects_dir(
+        &self,
+        binding: PendingCreateBinding,
+        path: Option<PathBuf>,
+    ) -> Result<(), AppError> {
+        self.update_pending(binding, |session| {
+            session.resolved_claude_projects_dir = path;
+        })
+        .await
     }
 
     /// Persisted Telegram ON/OFF state for the session. Some(bot_id) means the
     /// bridge should be reattached when the session is restored or woken.
     pub async fn set_telegram_bot_id(&self, id: Uuid, bot_id: Option<String>) {
-        let mut sessions = self.sessions.write().await;
-        if let Some(s) = sessions.get_mut(&id) {
+        let mut state = self.state.write().await;
+        if state.pending_create.contains_key(&id) {
+            return;
+        }
+        if let Some(s) = state.sessions.get_mut(&id) {
             s.telegram_bot_id = bot_id;
         }
     }
@@ -645,10 +783,12 @@ impl SessionManager {
     /// True when the session currently has a persisted Telegram bot assignment.
     /// Used by auto-close; does not expose the bot id.
     pub async fn session_has_telegram_bot(&self, id: Uuid) -> bool {
-        let sessions = self.sessions.read().await;
-        sessions
-            .get(&id)
-            .is_some_and(|s| s.telegram_bot_id.is_some())
+        let state = self.state.read().await;
+        !state.pending_create.contains_key(&id)
+            && state
+                .sessions
+                .get(&id)
+                .is_some_and(|s| s.telegram_bot_id.is_some())
     }
 
     /// Set `was_detached` on the session. Authoritative store for persistence under
@@ -656,8 +796,11 @@ impl SessionManager {
     /// `attach_terminal` (→false). See plan §10 rule — the `WindowEvent::Destroyed`
     /// handler must NOT call this.
     pub async fn set_was_detached(&self, id: Uuid, detached: bool) {
-        let mut sessions = self.sessions.write().await;
-        if let Some(s) = sessions.get_mut(&id) {
+        let mut state = self.state.write().await;
+        if state.pending_create.contains_key(&id) {
+            return;
+        }
+        if let Some(s) = state.sessions.get_mut(&id) {
             s.was_detached = detached;
         }
     }
@@ -666,29 +809,49 @@ impl SessionManager {
     /// drag/resize via the `set_detached_geometry` Tauri command. Read at spawn
     /// time by `detach_terminal_inner` (including the Phase 3 restore path).
     pub async fn set_detached_geometry(&self, id: Uuid, geometry: WindowGeometry) {
-        let mut sessions = self.sessions.write().await;
-        if let Some(s) = sessions.get_mut(&id) {
+        let mut state = self.state.write().await;
+        if state.pending_create.contains_key(&id) {
+            return;
+        }
+        if let Some(s) = state.sessions.get_mut(&id) {
             s.detached_geometry = Some(geometry);
         }
     }
 
     /// Register the effective arg vector actually handed to portable-pty
     /// at spawn time. Called by `create_session_inner` immediately before
-    /// `pty_mgr.spawn`. Idempotent — callers write the final vec once per
+    /// `pty_mgr.spawn`. Idempotent: callers write the final vec once per
     /// session lifetime. Overwrites on re-call (defensive; not expected in
     /// normal flow).
     pub async fn set_effective_shell_args(&self, id: Uuid, args: Vec<String>) {
-        let mut sessions = self.sessions.write().await;
-        if let Some(s) = sessions.get_mut(&id) {
+        let mut state = self.state.write().await;
+        if state.pending_create.contains_key(&id) {
+            return;
+        }
+        if let Some(s) = state.sessions.get_mut(&id) {
             s.effective_shell_args = Some(args);
         }
+    }
+
+    pub(crate) async fn set_pending_effective_shell_args(
+        &self,
+        binding: PendingCreateBinding,
+        args: Vec<String>,
+    ) -> Result<(), AppError> {
+        self.update_pending(binding, |session| {
+            session.effective_shell_args = Some(args);
+        })
+        .await
     }
 
     /// Overwrite `git_repos` atomically. Bumps `git_repos_gen`. Invariant:
     /// callers preserve insertion order (replica config.json `repos` array order).
     pub async fn set_git_repos(&self, id: Uuid, repos: Vec<SessionRepo>) {
-        let mut sessions = self.sessions.write().await;
-        if let Some(s) = sessions.get_mut(&id) {
+        let mut state = self.state.write().await;
+        if state.pending_create.contains_key(&id) {
+            return;
+        }
+        if let Some(s) = state.sessions.get_mut(&id) {
             s.git_repos = repos;
             s.git_repos_gen = s.git_repos_gen.wrapping_add(1);
         }
@@ -704,8 +867,11 @@ impl SessionManager {
         repos: Vec<SessionRepo>,
         expected_gen: u64,
     ) -> bool {
-        let mut sessions = self.sessions.write().await;
-        if let Some(s) = sessions.get_mut(&id) {
+        let mut state = self.state.write().await;
+        if state.pending_create.contains_key(&id) {
+            return false;
+        }
+        if let Some(s) = state.sessions.get_mut(&id) {
             if s.git_repos_gen == expected_gen {
                 s.git_repos = repos;
                 s.git_repos_gen = s.git_repos_gen.wrapping_add(1);
@@ -718,14 +884,19 @@ impl SessionManager {
     /// Snapshot the current `git_repos_gen` for a session. Used by watchers to capture
     /// generation at the start of a poll so `set_git_repos_if_gen` can detect a race.
     pub async fn get_git_repos_gen(&self, id: Uuid) -> Option<u64> {
-        let sessions = self.sessions.read().await;
-        sessions.get(&id).map(|s| s.git_repos_gen)
+        let state = self.state.read().await;
+        (!state.pending_create.contains_key(&id))
+            .then(|| state.sessions.get(&id).map(|s| s.git_repos_gen))
+            .flatten()
     }
 
     /// Overwrite `is_coordinator`. Use after a team-config refresh.
     pub async fn set_is_coordinator(&self, id: Uuid, is_coordinator: bool) {
-        let mut sessions = self.sessions.write().await;
-        if let Some(s) = sessions.get_mut(&id) {
+        let mut state = self.state.write().await;
+        if state.pending_create.contains_key(&id) {
+            return;
+        }
+        if let Some(s) = state.sessions.get_mut(&id) {
             s.is_coordinator = is_coordinator;
         }
     }
@@ -737,9 +908,14 @@ impl SessionManager {
         &self,
         teams: &[crate::config::teams::DiscoveredTeam],
     ) -> Vec<(Uuid, bool)> {
-        let mut sessions = self.sessions.write().await;
+        let mut state = self.state.write().await;
+        let pending = state.pending_create.keys().copied().collect::<HashSet<_>>();
         let mut changes = Vec::new();
-        for (id, s) in sessions.iter_mut() {
+        for (id, s) in state
+            .sessions
+            .iter_mut()
+            .filter(|(id, _)| !pending.contains(id))
+        {
             let new_val = crate::config::teams::is_coordinator_for_cwd(&s.working_directory, teams);
             if s.is_coordinator != new_val {
                 s.is_coordinator = new_val;
@@ -757,10 +933,16 @@ impl SessionManager {
         &self,
         updates: &[(String, Vec<SessionRepo>)],
     ) -> Vec<(Uuid, Vec<SessionRepo>)> {
-        let mut sessions = self.sessions.write().await;
+        let mut state = self.state.write().await;
+        let pending = state.pending_create.keys().copied().collect::<HashSet<_>>();
         let mut changed = Vec::new();
         for (name, repos) in updates {
-            if let Some((id, s)) = sessions.iter_mut().find(|(_, s)| &s.name == name) {
+            if let Some((id, s)) = state
+                .sessions
+                .iter_mut()
+                .filter(|(id, _)| !pending.contains(id))
+                .find(|(_, s)| &s.name == name)
+            {
                 if &s.git_repos != repos {
                     s.git_repos = repos.clone();
                     s.git_repos_gen = s.git_repos_gen.wrapping_add(1);
@@ -775,9 +957,11 @@ impl SessionManager {
     /// The generation snapshot lets the watcher call `set_git_repos_if_gen` for its
     /// write, skipping the write+emit if a refresh landed during detection.
     pub async fn get_sessions_repos(&self) -> Vec<(Uuid, Vec<SessionRepo>, u64)> {
-        let sessions = self.sessions.read().await;
-        sessions
+        let state = self.state.read().await;
+        state
+            .sessions
             .iter()
+            .filter(|(id, _)| !state.pending_create.contains_key(id))
             .map(|(id, s)| (*id, s.git_repos.clone(), s.git_repos_gen))
             .collect()
     }
@@ -785,35 +969,699 @@ impl SessionManager {
     /// (session_id, working_directory) view for callers that only need the CWD
     /// (e.g. mailbox outbox scanning, agent-name resolution).
     pub async fn get_sessions_working_dirs(&self) -> Vec<(Uuid, String)> {
-        let sessions = self.sessions.read().await;
-        sessions
+        let state = self.state.read().await;
+        state
+            .sessions
             .iter()
+            .filter(|(id, _)| !state.pending_create.contains_key(id))
             .map(|(id, s)| (*id, s.working_directory.clone()))
             .collect()
     }
 
     /// Find a session by its display name. Returns its UUID if found.
     pub async fn find_by_name(&self, name: &str) -> Option<Uuid> {
-        let sessions = self.sessions.read().await;
-        sessions
+        let state = self.state.read().await;
+        state
+            .sessions
             .iter()
+            .filter(|(id, _)| !state.pending_create.contains_key(id))
             .find(|(_, s)| s.name == name)
             .map(|(id, _)| *id)
     }
 
-    /// Find a session by its authentication token. Linear scan — fine for 10-20 sessions.
+    /// Find a session by its authentication token. Linear scan is fine for 10-20 sessions.
     pub async fn find_by_token(&self, token: Uuid) -> Option<SessionInfo> {
-        let sessions = self.sessions.read().await;
-        sessions
+        let state = self.state.read().await;
+        state
+            .sessions
             .values()
+            .filter(|s| !state.pending_create.contains_key(&s.id))
             .find(|s| s.token == token)
             .map(SessionInfo::from)
+    }
+
+    pub(crate) async fn selection_payload(&self) -> SessionSelection {
+        self.state.read().await.selection.clone()
+    }
+
+    pub(crate) async fn aggregate_snapshot(&self) -> ManagerAggregateSnapshot {
+        let state = self.state.read().await;
+        let sessions = state
+            .order
+            .iter()
+            .filter(|id| !state.pending_create.contains_key(id))
+            .filter_map(|id| state.sessions.get(id).cloned())
+            .collect();
+        ManagerAggregateSnapshot {
+            sessions,
+            order: state.order.clone(),
+            pending_ids: state.pending_create.keys().copied().collect(),
+            selection: state.selection.clone(),
+        }
+    }
+
+    pub(crate) async fn contains_public_or_pending(&self, id: Uuid) -> bool {
+        self.state.read().await.sessions.contains_key(&id)
+    }
+
+    async fn update_pending<F>(
+        &self,
+        binding: PendingCreateBinding,
+        update: F,
+    ) -> Result<(), AppError>
+    where
+        F: FnOnce(&mut Session),
+    {
+        let mut state = self.state.write().await;
+        if !binding_matches(&state, binding) {
+            return Err(AppError::Other(format!(
+                "pending create capability mismatch: {}",
+                binding.session_id
+            )));
+        }
+        let session = state
+            .sessions
+            .get_mut(&binding.session_id)
+            .ok_or_else(|| AppError::SessionNotFound(binding.session_id.to_string()))?;
+        update(session);
+        Ok(())
+    }
+
+    pub(super) async fn rollback_pending_create(
+        &self,
+        binding: PendingCreateBinding,
+    ) -> Result<(), String> {
+        let mut state = self.state.write().await;
+        if !binding_matches(&state, binding) {
+            if !state.sessions.contains_key(&binding.session_id) {
+                return Ok(());
+            }
+            return Err(format!(
+                "pending create capability mismatch: {}",
+                binding.session_id
+            ));
+        }
+        state.pending_create.remove(&binding.session_id);
+        state.sessions.remove(&binding.session_id);
+        state.order.retain(|id| *id != binding.session_id);
+        Ok(())
+    }
+
+    pub(super) async fn insert_transaction_pending_record(
+        &self,
+        session: Session,
+        binding: PendingCreateBinding,
+    ) -> Result<(), String> {
+        if session.id != binding.session_id {
+            return Err("transaction pending binding targets another session".to_string());
+        }
+        let mut state = self.state.write().await;
+        if state.sessions.contains_key(&session.id) {
+            return Err(format!("session already exists: {}", session.id));
+        }
+        state.next_number = state
+            .next_number
+            .checked_add(1)
+            .ok_or_else(|| "session number overflow".to_string())?;
+        state.order.push(session.id);
+        state.pending_create.insert(session.id, binding.nonce);
+        state.sessions.insert(session.id, session);
+        Ok(())
+    }
+
+    pub(super) async fn commit_selection_transition(
+        &self,
+        _capability: &CommitCapability,
+        decision: CommitDecision,
+        cause: SelectionCause,
+        mutations: LifecycleMutations,
+    ) -> Result<CommitResult, String> {
+        let mut state = self.state.write().await;
+        let old_selection = state.selection.clone();
+        let old_id = old_selection.id();
+        let old_mode = old_selection.mode();
+
+        validate_unique_ids("removal", mutations.removals.iter().copied())?;
+        validate_unique_ids(
+            "markExited",
+            mutations.mark_exited.iter().map(|(id, _)| *id),
+        )?;
+        validate_unique_ids(
+            "detachedIntent",
+            mutations.detached_intent.iter().map(|(id, _)| *id),
+        )?;
+        validate_unique_ids(
+            "finalization",
+            mutations
+                .finalizations
+                .iter()
+                .map(|mutation| match mutation {
+                    FinalizeMutation::Live(binding, _)
+                    | FinalizeMutation::Dormant(binding, _, _) => binding.session_id,
+                }),
+        )?;
+
+        let removals = mutations.removals.iter().copied().collect::<HashSet<_>>();
+        let exits = mutations
+            .mark_exited
+            .iter()
+            .map(|(id, _)| *id)
+            .collect::<HashSet<_>>();
+        let finalizations = mutations
+            .finalizations
+            .iter()
+            .map(|mutation| match mutation {
+                FinalizeMutation::Live(binding, _) | FinalizeMutation::Dormant(binding, _, _) => {
+                    binding.session_id
+                }
+            })
+            .collect::<HashSet<_>>();
+
+        if let Some(overlap) = removals.intersection(&exits).next() {
+            return Err(format!(
+                "lifecycle mutation remove+markExited conflict: {overlap}"
+            ));
+        }
+        if let Some(overlap) = removals.intersection(&finalizations).next() {
+            return Err(format!(
+                "lifecycle mutation remove+finalize conflict: {overlap}"
+            ));
+        }
+        if let Some(overlap) = exits.intersection(&finalizations).next() {
+            return Err(format!(
+                "lifecycle mutation markExited+finalize conflict: {overlap}"
+            ));
+        }
+        for id in removals.iter().chain(exits.iter()) {
+            if state.pending_create.contains_key(id) {
+                return Err(format!(
+                    "public lifecycle mutation cannot address pending create: {id}"
+                ));
+            }
+        }
+
+        for mutation in &mutations.finalizations {
+            match *mutation {
+                FinalizeMutation::Live(binding, witness) => {
+                    if !binding_matches(&state, binding) {
+                        return Err(format!(
+                            "create finalization capability mismatch: {}",
+                            binding.session_id
+                        ));
+                    }
+                    if witness.session_id != binding.session_id
+                        || !witness.has_pty
+                        || witness.detached
+                    {
+                        return Err(format!(
+                            "live create finalization has invalid runtime witness: {}",
+                            binding.session_id
+                        ));
+                    }
+                    let record = state.sessions.get(&binding.session_id).ok_or_else(|| {
+                        format!("pending create record missing: {}", binding.session_id)
+                    })?;
+                    if matches!(record.status, SessionStatus::Exited(_)) {
+                        return Err(format!(
+                            "live create finalization targets exited record: {}",
+                            binding.session_id
+                        ));
+                    }
+                }
+                FinalizeMutation::Dormant(binding, witness, _) => {
+                    if !binding_matches(&state, binding)
+                        || witness.session_id != binding.session_id
+                        || witness.detached
+                    {
+                        return Err(format!(
+                            "dormant create finalization has invalid capability/witness: {}",
+                            binding.session_id
+                        ));
+                    }
+                }
+            }
+        }
+
+        let projected_status = |id: Uuid| -> Option<SessionStatus> {
+            if removals.contains(&id) {
+                return None;
+            }
+            if let Some(mutation) = mutations
+                .finalizations
+                .iter()
+                .find(|mutation| match mutation {
+                    FinalizeMutation::Live(binding, _)
+                    | FinalizeMutation::Dormant(binding, _, _) => binding.session_id == id,
+                })
+            {
+                return Some(match mutation {
+                    FinalizeMutation::Live(_, _) => SessionStatus::Running,
+                    FinalizeMutation::Dormant(_, _, code) => SessionStatus::Exited(*code),
+                });
+            }
+            let current = state.sessions.get(&id)?.status.clone();
+            if matches!(current, SessionStatus::Exited(_)) {
+                return Some(current);
+            }
+            mutations
+                .mark_exited
+                .iter()
+                .find(|(candidate, _)| *candidate == id)
+                .map(|(_, code)| SessionStatus::Exited(*code))
+                .or(Some(current))
+        };
+
+        let (target_mode, target_id, target_status) = match decision {
+            CommitDecision::Keep => {
+                if old_id.is_some_and(|id| {
+                    removals.contains(&id)
+                        || exits.contains(&id)
+                        || mutations
+                            .detached_intent
+                            .iter()
+                            .any(|(candidate, detached)| *candidate == id && *detached)
+                }) {
+                    return Err(
+                        "Keep cannot remove, exit, or detach the selected record".to_string()
+                    );
+                }
+                (old_mode, old_id, old_selection.status().cloned())
+            }
+            CommitDecision::Clear => (SelectionMode::None, None, None),
+            CommitDecision::Live(witness) => {
+                let id = witness.session_id;
+                if !witness.has_pty || witness.detached {
+                    return Err(format!("live target has invalid runtime witness: {id}"));
+                }
+                if state.pending_create.contains_key(&id) && !finalizations.contains(&id) {
+                    return Err(format!("live target is still pending: {id}"));
+                }
+                if removals.contains(&id) {
+                    return Err(format!("live target is also removed: {id}"));
+                }
+                match projected_status(id) {
+                    Some(SessionStatus::Exited(_)) => {
+                        return Err(format!("live target is exited: {id}"));
+                    }
+                    Some(_) => {}
+                    None => return Err(format!("live target is missing: {id}")),
+                }
+                (SelectionMode::Live, Some(id), Some(SessionStatus::Active))
+            }
+            CommitDecision::Dormant(witness) => {
+                let id = witness.session_id;
+                if witness.detached {
+                    return Err(format!("dormant target is detached: {id}"));
+                }
+                if state.pending_create.contains_key(&id) && !finalizations.contains(&id) {
+                    return Err(format!("dormant target is still pending: {id}"));
+                }
+                if removals.contains(&id) {
+                    return Err(format!("dormant target is also removed: {id}"));
+                }
+                let status = projected_status(id)
+                    .ok_or_else(|| format!("dormant target is missing: {id}"))?;
+                if !matches!(status, SessionStatus::Exited(_)) {
+                    return Err(format!("dormant target is not exited: {id}"));
+                }
+                (SelectionMode::Dormant, Some(id), Some(status))
+            }
+        };
+
+        let selection_changed = target_mode != old_mode
+            || target_id != old_id
+            || (target_mode == SelectionMode::Dormant
+                && target_status.as_ref() != old_selection.status());
+        let next_revision = if selection_changed {
+            state.revision.checked_add(1).ok_or_else(|| {
+                log::error!(
+                    "[selection] revision overflow epoch={} oldId={:?} source={}",
+                    state.epoch,
+                    old_id,
+                    cause.source()
+                );
+                "selection revision overflow".to_string()
+            })?
+        } else {
+            state.revision
+        };
+
+        let mut result = CommitResult::default();
+        let mut changed_ids = HashSet::new();
+        for mutation in mutations.finalizations {
+            match mutation {
+                FinalizeMutation::Live(binding, _) => {
+                    state.pending_create.remove(&binding.session_id);
+                    if let Some(record) = state.sessions.get_mut(&binding.session_id) {
+                        if matches!(record.status, SessionStatus::Exited(_)) {
+                            return Err(format!(
+                                "live finalization became exited before commit: {}",
+                                binding.session_id
+                            ));
+                        }
+                        record.status = SessionStatus::Running;
+                        result.finalized_rows.push(SessionInfo::from(&*record));
+                    }
+                }
+                FinalizeMutation::Dormant(binding, _, exit_code) => {
+                    state.pending_create.remove(&binding.session_id);
+                    if let Some(record) = state.sessions.get_mut(&binding.session_id) {
+                        record.status = SessionStatus::Exited(exit_code);
+                        result.finalized_rows.push(SessionInfo::from(&*record));
+                    }
+                }
+            }
+        }
+
+        for (id, exit_code) in mutations.mark_exited {
+            let Some(record) = state.sessions.get_mut(&id) else {
+                result.missing_ids.push(id);
+                continue;
+            };
+            if matches!(record.status, SessionStatus::Exited(_)) {
+                continue;
+            }
+            let cleared_raise_hand = record.communication.as_ref().is_some_and(|communication| {
+                communication.kind == SessionCommunicationKind::RaiseHand && communication.visible
+            });
+            if cleared_raise_hand {
+                record.communication = None;
+                result.cleared_raise_hand_ids.push(id);
+            }
+            record.status = SessionStatus::Exited(exit_code);
+            changed_ids.insert(id);
+        }
+
+        for (id, detached) in mutations.detached_intent {
+            let Some(record) = state.sessions.get_mut(&id) else {
+                result.missing_ids.push(id);
+                continue;
+            };
+            if record.was_detached != detached {
+                record.was_detached = detached;
+                changed_ids.insert(id);
+            }
+        }
+
+        for id in mutations.removals {
+            if let Some(record) = state.sessions.remove(&id) {
+                state.order.retain(|candidate| *candidate != id);
+                state.pending_create.remove(&id);
+                result.removed_rows.push(SessionInfo::from(&record));
+            } else {
+                result.missing_ids.push(id);
+            }
+        }
+
+        if selection_changed {
+            if let Some(previous_id) = old_id {
+                let previous_remains_live_target =
+                    target_mode == SelectionMode::Live && target_id == Some(previous_id);
+                if !previous_remains_live_target {
+                    if let Some(previous) = state.sessions.get_mut(&previous_id) {
+                        if previous.status == SessionStatus::Active {
+                            previous.status = SessionStatus::Running;
+                            changed_ids.insert(previous_id);
+                        }
+                    }
+                }
+            }
+
+            state.revision = next_revision;
+            state.selection = match (target_mode, target_id, target_status) {
+                (SelectionMode::None, None, _) => {
+                    SessionSelection::none(state.epoch, next_revision, cause)
+                }
+                (SelectionMode::Live, Some(id), _) => {
+                    let target = state
+                        .sessions
+                        .get_mut(&id)
+                        .ok_or_else(|| format!("live target disappeared during commit: {id}"))?;
+                    target.status = SessionStatus::Active;
+                    changed_ids.insert(id);
+                    SessionSelection::live(state.epoch, next_revision, cause, id)
+                }
+                (SelectionMode::Dormant, Some(id), Some(SessionStatus::Exited(code))) => {
+                    let has_pty = match decision {
+                        CommitDecision::Dormant(witness) => witness.has_pty,
+                        _ => false,
+                    };
+                    SessionSelection::dormant(state.epoch, next_revision, cause, id, code, has_pty)
+                }
+                _ => return Err("invalid canonical selection target".to_string()),
+            };
+            result.selection = Some(state.selection.clone());
+        }
+
+        result.changed_rows = state
+            .order
+            .iter()
+            .filter(|id| changed_ids.contains(id) && !state.pending_create.contains_key(id))
+            .filter_map(|id| state.sessions.get(id).map(SessionInfo::from))
+            .collect();
+
+        log::info!(
+            "[selection] epoch={} revision={} oldId={:?} newId={:?} source={} userInitiated={} oldMode={} newMode={} oldStatus={:?} newStatus={:?} targetHasPty={} targetDetached={} result={}",
+            state.epoch,
+            state.revision,
+            old_id,
+            state.selection.id(),
+            cause.source(),
+            cause.user_initiated(),
+            old_mode,
+            state.selection.mode(),
+            old_selection.status(),
+            state.selection.status(),
+            state.selection.has_pty(),
+            state.selection.detached(),
+            if selection_changed { "committed" } else { "noop" },
+        );
+
+        Ok(result)
+    }
+}
+
+fn binding_matches(state: &SessionManagerState, binding: PendingCreateBinding) -> bool {
+    state.pending_create.get(&binding.session_id).copied() == Some(binding.nonce)
+}
+
+fn validate_unique_ids(label: &str, ids: impl IntoIterator<Item = Uuid>) -> Result<(), String> {
+    let mut seen = HashSet::new();
+    for id in ids {
+        if !seen.insert(id) {
+            return Err(format!("duplicate {label} lifecycle mutation: {id}"));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+impl SessionManager {
+    pub async fn set_communication_for_test(
+        &self,
+        id: Uuid,
+        communication: SessionCommunication,
+    ) {
+        if let Some(session) = self.state.write().await.sessions.get_mut(&id) {
+            session.communication = Some(communication);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_session(
+        &self,
+        shell: String,
+        shell_args: Vec<String>,
+        working_directory: String,
+        agent_id: Option<String>,
+        agent_label: Option<String>,
+        git_repos: Vec<SessionRepo>,
+        is_coordinator: bool,
+        backend_kind: SessionBackendKind,
+    ) -> Result<Session, AppError> {
+        let id = Uuid::new_v4();
+        let mut state = self.state.write().await;
+        let name = format!("Session {}", state.next_number);
+        state.next_number = state.next_number.saturating_add(1);
+        let mut session = Session {
+            id,
+            name,
+            shell,
+            shell_args,
+            backend_kind,
+            effective_shell_args: None,
+            created_at: chrono::Utc::now(),
+            working_directory,
+            status: SessionStatus::Running,
+            waiting_for_input: false,
+            communication: None,
+            pending_review: false,
+            last_prompt: None,
+            agent_id,
+            agent_label,
+            git_repos,
+            is_coordinator,
+            is_root_agent: false,
+            git_repos_gen: 0,
+            token: Uuid::new_v4(),
+            agent_kind: None,
+            requested_profile: None,
+            effective_profile: None,
+            profile_fallback_chain: Vec::new(),
+            profile_fallback_applied: false,
+            effective_codex_home: None,
+            resolved_claude_projects_dir: None,
+            profile_content_hash: None,
+            telegram_bot_id: None,
+            was_detached: false,
+            detached_geometry: None,
+            start_fresh_on_restore: false,
+        };
+        if state.selection.mode() == SelectionMode::None {
+            session.status = SessionStatus::Active;
+            state.revision += 1;
+            state.selection =
+                SessionSelection::live(state.epoch, state.revision, SelectionCause::UserSwitch, id);
+        }
+        state.order.push(id);
+        state.sessions.insert(id, session.clone());
+        Ok(session)
+    }
+
+    pub async fn get_active(&self) -> Option<Uuid> {
+        self.state.read().await.selection.id()
+    }
+
+    pub async fn switch_session(&self, id: Uuid) -> Result<(), AppError> {
+        let mut state = self.state.write().await;
+        if state.pending_create.contains_key(&id) || !state.sessions.contains_key(&id) {
+            return Err(AppError::SessionNotFound(id.to_string()));
+        }
+        if let Some(old_id) = state.selection.id() {
+            if old_id != id {
+                if let Some(old) = state.sessions.get_mut(&old_id) {
+                    if old.status == SessionStatus::Active {
+                        old.status = SessionStatus::Running;
+                    }
+                }
+            }
+        }
+        if let Some(target) = state.sessions.get_mut(&id) {
+            target.status = SessionStatus::Active;
+        }
+        state.revision += 1;
+        state.selection =
+            SessionSelection::live(state.epoch, state.revision, SelectionCause::UserSwitch, id);
+        Ok(())
+    }
+
+    pub async fn set_active_only(&self, id: Uuid) -> Result<(), AppError> {
+        let mut state = self.state.write().await;
+        let status = state
+            .sessions
+            .get(&id)
+            .filter(|_| !state.pending_create.contains_key(&id))
+            .map(|session| session.status.clone())
+            .ok_or_else(|| AppError::SessionNotFound(id.to_string()))?;
+        if let Some(old_id) = state.selection.id() {
+            if let Some(old) = state.sessions.get_mut(&old_id) {
+                if old.status == SessionStatus::Active {
+                    old.status = SessionStatus::Running;
+                }
+            }
+        }
+        state.revision += 1;
+        state.selection = match status {
+            SessionStatus::Exited(code) => SessionSelection::dormant(
+                state.epoch,
+                state.revision,
+                SelectionCause::Restore,
+                id,
+                code,
+                false,
+            ),
+            _ => {
+                SessionSelection::live(state.epoch, state.revision, SelectionCause::UserSwitch, id)
+            }
+        };
+        Ok(())
+    }
+
+    pub async fn clear_active(&self) {
+        let mut state = self.state.write().await;
+        if let Some(old_id) = state.selection.id() {
+            if let Some(old) = state.sessions.get_mut(&old_id) {
+                if old.status == SessionStatus::Active {
+                    old.status = SessionStatus::Running;
+                }
+            }
+            state.revision += 1;
+            state.selection = SessionSelection::none(
+                state.epoch,
+                state.revision,
+                SelectionCause::BackgroundCleanup,
+            );
+        }
+    }
+
+    pub async fn clear_active_if(&self, id: Uuid) {
+        if self.get_active().await == Some(id) {
+            self.clear_active().await;
+        }
+    }
+
+    pub async fn mark_exited(&self, id: Uuid, code: i32) -> bool {
+        let mut state = self.state.write().await;
+        let Some(session) = state.sessions.get_mut(&id) else {
+            return false;
+        };
+        let cleared = session.communication.as_ref().is_some_and(|communication| {
+            communication.kind == SessionCommunicationKind::RaiseHand && communication.visible
+        });
+        if cleared {
+            session.communication = None;
+        }
+        session.status = SessionStatus::Exited(code);
+        cleared
+    }
+
+    pub async fn destroy_session(&self, id: Uuid) -> Result<Option<Uuid>, AppError> {
+        let mut state = self.state.write().await;
+        if state.sessions.remove(&id).is_none() {
+            return Err(AppError::SessionNotFound(id.to_string()));
+        }
+        state.order.retain(|candidate| *candidate != id);
+        if state.selection.id() != Some(id) {
+            return Ok(None);
+        }
+        let next = state
+            .order
+            .iter()
+            .copied()
+            .find(|candidate| !state.pending_create.contains_key(candidate));
+        state.revision += 1;
+        if let Some(next_id) = next {
+            if let Some(session) = state.sessions.get_mut(&next_id) {
+                session.status = SessionStatus::Active;
+            }
+            state.selection = SessionSelection::live(
+                state.epoch,
+                state.revision,
+                SelectionCause::ManualClose,
+                next_id,
+            );
+        } else {
+            state.selection =
+                SessionSelection::none(state.epoch, state.revision, SelectionCause::ManualClose);
+        }
+        Ok(next)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::selection::TrustedCreateIntent;
 
     #[tokio::test]
     async fn set_effective_shell_args_writes_field() {
@@ -1904,5 +2752,430 @@ mod tests {
             Some(&coord.id),
             "team key maps to the coordinator session id, not a member"
         );
+    }
+
+    async fn pending_fixture(
+        manager: &SessionManager,
+        coordinator: bool,
+    ) -> (Session, PendingCreateBinding) {
+        manager
+            .create_transaction_pending_session(
+                "shell".to_string(),
+                Vec::new(),
+                "C:/work".to_string(),
+                None,
+                None,
+                Vec::new(),
+                coordinator,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("pending session")
+    }
+
+    fn live_witness(session_id: Uuid) -> LiveRuntimeWitness {
+        LiveRuntimeWitness {
+            session_id,
+            has_pty: true,
+            detached: false,
+        }
+    }
+
+    fn dormant_witness(session_id: Uuid) -> DormantRuntimeWitness {
+        DormantRuntimeWitness {
+            session_id,
+            has_pty: false,
+            detached: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_create_is_invisible_until_atomic_live_finalization() {
+        let manager = SessionManager::new();
+        let capability = CommitCapability::for_test();
+        let (pending, binding) = pending_fixture(&manager, false).await;
+
+        assert!(manager.list_sessions().await.is_empty());
+        assert!(manager.get_session(pending.id).await.is_none());
+        let before = manager.aggregate_snapshot().await;
+        assert!(before.sessions.is_empty());
+        assert!(before.pending_ids.contains(&pending.id));
+        assert!(before.order.contains(&pending.id));
+        assert_eq!(before.selection.revision(), 0);
+
+        let live = live_witness(pending.id);
+        let mut mutations = LifecycleMutations::default();
+        mutations.finalize_live(binding, live);
+        let committed = manager
+            .commit_selection_transition(
+                &capability,
+                CommitDecision::Live(live),
+                SelectionCause::SessionCreated(TrustedCreateIntent::User),
+                mutations,
+            )
+            .await
+            .expect("finalize pending create");
+        assert_eq!(committed.finalized_rows.len(), 1);
+        let visible = manager
+            .get_session(pending.id)
+            .await
+            .expect("finalized row visible");
+        assert_eq!(visible.status, SessionStatus::Active);
+        let selection = manager.selection_payload().await;
+        assert_eq!(selection.id(), Some(pending.id));
+        assert_eq!(selection.revision(), 1);
+
+        let mut duplicate = LifecycleMutations::default();
+        duplicate.finalize_live(binding, live);
+        assert!(manager
+            .commit_selection_transition(
+                &capability,
+                CommitDecision::Live(live),
+                SelectionCause::SessionCreated(TrustedCreateIntent::User),
+                duplicate,
+            )
+            .await
+            .is_err());
+        assert_eq!(manager.selection_payload().await.revision(), 1);
+    }
+
+    #[tokio::test]
+    async fn invalid_finalization_matrix_rejects_without_partial_mutation() {
+        let capability = CommitCapability::for_test();
+
+        for (has_pty, detached) in [(false, false), (true, true)] {
+            let manager = SessionManager::new();
+            let (pending, binding) = pending_fixture(&manager, false).await;
+            let witness = LiveRuntimeWitness {
+                session_id: pending.id,
+                has_pty,
+                detached,
+            };
+            let mut mutations = LifecycleMutations::default();
+            mutations.finalize_live(binding, witness);
+            assert!(manager
+                .commit_selection_transition(
+                    &capability,
+                    CommitDecision::Keep,
+                    SelectionCause::Restore,
+                    mutations,
+                )
+                .await
+                .is_err());
+            assert!(manager.get_pending_session(binding).await.is_some());
+            assert_eq!(manager.selection_payload().await.revision(), 0);
+        }
+
+        let manager = SessionManager::new();
+        let (pending, binding) = pending_fixture(&manager, false).await;
+        let wrong_binding = PendingCreateBinding::new(pending.id, Uuid::new_v4());
+        let mut wrong = LifecycleMutations::default();
+        wrong.finalize_live(wrong_binding, live_witness(pending.id));
+        assert!(manager
+            .commit_selection_transition(
+                &capability,
+                CommitDecision::Keep,
+                SelectionCause::Restore,
+                wrong,
+            )
+            .await
+            .is_err());
+        assert!(manager.get_pending_session(binding).await.is_some());
+
+        for conflict in ["remove", "exit"] {
+            let manager = SessionManager::new();
+            let (pending, binding) = pending_fixture(&manager, false).await;
+            let mut mutations = LifecycleMutations::default();
+            mutations.finalize_live(binding, live_witness(pending.id));
+            if conflict == "remove" {
+                mutations.remove(pending.id);
+            } else {
+                mutations.mark_exited(pending.id, 9);
+            }
+            assert!(manager
+                .commit_selection_transition(
+                    &capability,
+                    CommitDecision::Keep,
+                    SelectionCause::Restore,
+                    mutations,
+                )
+                .await
+                .is_err());
+            assert!(manager.get_pending_session(binding).await.is_some());
+        }
+
+        let manager = SessionManager::new();
+        let (pending, binding) = pending_fixture(&manager, false).await;
+        manager
+            .rollback_pending_create(binding)
+            .await
+            .expect("remove pending fixture");
+        let mut missing = LifecycleMutations::default();
+        missing.finalize_live(binding, live_witness(pending.id));
+        assert!(manager
+            .commit_selection_transition(
+                &capability,
+                CommitDecision::Keep,
+                SelectionCause::Restore,
+                missing,
+            )
+            .await
+            .is_err());
+        assert!(manager.aggregate_snapshot().await.sessions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dormant_finalization_and_live_transition_invariants_are_atomic() {
+        let manager = SessionManager::new();
+        let capability = CommitCapability::for_test();
+        let (dormant, dormant_binding) = pending_fixture(&manager, false).await;
+        let dormant_runtime = dormant_witness(dormant.id);
+        let mut dormant_mutations = LifecycleMutations::default();
+        dormant_mutations.finalize_dormant(dormant_binding, dormant_runtime, 37);
+        manager
+            .commit_selection_transition(
+                &capability,
+                CommitDecision::Dormant(dormant_runtime),
+                SelectionCause::Restore,
+                dormant_mutations,
+            )
+            .await
+            .expect("finalize dormant");
+        assert_eq!(
+            manager.get_session(dormant.id).await.unwrap().status,
+            SessionStatus::Exited(37)
+        );
+        assert_eq!(
+            manager.selection_payload().await.status(),
+            Some(&SessionStatus::Exited(37))
+        );
+
+        let (first, first_binding) = pending_fixture(&manager, false).await;
+        let first_live = live_witness(first.id);
+        let mut first_finalize = LifecycleMutations::default();
+        first_finalize.finalize_live(first_binding, first_live);
+        manager
+            .commit_selection_transition(
+                &capability,
+                CommitDecision::Live(first_live),
+                SelectionCause::UserSwitch,
+                first_finalize,
+            )
+            .await
+            .expect("select first live");
+
+        let (second, second_binding) = pending_fixture(&manager, false).await;
+        let second_live = live_witness(second.id);
+        let mut second_finalize = LifecycleMutations::default();
+        second_finalize.finalize_live(second_binding, second_live);
+        manager
+            .commit_selection_transition(
+                &capability,
+                CommitDecision::Live(second_live),
+                SelectionCause::UserSwitch,
+                second_finalize,
+            )
+            .await
+            .expect("select second live");
+        assert_eq!(
+            manager.get_session(first.id).await.unwrap().status,
+            SessionStatus::Running
+        );
+        assert_eq!(
+            manager.get_session(second.id).await.unwrap().status,
+            SessionStatus::Active
+        );
+
+        let revision = manager.selection_payload().await.revision();
+        for invalid in [
+            LiveRuntimeWitness {
+                session_id: Uuid::new_v4(),
+                has_pty: true,
+                detached: false,
+            },
+            LiveRuntimeWitness {
+                session_id: first.id,
+                has_pty: false,
+                detached: false,
+            },
+            LiveRuntimeWitness {
+                session_id: first.id,
+                has_pty: true,
+                detached: true,
+            },
+        ] {
+            assert!(manager
+                .commit_selection_transition(
+                    &capability,
+                    CommitDecision::Live(invalid),
+                    SelectionCause::UserSwitch,
+                    LifecycleMutations::default(),
+                )
+                .await
+                .is_err());
+        }
+        assert_eq!(manager.selection_payload().await.revision(), revision);
+    }
+
+    #[tokio::test]
+    async fn mark_exited_preserves_first_code_and_updates_selection_and_raise_hand_once() {
+        let manager = SessionManager::new();
+        let capability = CommitCapability::for_test();
+        let (session, binding) = pending_fixture(&manager, true).await;
+        let live = live_witness(session.id);
+        let mut finalize = LifecycleMutations::default();
+        finalize.finalize_live(binding, live);
+        manager
+            .commit_selection_transition(
+                &capability,
+                CommitDecision::Live(live),
+                SelectionCause::SessionCreated(TrustedCreateIntent::User),
+                finalize,
+            )
+            .await
+            .unwrap();
+        assert!(manager.raise_hand(session.id, chrono::Utc::now()).await.is_some());
+
+        let dormant = dormant_witness(session.id);
+        let mut exit = LifecycleMutations::default();
+        exit.mark_exited(session.id, 7);
+        let first = manager
+            .commit_selection_transition(
+                &capability,
+                CommitDecision::Dormant(dormant),
+                SelectionCause::LivenessReconcile,
+                exit,
+            )
+            .await
+            .expect("first exit");
+        assert_eq!(first.cleared_raise_hand_ids, vec![session.id]);
+        assert_eq!(
+            manager.get_session(session.id).await.unwrap().status,
+            SessionStatus::Exited(7)
+        );
+        assert!(manager
+            .get_session(session.id)
+            .await
+            .unwrap()
+            .communication
+            .is_none());
+        let revision = manager.selection_payload().await.revision();
+
+        let mut duplicate = LifecycleMutations::default();
+        duplicate.mark_exited(session.id, 99);
+        let second = manager
+            .commit_selection_transition(
+                &capability,
+                CommitDecision::Dormant(dormant),
+                SelectionCause::LivenessReconcile,
+                duplicate,
+            )
+            .await
+            .expect("duplicate exit is idempotent");
+        assert!(second.selection.is_none());
+        assert!(second.changed_rows.is_empty());
+        assert_eq!(manager.selection_payload().await.revision(), revision);
+        assert_eq!(
+            manager.get_session(session.id).await.unwrap().status,
+            SessionStatus::Exited(7)
+        );
+
+        let mut keep_selected = LifecycleMutations::default();
+        keep_selected.mark_exited(session.id, 101);
+        assert!(manager
+            .commit_selection_transition(
+                &capability,
+                CommitDecision::Keep,
+                SelectionCause::LivenessReconcile,
+                keep_selected,
+            )
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn detached_intent_is_atomic_and_preserves_geometry() {
+        let manager = SessionManager::new();
+        let capability = CommitCapability::for_test();
+        let (session, binding) = pending_fixture(&manager, false).await;
+        let live = live_witness(session.id);
+        let mut finalize = LifecycleMutations::default();
+        finalize.finalize_live(binding, live);
+        manager
+            .commit_selection_transition(
+                &capability,
+                CommitDecision::Keep,
+                SelectionCause::Restore,
+                finalize,
+            )
+            .await
+            .unwrap();
+        let geometry = WindowGeometry {
+            x: 12.0,
+            y: 34.0,
+            width: 800.0,
+            height: 600.0,
+        };
+        manager
+            .set_detached_geometry(session.id, geometry.clone())
+            .await;
+
+        let mut detach = LifecycleMutations::default();
+        detach.set_detached_intent(session.id, true);
+        let changed = manager
+            .commit_selection_transition(
+                &capability,
+                CommitDecision::Keep,
+                SelectionCause::Detach,
+                detach,
+            )
+            .await
+            .unwrap();
+        assert_eq!(changed.changed_rows.len(), 1);
+        let stored = manager.get_session(session.id).await.unwrap();
+        assert!(stored.was_detached);
+        let stored_geometry = stored.detached_geometry.expect("stored geometry");
+        assert_eq!(stored_geometry.x, geometry.x);
+        assert_eq!(stored_geometry.y, geometry.y);
+        assert_eq!(stored_geometry.width, geometry.width);
+        assert_eq!(stored_geometry.height, geometry.height);
+
+        let revision = manager.selection_payload().await.revision();
+        let mut repeat = LifecycleMutations::default();
+        repeat.set_detached_intent(session.id, true);
+        let repeated = manager
+            .commit_selection_transition(
+                &capability,
+                CommitDecision::Keep,
+                SelectionCause::Detach,
+                repeat,
+            )
+            .await
+            .unwrap();
+        assert!(repeated.changed_rows.is_empty());
+        assert_eq!(manager.selection_payload().await.revision(), revision);
+    }
+
+    #[tokio::test]
+    async fn revision_overflow_rejects_before_any_mutation() {
+        let manager = SessionManager::new();
+        let capability = CommitCapability::for_test();
+        let (session, binding) = pending_fixture(&manager, false).await;
+        manager.state.write().await.revision = u64::MAX;
+        let live = live_witness(session.id);
+        let mut finalize = LifecycleMutations::default();
+        finalize.finalize_live(binding, live);
+        let error = manager
+            .commit_selection_transition(
+                &capability,
+                CommitDecision::Live(live),
+                SelectionCause::UserSwitch,
+                finalize,
+            )
+            .await
+            .expect_err("revision must not wrap");
+        assert_eq!(error, "selection revision overflow");
+        assert!(manager.get_pending_session(binding).await.is_some());
+        assert!(manager.list_sessions().await.is_empty());
     }
 }

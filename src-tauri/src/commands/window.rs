@@ -3,7 +3,11 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 use crate::config::settings::WindowGeometry;
-use crate::session::manager::SessionManager;
+use crate::session::manager::{CommitDecision, LifecycleMutations, SessionManager};
+use crate::session::selection::{
+    SelectionCause, SelectionCoordinator, SelectionSource, SelectionTransaction,
+};
+use crate::session::session::SessionStatus;
 use crate::DetachedSessionsState;
 
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -164,119 +168,160 @@ fn monitor_work_area_for_window<R: tauri::Runtime>(
 ///
 /// `geometry: Some(geo)` uses the given position/size; `None` falls back to
 /// default 900×600 (plan §A2.2.G1).
-pub(crate) async fn detach_terminal_inner(
-    app: &AppHandle,
+pub(crate) async fn detach_terminal_inner<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
-    detached: &DetachedSessionsState,
+    _detached: &DetachedSessionsState,
     session_id: &str,
     geometry: Option<WindowGeometry>,
     skip_switch: bool,
 ) -> Result<String, String> {
+    let uuid = Uuid::parse_str(session_id).map_err(|error| error.to_string())?;
+    if session_mgr.read().await.get_session(uuid).await.is_none() {
+        return Err("Session not found".to_string());
+    }
+    let coordinator = app
+        .try_state::<SelectionCoordinator>()
+        .ok_or_else(|| "selectionCoordinatorUnavailable".to_string())?;
+    coordinator.detach(uuid, geometry, skip_switch).await
+}
+
+pub(crate) async fn execute_detach_transaction<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    session_id: Uuid,
+    geometry: Option<WindowGeometry>,
+    suppress_selection: bool,
+) -> Result<String, String> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
 
-    let uuid = Uuid::parse_str(session_id).map_err(|e| e.to_string())?;
-    let label = format!("terminal-{}", session_id.replace('-', ""));
-    let url = format!("index.html?window=detached&sessionId={}", session_id);
-
-    // Focus-existing short-circuit — matches pre-0.8.0 behavior.
-    if let Some(existing) = app.get_webview_window(&label) {
-        existing.set_focus().map_err(|e| e.to_string())?;
+    let snapshot = transaction.aggregate_snapshot().await;
+    let record = snapshot
+        .sessions
+        .iter()
+        .find(|session| session.id == session_id)
+        .ok_or_else(|| "Session not found".to_string())?;
+    if matches!(record.status, SessionStatus::Exited(_))
+        || !transaction.runtime_snapshot(session_id).has_pty
+    {
+        return Err("Session has no live PTY".to_string());
+    }
+    let session_id_string = session_id.to_string();
+    let label = format!("terminal-{}", session_id_string.replace('-', ""));
+    if let Some(existing) = transaction.app().get_webview_window(&label) {
+        existing.set_focus().map_err(|error| error.to_string())?;
         return Ok(label);
     }
 
+    let url = format!("index.html?window=detached&sessionId={session_id_string}");
     let icon = tauri::image::Image::from_bytes(include_bytes!("../../icons/icon.png"))
-        .expect("Failed to load app icon");
-
-    // Step 2: build first. If build fails, no state mutation — G.1 leak plugged.
-    let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url.into()))
-        .title("Terminal [detached]")
-        .icon(icon)
-        .map_err(|e| e.to_string())?
-        .min_inner_size(400.0, 300.0)
-        .decorations(false)
-        .zoom_hotkeys_enabled(false);
-    if let Some(ref geo) = geometry {
-        builder = builder
-            .inner_size(geo.width, geo.height)
-            .position(geo.x, geo.y);
-    } else {
-        builder = builder.inner_size(900.0, 600.0);
-    }
-    let win = builder.build().map_err(|e| e.to_string())?;
-
-    // Step 3: post-build session-existence recheck (G.7). If a concurrent destroy
-    // removed the session between the caller's check and our window build, roll
-    // back by destroying the window and returning Err. NOT inserting into the
-    // detached set keeps `DetachedSessionsState` clean for the next action.
-    {
-        let mgr = session_mgr.read().await;
-        if mgr.get_session(uuid).await.is_none() {
-            let _ = win.destroy();
-            return Err("Session destroyed during window build".into());
-        }
-    }
-
-    // Step 4: insert UUID into DetachedSessionsState (idempotent).
-    {
-        let mut set = detached.lock().unwrap();
-        set.insert(uuid);
-    }
-
-    // Step 5: sync Session::was_detached for persistence (Fix A, plan §A3.2.3).
-    {
-        let mgr = session_mgr.read().await;
-        mgr.set_was_detached(uuid, true).await;
-    }
-
-    // Step 6: emit terminal_detached — frontend stores + main-window pre-warm listener
-    // (A2.3.G6) subscribe to this.
-    let _ = app.emit(
-        "terminal_detached",
-        serde_json::json!({ "sessionId": session_id, "windowLabel": label }),
-    );
-
-    // Step 7: sibling-switch — skip on restore path per R.10 / A3.3 / A2.2.G3.
-    if !skip_switch {
-        let mgr = session_mgr.read().await;
-        let sessions = mgr.list_sessions().await;
-        let next_id = {
-            let set = detached.lock().unwrap();
-            sessions
-                .iter()
-                .find(|s| {
-                    Uuid::parse_str(&s.id)
-                        .ok()
-                        .is_some_and(|u| !set.contains(&u))
-                })
-                .map(|s| s.id.clone())
-        };
-
-        if let Some(next_id) = next_id {
-            let next_uuid = Uuid::parse_str(&next_id).map_err(|e| e.to_string())?;
-            // G.10 tolerance: switch failure logs + emits null rather than propagating.
-            match mgr.switch_session(next_uuid).await {
-                Ok(()) => {
-                    let _ = app.emit("session_switched", serde_json::json!({ "id": next_id }));
-                }
-                Err(e) => {
-                    log::warn!("[detach] switch to sibling {} failed: {}", next_id, e);
-                    mgr.clear_active().await;
-                    let _ = app.emit(
-                        "session_switched",
-                        serde_json::json!({ "id": serde_json::Value::Null }),
-                    );
-                }
-            }
+        .map_err(|error| format!("Failed to load app icon: {error}"))?;
+    let window = {
+        let mut builder =
+            WebviewWindowBuilder::new(transaction.app(), &label, WebviewUrl::App(url.into()))
+                .title("Terminal [detached]")
+                .icon(icon)
+                .map_err(|error| error.to_string())?
+                .min_inner_size(400.0, 300.0)
+                .decorations(false)
+                .zoom_hotkeys_enabled(false);
+        if let Some(ref geometry) = geometry {
+            builder = builder
+                .inner_size(geometry.width, geometry.height)
+                .position(geometry.x, geometry.y);
         } else {
-            mgr.clear_active().await;
-            let _ = app.emit(
-                "session_switched",
-                serde_json::json!({ "id": serde_json::Value::Null }),
+            builder = builder.inner_size(900.0, 600.0);
+        }
+        builder.build().map_err(|error| error.to_string())?
+    };
+
+    transaction
+        .app()
+        .state::<DetachedSessionsState>()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .insert(session_id);
+    let still_valid = transaction.app().get_webview_window(&label).is_some()
+        && transaction
+            .manager()
+            .await
+            .get_session(session_id)
+            .await
+            .is_some()
+        && transaction.runtime_snapshot(session_id).has_pty;
+    if !still_valid {
+        if let Err(error) = window.destroy() {
+            log::warn!(
+                "[detach] compensating window destroy failed session={}: {}",
+                session_id,
+                error
             );
         }
+        transaction
+            .app()
+            .state::<DetachedSessionsState>()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&session_id);
+        return Err("Session lost liveness during detach".to_string());
     }
 
+    let final_snapshot = transaction.aggregate_snapshot().await;
+    let decision = if final_snapshot.selection.id() != Some(session_id) {
+        CommitDecision::Keep
+    } else if suppress_selection {
+        CommitDecision::Clear
+    } else {
+        first_live_fallback(transaction, &final_snapshot.sessions, session_id)
+            .unwrap_or(CommitDecision::Clear)
+    };
+    let mut mutations = LifecycleMutations::default();
+    mutations.set_detached_intent(session_id, true);
+    let cause = if suppress_selection {
+        SelectionCause::Restore
+    } else {
+        SelectionCause::Detach
+    };
+    let committed = transaction.commit(decision, cause, mutations).await?;
+    transaction
+        .persist(
+            if suppress_selection {
+                SelectionSource::Restore
+            } else {
+                SelectionSource::Detach
+            },
+            Some(session_id),
+        )
+        .await;
+    if let Err(error) = transaction.app().emit(
+        "terminal_detached",
+        serde_json::json!({
+            "sessionId": session_id_string,
+            "windowLabel": label,
+        }),
+    ) {
+        log::warn!(
+            "[detach] terminal_detached publication failed session={}: {}",
+            session_id,
+            error
+        );
+    }
+    if let Some(selection) = committed.selection.as_ref() {
+        transaction.publish_selection(selection);
+    }
     Ok(label)
+}
+
+fn first_live_fallback<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    sessions: &[crate::session::session::Session],
+    excluded: Uuid,
+) -> Option<CommitDecision> {
+    sessions.iter().find_map(|candidate| {
+        if candidate.id == excluded || matches!(candidate.status, SessionStatus::Exited(_)) {
+            return None;
+        }
+        transaction.live_decision(candidate.id)
+    })
 }
 
 /// Detach a session into its own terminal window.
@@ -318,76 +363,107 @@ pub async fn detach_terminal(
 #[tauri::command]
 pub async fn attach_terminal(
     app: AppHandle,
-    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
-    detached: State<'_, DetachedSessionsState>,
+    _session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
+    _detached: State<'_, DetachedSessionsState>,
     session_id: String,
 ) -> Result<(), String> {
     let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
+    let coordinator = app
+        .try_state::<SelectionCoordinator>()
+        .ok_or_else(|| "selectionCoordinatorUnavailable".to_string())?;
+    coordinator.attach(uuid).await
+}
 
-    // A2.2.G5 contract: silent no-op when the session is gone.
-    {
-        let mgr = session_mgr.read().await;
-        if mgr.get_session(uuid).await.is_none() {
-            let mut set = detached.lock().unwrap();
-            set.remove(&uuid);
-            let label = format!("terminal-{}", session_id.replace('-', ""));
-            if let Some(win) = app.get_webview_window(&label) {
-                let _ = win.destroy();
+pub(crate) async fn execute_attach_transaction<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    session_id: Uuid,
+) -> Result<(), String> {
+    let manager = transaction.manager().await;
+    let Some(record) = manager.get_session(session_id).await else {
+        transaction
+            .app()
+            .state::<DetachedSessionsState>()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&session_id);
+        let label = format!("terminal-{}", session_id.to_string().replace('-', ""));
+        if let Some(window) = transaction.app().get_webview_window(&label) {
+            if let Err(error) = window.destroy() {
+                log::warn!(
+                    "[attach] stale detached window cleanup failed session={}: {}",
+                    session_id,
+                    error
+                );
             }
-            log::info!(
-                "[attach] session {} already destroyed; silent no-op",
-                session_id
-            );
-            return Ok(());
         }
-    }
+        return Ok(());
+    };
 
-    // Close the detached window if present. Use destroy() per R.2 to bypass any
-    // onCloseRequested handler (avoids recursion if this runs inside the X-click
-    // intercept path on the detached window). Destroy failure is a real attach
-    // failure: keep detached state intact so we do not render the same PTY twice.
-    let label = format!("terminal-{}", session_id.replace('-', ""));
-    if let Some(win) = app.get_webview_window(&label) {
-        win.destroy().map_err(|e| {
+    let label = format!("terminal-{}", session_id.to_string().replace('-', ""));
+    if let Some(window) = transaction.app().get_webview_window(&label) {
+        window.destroy().map_err(|error| {
             format!(
                 "Failed to destroy detached window {} during attach: {}",
-                label, e
+                label, error
             )
         })?;
     }
+    transaction
+        .app()
+        .state::<DetachedSessionsState>()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .remove(&session_id);
 
-    // Remove from DetachedSessionsState only after the detached window is gone.
-    {
-        let mut set = detached.lock().unwrap();
-        set.remove(&uuid);
-    }
-
-    let mgr = session_mgr.read().await;
-    if mgr.get_session(uuid).await.is_none() {
-        log::info!(
-            "[attach] session {} already destroyed; silent no-op",
-            session_id
-        );
-        return Ok(());
-    }
-
-    // Fix A (§A3.2.4 / NEW-2): clear was_detached BEFORE switch + emit so any
-    // snapshot that runs between set_was_detached and emit captures the correct
-    // post-attach state.
-    mgr.set_was_detached(uuid, false).await;
-
-    // Session lives → promote to active in main.
-    mgr.switch_session(uuid).await.map_err(|e| e.to_string())?;
-    let _ = app.emit(
+    let runtime = transaction.runtime_snapshot(session_id);
+    let mut mutations = LifecycleMutations::default();
+    let (decision, cause, source) = match record.status {
+        SessionStatus::Exited(_) => (
+            transaction
+                .dormant_decision(session_id)
+                .ok_or_else(|| "Attached dormant session remained detached".to_string())?,
+            SelectionCause::Attach,
+            SelectionSource::Attach,
+        ),
+        _ if runtime.has_pty => (
+            transaction
+                .live_decision(session_id)
+                .ok_or_else(|| "Attached session is not displayable".to_string())?,
+            SelectionCause::Attach,
+            SelectionSource::Attach,
+        ),
+        _ => {
+            mutations.mark_exited(session_id, 1);
+            (
+                transaction.dormant_decision(session_id).ok_or_else(|| {
+                    "Attached liveness-loss session remained detached".to_string()
+                })?,
+                SelectionCause::LivenessReconcile,
+                SelectionSource::LivenessReconcile,
+            )
+        }
+    };
+    mutations.set_detached_intent(session_id, false);
+    let committed = transaction.commit(decision, cause, mutations).await?;
+    transaction.persist(source, Some(session_id)).await;
+    if let Err(error) = transaction.app().emit(
         "terminal_attached",
-        serde_json::json!({ "sessionId": session_id }),
-    );
-    let _ = app.emit(
-        "session_switched",
-        serde_json::json!({ "id": session_id, "userInitiated": true }),
-    );
-
-    Ok(())
+        serde_json::json!({ "sessionId": session_id.to_string() }),
+    ) {
+        log::warn!(
+            "[attach] terminal_attached publication failed session={}: {}",
+            session_id,
+            error
+        );
+    }
+    if let Some(selection) = committed.selection.as_ref() {
+        transaction.publish_selection(selection);
+    }
+    if runtime.has_pty || matches!(record.status, SessionStatus::Exited(_)) {
+        Ok(())
+    } else {
+        Err("Session has no live PTY".to_string())
+    }
 }
 
 /// Return the list of session IDs currently in `DetachedSessionsState`. Used by

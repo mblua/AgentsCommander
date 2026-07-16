@@ -653,8 +653,54 @@ impl UiAutomationState {
         request_file: &RequestFile,
         request: &UiAutomationRequest,
     ) {
-        let response = handle_backend_request(app, request);
-        let _ = self.write_direct_response(request_file, &response);
+        let inflight_path = match self.ensure_inflight(request_file) {
+            Ok(path) => path,
+            Err(error) => {
+                let mut response = UiAutomationResponse::error_for_request(
+                    request,
+                    "automation_filesystem_error",
+                    "Failed to mark backend automation request as inflight.",
+                );
+                response.diagnostics = Some(json!({ "message": error.to_string() }));
+                let _ = self.write_direct_response(request_file, &response);
+                return;
+            }
+        };
+        let response_path = self.response_path(&request.request_id);
+        let pending = PendingRequest {
+            request: request.clone(),
+            response_path,
+            inflight_path,
+        };
+        self.inner
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(request.request_id.clone(), pending);
+
+        let state = self.clone();
+        let app = app.clone();
+        let request = request.clone();
+        tauri::async_runtime::spawn(async move {
+            let response = handle_backend_request(&app, &request).await;
+            let pending = state
+                .inner
+                .pending
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&request.request_id);
+            let Some(pending) = pending else {
+                return;
+            };
+            if let Err(error) = write_json_atomic_new(&pending.response_path, &response) {
+                log::warn!(
+                    "[ui-automation] backend response write failed request={}: {}",
+                    request.request_id,
+                    error
+                );
+            }
+            let _ = retry_remove_file(&pending.inflight_path);
+        });
     }
 
     fn is_pending(&self, request_id: &str) -> bool {
@@ -942,7 +988,10 @@ impl BackendWatchdogMode {
     }
 }
 
-fn handle_backend_request(app: &AppHandle, request: &UiAutomationRequest) -> UiAutomationResponse {
+async fn handle_backend_request(
+    app: &AppHandle,
+    request: &UiAutomationRequest,
+) -> UiAutomationResponse {
     if request.action != UiAutomationAction::Backend {
         return UiAutomationResponse::error_for_request(
             request,
@@ -953,7 +1002,7 @@ fn handle_backend_request(app: &AppHandle, request: &UiAutomationRequest) -> UiA
 
     match request.selector.as_str() {
         RESOURCE_WATCHDOG_BACKEND_SELECTOR => {
-            handle_resource_watchdog_backend_request(app, request)
+            handle_resource_watchdog_backend_request(app, request).await
         }
         _ => UiAutomationResponse::error_for_request(
             request,
@@ -963,7 +1012,7 @@ fn handle_backend_request(app: &AppHandle, request: &UiAutomationRequest) -> UiA
     }
 }
 
-fn handle_resource_watchdog_backend_request(
+async fn handle_resource_watchdog_backend_request(
     app: &AppHandle,
     request: &UiAutomationRequest,
 ) -> UiAutomationResponse {
@@ -1015,14 +1064,33 @@ fn handle_resource_watchdog_backend_request(
     let mut kill_results = Vec::new();
     if kill_enabled {
         for decision in decisions.iter().filter(|decision| decision.kill_required) {
-            match monitor.kill_group(
-                decision.session_id,
-                crate::resource_monitor::ResourceKillReason::Watchdog,
-            ) {
-                Ok(result) => kill_results.push(json!({
-                    "ok": true,
-                    "result": result,
-                })),
+            let Some(coordinator) =
+                app.try_state::<crate::session::selection::SelectionCoordinator>()
+            else {
+                kill_results.push(json!({
+                    "ok": false,
+                    "sessionId": decision.session_id,
+                    "message": "selectionCoordinatorUnavailable",
+                }));
+                continue;
+            };
+            match coordinator
+                .watchdog_resource_kill(decision.session_id)
+                .await
+            {
+                Ok(crate::session::selection::CriticalAdmissionOutcome::Completed(result)) => {
+                    kill_results.push(json!({
+                        "ok": true,
+                        "result": result,
+                    }))
+                }
+                Ok(crate::session::selection::CriticalAdmissionOutcome::AlreadyPending) => {
+                    kill_results.push(json!({
+                        "ok": true,
+                        "sessionId": decision.session_id,
+                        "alreadyPending": true,
+                    }))
+                }
                 Err(message) => kill_results.push(json!({
                     "ok": false,
                     "sessionId": decision.session_id,
