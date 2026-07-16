@@ -1646,6 +1646,19 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         return Err(err);
     }
 
+    // #1032 - start sampling this session's context reading. This sits above the backend
+    // split and covers local and container alike, with no backend plumbing. `try_state`,
+    // not `state`: `state` panics when unmanaged, and test apps do not manage the scraper.
+    // An absent scraper is simply the feature being off.
+    //
+    // Sessions with no agent are never registered, so a plain shell costs nothing. There is
+    // no race with the parser here: the first sample is 5s away.
+    if let Some(agent_id) = agent_id.clone() {
+        if let Some(scraper) = app.try_state::<Arc<crate::pty::context_scrape::ContextScraper>>() {
+            scraper.register_session(id, agent_id);
+        }
+    }
+
     // Auto-inject optional non-credential bootstrap text for agent sessions
     // after PTY spawn. Credentials are already present in child environment
     // variables; no credentials are written through PTY.

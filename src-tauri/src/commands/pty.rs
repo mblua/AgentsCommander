@@ -448,6 +448,20 @@ pub fn get_screen_snapshot(
     }))
 }
 
+/// #1032 - the last context reading for a session, for a frontend that just mounted and
+/// missed the `session_context` event.
+///
+/// `None` covers every unavailable case there is - no regex, no match, a truncated row, a
+/// session that is over, a scraper that is not managed - and NEVER means 0.
+#[tauri::command]
+pub fn get_session_context(app: AppHandle, session_id: String) -> Result<Option<u8>, String> {
+    let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
+    let Some(scraper) = app.try_state::<Arc<crate::pty::context_scrape::ContextScraper>>() else {
+        return Ok(None);
+    };
+    Ok(scraper.last_reading(uuid))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

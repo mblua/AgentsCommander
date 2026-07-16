@@ -27,12 +27,16 @@ use std::sync::{Arc, Mutex, OnceLock};
 use commands::ac_discovery::DiscoveryBranchWatcher;
 use config::sessions_persistence;
 use config::settings::SettingsState;
+use pty::context_scrape::{
+    ContextEventSink, ContextPatternSource, ContextScraper, ContextUsagePayload, ScreenRowsRead,
+    ScreenRowsSource,
+};
 use pty::git_watcher::GitWatcher;
 use pty::idle_detector::IdleDetector;
 use pty::manager::PtyManager;
 use session::manager::SessionManager;
 use shutdown::ShutdownSignal;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use telegram::manager::{OutputSenderMap, TelegramBridgeManager, TelegramBridgeState};
 use tokio_util::sync::CancellationToken;
 use voice::tracker::{VoiceTracker, VoiceTrackingState};
@@ -370,6 +374,79 @@ pub(crate) fn should_auto_create_root_agent_on_first_restore(
     commands::session::resolve_root_agent_command(settings, None, last_coding_agent).is_ok()
 }
 
+// ---- #1032: the three adapters ----------------------------------------------------
+//
+// This is the boundary. Everything above it holds an `AppHandle` and a `PtyManager` and
+// can do anything to a session; the `ContextScraper` below it holds these three trait
+// objects and can do exactly three things. The narrowing is the feature's one hard rule
+// ("the value never drives an action") made structural instead of remembered.
+
+/// Rows, via the routed backend. The three states come from the backend, which is the only
+/// thing that holds a liveness oracle.
+struct ScraperRows {
+    pty_mgr: Arc<Mutex<PtyManager>>,
+    /// A poisoned `PtyManager` is app-wide and permanent, so the warning is worth exactly
+    /// one line, not one per configured session every 5 seconds.
+    poison_logged: AtomicBool,
+}
+
+impl ScreenRowsSource for ScraperRows {
+    fn get_screen_rows(&self, id: uuid::Uuid) -> ScreenRowsRead {
+        match self.pty_mgr.lock() {
+            Ok(mgr) => mgr.get_screen_rows(id),
+            Err(_) => {
+                if !self
+                    .poison_logged
+                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    log::warn!(
+                        "[context] PtyManager lock is poisoned; context readings are unavailable"
+                    );
+                }
+                // NOT SessionOver: a poisoned lock says nothing about whether the session
+                // is alive, and guessing would deregister live sessions.
+                ScreenRowsRead::Unavailable
+            }
+        }
+    }
+}
+
+/// Every agent's configured pattern string, read fresh from settings each tick. One
+/// `RwLock` read per tick for all sessions, not one per session.
+struct ScraperPatterns {
+    settings: SettingsState,
+}
+
+impl ContextPatternSource for ScraperPatterns {
+    fn patterns(&self) -> futures::future::BoxFuture<'_, HashMap<String, String>> {
+        Box::pin(async move {
+            let settings = self.settings.read().await;
+            settings
+                .agents
+                .iter()
+                .filter_map(|agent| {
+                    let regex = agent.context_regex.as_deref()?.trim();
+                    // An empty string is a cleared field, not a pattern that matches
+                    // everything.
+                    (!regex.is_empty()).then(|| (agent.id.clone(), regex.to_string()))
+                })
+                .collect()
+        })
+    }
+}
+
+/// The sink. `PtyOutputTarget` (`output.rs`) already wraps an `AppHandle` behind a plain
+/// `Fn` for the same reason.
+struct ScraperSink {
+    app_handle: tauri::AppHandle,
+}
+
+impl ContextEventSink for ScraperSink {
+    fn emit(&self, payload: ContextUsagePayload) {
+        let _ = self.app_handle.emit("session_context", payload);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run(
     test_window_placement: Option<crate::testability::window_placement::TestWindowPlacement>,
@@ -694,6 +771,23 @@ pub fn run(
                 guard.start_container_pending_reaper(shutdown_for_setup.clone());
             }
             app.manage(pty_mgr.clone());
+
+            // #1032 context scrape. Must be after `.manage(settings)` above, since the
+            // pattern adapter reads settings back out of managed state. Mirrors GitWatcher.
+            let context_scraper = ContextScraper::new(
+                Arc::new(ScraperRows {
+                    pty_mgr: pty_mgr.clone(),
+                    poison_logged: AtomicBool::new(false),
+                }),
+                Arc::new(ScraperPatterns {
+                    settings: app.state::<SettingsState>().inner().clone(),
+                }),
+                Arc::new(ScraperSink {
+                    app_handle: app.handle().clone(),
+                }),
+            );
+            context_scraper.start(shutdown_for_setup.clone());
+            app.manage(Arc::clone(&context_scraper));
 
             // #714 register the configured global screenshot hotkey. Windows-only
             // effect; on other targets register_configured_hotkey records an
@@ -2067,6 +2161,7 @@ pub fn run(
                         commands::pty::pty_write,
             commands::pty::pty_resize,
             commands::pty::get_screen_snapshot,
+            commands::pty::get_session_context,
             commands::config::get_settings,
             commands::config::get_coding_agent_catalog,
             commands::config::list_reseedable_agent_commands,
