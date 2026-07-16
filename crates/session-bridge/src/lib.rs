@@ -387,6 +387,29 @@ mod tests {
     }
 
     #[test]
+    fn transport_url_maps_https_to_wss() {
+        let config = BridgeConfig {
+            api_url: "https://api.example.test:8765/".to_string(),
+            api_token: "secret".to_string(),
+            session_id: Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap(),
+            registration_ticket: "ticket".to_string(),
+            host_root: "C:/root".to_string(),
+            workdir: "/workspace".to_string(),
+            command: "sh".to_string(),
+            args: Vec::new(),
+            child_env: Vec::new(),
+            env_unset: Vec::new(),
+            cols: 80,
+            rows: 24,
+        };
+
+        assert_eq!(
+            config.transport_url(),
+            "wss://api.example.test:8765/api/v1/session-transport?sessionId=11111111-1111-4111-8111-111111111111&ticket=ticket"
+        );
+    }
+
+    #[test]
     fn protocol_frames_match_host_shape() {
         let hello = BridgeToHostTextFrame::Hello {
             version: TRANSPORT_PROTOCOL_VERSION,
