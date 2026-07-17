@@ -425,10 +425,20 @@ impl ContextPatternSource for ScraperPatterns {
                 .agents
                 .iter()
                 .filter_map(|agent| {
-                    let regex = agent.context_regex.as_deref()?.trim();
-                    // An empty string is a cleared field, not a pattern that matches
-                    // everything.
-                    (!regex.is_empty()).then(|| (agent.id.clone(), regex.to_string()))
+                    let regex = agent.context_regex.as_deref()?;
+                    // A blank field is the field being blank, and skipping it here is a
+                    // LOG-HYGIENE choice and nothing more: `pattern::compile` already
+                    // refuses "" and "   " for having no capture group 1, so this can never
+                    // become a pattern that matches everything - it would only warn on every
+                    // change while a user is still typing.
+                    //
+                    // Note what is trimmed and what is not: the emptiness TEST looks at a
+                    // trimmed view, the VALUE handed over is the user's string, byte for
+                    // byte. The pattern is the only defence this feature has - the engine
+                    // ships no anchoring rules of its own - so editing it can only weaken
+                    // it. Trimming would eat the leading spaces of `  Context ...`, which
+                    // ARE the column-2 anchor, and the reading would fail open.
+                    (!regex.trim().is_empty()).then(|| (agent.id.clone(), regex.to_string()))
                 })
                 .collect()
         })
@@ -2476,7 +2486,8 @@ mod tests {
         resolve_is_coord_for_restore, restore_session_should_become_active,
         restore_session_should_wake, should_auto_create_root_agent_on_first_restore,
         should_wake_on_restore, should_wake_root_agent_on_restore, skip_auto_resume_for_restore,
-        ApiServerHandle, ApiServerTask, WebServerHandle,
+        ApiServerHandle, ApiServerTask, ContextPatternSource, ScraperPatterns, SettingsState,
+        WebServerHandle,
     };
     use crate::config::settings::{AgentConfig, AppSettings};
     use crate::session::session::SessionStatus;
@@ -2504,6 +2515,95 @@ mod tests {
             }],
             ..AppSettings::default()
         }
+    }
+
+    fn settings_with_context_regex(regex: &str) -> AppSettings {
+        let mut settings = settings_with_agent();
+        settings.agents[0].context_regex = Some(regex.to_string());
+        settings
+    }
+
+    fn resolved(settings: AppSettings) -> std::collections::HashMap<String, String> {
+        let source = ScraperPatterns {
+            settings: std::sync::Arc::new(tokio::sync::RwLock::new(settings)) as SettingsState,
+        };
+        futures::executor::block_on(source.patterns())
+    }
+
+    /// #1032 - the adapter must hand `compile` the string the user wrote, byte for byte.
+    ///
+    /// The pattern is the ONLY defence this feature has: the engine deliberately ships no
+    /// anchoring rules of its own, so every rule that makes a reading trustworthy lives in
+    /// the user's text. An engine that edits that text can only weaken it, and it does so
+    /// silently, in the one place nobody thinks to look.
+    ///
+    /// The concrete loss this pins: `  Context [\u{2591}\u{2588}]+ (\d{1,3})%` is the natural
+    /// transcription of a row the plan says ALWAYS starts at column 2 - copy the row, swap
+    /// the bar and the number for classes. Trimming it deletes the column-2 anchor, and with
+    /// the statusline suppressed the pattern then matches input-box prose and reports a
+    /// confident 99% that is a lie. Failing open, in a design where everything else fails
+    /// closed.
+    #[test]
+    fn the_adapter_hands_over_the_users_pattern_verbatim() {
+        let user_wrote = "  Context [\u{2591}\u{2588}]+ (\\d{1,3})%";
+        let patterns = resolved(settings_with_context_regex(user_wrote));
+
+        assert_eq!(
+            patterns.get("codex").map(String::as_str),
+            Some(user_wrote),
+            "the engine must not rewrite the user's regex, and leading spaces ARE the anchor"
+        );
+    }
+
+    /// The consequence, end to end through the real adapter: what the user configured is
+    /// what gets read, and it reports NO number rather than a wrong one.
+    ///
+    /// The grid here is the statusline-suppressed case (`/help`, autocomplete, a hook turned
+    /// off), where the only `Context ... %` on screen is prose the user typed themselves.
+    /// The column-2 anchor is the single thing that rejects it. Resolve the pattern through
+    /// the adapter, compile it, run it: `None`. With the adapter trimming, this same row
+    /// read `Some(99)` - a confident lie - which is why the string identity above matters.
+    #[test]
+    fn a_pattern_resolved_through_the_adapter_still_rejects_input_box_prose() {
+        let user_wrote = "  Context [\u{2591}\u{2588}]+ (\\d{1,3})%";
+        let patterns = resolved(settings_with_context_regex(user_wrote));
+        let resolved_source = patterns.get("codex").expect("configured");
+
+        let pattern = crate::pty::context_scrape::pattern::compile(resolved_source)
+            .expect("the user's pattern compiles");
+        let grid = vec![
+            "\u{276f} The row says Context \u{2588}\u{2588}\u{2588}\u{2588}\u{2588} 99% right now"
+                .to_string(),
+        ];
+
+        assert_eq!(
+            crate::pty::context_scrape::rows::extract(&pattern, &grid),
+            None,
+            "no number beats a wrong number: the engine must not edit the only defence there is"
+        );
+    }
+
+    /// Trailing whitespace is just as much the user's business: `%` then a space is a
+    /// pattern that requires a space, and only the user knows whether their row has one.
+    #[test]
+    fn trailing_whitespace_in_a_pattern_is_the_users_business_too() {
+        let user_wrote = "Context (\\d{1,3})% ";
+        let patterns = resolved(settings_with_context_regex(user_wrote));
+
+        assert_eq!(patterns.get("codex").map(String::as_str), Some(user_wrote));
+    }
+
+    /// A blank field is the field being blank, not a pattern. Skipped for log hygiene ONLY:
+    /// `pattern::compile` already refuses "" and "   " (no capture group 1), so this cannot
+    /// become "a pattern that matches everything" - it would merely warn on every change.
+    #[test]
+    fn a_blank_context_regex_is_treated_as_unconfigured() {
+        assert!(resolved(settings_with_context_regex("")).is_empty());
+        assert!(resolved(settings_with_context_regex("   ")).is_empty());
+        assert!(
+            resolved(settings_with_agent()).is_empty(),
+            "None is unconfigured"
+        );
     }
 
     #[test]
