@@ -42,15 +42,12 @@ import {
   resolveProfileLabel,
   resolveProfilePreview,
   sortedProfileLetters,
+  suggestedContextRegex,
   validateEnvRows,
 } from "../../shared/profile-utils";
 
 type ProfileCellEnvRow = { key: string; value: string };
 
-// #576: always-visible reference for the AC path placeholders usable in a
-// profile's command and env values. The token strings are taken from the shared
-// profile-utils constants so they match the backend (placeholders.rs) byte for
-// byte; the backend stays the authority for real expansion + validation at launch.
 const AC_PLACEHOLDER_HELP = [
   "AC path placeholders (expand at launch):",
   `${AC_REPLICA_ROOT_PLACEHOLDER} — this replica's working dir`,
@@ -95,10 +92,6 @@ const API_CLIENT_EXPIRY_MS: Record<Exclude<ApiClientExpiryOption, "default">, nu
 const errorMessage = (err: unknown): string =>
   err instanceof Error ? err.message : String(err);
 
-// #526: the former "agents" + "profiles" tabs are merged into one unified
-// "Coding Agents" screen (agent list + dual comparison rails). The "profiles"
-// section name is kept as an alias so existing callers still land on the
-// unified screen. #516 adds a separate "resources" tab.
 type SettingsTab = "general" | "agents" | "resources" | "integrations";
 
 const TABS: { key: SettingsTab; label: string }[] = [
@@ -166,10 +159,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     ok: boolean;
     msg?: string;
   } | null>(null);
-  // `props.section` lets callers (e.g. disabled mic click) open on a specific
-  // tab. Invalid or absent → fall back to "general" default. The effect below
-  // also snaps to the requested section when props.section changes while the
-  // modal is already mounted (double-click on disabled mic re-targets).
   const initialTab: SettingsTab = resolveSettingsSection(props.section);
   const [activeTab, setActiveTab] = createSignal<SettingsTab>(initialTab);
   createEffect(() => {
@@ -198,9 +187,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const [saveError, setSaveError] = createSignal("");
   const [profileCellText, setProfileCellText] = createStore<Record<string, string>>({});
   const [profileCellErrors, setProfileCellErrors] = createStore<Record<string, string>>({});
-  // Per-cell env editing draft (ordered rows). Mirrors profileCellText: keeps
-  // in-progress key/value edits stable while the underlying Record<string,string>
-  // is rebuilt on every keystroke. Keyed by `${agentId}:${letter}`.
   const [profileCellEnvRows, setProfileCellEnvRows] = createStore<Record<string, ProfileCellEnvRow[]>>({});
 
   const s = () => settings.data;
@@ -413,20 +399,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     }
   };
 
-  // ── #526 Config Screen: comparison pair (two rails side by side) + the agent
-  // whose inline config editor is expanded. The LEFT rail is the primary and is
-  // always filled (positional fallback to the first agent). The RIGHT rail is an
-  // explicit comparison slot: it shows exactly the agent in `rightRailId`, and is
-  // empty when that is null — so "Remove" actually clears it. Seeded once on load
-  // (onMount) rather than via an effect, so clearing it does not get re-filled.
-  // The editor is collapsed by default — the resting screen reads as the
-  // prototype (compact agent list + the two comparison rails as the protagonist).
   const [leftRailId, setLeftRailId] = createSignal<string | null>(null);
   const [rightRailId, setRightRailId] = createSignal<string | null>(null);
   const [activeAgentId, setActiveAgentId] = createSignal<string | null>(null);
 
-  // #769 Phase 2 — "Re-seed default configuration" confirm flow. `reseedTarget`
-  // holds the catalog def being re-seeded (null = modal closed).
   const [reseedTarget, setReseedTarget] = createSignal<CodingAgentDefinition | null>(null);
   const [reseeding, setReseeding] = createSignal(false);
 
@@ -442,9 +418,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const swapRails = () => {
     const left = leftRailAgent()?.id ?? null;
     const right = rightRailAgent()?.id ?? null;
-    // #527: no-op when the right rail is empty. Swapping a null right into the
-    // left would drop the left's explicit pin to the positional fallback
-    // (agents[0]) — a surprising jump to a different agent. Keep the left pinned.
     if (right === null) return;
     setLeftRailId(right);
     setRightRailId(left);
@@ -457,15 +430,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     return "available";
   };
 
-  // #895 — the agent list doubles as the rail picker: clicking the first row
-  // targets the left/primary rail, clicking any later row targets the
-  // right/comparison rail.
   const railSideForIndex = (index: number): "left" | "right" =>
     index === 0 ? "left" : "right";
 
-  // What a click on that row would actually do. The head's title and
-  // `aria-disabled` are driven off this, so the row never advertises an action
-  // it will not perform.
   type RailAction = "assign" | "swap" | "none";
   const railActionFor = (agentId: string, index: number): RailAction => {
     const pill = railPillFor(agentId);
@@ -473,27 +440,16 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     return pill === "available" ? "assign" : "swap";
   };
 
-  // The two rails must never point at the same agent (`rightRailAgent()`
-  // collapses to null on a collision). So when the clicked agent already holds
-  // the *other* rail, the two exchange places instead of one stomping the other.
   const selectAgentRail = (agentId: string, index: number) => {
     const left = leftRailAgent()?.id ?? null;
     const right = rightRailAgent()?.id ?? null;
     if (railSideForIndex(index) === "left") {
       if (left === agentId) return;
-      // Row 0 already holds the comparison rail: hand the right rail the agent
-      // being displaced. A bare setLeftRailId here would leave `rightRailId`
-      // pointing at the new left agent — emptying the rail and wedging
-      // "Swap Rails", which early-returns on a null derived right.
       if (right === agentId) setRightRailId(left);
       setLeftRailId(agentId);
       return;
     }
     if (right === agentId) return;
-    // The clicked row holds the left rail. Demote it to the right and promote
-    // whatever was on the right. When the right rail is empty, `setLeftRailId(null)`
-    // hands the left back to the positional fallback (agents[0]) — never this
-    // agent, which sits at index > 0.
     if (left === agentId) setLeftRailId(right);
     setRightRailId(agentId);
   };
@@ -501,14 +457,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const toggleAgentEditor = (agentId: string) =>
     setActiveAgentId((prev) => (prev === agentId ? null : agentId));
 
-  // Per profile-cell expand state on the Config rails. Cells can collapse to a
-  // summary row (letter + label + status badge), but start expanded by default.
-  // Keyed by `${agentId}:${letter}`.
   const [expandedCells, setExpandedCells] = createStore<Record<string, boolean | undefined>>({});
   const isCellExpanded = (agentId: string, letter: string): boolean => {
-    // Read the key directly so the store tracks it even while still unset — a
-    // hasOwnProperty short-circuit would skip the subscription and the card
-    // would never react to a later toggle. `undefined` → default expanded.
     const value = expandedCells[`${agentId}:${letter}`];
     return value === undefined ? true : value;
   };
@@ -516,8 +466,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     setExpandedCells(`${agentId}:${letter}`, !isCellExpanded(agentId, letter));
 
   onMount(async () => {
-    // #769 — populate the backend-owned coding-agent catalog for the quick-add
-    // row. Pre-seeded with the fallback, so the buttons render immediately.
     void codingAgentsStore.ensureLoaded();
     const [loaded, wsRunning, apiRunning] = await Promise.all([
       SettingsAPI.get(),
@@ -532,14 +480,11 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       setSettings("data", nextSettings);
       const loadedSeed = cloneSettings(loaded);
       setModalSeed(loadedSeed);
-      // Seed the comparison pair from the loaded agents (left primary + right
-      // comparison slot). Only when still unset, so a user's pick isn't clobbered.
       if (leftRailId() === null && loaded.agents[0]) setLeftRailId(loaded.agents[0].id);
       if (rightRailId() === null && loaded.agents[1]) setRightRailId(loaded.agents[1].id);
     }
   });
 
-  // ── Generic field updater ──
   const updateField = <K extends keyof AppSettings>(
     key: K,
     value: AppSettings[K]
@@ -549,7 +494,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     setSettings("data", key as any, value as any);
   };
 
-  // ── Agents ──
   const updateAgent = (
     index: number,
     field: keyof AgentConfig,
@@ -560,10 +504,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     setSettings("data", "agents", index, field as any, value as any);
   };
 
-  // #598 — config seed is a nested object on AgentConfig, so it cannot flow
-  // through updateAgent (scalar fields only). These setters merge the nested
-  // shape while editing; the disabled/empty case is normalized to omitted at
-  // the save choke point (settings-save.ts::normalizeAgentConfigSeed).
   const setAgentConfigSeedEnabled = (index: number, enabled: boolean) => {
     if (!settings.data) return;
     setDraftDirty(true);
@@ -652,9 +592,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
   type ProfileBadge = "match" | "configured" | "fallback" | "missing" | "invalid";
 
-  // #526: the data-driven taxonomy lives in profileBadgeKind() (shared 1:1 with
-  // the Selection screen so both read the same state). A live command parse error
-  // is UI-local and takes precedence here as the red "invalid" badge.
   const profileCellBadge = (agentId: string, letter: string): ProfileBadge => {
     if (profileCellErrors[profileCellKey(agentId, letter)]) return "invalid";
     return profileBadgeKind(settings.data!.codingAgentProfiles, agentId, letter);
@@ -676,10 +613,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     }));
   };
 
-  // #548: per-agent label override. Keep the WHOLE-MAP functional replacement —
-  // it creates the missing [agentId] node on an agent's first edit AND fires the
-  // top-level property signal that drives the cross-rail inherited-placeholder
-  // recompute. Do NOT "optimize" to a deep-path set (see plan §9 / §13.2).
   const updateProfileLabel = (agentId: string, letter: string, label: string) => {
     if (!settings.data) return;
     setDraftDirty(true);
@@ -703,10 +636,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     }));
   };
 
-  // #526: slot-level delete — drop the letter from profileSlots and from every
-  // coding agent's cells. produce() so the keys are actually removed; assigning a
-  // fresh object to a store path merges (keeps absent keys), which would leave the
-  // slot behind and the card would re-render as MISSING instead of vanishing.
   const removeProfileLetter = (letter: string) => {
     if (!settings.data || letter === "A") return;
     setDraftDirty(true);
@@ -723,8 +652,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         }
       }),
     );
-    // Drop any in-progress per-cell drafts for this letter so a stale parse error
-    // can't block Save and stale env rows don't resurface.
     const suffix = `:${letter}`;
     setProfileCellText(produce((draft) => {
       for (const key of Object.keys(draft)) if (key.endsWith(suffix)) delete draft[key];
@@ -737,7 +664,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     }));
   };
 
-  // ── Profile cell command string (params appended to the agent base command, #597) ──
   const updateProfileCellCommand = (agentId: string, letter: string, text: string) => {
     const key = profileCellKey(agentId, letter);
     setDraftDirty(true);
@@ -756,7 +682,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     return profileCell(agentId, letter)?.command ?? "";
   };
 
-  // ── Profile cell env rows ──
   const cellEnvRows = (agentId: string, letter: string): ProfileCellEnvRow[] => {
     const key = profileCellKey(agentId, letter);
     if (Object.prototype.hasOwnProperty.call(profileCellEnvRows, key)) {
@@ -802,7 +727,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const removeCellEnvRow = (agentId: string, letter: string, rowIndex: number) =>
     setCellEnvRows(agentId, letter, cellEnvRows(agentId, letter).filter((_, i) => i !== rowIndex));
 
-  // Display-only env-row validation reusing the agent-env validator.
   const cellEnvError = (agentId: string, letter: string): string | null =>
     validateEnvRows(
       cellEnvRows(agentId, letter).map((row) => ({
@@ -828,8 +752,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           instructionsFilename: "AGENTS.md",
         };
     setSettings("data", "agents", (prev) => [...prev, agent]);
-    // A freshly added agent expands its inline editor so it is immediately
-    // editable (the resting list stays collapsed for existing agents).
     setActiveAgentId(agent.id);
   };
 
@@ -845,7 +767,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     }
   };
 
-  // ── Telegram Bots ──
   const updateBot = (
     index: number,
     field: keyof TelegramBotConfig,
@@ -893,13 +814,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     return settings.data.agents.some((a) => a.command.startsWith(command));
   };
 
-  // #769 Phase 2 — the catalog def a configured agent's command maps to IFF that
-  // command ships a re-seedable default config folder. Gating is EXACT
-  // executable-basename equality against the backend-derived reseedable set —
-  // deliberately NOT `hasAgentByCommand`'s `.startsWith` (so `pi` matches only
-  // `pi` not `pip`, and Cursor CLI `agent`/Hermes/Pi/custom get no button). The
-  // set is empty until loaded and stays empty on fetch failure, so a failure is
-  // fail-safe (no destructive button we cannot validate). Returns null → no button.
   const reseedableDefForCommand = (command: string): CodingAgentDefinition | null => {
     const basename = commandExecutableBasename(command).toLowerCase();
     if (!basename) return null;
@@ -910,7 +824,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     const def = codingAgentsStore
       .catalog()
       .find((d) => commandExecutableBasename(d.command).toLowerCase() === basename);
-    // A dest is required to name the affected folder in the confirm copy.
     return def && def.configSeed?.dest ? def : null;
   };
 
@@ -927,8 +840,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       );
       setReseedTarget(null);
     } catch (e) {
-      // Non-destructive: the server-side re-check refused or the swap failed; the
-      // prior master is intact.
       toastStore.error(`Could not re-seed ${def.label} default configuration: ${String(e)}`);
     } finally {
       setReseeding(false);
@@ -967,9 +878,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     return false;
   };
 
-  // ── Validation ──
-  // Provider resume-flag rules, shared by agent commands and profile-cell
-  // commands (#384 §2: enabled cell commands reject the same manual resume flags).
   const commandFlagError = (label: string, tokens: string[]): string | null => {
     const claudeIndex = tokens.findIndex((token) => executableTokenBasename(token) === "claude");
     if (
@@ -1001,11 +909,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       const flagError = commandFlagError(`Agent "${agent.label || "Unnamed"}"`, parsedCommand.argv);
       if (flagError) return flagError;
     }
-    // Live profile-cell command parse errors (red "invalid" badge) block save.
     for (const [key, error] of Object.entries(profileCellErrors)) {
       if (error) return `Profile cell ${key}: ${error}`;
     }
-    // Enabled profile-cell command + env validation (#384 §2/§3).
     const byAgent = settings.data.codingAgentProfiles.profilesByAgent;
     for (const [agentId, cells] of Object.entries(byAgent)) {
       for (const [letter, cell] of Object.entries(cells)) {
@@ -1029,9 +935,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     const data = settings.data;
     if (!data) return null;
 
-    // #565: mirror the backend (validate_resource_settings) — floor at 1, NO
-    // upper ceiling. The user sets this deliberately; the hard cap was replaced
-    // by an adjacent latency warning (see below), not a maximum.
     if (
       !Number.isInteger(data.maxConcurrentAgentProcesses) ||
       data.maxConcurrentAgentProcesses < 1
@@ -1052,11 +955,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     return null;
   };
 
-  // #552 Coordinator idle badge + auto-close thresholds. Enforced at Save (NOT
-  // inline per keystroke — the numeric inputs use the non-clamping guard so they
-  // don't fight the user mid-edit). yellow < red is required because the badge
-  // color helper tests red first, so an inverted pair makes the yellow band
-  // unreachable.
   const validateCoordinatorIdle = (): string | null => {
     const data = settings.data;
     if (!data) return null;
@@ -1100,8 +998,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     return null;
   };
 
-  // #714 Lightweight pre-check mirroring the backend MVP parser (one Ctrl/Control
-  // + one alphanumeric key). Backend stays the authority for OS registration.
   const validateScreenshotHotkey = (): string | null =>
     validateScreenshotHotkeySyntax(
       settings.data?.screenshotCaptureHotkey ?? "Ctrl+Q"
@@ -1114,7 +1010,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     validateApiServerSettings() ??
     validateScreenshotHotkey();
 
-  // ── Save ──
   const handleSave = async () => {
     if (!settings.data) return;
     const validationError = currentValidationError();
@@ -1131,18 +1026,12 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       if (wasApiServerRunning && apiServerEndpointChanged(nextSettings, seedBeforeSave)) {
         await restartApiServerAfterEndpointSave(nextSettings);
       }
-      // #158 — push soundsEnabled into sound.ts synchronously so the gate
-      // updates before the settingsStore.refresh() roundtrip below resolves.
-      // Without this, a beep emitted between this point and the next load()
-      // would see the stale gate value.
       setSoundsEnabled(nextSettings.soundsEnabled ?? true);
       if (isTauri) {
         const { getCurrentWindow } = await import("@tauri-apps/api/window");
         await getCurrentWindow().setAlwaysOnTop(nextSettings.sidebarAlwaysOnTop);
       }
-      // Refresh settings store so mic button visibility updates
       settingsStore.refresh();
-      // Refresh repos (project_paths may have changed)
       try {
         const allRepos = await ReposAPI.search("");
         sessionsStore.setRepos(allRepos.filter((r) => r.agents.length > 0));
@@ -1165,7 +1054,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     document.removeEventListener("keydown", handleKeyDown);
   });
 
-  // ── Tab renderers ──
 
   const renderGeneralTab = () => (
     <>
@@ -1942,12 +1830,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     );
   };
 
-  // Left-panel agent row: compact prototype-style header (dot, name, command
-  // basename, color swatch+hex, rail pill, delete) with the full agent config
-  // editor (#384: label/command/color/flags/env/CODEX_HOME isolation) collapsed
-  // behind the chevron. Collapsed by default — the resting screen reads as the
-  // prototype; the editor is secondary, behind the expand. #895: the head itself
-  // is the rail picker, so the editor expand lives on the chevron button.
   const renderAgentRow = (agent: AgentConfig, index: () => number) => {
     const i = () => index();
     const expanded = () => activeAgentId() === agent.id;
@@ -1985,9 +1867,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           aria-disabled={railAction() === "none"}
           onClick={() => selectAgentRail(agent.id, i())}
           onKeyDown={(e) => {
-            // The delete and chevron buttons live inside this head, and their
-            // keydown bubbles here. Only act on keys aimed at the head itself,
-            // or Enter on the trash icon would also reassign a rail.
             if (e.target !== e.currentTarget) return;
             if (e.key === "Enter" || e.key === " ") {
               e.preventDefault();
@@ -2023,8 +1902,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             <button
               class="settings-agent-row-delete"
               onClick={(e) => {
-                // Without this the head's click handler would also fire and
-                // assign a rail on the way out.
                 e.stopPropagation();
                 removeAgent(i());
               }}
@@ -2204,6 +2081,36 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               Filename AC writes into the agent root at launch (its AC context +
               Role.md). Leave blank to use the default shown.
             </div>
+            <label class="settings-field">
+              <span class="settings-label">Context badge pattern</span>
+              <input
+                class="settings-input"
+                value={agent.contextRegex ?? ""}
+                onInput={(e) => updateAgent(i(), "contextRegex", e.currentTarget.value)}
+                placeholder={suggestedContextRegex(agent.command) ?? ""}
+                data-ac-testid={`settings.agentRow.${i()}.contextRegex`}
+                data-ac-role="textbox"
+                spellcheck={false}
+              />
+            </label>
+            <Show when={suggestedContextRegex(agent.command)}>
+              {(suggested) => (
+                <button
+                  class="settings-add-btn"
+                  onClick={() => updateAgent(i(), "contextRegex", suggested())}
+                  data-ac-testid={`settings.agentRow.${i()}.contextRegex.suggest`}
+                  data-ac-role="button"
+                >
+                  Use suggested pattern
+                </button>
+              )}
+            </Show>
+            <div class="settings-hint">
+              Best-effort pattern AC runs over what this agent draws in its terminal, to show
+              a CTX badge on its sessions. Capture group 1 is the percentage. The reading can
+              be unavailable, stale or absent, and a high one does not mean the session needs
+              restarting. <strong>Leave blank for no badge.</strong>
+            </div>
             <label class="settings-checkbox-field">
               <input
                 type="checkbox"
@@ -2284,10 +2191,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     );
   };
 
-  // #769 — quick-add buttons are driven by the backend-owned catalog
-  // (`codingAgentsStore`) instead of a hand-maintained button per agent. Order,
-  // per-command `hasAgentByCommand` guards, testids, and `addAgent` are preserved
-  // verbatim; `+ Custom Agent` stays hardcoded last (it is not a catalog entry).
   const renderAgentPresets = () => (
     <div class="settings-agent-actions">
       <For each={codingAgentsStore.catalog()}>
@@ -2480,10 +2383,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     invalid: "invalid",
   };
 
-  // The cell command holds the params appended to the agent base command (#597);
-  // model/effort/sandbox are not split into separate fields (#384). The two
-  // comparison rails render the slots A..Z of two coding agents side by side;
-  // cards are addressed by rail index.
   const renderProfileCard = (agent: AgentConfig, railIndex: number, letter: string) => {
     const badge = () => profileCellBadge(agent.id, letter);
     const command = () => displayedProfileCellCommand(agent.id, letter);
@@ -2492,15 +2391,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     const expanded = () => isCellExpanded(agent.id, letter);
     const preview = () =>
       resolveProfilePreview(settings.data!.codingAgentProfiles, agent.id, letter);
-    // #538: every cell always exposes its command editor (no "Add cell" / missing
-    // box). The badge reports the real match/configured/fallback/missing state; the
-    // sub-line shows the agent base binary the cell params append to (#597), or,
-    // when no base command is set yet, the fallback/configured text, so it never
-    // contradicts a MISSING or FALLBACK badge by claiming "Configured".
     const subLine = () => {
       if (cellError()) return "Command syntax error";
-      // #597 - the binary comes from the agent base command; the cell holds only
-      // params. Show the effective binary basename, not the params text.
       const baseExe = commandExecutableBasename(agent.command);
       if (baseExe) return baseExe;
       const resolved = preview();
@@ -2643,9 +2535,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                     data-ac-role="textbox"
                   />
                   {(() => {
-                    // Accessor (not a once-computed const): <Index> keeps the row
-                    // scope alive across edits, so the origin label must re-read
-                    // row() to stay live as the user types.
                     const origin = () => profileEnvOrigin(row().key, row().value);
                     return (
                       <span
@@ -2721,9 +2610,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     );
   };
 
-  // One comparison rail = the A..Z profile slots of one coding agent. The two
-  // rails sit side by side (the comparison pair); each rail's agent is swappable
-  // via its header select or the panel-level "Swap Rails".
   const renderRail = (agent: AgentConfig | null, railIndex: number, side: "left" | "right") => {
     if (!agent) {
       return (
@@ -2813,10 +2699,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     );
   };
 
-  // #526 — the unified Coding Agents screen: compact agent list (left) + the two
-  // comparison rails (right). Replaces the former split "Coding Agents" /
-  // "Profiles" tabs. The `settings.profiles.*` test ids are kept so callers and
-  // automation that opened the old "profiles" view still resolve here.
   const renderCodingAgentsScreen = () => {
     const activeIndex = () => agentList().findIndex((a) => a.id === activeAgentId());
     const canSwap = () => agentList().length > 1;

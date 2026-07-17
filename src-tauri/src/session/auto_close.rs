@@ -537,6 +537,10 @@ mod tests {
             self.has_session(id).then_some((30, 120))
         }
 
+        fn get_screen_rows(&self, _id: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
+            crate::pty::context_scrape::ScreenRowsRead::SessionOver
+        }
+
         fn register_response_watcher(
             &self,
             _session_id: Uuid,

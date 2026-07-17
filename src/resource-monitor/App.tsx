@@ -31,11 +31,6 @@ const DEFAULT_RESOURCE_PREFERENCES = {
   resourceKeepLastSnapshot: true,
 };
 
-// #647 C: a `quarantined` group is now killable again — the Force-kill / Retry
-// affordance re-fires the durable Job Object kill (it was wrongly disabled,
-// stranding agents the AV kept alive). `terminating` stays non-killable (a kill
-// is already in flight); `terminated` is done; `failedCleanup` /
-// `unknownOwnership` are never emitted by the 4-variant backend state.
 const NON_KILLABLE_GROUP_STATES = new Set<ResourceGroupState>([
   "terminating",
   "terminated",
@@ -43,8 +38,6 @@ const NON_KILLABLE_GROUP_STATES = new Set<ResourceGroupState>([
   "unknownOwnership",
 ]);
 
-// #647 D: English guidance shown (ADDED to, never replacing, the per-PID detail)
-// when a kill is blocked by a security product stripping PROCESS_TERMINATE.
 const SECURITY_BLOCK_HINT =
   "The OS or security software is blocking process termination. Add an exclusion for AgentsCommander and the agent binaries.";
 
@@ -95,17 +88,12 @@ const overallLabel = (state: ResourceOverallState): string => {
 const processName = (process: ResourceProcessSnapshot): string =>
   process.name || process.exeName || `pid ${process.pid}`;
 
-// #516 - "wg-5-dev-team / dev-rust" identity so the user can tell which group a
-// Kill targets. Falls back to the coding-agent name when no replica identity is
-// present (non-WG / ad-hoc launches), and "-" for an unknown workgroup.
 const groupOrigin = (group: ResourceAgentGroupSnapshot): string =>
   `${group.workgroup ?? "-"} / ${group.agent ?? group.name}`;
 
 const canKillGroup = (group: ResourceAgentGroupSnapshot): boolean =>
   group.killAllowed !== false && !NON_KILLABLE_GROUP_STATES.has(group.state);
 
-// #647 C: a quarantined group is killable but its button re-fires the durable
-// kill, so it reads "Force-kill" rather than "Kill".
 const killActionLabel = (group: ResourceAgentGroupSnapshot): string =>
   group.state === "quarantined" ? "Force-kill" : "Kill";
 
@@ -119,14 +107,9 @@ const groupSeverity = (group: ResourceAgentGroupSnapshot): string => {
   return "ok";
 };
 
-// #566 - active = the agent still holds (or is releasing) live OS processes /
-// a concurrency slot: every state except `terminated` (matches the backend's
-// active_count semantics). Single source of truth for the status filter (A.1).
 const isActiveGroup = (group: ResourceAgentGroupSnapshot): boolean =>
   group.state !== "terminated";
 
-// #566 - status filter is component-local view state, not part of the IPC data
-// contract (deliberately kept out of shared/types.ts).
 type RmStatusFilter = "all" | "active" | "inactive";
 
 const STATUS_FILTERS: ReadonlyArray<{ value: RmStatusFilter; label: string }> = [
@@ -135,15 +118,9 @@ const STATUS_FILTERS: ReadonlyArray<{ value: RmStatusFilter; label: string }> = 
   { value: "inactive", label: "Inactive" },
 ];
 
-// #566 - distinct, sorted, non-empty values for a filter dimension. Derives from
-// the full snapshot set so a value stays selectable even while filtered out.
 const distinct = (values: (string | null | undefined)[]): string[] =>
   [...new Set(values.filter((v): v is string => !!v))].sort();
 
-// #566 - G3 reactivity contract: a multi-select toggle MUST replace the Set with
-// a fresh copy. Mutating in place returns the same reference, so SolidJS's
-// Object.is equality treats it as unchanged and the dependent memos silently
-// never re-run (the filters render, clicks register, nothing filters).
 const toggleFilter = (
   get: () => Set<string>,
   set: (next: Set<string>) => void,
@@ -159,16 +136,8 @@ const toggleFilter = (
 };
 
 const Titlebar: Component = () => {
-  // #587 - tracks the real OS maximize state so the button glyph (maximize vs
-  // restore) and its labels stay correct. Not all maximize paths route through
-  // handleMaximize: Tauri v2 also maximizes natively on data-tauri-drag-region
-  // double-click, and the OS does it on Win+Up / edge-snap. onResized below
-  // re-reads the truth after every such change.
   const [maximized, setMaximized] = createSignal(false);
 
-  // #587 — "Attach" pulls RM back into the main window's central pane (replaces
-  // the old window-snapping "Dock"). Emit BEFORE closing so the event is queued
-  // before this webview tears down; main's listener runs showResourceMonitor().
   const handleAttach = async () => {
     try {
       await emitResourceMonitorAttach();
@@ -192,23 +161,11 @@ const Titlebar: Component = () => {
     try {
       const { getCurrentWindow } = await import("@tauri-apps/api/window");
       const win = getCurrentWindow();
-      // Use explicit maximize()/unmaximize() rather than toggleMaximize().
-      // The app capability set (src-tauri/capabilities/default.json) grants
-      // core:window:allow-maximize, allow-unmaximize and allow-is-maximized,
-      // but NOT allow-toggle-maximize. toggleMaximize() therefore gets rejected
-      // at the Tauri v2 ACL layer at runtime, which is why the button "did
-      // nothing" in the real build (the rejection was only logged below). The
-      // drag-region double-click still maximizes because that path uses the
-      // separate allow-internal-toggle-maximize permission, which IS in
-      // core:window:default.
       if (await win.isMaximized()) {
         await win.unmaximize();
       } else {
         await win.maximize();
       }
-      // Reflect immediately so the icon swaps without waiting for the resize
-      // event. On failure leave the glyph as-is; the onResized mirror reconciles
-      // it once the window settles.
       setMaximized(await win.isMaximized());
     } catch (err) {
       console.error("Resource monitor toggle maximize failed:", err);
@@ -225,8 +182,6 @@ const Titlebar: Component = () => {
     if (!isTauri) return;
     let unlisten: (() => void) | undefined;
     let disposed = false;
-    // Register cleanup synchronously so it binds to this component's owner; the
-    // async listener registration below fills in `unlisten` once it resolves.
     onCleanup(() => {
       disposed = true;
       unlisten?.();
@@ -337,9 +292,6 @@ const Titlebar: Component = () => {
 };
 
 interface ResourceMonitorAppProps {
-  /** True when mounted inside MainApp's central pane. Suppresses the window
-   *  titlebar and skips documentElement theme init (main owns it), and shows a
-   *  "Detach" button that pops RM out into its own window (#587). */
   embedded?: boolean;
 }
 
@@ -349,12 +301,6 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
     createSignal<ResourceAgentGroupSnapshot | null>(null);
   const [killError, setKillError] = createSignal("");
   const [killInFlight, setKillInFlight] = createSignal(false);
-  // #647: the outcome of the last kill attempt that did NOT finalize (a verified
-  // success clears it). Carries `state` to distinguish a blocked `quarantined`
-  // result (show per-PID + security hint) from an unsettled `terminating` one
-  // (a concurrent kill is still settling — show "Verifying...", offer Retry).
-  // Keyed by sessionId so the detail attaches to the right row/modal. Held in the
-  // FE because blockedBySecurity is a per-attempt flag, not on the group snapshot.
   const [killResult, setKillResult] = createSignal<{
     sessionId: string;
     state: ResourceGroupState;
@@ -373,16 +319,10 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
     setKillError("");
   };
 
-  // #647 C (Step-7 narrowing): show "Verifying..." only where a kill is genuinely
-  // in flight — a group the backend is actively terminating, or the group whose
-  // Force-kill/Retry we are awaiting right now. A group merely sitting in
-  // `quarantined` with no attempt running is NOT verifying (it needs Force-kill).
   const isVerifying = (group: ResourceAgentGroupSnapshot): boolean =>
     group.state === "terminating" ||
     (killInFlight() && killTarget()?.sessionId === group.sessionId);
 
-  // #587 — pop the embedded RM out into its own OS window, then reveal the
-  // terminal in the pane (preserves the embedded-XOR-detached invariant).
   const handleDetach = async () => {
     try {
       await WindowAPI.openResourceMonitor();
@@ -394,10 +334,6 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
 
   onMount(async () => {
     let resourcePreferences = DEFAULT_RESOURCE_PREFERENCES;
-    // #587 — embedded RM inherits the theme MainApp owns on documentElement; it
-    // must not add/remove the class itself (would fight main). Windowed RM does
-    // its own corrective read below; dark is the CSS base, so first paint is
-    // dark with no optimistic class.
     try {
       const settings = await SettingsAPI.get();
       resourcePreferences = {
@@ -425,9 +361,6 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
   const snapshot = () => resourceMonitorStore.snapshot;
   const groups = createMemo(() => snapshot()?.groups ?? []);
 
-  // #566 - filter view-state (ephemeral, not persisted). The three multi-selects
-  // are Set<string>; every toggle goes through toggleFilter (fresh-Set copy) so
-  // the dependent memos actually re-run (see the G3 contract above).
   const [statusFilter, setStatusFilter] = createSignal<RmStatusFilter>("all");
   const [projectFilter, setProjectFilter] = createSignal<Set<string>>(new Set());
   const [workgroupFilter, setWorkgroupFilter] = createSignal<Set<string>>(
@@ -435,8 +368,6 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
   );
   const [roleFilter, setRoleFilter] = createSignal<Set<string>>(new Set());
 
-  // Option lists derive from the FULL snapshot set, not the filtered one, so a
-  // value stays selectable even while it is filtered out (A.4.2).
   const projectOptions = createMemo(() =>
     distinct(groups().map((g) => g.project))
   );
@@ -445,7 +376,6 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
   );
   const roleOptions = createMemo(() => distinct(groups().map((g) => g.agent)));
 
-  // AND across dimensions, OR within a dimension; an empty Set = no constraint.
   const filteredGroups = createMemo(() => {
     const status = statusFilter();
     const projects = projectFilter();
@@ -506,18 +436,9 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
         reason: "user",
       });
       if (result.finalized) {
-        // #647 (Step 7): verified dead AND finalized by the backend — it tore the
-        // tree down and emitted session_created carrying the Exited SessionInfo
-        // (the sidebar tile flips via the addSession upsert, E5). Close + refresh.
-        // NB: success keys off `finalized`, NOT `!quarantined` — a `terminating`
-        // early-return reports `quarantined === false` yet is not a real success.
         setKillResult(null);
         setKillTarget(null);
       } else {
-        // NOT finalized — keep the modal open. The agent may still be alive
-        // (`quarantined`) or a concurrent kill is still settling (`terminating`);
-        // the durable job is preserved backend-side for a Force/Retry. `state`
-        // drives whether we show the per-PID detail (+ hint) or "Verifying...".
         setKillResult({
           sessionId: result.sessionId,
           state: result.state,
@@ -830,12 +751,6 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                 data-ac-testid="resourceMonitor.empty"
                 data-ac-role="status"
                 data-ac-state={
-                  // #566 N1 - loading only wins when there is genuinely no data
-                  // yet (groups().length === 0). With keepLastSnapshot, every
-                  // poll's setLoading(true) would otherwise flash "loading" over
-                  // an already-populated-but-filtered view each cycle. Once rows
-                  // exist but the active filter matches none, stay on the stable
-                  // filtered-empty state; initial load (no data) still shows it.
                   resourceMonitorStore.loading && groups().length === 0
                     ? "loading"
                     : groups().length === 0

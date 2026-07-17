@@ -447,7 +447,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       coordSession({
         id: "same-name-other-project",
         workingDirectory: coordPath,
-        gitRepos: [{ label: "wrong-live", sourcePath: wrongLiveRepo, branch: "main" }],
+        gitRepos: [{ label: "wrong-live", sourcePath: wrongLiveRepo, branch: "main", dirty: null }],
       }),
     ]);
     rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);

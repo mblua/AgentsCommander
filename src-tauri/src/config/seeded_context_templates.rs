@@ -108,6 +108,37 @@ const COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION: &str =
          \"<AGENTSCOMMANDER_BINARY_PATH>\" raise-hand --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\"\n\
      This shows the Sidebar raised-hand indicator for your coordinator row; it clears when the user interacts with your session.\n";
 
+/// #1030: `get_default_coordinator_template()` exactly as it shipped through
+/// base commit 4acadfe5, frozen as the third legacy snapshot so a pristine v3
+/// `Context.coordinator.md` on disk keeps being recognized and auto-upgraded
+/// after the v4 rewrite that adds the cross-workgroup rule.
+/// Never edit. Provenance (E2): one-off run of the shipped accessor at
+/// 4acadfe5 printed len 2296, sha256
+/// 9f72fa83ac2fafc73565f975a2bec936a09d0e6a410b1ee1a4a13952e694ec84; pinned by
+/// `coordinator_pre_cross_workgroup_snapshot_is_byte_exact` against those
+/// externally captured values, never against this const itself.
+const COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE: &str =
+    "You are the coordinator for your team. You must:\n\
+     - Keep your base role; coordination is an additional assignment, not a replacement.\n\
+     - Receive team work requests and clarify scope, outcome, constraints, and acceptance criteria.\n\
+     - Route each part of a request to the team member best prepared for it by role, skills, and current assignment; delegate instead of absorbing technical work when a more specialized agent is available.\n\
+     - Sequence work, track progress, surface blockers, and keep ownership clear.\n\
+     - Follow up after assignment to verify the assigned agent is active and working; contact silent or inactive assigned agents up to three total attempts.\n\
+     - Require assigned agents to explicitly report completion, outcome, blockers, and verification before treating delegated work as complete; never infer completion solely from files/logs/artifacts/status flags when the agent has not reported the outcome.\n\
+     - Give recommendations that help an agent work better without removing or overriding that agent's role/scope.\n\n\
+     ## Sending Screenshots\n\
+     Use the CLI subcommand:\n\
+         telegram-send-image --path <PATH> [--caption <CAPTION>] [--bot-id <ID> | --bot-label <LABEL>]\n\
+     --path is required; --caption is optional, max 1024 UTF-16 units. If multiple Telegram bots are configured, pick one with --bot-id or --bot-label. jpg/jpeg/png/webp up to 10 MB use sendPhoto; other formats including GIF use sendDocument up to 50 MB. Symlinks/junctions are rejected.\n\n\
+     **Screenshot Capture Paths:**\n\
+     - Interactive desktop coordinator: PowerShell System.Drawing / CopyFromScreen can work; cast Measure-Object results to [int] before passing dimensions to Bitmap.\n\
+     - Sandboxed harness coordinator: CopyFromScreen may return all-zero/black pixels; then ask the user to capture with Greenshot, use the latest file from C:\\Users\\maria\\0_greenshot\\, and visually inspect the image content before sending.\n\
+     - Do not judge Greenshot screenshot relevance by filename; names can be misleading.\n\n\
+     ## Raising Your Hand\n\
+     When you are blocked, need a user decision, or are waiting for user attention, run:\n\
+         \"<AGENTSCOMMANDER_BINARY_PATH>\" raise-hand --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\"\n\
+     This shows the Sidebar raised-hand indicator for your coordinator row; it clears when the user interacts with your session.\n";
+
 /// #979: the standalone global context template that older builds seeded into the
 /// APP CONFIG directory (307 bytes; it predates `## Core Concepts`). Retirement may
 /// delete only bytes AgentsCommander provably generated itself, so this snapshot is
@@ -296,7 +327,7 @@ fn project_specs() -> [SeededContextTemplateSpec; 2] {
             id: "coordinator",
             filename: crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
             label: "Coordinator context",
-            current_version: 3,
+            current_version: 4,
             current_content: crate::config::session_context::get_default_coordinator_template,
             is_known_generated: is_known_generated_coordinator_template,
             project_actionable: true,
@@ -362,6 +393,7 @@ fn is_known_generated_standalone_global_template(content: &str) -> bool {
 
 fn is_known_generated_coordinator_template(content: &str) -> bool {
     content == crate::config::session_context::get_default_coordinator_template()
+        || content == COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE
         || content == COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
         || content == OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND
 }
@@ -1495,6 +1527,23 @@ mod tests {
         );
     }
 
+    /// #1030: the frozen v3 coordinator snapshot must stay byte-identical to
+    /// what shipped at base commit 4acadfe5. Expected values captured by a one-off
+    /// run of the shipped accessor AT 4acadfe5 (plan E2), never from this const.
+    #[test]
+    fn coordinator_pre_cross_workgroup_snapshot_is_byte_exact() {
+        assert_eq!(
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE.len(),
+            2296,
+            "frozen v3 coordinator snapshot must be the 4acadfe5 bytes"
+        );
+        assert_eq!(
+            hash_text(COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE),
+            "9f72fa83ac2fafc73565f975a2bec936a09d0e6a410b1ee1a4a13952e694ec84",
+            "frozen v3 coordinator snapshot changed; it must stay byte-identical to what shipped"
+        );
+    }
+
     /// #1005 S4 failing-first migration proof: the assert_ne fails while the live
     /// template still equals the frozen v2 bytes (pre-rewrite), and the sync half
     /// proves a pristine v2 file on disk auto-upgrades to the current default.
@@ -1645,6 +1694,132 @@ mod tests {
             std::fs::read_to_string(workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read coordinator");
         assert_eq!(content, get_default_coordinator_template());
+    }
+
+    /// #1030 failing-first migration proof for the STATELESS population (E4 row 4):
+    /// the assert_ne is the only check that fails if the v4 rule edit is skipped
+    /// while the freeze lands, and the assert! is the only one that fails if the
+    /// const is never wired into `is_known_generated_coordinator_template`. The
+    /// sync half proves a pristine v3 body with no state file auto-upgrades.
+    #[test]
+    fn read_sync_updates_pristine_v3_coordinator_template() {
+        assert_ne!(
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE,
+            get_default_coordinator_template(),
+            "the v4 edit must actually change the template or the freeze is pointless"
+        );
+        assert!(
+            is_known_generated_coordinator_template(
+                COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE
+            ),
+            "the recognizer must accept the frozen v3 bytes"
+        );
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join(".ac");
+        std::fs::create_dir(&workspace).expect("create workspace");
+        std::fs::write(
+            workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE,
+        )
+        .expect("write pristine v3 coordinator");
+
+        sync_project_context_template_for_read(&workspace, COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+            .expect("sync for read");
+
+        let content =
+            std::fs::read_to_string(workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read coordinator");
+        assert_eq!(content, get_default_coordinator_template());
+    }
+
+    /// #1030: the SEEDED population (E4 row 3), which is the branch every existing
+    /// workspace with a trusted state entry is in, so this is the test that proves
+    /// the migration actually reaches them. A pristine v3 body whose
+    /// lastSeededSha256 equals the file hash auto-updates and persists the bump.
+    #[test]
+    fn read_sync_updates_seeded_v3_coordinator_and_bumps_version() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join(".ac");
+        std::fs::create_dir(&workspace).expect("create workspace");
+        std::fs::write(
+            workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE,
+        )
+        .expect("write pristine v3 coordinator");
+        std::fs::write(
+            workspace.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME),
+            format!(
+                concat!(
+                    r#"{{"schemaVersion":1,"templates":{{"coordinator":{{"#,
+                    r#""templateId":"coordinator","currentVersion":3,"#,
+                    r#""lastSeededSha256":"{}","lastObservedSha256":null,"#,
+                    r#""ignoredDefaultSha256":null,"ignoredObservedSha256":null}}}}}}"#
+                ),
+                hash_text(COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE)
+            ),
+        )
+        .expect("write seeded v3 state");
+
+        // Pin the E4 row 3 preconditions before syncing. Every assertion after the sync
+        // call also passes on row 4 (:831-836), which auto-updates to the same v4 body
+        // when there is no entry at all, and `load_state` (:552-565) turns an unparseable
+        // fixture into a trusted empty map rather than an error. So without this block a
+        // fixture that never parses still leaves the test green while exercising row 4.
+        let spec = project_spec_by_filename(COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+            .expect("coordinator spec by filename");
+        let pre_sync = load_state(&workspace, true).expect("load the hand-written v3 state");
+        let entry = pre_sync
+            .trusted_entry(spec)
+            .expect("the v3 fixture must parse into a trusted coordinator entry (row 3)");
+        let v3_sha256 = hash_text(COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE);
+        let v4_sha256 = hash_text(get_default_coordinator_template());
+        assert_eq!(
+            entry.current_version, 3,
+            "row 3 requires the fixture to describe a seeded v3 coordinator"
+        );
+        assert_eq!(
+            entry.last_seeded_sha256.as_deref(),
+            Some(v3_sha256.as_str()),
+            "row 3 requires lastSeededSha256 to match the pristine v3 body on disk"
+        );
+        assert_ne!(
+            v3_sha256, v4_sha256,
+            "row 3 requires the seeded hash to differ from the current v4 default"
+        );
+        assert!(
+            is_known_generated_coordinator_template(
+                COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE
+            ),
+            "row 3 requires the pristine v3 body to be recognized as generated"
+        );
+
+        sync_project_context_template_for_read(&workspace, COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+            .expect("sync for read");
+
+        let content =
+            std::fs::read_to_string(workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read coordinator");
+        assert_eq!(
+            content,
+            get_default_coordinator_template(),
+            "a seeded pristine v3 body must auto-upgrade to the v4 default"
+        );
+
+        let state = std::fs::read_to_string(workspace.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
+            .expect("read seeded state");
+        let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
+        assert_eq!(
+            parsed["templates"]["coordinator"]["currentVersion"], 4,
+            "coordinator current_version must be bumped to 4 by the v4 rewrite"
+        );
+        assert_eq!(
+            parsed["templates"]["coordinator"]["lastSeededSha256"]
+                .as_str()
+                .expect("lastSeededSha256 is a string"),
+            hash_text(get_default_coordinator_template()),
+            "the seeded hash must record the new v4 default"
+        );
     }
 
     #[test]

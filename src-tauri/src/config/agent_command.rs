@@ -1092,6 +1092,7 @@ mod tests {
             isolated_home: false,
             instructions_filename: None,
             config_seed: None,
+            context_regex: None,
             backend: Default::default(),
         }
     }

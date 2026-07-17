@@ -237,6 +237,9 @@ export function resetUiStoresForTests(): void {
   // lands a branch event leaks its repoBranch/repoBranchByPath into the next test
   // in the same file (order-dependent, and silently wrong rather than red).
   replicaVolatileStore.clearAll();
+  // #1033 - same hazard, same reason: the context reading map is event-fed and is
+  // deliberately out of setSessions' reach, so it survives into the next test.
+  sessionsStore.resetContextReadingsForTests();
   sessionsStore.setSessions([]);
   sessionsStore.resetSelectionForTests();
   sessionsStore.setTeams([]);

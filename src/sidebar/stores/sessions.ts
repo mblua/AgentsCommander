@@ -1,5 +1,5 @@
 import { createMemo, createSignal } from "solid-js";
-import { createStore } from "solid-js/store";
+import { createStore, reconcile } from "solid-js/store";
 import { NO_TEAM } from "../../shared/constants";
 import type { RepoMatch, Session, SessionCommunication, SessionRepo, SessionSelection, SessionsState, Team, TeamSessionGroup } from "../../shared/types";
 import type { TransportConnectionState } from "../../shared/transport";
@@ -33,6 +33,7 @@ const [state, setState] = createStore<SessionsState>({
   repos: [],
   coordSortByActivity: false,
   lastActivityBySessionId: {},
+  contextPercentBySessionId: {},
   hydrated: false,
 });
 
@@ -82,7 +83,6 @@ const allTeamPathsMemo = createMemo(() => {
   return paths;
 });
 
-/** Build a placeholder Session for an inactive repo */
 function makeInactiveEntry(name: string, path: string): Session {
   return {
     id: `inactive-${normalizePath(path)}`,
@@ -111,7 +111,6 @@ function makeInactiveEntry(name: string, path: string): Session {
   };
 }
 
-/** Names and paths owned by WG replicas and matrix agents — used to hide them from Agent Sessions */
 const wgReplicaMemo = createMemo(() => {
   const names = new Set<string>();
   const paths = new Set<string>();
@@ -131,7 +130,6 @@ const wgReplicaMemo = createMemo(() => {
 });
 
 const filteredSessionsMemo = createMemo(() => {
-  // Root agent renders exclusively in RootAgentBanner; never list it as a generic session.
   const nonRootSessions = state.sessions.filter((s) => !s.isRootAgent);
 
   const activeSessions = (() => {
@@ -155,14 +153,10 @@ const filteredSessionsMemo = createMemo(() => {
     });
   })();
 
-  // Hide sessions owned by WG replicas — they display in ProjectPanel instead
   const wg = wgReplicaMemo();
   const visibleSessions = wg.names.size > 0
     ? activeSessions.filter((s) => !wg.names.has(s.name))
     : activeSessions;
-  // #881: hide every session under an archived project. This relies on the
-  // backend invariant that activation inside an archived project unarchives it
-  // before a live PTY can remain hidden.
   const archived = projectStore.archivedPaths;
   const notArchived = (s: Session) =>
     !s.workingDirectory || !isUnderAnyPath(s.workingDirectory, archived);
@@ -175,7 +169,6 @@ const filteredSessionsMemo = createMemo(() => {
   };
   if (!state.showInactive) return [...projectVisibleSessions].sort((a, b) => sortKey(a).localeCompare(sortKey(b), "en", { sensitivity: "base", numeric: true }));
 
-  // Add inactive repos/members that don't have active sessions
   const activePathSet = new Set(
     state.sessions
       .filter((s) => s.workingDirectory)
@@ -193,12 +186,10 @@ const filteredSessionsMemo = createMemo(() => {
   };
 
   if (!state.teamFilter) {
-    // "All" — show inactive from all discovered repos
     for (const repo of state.repos) {
       addInactive(repo.name, repo.path);
     }
   } else if (state.teamFilter === NO_TEAM) {
-    // "No team" — show inactive repos NOT in any team
     const teamPaths = allTeamPathsMemo();
     for (const repo of state.repos) {
       if (!teamPaths.has(normalizePath(repo.path))) {
@@ -206,7 +197,6 @@ const filteredSessionsMemo = createMemo(() => {
       }
     }
   } else {
-    // Specific team — show inactive team members only
     const team = state.teams.find((t) => t.id === state.teamFilter);
     if (team) {
       for (const m of team.members) {
@@ -215,7 +205,6 @@ const filteredSessionsMemo = createMemo(() => {
     }
   }
 
-  // Also filter inactive entries whose paths belong to WG replicas
   const filteredInactive = wg.paths.size > 0
     ? inactiveEntries.filter((e) => !wg.paths.has(normalizePath(e.workingDirectory)))
     : inactiveEntries;
@@ -229,18 +218,6 @@ const filteredSessionsMemo = createMemo(() => {
 
 const [collapsedTeams, setCollapsedTeams] = createSignal<Record<string, boolean>>({});
 
-/**
- * Detached-session UUID set. A session id is here iff a detached terminal
- * window for it currently exists. Hydrated by SidebarApp.onMount via
- * WindowAPI.listDetached (G.8 race safety) and maintained through
- * terminal_detached / terminal_attached / session_destroyed events.
- *
- * NOTE: this store is NOT the authoritative source of truth for "is the
- * detached window open?" — the Tauri window list is. Read the Tauri
- * window list directly when correctness matters (e.g. quit-confirmation
- * count per G3-B1). This signal exists only to drive sidebar UI
- * (icon/title toggles, context-menu items).
- */
 const [detachedIds, setDetachedIds] = createSignal<Set<string>>(new Set());
 
 const groupedSessionsMemo = createMemo((): { groups: TeamSessionGroup[]; ungrouped: Session[] } => {
@@ -253,18 +230,15 @@ const groupedSessionsMemo = createMemo((): { groups: TeamSessionGroup[]; ungroup
   const assignedPaths = new Set<string>();
 
   for (const team of teams) {
-    // Skip hidden teams — their sessions will appear as ungrouped
     if (team.visible === false) continue;
     const memberPaths = new Set(team.members.map((m) => normalizePath(m.path)));
 
-    // Find sessions belonging to this team
     const teamSessions = sessions.filter((s) =>
       s.workingDirectory && memberPaths.has(normalizePath(s.workingDirectory))
     );
 
     if (teamSessions.length === 0 && !state.showInactive) continue;
 
-    // Identify coordinator session
     let coordinator: Session | null = null;
     const members: Session[] = [];
 
@@ -279,7 +253,6 @@ const groupedSessionsMemo = createMemo((): { groups: TeamSessionGroup[]; ungroup
       assignedPaths.add(np);
     }
 
-    // When showInactive, add inactive placeholders for missing team members
     if (state.showInactive) {
       const activePathSet = new Set(teamSessions.map((s) => normalizePath(s.workingDirectory)));
       for (const m of team.members) {
@@ -299,7 +272,6 @@ const groupedSessionsMemo = createMemo((): { groups: TeamSessionGroup[]; ungroup
     groups.push({ team, coordinator, members });
   }
 
-  // Sessions not in any team
   const ungrouped = sessions.filter((s) => {
     if (!s.workingDirectory) return true;
     return !assignedPaths.has(normalizePath(s.workingDirectory));
@@ -494,7 +466,6 @@ export const sessionsStore = {
     const isActive = id === state.activeId;
     console.debug(`[idle-fe] setSessionWaiting: ${id.slice(0,8)} waiting=${waiting} wasAlreadyWaiting=${wasAlreadyWaiting} isActive=${isActive} pendingReview=${session?.pendingReview}`);
     setState("sessions", (s) => s.id === id, "waitingForInput", waiting);
-    // Only set pendingReview on a real busy→idle transition, not re-detection
     if (waiting && !wasAlreadyWaiting && !isActive) {
       console.debug(`[idle-fe] >>> SETTING pendingReview=true for ${id.slice(0,8)}`);
       setState("sessions", (s) => s.id === id, "pendingReview", true);
@@ -516,9 +487,6 @@ export const sessionsStore = {
     setState("sessions", (s) => s.id === sessionId, "isCoordinator", value);
   },
 
-  // #592 - surgical per-session drift flag update. Mirrors setIsCoordinator;
-  // never use setSessions for this (a wholesale replace would reset the
-  // frontend-only pendingReview field).
   setProfileOutdated(id: string, outdated: boolean) {
     setState("sessions", (s) => s.id === id, "profileOutdated", outdated);
   },
@@ -572,6 +540,9 @@ export const sessionsStore = {
   },
   get lastActivityBySessionId() {
     return state.lastActivityBySessionId;
+  },
+  get contextPercentBySessionId() {
+    return state.contextPercentBySessionId;
   },
   get hydrated() {
     return state.hydrated;
@@ -641,21 +612,36 @@ export const sessionsStore = {
     setState("lastActivityBySessionId", (prev) => ({ ...prev, [sessionId]: performance.now() }));
   },
 
+  setSessionContext(sessionId: string, percent: number | null) {
+    setState("contextPercentBySessionId", (prev) => ({ ...prev, [sessionId]: percent }));
+  },
+
+  hydrateSessionContext(sessionId: string, percent: number | null) {
+    setState("contextPercentBySessionId", (prev) =>
+      sessionId in prev ? prev : { ...prev, [sessionId]: percent },
+    );
+  },
+
+  resetContextReadingsForTests() {
+    const emptyReadings: Record<string, number | null> = {};
+    setState(
+      "contextPercentBySessionId",
+      reconcile(emptyReadings),
+    );
+  },
+
   toggleTeamCollapsed(teamId: string) {
     setCollapsedTeams((prev) => ({ ...prev, [teamId]: !prev[teamId] }));
   },
 
-  /** Find a session whose name exactly matches the given string */
   findSessionByName(name: string): Session | undefined {
     return state.sessions.find((s) => s.name === name);
   },
 
-  /** True iff a detached window currently exists for this session id. */
   isDetached(id: string): boolean {
     return detachedIds().has(id);
   },
 
-  /** Toggle detached state. Creates a new Set reference so subscribers re-run. */
   setDetached(id: string, detached: boolean) {
     const current = detachedIds();
     if (detached === current.has(id)) return; // no-op

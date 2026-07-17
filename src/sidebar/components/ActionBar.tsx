@@ -26,23 +26,11 @@ type ResourceBadgeState =
 const ActionBar: Component = () => {
   const [showDropdown, setShowDropdown] = createSignal(false);
   const [showSettings, setShowSettings] = createSignal(false);
-  // `equals: false` → each write notifies even if the value is the same. Lets
-  // a second disabled-mic click re-snap the modal back to Integrations if the
-  // user manually navigated away to another tab between clicks.
   const [pendingSection, setPendingSection] = createSignal<string | undefined>(undefined, { equals: false });
   const [confirmPath, setConfirmPath] = createSignal<string | null>(null);
   const [toastMsg, setToastMsg] = createSignal<string | null>(null);
   const [isPendingDialog, setIsPendingDialog] = createSignal(false);
   const [showBrowserCreateProjectNotice, setShowBrowserCreateProjectNotice] = createSignal(false);
-  // #289 — local synchronous mirror of the persisted theme. Drives the button
-  // glyph directly so rapid double-clicks each see the freshly-toggled value
-  // (a getter that reads settingsStore.current?.themeLight would see the
-  // pre-write value until fire-and-forget refresh() resolves, so clicks 2+ in
-  // a quick burst would all flip from the same stale state). createEffect
-  // syncs in when the store loads or changes externally (SettingsModal, the
-  // peer window's theme_changed event, etc.). Default false mirrors
-  // AppSettings::default (dark) for the brief window before load() resolves on
-  // mount.
   const [localThemeLight, setLocalThemeLight] = createSignal(
     settingsStore.current?.themeLight ?? false,
   );
@@ -53,7 +41,6 @@ const ActionBar: Component = () => {
   const isLight = (): boolean => localThemeLight();
   let dropdownRef: HTMLDivElement | undefined;
 
-  // Click-away to close dropdown
   const onClickAway = (e: MouseEvent) => {
     if (dropdownRef && !dropdownRef.contains(e.target as Node)) {
       setShowDropdown(false);
@@ -84,11 +71,6 @@ const ActionBar: Component = () => {
 
   onCleanup(() => window.removeEventListener("keydown", onConfirmKeyDown));
 
-  // Cross-window / same-window trigger to open the Settings modal (e.g. from a
-  // disabled mic button prompting the user to configure voice). The optional
-  // `section` argument targets a specific tab — SettingsModal picks it up via
-  // the `section` prop and its createEffect re-targets the tab if the modal is
-  // already open.
   let unlistenOpenSettings: UnlistenFn | null = null;
   let stopResourcePolling: (() => void) | null = null;
   onMount(async () => {
@@ -160,13 +142,6 @@ const ActionBar: Component = () => {
     }
   };
 
-  // #158 — global app-sound mute. Default true so old settings.json files
-  // (no `soundsEnabled` field) stay audible. setSoundsEnabled is pushed
-  // synchronously BEFORE the persist roundtrip so a beep that fires between
-  // the click and the IPC reply (e.g. team-idle-watcher transitioning during
-  // file IO) sees the new gate value — the user's intent in clicking mute is
-  // exactly to suppress imminent beeps. On persist failure we rollback the
-  // gate and toast.
   const isSoundsEnabled = (): boolean =>
     settingsStore.current?.soundsEnabled ?? true;
   const handleToggleMute = async () => {
@@ -183,11 +158,6 @@ const ActionBar: Component = () => {
     }
   };
 
-  // #289 — flip the DOM class optimistically (snappy UI), persist, and roll
-  // back both DOM and toast on failure. Mirrors handleToggleMute: the user
-  // intent in clicking is to *see* the new theme immediately, so the visual
-  // swap precedes the IPC roundtrip. emitThemeChanged keeps the other window
-  // in sync; on rollback we re-emit the previous value so it follows back.
   const applyThemeClass = (light: boolean) => {
     if (light) {
       document.documentElement.classList.add("light-theme");
@@ -242,9 +212,6 @@ const ActionBar: Component = () => {
     return `Resource Monitor: ${snapshot.activeAgentGroups}/${snapshot.maxConcurrentAgentGroups} agents, ${state}`;
   };
 
-  // #587 — the ▦ button now toggles the central-pane RM view (mirrors the 🏠
-  // Home toggle two slots away). Opening RM in a separate OS window is reachable
-  // from the embedded RM's "Detach" button.
   const handleToggleResourceMonitor = () => {
     centralViewStore.toggleResourceMonitor();
   };

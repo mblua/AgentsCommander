@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use crate::errors::AppError;
 use crate::pty::backend::{BackendSpawnSpec, PtyBackend};
+use crate::pty::context_scrape::ScreenRowsRead;
 use crate::pty::git_watcher::GitWatcher;
 use crate::pty::idle_detector::IdleDetector;
 use crate::pty::output::{PtyScreenSnapshot, SessionIoFanout};
@@ -979,14 +980,62 @@ impl LocalProcessBackend {
     /// #942 - liveness of the child of a session, without disturbing it. Never blocks
     /// (zero timeout) and never reports a child it could not query as running.
     fn probe_child(&self, id: Uuid) -> ChildLiveness {
-        let mut ptys = self.ptys.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(instance) = ptys.get_mut(&id) else {
-            return ChildLiveness::Gone;
-        };
-        let Some(child) = instance.child.as_mut() else {
-            return ChildLiveness::Gone;
-        };
-        probe_child_contained(child)
+        probe_child_in(&self.ptys, id)
+    }
+}
+
+/// #942 - the body of `probe_child`, free over the map so #1032's liveness gate can be
+/// driven by a test against a real ConPTY child.
+///
+/// The guard is a local and `ChildLiveness` is owned, so the `ptys` lock is released at the
+/// return. That is what makes the gate below safe by construction rather than by care: the
+/// `match` scrutinee holds no borrow of the map, so no temporary-lifetime extension can
+/// carry the guard into an arm and nest `screen_parsers` inside `ptys`.
+fn probe_child_in(ptys: &Mutex<HashMap<Uuid, PtyInstance>>, id: Uuid) -> ChildLiveness {
+    let mut ptys = ptys.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(instance) = ptys.get_mut(&id) else {
+        return ChildLiveness::Gone;
+    };
+    let Some(child) = instance.child.as_mut() else {
+        return ChildLiveness::Gone;
+    };
+    probe_child_contained(child)
+}
+
+/// #1032 - a local session's screen rows, gated on its child actually being alive.
+///
+/// Why a gate at all: a coding agent's statusline SURVIVES on the frozen grid after the
+/// child dies. Verbatim, ~8s after a confirmed `code: 0`, on every exit path that matters -
+/// a killed process cannot repaint, and Claude Code never uses the alternate screen, never
+/// clears and never restores. PTY EOF never arrives either. Nothing signals the death from
+/// any direction, so the frozen grid presents a perfectly well-formed row - glyph present,
+/// `%` present, column 2, last match on the grid - that passes every defence the user's
+/// pattern has. Liveness is not a regex problem, and asking the child is the only thing
+/// that can tell a live 42% from a dead one.
+///
+/// Free over the map and the fanout, like `resize_instance` above, so the gate can be driven
+/// by a test against a real ConPTY child: `LocalProcessBackend` itself cannot be built in a
+/// unit test (its `GitWatcher` needs a Tauri `AppHandle`), and none of that has anything to
+/// do with whether a child is alive.
+fn screen_rows_if_child_alive(
+    ptys: &Mutex<HashMap<Uuid, PtyInstance>>,
+    fanout: &SessionIoFanout,
+    id: Uuid,
+) -> ScreenRowsRead {
+    match probe_child_in(ptys, id) {
+        ChildLiveness::Alive => match fanout.get_screen_rows(id) {
+            Some(rows) => ScreenRowsRead::Rows(rows),
+            // The child is alive, so the session is NOT over. A missing or poisoned parser
+            // here is a desync or a poisoned lock, never a statement about the session.
+            None => ScreenRowsRead::Unavailable,
+        },
+        ChildLiveness::Exited { .. } | ChildLiveness::Gone => ScreenRowsRead::SessionOver,
+        // "We could not ask" is NOT "the child is dead". #942 built a three-valued oracle
+        // exactly so those two never merge, and this is the arm that keeps them apart: the
+        // same running process reads Alive through a full-rights handle and Unqueryable
+        // through one stripped of SYNCHRONIZE. Reporting that as over would deregister a
+        // live session permanently, on a child that never died.
+        ChildLiveness::Unqueryable(_) => ScreenRowsRead::Unavailable,
     }
 }
 
@@ -1355,6 +1404,10 @@ impl PtyBackend for LocalProcessBackend {
 
     fn get_pty_size(&self, id: Uuid) -> Option<(u16, u16)> {
         self.fanout.get_pty_size(id)
+    }
+
+    fn get_screen_rows(&self, id: Uuid) -> ScreenRowsRead {
+        screen_rows_if_child_alive(&self.ptys, &self.fanout, id)
     }
 
     fn register_response_watcher(
@@ -1848,6 +1901,194 @@ mod startup_gate_tests {
             gate.on_resize(80, 25),
             Some((80, 25)),
             "the gate is open now: resizes go straight through"
+        );
+    }
+}
+
+#[cfg(test)]
+mod context_gate_tests {
+    use super::{
+        probe_child_in, screen_rows_if_child_alive, ChildLiveness, PtyInstance, StartupGate,
+    };
+    use crate::pty::context_scrape::ScreenRowsRead;
+    use crate::pty::idle_detector::IdleDetector;
+    use crate::pty::output::{PtyOutputTarget, SessionIoFanout};
+    use crate::session::profile::IdleTuning;
+    use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+    use std::collections::HashMap;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+    use uuid::Uuid;
+
+    /// The statusline the agent painted, and the one that stays on the grid after it dies.
+    const ROW: &str = "  Context \u{2591}\u{2591}\u{2588} 42%";
+
+    /// A real ConPTY with a REAL CHILD on the far end, plus the real fanout.
+    ///
+    /// The child is the entire point. This gate's whole job is to answer a question the grid
+    /// cannot - is the child alive? - so a fake child cannot be asked it wrongly, which means
+    /// it cannot be asked at all. `startup_gate_tests::conpty` already opens the real ConPTY
+    /// and builds the real `PtyInstance`; this fills in its `child: None`.
+    fn conpty_with_child(cols: u16, rows: u16) -> (Mutex<HashMap<Uuid, PtyInstance>>, Uuid) {
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("openpty");
+
+        // A child that sits and waits, the way an agent CLI does.
+        let shell = if cfg!(windows) { "cmd.exe" } else { "sh" };
+        let child = pair
+            .slave
+            .spawn_command(CommandBuilder::new(shell))
+            .expect("spawn a real child");
+        drop(pair.slave);
+
+        let writer = pair.master.take_writer().expect("take_writer");
+        let instance = PtyInstance {
+            master: Arc::new(Mutex::new(pair.master)),
+            writer: Arc::new(Mutex::new(writer)),
+            child: Some(child),
+            job: None,
+            size: Mutex::new((cols, rows)),
+            startup_gate: Mutex::new(StartupGate::Holding(None)),
+            rendered: Arc::new(AtomicBool::new(false)),
+        };
+
+        let id = Uuid::new_v4();
+        let mut map = HashMap::new();
+        map.insert(id, instance);
+        (Mutex::new(map), id)
+    }
+
+    fn fanout() -> SessionIoFanout {
+        SessionIoFanout::new(
+            Arc::new(Mutex::new(HashMap::new())),
+            IdleDetector::new(|_| {}, |_| {}),
+            None,
+        )
+    }
+
+    fn paint(fanout: &SessionIoFanout, id: Uuid) {
+        fanout.register_session(id, IdleTuning::DEFAULT, 30, 120);
+        fanout.handle_output(
+            &PtyOutputTarget::noop(),
+            id,
+            &id.to_string(),
+            ROW.as_bytes().to_vec(),
+        );
+    }
+
+    /// Kill the child and wait until it is REALLY gone - which is NOT what
+    /// `portable_pty::Child::wait()` waits for, and finding that out cost this test a failing
+    /// run.
+    ///
+    /// `TerminateProcess` is asynchronous, and `wait()` short-circuits on `try_wait()` ->
+    /// `is_complete()` -> `GetExitCodeProcess`. The exit code is readable ~14 ms (measured
+    /// here) BEFORE the kernel signals the process object, so `wait()` returns `Ok(1)` while
+    /// `WaitForSingleObject(h, 0)` still answers WAIT_TIMEOUT. That is #942 arriving from the
+    /// other side: `is_complete` is exactly the accessor AC's oracle refuses to trust, and
+    /// the oracle asks the stronger question on purpose. Production never notices the gap -
+    /// 14 ms against a 5 s tick - but a test that kills and reads in the same breath lands
+    /// inside it every time.
+    fn kill_and_await_real_exit(ptys: &Mutex<HashMap<Uuid, PtyInstance>>, id: Uuid) {
+        {
+            let mut map = ptys.lock().unwrap();
+            let child = map
+                .get_mut(&id)
+                .expect("instance")
+                .child
+                .as_mut()
+                .expect("child");
+            child.kill().expect("kill the child");
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if !matches!(probe_child_in(ptys, id), ChildLiveness::Alive) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("the oracle answered Alive for 10s after TerminateProcess: it cannot see deaths");
+    }
+
+    /// The live case: a real child, a real grid with a real statusline on it, and the gate
+    /// hands the rows straight through.
+    #[test]
+    fn rows_are_readable_while_the_child_is_alive() {
+        let (ptys, id) = conpty_with_child(120, 30);
+        let fanout = fanout();
+        paint(&fanout, id);
+
+        match screen_rows_if_child_alive(&ptys, &fanout, id) {
+            ScreenRowsRead::Rows(rows) => assert_eq!(rows[0], ROW),
+            ScreenRowsRead::Unavailable => panic!("a live child with a live parser must read"),
+            ScreenRowsRead::SessionOver => panic!("the child is alive; the session is not over"),
+        }
+    }
+
+    /// The case the whole gate exists for, and it is RED if the probe call is deleted.
+    ///
+    /// The parser is never touched here, so the row stays on the frozen grid verbatim,
+    /// exactly as it does in production: a killed process cannot repaint, and no EOF ever
+    /// arrives to notice. Without the probe this reads a perfectly well-formed `42%` off a
+    /// dead session forever, and no rule expressible in the user pattern can tell.
+    #[test]
+    fn session_over_once_the_child_actually_exits() {
+        let (ptys, id) = conpty_with_child(120, 30);
+        let fanout = fanout();
+        paint(&fanout, id);
+
+        kill_and_await_real_exit(&ptys, id);
+
+        assert!(
+            matches!(
+                screen_rows_if_child_alive(&ptys, &fanout, id),
+                ScreenRowsRead::SessionOver
+            ),
+            "the child is gone, so the session is over - whatever the frozen grid still says"
+        );
+
+        // ...and the row really is still sitting there. This is the fact that makes the probe
+        // load-bearing rather than belt-and-braces.
+        assert_eq!(
+            fanout.get_screen_rows(id).expect("the parser is untouched")[0],
+            ROW,
+            "if this goes red the grid started self-correcting and the gate premise changed"
+        );
+    }
+
+    /// No instance at all is the other definite answer: `Gone`, so the session is over.
+    #[test]
+    fn session_over_when_there_is_no_pty_instance() {
+        let (ptys, _id) = conpty_with_child(120, 30);
+        let fanout = fanout();
+        assert!(matches!(
+            screen_rows_if_child_alive(&ptys, &fanout, Uuid::new_v4()),
+            ScreenRowsRead::SessionOver
+        ));
+    }
+
+    /// A live child whose parser is missing is a DESYNC, not a dead session, and the caller
+    /// must keep sampling it. This is the two-state collapse `ScreenRowsRead` exists to
+    /// prevent, pinned at the one seam where the real oracle is involved.
+    #[test]
+    fn a_live_child_with_no_parser_is_unavailable_not_over() {
+        let (ptys, id) = conpty_with_child(120, 30);
+        let fanout = fanout();
+        // deliberately never registered with the fanout
+
+        assert!(
+            matches!(
+                screen_rows_if_child_alive(&ptys, &fanout, id),
+                ScreenRowsRead::Unavailable
+            ),
+            "the child is alive, so nothing here may claim the session is over"
         );
     }
 }

@@ -12,6 +12,8 @@ import {
 import { sessionsStore } from "../stores/sessions";
 import { bridgesStore } from "../stores/bridges";
 import { settingsStore } from "../../shared/stores/settings";
+import ContextBadge from "./ContextBadge";
+import { contextBadgeConfigured } from "./session-context";
 import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder";
 import type { Session, TelegramBotConfig } from "../../shared/types";
 import { sessionProfileBadge } from "../../shared/profile-utils";
@@ -41,10 +43,6 @@ const RootAgentBanner: Component = () => {
     return !!r && sessionsStore.activeId === r.id;
   });
 
-  // Dormant root has status as `{ exited: number }` (not a string). Backend
-  // marks root exited/dormant instead of removing the record so the banner can
-  // re-wake — but PTY-dependent actions (mic, detach, telegram, close) must be
-  // hidden because there is no live PTY to receive input or attach to.
   const hasLivePty = createMemo(() => {
     const r = rootSession();
     return !!r && typeof r.status === "string";
@@ -69,9 +67,6 @@ const RootAgentBanner: Component = () => {
     const r = rootSession();
     return r ? sessionProfileBadge(r) : null;
   });
-  // #624 - mirror SessionItem's coding-agent resolver so the Root Agent row
-  // shows the same `[Coding Agent]` badge: prefer the session's own label, else
-  // resolve the configured agent's label from settings by id.
   const agentLabel = createMemo(() => {
     const r = rootSession();
     if (!r) return null;
@@ -79,6 +74,13 @@ const RootAgentBanner: Component = () => {
     if (!r.agentId) return null;
     return settingsStore.current?.agents?.find((a) => a.id === r.agentId)?.label ?? null;
   });
+
+  const ctxVisible = () =>
+    contextBadgeConfigured(settingsStore.current?.agents, rootSession()?.agentId);
+  const ctxPercent = () => {
+    const r = rootSession();
+    return r ? sessionsStore.contextPercentBySessionId[r.id] : undefined;
+  };
 
   const bridge = () => {
     const r = rootSession();
@@ -171,10 +173,6 @@ const RootAgentBanner: Component = () => {
       const r = rootSession();
       if (!r) {
         const session = await SessionAPI.createRootAgent();
-        // Hydrate the store: backend may reuse an existing live root and
-        // therefore NOT emit session_created (see ReuseLive in
-        // commands/session.rs). addSession upserts, so it's safe to call
-        // even when session_created later races in.
         sessionsStore.addSession(session);
         await SessionAPI.switch(session.id);
         await focusTerminal(session.id);
@@ -371,9 +369,6 @@ const RootAgentBanner: Component = () => {
         }
         onClick={handleClick}
         onKeyDown={(e) => {
-          // Only intercept keys aimed at the banner itself — when focus is on
-          // a child action button, that button's native handler runs and the
-          // event still bubbles here, so we must skip to avoid double-firing.
           if (e.currentTarget !== e.target) return;
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
@@ -421,6 +416,12 @@ const RootAgentBanner: Component = () => {
               </Show>
               <Show when={profileBadge()}>
                 {(badge) => <span class="profile-badge root-profile-badge">{badge()}</span>}
+              </Show>
+              <Show when={ctxVisible()}>
+                <ContextBadge
+                  percent={ctxPercent()}
+                  testId="rootAgent.contextBadge"
+                />
               </Show>
               {/* #592 - drift reload for the Root Agent (loaded profile cell no
                   longer matches its current config). Reuses the restart path, which

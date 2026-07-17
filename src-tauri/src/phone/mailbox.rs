@@ -6544,6 +6544,10 @@ mod tests {
             Some((30, 120))
         }
 
+        fn get_screen_rows(&self, _id: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
+            crate::pty::context_scrape::ScreenRowsRead::SessionOver
+        }
+
         fn register_response_watcher(
             &self,
             _session_id: Uuid,
@@ -6987,6 +6991,7 @@ mod tests {
             isolated_home: false,
             instructions_filename: None,
             config_seed: None,
+            context_regex: None,
             backend: Default::default(),
         }
     }

@@ -23,15 +23,10 @@ export interface ProjectState {
   agents: AcAgentMatrix[];
   teams: AcTeam[];
   loops: AcLoopSummary[];
-  /** #695 — pending seeded context-template updates surfaced by discovery. Each
-   *  entry is a customized template whose baked default has a newer version; the
-   *  sidebar resolves it through an explicit keep/overwrite modal. */
   contextTemplateUpdates: ContextTemplateUpdate[];
 }
 
 const [projects, setProjects] = createSignal<ProjectState[]>([]);
-// #881: archived projects leave `projects`, but their persisted sessions must
-// stay suppressed from the generic session list until an unarchive/open event.
 const [archivedPaths, setArchivedPaths] = createSignal<string[]>([]);
 const [loading, setLoading] = createSignal(false);
 const [lastLoadError, setLastLoadError] = createSignal<string | null>(null);
@@ -49,8 +44,6 @@ function normalizePath(p: string): string {
   return normalizeProjectPathForCompare(p);
 }
 
-/** Replica paths of every workgroup agent in a project/discovery shape — the
- *  set of paths whose live volatile overrides a fresh snapshot supersedes. */
 function workgroupReplicaPaths(source: { workgroups: AcWorkgroup[] }): string[] {
   return source.workgroups.flatMap((wg) => wg.agents.map((agent) => agent.path));
 }
@@ -85,14 +78,6 @@ async function discoverAndAppendIfCurrent(path: string, key: string): Promise<vo
   appendDiscoveredProject(path, result);
 }
 
-/** Append a freshly discovered project unless an equivalent path is already
- *  loaded (Round-1 G2 dedup: re-check against the BACKEND-absolutised regPath,
- *  which may differ from the caller's input in case/slashes/`..` — closes the
- *  double-render race when two concurrent calls pass differently-shaped
- *  strings that resolve to the same registered entry). The volatile overrides
- *  this snapshot supersedes are cleared ONLY when the append actually applied:
- *  a dedup-discarded snapshot must not wipe live event overrides that are
- *  newer than the state the store kept (#748). */
 function appendDiscoveredProject(regPath: string, result: AcDiscoveryResult) {
   const folderName = regPath.replace(/\\/g, "/").split("/").pop() ?? "unknown";
   const normalizedReg = normalizePath(regPath);
@@ -120,7 +105,6 @@ function appendDiscoveredProject(regPath: string, result: AcDiscoveryResult) {
   });
 }
 
-/** Stringify whatever a rejected Tauri command throws (usually the Err string). */
 function formatLoadError(e: unknown): string {
   if (typeof e === "string") return e;
   if (e instanceof Error) return e.message;
@@ -132,12 +116,10 @@ function formatLoadError(e: unknown): string {
 }
 
 export const projectStore = {
-  /** All loaded projects */
   get projects() {
     return projects();
   },
 
-  /** Legacy single-project accessor (first project or null) */
   get current() {
     return projects()[0] ?? null;
   },
@@ -150,22 +132,14 @@ export const projectStore = {
     return loading();
   },
 
-  /** Last error from a failed loadProject(). Surfaced as a sidebar status chip
-   *  (deferred Round-1 G11) and, critically, to the UI-automation surface so a
-   *  swallowed backend open_project/discover_project failure is observable
-   *  without devtools (#384 empty-tree triage). */
   get lastLoadError() {
     return lastLoadError();
   },
 
-  /** Whether initFromSettings() ran, and how many paths it received. Lets the
-   *  empty-tree diagnostic distinguish "onMount never reached initFromSettings"
-   *  (attempted=false) from "ran but projectPaths was empty" (pathCount=0). */
   get initState() {
     return initState();
   },
 
-  /** Register a project path in settings (via shared backend) and load its discovery data. */
   async loadProject(path: string) {
     const normalized = normalizePath(path);
     if (projects().some((p) => normalizePath(p.path) === normalized)) return;
@@ -176,10 +150,6 @@ export const projectStore = {
       loadingCount++;
       setLoading(true);
       try {
-        // #191 — backend owns the validation + dedup + persist atomically.
-        // Throws if `.ac/` is missing; caller (createAndLoad / pickAndCheck)
-        // is responsible for creating it first via projectStore.createAndLoad
-        // when that case is expected.
         const reg = await ProjectAPI.open(path);
         const normalizedReg = normalizePath(reg.path);
         await runSerializedArchiveChange(normalizedReg, () =>
@@ -187,11 +157,6 @@ export const projectStore = {
         );
         setLastLoadError(null);
       } catch (e) {
-        // Round-1 G11: surface the failure instead of only logging it. The
-        // sidebar status chip + UI-automation `project.loadStatus` target now
-        // expose this so a swallowed open_project/discover_project error is
-        // diagnosable without devtools (previously it silently dropped a
-        // project whose Project AC Root was deleted between sessions).
         console.error("Failed to load project:", e);
         setLastLoadError(formatLoadError(e));
       } finally {
@@ -204,46 +169,33 @@ export const projectStore = {
     return promise;
   },
 
-  /** Initialize from saved settings (call on mount) */
   async initFromSettings(
     projectPaths: string[],
     legacyPath: string | null,
     archivedProjectPaths: string[] = []
   ) {
-    // #881 (FE-F11) - union, not wholesale replace. `onProjectArchiveChanged`
-    // is registered before this boot-time call runs against an already-read
-    // settings snapshot; a concurrent archive from another window/CLI that
-    // `applyArchiveChange` committed into `archivedPaths` during that gap must
-    // survive, or the stale snapshot silently reverts it (and loadProject then
-    // re-registers the path on disk). Merge instead of clobbering.
     setArchivedPaths((prev) => {
       const keys = new Set(prev.map(normalizePath));
       return [...prev, ...archivedProjectPaths.filter((p) => !keys.has(normalizePath(p)))];
     });
-    // Merge legacy single path into the array (deduplicated)
     const paths = [...projectPaths];
     if (legacyPath && !paths.some((p) => normalizePath(p) === normalizePath(legacyPath))) {
       paths.push(legacyPath);
     }
-    // Record that boot-time load ran and with how many paths, so an empty tree
-    // can be triaged (onMount never got here vs. ran with zero paths).
     setInitState({ attempted: true, pathCount: paths.length });
     for (const path of paths) {
       await projectStore.loadProject(path);
     }
   },
 
-  /** Create `.ac/` Project AC Root in path if missing and register/load it. */
   async createAndLoad(path: string) {
     const reg = await ProjectAPI.new(path);
-    // After ensuring Project AC Root exists and persistence is set, run discovery for UI.
     const normalized = normalizePath(reg.path);
     await runSerializedArchiveChange(normalized, () =>
       discoverAndAppendIfCurrent(reg.path, normalized)
     );
   },
 
-  /** Full open flow: pick folder, check Project AC Root, auto-load if found */
   async pickAndCheck(): Promise<{ picked: string | null; hasWorkspace: boolean }> {
     const picked = await AgentCreatorAPI.pickFolder();
     if (!picked) return { picked: null, hasWorkspace: false };
@@ -255,22 +207,7 @@ export const projectStore = {
     return { picked, hasWorkspace };
   },
 
-  // #748 — the former updateReplicaBranch / updateCoordinatorClock /
-  // updateCoordinatorAutoClosed / updateCoordinatorManuallyClosed patchers
-  // lived here and rebuilt EVERY project/workgroup object reference per event,
-  // which made ProjectPanel's reference-keyed <For>s dispose and re-create the
-  // whole clickable sidebar DOM (losing any click in flight). Those live
-  // fields are now written to replicaVolatileStore (stores/replica-volatile.ts)
-  // and read through its effective* accessors, so events never touch project
-  // identity.
 
-  /** Update a workgroup's TASK.md fields from the discovery watcher. Clones
-   *  ONLY the project + workgroup on the matched path (#748 — unrelated rows
-   *  must keep their object identity); no match or no change leaves the store
-   *  value untouched. `taskTitle` is normalized null→undefined: the task event
-   *  serializes an explicit null while the discovery snapshot OMITS the field
-   *  (`skip_serializing_if` on task_title), so storing null would make the
-   *  next reload's deepEqual see a phantom change and re-create the row. */
   updateWorkgroupTask(
     workgroupPath: string,
     task: string | null,
@@ -296,9 +233,6 @@ export const projectStore = {
     });
   },
 
-  /** Apply a Loop summary returned by a mutation/event without waiting for
-   *  discovery. Identity-preserving (#748): an already-identical summary (a
-   *  duplicate event) leaves the store value untouched. */
   upsertLoop(projectPath: string, loop: AcLoopSummary) {
     const normalized = normalizePath(projectPath);
     setProjects((prev) => {
@@ -318,8 +252,6 @@ export const projectStore = {
     });
   },
 
-  /** Remove a Loop summary returned by a delete event without waiting for
-   *  discovery. Identity-preserving (#748): an unknown loop id is a no-op. */
   removeLoop(projectPath: string, loopId: string) {
     const normalized = normalizePath(projectPath);
     setProjects((prev) => {
@@ -334,7 +266,6 @@ export const projectStore = {
     });
   },
 
-  /** Re-discover a single project and update its data in place */
   async reloadProject(path: string) {
     const normalized = normalizePath(path);
     const existing = inFlightReloads.get(normalized);
@@ -350,18 +281,8 @@ export const projectStore = {
           try {
             const result = await ProjectAPI.discover(path);
             if (queuedReloads.has(normalized)) {
-              // A mutation/event may have already applied fresher summary data while this
-              // discovery was awaiting. Let the queued discovery provide the next full state.
               continue;
             }
-            // #748 — identity-preserving merge: entities the snapshot did not
-            // change keep their object references (an identical snapshot is a
-            // complete no-op). The volatile overrides for the replicas this
-            // snapshot covers are superseded in the same batch — discovery
-            // wins on reload, events re-patch after, exactly as the old
-            // wholesale replace behaved — but ONLY when the project is
-            // actually loaded: clearing for a snapshot the map cannot apply
-            // would wipe live overrides while installing nothing.
             const loaded = projects().some((p) => normalizePath(p.path) === normalized);
             batch(() => {
               setProjects((prev) => {
@@ -391,7 +312,6 @@ export const projectStore = {
     return promise;
   },
 
-  /** Re-discover a project only when it is already loaded in the sidebar. */
   async reloadProjectIfLoaded(path: string): Promise<boolean> {
     const loadedPath = findLoadedProjectPathForRefresh(projects(), path);
     if (!loadedPath) return false;
@@ -399,28 +319,19 @@ export const projectStore = {
     return true;
   },
 
-  /** Remove a project from the list by path */
   async removeProject(path: string) {
     const normalized = normalizePath(path);
     const removed = projects().find((p) => normalizePath(p.path) === normalized);
     batch(() => {
       setProjects((prev) => prev.filter((p) => normalizePath(p.path) !== normalized));
       setArchivedPaths((prev) => prev.filter((p) => normalizePath(p) !== normalized));
-      // #748 — drop the removed project's live overrides so a later re-add
-      // starts from its fresh discovery snapshot, not a stale live layer.
       if (removed) {
         replicaVolatileStore.clearForPaths(workgroupReplicaPaths(removed));
       }
     });
-    // #778 — persist the removal through the dedicated disk-authoritative
-    // command. A whole-object settings save no longer removes anything under
-    // Design S (it preserves the on-disk project_paths so it can't clobber
-    // CLI-registered projects), so removal must go through remove_project.
     await ProjectAPI.remove(path);
   },
 
-  /** #881 - hide a project. The backend call runs first and its rejection
-   *  propagates so a blocked archive leaves the project visible. */
   async archiveProject(path: string) {
     const normalized = normalizePath(path);
     await runSerializedArchiveChange(normalized, async () => {
@@ -438,7 +349,6 @@ export const projectStore = {
     });
   },
 
-  /** #881 - restore an archived project and load its discovery data. */
   async unarchiveProject(path: string) {
     const key = normalizePath(path);
     await runSerializedArchiveChange(key, async () => {
@@ -450,8 +360,6 @@ export const projectStore = {
     });
   },
 
-  /** #881 - reconcile cross-window/browser archive events. Idempotent because
-   *  initiating windows receive their own backend event echoes. */
   async applyArchiveChange(event: ProjectArchiveChanged) {
     const key = normalizePath(event.path);
     await runSerializedArchiveChange(key, async () => {
@@ -487,11 +395,6 @@ export const projectStore = {
     });
   },
 
-  /** #695 — drop exactly one resolved pending context-template update. The key
-   *  is `(projectPath, filename, currentDefaultSha256, currentFileSha256)`: the
-   *  file hash is part of the key (grinch fix #5) so resolving a stale modal
-   *  cannot silently remove a newer pending update queued for the same
-   *  project/file/default after the user edited the template again. */
   removeContextTemplateUpdate(
     projectPath: string,
     filename: string,
@@ -509,7 +412,6 @@ export const projectStore = {
             update.currentDefaultSha256 !== defaultSha256 ||
             update.currentFileSha256 !== fileSha256
         );
-        // #748 — nothing matched the exact key: keep the project identity.
         if (contextTemplateUpdates.length === project.contextTemplateUpdates.length) {
           return project;
         }

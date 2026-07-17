@@ -23,6 +23,7 @@ use crate::pty::container_runtime::{
     DEFAULT_CONTAINER_WORKDIR,
 };
 use crate::pty::container_tokens::{ContainerApiToken, ContainerApiTokenManager};
+use crate::pty::context_scrape::ScreenRowsRead;
 use crate::pty::idle_detector::IdleDetector;
 use crate::pty::output::{PtyOutputTarget, PtyScreenSnapshot, SessionIoFanout};
 use crate::resource_monitor::ResourceLogicalAgentSlot;
@@ -2678,6 +2679,16 @@ impl PtyBackend for ContainerTransportBackend {
 
     fn get_pty_size(&self, id: Uuid) -> Option<(u16, u16)> {
         self.fanout.get_pty_size(id)
+    }
+
+    fn get_screen_rows(&self, id: Uuid) -> ScreenRowsRead {
+        // No liveness gate here, and none is needed: this backend already tears down on a
+        // natural exit, and `close_transport` drops the parser before anyone could read it.
+        // Parser-absent IS the container's liveness oracle.
+        match self.fanout.get_screen_rows(id) {
+            Some(rows) => ScreenRowsRead::Rows(rows),
+            None => ScreenRowsRead::SessionOver,
+        }
     }
 
     fn register_response_watcher(

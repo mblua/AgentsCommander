@@ -241,11 +241,11 @@ describe("SessionItem coordinator repo folder menu (#708)", () => {
 
   it("renders one folder action per valid coordinator repo and opens duplicate labels by index", async () => {
     const repos = [
-      { label: "AgentsCommander", sourcePath: "C:\\Project\\.ac\\wg-7-dev-team\\repo-AgentsCommander", branch: "feature/x" },
-      { label: "docs", sourcePath: "C:\\Project\\.ac\\wg-7-dev-team\\repo-docs-primary", branch: null },
-      { label: "docs", sourcePath: "C:\\Project\\.ac\\wg-7-dev-team\\repo-docs-secondary", branch: "docs-alt" },
-      { label: "cli", sourcePath: "C:\\Project\\.ac\\wg-7-dev-team\\repo-cli", branch: null },
-      { label: "mobile", sourcePath: "C:\\Project\\.ac\\wg-7-dev-team\\repo-mobile", branch: "main" },
+      { label: "AgentsCommander", sourcePath: "C:\\Project\\.ac\\wg-7-dev-team\\repo-AgentsCommander", branch: "feature/x", dirty: null },
+      { label: "docs", sourcePath: "C:\\Project\\.ac\\wg-7-dev-team\\repo-docs-primary", branch: null, dirty: null },
+      { label: "docs", sourcePath: "C:\\Project\\.ac\\wg-7-dev-team\\repo-docs-secondary", branch: "docs-alt", dirty: null },
+      { label: "cli", sourcePath: "C:\\Project\\.ac\\wg-7-dev-team\\repo-cli", branch: null, dirty: null },
+      { label: "mobile", sourcePath: "C:\\Project\\.ac\\wg-7-dev-team\\repo-mobile", branch: "main", dirty: null },
     ];
     const fake = new FakeTransport();
     fake.resolve("open_in_explorer", null);
@@ -347,7 +347,7 @@ describe("SessionItem coordinator repo folder menu (#708)", () => {
             id: "member-1",
             isCoordinator: false,
             gitRepos: [
-              { label: "AgentsCommander", sourcePath: "C:\\Project\\.ac\\wg-7-dev-team\\repo-AgentsCommander", branch: null },
+              { label: "AgentsCommander", sourcePath: "C:\\Project\\.ac\\wg-7-dev-team\\repo-AgentsCommander", branch: null, dirty: null },
             ],
           })}
           isActive={false}
@@ -449,7 +449,7 @@ describe("SessionItem coordinator repo folder menu (#708)", () => {
             name: "wg-7-dev-team/architect",
             isCoordinator: true,
             gitRepos: [
-              { label: "AgentsCommander", sourcePath: "C:\\Project\\.ac\\wg-7-dev-team\\repo-AgentsCommander", branch: null },
+              { label: "AgentsCommander", sourcePath: "C:\\Project\\.ac\\wg-7-dev-team\\repo-AgentsCommander", branch: null, dirty: null },
             ],
           })}
           isActive={false}

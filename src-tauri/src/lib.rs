@@ -27,12 +27,16 @@ use std::sync::{Arc, Mutex, OnceLock};
 use commands::ac_discovery::DiscoveryBranchWatcher;
 use config::sessions_persistence;
 use config::settings::SettingsState;
+use pty::context_scrape::{
+    ContextEventSink, ContextPatternSource, ContextScraper, ContextUsagePayload, ScreenRowsRead,
+    ScreenRowsSource,
+};
 use pty::git_watcher::GitWatcher;
 use pty::idle_detector::IdleDetector;
 use pty::manager::PtyManager;
 use session::manager::SessionManager;
 use shutdown::ShutdownSignal;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use telegram::manager::{OutputSenderMap, TelegramBridgeManager, TelegramBridgeState};
 use tokio_util::sync::CancellationToken;
 use voice::tracker::{VoiceTracker, VoiceTrackingState};
@@ -439,6 +443,89 @@ pub(crate) fn should_auto_create_root_agent_on_first_restore(
     commands::session::resolve_root_agent_command(settings, None, last_coding_agent).is_ok()
 }
 
+// ---- #1032: the three adapters ----------------------------------------------------
+//
+// This is the boundary. Everything above it holds an `AppHandle` and a `PtyManager` and
+// can do anything to a session; the `ContextScraper` below it holds these three trait
+// objects and can do exactly three things. The narrowing is the feature's one hard rule
+// ("the value never drives an action") made structural instead of remembered.
+
+/// Rows, via the routed backend. The three states come from the backend, which is the only
+/// thing that holds a liveness oracle.
+struct ScraperRows {
+    pty_mgr: Arc<Mutex<PtyManager>>,
+    /// A poisoned `PtyManager` is app-wide and permanent, so the warning is worth exactly
+    /// one line, not one per configured session every 5 seconds.
+    poison_logged: AtomicBool,
+}
+
+impl ScreenRowsSource for ScraperRows {
+    fn get_screen_rows(&self, id: uuid::Uuid) -> ScreenRowsRead {
+        match self.pty_mgr.lock() {
+            Ok(mgr) => mgr.get_screen_rows(id),
+            Err(_) => {
+                if !self
+                    .poison_logged
+                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    log::warn!(
+                        "[context] PtyManager lock is poisoned; context readings are unavailable"
+                    );
+                }
+                // NOT SessionOver: a poisoned lock says nothing about whether the session
+                // is alive, and guessing would deregister live sessions.
+                ScreenRowsRead::Unavailable
+            }
+        }
+    }
+}
+
+/// Every agent's configured pattern string, read fresh from settings each tick. One
+/// `RwLock` read per tick for all sessions, not one per session.
+struct ScraperPatterns {
+    settings: SettingsState,
+}
+
+impl ContextPatternSource for ScraperPatterns {
+    fn patterns(&self) -> futures::future::BoxFuture<'_, HashMap<String, String>> {
+        Box::pin(async move {
+            let settings = self.settings.read().await;
+            settings
+                .agents
+                .iter()
+                .filter_map(|agent| {
+                    let regex = agent.context_regex.as_deref()?;
+                    // A blank field is the field being blank, and skipping it here is a
+                    // LOG-HYGIENE choice and nothing more: `pattern::compile` already
+                    // refuses "" and "   " for having no capture group 1, so this can never
+                    // become a pattern that matches everything - it would only warn on every
+                    // change while a user is still typing.
+                    //
+                    // Note what is trimmed and what is not: the emptiness TEST looks at a
+                    // trimmed view, the VALUE handed over is the user's string, byte for
+                    // byte. The pattern is the only defence this feature has - the engine
+                    // ships no anchoring rules of its own - so editing it can only weaken
+                    // it. Trimming would eat the leading spaces of `  Context ...`, which
+                    // ARE the column-2 anchor, and the reading would fail open.
+                    (!regex.trim().is_empty()).then(|| (agent.id.clone(), regex.to_string()))
+                })
+                .collect()
+        })
+    }
+}
+
+/// The sink. `PtyOutputTarget` (`output.rs`) already wraps an `AppHandle` behind a plain
+/// `Fn` for the same reason.
+struct ScraperSink {
+    app_handle: tauri::AppHandle,
+}
+
+impl ContextEventSink for ScraperSink {
+    fn emit(&self, payload: ContextUsagePayload) {
+        let _ = self.app_handle.emit("session_context", payload);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run(
     test_window_placement: Option<crate::testability::window_placement::TestWindowPlacement>,
@@ -772,6 +859,23 @@ pub fn run(
             app.state::<Arc<RestoreInProgress>>()
                 .0
                 .store(true, std::sync::atomic::Ordering::SeqCst);
+
+            // #1032 context scrape. Must be after `.manage(settings)` above, since the
+            // pattern adapter reads settings back out of managed state. Mirrors GitWatcher.
+            let context_scraper = ContextScraper::new(
+                Arc::new(ScraperRows {
+                    pty_mgr: pty_mgr.clone(),
+                    poison_logged: AtomicBool::new(false),
+                }),
+                Arc::new(ScraperPatterns {
+                    settings: app.state::<SettingsState>().inner().clone(),
+                }),
+                Arc::new(ScraperSink {
+                    app_handle: app.handle().clone(),
+                }),
+            );
+            context_scraper.start(shutdown_for_setup.clone());
+            app.manage(Arc::clone(&context_scraper));
 
             // Start web server if enabled in settings
             {
@@ -1968,6 +2072,7 @@ pub fn run(
                         commands::pty::pty_write,
             commands::pty::pty_resize,
             commands::pty::get_screen_snapshot,
+            commands::pty::get_session_context,
             commands::config::get_settings,
             commands::config::get_coding_agent_catalog,
             commands::config::list_reseedable_agent_commands,
@@ -2356,8 +2461,8 @@ mod tests {
         restore_session_should_become_active, restore_session_should_wake,
         should_auto_create_root_agent_on_first_restore, should_wake_on_restore,
         should_wake_root_agent_on_restore, skip_auto_resume_for_restore, ApiServerHandle,
-        ApiServerTask, PersistedActiveFlagNormalization, RestoreObserverStartBarrier,
-        WebServerHandle,
+        ApiServerTask, ContextPatternSource, PersistedActiveFlagNormalization,
+        RestoreObserverStartBarrier, ScraperPatterns, SettingsState, WebServerHandle,
     };
     use crate::config::sessions_persistence::PersistedSession;
     use crate::config::settings::{AgentConfig, AppSettings};
@@ -2381,10 +2486,100 @@ mod tests {
                 isolated_home: false,
                 instructions_filename: None,
                 config_seed: None,
+                context_regex: None,
                 backend: Default::default(),
             }],
             ..AppSettings::default()
         }
+    }
+
+    fn settings_with_context_regex(regex: &str) -> AppSettings {
+        let mut settings = settings_with_agent();
+        settings.agents[0].context_regex = Some(regex.to_string());
+        settings
+    }
+
+    fn resolved(settings: AppSettings) -> std::collections::HashMap<String, String> {
+        let source = ScraperPatterns {
+            settings: std::sync::Arc::new(tokio::sync::RwLock::new(settings)) as SettingsState,
+        };
+        futures::executor::block_on(source.patterns())
+    }
+
+    /// #1032 - the adapter must hand `compile` the string the user wrote, byte for byte.
+    ///
+    /// The pattern is the ONLY defence this feature has: the engine deliberately ships no
+    /// anchoring rules of its own, so every rule that makes a reading trustworthy lives in
+    /// the user's text. An engine that edits that text can only weaken it, and it does so
+    /// silently, in the one place nobody thinks to look.
+    ///
+    /// The concrete loss this pins: `  Context [\u{2591}\u{2588}]+ (\d{1,3})%` is the natural
+    /// transcription of a row the plan says ALWAYS starts at column 2 - copy the row, swap
+    /// the bar and the number for classes. Trimming it deletes the column-2 anchor, and with
+    /// the statusline suppressed the pattern then matches input-box prose and reports a
+    /// confident 99% that is a lie. Failing open, in a design where everything else fails
+    /// closed.
+    #[test]
+    fn the_adapter_hands_over_the_users_pattern_verbatim() {
+        let user_wrote = "  Context [\u{2591}\u{2588}]+ (\\d{1,3})%";
+        let patterns = resolved(settings_with_context_regex(user_wrote));
+
+        assert_eq!(
+            patterns.get("codex").map(String::as_str),
+            Some(user_wrote),
+            "the engine must not rewrite the user's regex, and leading spaces ARE the anchor"
+        );
+    }
+
+    /// The consequence, end to end through the real adapter: what the user configured is
+    /// what gets read, and it reports NO number rather than a wrong one.
+    ///
+    /// The grid here is the statusline-suppressed case (`/help`, autocomplete, a hook turned
+    /// off), where the only `Context ... %` on screen is prose the user typed themselves.
+    /// The column-2 anchor is the single thing that rejects it. Resolve the pattern through
+    /// the adapter, compile it, run it: `None`. With the adapter trimming, this same row
+    /// read `Some(99)` - a confident lie - which is why the string identity above matters.
+    #[test]
+    fn a_pattern_resolved_through_the_adapter_still_rejects_input_box_prose() {
+        let user_wrote = "  Context [\u{2591}\u{2588}]+ (\\d{1,3})%";
+        let patterns = resolved(settings_with_context_regex(user_wrote));
+        let resolved_source = patterns.get("codex").expect("configured");
+
+        let pattern = crate::pty::context_scrape::pattern::compile(resolved_source)
+            .expect("the user's pattern compiles");
+        let grid = vec![
+            "\u{276f} The row says Context \u{2588}\u{2588}\u{2588}\u{2588}\u{2588} 99% right now"
+                .to_string(),
+        ];
+
+        assert_eq!(
+            crate::pty::context_scrape::rows::extract(&pattern, &grid),
+            None,
+            "no number beats a wrong number: the engine must not edit the only defence there is"
+        );
+    }
+
+    /// Trailing whitespace is just as much the user's business: `%` then a space is a
+    /// pattern that requires a space, and only the user knows whether their row has one.
+    #[test]
+    fn trailing_whitespace_in_a_pattern_is_the_users_business_too() {
+        let user_wrote = "Context (\\d{1,3})% ";
+        let patterns = resolved(settings_with_context_regex(user_wrote));
+
+        assert_eq!(patterns.get("codex").map(String::as_str), Some(user_wrote));
+    }
+
+    /// A blank field is the field being blank, not a pattern. Skipped for log hygiene ONLY:
+    /// `pattern::compile` already refuses "" and "   " (no capture group 1), so this cannot
+    /// become "a pattern that matches everything" - it would merely warn on every change.
+    #[test]
+    fn a_blank_context_regex_is_treated_as_unconfigured() {
+        assert!(resolved(settings_with_context_regex("")).is_empty());
+        assert!(resolved(settings_with_context_regex("   ")).is_empty());
+        assert!(
+            resolved(settings_with_agent()).is_empty(),
+            "None is unconfigured"
+        );
     }
 
     #[test]

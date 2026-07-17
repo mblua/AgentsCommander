@@ -502,7 +502,7 @@ describe("ProjectPanel regex filter", () => {
         workingDirectory: `${workgroupPath}\\__agent_dev-webpage-ui`,
         status: "running",
         isCoordinator: true,
-        gitRepos: [{ label: "uirepo", sourcePath: "C:\\repo-ui", branch: "coordbranch" }],
+        gitRepos: [{ label: "uirepo", sourcePath: "C:\\repo-ui", branch: "coordbranch", dirty: null }],
       }),
       session({
         id: "peer-session",
@@ -510,7 +510,7 @@ describe("ProjectPanel regex filter", () => {
         workingDirectory: `${workgroupPath}\\__agent_dev-rust`,
         status: "running",
         isCoordinator: false,
-        gitRepos: [{ label: "rustrepo", sourcePath: "C:\\repo-rust", branch: "peerbranch" }],
+        gitRepos: [{ label: "rustrepo", sourcePath: "C:\\repo-rust", branch: "peerbranch", dirty: null }],
       }),
     ]);
     sessionsStore.setVisibleActiveIdForTests("coord-session");
@@ -745,7 +745,7 @@ describe("ProjectPanel regex filter", () => {
         isCoordinator: true,
         agentId: null,
         agentLabel: null,
-        gitRepos: [{ label: "shownrepo", sourcePath: "C:\\repo-shown", branch: "x" }],
+        gitRepos: [{ label: "shownrepo", sourcePath: "C:\\repo-shown", branch: "x", dirty: null }],
         requestedProfile: "C",
         effectiveProfile: "D",
         profileFallbackApplied: true,

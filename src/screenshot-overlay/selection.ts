@@ -1,7 +1,3 @@
-// #714 Pure geometry helpers for the screenshot overlay. Kept free of DOM/canvas
-// so they are unit-testable in jsdom/vitest (which cannot render canvas pixels).
-// All coordinates here are PHYSICAL image pixels unless a param is named
-// `client` (CSS/viewport pixels from a PointerEvent).
 
 export interface Point {
   x: number;
@@ -15,8 +11,6 @@ export interface Rect {
   height: number;
 }
 
-/** The subset of `DOMRect` the coordinate mapping needs. Lets tests pass a plain
- *  object instead of constructing a real bounding-client-rect. */
 export interface ClientRectLike {
   left: number;
   top: number;
@@ -28,7 +22,6 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-/** Top-left origin + non-negative width/height for a drag in ANY direction. */
 export function normalizeSelection(start: Point, end: Point): Rect {
   return {
     x: Math.min(start.x, end.x),
@@ -38,11 +31,6 @@ export function normalizeSelection(start: Point, end: Point): Rect {
   };
 }
 
-/** Map a client (CSS-pixel) point onto physical image coordinates. The canvas is
- *  displayed at some CSS size (`rect`) but backed by `imageWidth × imageHeight`
- *  physical pixels, so the mapping is proportional — this is what makes the crop
- *  DPI-independent (see plan: map via bounding rect, NOT devicePixelRatio). A
- *  zero-sized rect maps to the origin instead of producing NaN. */
 export function clientToImagePoint(
   client: Point,
   rect: ClientRectLike,
@@ -57,10 +45,6 @@ export function clientToImagePoint(
   };
 }
 
-/** A square source rect of `sourceSize` physical px centered on `center`, clamped
- *  so it always stays fully inside the image (the magnifier samples from this).
- *  If the image is smaller than `sourceSize` in either axis, the square shrinks
- *  to fit. */
 export function magnifierSourceRect(
   center: Point,
   sourceSize: number,
@@ -73,9 +57,6 @@ export function magnifierSourceRect(
   return { x, y, width: size, height: size };
 }
 
-/** Clamp a normalized selection so it never extends past the image edges. Guards
- *  the far-edge rounding case (e.g. x=3839,w=2 on a 3840-wide image) that the
- *  backend bounds validator would otherwise reject as a silent no-op. */
 export function clampSelectionToBounds(
   selection: Rect,
   imageWidth: number,
