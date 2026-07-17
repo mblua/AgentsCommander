@@ -6,7 +6,7 @@ src-tauri/gen/schemas/
 .DS_Store
 .agentscommander/
 .husky/_
-_plans/
+plans/
 _logbooks/
 
 # AgentsCommander delete sentinels/orphans.
