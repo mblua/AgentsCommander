@@ -1,12 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Barrier, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{mpsc, oneshot, Notify};
 use uuid::Uuid;
 
 use crate::errors::AppError;
@@ -162,17 +162,119 @@ struct RemovedSessionResources {
     container_credential_path: Option<PathBuf>,
 }
 
+#[derive(Default)]
+struct ContainerShutdownWorkState {
+    sealed: bool,
+    active_producers: usize,
+    tasks: Vec<std::thread::JoinHandle<()>>,
+}
+
+#[derive(Default)]
+struct ContainerShutdownWorkRegistry {
+    state: Mutex<ContainerShutdownWorkState>,
+    producers_drained: Condvar,
+}
+
+struct ContainerShutdownProducer {
+    registry: Arc<ContainerShutdownWorkRegistry>,
+}
+
+impl ContainerShutdownWorkRegistry {
+    fn register_producer(self: &Arc<Self>) -> Option<ContainerShutdownProducer> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if state.sealed {
+            return None;
+        }
+        state.active_producers += 1;
+        Some(ContainerShutdownProducer {
+            registry: Arc::clone(self),
+        })
+    }
+
+    fn spawn_owned<F>(&self, work: F)
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        let gate = Arc::new(Barrier::new(2));
+        let worker_gate = Arc::clone(&gate);
+        let task = std::thread::spawn(move || {
+            worker_gate.wait();
+            work();
+        });
+        {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            state.tasks.retain(|existing| !existing.is_finished());
+            state.tasks.push(task);
+        }
+        gate.wait();
+    }
+
+    fn seal_and_drain_blocking(&self) {
+        let tasks = {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            state.sealed = true;
+            while state.active_producers > 0 {
+                state = self
+                    .producers_drained
+                    .wait(state)
+                    .unwrap_or_else(|error| error.into_inner());
+            }
+            std::mem::take(&mut state.tasks)
+        };
+        for task in tasks {
+            if task.join().is_err() {
+                log::warn!("[container-transport] shutdown-owned work thread panicked");
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn snapshot(&self) -> (bool, usize, usize) {
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        (state.sealed, state.active_producers, state.tasks.len())
+    }
+}
+
+impl ContainerShutdownProducer {
+    fn spawn_owned<F>(&self, work: F)
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        self.registry.spawn_owned(work);
+    }
+}
+
+impl Drop for ContainerShutdownProducer {
+    fn drop(&mut self) {
+        let mut state = self
+            .registry
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if state.active_producers == 0 {
+            log::error!("[container-transport] shutdown-work producer count underflow");
+            return;
+        }
+        state.active_producers -= 1;
+        if state.active_producers == 0 {
+            self.registry.producers_drained.notify_all();
+        }
+    }
+}
+
 struct ContainerSpawnCancellationGuard<'a> {
     backend: &'a ContainerTransportBackend,
     session_id: Uuid,
     canceled: Arc<AtomicBool>,
     late_handle: Arc<Mutex<Option<ContainerRuntimeHandle>>>,
+    shutdown_producer: Option<ContainerShutdownProducer>,
     armed: bool,
 }
 
 impl ContainerSpawnCancellationGuard<'_> {
     fn disarm(&mut self) {
         self.armed = false;
+        self.shutdown_producer.take();
     }
 }
 
@@ -189,13 +291,25 @@ impl Drop for ContainerSpawnCancellationGuard<'_> {
             .take()
         {
             if let Some(runtime) = self.backend.runtime.clone() {
-                self.backend
-                    .spawn_tracked_runtime_stop(runtime, handle, "canceled-late-runtime");
+                if let Some(producer) = self.shutdown_producer.as_ref() {
+                    self.backend.spawn_shutdown_owned_runtime_stop(
+                        producer,
+                        runtime,
+                        handle,
+                        "canceled-late-runtime",
+                    );
+                } else {
+                    self.backend
+                        .stop_runtime_blocking(runtime, handle, "canceled-late-runtime");
+                }
             }
         }
         if let Some(resources) = self.backend.remove_session_state(self.session_id) {
-            self.backend
-                .cleanup_removed_resources_async(resources, "spawn-canceled");
+            self.backend.cleanup_removed_resources_async_owned(
+                resources,
+                "spawn-canceled",
+                self.shutdown_producer.as_ref(),
+            );
         }
     }
 }
@@ -218,7 +332,7 @@ pub struct ContainerTransportBackend {
     tuning: ContainerTransportTuning,
     runtime: Option<Arc<dyn ContainerRuntime>>,
     token_manager: Option<ContainerApiTokenManager>,
-    detached_cleanup_threads: Arc<Mutex<Vec<std::thread::JoinHandle<()>>>>,
+    shutdown_work: Arc<ContainerShutdownWorkRegistry>,
     #[cfg(test)]
     runtime_settings_override: Option<crate::config::settings::AppSettings>,
     #[cfg(test)]
@@ -256,7 +370,7 @@ impl ContainerTransportBackend {
             tuning,
             runtime: None,
             token_manager: None,
-            detached_cleanup_threads: Arc::new(Mutex::new(Vec::new())),
+            shutdown_work: Arc::new(ContainerShutdownWorkRegistry::default()),
             #[cfg(test)]
             runtime_settings_override: None,
             #[cfg(test)]
@@ -693,6 +807,7 @@ impl ContainerTransportBackend {
             session_id: id,
             canceled: Arc::clone(&canceled),
             late_handle: Arc::clone(&late_handle),
+            shutdown_producer: None,
             armed: true,
         };
 
@@ -773,34 +888,48 @@ impl ContainerTransportBackend {
                 return Err(err);
             }
         };
+        cancellation_guard.shutdown_producer = self.shutdown_work.register_producer();
+        let Some(start_producer) = cancellation_guard.shutdown_producer.as_ref() else {
+            return Err(AppError::Other(
+                "container runtime start rejected during shutdown".to_string(),
+            ));
+        };
         let start_runtime = runtime.clone();
         let canceled_for_start = Arc::clone(&canceled);
         let late_handle_for_start = Arc::clone(&late_handle);
-        let start_result = tokio::task::spawn_blocking(move || {
-            let handle = start_runtime.start(request)?;
-            let canceled_handle = {
-                let mut slot = late_handle_for_start
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner());
-                *slot = Some(handle);
-                if canceled_for_start.load(Ordering::Acquire) {
-                    slot.take()
-                } else {
-                    None
+        let (start_result_sender, start_result_receiver) = oneshot::channel();
+        start_producer.spawn_owned(move || {
+            let result = (|| {
+                let handle = start_runtime.start(request)?;
+                let canceled_handle = {
+                    let mut slot = late_handle_for_start
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    *slot = Some(handle);
+                    if canceled_for_start.load(Ordering::Acquire) {
+                        slot.take()
+                    } else {
+                        None
+                    }
+                };
+                if let Some(handle) = canceled_handle {
+                    if let Err(error) = start_runtime.stop(&handle, CONTAINER_STOP_TIMEOUT) {
+                        log::warn!(
+                            "[container-transport] canceled runtime start cleanup failed session={}: {}",
+                            handle.session_id,
+                            error
+                        );
+                    }
                 }
-            };
-            if let Some(handle) = canceled_handle {
-                if let Err(error) = start_runtime.stop(&handle, CONTAINER_STOP_TIMEOUT) {
-                    log::warn!(
-                        "[container-transport] canceled runtime start cleanup failed session={}: {}",
-                        handle.session_id,
-                        error
-                    );
-                }
+                Ok::<(), AppError>(())
+            })();
+            if start_result_sender.send(result).is_err() {
+                log::debug!(
+                    "[container-transport] runtime start completed after caller cancellation"
+                );
             }
-            Ok::<(), AppError>(())
-        })
-        .await;
+        });
+        let start_result = start_result_receiver.await;
         let handle = match start_result {
             Ok(Ok(())) => late_handle
                 .lock()
@@ -811,15 +940,23 @@ impl ContainerTransportBackend {
                 })?,
             Ok(Err(err)) => {
                 if let Some(resources) = self.remove_session_state(id) {
-                    self.cleanup_removed_resources_offloaded(resources, "runtime-start-failure")
-                        .await;
+                    self.cleanup_removed_resources_offloaded_owned(
+                        resources,
+                        "runtime-start-failure",
+                        cancellation_guard.shutdown_producer.as_ref(),
+                    )
+                    .await;
                 }
                 return Err(err);
             }
             Err(err) => {
                 if let Some(resources) = self.remove_session_state(id) {
-                    self.cleanup_removed_resources_offloaded(resources, "runtime-start-panic")
-                        .await;
+                    self.cleanup_removed_resources_offloaded_owned(
+                        resources,
+                        "runtime-start-panic",
+                        cancellation_guard.shutdown_producer.as_ref(),
+                    )
+                    .await;
                 }
                 return Err(AppError::Other(format!(
                     "container runtime start task failed: {err}"
@@ -836,8 +973,12 @@ impl ContainerTransportBackend {
                 // remove_copied idempotency makes a missed second delete a no-op.
                 container_credential_path: None,
             };
-            self.cleanup_removed_resources_offloaded(resources, "install-runtime-failure")
-                .await;
+            self.cleanup_removed_resources_offloaded_owned(
+                resources,
+                "install-runtime-failure",
+                cancellation_guard.shutdown_producer.as_ref(),
+            )
+            .await;
             return Err(err);
         }
 
@@ -866,8 +1007,12 @@ impl ContainerTransportBackend {
                             diagnostics.log_summary()
                         );
                     }
-                    self.cleanup_removed_resources_offloaded(resources, "handshake-timeout")
-                        .await;
+                    self.cleanup_removed_resources_offloaded_owned(
+                        resources,
+                        "handshake-timeout",
+                        cancellation_guard.shutdown_producer.as_ref(),
+                    )
+                    .await;
                     return Err(Self::handshake_timeout_error(
                         self.tuning.handshake_timeout,
                         diagnostics.as_ref(),
@@ -916,8 +1061,22 @@ impl ContainerTransportBackend {
         handle: ContainerRuntimeHandle,
         reason: &'static str,
     ) {
+        let Some(producer) = self.shutdown_work.register_producer() else {
+            self.stop_runtime_blocking(runtime, handle, reason);
+            return;
+        };
+        self.spawn_shutdown_owned_runtime_stop(&producer, runtime, handle, reason);
+    }
+
+    fn spawn_shutdown_owned_runtime_stop(
+        &self,
+        producer: &ContainerShutdownProducer,
+        runtime: Arc<dyn ContainerRuntime>,
+        handle: ContainerRuntimeHandle,
+        reason: &'static str,
+    ) {
         let session_id = handle.session_id;
-        let task = std::thread::spawn(move || {
+        producer.spawn_owned(move || {
             if let Err(error) = runtime.stop(&handle, CONTAINER_STOP_TIMEOUT) {
                 log::warn!(
                     "[container-transport] {} stop failed for session {}: {}",
@@ -927,44 +1086,46 @@ impl ContainerTransportBackend {
                 );
             }
         });
-        let mut tracked = self
-            .detached_cleanup_threads
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        tracked.retain(|existing| !existing.is_finished());
-        tracked.push(task);
-        drop(tracked);
         log::debug!(
-            "[container-transport] tracking detached stop session={} reason={}",
+            "[container-transport] tracking shutdown-owned stop session={} reason={}",
             session_id,
             reason
         );
     }
 
-    pub(crate) fn drain_detached_cleanup_threads_blocking(&self) {
-        loop {
-            let tasks = {
-                let mut tracked = self
-                    .detached_cleanup_threads
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner());
-                std::mem::take(&mut *tracked)
-            };
-            if tasks.is_empty() {
-                return;
-            }
-            for task in tasks {
-                if task.join().is_err() {
-                    log::warn!("[container-transport] detached cleanup thread panicked");
-                }
-            }
+    fn stop_runtime_blocking(
+        &self,
+        runtime: Arc<dyn ContainerRuntime>,
+        handle: ContainerRuntimeHandle,
+        reason: &'static str,
+    ) {
+        if let Err(error) = runtime.stop(&handle, CONTAINER_STOP_TIMEOUT) {
+            log::warn!(
+                "[container-transport] {} stop failed for session {}: {}",
+                reason,
+                handle.session_id,
+                error
+            );
         }
+    }
+
+    pub(crate) fn seal_and_drain_shutdown_work_blocking(&self) {
+        self.shutdown_work.seal_and_drain_blocking();
     }
 
     fn cleanup_removed_resources_async(
         &self,
         resources: RemovedSessionResources,
         reason: &'static str,
+    ) {
+        self.cleanup_removed_resources_async_owned(resources, reason, None);
+    }
+
+    fn cleanup_removed_resources_async_owned(
+        &self,
+        resources: RemovedSessionResources,
+        reason: &'static str,
+        producer: Option<&ContainerShutdownProducer>,
     ) {
         // #930 - delete the copied credential FIRST so the secret is gone even if
         // a later revoke/stop errors.
@@ -978,7 +1139,11 @@ impl ContainerTransportBackend {
         }
         drop(resources.logical_resource_slot);
         if let (Some(runtime), Some(handle)) = (self.runtime.clone(), resources.runtime_handle) {
-            self.spawn_tracked_runtime_stop(runtime, handle, reason);
+            if let Some(producer) = producer {
+                self.spawn_shutdown_owned_runtime_stop(producer, runtime, handle, reason);
+            } else {
+                self.spawn_tracked_runtime_stop(runtime, handle, reason);
+            }
         }
     }
 
@@ -1008,18 +1173,43 @@ impl ContainerTransportBackend {
         resources: RemovedSessionResources,
         reason: &'static str,
     ) {
+        self.cleanup_removed_resources_offloaded_owned(resources, reason, None)
+            .await;
+    }
+
+    async fn cleanup_removed_resources_offloaded_owned(
+        &self,
+        resources: RemovedSessionResources,
+        reason: &'static str,
+        producer: Option<&ContainerShutdownProducer>,
+    ) {
         let token_manager = self.token_manager.clone();
         let runtime = self.runtime.clone();
-        let task = tokio::task::spawn_blocking(move || {
-            cleanup_removed_resources_inner(token_manager, runtime, resources, reason)
-        });
-        match tokio::time::timeout(CLEANUP_TASK_TIMEOUT, task).await {
+        let (completed, completion) = oneshot::channel();
+        let work = move || {
+            cleanup_removed_resources_inner(token_manager, runtime, resources, reason);
+            if completed.send(()).is_err() {
+                log::debug!(
+                    "[container-transport] {} cleanup completed after caller cancellation",
+                    reason
+                );
+            }
+        };
+        if let Some(producer) = producer {
+            producer.spawn_owned(work);
+        } else if let Some(producer) = self.shutdown_work.register_producer() {
+            producer.spawn_owned(work);
+        } else {
+            work();
+            return;
+        }
+        match tokio::time::timeout(CLEANUP_TASK_TIMEOUT, completion).await {
             Ok(Ok(())) => {}
-            Ok(Err(err)) => {
+            Ok(Err(error)) => {
                 log::warn!(
                     "[container-transport] {} cleanup task failed: {}",
                     reason,
-                    err
+                    error
                 );
             }
             Err(_) => {
@@ -1258,10 +1448,20 @@ impl ContainerTransportBackend {
 
     #[cfg(test)]
     pub(crate) fn detached_cleanup_count_for_test(&self) -> usize {
-        self.detached_cleanup_threads
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .len()
+        self.shutdown_work.snapshot().2
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shutdown_work_state_for_test(&self) -> (bool, usize, usize) {
+        self.shutdown_work.snapshot()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_runtime_settings_for_test(
+        &mut self,
+        settings: crate::config::settings::AppSettings,
+    ) {
+        self.runtime_settings_override = Some(settings);
     }
 }
 
@@ -1640,10 +1840,15 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingRuntime {
+        started: AtomicUsize,
         stopped: Arc<Mutex<Vec<Uuid>>>,
     }
 
     impl RecordingRuntime {
+        fn start_count(&self) -> usize {
+            self.started.load(Ordering::SeqCst)
+        }
+
         fn stopped(&self) -> Vec<Uuid> {
             self.stopped.lock().unwrap().clone()
         }
@@ -1654,6 +1859,7 @@ mod tests {
             &self,
             request: ContainerStartRequest,
         ) -> Result<ContainerRuntimeHandle, AppError> {
+            self.started.fetch_add(1, Ordering::SeqCst);
             Ok(ContainerRuntimeHandle {
                 session_id: request.session_id,
                 container_id: format!("container-{}", request.session_id),
@@ -1928,6 +2134,109 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         panic!("canceled container start leaked its pending state or late runtime handle");
+    }
+
+    #[tokio::test]
+    async fn shutdown_barrier_rejects_start_and_stop_registration_after_empty_drain() {
+        let runtime = Arc::new(RecordingRuntime::default());
+        let token_dir = tempfile::TempDir::new().unwrap();
+        let token_manager =
+            ContainerApiTokenManager::new_for_path(token_dir.path().join("api-clients.json"));
+        let (mut backend, _manager) = backend_with_tuning(ContainerTransportTuning::default());
+        backend.runtime = Some(runtime.clone());
+        backend.token_manager = Some(token_manager);
+        backend.runtime_settings_override = Some(api_enabled_settings());
+        backend.seal_and_drain_shutdown_work_blocking();
+        assert_eq!(backend.shutdown_work_state_for_test(), (true, 0, 0));
+
+        let rejected_id = Uuid::new_v4();
+        let mut spec = test_spec(
+            rejected_id,
+            "C:/repo/.ac/wg-1/__agent_dev",
+            PtyOutputTarget::noop(),
+        );
+        spec.container_image = Some("agentscommander/test:latest".to_string());
+        let error = backend
+            .spawn(spec)
+            .await
+            .expect_err("sealed shutdown barrier rejects a new runtime start");
+        assert!(error
+            .to_string()
+            .contains("container runtime start rejected during shutdown"));
+        assert_eq!(runtime.start_count(), 0);
+        assert!(!backend.contains_transport_state_for_test(rejected_id));
+        assert_eq!(backend.shutdown_work_state_for_test(), (true, 0, 0));
+
+        let stopped_id = Uuid::new_v4();
+        let _transport_receiver =
+            backend.insert_active_runtime_handle_for_test(ContainerRuntimeHandle {
+                session_id: stopped_id,
+                container_id: format!("container-{stopped_id}"),
+            });
+        backend
+            .kill(stopped_id)
+            .expect("sealed registry performs late stop synchronously");
+        assert_eq!(runtime.stopped(), vec![stopped_id]);
+        assert_eq!(backend.shutdown_work_state_for_test(), (true, 0, 0));
+    }
+
+    #[test]
+    fn shutdown_barrier_waits_for_presealed_producer_and_its_late_cleanup() {
+        let registry = Arc::new(ContainerShutdownWorkRegistry::default());
+        let producer = registry
+            .register_producer()
+            .expect("register producer before shutdown sealing");
+        let (drain_done, drain_done_rx) = std::sync::mpsc::channel();
+        let drain_registry = Arc::clone(&registry);
+        let drain = std::thread::spawn(move || {
+            drain_registry.seal_and_drain_blocking();
+            drain_done
+                .send(())
+                .expect("publish shutdown drain completion");
+        });
+        let seal_deadline = Instant::now() + Duration::from_secs(1);
+        while !registry.snapshot().0 {
+            assert!(
+                Instant::now() < seal_deadline,
+                "shutdown registry did not seal"
+            );
+            std::thread::yield_now();
+        }
+        assert_eq!(registry.snapshot(), (true, 1, 0));
+        assert!(
+            drain_done_rx
+                .recv_timeout(Duration::from_millis(25))
+                .is_err(),
+            "an admitted producer must prevent an empty shutdown drain"
+        );
+
+        let (cleanup_started, cleanup_started_rx) = std::sync::mpsc::channel();
+        let (cleanup_release, cleanup_release_rx) = std::sync::mpsc::channel();
+        producer.spawn_owned(move || {
+            cleanup_started
+                .send(())
+                .expect("publish late cleanup start");
+            cleanup_release_rx
+                .recv()
+                .expect("wait for late cleanup release");
+        });
+        drop(producer);
+        cleanup_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("presealed producer registers its late cleanup");
+        assert!(
+            drain_done_rx
+                .recv_timeout(Duration::from_millis(25))
+                .is_err(),
+            "shutdown drain must join cleanup registered after sealing"
+        );
+        cleanup_release.send(()).expect("release late cleanup");
+        drain_done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("shutdown drain completes after late cleanup");
+        drain.join().expect("join shutdown drain thread");
+        assert_eq!(registry.snapshot(), (true, 0, 0));
+        assert!(registry.register_producer().is_none());
     }
 
     #[tokio::test]

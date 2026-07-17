@@ -1193,7 +1193,7 @@ impl SelectionCoordinator {
         }
 
         cleanup_pending_creates_after_join(&self.inner).await;
-        drain_container_cleanup_threads_after_join(&self.inner).await;
+        seal_and_drain_container_shutdown_work_after_join(&self.inner).await;
         match self.inner.critical_keys.lock() {
             Ok(mut keys) => keys.clear(),
             Err(error) => {
@@ -2175,7 +2175,7 @@ async fn cleanup_pending_creates_after_join(inner: &Arc<CoordinatorInner>) {
     }
 }
 
-async fn drain_container_cleanup_threads_after_join(inner: &Arc<CoordinatorInner>) {
+async fn seal_and_drain_container_shutdown_work_after_join(inner: &Arc<CoordinatorInner>) {
     let pty = inner
         .cleanup_pty
         .lock()
@@ -2188,11 +2188,11 @@ async fn drain_container_cleanup_threads_after_join(inner: &Arc<CoordinatorInner
     let task = tokio::task::spawn_blocking(move || {
         pty.lock()
             .unwrap_or_else(|error| error.into_inner())
-            .drain_container_cleanup_threads_blocking();
+            .seal_and_drain_container_shutdown_work_blocking();
     });
     if let Err(error) = task.await {
         log::error!(
-            "[selection] container cleanup thread drain failed after coordinator join: {}",
+            "[selection] container shutdown-work drain failed after coordinator join: {}",
             error
         );
     }
@@ -2375,6 +2375,15 @@ mod tests {
         stop_calls: AtomicUsize,
     }
 
+    struct GatedStartStopRuntime {
+        start_started: Mutex<Option<oneshot::Sender<()>>>,
+        start_release: Mutex<std::sync::mpsc::Receiver<()>>,
+        stop_started: Mutex<Option<oneshot::Sender<()>>>,
+        stop_release: Mutex<std::sync::mpsc::Receiver<()>>,
+        start_calls: AtomicUsize,
+        stop_calls: AtomicUsize,
+    }
+
     impl crate::pty::container_runtime::ContainerRuntime for GatedStopRuntime {
         fn start(
             &self,
@@ -2416,6 +2425,89 @@ mod tests {
         ) -> Result<crate::pty::container_runtime::ContainerCleanupReport, crate::errors::AppError>
         {
             Ok(crate::pty::container_runtime::ContainerCleanupReport::default())
+        }
+    }
+
+    impl crate::pty::container_runtime::ContainerRuntime for GatedStartStopRuntime {
+        fn start(
+            &self,
+            request: crate::pty::container_runtime::ContainerStartRequest,
+        ) -> Result<crate::pty::container_runtime::ContainerRuntimeHandle, crate::errors::AppError>
+        {
+            self.start_calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(started) = self
+                .start_started
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take()
+            {
+                let _ = started.send(());
+            }
+            self.start_release
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .recv()
+                .map_err(|error| crate::errors::AppError::Other(error.to_string()))?;
+            Ok(crate::pty::container_runtime::ContainerRuntimeHandle {
+                session_id: request.session_id,
+                container_id: format!("container-{}", request.session_id),
+            })
+        }
+
+        fn stop(
+            &self,
+            _handle: &crate::pty::container_runtime::ContainerRuntimeHandle,
+            _timeout: Duration,
+        ) -> Result<(), crate::errors::AppError> {
+            self.stop_calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(started) = self
+                .stop_started
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take()
+            {
+                let _ = started.send(());
+            }
+            self.stop_release
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .recv()
+                .map_err(|error| crate::errors::AppError::Other(error.to_string()))?;
+            Ok(())
+        }
+
+        fn cleanup_labeled_orphans(
+            &self,
+            _live_sessions: &HashSet<Uuid>,
+            _timeout: Duration,
+        ) -> Result<crate::pty::container_runtime::ContainerCleanupReport, crate::errors::AppError>
+        {
+            Ok(crate::pty::container_runtime::ContainerCleanupReport::default())
+        }
+    }
+
+    fn real_container_spawn_spec(session_id: Uuid) -> crate::pty::backend::BackendSpawnSpec {
+        crate::pty::backend::BackendSpawnSpec {
+            id: session_id,
+            agent_id: None,
+            coding_agent: None,
+            cmd: "container".to_string(),
+            args: Vec::new(),
+            cwd: "C:/repo/.ac/wg-1/__agent_dev".to_string(),
+            selected_cwd: None,
+            cols: 120,
+            rows: 30,
+            container_image: Some("agentscommander/test:latest".to_string()),
+            configured_env: Vec::new(),
+            env_remove_keys: Vec::new(),
+            env_unset: Vec::new(),
+            extra_env: Vec::new(),
+            idle_tuning: crate::session::profile::IdleTuning::DEFAULT,
+            output_target: crate::pty::output::PtyOutputTarget::noop(),
+            resource_registration: None,
+            logical_resource_slot: None,
+            container_credential: None,
+            container_repo_mounts: Vec::new(),
         }
     }
 
@@ -2731,6 +2823,239 @@ mod tests {
             runtime.stop_calls.load(Ordering::SeqCst),
             1,
             "later global sweep must be a no-op for the joined rollback"
+        );
+    }
+
+    async fn assert_real_pending_container_start_shutdown_waits_for_stop(capped: bool) {
+        use crate::pty::backend::SessionBackendKind;
+        use crate::pty::container_backend::ContainerTransportBackend;
+        use crate::pty::container_tokens::ContainerApiTokenManager;
+
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let (start_started, start_started_rx) = oneshot::channel();
+        let (start_release, start_release_rx) = std::sync::mpsc::channel();
+        let (stop_started, stop_started_rx) = oneshot::channel();
+        let (stop_release, stop_release_rx) = std::sync::mpsc::channel();
+        let runtime = Arc::new(GatedStartStopRuntime {
+            start_started: Mutex::new(Some(start_started)),
+            start_release: Mutex::new(start_release_rx),
+            stop_started: Mutex::new(Some(stop_started)),
+            stop_release: Mutex::new(stop_release_rx),
+            start_calls: AtomicUsize::new(0),
+            stop_calls: AtomicUsize::new(0),
+        });
+        let token_dir = tempfile::TempDir::new().expect("create container token directory");
+        let token_manager =
+            ContainerApiTokenManager::new_for_path(token_dir.path().join("api-clients.json"));
+        let output_senders = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let idle_detector = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
+        let runtime_settings = crate::config::settings::AppSettings {
+            api_server_enabled: true,
+            api_server_bind: "0.0.0.0".to_string(),
+            api_server_port: 8765,
+            ..crate::config::settings::AppSettings::default()
+        };
+        let mut container_backend = ContainerTransportBackend::with_runtime(
+            output_senders,
+            idle_detector,
+            None,
+            None,
+            runtime.clone(),
+            Some(token_manager),
+        );
+        container_backend.set_runtime_settings_for_test(runtime_settings);
+        let container_backend = Arc::new(container_backend);
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test_with_container_backend(
+            Arc::new(LifecycleTestBackend::default()),
+            container_backend.clone(),
+        )));
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(Arc::clone(&pty))
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build real pending-container shutdown app");
+        coordinator
+            .start(app.handle().clone())
+            .expect("start real pending-container shutdown coordinator");
+        let mut restore_guard = Some(
+            coordinator
+                .submit_restore_first()
+                .await
+                .expect("hold restore barrier"),
+        );
+        let manager_handle = manager.read().await.clone();
+        let mut ticket = coordinator
+            .reserve_create(TrustedCreateIntent::Background)
+            .await
+            .expect("reserve real pending-container finalizer");
+        let pending = manager_handle
+            .create_pending_session(
+                &mut ticket,
+                "container".to_string(),
+                Vec::new(),
+                "C:/repo/.ac/wg-1/__agent_dev".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::ContainerTransport,
+            )
+            .await
+            .expect("create real pending-container manager row");
+        let pending_id = pending.id;
+        let create_shutdown = coordinator.inner.shutdown.clone();
+        let create_pty = Arc::clone(&pty);
+        let mut create = tokio::spawn(async move {
+            let _ticket = ticket;
+            let _spawn_mark = create_pty
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .mark_spawning("C:/repo/.ac/wg-1/__agent_dev", "container");
+            tokio::select! {
+                _ = create_shutdown.cancelled() => {
+                    Err(SelectionCoordinatorError::Unavailable.to_string())
+                }
+                result = PtyManager::spawn(
+                    &create_pty,
+                    SessionBackendKind::ContainerTransport,
+                    real_container_spawn_spec(pending_id),
+                ) => result.map_err(|error| error.to_string()),
+            }
+        });
+
+        tokio::select! {
+            result = &mut create => {
+                panic!("real container create ended before runtime start: {result:?}");
+            }
+            started = tokio::time::timeout(Duration::from_secs(5), start_started_rx) => {
+                started
+                    .expect("runtime start reaches blocking section")
+                    .expect("runtime start witness is delivered");
+            }
+        }
+        assert_eq!(runtime.start_calls.load(Ordering::SeqCst), 1);
+        assert!(container_backend.contains_transport_state_for_test(pending_id));
+        let aggregate = manager_handle.aggregate_snapshot().await;
+        assert!(aggregate.pending_ids.contains(&pending_id));
+        assert!(aggregate.sessions.is_empty());
+        let (pending_spawns, live_routes) = pty
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .archive_liveness(&[pending_id]);
+        assert_eq!(pending_spawns.len(), 1);
+        assert_eq!(live_routes, vec![false]);
+        assert_eq!(
+            container_backend.shutdown_work_state_for_test(),
+            (false, 1, 1),
+            "the producer and blocking start must be shutdown-owned before runtime.start"
+        );
+
+        let mut close = {
+            let coordinator = coordinator.clone();
+            tokio::spawn(async move {
+                if capped {
+                    coordinator
+                        .close_and_join_with_budget(Duration::from_millis(25))
+                        .await;
+                } else {
+                    coordinator.close_and_join().await;
+                }
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !coordinator.inner.shutdown.is_cancelled() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("real pending-container shutdown signal becomes visible");
+        assert_eq!(
+            (&mut create)
+                .await
+                .expect("join canceled real container create")
+                .expect_err("shutdown cancels the real container create"),
+            SelectionCoordinatorError::Unavailable.to_string()
+        );
+        if !capped {
+            restore_guard
+                .take()
+                .expect("normal-drain restore guard")
+                .finish();
+        }
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if manager_handle
+                    .aggregate_snapshot()
+                    .await
+                    .pending_ids
+                    .is_empty()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("pending manager row is rolled back before start release");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut close)
+                .await
+                .is_err(),
+            "coordinator close must wait for the shutdown-owned runtime start"
+        );
+
+        start_release.send(()).expect("release gated runtime start");
+        tokio::time::timeout(Duration::from_secs(1), stop_started_rx)
+            .await
+            .expect("late runtime handle stop starts")
+            .expect("late runtime handle stop witness is delivered");
+        assert_eq!(runtime.stop_calls.load(Ordering::SeqCst), 1);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut close)
+                .await
+                .is_err(),
+            "coordinator close must wait for late runtime handle stop completion"
+        );
+        stop_release
+            .send(())
+            .expect("release late runtime handle stop");
+        close.await.expect("join real pending-container close task");
+        if let Some(guard) = restore_guard.take() {
+            guard.finish();
+        }
+
+        assert_eq!(runtime.start_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(runtime.stop_calls.load(Ordering::SeqCst), 1);
+        assert!(!container_backend.contains_transport_state_for_test(pending_id));
+        assert_eq!(
+            container_backend.shutdown_work_state_for_test(),
+            (true, 0, 0)
+        );
+        let aggregate = manager_handle.aggregate_snapshot().await;
+        assert!(aggregate.pending_ids.is_empty());
+        assert!(aggregate.sessions.is_empty());
+        let (pending_spawns, live_routes) = pty
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .archive_liveness(&[pending_id]);
+        assert!(pending_spawns.is_empty());
+        assert_eq!(live_routes, vec![false]);
+        assert!(pty
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .backend_kind(pending_id)
+            .is_none());
+
+        pty.lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .stop_all_started_containers_blocking(Duration::from_secs(1));
+        assert_eq!(
+            runtime.stop_calls.load(Ordering::SeqCst),
+            1,
+            "later global sweep must be a no-op after the real start is joined"
         );
     }
 
@@ -3874,6 +4199,11 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn normal_shutdown_drain_joins_real_pending_container_start_and_stop_exactly_once() {
+        assert_real_pending_container_start_shutdown_waits_for_stop(false).await;
+    }
+
+    #[tokio::test]
     async fn cancelled_and_panicked_post_spawn_creates_roll_back_without_ghost_events() {
         use crate::pty::backend::SessionBackendKind;
         use tauri::Listener;
@@ -4092,6 +4422,11 @@ mod tests {
     #[tokio::test]
     async fn capped_shutdown_abort_joins_pending_container_stop_exactly_once() {
         assert_pending_container_shutdown_waits_for_stop(true).await;
+    }
+
+    #[tokio::test]
+    async fn capped_shutdown_abort_joins_real_pending_container_start_and_stop_exactly_once() {
+        assert_real_pending_container_start_shutdown_waits_for_stop(true).await;
     }
 
     #[tokio::test]
