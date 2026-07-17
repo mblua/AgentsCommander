@@ -2186,19 +2186,22 @@ pub fn run(
                     log::info!("[shutdown] Triggering background task shutdown (async, not awaited)...");
                     shutdown_for_exit.trigger();
 
-                    tauri::async_runtime::block_on(selection_coordinator_for_exit.close_and_join());
+                    let selection_shutdown = tauri::async_runtime::block_on(
+                        selection_coordinator_for_exit.close_and_join(),
+                    );
                     log::info!("[shutdown] selection coordinator joined before global cleanup");
 
                     // #632 A - kill every agent's Job Object: atomically terminates
                     // each jobbed session's whole descendant tree via the job handle.
                     // This is the durable, orphan-free guarantee for jobbed sessions.
-                    let (jobs_killed, jobless_sessions) = {
+                    let (container_shutdown, jobs_killed, jobless_sessions) = {
                         let pty_mgr = app_handle.state::<Arc<Mutex<PtyManager>>>();
                         let guard = pty_mgr.lock().unwrap_or_else(|e| e.into_inner());
-                        guard.stop_all_started_containers_blocking(std::time::Duration::from_secs(
-                            SHUTDOWN_CLEANUP_BUDGET_SECS,
-                        ));
-                        guard.kill_all_jobs()
+                        let container_shutdown = guard.stop_all_started_containers_blocking(
+                            std::time::Duration::from_secs(SHUTDOWN_CLEANUP_BUDGET_SECS),
+                        );
+                        let (jobs_killed, jobless_sessions) = guard.kill_all_jobs();
+                        (container_shutdown, jobs_killed, jobless_sessions)
                     };
                     log::info!(
                         "[shutdown] terminated {jobs_killed} agent job object(s); {jobless_sessions} session(s) had no job"
@@ -2245,13 +2248,24 @@ pub fn run(
                         );
                     }
 
-                    log::info!("[shutdown] Persisting session state...");
-                    let mgr_clone = session_mgr_for_exit.clone();
-                    tauri::async_runtime::block_on(async move {
-                        let mgr = mgr_clone.read().await;
-                        sessions_persistence::persist_current_state(&mgr).await;
-                    });
-                    log::info!("[shutdown] Session state persisted, process exiting");
+                    if selection_shutdown.persistence_safe && container_shutdown.terminal {
+                        log::info!("[shutdown] Persisting session state...");
+                        let mgr_clone = session_mgr_for_exit.clone();
+                        tauri::async_runtime::block_on(async move {
+                            let mgr = mgr_clone.read().await;
+                            sessions_persistence::persist_current_state(&mgr).await;
+                        });
+                        log::info!("[shutdown] Session state persisted, process exiting");
+                    } else {
+                        let mut retained = selection_shutdown.retained;
+                        retained.extend(container_shutdown.retained);
+                        retained.sort();
+                        retained.dedup();
+                        log::error!(
+                            "[shutdown] final session persistence skipped because cleanup ownership is retained work=[{}]",
+                            retained.join(", ")
+                        );
+                    }
 
                     // #552 flush the coordinator badge / auto-closed store on clean
                     // exit (the 60s tick can leave up to one tick of recency

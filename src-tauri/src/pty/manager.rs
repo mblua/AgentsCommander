@@ -121,9 +121,12 @@ impl PtyManager {
         self.container_backend.cleanup_labeled_orphans_on_startup();
     }
 
-    pub fn stop_all_started_containers_blocking(&self, budget: std::time::Duration) {
+    pub fn stop_all_started_containers_blocking(
+        &self,
+        budget: std::time::Duration,
+    ) -> super::container_backend::ContainerShutdownReport {
         self.container_backend
-            .stop_all_started_containers_blocking(budget);
+            .stop_all_started_containers_blocking(budget)
     }
 
     pub fn record_route(&self, id: Uuid, kind: SessionBackendKind) {

@@ -529,6 +529,10 @@ struct CoordinatorInner {
     critical_keys: Mutex<HashSet<CriticalAdmissionKey>>,
     shutdown: CancellationToken,
     worker: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    retained_workers: Mutex<Vec<tauri::async_runtime::JoinHandle<()>>>,
+    retained_cleanup_tasks:
+        Mutex<Vec<tokio::task::JoinHandle<crate::pty::container_backend::ContainerShutdownReport>>>,
+    retained_rollback_tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     cleanup_pty: Mutex<Option<Weak<Mutex<PtyManager>>>>,
     cleanup_container_backend: Mutex<Option<Weak<ContainerTransportBackend>>>,
 }
@@ -536,6 +540,12 @@ struct CoordinatorInner {
 #[derive(Clone)]
 pub struct SelectionCoordinator {
     inner: Arc<CoordinatorInner>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectionShutdownReport {
+    pub persistence_safe: bool,
+    pub retained: Vec<String>,
 }
 
 impl SelectionCoordinator {
@@ -555,6 +565,9 @@ impl SelectionCoordinator {
                 critical_keys: Mutex::new(HashSet::new()),
                 shutdown,
                 worker: Mutex::new(None),
+                retained_workers: Mutex::new(Vec::new()),
+                retained_cleanup_tasks: Mutex::new(Vec::new()),
+                retained_rollback_tasks: Mutex::new(Vec::new()),
                 cleanup_pty: Mutex::new(None),
                 cleanup_container_backend: Mutex::new(None),
             }),
@@ -1161,12 +1174,12 @@ impl SelectionCoordinator {
         }
     }
 
-    pub async fn close_and_join(&self) {
+    pub async fn close_and_join(&self) -> SelectionShutdownReport {
         self.close_and_join_with_budget(Duration::from_secs(SHUTDOWN_CLEANUP_BUDGET_SECS))
-            .await;
+            .await
     }
 
-    async fn close_and_join_with_budget(&self, budget: Duration) {
+    async fn close_and_join_with_budget(&self, budget: Duration) -> SelectionShutdownReport {
         let started_at = Instant::now();
         let deadline = started_at.checked_add(budget).unwrap_or(started_at);
         let finalization_reserve = (budget / 4).min(SHUTDOWN_FINALIZATION_RESERVE_MAX);
@@ -1179,12 +1192,18 @@ impl SelectionCoordinator {
         self.inner.admission.close();
         self.inner.create_tickets.close();
         self.inner.shutdown.cancel();
-        begin_container_shutdown(&self.inner, deadline);
+        let mut retained = Vec::new();
+        if !begin_container_shutdown(&self.inner, deadline) {
+            retained.push("reason=container-shutdown-signal state=retained".to_string());
+        }
 
-        let handle = match self.inner.worker.lock() {
+        let handle = match self.inner.worker.try_lock() {
             Ok(mut worker) => worker.take(),
             Err(error) => {
-                log::error!("[selection] worker handle lock poisoned during shutdown: {error}");
+                log::error!(
+                    "[selection] worker handle lock unavailable during bounded shutdown: {error}"
+                );
+                retained.push("reason=coordinator-worker-handle state=retained".to_string());
                 None
             }
         };
@@ -1209,20 +1228,48 @@ impl SelectionCoordinator {
                         critical_count
                     );
                     handle.abort();
-                    if let Err(error) = handle.await {
-                        log::debug!("[selection] aborted worker join result: {error}");
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    match tokio::time::timeout(remaining, &mut handle).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => {
+                            log::debug!("[selection] aborted worker join result: {error}");
+                        }
+                        Err(_) => {
+                            log::error!(
+                                "[selection] aborted coordinator worker retained after absolute deadline state=retained"
+                            );
+                            retained.push(
+                                "reason=coordinator-worker-abort state=retained".to_string(),
+                            );
+                            self.inner
+                                .retained_workers
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner())
+                                .push(handle);
+                        }
                     }
                 }
             }
         }
 
-        cleanup_pending_creates_after_join(&self.inner, deadline).await;
-        seal_and_drain_container_shutdown_work_after_join(&self.inner, deadline).await;
-        match self.inner.critical_keys.lock() {
+        retained.extend(cleanup_pending_creates_after_join(&self.inner, deadline).await);
+        retained.extend(
+            seal_and_drain_container_shutdown_work_after_join(&self.inner, deadline).await,
+        );
+        match self.inner.critical_keys.try_lock() {
             Ok(mut keys) => keys.clear(),
             Err(error) => {
-                log::error!("[selection] critical key lock poisoned after worker join: {error}")
+                log::error!(
+                    "[selection] critical key lock unavailable after worker join: {error}"
+                );
+                retained.push("reason=critical-key-clear state=retained".to_string());
             }
+        }
+        retained.sort();
+        retained.dedup();
+        SelectionShutdownReport {
+            persistence_safe: retained.is_empty(),
+            retained,
         }
     }
 }
@@ -2178,30 +2225,64 @@ async fn execute_rollback_create_parts(
     }
 }
 
-fn begin_container_shutdown(inner: &Arc<CoordinatorInner>, deadline: Instant) {
-    let container_backend = inner
-        .cleanup_container_backend
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .as_ref()
-        .and_then(Weak::upgrade);
+fn begin_container_shutdown(inner: &Arc<CoordinatorInner>, deadline: Instant) -> bool {
+    let container_backend = match inner.cleanup_container_backend.try_lock() {
+        Ok(backend) => backend.as_ref().and_then(Weak::upgrade),
+        Err(error) => {
+            log::error!(
+                "[selection] container backend ownership lock unavailable during shutdown signal: {}",
+                error
+            );
+            return false;
+        }
+    };
     if let Some(container_backend) = container_backend {
         container_backend.begin_shutdown(deadline);
     }
+    true
 }
 
-async fn cleanup_pending_creates_after_join(inner: &Arc<CoordinatorInner>, deadline: Instant) {
-    let manager = inner.manager.read().await.clone();
-    let bindings = manager.pending_create_bindings().await;
+async fn cleanup_pending_creates_after_join(
+    inner: &Arc<CoordinatorInner>,
+    deadline: Instant,
+) -> Vec<String> {
+    let mut retained = Vec::new();
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let manager = match tokio::time::timeout(remaining, inner.manager.read()).await {
+        Ok(manager) => manager.clone(),
+        Err(_) => {
+            log::error!(
+                "[selection] pending-create manager acquisition reached absolute deadline reason=pending-manager-read state=retained"
+            );
+            retained.push("reason=pending-manager-read state=retained".to_string());
+            return retained;
+        }
+    };
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let bindings = match tokio::time::timeout(remaining, manager.pending_create_bindings()).await {
+        Ok(bindings) => bindings,
+        Err(_) => {
+            log::error!(
+                "[selection] pending-create enumeration reached absolute deadline reason=pending-enumeration state=retained"
+            );
+            retained.push("reason=pending-enumeration state=retained".to_string());
+            return retained;
+        }
+    };
     if bindings.is_empty() {
-        return;
+        return retained;
     }
-    let pty = inner
-        .cleanup_pty
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .as_ref()
-        .and_then(Weak::upgrade);
+    let pty = match inner.cleanup_pty.try_lock() {
+        Ok(pty) => pty.as_ref().and_then(Weak::upgrade),
+        Err(error) => {
+            log::error!(
+                "[selection] pending-create PTY ownership lock unavailable: {}",
+                error
+            );
+            retained.push("reason=pending-pty-owner state=retained".to_string());
+            None
+        }
+    };
     log::warn!(
         "[selection] cleaning {} pending create(s) after worker join",
         bindings.len()
@@ -2209,36 +2290,145 @@ async fn cleanup_pending_creates_after_join(inner: &Arc<CoordinatorInner>, deadl
     for binding in bindings {
         if Instant::now() >= deadline {
             log::error!(
-                "[selection] pending-create rollback reached shared shutdown deadline session={} reason=pending-create-rollback",
+                "[selection] pending-create rollback reached shared shutdown deadline session={} reason=pending-create-rollback state=retained",
                 binding.session_id()
             );
+            retained.push(format!(
+                "session={} reason=pending-create-rollback state=retained",
+                binding.session_id()
+            ));
+            continue;
         }
-        execute_rollback_create_parts(manager.clone(), pty.clone(), binding).await;
+        let session_id = binding.session_id();
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let backend_kind = match tokio::time::timeout(
+            remaining,
+            manager.get_pending_session(binding),
+        )
+        .await
+        {
+            Ok(session) => session.map(|session| session.backend_kind),
+            Err(_) => {
+                log::error!(
+                    "[selection] pending-create classification reached absolute deadline session={} reason=pending-classification state=retained",
+                    session_id
+                );
+                retained.push(format!(
+                    "session={session_id} reason=pending-classification state=retained"
+                ));
+                continue;
+            }
+        };
+        let Some(backend_kind) = backend_kind else {
+            continue;
+        };
+
+        if let Some(pty) = pty.clone() {
+            let mut kill = tokio::task::spawn_blocking(move || {
+                let pty = pty.lock().unwrap_or_else(|error| error.into_inner());
+                if let Err(error) = pty.kill_for_kind(session_id, backend_kind) {
+                    log::debug!(
+                        "[selection] pending create PTY cleanup session={} result={}",
+                        session_id,
+                        error
+                    );
+                }
+            });
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match tokio::time::timeout(remaining, &mut kill).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    log::error!(
+                        "[selection] pending-create PTY cleanup task failed session={}: {}",
+                        session_id,
+                        error
+                    );
+                }
+                Err(_) => {
+                    log::error!(
+                        "[selection] pending-create PTY cleanup retained after absolute deadline session={} reason=pending-pty-kill state=retained",
+                        session_id
+                    );
+                    retained.push(format!(
+                        "session={session_id} reason=pending-pty-kill state=retained"
+                    ));
+                    inner
+                        .retained_rollback_tasks
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .push(kill);
+                    continue;
+                }
+            }
+        }
+
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match tokio::time::timeout(remaining, manager.rollback_pending_create(binding)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => log::warn!(
+                "[selection] pending create manager rollback failed session={}: {}",
+                session_id,
+                error
+            ),
+            Err(_) => {
+                log::error!(
+                    "[selection] pending-create manager rollback reached absolute deadline session={} reason=pending-manager-rollback state=retained",
+                    session_id
+                );
+                retained.push(format!(
+                    "session={session_id} reason=pending-manager-rollback state=retained"
+                ));
+            }
+        }
     }
+    retained
 }
 
 async fn seal_and_drain_container_shutdown_work_after_join(
     inner: &Arc<CoordinatorInner>,
     deadline: Instant,
-) {
-    let container_backend = inner
-        .cleanup_container_backend
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .as_ref()
-        .and_then(Weak::upgrade);
-    let Some(container_backend) = container_backend else {
-        return;
+) -> Vec<String> {
+    let mut retained = Vec::new();
+    let container_backend = match inner.cleanup_container_backend.try_lock() {
+        Ok(backend) => backend.as_ref().and_then(Weak::upgrade),
+        Err(error) => {
+            log::error!(
+                "[selection] container backend ownership lock unavailable before bounded drain: {}",
+                error
+            );
+            retained.push("reason=container-drain-owner state=retained".to_string());
+            return retained;
+        }
     };
-    let task = tokio::task::spawn_blocking(move || {
-        container_backend.seal_and_drain_shutdown_work_blocking(deadline);
+    let Some(container_backend) = container_backend else {
+        return retained;
+    };
+    let mut task = tokio::task::spawn_blocking(move || {
+        container_backend.seal_and_drain_shutdown_work_blocking(deadline)
     });
-    if let Err(error) = task.await {
-        log::error!(
-            "[selection] container shutdown-work drain failed after coordinator join: {}",
-            error
-        );
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    match tokio::time::timeout(remaining, &mut task).await {
+        Ok(Ok(report)) => retained.extend(report.retained),
+        Ok(Err(error)) => {
+            log::error!(
+                "[selection] container shutdown-work drain failed after coordinator join: {}",
+                error
+            );
+            retained.push("reason=container-drain-task state=retained".to_string());
+        }
+        Err(_) => {
+            log::error!(
+                "[selection] container shutdown-work blocking task retained after absolute deadline reason=container-drain-await state=retained"
+            );
+            retained.push("reason=container-drain-await state=retained".to_string());
+            inner
+                .retained_cleanup_tasks
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(task);
+        }
     }
+    retained
 }
 
 async fn execute_route_loss<R: Runtime>(

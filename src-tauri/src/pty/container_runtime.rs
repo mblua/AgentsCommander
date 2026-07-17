@@ -277,6 +277,18 @@ pub trait ContainerRuntime: Send + Sync {
         live_sessions: &HashSet<Uuid>,
         timeout: Duration,
     ) -> Result<ContainerCleanupReport, AppError>;
+
+    /// Retry deterministic cleanup targets retained by the runtime after an
+    /// ambiguous start result. Implementations that do not create an external
+    /// resource before returning `Err` have no retained work.
+    fn retry_retained_cleanups(&self, _control: &ContainerRuntimeControl) {}
+
+    /// Sessions whose deterministic cleanup target or command ownership is
+    /// still retained by the runtime. A non-empty result prevents shutdown
+    /// persistence from treating container cleanup as terminal.
+    fn retained_cleanup_sessions(&self) -> Vec<Uuid> {
+        Vec::new()
+    }
 }
 
 pub fn container_image_from_env() -> Option<String> {
@@ -362,7 +374,7 @@ fn redact_and_truncate(value: &str, max_chars: usize) -> String {
     truncate_chars(&redact_container_diagnostic_text(value), max_chars)
 }
 
-fn redact_container_diagnostic_text(input: &str) -> String {
+pub(crate) fn redact_container_diagnostic_text(input: &str) -> String {
     let mut redacted = input.to_string();
     for key in SENSITIVE_LOG_KEYS {
         redacted = redact_key_values(&redacted, key);
