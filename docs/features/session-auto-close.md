@@ -21,6 +21,12 @@ Two more conditions gate an actual close:
 - The session must have a **live PTY**. A deferred or not-yet-spawned session has nothing to terminate and is skipped.
 - The team must be **established**: at least one member alive for 30 seconds or more. A team you just opened, or one that just woke on restore, is visible for at least that long before anything can close it.
 
+## What happens to the selected session
+
+If auto-close destroys the selected session, AC publishes an authoritative `none` selection and clears the central pane. It never selects a sibling, an exited Root session, or any other unrelated fallback. The pane stays neutral until a later authoritative selection fills it.
+
+Closing a nonselected session leaves the current selection unchanged. This no-fallback rule is specific to automatic close; manual close keeps its eligible live-session fallback behavior.
+
 ## Two badges, two meanings
 
 This page describes two separate sidebar badges. The **idle badge** (`Nm`) counts how long a team has been idle. The **AUTO-CLOSED badge** marks a coordinator that auto-close has already shut down. The next two sections cover each one.
@@ -104,9 +110,13 @@ Idle time is measured from a single anchor per team: **the more recent of two cl
 
 The anchor is `max(last user message, last activity)`, and idle time is `now - anchor`. Either real work or your input resets the clock, so a team is only "idle" when both the human and the agents have gone quiet.
 
+Passive viewing is not activity. Keeping the terminal visible, clicking it, or focusing it does not update either clock. AC needs actual input or genuine PTY output to reset the idle anchor.
+
 ### Why a reopened team keeps its old idle time
 
-When you reopen an abandoned team, the session replays its scrollback for a second or two. AC ignores output in the first 10 seconds of a woken session so that scrollback replay does not look like fresh activity and reset the idle clock. Genuine activity after that window advances the anchor normally.
+Reopening does not reset an existing persisted idle anchor. AC seeds an anchor only when the team has none. A reopened team can therefore keep a large idle value instead of starting at `0m`.
+
+The session may replay its scrollback for a second or two after it wakes. AC ignores output during the first 10 seconds so that repaint output does not look like fresh activity. Genuine PTY output after that repaint grace advances the anchor normally. Separately, the 30-second wake grace keeps the reopened team visible before auto-close can act.
 
 ### Why a close can lag the timeout by up to a minute
 
@@ -129,9 +139,9 @@ The frontend computes `Nm` from that timestamp. The clocks themselves persist pe
 
 **"My ad-hoc shell got closed."** It should not have. Auto-close only targets coordinators and agent-owned sessions; a plain shell with no coding agent is never a candidate. If you saw a shell close, it was not auto-close. Check the row tooltip for the real exit reason.
 
-**"My team did not close after the timeout."** Confirm `coordinatorAutoCloseEnabled` is true and `coordinatorAutoCloseMinutes` is non-zero. Then remember the team must be established (a member alive 30 seconds or more) and have a live PTY, and the close happens on the next 60-second tick. A team you just reopened restarts from fresh activity.
+**"My team did not close after the timeout."** Confirm `coordinatorAutoCloseEnabled` is true and `coordinatorAutoCloseMinutes` is non-zero. Then remember the team must be established (a member alive 30 seconds or more) and have a live PTY, and the close happens on the next 60-second tick. Reopening does not refresh the persisted anchor. A previously idle team can qualify after the 30-second wake grace, then close on a later tick unless qualifying activity updates the anchor.
 
-**"The idle badge never reaches red."** Something is resetting the anchor. Any PTY output (an agent still working, a watchdog, a stray log) or any input counts as activity. Watch the `Nm` value: if it keeps dropping back to a low number, the team is not actually idle.
+**"The idle badge never reaches red."** Something is resetting the anchor. Genuine PTY output after the 10-second repaint grace, or actual input, counts as activity. Passive viewing and focus do not. Watch the `Nm` value: if it keeps dropping back to a low number, the team is not actually idle.
 
 **"A member closed but the coordinator stayed."** Expected. Only the coordinator's own auto-close stamps the AUTO-CLOSED badge; a reaped sibling leaves a surviving coordinator counting normally.
 

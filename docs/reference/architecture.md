@@ -1,4 +1,4 @@
-# Agents Commander — Architecture Map
+# Agents Commander: Architecture Map
 
 > Auto-generated from codebase analysis. Version 0.8.43, branch `main`.
 
@@ -76,7 +76,7 @@ graph TB
 
 ```mermaid
 graph LR
-    subgraph "lib.rs — App Bootstrap"
+    subgraph "lib.rs: App Bootstrap"
         BOOTSTRAP["State init<br/>Window creation<br/>Command registration<br/>Session restore"]
     end
 
@@ -251,13 +251,13 @@ graph LR
 
 ---
 
-## 4. IPC Contract — All Commands
+## 4. IPC Contract: All Commands
 
 ```mermaid
 graph LR
     subgraph "Frontend APIs"
         direction TB
-        A1["SessionAPI<br/>create, destroy, switch<br/>rename, list, getActive<br/>setLastPrompt"]
+        A1["SessionAPI<br/>create, destroy, switch<br/>rename, list, getSelection<br/>(decodes get_active_session)<br/>setLastPrompt"]
         A2["PtyAPI<br/>write, resize"]
         A3["SettingsAPI<br/>get, update"]
         A4["ReposAPI<br/>search"]
@@ -296,15 +296,15 @@ graph LR
 
 ---
 
-## 5. Events — Backend to Frontend
+## 5. Events: Backend to Frontend
 
 ```mermaid
 graph LR
     subgraph "Rust emits"
         E1["pty_output<br/>{sessionId, data}"]
         E2["session_created<br/>{SessionInfo}"]
-        E3["session_destroyed<br/>{id}"]
-        E4["session_switched<br/>{id}"]
+        E3["session_destroyed<br/>{id}<br/>cache disposal + safety suspension"]
+        E4["session_switched<br/>{SessionSelection}<br/>authoritative"]
         E5["session_renamed<br/>{id, name}"]
         E6["session_idle<br/>{id}"]
         E7["session_busy<br/>{id}"]
@@ -341,6 +341,108 @@ graph LR
     E12 --> L5
 ```
 
+### 5.1 Authoritative session selection contract
+
+`session_switched` is the only authoritative selection event for the central pane. Native Tauri windows and WebSocket clients receive the same stored payload. The `get_active_session` command returns that same payload for hydration, despite retaining its older command name.
+
+The complete Rust and TypeScript wire contract is:
+
+```ts
+export type SessionSelectionMode = "none" | "live" | "dormant";
+
+export type SessionSelectionCause =
+  | { source: "initialHydration"; userInitiated: false; mode: "none" }
+  | { source: "sessionCreated"; userInitiated: boolean; mode: "live" }
+  | { source: "userSwitch"; userInitiated: true; mode: "live" | "dormant" }
+  | { source: "manualClose"; userInitiated: true; mode: "live" | "none" }
+  | { source: "autoClose"; userInitiated: false; mode: "none" }
+  | { source: "restart"; userInitiated: boolean; mode: "live" | "none" }
+  | { source: "restore"; userInitiated: false; mode: "live" | "dormant" | "none" }
+  | { source: "detach"; userInitiated: true; mode: "live" | "none" }
+  | { source: "attach"; userInitiated: true; mode: "live" | "dormant" }
+  | { source: "spawnRollback"; userInitiated: false; mode: "none" }
+  | { source: "resourceMonitor"; userInitiated: boolean; mode: "none" }
+  | { source: "backgroundCleanup"; userInitiated: false; mode: "none" }
+  | { source: "livenessReconcile"; userInitiated: false; mode: "dormant" | "none" };
+
+export type SessionSelectionSource = SessionSelectionCause["source"];
+
+interface SessionSelectionOrder {
+  epoch: string;
+  revision: number;
+}
+
+type SessionSelectionBase = SessionSelectionOrder & SessionSelectionCause;
+
+export type SessionSelection =
+  | (SessionSelectionBase & {
+      mode: "none";
+      id: null;
+      status: null;
+      hasPty: false;
+      detached: false;
+      displayable: false;
+    })
+  | (SessionSelectionBase & {
+      mode: "live";
+      id: string;
+      status: "active";
+      hasPty: true;
+      detached: false;
+      displayable: true;
+    })
+  | (SessionSelectionBase & {
+      mode: "dormant";
+      id: string;
+      status: { exited: number };
+      hasPty: boolean;
+      detached: false;
+      displayable: false;
+    });
+```
+
+The source contract is exact:
+
+| `source` | Allowed modes | Allowed `userInitiated` |
+|---|---|---|
+| `initialHydration` | `none` at revision 0 only | `false` |
+| `sessionCreated` | `live` | Trusted create intent |
+| `userSwitch` | `live`, `dormant` | `true` |
+| `manualClose` | `live`, `none` | `true` |
+| `autoClose` | `none` | `false` |
+| `restart` | `live`, `none` | Trusted restart intent |
+| `restore` | `live`, `dormant`, `none` | `false` |
+| `detach` | `live`, `none` | `true` |
+| `attach` | `live`, `dormant` | `true` |
+| `spawnRollback` | `none` | `false` |
+| `resourceMonitor` | `none` | `true` for a user kill; `false` for a watchdog kill; app shutdown does not emit |
+| `backgroundCleanup` | `none` | `false` |
+| `livenessReconcile` | `dormant`, `none` | `false` |
+
+All ten fields are required. `epoch` and every non-null `id` are canonical UUID strings, `revision` is a nonnegative safe integer, and an exited status contains a signed 32-bit code. `live` is the only displayable mode and the only mode that may carry status `"active"`. `dormant` preserves the selected record's exit code and reports its actual PTY snapshot, normally `false`, for sidebar continuity and wake guidance. It cannot route terminal input, resize, snapshots, voice, or task actions. `none` clears the central selection. Source, mode, and `userInitiated` must match the table and union above.
+
+The manager creates one nonempty UUID `epoch` with its initial state and owns it for the backend process lifetime. It also owns the process-local `revision`. Each material selection commit increments the revision exactly once; a no-op does not increment or emit. A restarted backend creates a new epoch and a new revision domain. Commands, Tauri event delivery, and WebSocket delivery serialize this stored state but never create or advance an epoch or revision.
+
+### 5.2 Hydration, reconnect, and stale data
+
+The frontend calls `SessionAPI.getSelection()`, which invokes `get_active_session` as `unknown` and passes the result through `decodeSessionSelection`. `onSessionSwitched` uses the same decoder before invoking a consumer. The decoder constructs a normalized object and rejects malformed keys, values, and source-mode combinations before they can mutate a store.
+
+Terminal and sidebar consumers register the selection listener before hydration. WebSocket consumers also track a local connection generation. They apply these ordering rules:
+
+1. Check the captured connection generation before the epoch or revision. A disconnect immediately suspends live routing and display state.
+2. Within one epoch, accept only a strictly newer revision during normal reconciliation.
+3. Accept any revision from a new, nonretired epoch, and retire the previous epoch. Never accept a retired epoch again.
+4. Allow an equal epoch and revision only once for the exact current-generation reconnect hydration that is still awaited. A newer event cancels that permission.
+5. Reserve an accepted generation, epoch, revision, mode, and ID before awaiting session metadata. A late hydration or list result cannot overwrite a newer selection.
+
+An exact `selectionCoordinatorBusy` hydration failure schedules one current-generation capped-backoff retry. A selection event, disconnect, replacement generation, or component disposal cancels that retry. Other malformed or failed hydration leaves the consumer in its safe neutral state.
+
+### 5.3 `session_destroyed` does not select
+
+`session_destroyed` reports lifecycle disposal only. Consumers use it to dispose the matching xterm cache and close a matching locked detached window. If its ID matches the writable central binding, the terminal also safety-suspends that binding immediately because the destroy event arrives before the final selection event.
+
+The destroy handler never calls selection hydration, derives a fallback, or chooses a replacement. A later authoritative `session_switched` payload or reconnect hydration alone decides whether the central pane becomes `none`, `live`, or `dormant`.
+
 ---
 
 ## 6. Data Flows
@@ -365,7 +467,12 @@ sequenceDiagram
     CMD-->>SB: emit("session_created")
     CMD-->>TM: emit("session_created")
     SB->>SB: sessionsStore.addSession()
-    TM->>TM: TerminalView creates xterm instance
+    opt Creation changes canonical selection
+        CMD-->>SB: emit("session_switched", SessionSelection)
+        CMD-->>TM: emit("session_switched", SessionSelection)
+        SB->>SB: Apply authoritative selection
+        TM->>TM: Reconcile and bind the live selection
+    end
 ```
 
 ### 6.2 Terminal I/O
@@ -493,7 +600,7 @@ graph TD
 
 ---
 
-## 8. Persistence — Files on Disk
+## 8. Persistence: Files on Disk
 
 ```mermaid
 graph TD
@@ -567,8 +674,9 @@ graph TD
 | `lib.rs` | App bootstrap, state init, window creation, session restore, command registration |
 | `errors.rs` | `AppError` enum (thiserror) |
 | `session/session.rs` | `Session`, `SessionInfo`, `SessionStatus` structs |
-| `session/manager.rs` | `SessionManager` — CRUD, ordering, active tracking |
-| `pty/manager.rs` | `PtyManager` — spawn, read loop, write, resize, kill |
+| `session/manager.rs` | `SessionManagerState`: records, stable order, pending creates, and canonical selection state |
+| `session/selection.rs` | Selection contract, coordinator, eligibility policy, process epoch, revision, and publication |
+| `pty/manager.rs` | `PtyManager`: spawn, read loop, write, resize, kill |
 | `pty/idle_detector.rs` | 700ms silence detection, idle/busy events |
 | `pty/git_watcher.rs` | 5s branch polling via `git rev-parse` |
 | `telegram/types.rs` | `TelegramBotConfig`, `BridgeInfo`, `BridgeStatus` |
@@ -577,7 +685,7 @@ graph TD
 | `telegram/bridge.rs` | vt100 pipeline, `RowTracker`, `ClaudeCodeFilter`, output/poll tasks |
 | `phone/types.rs` | `PhoneMessage`, `Conversation`, `AgentInfo` |
 | `phone/manager.rs` | `can_communicate()`, `send_message()`, `get_inbox()`, `ack_messages()` |
-| `config/mod.rs` | `config_dir()` — `-dev` suffix in debug |
+| `config/mod.rs` | `config_dir()`: `-dev` suffix in debug |
 | `config/settings.rs` | `AppSettings`, `AgentConfig`, load/save JSON |
 | `config/dark_factory.rs` | `DarkFactoryConfig`, `Team`, `TeamMember`, `sync_agent_configs()` |
 | `config/sessions_persistence.rs` | `PersistedSession`, snapshot/restore |
@@ -596,15 +704,16 @@ graph TD
 | File | Purpose |
 |------|---------|
 | `main.tsx` | Entry, window routing by query param |
-| `shared/types.ts` | All TypeScript interfaces |
-| `shared/ipc.ts` | All API wrappers + event listeners |
+| `shared/types.ts` | TypeScript interfaces and the invariant-bearing `SessionSelection` union |
+| `shared/session-selection.ts` | Runtime decoder for untrusted selection hydration and events |
+| `shared/ipc.ts` | API wrappers, decoded selection hydration, and event listeners |
 | `shared/shortcuts.ts` | Global keyboard shortcuts (Ctrl+Shift+W/R) |
 | `shared/constants.ts` | `WINDOW_TYPE`, `IS_SIDEBAR`, `IS_TERMINAL` |
 | `shared/voice-recorder.ts` | Mic recording → Gemini → PTY inject |
 | `shared/console-capture.ts` | Console monkey-patch, 500 entries buffer |
 | `shared/stores/settings.ts` | Global `AppSettings` signal + `voiceEnabled` |
-| `sidebar/App.tsx` | Sidebar root — events, shortcuts, bridge subs |
-| `sidebar/stores/sessions.ts` | `sessions[]` + `activeId` reactive store |
+| `sidebar/App.tsx` | Sidebar root: events, shortcuts, bridge subs |
+| `sidebar/stores/sessions.ts` | Session rows plus authoritative selection epoch, revision, mode, and highlight |
 | `sidebar/stores/bridges.ts` | `bridges[]` reactive store |
 | `sidebar/components/Titlebar.tsx` | Drag region, icon, version, controls |
 | `sidebar/components/SessionList.tsx` | `<For>` over sessions → `SessionItem` |
@@ -612,8 +721,8 @@ graph TD
 | `sidebar/components/Toolbar.tsx` | Open Agent + New Session + Settings gear |
 | `sidebar/components/SettingsModal.tsx` | 4-tab settings: General, Agents, Integrations, Dark Factory |
 | `sidebar/components/OpenAgentModal.tsx` | Repo search → agent picker → launch |
-| `terminal/App.tsx` | Terminal root — session switching, detached mode |
-| `terminal/stores/terminal.ts` | `activeSessionId`, `name`, `shell`, `shellArgs`, `workingDirectory` signals |
+| `terminal/App.tsx` | Terminal root: authoritative selection reconciliation and detached mode |
+| `terminal/stores/terminal.ts` | Ordered selection state, connection generation, binding state, and live-only `activeSessionId` |
 | `terminal/components/TerminalView.tsx` | xterm.js multi-session container, WebGL, FitAddon |
 | `terminal/components/Titlebar.tsx` | Session name, shell, DETACHED badge |
 | `terminal/components/StatusBar.tsx` | Full launch command (ellipsis + tooltip), mic button, clear input |
