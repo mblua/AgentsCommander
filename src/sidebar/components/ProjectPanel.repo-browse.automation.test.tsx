@@ -191,7 +191,7 @@ function discoveryShared(shared: string): AcDiscoveryResult {
 }
 
 function repo(sourcePath: string, label: string, branch: string | null): SessionRepo {
-  return { label, sourcePath, branch };
+  return { label, sourcePath, branch, dirty: null };
 }
 
 function coordASession(gitRepos: SessionRepo[]): Session {

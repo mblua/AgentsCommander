@@ -67,6 +67,17 @@ pub struct AgentConfig {
     /// means no seeding. Serialized as `configSeed`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_seed: Option<ConfigSeedConfig>,
+    /// #1032 - per-agent regex run over this agent's screen rows to read its
+    /// context-window usage. Capture group 1 is the percentage. `None`/absent means
+    /// the feature is off for this agent: no event, no reading, no PTY lock, no
+    /// compile. Serialized as `contextRegex`.
+    ///
+    /// The engine ships no anchoring rules of its own; every rule that makes a
+    /// pattern trustworthy lives in the pattern, because only the user knows what
+    /// their agent renders. The reading is a signal for a human and never drives an
+    /// action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_regex: Option<String>,
     /// Backend used for future non-local session transports. Omitted/default
     /// keeps today's local-process behavior.
     #[serde(default, skip_serializing_if = "AgentBackendConfig::is_default")]
@@ -2261,6 +2272,7 @@ mod tests {
                     isolated_home: false,
                     instructions_filename: None,
                     config_seed: None,
+                    context_regex: None,
                     backend: Default::default(),
                 })
                 .collect(),
@@ -2343,6 +2355,7 @@ mod tests {
                 enabled: true,
                 dest: ".claude".to_string(),
             }),
+            context_regex: None,
             backend: Default::default(),
         };
         let json = serde_json::to_string(&agent).unwrap();
@@ -4346,5 +4359,48 @@ mod tests {
         assert_eq!(s.max_concurrent_agent_processes, 32);
         assert_eq!(s.resource_watchdog_action, ResourceWatchdogAction::Warn);
         assert!(validate_resource_settings(&s).is_ok());
+    }
+
+    // ---- #1032: the per-agent context regex ---------------------------------------
+
+    /// Criterion 6. Every settings file that exists today predates this field, so the one
+    /// thing this field must never do is make an existing config fail to load.
+    #[test]
+    fn settings_without_context_regex_deserialize_unchanged() {
+        let json = r##"{ "id": "claude", "label": "Claude", "command": "claude",
+                         "color": "#10b981" }"##;
+        let agent: super::AgentConfig = serde_json::from_str(json).expect("deserializes");
+        assert_eq!(agent.label, "Claude");
+        assert_eq!(agent.context_regex, None, "absent must mean off, not empty");
+    }
+
+    /// The field is an agent-config field, where an absent key is the correct way to say
+    /// "off" - unlike the IPC payload, where `percent` must serialize as an explicit null.
+    #[test]
+    fn context_regex_round_trips_as_camel_case() {
+        let json = r##"{ "id": "claude", "label": "Claude", "command": "claude",
+                         "color": "#10b981",
+                         "contextRegex": "^ {2}Context [\u2591\u2588]+ (\\d{1,3})%" }"##;
+        let agent: super::AgentConfig = serde_json::from_str(json).expect("deserializes");
+        assert_eq!(
+            agent.context_regex.as_deref(),
+            Some("^ {2}Context [\u{2591}\u{2588}]+ (\\d{1,3})%")
+        );
+
+        let back = serde_json::to_string(&agent).expect("serializes");
+        assert!(
+            back.contains("\"contextRegex\""),
+            "the frontend contract is camelCase: {back}"
+        );
+
+        let cleared = super::AgentConfig {
+            context_regex: None,
+            ..agent
+        };
+        let back = serde_json::to_string(&cleared).expect("serializes");
+        assert!(
+            !back.contains("contextRegex"),
+            "None must omit the key here, so an untouched config stays untouched: {back}"
+        );
     }
 }

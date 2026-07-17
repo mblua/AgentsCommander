@@ -141,7 +141,7 @@ pub async fn search_repos(
 }
 
 /// #943 - upper bound for the `git remote get-url` call, mirroring
-/// `GitWatcher::detect_branch_with_timeout` (src-tauri/src/pty/git_watcher.rs:171).
+/// `GitWatcher::detect_status_with_timeout` (src-tauri/src/pty/git_watcher.rs).
 /// The context menu must never wait on a stalled git.
 const GIT_REMOTE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 

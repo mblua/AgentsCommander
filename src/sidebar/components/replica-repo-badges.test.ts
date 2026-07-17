@@ -3,10 +3,12 @@ import {
   automationIdPart,
   configuredReplicaRepoBadges,
   formatReplicaRepoBadgeLabel,
+  formatReplicaRepoBadgeTitle,
   repoLabelFromPath,
 } from "./replica-repo-badges";
 import {
   effectiveRepoBranchByPath,
+  effectiveRepoDirtyByPath,
   replicaVolatileStore,
 } from "../stores/replica-volatile";
 
@@ -114,8 +116,10 @@ describe("#943 B2 per-repo branches are merged BY PATH", () => {
     );
 
     expect(badgesFor([REPO_B, REPO_A])).toEqual([
-      { label: "webpage", sourcePath: REPO_B, branch: "branch-b" },
-      { label: "AgentsCommander", sourcePath: REPO_A, branch: "branch-a" },
+      // #1028: `dirty` is null here because badgesFor() passes no dirty map - this
+      // test is about branch/path transposition and says nothing about dirty.
+      { label: "webpage", sourcePath: REPO_B, branch: "branch-b", dirty: null },
+      { label: "AgentsCommander", sourcePath: REPO_A, branch: "branch-a", dirty: null },
     ]);
   });
 
@@ -172,5 +176,138 @@ describe("#943 B2 per-repo branches are merged BY PATH", () => {
     expect(
       badgesFor([REPO_A, REPO_B], "feature/from-discovery").map((badge) => badge.branch)
     ).toEqual([null, null]);
+  });
+});
+
+// #1028 - worktree-dirty rides the B2 feed and is merged by path for the same
+// reason. The stake is different though: a transposed BRANCH opens the wrong
+// Browse Branch page, a transposed DIRTY accuses a clean repo of holding
+// uncommitted work (or, worse, clears the accusation from one that does).
+describe("#1028 per-repo dirty is merged BY PATH", () => {
+  const REPLICA = "C:\\proj\\.ac\\wg-1-team\\__agent_coord";
+  const REPO_A = "C:\\proj\\.ac\\wg-1-team\\repo-AgentsCommander";
+  const REPO_B = "C:\\proj\\.ac\\wg-1-team\\repo-webpage";
+  const REPO_C = "C:\\proj\\.ac\\wg-1-team\\repo-docs";
+
+  beforeEach(() => {
+    replicaVolatileStore.clearAll();
+  });
+
+  /** Exactly what configuredReplicaRepoBadgesLive (ProjectPanel) passes. */
+  const badgesFor = (repoPaths: string[]) =>
+    configuredReplicaRepoBadges(
+      {
+        repoPaths,
+        repoBranch: undefined,
+        repoBranchByPath: effectiveRepoBranchByPath({ path: REPLICA }),
+        repoDirtyByPath: effectiveRepoDirtyByPath({ path: REPLICA }),
+      },
+      { repoPath: undefined }
+    );
+
+  it("resolves each repo's dirty from the map by path", () => {
+    replicaVolatileStore.applyDiscoveryBranchUpdate(
+      REPLICA,
+      null,
+      [REPO_A, REPO_B],
+      ["main", "main"],
+      [true, false]
+    );
+
+    expect(badgesFor([REPO_A, REPO_B]).map((badge) => badge.dirty)).toEqual([true, false]);
+  });
+
+  it("follows the PATH, not the position, when config.json reorders the repos", () => {
+    // The event was emitted for [A, B]; discovery then reports [B, A] because the
+    // user reordered `repos`. An index-keyed merge would paint A's red onto B.
+    replicaVolatileStore.applyDiscoveryBranchUpdate(
+      REPLICA,
+      null,
+      [REPO_A, REPO_B],
+      ["main", "main"],
+      [true, false]
+    );
+
+    expect(badgesFor([REPO_B, REPO_A]).map((badge) => badge.dirty)).toEqual([false, true]);
+  });
+
+  it("yields null for a repo the payload never mentioned, not a neighbour's dirty", () => {
+    // Event covered [A, B]; the user then swapped B for C in config.json.
+    replicaVolatileStore.applyDiscoveryBranchUpdate(
+      REPLICA,
+      null,
+      [REPO_A, REPO_B],
+      ["main", "main"],
+      [true, true]
+    );
+
+    expect(badgesFor([REPO_A, REPO_C]).map((badge) => badge.dirty)).toEqual([
+      true,
+      null, // NOT true
+    ]);
+  });
+
+  it("yields null before any event lands: there is no single-repo shorthand for dirty", () => {
+    // Unlike `branch`, which falls back to the discovery shorthand here, dirty has no
+    // scalar counterpart on AcAgentReplica. This is the <=15s post-launch state.
+    expect(badgesFor([REPO_A]).map((badge) => badge.dirty)).toEqual([null]);
+  });
+
+  it("keeps a detected `false` distinct from an unknown `null` all the way to the badge", () => {
+    replicaVolatileStore.applyDiscoveryBranchUpdate(REPLICA, null, [REPO_A], ["main"], [false]);
+
+    const [clean, unknown] = badgesFor([REPO_A, REPO_C]);
+    expect(clean.dirty).toBe(false);
+    expect(unknown.dirty).toBe(null);
+    // Both render violet, so the ONLY user-visible difference is the tooltip. This
+    // pair is what makes a `?? null` -> `|| null` regression observable at all.
+    expect(formatReplicaRepoBadgeTitle(clean)).toBe(REPO_A);
+    expect(formatReplicaRepoBadgeTitle(unknown)).toBe(`${REPO_C} (status unknown)`);
+  });
+
+  it("survives a project reload (AC 6): the badges keep their dirty state", () => {
+    replicaVolatileStore.applyDiscoveryBranchUpdate(REPLICA, null, [REPO_A], ["main"], [true]);
+
+    replicaVolatileStore.clearForPaths([REPLICA]);
+
+    expect(badgesFor([REPO_A]).map((badge) => badge.dirty)).toEqual([true]);
+  });
+
+  it("leaves dirty null for callers that do not read the volatile layer", () => {
+    // `replicaRepoMenuEntries` / `replicaSearchText` pass no dirty map: they reach
+    // only label/branch, and must keep compiling and behaving unchanged.
+    replicaVolatileStore.applyDiscoveryBranchUpdate(REPLICA, null, [REPO_A], ["main"], [true]);
+
+    const badges = configuredReplicaRepoBadges(
+      { repoPaths: [REPO_A], repoBranch: "main" },
+      { repoPath: undefined }
+    );
+    expect(badges.map((badge) => badge.dirty)).toEqual([null]);
+    expect(badges.map(formatReplicaRepoBadgeLabel)).toEqual(["AgentsCommander/main"]);
+  });
+});
+
+// #1028 - the tooltip is the only surface that distinguishes all three states, so
+// the colour can stay a binary alarm at 8px.
+describe("#1028 badge title carries the third state", () => {
+  const REPO = "C:\\proj\\.ac\\wg-1-team\\repo-AgentsCommander";
+
+  it("names the uncommitted work when the repo is dirty", () => {
+    expect(formatReplicaRepoBadgeTitle({ sourcePath: REPO, dirty: true })).toBe(
+      `${REPO} (uncommitted changes)`
+    );
+  });
+
+  it("leaves the title exactly as it was when the repo is known clean", () => {
+    // The pre-#1028 title, unchanged: a clean repo must not gain tooltip noise.
+    expect(formatReplicaRepoBadgeTitle({ sourcePath: REPO, dirty: false })).toBe(REPO);
+  });
+
+  it("says status unknown - the normal state for the first <=15s after launch", () => {
+    // Deliberately worded as "not yet known", not as a fault: it is the first thing
+    // a user sees on every launch, before the first watcher tick lands.
+    expect(formatReplicaRepoBadgeTitle({ sourcePath: REPO, dirty: null })).toBe(
+      `${REPO} (status unknown)`
+    );
   });
 });
