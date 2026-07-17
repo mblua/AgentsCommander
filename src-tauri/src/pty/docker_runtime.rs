@@ -4,17 +4,20 @@ use std::process::{Command, Stdio};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
+use std::sync::Arc;
+
 use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::pty::container_runtime::{
-    ContainerCleanupReport, ContainerDiagnostics, ContainerRuntime, ContainerRuntimeHandle,
-    ContainerStartRequest, ContainerStateSnapshot, DEFAULT_API_HELPER_PATH,
+    ContainerCleanupReport, ContainerDiagnostics, ContainerRuntime, ContainerRuntimeControl,
+    ContainerRuntimeHandle, ContainerStartRequest, ContainerStateSnapshot, DEFAULT_API_HELPER_PATH,
     DEFAULT_BRIDGE_ENTRYPOINT, SESSION_LABEL,
 };
 
 const DOCKER_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
-const DOCKER_COMMAND_POLL: Duration = Duration::from_millis(50);
+const DOCKER_COMMAND_POLL: Duration = Duration::from_millis(10);
 const DOCKER_COMMAND_OUTPUT_BYTE_LIMIT: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,9 +32,16 @@ struct CappedCommandStream {
     truncated: bool,
 }
 
+#[derive(Debug)]
 struct DockerCommandOutput {
     stdout: CappedCommandStream,
     stderr: CappedCommandStream,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DockerCommandShutdownBehavior {
+    CancelOnShutdown,
+    ContinueUntilDeadline,
 }
 
 impl DockerCommandOutput {
@@ -102,6 +112,10 @@ pub struct DockerRuntime {
     program: String,
     #[cfg(test)]
     recorded_commands: Option<std::sync::Arc<std::sync::Mutex<Vec<DockerCommandSpec>>>>,
+    #[cfg(test)]
+    active_children: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(test)]
+    active_readers: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Default for DockerRuntime {
@@ -116,6 +130,10 @@ impl DockerRuntime {
             program: "docker".to_string(),
             #[cfg(test)]
             recorded_commands: None,
+            #[cfg(test)]
+            active_children: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            #[cfg(test)]
+            active_readers: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 
@@ -124,6 +142,8 @@ impl DockerRuntime {
         Self {
             program: program.into(),
             recorded_commands: None,
+            active_children: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            active_readers: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 
@@ -135,7 +155,21 @@ impl DockerRuntime {
         Self {
             program: program.into(),
             recorded_commands: Some(recorded_commands),
+            active_children: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            active_readers: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
+    }
+
+    #[cfg(test)]
+    fn active_child_count(&self) -> usize {
+        self.active_children
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    fn active_reader_count(&self) -> usize {
+        self.active_readers
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn build_run_command(
@@ -152,6 +186,8 @@ impl DockerRuntime {
         let mut args = vec![
             "run".to_string(),
             "-d".to_string(),
+            "--name".to_string(),
+            Self::container_name(request.session_id),
             "--label".to_string(),
             format!("{}={}", SESSION_LABEL, request.session_id),
             "--env".to_string(),
@@ -227,6 +263,10 @@ impl DockerRuntime {
         })
     }
 
+    fn container_name(session_id: Uuid) -> String {
+        format!("agentscommander-{}", session_id.as_simple())
+    }
+
     pub fn build_stop_command(
         &self,
         handle: &ContainerRuntimeHandle,
@@ -300,10 +340,39 @@ impl DockerRuntime {
     }
 
     fn run_command_output(&self, spec: DockerCommandSpec) -> Result<DockerCommandOutput, AppError> {
+        self.run_command_output_with_control(
+            spec,
+            &ContainerRuntimeControl::default(),
+            DockerCommandShutdownBehavior::ContinueUntilDeadline,
+        )
+    }
+
+    fn run_command_output_with_control(
+        &self,
+        spec: DockerCommandSpec,
+        control: &ContainerRuntimeControl,
+        shutdown_behavior: DockerCommandShutdownBehavior,
+    ) -> Result<DockerCommandOutput, AppError> {
         #[cfg(test)]
         if let Some(recorded_commands) = &self.recorded_commands {
             recorded_commands.lock().unwrap().push(spec);
             return Ok(DockerCommandOutput::empty());
+        }
+
+        if shutdown_behavior == DockerCommandShutdownBehavior::CancelOnShutdown
+            && control.shutdown_requested()
+        {
+            return Err(AppError::PtyError(
+                "container runtime command canceled by shutdown before spawn".to_string(),
+            ));
+        }
+        if control
+            .shutdown_deadline()
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return Err(AppError::PtyError(
+                "container runtime command skipped after shutdown deadline".to_string(),
+            ));
         }
 
         // #992 - AC is a GUI-subsystem process and owns no console. A console-
@@ -332,49 +401,98 @@ impl DockerRuntime {
             .spawn()
             .map_err(|e| AppError::PtyError(format!("container runtime command failed: {e}")))?;
 
+        #[cfg(test)]
+        let _active_child = ActiveDockerChildGuard::new(Arc::clone(&self.active_children));
+
         let Some(mut stdout) = child.stdout.take() else {
-            let _ = child.kill();
-            let _ = child.wait();
+            terminate_docker_child(&mut child, &spec, false)?;
             return Err(AppError::PtyError(
                 "container runtime command did not expose stdout".to_string(),
             ));
         };
         let Some(mut stderr) = child.stderr.take() else {
-            let _ = child.kill();
-            let _ = child.wait();
+            terminate_docker_child(&mut child, &spec, false)?;
             return Err(AppError::PtyError(
                 "container runtime command did not expose stderr".to_string(),
             ));
         };
-        let stdout_reader = std::thread::spawn(move || {
-            read_capped_to_end(&mut stdout, DOCKER_COMMAND_OUTPUT_BYTE_LIMIT)
-        });
-        let stderr_reader = std::thread::spawn(move || {
-            read_capped_to_end(&mut stderr, DOCKER_COMMAND_OUTPUT_BYTE_LIMIT)
-        });
+        #[cfg(test)]
+        let stdout_readers = Arc::clone(&self.active_readers);
+        let stdout_reader = match std::thread::Builder::new()
+            .name("ac-docker-stdout".to_string())
+            .spawn(move || {
+                #[cfg(test)]
+                let _active_reader = ActiveDockerReaderGuard::new(stdout_readers);
+                read_capped_to_end(&mut stdout, DOCKER_COMMAND_OUTPUT_BYTE_LIMIT)
+            }) {
+            Ok(reader) => reader,
+            Err(error) => {
+                terminate_docker_child(&mut child, &spec, false)?;
+                return Err(AppError::PtyError(format!(
+                    "container runtime stdout reader spawn failed: {error}"
+                )));
+            }
+        };
+        #[cfg(test)]
+        let stderr_readers = Arc::clone(&self.active_readers);
+        let stderr_reader = match std::thread::Builder::new()
+            .name("ac-docker-stderr".to_string())
+            .spawn(move || {
+                #[cfg(test)]
+                let _active_reader = ActiveDockerReaderGuard::new(stderr_readers);
+                read_capped_to_end(&mut stderr, DOCKER_COMMAND_OUTPUT_BYTE_LIMIT)
+            }) {
+            Ok(reader) => reader,
+            Err(error) => {
+                let terminate_result = terminate_docker_child(&mut child, &spec, false);
+                let stdout_result = join_command_reader(stdout_reader, "stdout");
+                terminate_result?;
+                stdout_result?;
+                return Err(AppError::PtyError(format!(
+                    "container runtime stderr reader spawn failed: {error}"
+                )));
+            }
+        };
 
-        let deadline = Instant::now() + DOCKER_COMMAND_TIMEOUT;
+        let command_deadline = Instant::now() + DOCKER_COMMAND_TIMEOUT;
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break status,
                 Ok(None) => {
-                    if Instant::now() >= deadline {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        let _ = stdout_reader.join();
-                        let _ = stderr_reader.join();
+                    let now = Instant::now();
+                    let effective_deadline = control
+                        .shutdown_deadline()
+                        .map(|deadline| deadline.min(command_deadline))
+                        .unwrap_or(command_deadline);
+                    let canceled = shutdown_behavior
+                        == DockerCommandShutdownBehavior::CancelOnShutdown
+                        && control.shutdown_requested();
+                    if canceled || now >= effective_deadline {
+                        let terminate_result = terminate_docker_child(&mut child, &spec, canceled);
+                        let readers_result = join_command_readers(stdout_reader, stderr_reader);
+                        terminate_result?;
+                        readers_result?;
+                        let reason = if canceled {
+                            "canceled by shutdown"
+                        } else if control.shutdown_requested() {
+                            "exceeded the shared shutdown deadline"
+                        } else {
+                            "timed out"
+                        };
                         return Err(AppError::PtyError(format!(
-                            "container runtime command timed out after {:?}",
-                            DOCKER_COMMAND_TIMEOUT
+                            "container runtime command {reason} program={}",
+                            spec.program
                         )));
                     }
-                    std::thread::sleep(DOCKER_COMMAND_POLL);
+                    std::thread::sleep(
+                        DOCKER_COMMAND_POLL.min(effective_deadline.saturating_duration_since(now)),
+                    );
                 }
                 Err(e) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let _ = stdout_reader.join();
-                    let _ = stderr_reader.join();
+                    let terminate_result = terminate_docker_child(&mut child, &spec, false);
+                    let readers_result = join_command_readers(stdout_reader, stderr_reader);
+                    terminate_result?;
+                    readers_result?;
                     return Err(AppError::PtyError(format!(
                         "container runtime command wait failed: {e}"
                     )));
@@ -382,8 +500,8 @@ impl DockerRuntime {
             }
         };
 
-        let stdout = join_command_reader(stdout_reader, "stdout")?;
-        let stderr = join_command_reader(stderr_reader, "stderr")?;
+        let DockerCommandOutput { stdout, stderr } =
+            join_command_readers(stdout_reader, stderr_reader)?;
         if !status.success() {
             let stderr_text = stderr.trimmed_text();
             let stdout_text = stdout.trimmed_text();
@@ -402,6 +520,18 @@ impl DockerRuntime {
 
     fn run_command(&self, spec: DockerCommandSpec) -> Result<String, AppError> {
         let output = self.run_command_output(spec)?;
+        Ok(String::from_utf8_lossy(&output.stdout.bytes)
+            .trim()
+            .to_string())
+    }
+
+    fn run_command_with_control(
+        &self,
+        spec: DockerCommandSpec,
+        control: &ContainerRuntimeControl,
+        shutdown_behavior: DockerCommandShutdownBehavior,
+    ) -> Result<String, AppError> {
+        let output = self.run_command_output_with_control(spec, control, shutdown_behavior)?;
         Ok(String::from_utf8_lossy(&output.stdout.bytes)
             .trim()
             .to_string())
@@ -459,6 +589,15 @@ impl DockerRuntime {
     }
 }
 
+fn join_command_readers(
+    stdout: JoinHandle<std::io::Result<CappedCommandStream>>,
+    stderr: JoinHandle<std::io::Result<CappedCommandStream>>,
+) -> Result<DockerCommandOutput, AppError> {
+    let stdout = join_command_reader(stdout, "stdout")?;
+    let stderr = join_command_reader(stderr, "stderr")?;
+    Ok(DockerCommandOutput { stdout, stderr })
+}
+
 fn join_command_reader(
     reader: JoinHandle<std::io::Result<CappedCommandStream>>,
     stream_name: &'static str,
@@ -470,42 +609,154 @@ fn join_command_reader(
                 "container runtime command {stream_name} reader panicked"
             ))
         })?
-        .map_err(|e| {
+        .map_err(|error| {
             AppError::PtyError(format!(
-                "container runtime command {stream_name} read failed: {e}"
+                "container runtime command {stream_name} read failed: {error}"
             ))
         })
 }
 
+fn terminate_docker_child(
+    child: &mut std::process::Child,
+    spec: &DockerCommandSpec,
+    canceled: bool,
+) -> Result<(), AppError> {
+    if let Err(error) = child.kill() {
+        log::debug!(
+            "[container-runtime] Docker command kill returned program={} canceled={} error={}",
+            spec.program,
+            canceled,
+            error
+        );
+    }
+    child.wait().map(|_| ()).map_err(|error| {
+        AppError::PtyError(format!(
+            "container runtime command reap failed program={} canceled={}: {}",
+            spec.program, canceled, error
+        ))
+    })
+}
+
+#[cfg(test)]
+struct ActiveDockerChildGuard {
+    active: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[cfg(test)]
+impl ActiveDockerChildGuard {
+    fn new(active: Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        active.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self { active }
+    }
+}
+
+#[cfg(test)]
+impl Drop for ActiveDockerChildGuard {
+    fn drop(&mut self) {
+        self.active
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+struct ActiveDockerReaderGuard {
+    active: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[cfg(test)]
+impl ActiveDockerReaderGuard {
+    fn new(active: Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        active.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self { active }
+    }
+}
+
+#[cfg(test)]
+impl Drop for ActiveDockerReaderGuard {
+    fn drop(&mut self) {
+        self.active
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 impl ContainerRuntime for DockerRuntime {
-    fn start(&self, request: ContainerStartRequest) -> Result<ContainerRuntimeHandle, AppError> {
+    fn start(
+        &self,
+        request: ContainerStartRequest,
+        control: &ContainerRuntimeControl,
+    ) -> Result<ContainerRuntimeHandle, AppError> {
         let session_id = request.session_id;
-        let stdout = self.run_command(self.build_run_command(&request)?)?;
-        let container_id = stdout
-            .lines()
-            .next()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| {
-                AppError::PtyError("container runtime returned an empty container id".to_string())
-            })?
-            .to_string();
-        Ok(ContainerRuntimeHandle {
+        let cleanup_handle = ContainerRuntimeHandle {
             session_id,
-            container_id,
-        })
+            container_id: Self::container_name(session_id),
+        };
+        match self.run_command_with_control(
+            self.build_run_command(&request)?,
+            control,
+            DockerCommandShutdownBehavior::CancelOnShutdown,
+        ) {
+            Ok(stdout) => {
+                let container_id = stdout
+                    .lines()
+                    .next()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        AppError::PtyError(
+                            "container runtime returned an empty container id".to_string(),
+                        )
+                    })?
+                    .to_string();
+                Ok(ContainerRuntimeHandle {
+                    session_id,
+                    container_id,
+                })
+            }
+            Err(error) if control.shutdown_requested() => {
+                log::debug!(
+                    "[container-runtime] Docker start canceled session={}; returning owned cleanup handle: {}",
+                    session_id,
+                    error
+                );
+                Ok(cleanup_handle)
+            }
+            Err(error) => Err(error),
+        }
     }
 
-    fn stop(&self, handle: &ContainerRuntimeHandle, timeout: Duration) -> Result<(), AppError> {
-        if let Err(stop_err) = self.run_command(self.build_stop_command(handle, timeout)) {
-            log::warn!(
-                "[container-runtime] graceful stop failed for session {}: {}",
-                handle.session_id,
-                stop_err
-            );
+    fn stop(
+        &self,
+        handle: &ContainerRuntimeHandle,
+        timeout: Duration,
+        control: &ContainerRuntimeControl,
+    ) -> Result<(), AppError> {
+        if !control.shutdown_requested() {
+            if let Err(stop_err) = self.run_command_with_control(
+                self.build_stop_command(handle, timeout),
+                control,
+                DockerCommandShutdownBehavior::CancelOnShutdown,
+            ) {
+                if control.shutdown_requested() {
+                    log::debug!(
+                        "[container-runtime] graceful stop interrupted by shutdown session={}: {}",
+                        handle.session_id,
+                        stop_err
+                    );
+                } else {
+                    log::warn!(
+                        "[container-runtime] graceful stop failed for session {}: {}",
+                        handle.session_id,
+                        stop_err
+                    );
+                }
+            }
         }
-        self.run_command(self.build_force_remove_command(handle))
-            .map(|_| ())
+        self.run_command_with_control(
+            self.build_force_remove_command(handle),
+            control,
+            DockerCommandShutdownBehavior::ContinueUntilDeadline,
+        )
+        .map(|_| ())
     }
 
     fn diagnostics(
@@ -543,6 +794,7 @@ impl ContainerRuntime for DockerRuntime {
         let stdout = self.run_command(self.build_list_labeled_command())?;
         let mut report = ContainerCleanupReport::default();
         let mut errors = Vec::new();
+        let control = ContainerRuntimeControl::default();
         for (container_id, label) in Self::parse_labeled_containers(&stdout) {
             let Ok(session_id) = Uuid::parse_str(&label) else {
                 report.invalid_labels.push(label);
@@ -556,7 +808,7 @@ impl ContainerRuntime for DockerRuntime {
                 session_id,
                 container_id,
             };
-            match self.stop(&handle, timeout) {
+            match self.stop(&handle, timeout, &control) {
                 Ok(()) => report.stopped.push(session_id),
                 // #992 - no warn! here on purpose. The same `session_id: err` string is
                 // returned in the aggregate Err below, which the backend logs at the
@@ -614,6 +866,7 @@ mod tests {
 
         assert_eq!(spec.program, "docker-test");
         assert!(spec.args.iter().any(|arg| arg == "-d"));
+        assert!(joined.contains("--name agentscommander-11111111111141118111111111111111"));
         assert!(!spec.args.iter().any(|arg| arg == "--rm"));
         assert!(!spec
             .args
@@ -764,12 +1017,76 @@ mod tests {
             container_id: "abc123".to_string(),
         };
 
-        runtime.stop(&handle, Duration::from_secs(5)).unwrap();
+        runtime
+            .stop(
+                &handle,
+                Duration::from_secs(5),
+                &ContainerRuntimeControl::default(),
+            )
+            .unwrap();
 
         let commands = recorded.lock().unwrap().clone();
         assert_eq!(commands.len(), 2);
         assert_eq!(commands[0].args, vec!["stop", "--time", "5", "abc123"]);
         assert_eq!(commands[1].args, vec!["rm", "-f", "abc123"]);
+    }
+
+    #[test]
+    fn shutdown_control_kills_and_reaps_command_child_before_deadline() {
+        let runtime = Arc::new(DockerRuntime::new());
+        let control = ContainerRuntimeControl::default();
+        #[cfg(windows)]
+        let spec = DockerCommandSpec {
+            program: "powershell.exe".to_string(),
+            args: vec![
+                "-NoLogo".to_string(),
+                "-NoProfile".to_string(),
+                "-NonInteractive".to_string(),
+                "-Command".to_string(),
+                "Start-Sleep -Seconds 30".to_string(),
+            ],
+        };
+        #[cfg(not(windows))]
+        let spec = DockerCommandSpec {
+            program: "sleep".to_string(),
+            args: vec!["30".to_string()],
+        };
+        let worker_runtime = Arc::clone(&runtime);
+        let worker_control = control.clone();
+        let command = std::thread::Builder::new()
+            .name("docker-runtime-cancellation-test".to_string())
+            .spawn(move || {
+                worker_runtime.run_command_output_with_control(
+                    spec,
+                    &worker_control,
+                    DockerCommandShutdownBehavior::CancelOnShutdown,
+                )
+            })
+            .expect("spawn Docker cancellation test command");
+
+        let child_deadline = Instant::now() + Duration::from_secs(5);
+        while runtime.active_child_count() == 0 {
+            assert!(
+                Instant::now() < child_deadline,
+                "Docker cancellation test child did not start"
+            );
+            std::thread::yield_now();
+        }
+        let shutdown_started = Instant::now();
+        let shutdown_deadline = shutdown_started + Duration::from_millis(500);
+        control.request_shutdown(shutdown_deadline);
+        let error = command
+            .join()
+            .expect("join Docker cancellation test command")
+            .expect_err("shutdown cancels the blocking command")
+            .to_string();
+        assert!(error.contains("canceled by shutdown"), "{error}");
+        assert!(
+            shutdown_started.elapsed() <= Duration::from_secs(1),
+            "Docker child cancellation exceeded its deadline bound"
+        );
+        assert_eq!(runtime.active_child_count(), 0);
+        assert_eq!(runtime.active_reader_count(), 0);
     }
 
     #[test]

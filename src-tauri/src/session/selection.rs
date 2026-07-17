@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -12,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::config::sessions_persistence::persist_current_state_result;
+use crate::pty::container_backend::ContainerTransportBackend;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::{
     CommitDecision, CommitResult, LifecycleMutations, ManagerAggregateSnapshot,
@@ -26,6 +27,7 @@ const COORDINATOR_QUEUE_CAPACITY: usize = 64;
 const COORDINATOR_ADMISSION_CAPACITY: usize = 65;
 const CREATE_TICKET_CAPACITY: usize = 16;
 pub const SHUTDOWN_CLEANUP_BUDGET_SECS: u64 = 5;
+const SHUTDOWN_FINALIZATION_RESERVE_MAX: Duration = Duration::from_millis(500);
 
 tokio::task_local! {
     static IN_SELECTION_WORKER: ();
@@ -528,6 +530,7 @@ struct CoordinatorInner {
     shutdown: CancellationToken,
     worker: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     cleanup_pty: Mutex<Option<Weak<Mutex<PtyManager>>>>,
+    cleanup_container_backend: Mutex<Option<Weak<ContainerTransportBackend>>>,
 }
 
 #[derive(Clone)]
@@ -553,18 +556,30 @@ impl SelectionCoordinator {
                 shutdown,
                 worker: Mutex::new(None),
                 cleanup_pty: Mutex::new(None),
+                cleanup_container_backend: Mutex::new(None),
             }),
         }
     }
 
     pub fn start<R: Runtime>(&self, app: AppHandle<R>) -> Result<(), SelectionCoordinatorError> {
         if let Some(pty) = app.try_state::<Arc<Mutex<PtyManager>>>() {
+            let container_backend = pty
+                .inner()
+                .lock()
+                .map_err(|_| SelectionCoordinatorError::Unavailable)?
+                .container_backend();
             let mut cleanup_pty = self
                 .inner
                 .cleanup_pty
                 .lock()
                 .map_err(|_| SelectionCoordinatorError::Unavailable)?;
             *cleanup_pty = Some(Arc::downgrade(pty.inner()));
+            let mut cleanup_container_backend = self
+                .inner
+                .cleanup_container_backend
+                .lock()
+                .map_err(|_| SelectionCoordinatorError::Unavailable)?;
+            *cleanup_container_backend = Some(Arc::downgrade(&container_backend));
         }
         let receiver = self
             .inner
@@ -1152,12 +1167,19 @@ impl SelectionCoordinator {
     }
 
     async fn close_and_join_with_budget(&self, budget: Duration) {
+        let started_at = Instant::now();
+        let deadline = started_at.checked_add(budget).unwrap_or(started_at);
+        let finalization_reserve = (budget / 4).min(SHUTDOWN_FINALIZATION_RESERVE_MAX);
+        let worker_deadline = deadline
+            .checked_sub(finalization_reserve)
+            .unwrap_or(started_at);
         self.inner
             .phase
             .store(CoordinatorPhase::Closing as u8, Ordering::Release);
         self.inner.admission.close();
         self.inner.create_tickets.close();
         self.inner.shutdown.cancel();
+        begin_container_shutdown(&self.inner, deadline);
 
         let handle = match self.inner.worker.lock() {
             Ok(mut worker) => worker.take(),
@@ -1167,7 +1189,8 @@ impl SelectionCoordinator {
             }
         };
         if let Some(mut handle) = handle {
-            match tokio::time::timeout(budget, &mut handle).await {
+            let remaining = worker_deadline.saturating_duration_since(Instant::now());
+            match tokio::time::timeout(remaining, &mut handle).await {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => {
                     log::error!("[selection] coordinator worker join failed: {error}");
@@ -1180,8 +1203,9 @@ impl SelectionCoordinator {
                         .map(|keys| keys.len())
                         .unwrap_or_default();
                     log::error!(
-                        "[selection] coordinator shutdown exceeded {:?}; aborting worker outstandingCriticalKeys={}",
+                        "[selection] coordinator worker phase exhausted before shared deadline budget={:?} finalizationReserve={:?} outstandingCriticalKeys={}",
                         budget,
+                        finalization_reserve,
                         critical_count
                     );
                     handle.abort();
@@ -1192,8 +1216,8 @@ impl SelectionCoordinator {
             }
         }
 
-        cleanup_pending_creates_after_join(&self.inner).await;
-        seal_and_drain_container_shutdown_work_after_join(&self.inner).await;
+        cleanup_pending_creates_after_join(&self.inner, deadline).await;
+        seal_and_drain_container_shutdown_work_after_join(&self.inner, deadline).await;
         match self.inner.critical_keys.lock() {
             Ok(mut keys) => keys.clear(),
             Err(error) => {
@@ -2154,7 +2178,19 @@ async fn execute_rollback_create_parts(
     }
 }
 
-async fn cleanup_pending_creates_after_join(inner: &Arc<CoordinatorInner>) {
+fn begin_container_shutdown(inner: &Arc<CoordinatorInner>, deadline: Instant) {
+    let container_backend = inner
+        .cleanup_container_backend
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .and_then(Weak::upgrade);
+    if let Some(container_backend) = container_backend {
+        container_backend.begin_shutdown(deadline);
+    }
+}
+
+async fn cleanup_pending_creates_after_join(inner: &Arc<CoordinatorInner>, deadline: Instant) {
     let manager = inner.manager.read().await.clone();
     let bindings = manager.pending_create_bindings().await;
     if bindings.is_empty() {
@@ -2171,24 +2207,31 @@ async fn cleanup_pending_creates_after_join(inner: &Arc<CoordinatorInner>) {
         bindings.len()
     );
     for binding in bindings {
+        if Instant::now() >= deadline {
+            log::error!(
+                "[selection] pending-create rollback reached shared shutdown deadline session={} reason=pending-create-rollback",
+                binding.session_id()
+            );
+        }
         execute_rollback_create_parts(manager.clone(), pty.clone(), binding).await;
     }
 }
 
-async fn seal_and_drain_container_shutdown_work_after_join(inner: &Arc<CoordinatorInner>) {
-    let pty = inner
-        .cleanup_pty
+async fn seal_and_drain_container_shutdown_work_after_join(
+    inner: &Arc<CoordinatorInner>,
+    deadline: Instant,
+) {
+    let container_backend = inner
+        .cleanup_container_backend
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .as_ref()
         .and_then(Weak::upgrade);
-    let Some(pty) = pty else {
+    let Some(container_backend) = container_backend else {
         return;
     };
     let task = tokio::task::spawn_blocking(move || {
-        pty.lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .seal_and_drain_container_shutdown_work_blocking();
+        container_backend.seal_and_drain_shutdown_work_blocking(deadline);
     });
     if let Err(error) = task.await {
         log::error!(
@@ -2340,8 +2383,9 @@ pub(crate) fn publish_session_communication<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
 
     #[derive(Default)]
     struct LifecycleTestBackend {
@@ -2371,23 +2415,60 @@ mod tests {
 
     struct GatedStopRuntime {
         stop_started: Mutex<Option<oneshot::Sender<()>>>,
-        stop_release: Mutex<std::sync::mpsc::Receiver<()>>,
         stop_calls: AtomicUsize,
+        stop_hold: Duration,
+        active_stops: AtomicUsize,
+        deadline_seen: AtomicBool,
     }
 
     struct GatedStartStopRuntime {
         start_started: Mutex<Option<oneshot::Sender<()>>>,
-        start_release: Mutex<std::sync::mpsc::Receiver<()>>,
         stop_started: Mutex<Option<oneshot::Sender<()>>>,
-        stop_release: Mutex<std::sync::mpsc::Receiver<()>>,
         start_calls: AtomicUsize,
         stop_calls: AtomicUsize,
+        stop_hold: Duration,
+        active_starts: AtomicUsize,
+        active_stops: AtomicUsize,
+        deadline_seen: AtomicBool,
+    }
+
+    struct AtomicActivityGuard<'a> {
+        active: &'a AtomicUsize,
+    }
+
+    impl<'a> AtomicActivityGuard<'a> {
+        fn enter(active: &'a AtomicUsize) -> Self {
+            active.fetch_add(1, Ordering::SeqCst);
+            Self { active }
+        }
+    }
+
+    impl Drop for AtomicActivityGuard<'_> {
+        fn drop(&mut self) {
+            self.active.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    fn hold_runtime_stop_until_budget(
+        control: &crate::pty::container_runtime::ContainerRuntimeControl,
+        requested_hold: Duration,
+    ) {
+        if requested_hold.is_zero() {
+            return;
+        }
+        let _ = control.wait_for_shutdown();
+        let remaining = control.remaining().unwrap_or(requested_hold);
+        let hold = requested_hold.min(remaining.saturating_sub(Duration::from_millis(20)));
+        if !hold.is_zero() {
+            std::thread::sleep(hold);
+        }
     }
 
     impl crate::pty::container_runtime::ContainerRuntime for GatedStopRuntime {
         fn start(
             &self,
             request: crate::pty::container_runtime::ContainerStartRequest,
+            _control: &crate::pty::container_runtime::ContainerRuntimeControl,
         ) -> Result<crate::pty::container_runtime::ContainerRuntimeHandle, crate::errors::AppError>
         {
             Ok(crate::pty::container_runtime::ContainerRuntimeHandle {
@@ -2400,7 +2481,9 @@ mod tests {
             &self,
             _handle: &crate::pty::container_runtime::ContainerRuntimeHandle,
             _timeout: Duration,
+            control: &crate::pty::container_runtime::ContainerRuntimeControl,
         ) -> Result<(), crate::errors::AppError> {
+            let _active = AtomicActivityGuard::enter(&self.active_stops);
             self.stop_calls.fetch_add(1, Ordering::SeqCst);
             if let Some(started) = self
                 .stop_started
@@ -2410,11 +2493,9 @@ mod tests {
             {
                 let _ = started.send(());
             }
-            self.stop_release
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .recv()
-                .map_err(|error| crate::errors::AppError::Other(error.to_string()))?;
+            hold_runtime_stop_until_budget(control, self.stop_hold);
+            self.deadline_seen
+                .store(control.shutdown_deadline().is_some(), Ordering::SeqCst);
             Ok(())
         }
 
@@ -2432,8 +2513,10 @@ mod tests {
         fn start(
             &self,
             request: crate::pty::container_runtime::ContainerStartRequest,
+            control: &crate::pty::container_runtime::ContainerRuntimeControl,
         ) -> Result<crate::pty::container_runtime::ContainerRuntimeHandle, crate::errors::AppError>
         {
+            let _active = AtomicActivityGuard::enter(&self.active_starts);
             self.start_calls.fetch_add(1, Ordering::SeqCst);
             if let Some(started) = self
                 .start_started
@@ -2443,11 +2526,7 @@ mod tests {
             {
                 let _ = started.send(());
             }
-            self.start_release
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .recv()
-                .map_err(|error| crate::errors::AppError::Other(error.to_string()))?;
+            let _ = control.wait_for_shutdown();
             Ok(crate::pty::container_runtime::ContainerRuntimeHandle {
                 session_id: request.session_id,
                 container_id: format!("container-{}", request.session_id),
@@ -2458,7 +2537,9 @@ mod tests {
             &self,
             _handle: &crate::pty::container_runtime::ContainerRuntimeHandle,
             _timeout: Duration,
+            control: &crate::pty::container_runtime::ContainerRuntimeControl,
         ) -> Result<(), crate::errors::AppError> {
+            let _active = AtomicActivityGuard::enter(&self.active_stops);
             self.stop_calls.fetch_add(1, Ordering::SeqCst);
             if let Some(started) = self
                 .stop_started
@@ -2468,11 +2549,9 @@ mod tests {
             {
                 let _ = started.send(());
             }
-            self.stop_release
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .recv()
-                .map_err(|error| crate::errors::AppError::Other(error.to_string()))?;
+            hold_runtime_stop_until_budget(control, self.stop_hold);
+            self.deadline_seen
+                .store(control.shutdown_deadline().is_some(), Ordering::SeqCst);
             Ok(())
         }
 
@@ -2689,11 +2768,17 @@ mod tests {
 
         let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
         let (stop_started, stop_started_rx) = oneshot::channel();
-        let (stop_release, stop_release_rx) = std::sync::mpsc::channel();
+        let close_budget = Duration::from_millis(200);
         let runtime = Arc::new(GatedStopRuntime {
             stop_started: Mutex::new(Some(stop_started)),
-            stop_release: Mutex::new(stop_release_rx),
             stop_calls: AtomicUsize::new(0),
+            stop_hold: if capped {
+                Duration::from_secs(30)
+            } else {
+                Duration::from_millis(10)
+            },
+            active_stops: AtomicUsize::new(0),
+            deadline_seen: AtomicBool::new(false),
         });
         let output_senders = Arc::new(Mutex::new(std::collections::HashMap::new()));
         let idle_detector = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
@@ -2755,13 +2840,12 @@ mod tests {
             .record_route(pending.id, SessionBackendKind::ContainerTransport);
 
         let finalizer = tokio::spawn(async move { ticket.finalize(Vec::new()).await });
-        let mut close = {
+        let close_started = Instant::now();
+        let close = {
             let coordinator = coordinator.clone();
             tokio::spawn(async move {
                 if capped {
-                    coordinator
-                        .close_and_join_with_budget(Duration::from_millis(25))
-                        .await;
+                    coordinator.close_and_join_with_budget(close_budget).await;
                 } else {
                     coordinator.close_and_join().await;
                 }
@@ -2786,15 +2870,20 @@ mod tests {
             .expect("container stop is invoked during coordinator close")
             .expect("container stop-start signal is delivered");
         assert_eq!(runtime.stop_calls.load(Ordering::SeqCst), 1);
+        tokio::time::timeout(Duration::from_secs(2), close)
+            .await
+            .expect("coordinator close obeys the shared shutdown deadline")
+            .expect("join coordinator close task");
+        let close_elapsed = close_started.elapsed();
+        let close_bound = if capped {
+            close_budget + Duration::from_millis(550)
+        } else {
+            Duration::from_secs(1)
+        };
         assert!(
-            tokio::time::timeout(Duration::from_millis(50), &mut close)
-                .await
-                .is_err(),
-            "coordinator close must remain pending until container stop finishes"
+            close_elapsed <= close_bound,
+            "coordinator close elapsed {close_elapsed:?}, bound {close_bound:?}"
         );
-
-        stop_release.send(()).expect("release gated container stop");
-        close.await.expect("join coordinator close task");
         if let Some(guard) = restore_guard.take() {
             guard.finish();
         }
@@ -2806,6 +2895,8 @@ mod tests {
             SelectionCoordinatorError::Unavailable.to_string()
         );
         assert_eq!(runtime.stop_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(runtime.active_stops.load(Ordering::SeqCst), 0);
+        assert!(runtime.deadline_seen.load(Ordering::SeqCst));
         assert!(!container_backend.contains_transport_state_for_test(pending.id));
         assert_eq!(container_backend.detached_cleanup_count_for_test(), 0);
         let aggregate = manager_handle.aggregate_snapshot().await;
@@ -2826,23 +2917,31 @@ mod tests {
         );
     }
 
-    async fn assert_real_pending_container_start_shutdown_waits_for_stop(capped: bool) {
+    async fn assert_real_pending_container_start_shutdown_waits_for_stop(
+        capped: bool,
+        fail_worker_spawn: bool,
+    ) {
         use crate::pty::backend::SessionBackendKind;
         use crate::pty::container_backend::ContainerTransportBackend;
         use crate::pty::container_tokens::ContainerApiTokenManager;
 
         let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
         let (start_started, start_started_rx) = oneshot::channel();
-        let (start_release, start_release_rx) = std::sync::mpsc::channel();
         let (stop_started, stop_started_rx) = oneshot::channel();
-        let (stop_release, stop_release_rx) = std::sync::mpsc::channel();
+        let close_budget = Duration::from_millis(200);
         let runtime = Arc::new(GatedStartStopRuntime {
             start_started: Mutex::new(Some(start_started)),
-            start_release: Mutex::new(start_release_rx),
             stop_started: Mutex::new(Some(stop_started)),
-            stop_release: Mutex::new(stop_release_rx),
             start_calls: AtomicUsize::new(0),
             stop_calls: AtomicUsize::new(0),
+            stop_hold: if capped {
+                Duration::from_secs(30)
+            } else {
+                Duration::from_millis(10)
+            },
+            active_starts: AtomicUsize::new(0),
+            active_stops: AtomicUsize::new(0),
+            deadline_seen: AtomicBool::new(false),
         });
         let token_dir = tempfile::TempDir::new().expect("create container token directory");
         let token_manager =
@@ -2864,6 +2963,9 @@ mod tests {
             Some(token_manager),
         );
         container_backend.set_runtime_settings_for_test(runtime_settings);
+        if fail_worker_spawn {
+            container_backend.inject_shutdown_worker_spawn_failure_for_test();
+        }
         let container_backend = Arc::new(container_backend);
         let pty = Arc::new(Mutex::new(PtyManager::new_for_test_with_container_backend(
             Arc::new(LifecycleTestBackend::default()),
@@ -2908,22 +3010,29 @@ mod tests {
         let pending_id = pending.id;
         let create_shutdown = coordinator.inner.shutdown.clone();
         let create_pty = Arc::clone(&pty);
-        let mut create = tokio::spawn(async move {
-            let _ticket = ticket;
-            let _spawn_mark = create_pty
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .mark_spawning("C:/repo/.ac/wg-1/__agent_dev", "container");
-            tokio::select! {
-                _ = create_shutdown.cancelled() => {
-                    Err(SelectionCoordinatorError::Unavailable.to_string())
+        let mut create = tokio::task::spawn_blocking(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build real-container create test runtime");
+            runtime.block_on(async move {
+                let _ticket = ticket;
+                let _spawn_mark = create_pty
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .mark_spawning("C:/repo/.ac/wg-1/__agent_dev", "container");
+                tokio::select! {
+                    biased;
+                    _ = create_shutdown.cancelled() => {
+                        Err(SelectionCoordinatorError::Unavailable.to_string())
+                    }
+                    result = PtyManager::spawn(
+                        &create_pty,
+                        SessionBackendKind::ContainerTransport,
+                        real_container_spawn_spec(pending_id),
+                    ) => result.map_err(|error| error.to_string()),
                 }
-                result = PtyManager::spawn(
-                    &create_pty,
-                    SessionBackendKind::ContainerTransport,
-                    real_container_spawn_spec(pending_id),
-                ) => result.map_err(|error| error.to_string()),
-            }
+            })
         });
 
         tokio::select! {
@@ -2953,13 +3062,12 @@ mod tests {
             "the producer and blocking start must be shutdown-owned before runtime.start"
         );
 
-        let mut close = {
+        let close_started = Instant::now();
+        let close = {
             let coordinator = coordinator.clone();
             tokio::spawn(async move {
                 if capped {
-                    coordinator
-                        .close_and_join_with_budget(Duration::from_millis(25))
-                        .await;
+                    coordinator.close_and_join_with_budget(close_budget).await;
                 } else {
                     coordinator.close_and_join().await;
                 }
@@ -2972,13 +3080,22 @@ mod tests {
         })
         .await
         .expect("real pending-container shutdown signal becomes visible");
-        assert_eq!(
-            (&mut create)
-                .await
-                .expect("join canceled real container create")
-                .expect_err("shutdown cancels the real container create"),
-            SelectionCoordinatorError::Unavailable.to_string()
-        );
+        let create_error = (&mut create)
+            .await
+            .expect("join canceled real container create")
+            .expect_err("shutdown cancels the real container create");
+        if fail_worker_spawn {
+            assert!(
+                create_error == SelectionCoordinatorError::Unavailable.to_string()
+                    || create_error == "container runtime start was canceled",
+                "unexpected synchronous-fallback cancellation error: {create_error}"
+            );
+        } else {
+            assert_eq!(
+                create_error,
+                SelectionCoordinatorError::Unavailable.to_string()
+            );
+        }
         if !capped {
             restore_guard
                 .take()
@@ -2999,41 +3116,41 @@ mod tests {
             }
         })
         .await
-        .expect("pending manager row is rolled back before start release");
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), &mut close)
-                .await
-                .is_err(),
-            "coordinator close must wait for the shutdown-owned runtime start"
-        );
-
-        start_release.send(()).expect("release gated runtime start");
+        .expect("pending manager row is rolled back during shutdown");
         tokio::time::timeout(Duration::from_secs(1), stop_started_rx)
             .await
             .expect("late runtime handle stop starts")
             .expect("late runtime handle stop witness is delivered");
         assert_eq!(runtime.stop_calls.load(Ordering::SeqCst), 1);
+        tokio::time::timeout(Duration::from_secs(2), close)
+            .await
+            .expect("real pending-container close obeys the shared deadline")
+            .expect("join real pending-container close task");
+        let close_elapsed = close_started.elapsed();
+        let close_bound = if capped {
+            close_budget + Duration::from_millis(550)
+        } else {
+            Duration::from_secs(1)
+        };
         assert!(
-            tokio::time::timeout(Duration::from_millis(50), &mut close)
-                .await
-                .is_err(),
-            "coordinator close must wait for late runtime handle stop completion"
+            close_elapsed <= close_bound,
+            "real container close elapsed {close_elapsed:?}, bound {close_bound:?}"
         );
-        stop_release
-            .send(())
-            .expect("release late runtime handle stop");
-        close.await.expect("join real pending-container close task");
         if let Some(guard) = restore_guard.take() {
             guard.finish();
         }
 
         assert_eq!(runtime.start_calls.load(Ordering::SeqCst), 1);
         assert_eq!(runtime.stop_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(runtime.active_starts.load(Ordering::SeqCst), 0);
+        assert_eq!(runtime.active_stops.load(Ordering::SeqCst), 0);
+        assert!(runtime.deadline_seen.load(Ordering::SeqCst));
         assert!(!container_backend.contains_transport_state_for_test(pending_id));
         assert_eq!(
             container_backend.shutdown_work_state_for_test(),
             (true, 0, 0)
         );
+        assert_eq!(container_backend.shutdown_worker_count_for_test(), 0);
         let aggregate = manager_handle.aggregate_snapshot().await;
         assert!(aggregate.pending_ids.is_empty());
         assert!(aggregate.sessions.is_empty());
@@ -4200,7 +4317,7 @@ mod tests {
 
     #[tokio::test]
     async fn normal_shutdown_drain_joins_real_pending_container_start_and_stop_exactly_once() {
-        assert_real_pending_container_start_shutdown_waits_for_stop(false).await;
+        assert_real_pending_container_start_shutdown_waits_for_stop(false, false).await;
     }
 
     #[tokio::test]
@@ -4426,7 +4543,134 @@ mod tests {
 
     #[tokio::test]
     async fn capped_shutdown_abort_joins_real_pending_container_start_and_stop_exactly_once() {
-        assert_real_pending_container_start_shutdown_waits_for_stop(true).await;
+        assert_real_pending_container_start_shutdown_waits_for_stop(true, false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canceled_real_start_worker_spawn_failure_falls_back_without_losing_handle() {
+        assert_real_pending_container_start_shutdown_waits_for_stop(true, true).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn installed_handle_cleanup_worker_spawn_failure_falls_back_without_panic() {
+        use crate::pty::backend::SessionBackendKind;
+        use crate::pty::container_backend::ContainerTransportBackend;
+        use crate::pty::container_runtime::ContainerRuntimeHandle;
+
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let (stop_started, stop_started_rx) = oneshot::channel();
+        let runtime = Arc::new(GatedStopRuntime {
+            stop_started: Mutex::new(Some(stop_started)),
+            stop_calls: AtomicUsize::new(0),
+            stop_hold: Duration::from_secs(30),
+            active_stops: AtomicUsize::new(0),
+            deadline_seen: AtomicBool::new(false),
+        });
+        let output_senders = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let idle_detector = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
+        let container_backend = Arc::new(ContainerTransportBackend::with_runtime(
+            output_senders,
+            idle_detector,
+            None,
+            None,
+            runtime.clone(),
+            None,
+        ));
+        container_backend.inject_shutdown_worker_spawn_failure_for_test();
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test_with_container_backend(
+            Arc::new(LifecycleTestBackend::default()),
+            container_backend.clone(),
+        )));
+        let session_id = Uuid::new_v4();
+        let _transport_receiver =
+            container_backend.insert_active_runtime_handle_for_test(ContainerRuntimeHandle {
+                session_id,
+                container_id: format!("container-{session_id}"),
+            });
+        pty.lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .record_route(session_id, SessionBackendKind::ContainerTransport);
+
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(Arc::clone(&pty))
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build installed-handle admission-failure app");
+        coordinator
+            .start(app.handle().clone())
+            .expect("start installed-handle admission-failure coordinator");
+        coordinator
+            .submit_restore_first()
+            .await
+            .expect("submit installed-handle restore")
+            .finish();
+
+        let kill_pty = Arc::clone(&pty);
+        let kill = tokio::task::spawn_blocking(move || {
+            match catch_unwind(AssertUnwindSafe(|| {
+                kill_pty
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .kill(session_id)
+            })) {
+                Ok(result) => result.map_err(|error| error.to_string()),
+                Err(_) => Err("cleanup admission failure panicked".to_string()),
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(1), stop_started_rx)
+            .await
+            .expect("installed-handle fallback stop starts")
+            .expect("installed-handle fallback stop witness is delivered");
+        assert_eq!(runtime.stop_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(runtime.active_stops.load(Ordering::SeqCst), 1);
+        assert!(!container_backend.contains_transport_state_for_test(session_id));
+        assert_eq!(
+            container_backend.shutdown_work_state_for_test(),
+            (false, 1, 1)
+        );
+        assert_eq!(container_backend.shutdown_worker_count_for_test(), 0);
+
+        let close_budget = Duration::from_millis(200);
+        let close_started = Instant::now();
+        coordinator.close_and_join_with_budget(close_budget).await;
+        assert!(
+            close_started.elapsed() <= close_budget + Duration::from_millis(550),
+            "installed-handle close must consume the shared deadline"
+        );
+        tokio::time::timeout(Duration::from_secs(1), kill)
+            .await
+            .expect("installed-handle fallback kill finishes after shutdown cancellation")
+            .expect("join installed-handle fallback kill")
+            .expect("cleanup admission failure must not panic or lose the stop");
+
+        let manager_handle = manager.read().await.clone();
+        let aggregate = manager_handle.aggregate_snapshot().await;
+        assert!(aggregate.sessions.is_empty());
+        assert!(aggregate.pending_ids.is_empty());
+        assert_eq!(runtime.stop_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(runtime.active_stops.load(Ordering::SeqCst), 0);
+        assert!(runtime.deadline_seen.load(Ordering::SeqCst));
+        assert!(!container_backend.contains_transport_state_for_test(session_id));
+        assert!(!pty
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .has_session(session_id));
+        assert_eq!(
+            container_backend.shutdown_work_state_for_test(),
+            (true, 0, 0)
+        );
+        assert_eq!(container_backend.shutdown_worker_count_for_test(), 0);
+        pty.lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .stop_all_started_containers_blocking(Duration::from_secs(1));
+        assert_eq!(
+            runtime.stop_calls.load(Ordering::SeqCst),
+            1,
+            "later global sweep must not repeat the recovered stop"
+        );
     }
 
     #[tokio::test]

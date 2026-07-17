@@ -126,11 +126,6 @@ impl PtyManager {
             .stop_all_started_containers_blocking(budget);
     }
 
-    pub(crate) fn seal_and_drain_container_shutdown_work_blocking(&self) {
-        self.container_backend
-            .seal_and_drain_shutdown_work_blocking();
-    }
-
     pub fn record_route(&self, id: Uuid, kind: SessionBackendKind) {
         self.registry
             .lock()

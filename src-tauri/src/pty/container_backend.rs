@@ -1,7 +1,8 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Barrier, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use futures::future::BoxFuture;
@@ -18,7 +19,7 @@ use crate::pty::container_paths::{
 };
 use crate::pty::container_runtime::{
     api_url_for_container, resolve_container_image, ContainerDiagnostics, ContainerRuntime,
-    ContainerRuntimeHandle, ContainerStartRequest, CONTAINER_STOP_TIMEOUT,
+    ContainerRuntimeControl, ContainerRuntimeHandle, ContainerStartRequest, CONTAINER_STOP_TIMEOUT,
     DEFAULT_CONTAINER_WORKDIR,
 };
 use crate::pty::container_tokens::{ContainerApiToken, ContainerApiTokenManager};
@@ -33,6 +34,9 @@ pub const MAX_TRANSPORT_FRAME_BYTES: usize = 64 * 1024;
 const TRANSPORT_LOST_EXIT_CODE: i32 = 1;
 const CLEANUP_TASK_TIMEOUT: Duration = Duration::from_secs(10);
 const CONTAINER_DIAGNOSTIC_LOG_TAIL_LINES: usize = 80;
+const CONTAINER_SHUTDOWN_WORKER_CAPACITY: usize = 4;
+const CONTAINER_SHUTDOWN_QUEUE_CAPACITY: usize = 64;
+const CONTAINER_SHUTDOWN_FALLBACK_CAPACITY: usize = 1;
 
 // Keep this re-export so session_transport and container_backend continue to
 // share exactly one normalization rule.
@@ -166,22 +170,65 @@ struct RemovedSessionResources {
 struct ContainerShutdownWorkState {
     sealed: bool,
     active_producers: usize,
-    tasks: Vec<std::thread::JoinHandle<()>>,
+    queued: VecDeque<ContainerShutdownWork>,
+    active: HashMap<u64, ContainerShutdownWorkContext>,
+    active_fallbacks: usize,
+    next_task_id: u64,
+    terminating: bool,
+    worker_count: usize,
+    #[cfg(test)]
+    fail_worker_spawn: bool,
 }
 
-#[derive(Default)]
 struct ContainerShutdownWorkRegistry {
-    state: Mutex<ContainerShutdownWorkState>,
-    producers_drained: Condvar,
+    shared: Arc<ContainerShutdownWorkShared>,
+    workers: Mutex<Vec<std::thread::JoinHandle<()>>>,
 }
 
 struct ContainerShutdownProducer {
     registry: Arc<ContainerShutdownWorkRegistry>,
 }
 
+struct ContainerShutdownWorkShared {
+    state: Mutex<ContainerShutdownWorkState>,
+    state_changed: Condvar,
+    work_available: Condvar,
+    control: ContainerRuntimeControl,
+}
+
+#[derive(Clone)]
+struct ContainerShutdownWorkContext {
+    session_id: Option<Uuid>,
+    reason: &'static str,
+}
+
+struct ContainerShutdownWork {
+    id: u64,
+    context: ContainerShutdownWorkContext,
+    run: Box<dyn FnOnce(&ContainerRuntimeControl) + Send + 'static>,
+}
+
+impl Default for ContainerShutdownWorkRegistry {
+    fn default() -> Self {
+        Self {
+            shared: Arc::new(ContainerShutdownWorkShared {
+                state: Mutex::new(ContainerShutdownWorkState::default()),
+                state_changed: Condvar::new(),
+                work_available: Condvar::new(),
+                control: ContainerRuntimeControl::default(),
+            }),
+            workers: Mutex::new(Vec::new()),
+        }
+    }
+}
+
 impl ContainerShutdownWorkRegistry {
     fn register_producer(self: &Arc<Self>) -> Option<ContainerShutdownProducer> {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if state.sealed {
             return None;
         }
@@ -191,56 +238,371 @@ impl ContainerShutdownWorkRegistry {
         })
     }
 
-    fn spawn_owned<F>(&self, work: F)
+    fn spawn_owned<F>(&self, session_id: Option<Uuid>, reason: &'static str, work: F)
     where
-        F: FnOnce() + Send + 'static,
+        F: FnOnce(&ContainerRuntimeControl) + Send + 'static,
     {
-        let gate = Arc::new(Barrier::new(2));
-        let worker_gate = Arc::clone(&gate);
-        let task = std::thread::spawn(move || {
-            worker_gate.wait();
-            work();
-        });
-        {
-            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-            state.tasks.retain(|existing| !existing.is_finished());
-            state.tasks.push(task);
+        let context = ContainerShutdownWorkContext { session_id, reason };
+        let mut work = Some(Box::new(work) as Box<dyn FnOnce(&ContainerRuntimeControl) + Send>);
+        let worker_count = self.ensure_workers(&context);
+        let queued = if worker_count == 0 {
+            false
+        } else {
+            let mut state = self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if state.terminating || state.queued.len() >= CONTAINER_SHUTDOWN_QUEUE_CAPACITY {
+                false
+            } else {
+                let id = state.next_task_id;
+                state.next_task_id = state.next_task_id.wrapping_add(1);
+                match work.take() {
+                    Some(run) => {
+                        state.queued.push_back(ContainerShutdownWork {
+                            id,
+                            context: context.clone(),
+                            run,
+                        });
+                        self.shared.work_available.notify_one();
+                        true
+                    }
+                    None => {
+                        log::error!(
+                            "[container-transport] shutdown work ownership missing before admission session={} reason={}",
+                            context
+                                .session_id
+                                .map(|id| id.to_string())
+                                .unwrap_or_else(|| "none".to_string()),
+                            context.reason
+                        );
+                        false
+                    }
+                }
+            }
+        };
+        if queued {
+            return;
         }
-        gate.wait();
+
+        log::warn!(
+            "[container-transport] shutdown work admission unavailable; running synchronously session={} reason={} workers={} queueCapacity={}",
+            context
+                .session_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            context.reason,
+            worker_count,
+            CONTAINER_SHUTDOWN_QUEUE_CAPACITY
+        );
+        if let Some(work) = work {
+            let id = {
+                let mut state = self
+                    .shared
+                    .state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                while state.active_fallbacks >= CONTAINER_SHUTDOWN_FALLBACK_CAPACITY {
+                    state = self
+                        .shared
+                        .state_changed
+                        .wait(state)
+                        .unwrap_or_else(|error| error.into_inner());
+                }
+                let id = state.next_task_id;
+                state.next_task_id = state.next_task_id.wrapping_add(1);
+                state.active.insert(id, context.clone());
+                state.active_fallbacks += 1;
+                id
+            };
+            run_container_shutdown_work(work, &self.shared.control, &context);
+            let mut state = self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            state.active.remove(&id);
+            if state.active_fallbacks == 0 {
+                log::error!(
+                    "[container-transport] synchronous shutdown work count underflow session={} reason={}",
+                    context
+                        .session_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                    context.reason
+                );
+            } else {
+                state.active_fallbacks -= 1;
+            }
+            self.shared.state_changed.notify_all();
+        }
     }
 
-    fn seal_and_drain_blocking(&self) {
-        let tasks = {
-            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-            state.sealed = true;
-            while state.active_producers > 0 {
-                state = self
-                    .producers_drained
-                    .wait(state)
+    fn ensure_workers(&self, context: &ContainerShutdownWorkContext) -> usize {
+        let mut workers = self
+            .workers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut retained = Vec::with_capacity(workers.len());
+        for worker in workers.drain(..) {
+            if worker.is_finished() {
+                if worker.join().is_err() {
+                    log::error!(
+                        "[container-transport] shutdown worker exited after panic session={} reason={}",
+                        context
+                            .session_id
+                            .map(|id| id.to_string())
+                            .unwrap_or_else(|| "none".to_string()),
+                        context.reason
+                    );
+                }
+            } else {
+                retained.push(worker);
+            }
+        }
+        *workers = retained;
+
+        while workers.len() < CONTAINER_SHUTDOWN_WORKER_CAPACITY {
+            #[cfg(test)]
+            if self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .fail_worker_spawn
+            {
+                log::warn!(
+                    "[container-transport] injected shutdown worker spawn failure session={} reason={}",
+                    context
+                        .session_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                    context.reason
+                );
+                break;
+            }
+
+            let shared = Arc::clone(&self.shared);
+            let worker_index = workers.len();
+            match std::thread::Builder::new()
+                .name(format!("ac-container-shutdown-{worker_index}"))
+                .spawn(move || container_shutdown_worker(shared))
+            {
+                Ok(worker) => workers.push(worker),
+                Err(error) => {
+                    log::warn!(
+                        "[container-transport] shutdown worker spawn failed session={} reason={} worker={} error={}",
+                        context
+                            .session_id
+                            .map(|id| id.to_string())
+                            .unwrap_or_else(|| "none".to_string()),
+                        context.reason,
+                        worker_index,
+                        error
+                    );
+                    break;
+                }
+            }
+        }
+        let worker_count = workers.len();
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .worker_count = worker_count;
+        worker_count
+    }
+
+    fn begin_shutdown(&self, deadline: Instant) {
+        self.shared.control.request_shutdown(deadline);
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.sealed = true;
+        self.shared.work_available.notify_all();
+        self.shared.state_changed.notify_all();
+    }
+
+    fn seal_and_drain_until(&self, deadline: Instant) {
+        self.begin_shutdown(deadline);
+        let mut deadline_reported = false;
+        {
+            let mut state = self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            while state.active_producers > 0 || !state.queued.is_empty() || !state.active.is_empty()
+            {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    if !deadline_reported {
+                        let contexts = state
+                            .active
+                            .values()
+                            .chain(state.queued.iter().map(|work| &work.context))
+                            .map(|context| {
+                                format!(
+                                    "session={} reason={}",
+                                    context
+                                        .session_id
+                                        .map(|id| id.to_string())
+                                        .unwrap_or_else(|| "none".to_string()),
+                                    context.reason
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        log::error!(
+                            "[container-transport] shared shutdown deadline exhausted producers={} queued={} active={} work=[{}]",
+                            state.active_producers,
+                            state.queued.len(),
+                            state.active.len(),
+                            contexts
+                        );
+                        deadline_reported = true;
+                    }
+                    state = self
+                        .shared
+                        .state_changed
+                        .wait(state)
+                        .unwrap_or_else(|error| error.into_inner());
+                    continue;
+                }
+                let (next, _) = self
+                    .shared
+                    .state_changed
+                    .wait_timeout(state, remaining)
                     .unwrap_or_else(|error| error.into_inner());
+                state = next;
             }
-            std::mem::take(&mut state.tasks)
+            state.terminating = true;
+            self.shared.work_available.notify_all();
+        }
+
+        let workers = {
+            let mut workers = self
+                .workers
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            std::mem::take(&mut *workers)
         };
-        for task in tasks {
-            if task.join().is_err() {
-                log::warn!("[container-transport] shutdown-owned work thread panicked");
+        for worker in workers {
+            if worker.join().is_err() {
+                log::error!("[container-transport] shutdown worker panicked during final join");
             }
+        }
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .worker_count = 0;
+        if Instant::now() > deadline {
+            log::warn!("[container-transport] shutdown work finished after the shared deadline");
         }
     }
 
     #[cfg(test)]
+    fn inject_worker_spawn_failure(&self) {
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .fail_worker_spawn = true;
+    }
+
+    #[cfg(test)]
+    fn worker_count(&self) -> usize {
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .worker_count
+    }
+
+    #[cfg(test)]
     fn snapshot(&self) -> (bool, usize, usize) {
-        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        (state.sealed, state.active_producers, state.tasks.len())
+        let state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        (
+            state.sealed,
+            state.active_producers,
+            state.queued.len() + state.active.len(),
+        )
+    }
+}
+
+impl Drop for ContainerShutdownWorkRegistry {
+    fn drop(&mut self) {
+        self.seal_and_drain_until(Instant::now() + Duration::from_secs(1));
+    }
+}
+
+fn container_shutdown_worker(shared: Arc<ContainerShutdownWorkShared>) {
+    loop {
+        let work = {
+            let mut state = shared
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            loop {
+                if let Some(work) = state.queued.pop_front() {
+                    state.active.insert(work.id, work.context.clone());
+                    shared.state_changed.notify_all();
+                    break Some(work);
+                }
+                if state.terminating {
+                    break None;
+                }
+                state = shared
+                    .work_available
+                    .wait(state)
+                    .unwrap_or_else(|error| error.into_inner());
+            }
+        };
+        let Some(work) = work else {
+            return;
+        };
+        let id = work.id;
+        run_container_shutdown_work(work.run, &shared.control, &work.context);
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.active.remove(&id);
+        shared.state_changed.notify_all();
+    }
+}
+
+fn run_container_shutdown_work(
+    work: Box<dyn FnOnce(&ContainerRuntimeControl) + Send + 'static>,
+    control: &ContainerRuntimeControl,
+    context: &ContainerShutdownWorkContext,
+) {
+    if catch_unwind(AssertUnwindSafe(|| work(control))).is_err() {
+        log::error!(
+            "[container-transport] shutdown work panicked session={} reason={}",
+            context
+                .session_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            context.reason
+        );
     }
 }
 
 impl ContainerShutdownProducer {
-    fn spawn_owned<F>(&self, work: F)
+    fn spawn_owned<F>(&self, session_id: Option<Uuid>, reason: &'static str, work: F)
     where
-        F: FnOnce() + Send + 'static,
+        F: FnOnce(&ContainerRuntimeControl) + Send + 'static,
     {
-        self.registry.spawn_owned(work);
+        self.registry.spawn_owned(session_id, reason, work);
     }
 }
 
@@ -248,6 +610,7 @@ impl Drop for ContainerShutdownProducer {
     fn drop(&mut self) {
         let mut state = self
             .registry
+            .shared
             .state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
@@ -257,7 +620,7 @@ impl Drop for ContainerShutdownProducer {
         }
         state.active_producers -= 1;
         if state.active_producers == 0 {
-            self.registry.producers_drained.notify_all();
+            self.registry.shared.state_changed.notify_all();
         }
     }
 }
@@ -276,13 +639,8 @@ impl ContainerSpawnCancellationGuard<'_> {
         self.armed = false;
         self.shutdown_producer.take();
     }
-}
 
-impl Drop for ContainerSpawnCancellationGuard<'_> {
-    fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
+    fn cancel_without_unwind(&mut self) {
         self.canceled.store(true, Ordering::Release);
         if let Some(handle) = self
             .late_handle
@@ -309,6 +667,20 @@ impl Drop for ContainerSpawnCancellationGuard<'_> {
                 resources,
                 "spawn-canceled",
                 self.shutdown_producer.as_ref(),
+            );
+        }
+    }
+}
+
+impl Drop for ContainerSpawnCancellationGuard<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        if catch_unwind(AssertUnwindSafe(|| self.cancel_without_unwind())).is_err() {
+            log::error!(
+                "[container-transport] spawn cancellation cleanup panicked session={}",
+                self.session_id
             );
         }
     }
@@ -643,7 +1015,11 @@ impl ContainerTransportBackend {
     }
 
     fn remove_session_state(&self, session_id: Uuid) -> Option<RemovedSessionResources> {
-        let removed = self.sessions.lock().unwrap().remove(&session_id);
+        let removed = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&session_id);
         if removed.is_some() {
             self.fanout.remove_session(session_id);
         }
@@ -898,22 +1274,26 @@ impl ContainerTransportBackend {
         let canceled_for_start = Arc::clone(&canceled);
         let late_handle_for_start = Arc::clone(&late_handle);
         let (start_result_sender, start_result_receiver) = oneshot::channel();
-        start_producer.spawn_owned(move || {
+        start_producer.spawn_owned(Some(id), "runtime-start", move |control| {
             let result = (|| {
-                let handle = start_runtime.start(request)?;
+                let handle = start_runtime.start(request, control)?;
                 let canceled_handle = {
                     let mut slot = late_handle_for_start
                         .lock()
                         .unwrap_or_else(|error| error.into_inner());
                     *slot = Some(handle);
-                    if canceled_for_start.load(Ordering::Acquire) {
+                    if canceled_for_start.load(Ordering::Acquire)
+                        || control.shutdown_requested()
+                    {
                         slot.take()
                     } else {
                         None
                     }
                 };
                 if let Some(handle) = canceled_handle {
-                    if let Err(error) = start_runtime.stop(&handle, CONTAINER_STOP_TIMEOUT) {
+                    if let Err(error) =
+                        start_runtime.stop(&handle, CONTAINER_STOP_TIMEOUT, control)
+                    {
                         log::warn!(
                             "[container-transport] canceled runtime start cleanup failed session={}: {}",
                             handle.session_id,
@@ -1076,8 +1456,8 @@ impl ContainerTransportBackend {
         reason: &'static str,
     ) {
         let session_id = handle.session_id;
-        producer.spawn_owned(move || {
-            if let Err(error) = runtime.stop(&handle, CONTAINER_STOP_TIMEOUT) {
+        producer.spawn_owned(Some(session_id), reason, move |control| {
+            if let Err(error) = runtime.stop(&handle, CONTAINER_STOP_TIMEOUT, control) {
                 log::warn!(
                     "[container-transport] {} stop failed for session {}: {}",
                     reason,
@@ -1099,7 +1479,8 @@ impl ContainerTransportBackend {
         handle: ContainerRuntimeHandle,
         reason: &'static str,
     ) {
-        if let Err(error) = runtime.stop(&handle, CONTAINER_STOP_TIMEOUT) {
+        let control = self.shutdown_work.shared.control.clone();
+        if let Err(error) = runtime.stop(&handle, CONTAINER_STOP_TIMEOUT, &control) {
             log::warn!(
                 "[container-transport] {} stop failed for session {}: {}",
                 reason,
@@ -1109,8 +1490,12 @@ impl ContainerTransportBackend {
         }
     }
 
-    pub(crate) fn seal_and_drain_shutdown_work_blocking(&self) {
-        self.shutdown_work.seal_and_drain_blocking();
+    pub(crate) fn begin_shutdown(&self, deadline: Instant) {
+        self.shutdown_work.begin_shutdown(deadline);
+    }
+
+    pub(crate) fn seal_and_drain_shutdown_work_blocking(&self, deadline: Instant) {
+        self.shutdown_work.seal_and_drain_until(deadline);
     }
 
     fn cleanup_removed_resources_async(
@@ -1158,7 +1543,11 @@ impl ContainerTransportBackend {
         }
         drop(resources.logical_resource_slot);
         if let (Some(runtime), Some(handle)) = (self.runtime.clone(), resources.runtime_handle) {
-            if let Err(err) = runtime.stop(&handle, CONTAINER_STOP_TIMEOUT) {
+            if let Err(err) = runtime.stop(
+                &handle,
+                CONTAINER_STOP_TIMEOUT,
+                &self.shutdown_work.shared.control,
+            ) {
                 log::warn!(
                     "[container-transport] blocking stop failed for session {}: {}",
                     handle.session_id,
@@ -1186,8 +1575,12 @@ impl ContainerTransportBackend {
         let token_manager = self.token_manager.clone();
         let runtime = self.runtime.clone();
         let (completed, completion) = oneshot::channel();
-        let work = move || {
-            cleanup_removed_resources_inner(token_manager, runtime, resources, reason);
+        let session_id = resources
+            .runtime_handle
+            .as_ref()
+            .map(|handle| handle.session_id);
+        let work = move |control: &ContainerRuntimeControl| {
+            cleanup_removed_resources_inner(token_manager, runtime, resources, reason, control);
             if completed.send(()).is_err() {
                 log::debug!(
                     "[container-transport] {} cleanup completed after caller cancellation",
@@ -1196,11 +1589,13 @@ impl ContainerTransportBackend {
             }
         };
         if let Some(producer) = producer {
-            producer.spawn_owned(work);
+            producer.spawn_owned(session_id, reason, work);
         } else if let Some(producer) = self.shutdown_work.register_producer() {
-            producer.spawn_owned(work);
+            producer.spawn_owned(session_id, reason, work);
         } else {
-            work();
+            let work = Box::new(work) as Box<dyn FnOnce(&ContainerRuntimeControl) + Send + 'static>;
+            let context = ContainerShutdownWorkContext { session_id, reason };
+            run_container_shutdown_work(work, &self.shutdown_work.shared.control, &context);
             return;
         }
         match tokio::time::timeout(CLEANUP_TASK_TIMEOUT, completion).await {
@@ -1457,6 +1852,16 @@ impl ContainerTransportBackend {
     }
 
     #[cfg(test)]
+    pub(crate) fn inject_shutdown_worker_spawn_failure_for_test(&self) {
+        self.shutdown_work.inject_worker_spawn_failure();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shutdown_worker_count_for_test(&self) -> usize {
+        self.shutdown_work.worker_count()
+    }
+
+    #[cfg(test)]
     pub(crate) fn set_runtime_settings_for_test(
         &mut self,
         settings: crate::config::settings::AppSettings,
@@ -1470,6 +1875,7 @@ fn cleanup_removed_resources_inner(
     runtime: Option<Arc<dyn ContainerRuntime>>,
     resources: RemovedSessionResources,
     reason: &'static str,
+    control: &ContainerRuntimeControl,
 ) {
     if let Some(path) = resources.container_credential_path.as_deref() {
         crate::pty::container_credentials::remove_copied(path);
@@ -1479,7 +1885,7 @@ fn cleanup_removed_resources_inner(
     }
     drop(resources.logical_resource_slot);
     if let (Some(runtime), Some(handle)) = (runtime, resources.runtime_handle) {
-        if let Err(err) = runtime.stop(&handle, CONTAINER_STOP_TIMEOUT) {
+        if let Err(err) = runtime.stop(&handle, CONTAINER_STOP_TIMEOUT, control) {
             log::warn!(
                 "[container-transport] {} stop failed for session {}: {}",
                 reason,
@@ -1858,6 +2264,7 @@ mod tests {
         fn start(
             &self,
             request: ContainerStartRequest,
+            _control: &ContainerRuntimeControl,
         ) -> Result<ContainerRuntimeHandle, AppError> {
             self.started.fetch_add(1, Ordering::SeqCst);
             Ok(ContainerRuntimeHandle {
@@ -1870,6 +2277,7 @@ mod tests {
             &self,
             handle: &ContainerRuntimeHandle,
             _timeout: Duration,
+            _control: &ContainerRuntimeControl,
         ) -> Result<(), AppError> {
             self.stopped.lock().unwrap().push(handle.session_id);
             Ok(())
@@ -1894,6 +2302,7 @@ mod tests {
         fn start(
             &self,
             request: ContainerStartRequest,
+            _control: &ContainerRuntimeControl,
         ) -> Result<ContainerRuntimeHandle, AppError> {
             if let Some(started) = self.started.lock().unwrap().take() {
                 let _ = started.send(());
@@ -1913,6 +2322,7 @@ mod tests {
             &self,
             handle: &ContainerRuntimeHandle,
             _timeout: Duration,
+            _control: &ContainerRuntimeControl,
         ) -> Result<(), AppError> {
             self.stopped.lock().unwrap().push(handle.session_id);
             Ok(())
@@ -2146,7 +2556,7 @@ mod tests {
         backend.runtime = Some(runtime.clone());
         backend.token_manager = Some(token_manager);
         backend.runtime_settings_override = Some(api_enabled_settings());
-        backend.seal_and_drain_shutdown_work_blocking();
+        backend.seal_and_drain_shutdown_work_blocking(Instant::now() + Duration::from_secs(1));
         assert_eq!(backend.shutdown_work_state_for_test(), (true, 0, 0));
 
         let rejected_id = Uuid::new_v4();
@@ -2189,7 +2599,7 @@ mod tests {
         let (drain_done, drain_done_rx) = std::sync::mpsc::channel();
         let drain_registry = Arc::clone(&registry);
         let drain = std::thread::spawn(move || {
-            drain_registry.seal_and_drain_blocking();
+            drain_registry.seal_and_drain_until(Instant::now() + Duration::from_secs(1));
             drain_done
                 .send(())
                 .expect("publish shutdown drain completion");
@@ -2212,7 +2622,7 @@ mod tests {
 
         let (cleanup_started, cleanup_started_rx) = std::sync::mpsc::channel();
         let (cleanup_release, cleanup_release_rx) = std::sync::mpsc::channel();
-        producer.spawn_owned(move || {
+        producer.spawn_owned(None, "barrier-test", move |_| {
             cleanup_started
                 .send(())
                 .expect("publish late cleanup start");
@@ -2237,6 +2647,108 @@ mod tests {
         drain.join().expect("join shutdown drain thread");
         assert_eq!(registry.snapshot(), (true, 0, 0));
         assert!(registry.register_producer().is_none());
+    }
+
+    #[test]
+    fn bounded_shutdown_executor_limits_multiple_slow_cleanups() {
+        const WORK_ITEMS: usize = 12;
+
+        let registry = Arc::new(ContainerShutdownWorkRegistry::default());
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+        let completed = Arc::new(AtomicUsize::new(0));
+        for _ in 0..WORK_ITEMS {
+            let producer = registry
+                .register_producer()
+                .expect("register bounded-executor producer");
+            let active = Arc::clone(&active);
+            let max_active = Arc::clone(&max_active);
+            let completed = Arc::clone(&completed);
+            producer.spawn_owned(None, "bounded-cleanup-test", move |control| {
+                let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                max_active.fetch_max(current, Ordering::SeqCst);
+                let _ = control.wait_for_shutdown();
+                active.fetch_sub(1, Ordering::SeqCst);
+                completed.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        let start_deadline = Instant::now() + Duration::from_secs(1);
+        while active.load(Ordering::SeqCst) < CONTAINER_SHUTDOWN_WORKER_CAPACITY {
+            assert!(
+                Instant::now() < start_deadline,
+                "bounded shutdown workers did not start"
+            );
+            std::thread::yield_now();
+        }
+        assert_eq!(registry.worker_count(), CONTAINER_SHUTDOWN_WORKER_CAPACITY);
+        assert_eq!(registry.snapshot(), (false, 0, WORK_ITEMS));
+        assert_eq!(
+            max_active.load(Ordering::SeqCst),
+            CONTAINER_SHUTDOWN_WORKER_CAPACITY
+        );
+
+        registry.seal_and_drain_until(Instant::now() + Duration::from_secs(1));
+        assert_eq!(completed.load(Ordering::SeqCst), WORK_ITEMS);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert!(max_active.load(Ordering::SeqCst) <= CONTAINER_SHUTDOWN_WORKER_CAPACITY);
+        assert_eq!(registry.snapshot(), (true, 0, 0));
+        assert_eq!(registry.worker_count(), 0);
+    }
+
+    #[test]
+    fn worker_spawn_failure_serializes_multiple_slow_cleanups() {
+        const WORK_ITEMS: usize = 4;
+
+        let registry = Arc::new(ContainerShutdownWorkRegistry::default());
+        registry.inject_worker_spawn_failure();
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+        let completed = Arc::new(AtomicUsize::new(0));
+        let mut callers = Vec::new();
+        for index in 0..WORK_ITEMS {
+            let producer = registry
+                .register_producer()
+                .expect("register synchronous-fallback producer");
+            let active = Arc::clone(&active);
+            let max_active = Arc::clone(&max_active);
+            let completed = Arc::clone(&completed);
+            callers.push(
+                std::thread::Builder::new()
+                    .name(format!("shutdown-fallback-caller-{index}"))
+                    .spawn(move || {
+                        producer.spawn_owned(None, "fallback-bound-test", move |control| {
+                            let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                            max_active.fetch_max(current, Ordering::SeqCst);
+                            let _ = control.wait_for_shutdown();
+                            active.fetch_sub(1, Ordering::SeqCst);
+                            completed.fetch_add(1, Ordering::SeqCst);
+                        });
+                    })
+                    .expect("spawn synchronous-fallback caller"),
+            );
+        }
+
+        let start_deadline = Instant::now() + Duration::from_secs(1);
+        while max_active.load(Ordering::SeqCst) == 0 {
+            assert!(
+                Instant::now() < start_deadline,
+                "synchronous fallback did not start"
+            );
+            std::thread::yield_now();
+        }
+        assert_eq!(max_active.load(Ordering::SeqCst), 1);
+        assert_eq!(registry.worker_count(), 0);
+        assert_eq!(registry.snapshot(), (false, WORK_ITEMS, 1));
+
+        registry.seal_and_drain_until(Instant::now() + Duration::from_secs(1));
+        for caller in callers {
+            caller.join().expect("join synchronous-fallback caller");
+        }
+        assert_eq!(completed.load(Ordering::SeqCst), WORK_ITEMS);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert_eq!(max_active.load(Ordering::SeqCst), 1);
+        assert_eq!(registry.snapshot(), (true, 0, 0));
     }
 
     #[tokio::test]

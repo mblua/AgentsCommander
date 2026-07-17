@@ -1,5 +1,6 @@
 use std::collections::HashSet;
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use uuid::Uuid;
 
@@ -34,6 +35,85 @@ const SENSITIVE_TOKEN_PREFIXES: &[&str] = &[
     "sk-ant-",
     "sk-proj-",
 ];
+
+#[derive(Clone)]
+pub struct ContainerRuntimeControl {
+    inner: Arc<ContainerRuntimeControlInner>,
+}
+
+#[derive(Default)]
+struct ContainerRuntimeControlState {
+    shutdown_deadline: Option<Instant>,
+}
+
+#[derive(Default)]
+struct ContainerRuntimeControlInner {
+    state: Mutex<ContainerRuntimeControlState>,
+    changed: Condvar,
+}
+
+impl Default for ContainerRuntimeControl {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(ContainerRuntimeControlInner::default()),
+        }
+    }
+}
+
+impl ContainerRuntimeControl {
+    pub fn request_shutdown(&self, deadline: Instant) {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.shutdown_deadline = Some(match state.shutdown_deadline {
+            Some(existing) => existing.min(deadline),
+            None => deadline,
+        });
+        self.inner.changed.notify_all();
+    }
+
+    pub fn shutdown_requested(&self) -> bool {
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .shutdown_deadline
+            .is_some()
+    }
+
+    pub fn shutdown_deadline(&self) -> Option<Instant> {
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .shutdown_deadline
+    }
+
+    pub fn remaining(&self) -> Option<Duration> {
+        self.shutdown_deadline()
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+    }
+
+    pub fn wait_for_shutdown(&self) -> Instant {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        loop {
+            if let Some(deadline) = state.shutdown_deadline {
+                return deadline;
+            }
+            state = self
+                .inner
+                .changed
+                .wait(state)
+                .unwrap_or_else(|error| error.into_inner());
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContainerStartRequest {
@@ -171,9 +251,18 @@ impl ContainerDiagnostics {
 }
 
 pub trait ContainerRuntime: Send + Sync {
-    fn start(&self, request: ContainerStartRequest) -> Result<ContainerRuntimeHandle, AppError>;
+    fn start(
+        &self,
+        request: ContainerStartRequest,
+        control: &ContainerRuntimeControl,
+    ) -> Result<ContainerRuntimeHandle, AppError>;
 
-    fn stop(&self, handle: &ContainerRuntimeHandle, timeout: Duration) -> Result<(), AppError>;
+    fn stop(
+        &self,
+        handle: &ContainerRuntimeHandle,
+        timeout: Duration,
+        control: &ContainerRuntimeControl,
+    ) -> Result<(), AppError>;
 
     fn diagnostics(
         &self,
