@@ -1646,6 +1646,19 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         return Err(err);
     }
 
+    // #1032 - start sampling this session's context reading. This sits above the backend
+    // split and covers local and container alike, with no backend plumbing. `try_state`,
+    // not `state`: `state` panics when unmanaged, and test apps do not manage the scraper.
+    // An absent scraper is simply the feature being off.
+    //
+    // Sessions with no agent are never registered, so a plain shell costs nothing. There is
+    // no race with the parser here: the first sample is 5s away.
+    if let Some(agent_id) = agent_id.clone() {
+        if let Some(scraper) = app.try_state::<Arc<crate::pty::context_scrape::ContextScraper>>() {
+            scraper.register_session(id, agent_id);
+        }
+    }
+
     // Auto-inject optional non-credential bootstrap text for agent sessions
     // after PTY spawn. Credentials are already present in child environment
     // variables; no credentials are written through PTY.
@@ -3529,6 +3542,7 @@ mod tests {
                     isolated_home: false,
                     instructions_filename: None,
                     config_seed: None,
+                    context_regex: None,
                     backend: Default::default(),
                 },
                 AgentConfig {
@@ -3540,6 +3554,7 @@ mod tests {
                     isolated_home: false,
                     instructions_filename: None,
                     config_seed: None,
+                    context_regex: None,
                     backend: Default::default(),
                 },
             ],
@@ -3923,6 +3938,10 @@ mod tests {
             None
         }
 
+        fn get_screen_rows(&self, _id: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
+            crate::pty::context_scrape::ScreenRowsRead::SessionOver
+        }
+
         fn register_response_watcher(
             &self,
             _session_id: Uuid,
@@ -4023,6 +4042,10 @@ mod tests {
 
         fn get_pty_size(&self, _id: Uuid) -> Option<(u16, u16)> {
             None
+        }
+
+        fn get_screen_rows(&self, _id: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
+            crate::pty::context_scrape::ScreenRowsRead::SessionOver
         }
 
         fn register_response_watcher(
@@ -5144,6 +5167,7 @@ mod tests {
             isolated_home: false,
             instructions_filename: None,
             config_seed: None,
+            context_regex: None,
             backend: Default::default(),
         });
 
@@ -5222,6 +5246,7 @@ mod tests {
             isolated_home: false,
             instructions_filename: None,
             config_seed: None,
+            context_regex: None,
             backend: Default::default(),
         }];
 

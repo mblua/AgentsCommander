@@ -26,6 +26,7 @@ dependencies = [
  "mime_guess",
  "open",
  "portable-pty",
+ "regex",
  "reqwest 0.12.28",
  "rfd 0.15.4",
  "rusqlite",

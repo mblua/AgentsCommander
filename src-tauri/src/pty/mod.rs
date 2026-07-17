@@ -5,6 +5,7 @@ pub mod container_paths;
 pub mod container_repos;
 pub mod container_runtime;
 pub mod container_tokens;
+pub mod context_scrape;
 pub mod credentials;
 pub mod docker_runtime;
 pub mod git_watcher;
