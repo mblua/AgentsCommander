@@ -504,6 +504,49 @@ export function defaultInstructionsFilename(command: string): string {
   return "AGENTS.md";
 }
 
+/**
+ * #1033 - the context patterns #1032 captured, shipped VERBATIM.
+ *
+ * Do not re-derive these and do not "simplify" them to typeable characters. The
+ * glyph class is load-bearing: measured against regex 1.12.3, `[░█]+` rejects the
+ * prose row `  Context is 42% of the budget` while a typeable `\S+` reads it as
+ * `Some(42)` - a wrong number, not a miss.
+ *
+ * Both literals adjacent to the capture are load-bearing for the same reason: a
+ * literal next to the capture is what pins where the capture lands. Strip
+ * `· Context ` and ` used` from the Codex pattern and greedy `.*` slides to the
+ * last `%` of `  Ready · Context 0% used · weekly 83% left`, capturing `3` out of
+ * `83`.
+ *
+ * Capture group 1 is the percentage; both compile with `captures_len=2`, clearing
+ * the backend's mandatory-capture gate (`pty/context_scrape/pattern.rs:44`).
+ */
+export const CLAUDE_CONTEXT_REGEX = String.raw`^ {2}Context [░█]+ (\d{1,3})%`;
+export const CODEX_CONTEXT_REGEX = String.raw`^ {2}.*· Context (\d{1,3})% used`;
+
+/**
+ * #1033 - the suggested pattern for a command, or `null` when there is no evidence
+ * for one. Resolves the command exactly as {@link defaultInstructionsFilename}
+ * does, so a wrapped invocation (`cmd.exe /c claude`, an absolute-path
+ * `claude.exe`, `claude --model sonnet`) still resolves.
+ *
+ * Unlike {@link defaultInstructionsFilename}, this deliberately does NOT fall back
+ * to a default for an unknown agent: it returns `null` for Gemini and everything
+ * else. #1032's capture covered `claude.exe` and `codex.exe` and nothing else, and
+ * the asymmetry is the point - a wrong filename costs a renamed file, while a
+ * wrong pattern costs a silently wrong percentage. No suggestion means the button
+ * does not render; the field still accepts anything the user types.
+ *
+ * The button exists because `░` (U+2591) and `█` (U+2588) are not on a keyboard:
+ * without it the feature is unconfigurable for Claude.
+ */
+export function suggestedContextRegex(command: string): string | null {
+  const stems = command.trim().split(/\s+/).filter(Boolean).map(executableTokenBasename);
+  if (stems.some((s) => s.startsWith("claude"))) return CLAUDE_CONTEXT_REGEX;
+  if (stems.some((s) => s.startsWith("codex"))) return CODEX_CONTEXT_REGEX;
+  return null;
+}
+
 export function agentNameFromPathOrSession(
   path: string | null | undefined,
   sessionName: string,

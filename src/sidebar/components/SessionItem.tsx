@@ -13,6 +13,8 @@ import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder"
 import OpenAgentModal from "./OpenAgentModal";
 import AgentPickerModal from "./AgentPickerModal";
 import ProfileOutdatedBadge from "./ProfileOutdatedBadge";
+import ContextBadge from "./ContextBadge";
+import { contextBadgeConfigured } from "./session-context";
 import { TelegramIcon } from "./TelegramIcon";
 import { profileDisplayLabel, sessionProfileBadge } from "../../shared/profile-utils";
 import { sessionDotClass } from "./session-status";
@@ -48,6 +50,11 @@ const SessionItem: Component<{
     return settingsStore.current?.agents?.find((a) => a.id === props.session.agentId)?.label ?? null;
   };
   const profileBadge = () => sessionProfileBadge(props.session);
+  // #1033 - settingsStore.current is a signal, so saving a pattern makes the badge
+  // appear or disappear with no reload.
+  const ctxVisible = () =>
+    contextBadgeConfigured(settingsStore.current?.agents, props.session.agentId);
+  const ctxPercent = () => sessionsStore.contextPercentBySessionId[props.session.id];
   // #548: unify with the ProjectPanel quick-access tooltip — resolve the name of
   // the EFFECTIVE profile via the SAME shared resolver (no second resolver, no
   // badge-string parsing). Plain function, matching profileBadge.
@@ -386,6 +393,12 @@ const SessionItem: Component<{
                     {badge()}
                   </span>
                 )}
+              </Show>
+              <Show when={ctxVisible()}>
+                <ContextBadge
+                  percent={ctxPercent()}
+                  testId={`session.${props.session.id}.contextBadge`}
+                />
               </Show>
               <Show when={props.session.profileOutdated}>
                 <ProfileOutdatedBadge onReload={() => void restartSession()} />

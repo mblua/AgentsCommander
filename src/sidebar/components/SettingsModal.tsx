@@ -42,6 +42,7 @@ import {
   resolveProfileLabel,
   resolveProfilePreview,
   sortedProfileLetters,
+  suggestedContextRegex,
   validateEnvRows,
 } from "../../shared/profile-utils";
 
@@ -2203,6 +2204,36 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             <div class="settings-hint">
               Filename AC writes into the agent root at launch (its AC context +
               Role.md). Leave blank to use the default shown.
+            </div>
+            <label class="settings-field">
+              <span class="settings-label">Context badge pattern</span>
+              <input
+                class="settings-input"
+                value={agent.contextRegex ?? ""}
+                onInput={(e) => updateAgent(i(), "contextRegex", e.currentTarget.value)}
+                placeholder={suggestedContextRegex(agent.command) ?? ""}
+                data-ac-testid={`settings.agentRow.${i()}.contextRegex`}
+                data-ac-role="textbox"
+                spellcheck={false}
+              />
+            </label>
+            <Show when={suggestedContextRegex(agent.command)}>
+              {(suggested) => (
+                <button
+                  class="settings-add-btn"
+                  onClick={() => updateAgent(i(), "contextRegex", suggested())}
+                  data-ac-testid={`settings.agentRow.${i()}.contextRegex.suggest`}
+                  data-ac-role="button"
+                >
+                  Use suggested pattern
+                </button>
+              )}
+            </Show>
+            <div class="settings-hint">
+              Best-effort pattern AC runs over what this agent draws in its terminal, to show
+              a CTX badge on its sessions. Capture group 1 is the percentage. The reading can
+              be unavailable, stale or absent, and a high one does not mean the session needs
+              restarting. <strong>Leave blank for no badge.</strong>
             </div>
             <label class="settings-checkbox-field">
               <input

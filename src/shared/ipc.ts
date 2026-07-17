@@ -10,6 +10,7 @@ import type {
   Session,
   SessionCommunication,
   SessionRepo,
+  SessionContextPayload,
   SessionEnvWarningPayload,
   SessionWarning,
   PtyOutputEvent,
@@ -274,6 +275,15 @@ export const PtyAPI = {
 
   getScreenSnapshot: (sessionId: string) =>
     transport.invoke<PtyScreenSnapshot | null>("get_screen_snapshot", { sessionId }),
+
+  /** #1033 - last context reading for a session, or `null` when there is none.
+   *  `null` covers "no reading", "not registered", "scraper unmanaged" and "session
+   *  over" alike, and NEVER means 0. Mandatory rather than an optimisation: the
+   *  engine emits `session_context` only when the value CHANGES, so a session
+   *  already sitting at a reading when this window mounts never sends an event and
+   *  a listener alone would leave it at `CTX N/A` forever. */
+  getSessionContext: (sessionId: string) =>
+    transport.invoke<number | null>("get_session_context", { sessionId }),
 
   /** Request screen snapshot replay for late-joining browser clients.
    *  Returns PTY dimensions so the browser can mirror them. */
@@ -774,6 +784,17 @@ export function onSessionBusy(
   callback: (data: { id: string }) => void
 ): Promise<UnlistenFn> {
   return transport.listen<{ id: string }>("session_busy", callback);
+}
+
+/**
+ * #1033 - a session's context-window reading changed. Emit-on-change only: pair
+ * every listener with `PtyAPI.getSessionContext` to seed sessions that are already
+ * sitting at a value (`App.tsx`), or they read `CTX N/A` until they next change.
+ */
+export function onSessionContext(
+  callback: (data: SessionContextPayload) => void
+): Promise<UnlistenFn> {
+  return transport.listen<SessionContextPayload>("session_context", callback);
 }
 
 export function onTelegramBridgeAttached(

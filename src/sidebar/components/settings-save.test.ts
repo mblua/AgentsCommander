@@ -378,4 +378,59 @@ describe("mergeSettingsForSavePreservingProjects api-server seed rebasing", () =
     expect(merged.apiServerPort).toBe(9000);
     expect(merged.apiServerBind).toBe("0.0.0.0");
   });
+
+  // #1033 - the context regex normalizer (plan SS9.3).
+  //
+  // The single most important test in this plan. The other three normalizers in this
+  // file all trim; this one must not. Leading whitespace is a regex's column anchor,
+  // and measured against regex 1.12.3 a trim turns the typed-in-the-input-box false
+  // positive from None into Some(99) while the real statusline keeps reading fine -
+  // so the damage is invisible in every normal case.
+  it("keeps a pattern's literal leading spaces byte-for-byte (a_pattern_with_literal_leading_spaces_is_not_trimmed)", () => {
+    const stored = String.raw`  Context [░█]+ (\d{1,3})%`;
+    const draft = settings({ agents: [agent({ id: "claude", contextRegex: stored })] });
+
+    const merged = mergeSettingsForSavePreservingProjects(draft, settings());
+
+    expect(merged.agents[0]?.contextRegex).toBe(stored);
+    expect(merged.agents[0]?.contextRegex?.startsWith("  ")).toBe(true);
+  });
+
+  it("round-trips a normal pattern unchanged (a_set_pattern_round_trips)", () => {
+    const stored = String.raw`^ {2}Context [░█]+ (\d{1,3})%`;
+    const draft = settings({ agents: [agent({ id: "claude", contextRegex: stored })] });
+
+    const merged = mergeSettingsForSavePreservingProjects(draft, settings());
+
+    expect(merged.agents[0]?.contextRegex).toBe(stored);
+  });
+
+  it("drops an empty pattern rather than persisting a sentinel (an_empty_pattern_is_dropped_not_persisted_as_a_sentinel)", () => {
+    // Rust's skip_serializing_if = "Option::is_none" does NOT omit Some(""), so an
+    // empty string here would persist as `"contextRegex": ""`.
+    const draft = settings({ agents: [agent({ id: "empty", contextRegex: "" })] });
+
+    const merged = mergeSettingsForSavePreservingProjects(draft, settings());
+
+    expect("contextRegex" in (merged.agents[0] as object)).toBe(false);
+  });
+
+  it("drops a whitespace-only pattern (a_whitespace_only_pattern_is_dropped)", () => {
+    // It cannot compile anyway (no capture group), so the sentinel rule is unaffected
+    // and this does not weaken the no-trim guarantee above.
+    const draft = settings({ agents: [agent({ id: "spaces", contextRegex: "   " })] });
+
+    const merged = mergeSettingsForSavePreservingProjects(draft, settings());
+
+    expect("contextRegex" in (merged.agents[0] as object)).toBe(false);
+  });
+
+  it("leaves an agent without the field unchanged (an_agent_without_the_field_is_unchanged)", () => {
+    const draft = settings({ agents: [agent({ id: "absent" })] });
+
+    const merged = mergeSettingsForSavePreservingProjects(draft, settings());
+
+    expect("contextRegex" in (merged.agents[0] as object)).toBe(false);
+    expect(merged.agents[0]?.id).toBe("absent");
+  });
 });

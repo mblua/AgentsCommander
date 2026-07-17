@@ -57,6 +57,8 @@ import { coordinatorIdleBadge } from "../../shared/coordinator-badge";
 import { COORD_IDLE_CLASS } from "./coordinator-badge-class";
 import SessionItem from "./SessionItem";
 import ProfileOutdatedBadge from "./ProfileOutdatedBadge";
+import ContextBadge from "./ContextBadge";
+import { contextBadgeConfigured } from "./session-context";
 import NewEntityAgentModal from "./NewEntityAgentModal";
 import NewTeamModal from "./NewTeamModal";
 import NewWorkgroupModal from "./NewWorkgroupModal";
@@ -2493,6 +2495,15 @@ const ProjectPanel: Component = () => {
           // (#515). The live-session branch stays byte-identical.
           const liveAgentLabel = () => resolveReplicaAgentLabel(session(), replica);
           const profileBadge = () => resolveReplicaProfileBadge(session(), replica);
+          // #1033 - the CTX badge, keyed off this replica's live session. NOT added to
+          // replicaSearchText: a 5s-volatile value is not identity, and matching it
+          // would make a filtered list rearrange itself with no user input (SS4.7).
+          const ctxVisible = () =>
+            contextBadgeConfigured(settingsStore.current?.agents, session()?.agentId);
+          const ctxPercent = () => {
+            const s = session();
+            return s ? sessionsStore.contextPercentBySessionId[s.id] : undefined;
+          };
           // #548: resolver-backed tooltip naming the EFFECTIVE profile (the one
           // actually in effect) for this session's coding agent. Plain function
           // (NOT createMemo) — row-local and recomputes on settings reload.
@@ -2684,6 +2695,12 @@ const ProjectPanel: Component = () => {
                   </Show>
                   <Show when={profileBadge()}>
                     {(badge) => <span class="profile-badge" title={profileBadgeTitle()}>{badge()}</span>}
+                  </Show>
+                  <Show when={ctxVisible()}>
+                    <ContextBadge
+                      percent={ctxPercent()}
+                      testId={`replica.contextBadge.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`}
+                    />
                   </Show>
                   {/* #592 - drift indicator for a WG replica session. Mirrors the
                       SessionItem badge: the backend marks profileOutdated in

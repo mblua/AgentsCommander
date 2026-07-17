@@ -8,6 +8,7 @@ import type {
   SessionWarning,
 } from "../shared/types";
 import {
+  PtyAPI,
   SessionAPI,
   SettingsAPI,
   TelegramAPI,
@@ -21,6 +22,7 @@ import {
   onSessionCommunicationChanged,
   onSessionIdle,
   onSessionBusy,
+  onSessionContext,
   onSessionGitRepos,
   onSessionCoordinatorChanged,
   onTelegramBridgeAttached,
@@ -663,6 +665,30 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
         sessionsStore.setSessionWaiting(id, false);
       })
     );
+
+    unlisteners.push(
+      await onSessionContext(({ sessionId, percent }) => {
+        sessionsStore.setSessionContext(sessionId, percent);
+      })
+    );
+
+    // #1033 - snapshot-seed every agent session no event has spoken for yet. The engine
+    // emits ONLY on change (pty/context_scrape/mod.rs), so a session already sitting at a
+    // value when this window mounted will never send one, and a listener alone leaves it
+    // reading N/A forever. Registered AFTER the listener, and hydrateSessionContext is a
+    // no-op on an existing key, so a slow invoke cannot overwrite a fresher event.
+    // Absent-key check, never a truthiness check: a hydrated `null` and a hydrated `0`
+    // are both answers. try/catch mirrors the repo-search fan-out at :564-567 so one
+    // rejected invoke cannot abort the rest of onMount.
+    try {
+      await Promise.all(
+        sessionsStore.sessions
+          .filter((s) => s.agentId)
+          .map(async (s) => {
+            sessionsStore.hydrateSessionContext(s.id, await PtyAPI.getSessionContext(s.id));
+          })
+      );
+    } catch {}
 
     unlisteners.push(
       await onSessionGitRepos(({ sessionId, repos }) => {
