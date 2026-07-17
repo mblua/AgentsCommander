@@ -16,8 +16,6 @@ export type WorkgroupGroupSelection =
   | { kind: "nonstop" }
   | { kind: "group"; id: string };
 
-// #777 Non-stop group defaults + clamp bounds (mirror the Rust side in
-// project_settings.rs so both ends agree).
 export const DEFAULT_NON_STOP_NAME = "Alert me!";
 const LEGACY_NON_STOP_NAME = "Non-stop";
 export const MATCH_NONE_REGEX = "(?!)";
@@ -69,7 +67,6 @@ export function defaultGroupsConfig(): WorkgroupGroupsConfig {
   };
 }
 
-/** #777 default Non-stop slot (D3): hidden, matches nothing, 30s tolerance, 3s beep. */
 export function defaultNonStop(): NonStopGroupConfig {
   return {
     show: false,
@@ -89,10 +86,6 @@ function clampInt(value: number, min: number, max: number, fallback: number): nu
   return n;
 }
 
-/** #777 C6: repair a persisted/hand-edited `nonStop` so a bad value degrades
- *  gracefully instead of entering the fatal validate-and-reset path (which would
- *  wipe every user group). Clamps numerics, truncates the name, and resets an
- *  invalid/oversize regex to match-none. Never throws. `null`/`undefined` stay absent. */
 export function normalizeNonStop(
   nonStop: NonStopGroupConfig | null | undefined
 ): NonStopGroupConfig | null | undefined {
@@ -195,7 +188,6 @@ function normalizeSelection(
   if (selection.kind === "ungrouped" && !config.showUngrouped) {
     return config.showAll ? { kind: "all" } : { kind: "ungrouped" };
   }
-  // #777: selecting Non-stop while it is hidden/absent falls back like All/Ungrouped.
   if (selection.kind === "nonstop" && !config.nonStop?.show) {
     return config.showAll ? { kind: "all" } : { kind: "ungrouped" };
   }
@@ -312,9 +304,6 @@ export function compileGroupRegex(group: WorkgroupGroup): RegExp | null {
   }
 }
 
-/** #777 Non-stop membership matcher. Mirrors the rail's `groupMatches` exactly
- *  (reuses `compileGroupRegex`), so the rail, the predicate, and the watchdog
- *  client resolve membership identically. Oversize/invalid regex -> false (no throw). */
 export function nonStopMatchesWorkgroup(config: NonStopGroupConfig, wg: AcWorkgroup): boolean {
   const id = groupMatchId(wg);
   if (charLength(id) > MAX_GROUP_MATCH_ID_LENGTH) return false;
@@ -366,9 +355,6 @@ export function validateGroupsConfig(
     }
   });
 
-  // #777 C6: soft regex-syntax check for Non-stop, ONLY under validateRegexSyntax
-  // (the save/modal path). Load uses validateRegexSyntax:false, so a bad nonStop
-  // never trips the fatal reset-to-defaults path; normalizeNonStop repairs it there.
   if (config.nonStop && options.validateRegexSyntax) {
     if (charLength(config.nonStop.regex) > MAX_GROUP_REGEX_LENGTH) {
       errors.push(`Alert me!: regex cannot exceed ${MAX_GROUP_REGEX_LENGTH} characters.`);
@@ -402,8 +388,6 @@ function setConfig(
 ) {
   const key = keyFor(projectPath);
   const current = ensureEntry(projectPath);
-  // #777 C6: clamp/repair nonStop on every store write (covers load + post-save),
-  // so a bad persisted value degrades gracefully instead of wiping the config.
   const nextConfig = cloneConfig({ ...config, nonStop: normalizeNonStop(config.nonStop) });
   setEntries(key, {
     ...current,
@@ -571,11 +555,6 @@ export const workgroupGroupsStore = {
     await this.save(projectPath, { ...config, groups });
   },
 
-  // #965 - pin/unpin a group into the rail's cross-project Favorites section. The
-  // flag lives on the group record, so it survives rename (`id` is stable), travels
-  // with reorder, and dies with the group. `save()` re-seeds the store from the
-  // SAVED config, so the flag is authoritative from the backend on the same tick
-  // and the toggle cannot visually revert.
   async setGroupFavorite(projectPath: string, groupId: string, favorite: boolean): Promise<void> {
     const config = this.config(projectPath);
     const group = config.groups.find((candidate) => candidate.id === groupId);
@@ -661,8 +640,6 @@ export const workgroupGroupsStore = {
     });
   },
 
-  // #777 C5: membership helpers for the built-in Non-stop slot. Mirror
-  // addWorkgroupToGroup/removeWorkgroupFromGroup but target `config.nonStop.regex`.
   async addWorkgroupToNonStop(projectPath: string, wgName: string): Promise<void> {
     if (charLength(wgName) > MAX_GROUP_MATCH_ID_LENGTH) {
       const message = `Workgroup id cannot exceed ${MAX_GROUP_MATCH_ID_LENGTH} characters.`;
@@ -673,7 +650,6 @@ export const workgroupGroupsStore = {
     const config = this.config(projectPath);
     const current = config.nonStop;
     if (!current) {
-      // Materialize the slot (shown) with an exact-match regex for this workgroup.
       await this.save(projectPath, {
         ...config,
         nonStop: { ...defaultNonStop(), show: true, regex: exactGroupRegexForWorkgroup(wgName) },

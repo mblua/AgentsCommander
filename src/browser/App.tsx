@@ -10,14 +10,8 @@ import "./styles/browser.css";
 
 const MIN_SIDEBAR_WIDTH = 200;
 const MAX_SIDEBAR_WIDTH = 600;
-// #840 — the web view mirrors the desktop default: sidebar on the right unless
-// the persisted `mainSidebarSide` preference says "left".
 const DEFAULT_SIDEBAR_SIDE: MainSidebarSide = "right";
 
-/**
- * Combined browser layout: sidebar + terminal with a draggable divider.
- * Used when accessing AgentsCommander via web browser instead of Tauri.
- */
 const BrowserApp: Component = () => {
   const [sidebarWidth, setSidebarWidth] = createSignal(300);
   const [sidebarSide, setSidebarSide] = createSignal<MainSidebarSide>(DEFAULT_SIDEBAR_SIDE);
@@ -33,9 +27,6 @@ const BrowserApp: Component = () => {
     Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, raw));
 
   onMount(async () => {
-    // BrowserApp owns the document theme because its children are embedded to
-    // suppress titlebars/window geometry. Dark is the CSS base, so first paint
-    // is dark with no optimistic class; correct from persisted settings below.
     const unlisten = await onThemeChanged(({ light }) => {
       applyTheme(light);
     });
@@ -49,8 +40,6 @@ const BrowserApp: Component = () => {
       const settings = await SettingsAPI.get();
       if (!disposed) {
         applyTheme(settings.themeLight);
-        // #840 — honor the shared `mainSidebarSide` preference. Default to the
-        // right for any value that isn't an explicit "left".
         setSidebarSide(settings.mainSidebarSide === "left" ? "left" : DEFAULT_SIDEBAR_SIDE);
       }
     } catch (err) {
@@ -63,11 +52,6 @@ const BrowserApp: Component = () => {
     unlistenThemeChanged?.();
   });
 
-  // #840 — flip the sidebar side and write it through to the shared
-  // `mainSidebarSide` setting (the same preference the desktop Titlebar drives),
-  // so web and desktop stay in sync. Optimistic: update the signal first for a
-  // snappy swap, then persist; on failure we keep the UI state and just log —
-  // this mirrors the desktop side-preset handler, which also does not roll back.
   const toggleSide = async () => {
     const next: MainSidebarSide = sidebarSide() === "right" ? "left" : "right";
     setSidebarSide(next);
@@ -82,9 +66,6 @@ const BrowserApp: Component = () => {
   const onMouseDown = (e: MouseEvent) => {
     e.preventDefault();
     setDragging(true);
-    // Capture the side at drag start. The divider math mirrors main/App.tsx: a
-    // left sidebar grows with clientX; a right sidebar grows as the pointer
-    // moves toward it (innerWidth - clientX).
     const side = sidebarSide();
 
     const onMouseMove = (e: MouseEvent) => {
@@ -102,7 +83,6 @@ const BrowserApp: Component = () => {
     document.addEventListener("mouseup", onMouseUp);
   };
 
-  // Touch support for mobile
   const onTouchStart = (e: TouchEvent) => {
     e.preventDefault();
     setDragging(true);

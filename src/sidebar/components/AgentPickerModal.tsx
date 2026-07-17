@@ -28,9 +28,6 @@ import {
   targetProfileFqn,
 } from "../../shared/profile-utils";
 
-/** Scope/replica context supplied by ProjectPanel for WG replica launches. When
- *  absent (OpenAgentModal / normal repo / RootAgentBanner) only the safe
- *  "this replica" scope is offered. (#384 Frontend §4) */
 export type AgentPickerScopeContext = {
   workgroupPath?: string;
   workgroupName?: string;
@@ -57,10 +54,6 @@ const EMPTY_DISPLAY_CELL: ProfileCellConfig = {
   notes: "",
 };
 
-// #527: per-card status pill labels for the Selection profile cards. Same
-// taxonomy/colors as the Config rails (profileBadgeKind), so a given (agent,
-// letter) reads identically on both screens. `invalid` is Config-only (live
-// command edits), so it never surfaces here.
 const SELECTION_PILL_LABEL: Record<Exclude<ProfileBadgeKind, "invalid">, string> = {
   match: "MATCH",
   configured: "CONFIGURED",
@@ -68,8 +61,6 @@ const SELECTION_PILL_LABEL: Record<Exclude<ProfileBadgeKind, "invalid">, string>
   missing: "MISSING",
 };
 
-// #551: shown on the disabled "Assign to this replica" button when the pending
-// selection still equals the replica's current Coding Agent + Profile.
 const REDUNDANT_REPLICA_ASSIGN_TOOLTIP =
   "This replica already uses this Coding Agent + Profile.";
 
@@ -77,29 +68,10 @@ const AgentPickerModal: Component<{
   sessionName: string;
   agentPath?: string | null;
   currentAgentId?: string | null;
-  // #551 FIX 2: the EXPLICIT persisted current coding agent — the replica's
-  // `currentCodingAgentId` (or a live session's `agentId`). The redundancy disable
-  // keys off THIS, never off `currentAgentId` (which may carry a soft
-  // `preferredAgentId` / `lastCodingAgent` hint used only to pre-select the picker).
-  // A never-assigned replica has no explicit current agent (undefined/null here), so
-  // its "Assign to this replica" stays enabled — the user can still pin the hinted
-  // agent as a genuine first assignment.
   explicitCurrentAgentId?: string | null;
   currentRequestedProfile?: string | null;
   scopeContext?: AgentPickerScopeContext;
-  // #551: opt-in for the replica *assign* flows. When set, the "Assign to this
-  // replica" button is disabled (with a tooltip) while the pending selection
-  // still equals the replica's current Coding Agent + Profile — re-assigning the
-  // same pair is a no-op and (since #537) pops a needless "Restart now?" prompt.
-  // The launch flow leaves this off so a replica can always be started with its
-  // configured agent.
   disableRedundantReplicaAssign?: boolean;
-  // #592: when the target session's loaded profile has DRIFTED from its current
-  // configuration (profileOutdated), re-assigning the same Coding Agent + Profile
-  // is no longer a no-op: it re-stamps the cell content and relaunches. So drift
-  // overrides the redundancy disable above and keeps "Assign to this replica"
-  // enabled: a sibling "manual reload" affordance to the outdated badge. Read
-  // from the SAME backend-computed profileOutdated the badge uses (no FE hash).
   targetProfileOutdated?: boolean;
   onSelect: (selection: AgentPickerSelection) => void | Promise<void>;
   onClose: () => void;
@@ -115,14 +87,9 @@ const AgentPickerModal: Component<{
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal("");
 
-  // ── V2 scope picker state ──
   const [selectedScope, setSelectedScope] = createSignal<ProfileAssignmentScope>("replica");
   const [restartSessions, setRestartSessions] = createSignal(false);
   const [dangerArmed, setDangerArmed] = createSignal(false);
-  // #800: previews are kept per-scope so every radio button can display its
-  // true targetCount, not just the currently selected scope. The selected
-  // scope's slot is exposed via the `scopePreview` memo below so existing
-  // readers (apply, fingerprint, target review, warnings) are unchanged.
   const emptyScopePreviews: Record<ProfileAssignmentScope, PreviewCodingAgentProfileSelectionResult | null> = {
     replica: null,
     kind: null,
@@ -145,20 +112,13 @@ const AgentPickerModal: Component<{
   const scopePreviewBusy = createMemo(() => scopePreviewBusyMap()[selectedScope()]);
   const scopePreviewError = createMemo(() => scopePreviewErrorMap()[selectedScope()]);
   const [applyErrors, setApplyErrors] = createSignal<ProfileAssignmentError[]>([]);
-  // #537: transient toast so an assign failure is loud and unmissable (the
-  // persistent banner below keeps the actionable detail once the toast fades).
   const [toastMsg, setToastMsg] = createSignal<string | null>(null);
 
   let overlayRef!: HTMLDivElement;
   let profileResolveSeq = 0;
-  // #800: per-scope race guard so a slow preview for one scope can't overwrite
-  // another scope's slot. Bumped in the createEffect (all three) and in
-  // runScopePreview (the scope being fetched).
   let previewSeqByScope: Record<ProfileAssignmentScope, number> = { replica: 0, kind: 0, workgroup: 0 };
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
 
-  // #537: mirror the SidebarApp/SettingsModal toast pattern (.toast-error,
-  // auto-dismiss after 3s). Used to surface a failed Coding Agent assignment.
   const showToast = (message: string) => {
     if (toastTimer) clearTimeout(toastTimer);
     setToastMsg(message);
@@ -182,7 +142,6 @@ const AgentPickerModal: Component<{
   const profileLetters = createMemo(() =>
     settings() ? sortedProfileLetters(settings()!.codingAgentProfiles) : ["A"]
   );
-  // Prefer the explicit scope-context replica path; fall back to the legacy agentPath.
   const targetReplicaPath = createMemo(
     () => props.scopeContext?.targetReplicaPath ?? props.agentPath ?? null
   );
@@ -193,8 +152,6 @@ const AgentPickerModal: Component<{
     targetProfileFqn(targetReplicaPath(), props.sessionName)
   );
   const isWgReplica = createMemo(() => isWgReplicaPath(targetReplicaPath()));
-  // Broad scope (kind/workgroup) is only offered for a real WG replica with
-  // workgroup context. Everything else collapses to "assign to this replica".
   const showBroadScope = createMemo(
     () => Boolean(props.scopeContext?.workgroupPath) && isWgReplica()
   );
@@ -347,7 +304,6 @@ const AgentPickerModal: Component<{
     setInitialProfileShouldLaunch(Boolean(currentRequested) || Boolean(acDefault));
   });
 
-  // Backend profile resolution for the selected pair (effective letter, fallback).
   createEffect(() => {
     const current = settings();
     const agent = selectedAgent();
@@ -384,10 +340,6 @@ const AgentPickerModal: Component<{
       });
   });
 
-  // Backend scope preview — authoritative target/live-session enumeration and the
-  // fingerprint that apply re-validates. Re-runs (and clears the broad-scope
-  // confirmation checkbox, preview, fingerprint) whenever scope, coding agent, profile,
-  // restart toggle, or target replica changes (#384 Frontend §4).
   const runScopePreview = (scope: ProfileAssignmentScope, agentId: string, profile: string) => {
     const target = targetReplicaPath();
     if (!target || !isWgReplica()) return;
@@ -419,11 +371,9 @@ const AgentPickerModal: Component<{
     const scope = selectedScope();
     const agent = selectedAgent();
     const profile = selectedProfile();
-    // Track these so any change resets the confirmation gate and re-previews.
     restartSessions();
     targetReplicaPath();
 
-    // #800: invalidate all in-flight previews and reset transient artifacts.
     previewSeqByScope.replica += 1;
     previewSeqByScope.kind += 1;
     previewSeqByScope.workgroup += 1;
@@ -434,9 +384,6 @@ const AgentPickerModal: Component<{
     setScopePreviewBusyMap({ ...emptyScopeBusy });
 
     if (!agent || !isWgReplica()) return;
-    // Fetch all three broad-scope previews up front so each radio button
-    // displays its true targetCount (#800). The selected scope's slot drives
-    // apply, fingerprint, and the target review list (via `scopePreview`).
     runScopePreview("replica", agent.id, profile);
     runScopePreview("kind", agent.id, profile);
     runScopePreview("workgroup", agent.id, profile);
@@ -461,9 +408,6 @@ const AgentPickerModal: Component<{
   };
 
   const scopeCount = (scope: ProfileAssignmentScope): number => {
-    // #800: replica scope is always exactly 1 (the target itself). For kind
-    // and workgroup, read the per-scope preview slot so the count is correct
-    // even before the user selects that scope.
     if (scope === "replica") return 1;
     return scopePreviews()[scope]?.targetCount ?? 0;
   };
@@ -492,20 +436,6 @@ const AgentPickerModal: Component<{
     return `Overwrite ${count}${wg ? ` in ${wg}` : " in this workgroup"}`;
   });
 
-  // #551: the replica's *current* profile letter — the baseline for the redundant
-  // selection check. It must mirror the backend's resolve_profile fallback chain
-  // exactly (coding_agent_profiles.rs):
-  //   instance_override → explicit (requested) → origin_default → agent_default → "A"
-  // The backend ranks the persisted instance override ahead of the launch-time
-  // requested profile, so when present it — not props.currentRequestedProfile — is
-  // what the modal resolves to and applies on open. The origin_default and
-  // agent_default tiers are read from the backend resolution fields (request-
-  // independent, computed from disk/settings — same as configuredDefault()), so the
-  // baseline stays stable even after the user picks a different profile (which would
-  // otherwise let a stale session.requestedProfile wrongly enable a no-op assign).
-  // The local-settings read is only a last-resort fallback for when the backend
-  // preview is unavailable (non-AC path or a resolution error) — the same
-  // agent_default tier, read locally.
   const currentProfileLetter = createMemo(() => {
     const preview = backendPreview();
     const override = normalizeProfileLetter(preview?.instanceProfileOverride);
@@ -526,20 +456,9 @@ const AgentPickerModal: Component<{
     return "A";
   });
 
-  // #551: true while the pending selection still equals the replica's current
-  // Coding Agent + Profile (replica scope only, and only when the caller opted in
-  // via the assign flows). The untouched short-circuit covers the just-opened
-  // state robustly even if a backend default differs from the front-end default;
-  // once the user picks a profile, an explicit letter match is required.
-  // FIX 2: the agent-equality baseline is the EXPLICIT current coding agent
-  // (explicitCurrentAgentId), never the pre-select hint in currentAgentId. A
-  // never-assigned replica (no explicit current agent) is never redundant, so its
-  // assign stays enabled even though the picker opens on a preferred-agent hint.
   const isRedundantReplicaSelection = createMemo(() => {
     if (!props.disableRedundantReplicaAssign) return false;
     if (selectedScope() !== "replica") return false;
-    // #592 - drift makes a same-pair re-assign meaningful (re-stamp + relaunch
-    // with the current cell content), so it is never redundant while outdated.
     if (props.targetProfileOutdated) return false;
     const agent = selectedAgent();
     const baselineAgentId = props.explicitCurrentAgentId;
@@ -569,14 +488,10 @@ const AgentPickerModal: Component<{
     const requested = requestedProfileForSelection();
     const effective = effectivePreview().effectiveProfile;
     const target = targetReplicaPath();
-    // #537: replica scope no longer uses the pre-apply restart toggle; the post-assign
-    // "Restart now?" modal (ProjectPanel) owns the restart. Force it off so a toggle
-    // value carried over from kind/workgroup scope cannot trigger a backend restart.
     const restart = scope === "replica" ? false : restartSessions();
     try {
       let updatedCount: number | undefined;
       let restartedCount: number | undefined;
-      // Broad-scope writes are backend-owned; only call apply for a real WG replica.
       if (target && isWgReplica()) {
         const result = await SettingsAPI.applyCodingAgentProfileSelection({
           targetReplicaPath: target,
@@ -589,11 +504,7 @@ const AgentPickerModal: Component<{
           typedConfirmation: null,
         });
         if (result.errors.length > 0) {
-          // Stale fingerprint / failed targets: surface errors, keep the modal open,
-          // reset the broad confirmation and re-run preview so the user re-confirms.
           setApplyErrors(result.errors);
-          // #537: the assign no longer silently no-ops. Fire a loud toast with the
-          // backend's human-readable message so the failure cannot be missed.
           const firstError = result.errors[0];
           const extra = result.errors.length - 1;
           showToast(extra > 0 ? `${firstError.message} (+${extra} more)` : firstError.message);
@@ -616,12 +527,8 @@ const AgentPickerModal: Component<{
         restartedCount,
       });
     } catch (err: unknown) {
-      // #516 — surface the failure in the modal (keep it open) rather than
-      // letting the rejection escape as a swallowed unhandled rejection. The
-      // Resource Monitor cap gets a friendly, actionable message.
       const message = launchErrorMessage(err);
       setError(message);
-      // #537: keep unexpected apply failures as loud as the structured ones.
       showToast(message);
       if (scope !== "replica" && target && isWgReplica()) {
         setDangerArmed(false);
@@ -778,7 +685,6 @@ const AgentPickerModal: Component<{
                             fallbackApplied: false,
                           };
                     const cell = () => enabledLaunchCellFor(selectedAgent(), preview().effectiveProfile);
-                    // #527: per-card status pill — shared taxonomy with the Config rails.
                     const pillKind = (): Exclude<ProfileBadgeKind, "invalid"> => {
                       const current = settings();
                       const agent = selectedAgent();

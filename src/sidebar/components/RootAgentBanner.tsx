@@ -43,10 +43,6 @@ const RootAgentBanner: Component = () => {
     return !!r && sessionsStore.activeId === r.id;
   });
 
-  // Dormant root has status as `{ exited: number }` (not a string). Backend
-  // marks root exited/dormant instead of removing the record so the banner can
-  // re-wake — but PTY-dependent actions (mic, detach, telegram, close) must be
-  // hidden because there is no live PTY to receive input or attach to.
   const hasLivePty = createMemo(() => {
     const r = rootSession();
     return !!r && typeof r.status === "string";
@@ -66,9 +62,6 @@ const RootAgentBanner: Component = () => {
     const r = rootSession();
     return r ? sessionProfileBadge(r) : null;
   });
-  // #624 - mirror SessionItem's coding-agent resolver so the Root Agent row
-  // shows the same `[Coding Agent]` badge: prefer the session's own label, else
-  // resolve the configured agent's label from settings by id.
   const agentLabel = createMemo(() => {
     const r = rootSession();
     if (!r) return null;
@@ -77,8 +70,6 @@ const RootAgentBanner: Component = () => {
     return settingsStore.current?.agents?.find((a) => a.id === r.agentId)?.label ?? null;
   });
 
-  // #1033 - the CTX badge, keyed off the root session. Same shared gate as the other
-  // two surfaces; a resolver written against props.session would not compile here.
   const ctxVisible = () =>
     contextBadgeConfigured(settingsStore.current?.agents, rootSession()?.agentId);
   const ctxPercent = () => {
@@ -177,10 +168,6 @@ const RootAgentBanner: Component = () => {
       const r = rootSession();
       if (!r) {
         const session = await SessionAPI.createRootAgent();
-        // Hydrate the store: backend may reuse an existing live root and
-        // therefore NOT emit session_created (see ReuseLive in
-        // commands/session.rs). addSession upserts, so it's safe to call
-        // even when session_created later races in.
         sessionsStore.addSession(session);
         await SessionAPI.switch(session.id);
         await focusTerminal(session.id);
@@ -344,16 +331,9 @@ const RootAgentBanner: Component = () => {
     e.stopPropagation();
     const r = rootSession();
     if (!r) return;
-    // Cancel local capture before destroy: backend marks the root dormant,
-    // which hides the in-banner cancel control and leaves MediaRecorder +
-    // mic stream running. cancel() also detaches onstop so a pending
-    // transcription doesn't write to the now-dormant session.
     if (voiceRecorder.recordingSessionId() === r.id) {
       voiceRecorder.cancel();
     }
-    // Root destroy is special: backend kills PTY and marks dormant rather
-    // than removing the session record (see destroy_session_inner_with_options
-    // in commands/session.rs). The banner stays visible and can re-wake.
     SessionAPI.destroy(r.id);
   };
 
@@ -374,9 +354,6 @@ const RootAgentBanner: Component = () => {
         }
         onClick={handleClick}
         onKeyDown={(e) => {
-          // Only intercept keys aimed at the banner itself — when focus is on
-          // a child action button, that button's native handler runs and the
-          // event still bubbles here, so we must skip to avoid double-firing.
           if (e.currentTarget !== e.target) return;
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();

@@ -1,22 +1,6 @@
 import { Component, Show } from "solid-js";
 import { automationAttrs } from "../../shared/automation-hooks";
 
-/**
- * #537: Post-assign confirmation. After a Coding Agent is assigned to a running WG
- * replica (replica scope), the selection is persisted but the live session keeps the
- * old agent until it restarts. This lite modal offers that restart immediately so the
- * assignment applies without a manual restart.
- *
- * Presentational only: the caller decides when to show it (a live session must exist)
- * and supplies the restart action. Mirrors the Delete-Workgroup modal shell
- * (`modal-overlay` + `agent-modal` + `new-agent-footer`).
- *
- * #573: the restart can fail (e.g. the Resource Monitor concurrency cap re-trips on
- * the relaunch). The caller drives `error`/`busy` so a rejected restart stays visible
- * — the modal keeps itself open, shows the failure, and lets the user retry, instead
- * of silently closing while the old agent still runs. Mirrors the inline-error pattern
- * in `AgentPickerModal.apply()` and Resource Monitor's `confirmKill`.
- */
 const RestartPromptModal: Component<{
   agentLabel: string;
   replicaName: string;
