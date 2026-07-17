@@ -133,14 +133,31 @@ mod tests {
         );
     }
 
+    /// Re-captured 2026-07-17 against claude.exe 2.1.212 at cols 80 and 40, with the rig
+    /// the round-1 capture used: portable-pty 0.8.1 + vt100 0.15.2,
+    /// `Parser::new(rows, cols, 0)`, rows read back with `contents_between`. The bar really
+    /// does shrink 10 -> 6 -> 4 blocks at 120 -> 80 -> 40, exactly as recorded.
+    const REAL_80: &str = "  Context ░░░░░░ 0% │ Usage ░░░░░░ 8% (resets in 3h 21m)";
+
+    /// At 40 cols claude-hud DROPS the `│ Usage ...` segment rather than wrapping it, so the
+    /// row simply ends at the percent. Nothing is ever split mid-segment.
+    const REAL_40: &str = "  Context ░░░░ 0%";
+
+    /// 120 is deliberately not re-asserted here: `the_real_120_col_row_extracts` owns it,
+    /// and a test that restates another test earns nothing.
     #[test]
-    fn all_three_bar_widths_extract() {
-        // The bar shrinks with the terminal: 10 blocks at cols=120, 6 at 80, 4 at 40. Only
-        // the 120-col row survives verbatim in the plan, so the 6- and 4-block rows are
-        // built to the same recorded shape. Bar-width-agnostic is the assertion.
-        assert_eq!(extract_with(CLAUDE, &[REAL_120]), Some(0));
-        assert_eq!(extract_with(CLAUDE, &["  Context ███░░░ 42%"]), Some(42));
-        assert_eq!(extract_with(CLAUDE, &["  Context ██░░ 42%"]), Some(42));
+    fn the_placeholder_extracts_at_80_and_40_cols() {
+        assert_eq!(extract_with(CLAUDE, &[REAL_80]), Some(0));
+        assert_eq!(extract_with(CLAUDE, &[REAL_40]), Some(0));
+    }
+
+    /// The wide rows carry a SECOND percent - `Usage ... 8%` - exactly like Codex's
+    /// `weekly 83% left`. The column-2 anchor is what keeps the reading on the context
+    /// segment: Some(0), never Some(8).
+    #[test]
+    fn the_usage_percent_on_the_same_row_is_never_read_as_context() {
+        assert_eq!(extract_with(CLAUDE, &[REAL_80]), Some(0));
+        assert_ne!(extract_with(CLAUDE, &[REAL_80]), Some(8));
     }
 
     #[test]
