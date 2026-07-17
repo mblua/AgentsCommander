@@ -230,8 +230,18 @@ impl PtyManager {
             .get(&id)
             .copied()
             .unwrap_or(SessionBackendKind::LocalProcess);
-        let result = self.backend_for_kind(kind).kill(id);
-        self.remove_route_if_kind(id, kind);
+        self.kill_for_kind(id, kind)
+    }
+
+    /// Clean a pending create through its manager-record backend kind even when
+    /// route registration never completed. Cancellation and shutdown rollback
+    /// use this for both local and container-backed sessions.
+    pub(crate) fn kill_for_kind(&self, id: Uuid, kind: SessionBackendKind) -> Result<(), AppError> {
+        let backend = self.backend_for_kind(kind);
+        let result = backend.kill(id);
+        if result.is_ok() || !backend.has_session(id) {
+            self.remove_route_if_kind(id, kind);
+        }
         result
     }
 

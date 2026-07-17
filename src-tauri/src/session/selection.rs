@@ -499,6 +499,7 @@ struct CoordinatorInner {
     critical_keys: Mutex<HashSet<CriticalAdmissionKey>>,
     shutdown: CancellationToken,
     worker: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    cleanup_pty: Mutex<Option<Weak<Mutex<PtyManager>>>>,
 }
 
 #[derive(Clone)]
@@ -523,11 +524,20 @@ impl SelectionCoordinator {
                 critical_keys: Mutex::new(HashSet::new()),
                 shutdown,
                 worker: Mutex::new(None),
+                cleanup_pty: Mutex::new(None),
             }),
         }
     }
 
     pub fn start<R: Runtime>(&self, app: AppHandle<R>) -> Result<(), SelectionCoordinatorError> {
+        if let Some(pty) = app.try_state::<Arc<Mutex<PtyManager>>>() {
+            let mut cleanup_pty = self
+                .inner
+                .cleanup_pty
+                .lock()
+                .map_err(|_| SelectionCoordinatorError::Unavailable)?;
+            *cleanup_pty = Some(Arc::downgrade(pty.inner()));
+        }
         let receiver = self
             .inner
             .receiver
@@ -823,15 +833,24 @@ impl SelectionCoordinator {
                 Ordering::Acquire,
             )
             .map_err(|_| SelectionCoordinatorError::Busy.to_string())?;
-        let admission = Arc::clone(&self.inner.admission)
-            .try_acquire_owned()
-            .map_err(|_| SelectionCoordinatorError::Busy.to_string())?;
-        let slot = self
-            .inner
-            .sender
-            .clone()
-            .try_reserve_owned()
-            .map_err(|_| SelectionCoordinatorError::Busy.to_string())?;
+        let admission = match Arc::clone(&self.inner.admission).try_acquire_owned() {
+            Ok(admission) => admission,
+            Err(_) => {
+                self.inner
+                    .phase
+                    .store(CoordinatorPhase::Bootstrapping as u8, Ordering::Release);
+                return Err(SelectionCoordinatorError::Busy.to_string());
+            }
+        };
+        let slot = match self.inner.sender.clone().try_reserve_owned() {
+            Ok(slot) => slot,
+            Err(_) => {
+                self.inner
+                    .phase
+                    .store(CoordinatorPhase::Bootstrapping as u8, Ordering::Release);
+                return Err(SelectionCoordinatorError::Busy.to_string());
+            }
+        };
         let (started, started_rx) = oneshot::channel();
         let (release, release_rx) = oneshot::channel();
         drop(slot.send(CoordinatorEnvelope {
@@ -843,12 +862,18 @@ impl SelectionCoordinator {
             _create_ticket: None,
             critical_key: None,
         }));
+        // Restore now owns FIFO position one. Normal and critical work may be
+        // admitted, but the worker cannot execute it until restore releases the
+        // barrier. In particular, unsolicited route loss must wait here instead
+        // of being rejected after the external route has already disappeared.
+        self.inner
+            .phase
+            .store(CoordinatorPhase::Running as u8, Ordering::Release);
         started_rx
             .await
             .map_err(|_| SelectionCoordinatorError::Unavailable.to_string())?;
         Ok(RestoreBarrierGuard {
             release: Some(release),
-            inner: Arc::clone(&self.inner),
         })
     }
 
@@ -1113,6 +1138,19 @@ impl SelectionCoordinator {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn critical_key_registered_for_test(
+        &self,
+        session_id: Uuid,
+        kind: CriticalAdmissionKind,
+    ) -> bool {
+        self.inner
+            .critical_keys
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains(&CriticalAdmissionKey { session_id, kind })
+    }
+
     pub fn container_lifecycle_sender(&self) -> ContainerLifecycleSender {
         ContainerLifecycleSender {
             inner: Arc::downgrade(&self.inner),
@@ -1120,6 +1158,11 @@ impl SelectionCoordinator {
     }
 
     pub async fn close_and_join(&self) {
+        self.close_and_join_with_budget(Duration::from_secs(SHUTDOWN_CLEANUP_BUDGET_SECS))
+            .await;
+    }
+
+    async fn close_and_join_with_budget(&self, budget: Duration) {
         self.inner
             .phase
             .store(CoordinatorPhase::Closing as u8, Ordering::Release);
@@ -1134,35 +1177,37 @@ impl SelectionCoordinator {
                 None
             }
         };
-        let Some(mut handle) = handle else {
-            return;
-        };
-        match tokio::time::timeout(
-            Duration::from_secs(SHUTDOWN_CLEANUP_BUDGET_SECS),
-            &mut handle,
-        )
-        .await
-        {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                log::error!("[selection] coordinator worker join failed: {error}");
-            }
-            Err(_) => {
-                let critical_count = self
-                    .inner
-                    .critical_keys
-                    .lock()
-                    .map(|keys| keys.len())
-                    .unwrap_or_default();
-                log::error!(
-                    "[selection] coordinator shutdown exceeded {}s; aborting worker outstandingCriticalKeys={}",
-                    SHUTDOWN_CLEANUP_BUDGET_SECS,
-                    critical_count
-                );
-                handle.abort();
-                if let Err(error) = handle.await {
-                    log::debug!("[selection] aborted worker join result: {error}");
+        if let Some(mut handle) = handle {
+            match tokio::time::timeout(budget, &mut handle).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    log::error!("[selection] coordinator worker join failed: {error}");
                 }
+                Err(_) => {
+                    let critical_count = self
+                        .inner
+                        .critical_keys
+                        .lock()
+                        .map(|keys| keys.len())
+                        .unwrap_or_default();
+                    log::error!(
+                        "[selection] coordinator shutdown exceeded {:?}; aborting worker outstandingCriticalKeys={}",
+                        budget,
+                        critical_count
+                    );
+                    handle.abort();
+                    if let Err(error) = handle.await {
+                        log::debug!("[selection] aborted worker join result: {error}");
+                    }
+                }
+            }
+        }
+
+        cleanup_pending_creates_after_join(&self.inner).await;
+        match self.inner.critical_keys.lock() {
+            Ok(mut keys) => keys.clear(),
+            Err(error) => {
+                log::error!("[selection] critical key lock poisoned after worker join: {error}")
             }
         }
     }
@@ -1170,7 +1215,6 @@ impl SelectionCoordinator {
 
 pub struct RestoreBarrierGuard {
     release: Option<oneshot::Sender<()>>,
-    inner: Arc<CoordinatorInner>,
 }
 
 pub(crate) struct AutoCloseBatchTicket {
@@ -1217,13 +1261,6 @@ impl RestoreBarrierGuard {
     }
 
     fn release_worker(&mut self) {
-        if CoordinatorPhase::from_u8(self.inner.phase.load(Ordering::Acquire))
-            == CoordinatorPhase::Restoring
-        {
-            self.inner
-                .phase
-                .store(CoordinatorPhase::Running as u8, Ordering::Release);
-        }
         if let Some(release) = self.release.take() {
             if release.send(()).is_err() {
                 log::warn!("[selection] restore barrier worker ended before completion signal");
@@ -1461,6 +1498,14 @@ impl<R: Runtime> SelectionTransaction<R> {
         execute_rollback_create(self, binding).await;
     }
 
+    pub(crate) async fn reconcile_route_loss_inline(
+        &self,
+        session_id: Uuid,
+        exit_code: i32,
+    ) -> Result<(), String> {
+        execute_route_loss(self, session_id, exit_code).await
+    }
+
     pub(crate) async fn restore_dormant_inline(
         &self,
         request: DormantRestoreRequest,
@@ -1592,18 +1637,7 @@ async fn drain_after_shutdown<R: Runtime>(
     while let Some(envelope) = receiver.recv().await {
         match envelope.job {
             CoordinatorJob::FinalizeCreate { request, response } => {
-                let rollback = transaction
-                    .manager()
-                    .await
-                    .rollback_pending_create(request.binding)
-                    .await;
-                if let Err(error) = rollback {
-                    log::warn!(
-                        "[selection] shutdown create rollback failed session={}: {}",
-                        request.binding.session_id(),
-                        error
-                    );
-                }
+                execute_rollback_create(transaction, request.binding).await;
                 if response
                     .send(Err(SelectionCoordinatorError::Unavailable.to_string()))
                     .is_err()
@@ -1615,18 +1649,7 @@ async fn drain_after_shutdown<R: Runtime>(
                 }
             }
             CoordinatorJob::RollbackCreate { binding } => {
-                if let Err(error) = transaction
-                    .manager()
-                    .await
-                    .rollback_pending_create(binding)
-                    .await
-                {
-                    log::warn!(
-                        "[selection] shutdown ticket-drop rollback failed session={}: {}",
-                        binding.session_id(),
-                        error
-                    );
-                }
+                execute_rollback_create(transaction, binding).await;
             }
             CoordinatorJob::Transition { response, .. } => {
                 if response
@@ -2104,14 +2127,32 @@ async fn execute_rollback_create<R: Runtime>(
     transaction: &SelectionTransaction<R>,
     binding: PendingCreateBinding,
 ) {
+    let manager = transaction.manager().await;
+    let pty = transaction
+        .app()
+        .try_state::<Arc<Mutex<PtyManager>>>()
+        .map(|state| state.inner().clone());
+    execute_rollback_create_parts(manager, pty, binding).await;
+}
+
+async fn execute_rollback_create_parts(
+    manager: SessionManager,
+    pty: Option<Arc<Mutex<PtyManager>>>,
+    binding: PendingCreateBinding,
+) {
     let session_id = binding.session_id();
-    let pty = transaction.app().try_state::<Arc<Mutex<PtyManager>>>();
+    let backend_kind = manager
+        .get_pending_session(binding)
+        .await
+        .map(|session| session.backend_kind);
     if let Some(pty) = pty {
-        let kill_result = pty
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .kill(session_id);
-        if let Err(error) = kill_result {
+        let pty = pty.lock().unwrap_or_else(|error| error.into_inner());
+        let kill_result = match backend_kind {
+            Some(kind) => Some(pty.kill_for_kind(session_id, kind)),
+            None if pty.has_session(session_id) => Some(pty.kill(session_id)),
+            None => None,
+        };
+        if let Some(Err(error)) = kill_result {
             log::debug!(
                 "[selection] pending create PTY cleanup session={} result={}",
                 session_id,
@@ -2119,17 +2160,36 @@ async fn execute_rollback_create<R: Runtime>(
             );
         }
     }
-    if let Err(error) = transaction
-        .manager()
-        .await
-        .rollback_pending_create(binding)
-        .await
-    {
+    if backend_kind.is_none() {
+        return;
+    }
+    if let Err(error) = manager.rollback_pending_create(binding).await {
         log::warn!(
             "[selection] pending create manager rollback failed session={}: {}",
             session_id,
             error
         );
+    }
+}
+
+async fn cleanup_pending_creates_after_join(inner: &Arc<CoordinatorInner>) {
+    let manager = inner.manager.read().await.clone();
+    let bindings = manager.pending_create_bindings().await;
+    if bindings.is_empty() {
+        return;
+    }
+    let pty = inner
+        .cleanup_pty
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .and_then(Weak::upgrade);
+    log::warn!(
+        "[selection] cleaning {} pending create(s) after worker join",
+        bindings.len()
+    );
+    for binding in bindings {
+        execute_rollback_create_parts(manager.clone(), pty.clone(), binding).await;
     }
 }
 
@@ -2280,6 +2340,7 @@ mod tests {
     #[derive(Default)]
     struct LifecycleTestBackend {
         live: Mutex<HashSet<Uuid>>,
+        kills: Mutex<std::collections::HashMap<Uuid, usize>>,
     }
 
     impl LifecycleTestBackend {
@@ -2290,6 +2351,15 @@ mod tests {
             } else {
                 sessions.remove(&session_id);
             }
+        }
+
+        fn kill_count(&self, session_id: Uuid) -> usize {
+            self.kills
+                .lock()
+                .unwrap()
+                .get(&session_id)
+                .copied()
+                .unwrap_or_default()
         }
     }
 
@@ -2317,16 +2387,12 @@ mod tests {
                 .ok_or_else(|| crate::errors::AppError::SessionNotFound(id.to_string()))
         }
 
-        fn resize(
-            &self,
-            id: Uuid,
-            _cols: u16,
-            _rows: u16,
-        ) -> Result<(), crate::errors::AppError> {
+        fn resize(&self, id: Uuid, _cols: u16, _rows: u16) -> Result<(), crate::errors::AppError> {
             self.write(id, &[])
         }
 
         fn kill(&self, id: Uuid) -> Result<(), crate::errors::AppError> {
+            *self.kills.lock().unwrap().entry(id).or_default() += 1;
             self.set_live(id, false);
             Ok(())
         }
@@ -2561,9 +2627,7 @@ mod tests {
             "dyn Future",
             "FnOnce",
         ] {
-            let mutated = format!(
-                "enum CoordinatorJob {{ Rogue {{ value: {forbidden} }} }}"
-            );
+            let mutated = format!("enum CoordinatorJob {{ Rogue {{ value: {forbidden} }} }}");
             assert_eq!(
                 coordinator_job_handle_violations(&mutated),
                 vec![forbidden],
@@ -2595,14 +2659,8 @@ mod tests {
         let id = Uuid::new_v4();
         let none = SessionSelection::none(epoch, 1, SelectionCause::AutoClose);
         let live = SessionSelection::live(epoch, 2, SelectionCause::UserSwitch, id);
-        let dormant = SessionSelection::dormant(
-            epoch,
-            3,
-            SelectionCause::LivenessReconcile,
-            id,
-            19,
-            false,
-        );
+        let dormant =
+            SessionSelection::dormant(epoch, 3, SelectionCause::LivenessReconcile, id, 19, false);
 
         assert_eq!(none.epoch(), live.epoch());
         assert_eq!(live.epoch(), dormant.epoch());
@@ -2655,8 +2713,9 @@ mod tests {
         )
         .expect("parse native selection");
         let websocket = match web.try_recv().expect("websocket selection event") {
-            WsOutMsg::Text(text) => serde_json::from_str::<serde_json::Value>(&text)
-                .expect("parse websocket selection"),
+            WsOutMsg::Text(text) => {
+                serde_json::from_str::<serde_json::Value>(&text).expect("parse websocket selection")
+            }
             other => panic!("expected websocket text event, got {other:?}"),
         };
         assert_eq!(websocket["event"], "session_switched");
@@ -2794,7 +2853,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restore_is_first_and_keeps_external_work_busy_until_release() {
+    async fn restore_is_fifo_first_and_queues_external_work_until_release() {
         let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
         let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
         let app = tauri::test::mock_builder()
@@ -2811,18 +2870,111 @@ mod tests {
             .expect("submit first restore job");
         assert_eq!(
             CoordinatorPhase::from_u8(coordinator.inner.phase.load(Ordering::Acquire)),
-            CoordinatorPhase::Restoring
-        );
-        assert_eq!(
-            coordinator.snapshot().await.unwrap_err(),
-            SelectionCoordinatorError::Busy.to_string()
+            CoordinatorPhase::Running
         );
         assert!(matches!(
             coordinator.submit_restore_first().await,
             Err(error) if error == SelectionCoordinatorError::Busy.to_string()
         ));
+        let mut queued_snapshot = {
+            let coordinator = coordinator.clone();
+            tokio::spawn(async move { coordinator.snapshot().await })
+        };
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut queued_snapshot)
+                .await
+                .is_err(),
+            "hydration admitted after restore must remain queued behind it"
+        );
         guard.finish();
-        assert_eq!(coordinator.snapshot().await.unwrap().revision(), 0);
+        assert_eq!(
+            queued_snapshot
+                .await
+                .expect("join queued hydration")
+                .expect("queued hydration succeeds")
+                .revision(),
+            0
+        );
+        coordinator.close_and_join().await;
+    }
+
+    #[tokio::test]
+    async fn restore_held_route_loss_waits_then_reconciles_the_public_row() {
+        use crate::pty::backend::SessionBackendKind;
+
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let session = manager
+            .read()
+            .await
+            .create_session(
+                "shell".to_string(),
+                Vec::new(),
+                "C:/restore-route-loss".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        let backend = Arc::new(LifecycleTestBackend::default());
+        backend.set_live(session.id, true);
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
+        pty.lock()
+            .unwrap()
+            .record_route(session.id, SessionBackendKind::LocalProcess);
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(Arc::clone(&pty))
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build restore-held route-loss app");
+        coordinator
+            .start(app.handle().clone())
+            .expect("start selection coordinator");
+        let guard = coordinator.submit_restore_first().await.unwrap();
+
+        backend.set_live(session.id, false);
+        pty.lock()
+            .unwrap()
+            .remove_route_if_kind(session.id, SessionBackendKind::LocalProcess);
+        let mut route_loss = {
+            let sender = coordinator.container_lifecycle_sender();
+            tokio::spawn(async move { sender.route_lost(session.id, 71).await })
+        };
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut route_loss)
+                .await
+                .is_err(),
+            "route loss must queue behind the held restore job"
+        );
+        assert!(!matches!(
+            manager
+                .read()
+                .await
+                .get_session(session.id)
+                .await
+                .unwrap()
+                .status,
+            SessionStatus::Exited(_)
+        ));
+
+        guard.finish();
+        assert_eq!(
+            route_loss
+                .await
+                .expect("join route-loss waiter")
+                .expect("route-loss reconciliation"),
+            CriticalAdmissionOutcome::Completed(())
+        );
+        let row = manager.read().await.get_session(session.id).await.unwrap();
+        assert_eq!(row.status, SessionStatus::Exited(71));
+        let selection = manager.read().await.selection_payload().await;
+        assert_eq!(selection.id(), Some(session.id));
+        assert_eq!(selection.mode(), SelectionMode::Dormant);
         coordinator.close_and_join().await;
     }
 
@@ -2974,12 +3126,7 @@ mod tests {
             sender.route_lost(session.id, 44).await.unwrap(),
             CriticalAdmissionOutcome::Completed(())
         );
-        let row = manager
-            .read()
-            .await
-            .get_session(session.id)
-            .await
-            .unwrap();
+        let row = manager.read().await.get_session(session.id).await.unwrap();
         assert_eq!(row.status, SessionStatus::Exited(44));
         let selection = manager.read().await.selection_payload().await;
         assert_eq!(selection.id(), Some(session.id));
@@ -2998,7 +3145,10 @@ mod tests {
             sender.route_lost(session.id, 99).await.unwrap(),
             CriticalAdmissionOutcome::Completed(())
         );
-        assert_eq!(manager.read().await.selection_payload().await.revision(), revision);
+        assert_eq!(
+            manager.read().await.selection_payload().await.revision(),
+            revision
+        );
         assert!(events_rx.try_recv().is_err());
         coordinator.close_and_join().await;
     }
@@ -3051,6 +3201,552 @@ mod tests {
         coordinator
             .reserve_auto_close()
             .expect("dropped reservations return capacity");
+    }
+
+    #[tokio::test]
+    async fn full_queue_critical_route_waiter_is_deduplicated_and_runs_after_capacity_returns() {
+        use crate::pty::backend::SessionBackendKind;
+
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let session = manager
+            .read()
+            .await
+            .create_session(
+                "shell".to_string(),
+                Vec::new(),
+                "C:/critical-capacity".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        let backend = Arc::new(LifecycleTestBackend::default());
+        backend.set_live(session.id, true);
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
+        pty.lock()
+            .unwrap()
+            .record_route(session.id, SessionBackendKind::LocalProcess);
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(Arc::clone(&pty))
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build critical-capacity app");
+        coordinator.start(app.handle().clone()).unwrap();
+        let guard = coordinator.submit_restore_first().await.unwrap();
+        let mut reservations = (0..COORDINATOR_QUEUE_CAPACITY)
+            .map(|_| coordinator.reserve_auto_close().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(coordinator.inner.admission.available_permits(), 0);
+
+        backend.set_live(session.id, false);
+        pty.lock()
+            .unwrap()
+            .remove_route_if_kind(session.id, SessionBackendKind::LocalProcess);
+        let mut first_waiter = {
+            let sender = coordinator.container_lifecycle_sender();
+            tokio::spawn(async move { sender.route_lost(session.id, 82).await })
+        };
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if coordinator.inner.critical_keys.lock().unwrap().len() == 1 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("critical waiter registers while the queue is full");
+        assert_eq!(
+            coordinator
+                .container_lifecycle_sender()
+                .route_lost(session.id, 99)
+                .await
+                .unwrap(),
+            CriticalAdmissionOutcome::AlreadyPending
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut first_waiter)
+                .await
+                .is_err(),
+            "critical waiter must remain pending while all logical capacity is held"
+        );
+
+        drop(reservations.pop());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        drop(reservations);
+        guard.finish();
+        assert_eq!(
+            first_waiter
+                .await
+                .expect("join critical waiter")
+                .expect("critical route-loss result"),
+            CriticalAdmissionOutcome::Completed(())
+        );
+        assert!(coordinator.inner.critical_keys.lock().unwrap().is_empty());
+        assert_eq!(
+            manager
+                .read()
+                .await
+                .get_session(session.id)
+                .await
+                .unwrap()
+                .status,
+            SessionStatus::Exited(82)
+        );
+        assert_eq!(
+            coordinator
+                .container_lifecycle_sender()
+                .route_lost(session.id, 100)
+                .await
+                .unwrap(),
+            CriticalAdmissionOutcome::Completed(())
+        );
+        assert!(coordinator.inner.critical_keys.lock().unwrap().is_empty());
+        coordinator.close_and_join().await;
+    }
+
+    #[tokio::test]
+    async fn full_queue_keeps_critical_kinds_distinct_and_deduplicates_each_kind() {
+        use crate::pty::backend::SessionBackendKind;
+
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let session = manager
+            .read()
+            .await
+            .create_session(
+                "shell".to_string(),
+                Vec::new(),
+                "C:/critical-kind-capacity".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(Arc::new(
+            LifecycleTestBackend::default(),
+        ))));
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(pty)
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build critical-kind app");
+        coordinator.start(app.handle().clone()).unwrap();
+        let guard = coordinator.submit_restore_first().await.unwrap();
+        let reservations = (0..COORDINATOR_QUEUE_CAPACITY)
+            .map(|_| coordinator.reserve_auto_close().unwrap())
+            .collect::<Vec<_>>();
+
+        let route = {
+            let sender = coordinator.container_lifecycle_sender();
+            tokio::spawn(async move { sender.route_lost(session.id, 31).await })
+        };
+        let watchdog = {
+            let coordinator = coordinator.clone();
+            tokio::spawn(async move { coordinator.watchdog_resource_kill(session.id).await })
+        };
+        let cleanup = {
+            let coordinator = coordinator.clone();
+            tokio::spawn(async move { coordinator.background_destroy(session.id).await })
+        };
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while coordinator.inner.critical_keys.lock().unwrap().len() != 3 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("all critical kinds register independently at full capacity");
+
+        assert!(matches!(
+            coordinator
+                .container_lifecycle_sender()
+                .route_lost(session.id, 32)
+                .await
+                .unwrap(),
+            CriticalAdmissionOutcome::AlreadyPending
+        ));
+        assert!(matches!(
+            coordinator
+                .watchdog_resource_kill(session.id)
+                .await
+                .unwrap(),
+            CriticalAdmissionOutcome::AlreadyPending
+        ));
+        assert!(matches!(
+            coordinator.background_destroy(session.id).await.unwrap(),
+            CriticalAdmissionOutcome::AlreadyPending
+        ));
+
+        coordinator
+            .close_and_join_with_budget(Duration::from_millis(25))
+            .await;
+        guard.finish();
+        drop(reservations);
+        for error in [
+            route.await.unwrap().unwrap_err(),
+            watchdog.await.unwrap().unwrap_err(),
+            cleanup.await.unwrap().unwrap_err(),
+        ] {
+            assert_eq!(error, SelectionCoordinatorError::Unavailable.to_string());
+        }
+        assert!(coordinator.inner.critical_keys.lock().unwrap().is_empty());
+        assert!(coordinator.inner.worker.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn shutdown_drain_runs_common_resource_rollback_for_finalize_and_drop_jobs() {
+        use crate::pty::backend::{PtyBackend, SessionBackendKind};
+
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(LifecycleTestBackend::default());
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(Arc::clone(&pty))
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build shutdown-drain app");
+        coordinator.start(app.handle().clone()).unwrap();
+        let guard = coordinator.submit_restore_first().await.unwrap();
+        let manager_handle = manager.read().await.clone();
+
+        let mut finalizer_ticket = coordinator
+            .reserve_create(TrustedCreateIntent::Background)
+            .await
+            .unwrap();
+        let finalizer_session = manager_handle
+            .create_pending_session(
+                &mut finalizer_ticket,
+                "shell".to_string(),
+                Vec::new(),
+                "C:/shutdown-finalizer".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        backend.set_live(finalizer_session.id, true);
+        pty.lock()
+            .unwrap()
+            .record_route(finalizer_session.id, SessionBackendKind::LocalProcess);
+
+        let mut drop_ticket = coordinator
+            .reserve_create(TrustedCreateIntent::Background)
+            .await
+            .unwrap();
+        let drop_session = manager_handle
+            .create_pending_session(
+                &mut drop_ticket,
+                "shell".to_string(),
+                Vec::new(),
+                "C:/shutdown-drop".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        backend.set_live(drop_session.id, true);
+        pty.lock()
+            .unwrap()
+            .record_route(drop_session.id, SessionBackendKind::LocalProcess);
+
+        let finalizer = tokio::spawn(async move { finalizer_ticket.finalize(Vec::new()).await });
+        drop(drop_ticket);
+        tokio::task::yield_now().await;
+        let close = {
+            let coordinator = coordinator.clone();
+            tokio::spawn(async move { coordinator.close_and_join().await })
+        };
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !coordinator.inner.shutdown.is_cancelled() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("shutdown signal becomes visible");
+        guard.finish();
+        close.await.expect("join close task");
+
+        assert_eq!(
+            finalizer
+                .await
+                .expect("join finalizer caller")
+                .expect_err("queued finalizer is unavailable during shutdown"),
+            SelectionCoordinatorError::Unavailable.to_string()
+        );
+        assert_eq!(backend.kill_count(finalizer_session.id), 1);
+        assert_eq!(backend.kill_count(drop_session.id), 1);
+        assert!(!backend.has_session(finalizer_session.id));
+        assert!(!backend.has_session(drop_session.id));
+        assert!(!pty.lock().unwrap().has_session(finalizer_session.id));
+        assert!(!pty.lock().unwrap().has_session(drop_session.id));
+        let aggregate = manager_handle.aggregate_snapshot().await;
+        assert!(aggregate.pending_ids.is_empty());
+        assert!(aggregate.sessions.is_empty());
+        assert!(coordinator.inner.critical_keys.lock().unwrap().is_empty());
+        assert!(coordinator.inner.worker.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn cancelled_and_panicked_post_spawn_creates_roll_back_without_ghost_events() {
+        use crate::pty::backend::SessionBackendKind;
+        use tauri::Listener;
+
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(LifecycleTestBackend::default());
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(Arc::clone(&pty))
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build cancellation rollback app");
+        coordinator.start(app.handle().clone()).unwrap();
+        coordinator.submit_restore_first().await.unwrap().finish();
+        let manager_handle = manager.read().await.clone();
+        let (events_tx, events_rx) = std::sync::mpsc::channel();
+        for event_name in ["session_created", "session_switched"] {
+            let events_tx = events_tx.clone();
+            app.listen_any(event_name, move |_| {
+                let _ = events_tx.send(event_name);
+            });
+        }
+
+        let mut cancelled_ticket = coordinator
+            .reserve_create(TrustedCreateIntent::Background)
+            .await
+            .unwrap();
+        let cancelled_session = manager_handle
+            .create_pending_session(
+                &mut cancelled_ticket,
+                "shell".to_string(),
+                Vec::new(),
+                "C:/cancelled-create".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        backend.set_live(cancelled_session.id, true);
+        pty.lock()
+            .unwrap()
+            .record_route(cancelled_session.id, SessionBackendKind::LocalProcess);
+        let (cancel_started, cancel_started_rx) = oneshot::channel();
+        let cancelled_task = tokio::spawn(async move {
+            let ticket = cancelled_ticket;
+            let _ = cancel_started.send(());
+            std::future::pending::<()>().await;
+            drop(ticket);
+        });
+        cancel_started_rx.await.unwrap();
+        cancelled_task.abort();
+        assert!(cancelled_task.await.unwrap_err().is_cancelled());
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let aggregate = manager_handle.aggregate_snapshot().await;
+                if !aggregate.pending_ids.contains(&cancelled_session.id)
+                    && !pty.lock().unwrap().has_session(cancelled_session.id)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancelled create rollback completes");
+        assert_eq!(backend.kill_count(cancelled_session.id), 1);
+
+        let mut panicked_ticket = coordinator
+            .reserve_create(TrustedCreateIntent::Background)
+            .await
+            .unwrap();
+        let panicked_session = manager_handle
+            .create_pending_session(
+                &mut panicked_ticket,
+                "shell".to_string(),
+                Vec::new(),
+                "C:/panicked-create".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        backend.set_live(panicked_session.id, true);
+        pty.lock()
+            .unwrap()
+            .record_route(panicked_session.id, SessionBackendKind::LocalProcess);
+        let panicked_task = tokio::spawn(async move {
+            let _ticket = panicked_ticket;
+            panic!("synthetic create task panic");
+        });
+        assert!(panicked_task.await.unwrap_err().is_panic());
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let aggregate = manager_handle.aggregate_snapshot().await;
+                if !aggregate.pending_ids.contains(&panicked_session.id)
+                    && !pty.lock().unwrap().has_session(panicked_session.id)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("panicked create rollback completes");
+        assert_eq!(backend.kill_count(panicked_session.id), 1);
+        assert!(manager_handle
+            .aggregate_snapshot()
+            .await
+            .sessions
+            .is_empty());
+        assert!(events_rx.try_recv().is_err());
+        assert_eq!(
+            coordinator.inner.create_tickets.available_permits(),
+            CREATE_TICKET_CAPACITY
+        );
+        assert_eq!(
+            coordinator.inner.admission.available_permits(),
+            COORDINATOR_ADMISSION_CAPACITY
+        );
+        coordinator.close_and_join().await;
+    }
+
+    #[tokio::test]
+    async fn capped_shutdown_aborts_a_held_worker_then_cleans_pending_resources_and_keys() {
+        use crate::pty::backend::{PtyBackend, SessionBackendKind};
+
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(LifecycleTestBackend::default());
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(Arc::clone(&pty))
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build capped shutdown app");
+        coordinator.start(app.handle().clone()).unwrap();
+        let guard = coordinator.submit_restore_first().await.unwrap();
+        let manager_handle = manager.read().await.clone();
+
+        let mut ticket = coordinator
+            .reserve_create(TrustedCreateIntent::Background)
+            .await
+            .unwrap();
+        let pending = manager_handle
+            .create_pending_session(
+                &mut ticket,
+                "shell".to_string(),
+                Vec::new(),
+                "C:/aborted-shutdown".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        backend.set_live(pending.id, true);
+        pty.lock()
+            .unwrap()
+            .record_route(pending.id, SessionBackendKind::LocalProcess);
+        let finalizer = tokio::spawn(async move { ticket.finalize(Vec::new()).await });
+        let route_waiter = {
+            let sender = coordinator.container_lifecycle_sender();
+            tokio::spawn(async move { sender.route_lost(pending.id, 9).await })
+        };
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while coordinator.inner.critical_keys.lock().unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("route-loss key is registered behind the held worker");
+
+        let started = std::time::Instant::now();
+        coordinator
+            .close_and_join_with_budget(Duration::from_millis(25))
+            .await;
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "capped coordinator shutdown must not wait for the held transaction"
+        );
+        guard.finish();
+
+        assert_eq!(
+            finalizer.await.unwrap().unwrap_err(),
+            SelectionCoordinatorError::Unavailable.to_string()
+        );
+        assert_eq!(
+            route_waiter.await.unwrap().unwrap_err(),
+            SelectionCoordinatorError::Unavailable.to_string()
+        );
+        assert_eq!(backend.kill_count(pending.id), 1);
+        assert!(!backend.has_session(pending.id));
+        assert!(!pty.lock().unwrap().has_session(pending.id));
+        let aggregate = manager_handle.aggregate_snapshot().await;
+        assert!(aggregate.pending_ids.is_empty());
+        assert!(aggregate.sessions.is_empty());
+        assert!(coordinator.inner.critical_keys.lock().unwrap().is_empty());
+        assert!(coordinator.inner.worker.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn joined_worker_retains_no_coordinator_or_extra_pty_owner() {
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(LifecycleTestBackend::default());
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let weak_inner = Arc::downgrade(&coordinator.inner);
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(Arc::clone(&pty))
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build retention test app");
+        coordinator.start(app.handle().clone()).unwrap();
+        coordinator.submit_restore_first().await.unwrap().finish();
+        coordinator.close_and_join().await;
+        assert!(coordinator.inner.worker.lock().unwrap().is_none());
+
+        drop(coordinator);
+        assert!(weak_inner.upgrade().is_none());
+        assert_eq!(Arc::strong_count(&manager), 2);
+        assert_eq!(Arc::strong_count(&pty), 2);
+        assert_eq!(Arc::strong_count(&backend), 2);
+        drop(app);
     }
 
     #[tokio::test]

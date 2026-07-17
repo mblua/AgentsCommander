@@ -1828,9 +1828,7 @@ mod tests {
         let task_backend = Arc::clone(&backend);
         let mut spec = test_spec(id, root, PtyOutputTarget::noop());
         spec.container_image = Some("agentscommander/test:latest".to_string());
-        let mut task = tokio::spawn(async move {
-            task_backend.spawn(spec).await
-        });
+        let mut task = tokio::spawn(async move { task_backend.spawn(spec).await });
 
         tokio::select! {
             result = &mut task => panic!("container spawn ended before runtime start: {result:?}"),
@@ -1886,7 +1884,10 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert!(installed, "runtime handle was not installed before handshake wait");
+        assert!(
+            installed,
+            "runtime handle was not installed before handshake wait"
+        );
         task.abort();
         let _ = task.await;
 
@@ -1933,10 +1934,7 @@ mod tests {
 
         backend.kill(id).expect("kill");
 
-        assert!(
-            !dest.exists(),
-            "teardown must delete the copied credential"
-        );
+        assert!(!dest.exists(), "teardown must delete the copied credential");
     }
 
     // #930 F1 - the teardown-during-spawn race: if the session is gone from the
@@ -2422,10 +2420,9 @@ mod tests {
         let (removed_tx, removed_rx) = std::sync::mpsc::channel();
         backend.set_route_remover(Arc::new(move |session_id| {
             if let Some(pty) = weak_pty.upgrade() {
-                pty.lock().unwrap().remove_route_if_kind(
-                    session_id,
-                    SessionBackendKind::ContainerTransport,
-                );
+                pty.lock()
+                    .unwrap()
+                    .remove_route_if_kind(session_id, SessionBackendKind::ContainerTransport);
             }
             let _ = removed_tx.send(());
         }));

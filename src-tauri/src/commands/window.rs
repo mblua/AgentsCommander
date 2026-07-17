@@ -10,6 +10,26 @@ use crate::session::selection::{
 use crate::session::session::SessionStatus;
 use crate::DetachedSessionsState;
 
+#[cfg(test)]
+#[derive(Default)]
+struct WindowDestroyAudit(std::sync::Mutex<Vec<String>>);
+
+#[cfg(test)]
+impl WindowDestroyAudit {
+    fn record(&self, label: &str) {
+        self.0.lock().unwrap().push(label.to_string());
+    }
+
+    fn count(&self, label: &str) -> usize {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|observed| observed.as_str() == label)
+            .count()
+    }
+}
+
 const MAIN_WINDOW_LABEL: &str = "main";
 const RESOURCE_MONITOR_WINDOW_LABEL: &str = "resource-monitor";
 const RESOURCE_MONITOR_FLOATING_WIDTH: u32 = 760;
@@ -240,21 +260,29 @@ pub(crate) async fn execute_detach_transaction<R: tauri::Runtime>(
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .insert(session_id);
-    let still_valid = transaction.app().get_webview_window(&label).is_some()
-        && transaction
-            .manager()
-            .await
-            .get_session(session_id)
-            .await
-            .is_some()
-        && transaction.runtime_snapshot(session_id).has_pty;
+    let window_still_present = transaction.app().get_webview_window(&label).is_some();
+    let session_still_present = transaction
+        .manager()
+        .await
+        .get_session(session_id)
+        .await
+        .is_some();
+    let runtime_still_live = transaction.runtime_snapshot(session_id).has_pty;
+    let still_valid = window_still_present && session_still_present && runtime_still_live;
     if !still_valid {
-        if let Err(error) = window.destroy() {
+        let destroy_result = window.destroy();
+        if let Err(error) = &destroy_result {
             log::warn!(
                 "[detach] compensating window destroy failed session={}: {}",
                 session_id,
                 error
             );
+        }
+        #[cfg(test)]
+        if destroy_result.is_ok() {
+            if let Some(audit) = transaction.app().try_state::<WindowDestroyAudit>() {
+                audit.record(&label);
+            }
         }
         transaction
             .app()
@@ -262,6 +290,11 @@ pub(crate) async fn execute_detach_transaction<R: tauri::Runtime>(
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .remove(&session_id);
+        if session_still_present && !runtime_still_live {
+            transaction
+                .reconcile_route_loss_inline(session_id, 1)
+                .await?;
+        }
         return Err("Session lost liveness during detach".to_string());
     }
 
@@ -407,6 +440,10 @@ pub(crate) async fn execute_attach_transaction<R: tauri::Runtime>(
                 label, error
             )
         })?;
+        #[cfg(test)]
+        if let Some(audit) = transaction.app().try_state::<WindowDestroyAudit>() {
+            audit.record(&label);
+        }
     }
     transaction
         .app()
@@ -416,6 +453,7 @@ pub(crate) async fn execute_attach_transaction<R: tauri::Runtime>(
         .remove(&session_id);
 
     let runtime = transaction.runtime_snapshot(session_id);
+    let liveness_lost = !runtime.has_pty && !matches!(record.status, SessionStatus::Exited(_));
     let mut mutations = LifecycleMutations::default();
     let (decision, cause, source) = match record.status {
         SessionStatus::Exited(_) => (
@@ -446,6 +484,15 @@ pub(crate) async fn execute_attach_transaction<R: tauri::Runtime>(
     mutations.set_detached_intent(session_id, false);
     let committed = transaction.commit(decision, cause, mutations).await?;
     transaction.persist(source, Some(session_id)).await;
+    if liveness_lost && !committed.changed_rows.is_empty() {
+        transaction.publish_destroyed(session_id);
+        for row in &committed.changed_rows {
+            transaction.publish_created(row);
+        }
+        for cleared in &committed.cleared_raise_hand_ids {
+            transaction.publish_communication_cleared(*cleared);
+        }
+    }
     if let Err(error) = transaction.app().emit(
         "terminal_attached",
         serde_json::json!({ "sessionId": session_id.to_string() }),
@@ -759,8 +806,116 @@ pub async fn dock_resource_monitor_window(app: AppHandle) -> Result<(), String> 
 #[cfg(test)]
 mod tests {
     use super::{
-        resource_monitor_placement_for_main, PhysicalWindowRect, RESOURCE_MONITOR_DOCK_WIDTH,
+        resource_monitor_placement_for_main, PhysicalWindowRect, WindowDestroyAudit,
+        RESOURCE_MONITOR_DOCK_WIDTH,
     };
+    use crate::config::settings::WindowGeometry;
+    use crate::pty::backend::{BackendSpawnSpec, PtyBackend, SessionBackendKind};
+    use crate::pty::manager::PtyManager;
+    use crate::session::manager::SessionManager;
+    use crate::session::selection::{SelectionCoordinator, SelectionMode, SelectionSource};
+    use crate::session::session::SessionStatus;
+    use crate::web::broadcast::WsBroadcaster;
+    use crate::DetachedSessionsState;
+    use futures::future::BoxFuture;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::time::Duration;
+    use tauri::{Listener, Manager, WebviewUrl, WebviewWindowBuilder};
+    use tokio_util::sync::CancellationToken;
+    use uuid::Uuid;
+
+    struct GatedLivenessBackend {
+        live: AtomicBool,
+        calls: AtomicUsize,
+        block_call: usize,
+        entered: AtomicBool,
+        gate: (Mutex<bool>, Condvar),
+    }
+
+    impl GatedLivenessBackend {
+        fn new(block_call: usize) -> Self {
+            Self {
+                live: AtomicBool::new(true),
+                calls: AtomicUsize::new(0),
+                block_call,
+                entered: AtomicBool::new(false),
+                gate: (Mutex::new(false), Condvar::new()),
+            }
+        }
+
+        fn lose_liveness_and_release(&self) {
+            self.live.store(false, Ordering::SeqCst);
+            *self.gate.0.lock().unwrap() = true;
+            self.gate.1.notify_all();
+        }
+    }
+
+    impl PtyBackend for GatedLivenessBackend {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn spawn(
+            &self,
+            _spec: BackendSpawnSpec,
+        ) -> BoxFuture<'_, Result<(), crate::errors::AppError>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn write(&self, id: Uuid, _data: &[u8]) -> Result<(), crate::errors::AppError> {
+            self.live
+                .load(Ordering::SeqCst)
+                .then_some(())
+                .ok_or_else(|| crate::errors::AppError::SessionNotFound(id.to_string()))
+        }
+
+        fn resize(&self, id: Uuid, _cols: u16, _rows: u16) -> Result<(), crate::errors::AppError> {
+            self.write(id, &[])
+        }
+
+        fn kill(&self, _id: Uuid) -> Result<(), crate::errors::AppError> {
+            self.live.store(false, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn has_session(&self, _id: Uuid) -> bool {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if call == self.block_call {
+                self.entered.store(true, Ordering::SeqCst);
+                let mut released = self.gate.0.lock().unwrap();
+                while !*released {
+                    released = self.gate.1.wait(released).unwrap();
+                }
+            }
+            self.live.load(Ordering::SeqCst)
+        }
+
+        fn get_screen_snapshot(&self, _id: Uuid) -> Option<crate::pty::output::PtyScreenSnapshot> {
+            None
+        }
+
+        fn get_pty_size(&self, _id: Uuid) -> Option<(u16, u16)> {
+            self.live.load(Ordering::SeqCst).then_some((120, 30))
+        }
+
+        fn register_response_watcher(
+            &self,
+            _session_id: Uuid,
+            _request_id: String,
+            _response_dir: PathBuf,
+        ) {
+        }
+
+        fn terminate_job_for_session(&self, _id: Uuid) -> bool {
+            false
+        }
+
+        fn kill_all_jobs(&self) -> (usize, usize) {
+            (0, 0)
+        }
+    }
 
     #[test]
     fn resource_monitor_stays_inside_negative_x_monitor_when_right_side_is_full() {
@@ -790,5 +945,211 @@ mod tests {
         assert_eq!(placement.y, 40);
         assert_eq!(placement.width, 420);
         assert_eq!(placement.height, 700);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn detach_pty_loss_after_window_creation_compensates_and_reconciles_liveness() {
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let session = manager
+            .read()
+            .await
+            .create_session(
+                "shell".to_string(),
+                Vec::new(),
+                "C:/detach-race".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        let backend = Arc::new(GatedLivenessBackend::new(2));
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
+        pty.lock()
+            .unwrap()
+            .record_route(session.id, SessionBackendKind::LocalProcess);
+        let detached = DetachedSessionsState::default();
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(Arc::clone(&pty))
+            .manage(detached)
+            .manage(WsBroadcaster::new())
+            .manage(WindowDestroyAudit::default())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build detach race app");
+        coordinator.start(app.handle().clone()).unwrap();
+        coordinator.submit_restore_first().await.unwrap().finish();
+        let (events_tx, events_rx) = std::sync::mpsc::channel();
+        for event_name in ["session_destroyed", "session_created", "session_switched"] {
+            let events_tx = events_tx.clone();
+            app.listen_any(event_name, move |_| {
+                let _ = events_tx.send(event_name);
+            });
+        }
+
+        let detach = {
+            let coordinator = coordinator.clone();
+            tokio::spawn(async move { coordinator.detach(session.id, None, false).await })
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !backend.entered.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("detach reaches post-window liveness barrier");
+        let label = format!("terminal-{}", session.id.to_string().replace('-', ""));
+        assert!(app.get_webview_window(&label).is_some());
+        assert!(app
+            .state::<DetachedSessionsState>()
+            .lock()
+            .unwrap()
+            .contains(&session.id));
+
+        backend.lose_liveness_and_release();
+        assert_eq!(
+            detach.await.unwrap().unwrap_err(),
+            "Session lost liveness during detach"
+        );
+        assert_eq!(app.state::<WindowDestroyAudit>().count(&label), 1);
+        assert!(!app
+            .state::<DetachedSessionsState>()
+            .lock()
+            .unwrap()
+            .contains(&session.id));
+        let row = manager.read().await.get_session(session.id).await.unwrap();
+        assert_eq!(row.status, SessionStatus::Exited(1));
+        assert!(!row.was_detached);
+        let selection = manager.read().await.selection_payload().await;
+        assert_eq!(selection.id(), Some(session.id));
+        assert_eq!(selection.mode(), SelectionMode::Dormant);
+        assert_eq!(selection.source(), SelectionSource::LivenessReconcile);
+        assert_eq!(
+            (0..3)
+                .map(|_| events_rx.recv_timeout(Duration::from_secs(1)).unwrap())
+                .collect::<Vec<_>>(),
+            vec!["session_destroyed", "session_created", "session_switched"]
+        );
+        assert!(events_rx.try_recv().is_err());
+        coordinator.close_and_join().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn attach_post_destroy_pty_loss_clears_intent_preserves_geometry_and_publishes_exit() {
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let session = manager
+            .read()
+            .await
+            .create_session(
+                "shell".to_string(),
+                Vec::new(),
+                "C:/attach-race".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        let geometry = WindowGeometry {
+            x: 17.25,
+            y: -44.5,
+            width: 923.75,
+            height: 611.125,
+        };
+        let manager_handle = manager.read().await.clone();
+        manager_handle.set_was_detached(session.id, true).await;
+        manager_handle
+            .set_detached_geometry(session.id, geometry.clone())
+            .await;
+        let backend = Arc::new(GatedLivenessBackend::new(1));
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
+        pty.lock()
+            .unwrap()
+            .record_route(session.id, SessionBackendKind::LocalProcess);
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(Arc::clone(&pty))
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .manage(WindowDestroyAudit::default())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build attach race app");
+        let label = format!("terminal-{}", session.id.to_string().replace('-', ""));
+        WebviewWindowBuilder::new(app.handle(), &label, WebviewUrl::App("index.html".into()))
+            .build()
+            .unwrap();
+        app.state::<DetachedSessionsState>()
+            .lock()
+            .unwrap()
+            .insert(session.id);
+        coordinator.start(app.handle().clone()).unwrap();
+        coordinator.submit_restore_first().await.unwrap().finish();
+        let (events_tx, events_rx) = std::sync::mpsc::channel();
+        for event_name in [
+            "session_destroyed",
+            "session_created",
+            "terminal_attached",
+            "session_switched",
+        ] {
+            let events_tx = events_tx.clone();
+            app.listen_any(event_name, move |_| {
+                let _ = events_tx.send(event_name);
+            });
+        }
+
+        let attach = {
+            let coordinator = coordinator.clone();
+            tokio::spawn(async move { coordinator.attach(session.id).await })
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !backend.entered.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("attach reaches post-destroy liveness barrier");
+        assert_eq!(app.state::<WindowDestroyAudit>().count(&label), 1);
+        assert!(!app
+            .state::<DetachedSessionsState>()
+            .lock()
+            .unwrap()
+            .contains(&session.id));
+
+        backend.lose_liveness_and_release();
+        assert_eq!(
+            attach.await.unwrap().unwrap_err(),
+            "Session has no live PTY"
+        );
+        let row = manager_handle.get_session(session.id).await.unwrap();
+        assert_eq!(row.status, SessionStatus::Exited(1));
+        assert!(!row.was_detached);
+        let stored_geometry = row.detached_geometry.unwrap();
+        assert_eq!(stored_geometry.x.to_bits(), geometry.x.to_bits());
+        assert_eq!(stored_geometry.y.to_bits(), geometry.y.to_bits());
+        assert_eq!(stored_geometry.width.to_bits(), geometry.width.to_bits());
+        assert_eq!(stored_geometry.height.to_bits(), geometry.height.to_bits());
+        let selection = manager_handle.selection_payload().await;
+        assert_eq!(selection.id(), Some(session.id));
+        assert_eq!(selection.mode(), SelectionMode::Dormant);
+        assert_eq!(selection.source(), SelectionSource::LivenessReconcile);
+        assert_eq!(
+            (0..4)
+                .map(|_| events_rx.recv_timeout(Duration::from_secs(1)).unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                "session_destroyed",
+                "session_created",
+                "terminal_attached",
+                "session_switched",
+            ]
+        );
+        assert!(events_rx.try_recv().is_err());
+        coordinator.close_and_join().await;
     }
 }

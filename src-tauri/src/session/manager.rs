@@ -333,6 +333,20 @@ impl SessionManager {
             .then(|| state.sessions.get(&binding.session_id).cloned())?
     }
 
+    pub(super) async fn pending_create_bindings(&self) -> Vec<PendingCreateBinding> {
+        let state = self.state.read().await;
+        state
+            .order
+            .iter()
+            .filter_map(|session_id| {
+                state
+                    .pending_create
+                    .get(session_id)
+                    .map(|nonce| PendingCreateBinding::new(*session_id, *nonce))
+            })
+            .collect()
+    }
+
     pub async fn get_shell(&self, id: Uuid) -> Option<String> {
         self.get_session(id).await.map(|s| s.shell)
     }
@@ -1457,11 +1471,7 @@ fn validate_unique_ids(label: &str, ids: impl IntoIterator<Item = Uuid>) -> Resu
 
 #[cfg(test)]
 impl SessionManager {
-    pub async fn set_communication_for_test(
-        &self,
-        id: Uuid,
-        communication: SessionCommunication,
-    ) {
+    pub async fn set_communication_for_test(&self, id: Uuid, communication: SessionCommunication) {
         if let Some(session) = self.state.write().await.sessions.get_mut(&id) {
             session.communication = Some(communication);
         }
@@ -3034,7 +3044,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(manager.raise_hand(session.id, chrono::Utc::now()).await.is_some());
+        assert!(manager
+            .raise_hand(session.id, chrono::Utc::now())
+            .await
+            .is_some());
 
         let dormant = dormant_witness(session.id);
         let mut exit = LifecycleMutations::default();

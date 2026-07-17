@@ -21,7 +21,7 @@ pub mod web;
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use commands::ac_discovery::DiscoveryBranchWatcher;
@@ -324,6 +324,75 @@ pub(crate) fn restore_session_should_become_active(
     was_active && !archived_session
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PersistedActiveFlagNormalization {
+    Zero,
+    One { index: usize },
+    Multiple { identities: Vec<String> },
+}
+
+/// Normalize persisted canonical-selection intent before any restore side
+/// effect. A single flag remains authoritative. Multiple flags are corrupt
+/// input, so all are cleared and final restore uses the documented first
+/// eligible live attached fallback.
+pub(crate) fn normalize_persisted_active_flags(
+    sessions: &mut [crate::config::sessions_persistence::PersistedSession],
+) -> PersistedActiveFlagNormalization {
+    let flagged = sessions
+        .iter()
+        .enumerate()
+        .filter(|(_, session)| session.was_active)
+        .map(|(index, session)| {
+            (
+                index,
+                format!("{}:{}@{}", index, session.name, session.working_directory),
+            )
+        })
+        .collect::<Vec<_>>();
+    match flagged.as_slice() {
+        [] => PersistedActiveFlagNormalization::Zero,
+        [(index, _)] => PersistedActiveFlagNormalization::One { index: *index },
+        _ => {
+            let identities = flagged.into_iter().map(|(_, identity)| identity).collect();
+            for session in sessions {
+                session.was_active = false;
+            }
+            PersistedActiveFlagNormalization::Multiple { identities }
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct RestoreObserverStartBarrier {
+    phase: AtomicU8,
+}
+
+impl RestoreObserverStartBarrier {
+    fn mark_restore_admitted(&self) -> Result<(), String> {
+        self.phase
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| ())
+            .map_err(|phase| format!("restore observer barrier admission from phase {phase}"))
+    }
+
+    fn mark_restore_complete(&self) -> Result<(), String> {
+        self.phase
+            .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| ())
+            .map_err(|phase| format!("restore observer barrier completion from phase {phase}"))
+    }
+
+    fn start(&self, producer: &str, start: impl FnOnce()) -> Result<(), String> {
+        if self.phase.load(Ordering::Acquire) != 2 {
+            return Err(format!(
+                "startup producer {producer} attempted before restore completion"
+            ));
+        }
+        start();
+        Ok(())
+    }
+}
+
 /// (#630) Resolve coordinator status for a restore decision, backstopping a
 /// transient empty `discover_teams()` with the snapshot's persisted
 /// `is_coordinator`. When live discovery returned teams we trust it. Only when
@@ -502,8 +571,6 @@ pub fn run(
             }
         },
     );
-    idle_detector.start(shutdown_signal.clone());
-
     let session_mgr_for_git = Arc::clone(&session_mgr);
     let session_mgr_for_discovery = Arc::clone(&session_mgr);
     let session_mgr_for_web = Arc::clone(&session_mgr);
@@ -514,6 +581,7 @@ pub fn run(
     // #552 manage the IdleDetector so the shared user-message helper, the mailbox
     // wake path, and the auto-close task can reach its silence clock.
     let idle_detector_for_state = Arc::clone(&idle_detector);
+    let idle_detector_for_setup = Arc::clone(&idle_detector);
     let broadcaster_for_pty = broadcaster.clone();
     let broadcaster_for_web = broadcaster.clone();
     let web_token_for_server = Arc::clone(&web_access_token);
@@ -654,7 +722,6 @@ pub fn run(
 
             // Git branch watcher: polls git branch for each session every 5s
             let git_watcher = GitWatcher::new(session_mgr_for_git, app.handle().clone());
-            git_watcher.start(shutdown_for_setup.clone());
             // Register for Tauri commands that take `State<'_, Arc<GitWatcher>>`
             // (e.g. `update_team`, `sync_workgroup_repos`). Must happen BEFORE the
             // `PtyManager::new(..., git_watcher, ...)` move below.
@@ -665,14 +732,13 @@ pub fn run(
                 app.handle().clone(),
                 session_mgr_for_discovery,
             );
-            discovery_branch_watcher.start(shutdown_for_setup.clone());
-            app.manage(discovery_branch_watcher);
+            app.manage(Arc::clone(&discovery_branch_watcher));
 
             // PtyManager needs GitWatcher for cleanup on session kill
             let pty_mgr = Arc::new(Mutex::new(PtyManager::new(
                 output_senders_for_pty,
                 idle_detector_for_pty,
-                git_watcher,
+                Arc::clone(&git_watcher),
                 Some(broadcaster_for_pty),
                 Some(selection_coordinator_for_setup.container_lifecycle_sender()),
             )));
@@ -697,9 +763,11 @@ pub fn run(
             selection_coordinator_for_setup
                 .start(app.handle().clone())
                 .map_err(|error| error.to_string())?;
+            let restore_observer_barrier = RestoreObserverStartBarrier::default();
             let restore_barrier = tauri::async_runtime::block_on(
                 selection_coordinator_for_setup.submit_restore_first(),
             )?;
+            restore_observer_barrier.mark_restore_admitted()?;
             let restore_transaction = restore_barrier.transaction(app.handle().clone());
             app.state::<Arc<RestoreInProgress>>()
                 .0
@@ -826,11 +894,29 @@ pub fn run(
             // immediately.
             let restore_session_paths =
                 sessions_persistence::session_retention_project_paths(&restore_settings_snapshot);
-            let persisted = tauri::async_runtime::block_on(
+            let mut persisted = tauri::async_runtime::block_on(
                 sessions_persistence::load_sessions_purging_outside_project_paths(
                     &restore_session_paths,
                 ),
             );
+            match normalize_persisted_active_flags(&mut persisted) {
+                PersistedActiveFlagNormalization::Zero => {
+                    log::debug!("[restore] persisted selection flags normalized: zero");
+                }
+                PersistedActiveFlagNormalization::One { index } => {
+                    log::debug!(
+                        "[restore] persisted selection flags normalized: exactly one rowIndex={}",
+                        index
+                    );
+                }
+                PersistedActiveFlagNormalization::Multiple { identities } => {
+                    log::warn!(
+                        "[restore] inconsistent was_active flags count={} rows=[{}]; exact target cleared for eligible-live fallback",
+                        identities.len(),
+                        identities.join(", ")
+                    );
+                }
+            }
             let restore_flag = app
                 .state::<Arc<RestoreInProgress>>()
                 .inner()
@@ -1810,6 +1896,20 @@ pub fn run(
             }
 
             restore_barrier.finish();
+            restore_observer_barrier.mark_restore_complete()?;
+
+            // These observers mutate session metadata or persistence directly.
+            // Start them only after restore has completed, which is stricter than
+            // merely placing restore first and prevents an intermediate snapshot.
+            restore_observer_barrier.start("idle", || {
+                idle_detector_for_setup.start(shutdown_for_setup.clone());
+            })?;
+            restore_observer_barrier.start("git", || {
+                git_watcher.start(shutdown_for_setup.clone());
+            })?;
+            restore_observer_barrier.start("discovery", || {
+                discovery_branch_watcher.start(shutdown_for_setup.clone());
+            })?;
 
             resource_monitor::watchdog::start(
                 (*resource_monitor_for_setup).clone(),
@@ -2182,11 +2282,14 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::{
-        resolve_is_coord_for_restore, restore_session_should_become_active,
-        restore_session_should_wake, should_auto_create_root_agent_on_first_restore,
-        should_wake_on_restore, should_wake_root_agent_on_restore, skip_auto_resume_for_restore,
-        ApiServerHandle, ApiServerTask, WebServerHandle,
+        normalize_persisted_active_flags, resolve_is_coord_for_restore,
+        restore_session_should_become_active, restore_session_should_wake,
+        should_auto_create_root_agent_on_first_restore, should_wake_on_restore,
+        should_wake_root_agent_on_restore, skip_auto_resume_for_restore, ApiServerHandle,
+        ApiServerTask, PersistedActiveFlagNormalization, RestoreObserverStartBarrier,
+        WebServerHandle,
     };
+    use crate::config::sessions_persistence::PersistedSession;
     use crate::config::settings::{AgentConfig, AppSettings};
     use crate::session::session::SessionStatus;
     use std::net::SocketAddr;
@@ -2243,6 +2346,82 @@ mod tests {
             hoist < loop_start,
             "startup restore must normalize archived roots once before the session loop"
         );
+    }
+
+    fn persisted_row(name: &str, was_active: bool) -> PersistedSession {
+        PersistedSession {
+            name: name.to_string(),
+            working_directory: format!("C:/restore/{name}"),
+            was_active,
+            ..PersistedSession::default()
+        }
+    }
+
+    #[test]
+    fn restore_active_flag_normalization_accepts_zero_flags() {
+        let mut sessions = vec![
+            persisted_row("first", false),
+            persisted_row("second", false),
+        ];
+        assert_eq!(
+            normalize_persisted_active_flags(&mut sessions),
+            PersistedActiveFlagNormalization::Zero
+        );
+        assert!(sessions.iter().all(|session| !session.was_active));
+    }
+
+    #[test]
+    fn restore_active_flag_normalization_keeps_exactly_one_target() {
+        let mut sessions = vec![persisted_row("first", false), persisted_row("second", true)];
+        assert_eq!(
+            normalize_persisted_active_flags(&mut sessions),
+            PersistedActiveFlagNormalization::One { index: 1 }
+        );
+        assert!(!sessions[0].was_active);
+        assert!(sessions[1].was_active);
+    }
+
+    #[test]
+    fn restore_active_flag_normalization_clears_all_conflicting_targets_stably() {
+        let mut sessions = vec![persisted_row("first", true), persisted_row("second", true)];
+        assert_eq!(
+            normalize_persisted_active_flags(&mut sessions),
+            PersistedActiveFlagNormalization::Multiple {
+                identities: vec![
+                    "0:first@C:/restore/first".to_string(),
+                    "1:second@C:/restore/second".to_string(),
+                ],
+            }
+        );
+        assert!(sessions.iter().all(|session| !session.was_active));
+    }
+
+    #[test]
+    fn idle_git_and_discovery_are_held_by_the_real_restore_completion_barrier() {
+        let barrier = RestoreObserverStartBarrier::default();
+        let starts = std::sync::Mutex::new(Vec::new());
+        for producer in ["idle", "git", "discovery"] {
+            assert!(barrier
+                .start(producer, || starts.lock().unwrap().push(producer))
+                .is_err());
+        }
+        assert!(starts.lock().unwrap().is_empty());
+
+        barrier.mark_restore_admitted().unwrap();
+        for producer in ["idle", "git", "discovery"] {
+            assert!(barrier
+                .start(producer, || starts.lock().unwrap().push(producer))
+                .is_err());
+        }
+        assert!(starts.lock().unwrap().is_empty());
+
+        barrier.mark_restore_complete().unwrap();
+        for producer in ["idle", "git", "discovery"] {
+            barrier
+                .start(producer, || starts.lock().unwrap().push(producer))
+                .unwrap();
+        }
+        assert_eq!(*starts.lock().unwrap(), ["idle", "git", "discovery"]);
     }
 
     #[tokio::test]

@@ -3157,10 +3157,9 @@ mod tests {
         stale.rail_collapsed_projects = Vec::new();
         stale.rail_favorites_collapsed = false;
 
-        let saved =
-            persist_protected_settings_update_with_saver(&state, stale, |c| Ok(c.clone()))
-                .await
-                .expect("persist");
+        let saved = persist_protected_settings_update_with_saver(&state, stale, |c| Ok(c.clone()))
+            .await
+            .expect("persist");
 
         assert_eq!(saved.rail_collapsed_projects, vec!["c:/foo".to_string()]);
         assert!(saved.rail_favorites_collapsed);

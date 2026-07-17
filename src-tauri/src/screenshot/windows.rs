@@ -549,7 +549,11 @@ fn open_overlay_windows(
     use tauri::{WebviewUrl, WebviewWindowBuilder};
 
     for p in placements {
-        let scale = if p.scale_factor > 0.0 { p.scale_factor } else { 1.0 };
+        let scale = if p.scale_factor > 0.0 {
+            p.scale_factor
+        } else {
+            1.0
+        };
         let url = format!(
             "index.html?window=screenshot-overlay&captureId={capture_id}&monitorId={}",
             p.monitor_id
@@ -637,9 +641,10 @@ pub async fn overlay_state(
                         // leaves on the resolved root, so the overlay shows a clean save
                         // location (shared #730 helper; internal PathBuf checks keep the
                         // raw canonical value).
-                        target_directory: crate::path_utils::path_to_string_without_windows_verbatim_prefix(
-                            &c.target_directory,
-                        ),
+                        target_directory:
+                            crate::path_utils::path_to_string_without_windows_verbatim_prefix(
+                                &c.target_directory,
+                            ),
                     })),
                     None => OverlayDecision::Stale,
                 }
@@ -1111,8 +1116,7 @@ mod tests {
             .expect("capture session fixture");
         let rows = manager.list_sessions().await;
         let none = crate::session::selection::SessionSelection::none_for_test();
-        let dormant =
-            crate::session::selection::SessionSelection::dormant_for_test(session.id, 7);
+        let dormant = crate::session::selection::SessionSelection::dormant_for_test(session.id, 7);
         let live = crate::session::selection::SessionSelection::live_for_test(session.id);
 
         assert_eq!(
@@ -1123,7 +1127,10 @@ mod tests {
             resolve_live_capture_session(&dormant, &rows).unwrap_err(),
             "No active session is selected in AgentsCommander"
         );
-        assert_eq!(resolve_live_capture_session(&live, &rows).unwrap(), session.id);
+        assert_eq!(
+            resolve_live_capture_session(&live, &rows).unwrap(),
+            session.id
+        );
     }
 
     #[test]
@@ -1158,7 +1165,9 @@ mod tests {
         // Ad-hoc CWD.
         assert!(find_replica_root(Path::new(r"C:\tmp")).is_none());
         // repo-* workgroup sibling (parent is wg-*, but name is not __agent_*).
-        assert!(find_replica_root(Path::new(r"C:\proj\.ac\wg-6-team\repo-AgentsCommander")).is_none());
+        assert!(
+            find_replica_root(Path::new(r"C:\proj\.ac\wg-6-team\repo-AgentsCommander")).is_none()
+        );
         // __agent_* whose parent is NOT a wg-* folder.
         assert!(find_replica_root(Path::new(r"C:\proj\__agent_x")).is_none());
         // Root-agent directory name.
@@ -1170,10 +1179,7 @@ mod tests {
         // Non-replica path: rejected before any filesystem access.
         assert!(resolve_session_replica_root(r"C:\definitely\not\a\replica").is_err());
         // Replica-shaped but missing on disk: symlink_metadata fails.
-        let missing = format!(
-            r"C:\proj\.ac\wg-6-team\__agent_{}",
-            Uuid::new_v4().simple()
-        );
+        let missing = format!(r"C:\proj\.ac\wg-6-team\__agent_{}", Uuid::new_v4().simple());
         assert!(resolve_session_replica_root(&missing).is_err());
     }
 
@@ -1218,7 +1224,8 @@ mod tests {
         // The replica exists, but the session CWD points to a now-missing child.
         // With no existing path to canonicalize, resolution must fail rather than
         // fall back to the raw replica ancestor (Grinch #714 MEDIUM).
-        let base = std::env::temp_dir().join(format!("ac-shot-missing-{}", Uuid::new_v4().simple()));
+        let base =
+            std::env::temp_dir().join(format!("ac-shot-missing-{}", Uuid::new_v4().simple()));
         let replica = base.join("wg-6-dev-team").join("__agent_x");
         std::fs::create_dir_all(&replica).unwrap();
 
@@ -1337,7 +1344,10 @@ mod tests {
                 created_at: Utc::now(),
             }),
         ));
-        assert!(matches!(busy_pregate(&active).await, Some(BeginOutcome::Busy)));
+        assert!(matches!(
+            busy_pregate(&active).await,
+            Some(BeginOutcome::Busy)
+        ));
 
         let finishing: ScreenshotCaptureState = std::sync::Arc::new(tokio::sync::Mutex::new(
             ScreenshotCaptureLifecycle::Finishing(Uuid::new_v4()),

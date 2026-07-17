@@ -185,10 +185,7 @@ fn destroyed_is_team_coordinator(destroyed_id: Uuid, coord_id_of_team: Option<Uu
     coord_id_of_team == Some(destroyed_id)
 }
 
-async fn tick<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    last_emitted: &mut HashMap<String, i64>,
-) {
+async fn tick<R: tauri::Runtime>(app: &AppHandle<R>, last_emitted: &mut HashMap<String, i64>) {
     let settings = app.state::<SettingsState>();
     let (enabled, timeout_min, skip_telegram_assigned) = {
         let s = settings.read().await;
@@ -265,8 +262,7 @@ async fn tick<R: tauri::Runtime>(
         let mut g = clocks.lock().unwrap_or_else(|e| e.into_inner());
         for (team, (fqn, _)) in &coord_refs {
             if let Some(sil) = team_sil.get(team) {
-                if let Some(c) =
-                    DateTime::<Utc>::from_timestamp(now_secs - sil.as_secs() as i64, 0)
+                if let Some(c) = DateTime::<Utc>::from_timestamp(now_secs - sil.as_secs() as i64, 0)
                 {
                     g.note_activity(fqn, c); // monotonic; dirties only on a real move
                 }
@@ -291,7 +287,11 @@ async fn tick<R: tauri::Runtime>(
             e.and_then(|e| e.last_user_message_at),
             e.and_then(|e| e.last_activity_at),
             anchor,
-            if anchor == i64::MIN { 0 } else { now_secs - anchor }
+            if anchor == i64::MIN {
+                0
+            } else {
+                now_secs - anchor
+            }
         ); // Decision D: debug-only, no new IPC field
         if anchor != i64::MIN && last_emitted.get(team).copied() != Some(anchor) {
             last_emitted.insert(team.clone(), anchor);
@@ -367,8 +367,7 @@ async fn tick<R: tauri::Runtime>(
                 None => i64::MIN,
             }
         }; // guard dropped before the destroy await
-        let anchor_fresh =
-            fresh_anchor != i64::MIN && (now_secs - fresh_anchor) <= timeout_secs;
+        let anchor_fresh = fresh_anchor != i64::MIN && (now_secs - fresh_anchor) <= timeout_secs;
         let emitted_recently = idle.silence_age(id).is_some_and(|a| a < REPAINT_GRACE);
         if anchor_fresh || emitted_recently {
             log::info!(
@@ -517,12 +516,7 @@ mod tests {
                 .ok_or_else(|| crate::errors::AppError::SessionNotFound(id.to_string()))
         }
 
-        fn resize(
-            &self,
-            id: Uuid,
-            _cols: u16,
-            _rows: u16,
-        ) -> Result<(), crate::errors::AppError> {
+        fn resize(&self, id: Uuid, _cols: u16, _rows: u16) -> Result<(), crate::errors::AppError> {
             self.write(id, &[])
         }
 
@@ -535,10 +529,7 @@ mod tests {
             self.live.lock().unwrap().contains(&id)
         }
 
-        fn get_screen_snapshot(
-            &self,
-            _id: Uuid,
-        ) -> Option<crate::pty::output::PtyScreenSnapshot> {
+        fn get_screen_snapshot(&self, _id: Uuid) -> Option<crate::pty::output::PtyScreenSnapshot> {
             None
         }
 
@@ -716,8 +707,14 @@ mod tests {
 
     #[test]
     fn idle_since_secs_picks_max_present_component() {
-        assert_eq!(team_idle_since_secs(Some(ts(100)), None), ts(100).timestamp());
-        assert_eq!(team_idle_since_secs(None, Some(ts(200))), ts(200).timestamp());
+        assert_eq!(
+            team_idle_since_secs(Some(ts(100)), None),
+            ts(100).timestamp()
+        );
+        assert_eq!(
+            team_idle_since_secs(None, Some(ts(200))),
+            ts(200).timestamp()
+        );
         assert_eq!(
             team_idle_since_secs(Some(ts(100)), Some(ts(200))),
             ts(200).timestamp(),
@@ -736,7 +733,7 @@ mod tests {
     fn closeable_when_established_and_idle_past_timeout() {
         let now = ts(10_000).timestamp();
         let timeout = 3600; // 60 min
-        // 3700s idle > 3600s timeout.
+                            // 3700s idle > 3600s timeout.
         let anchor = team_idle_since_secs(Some(ts(10_000 - 3700)), None);
         assert!(team_is_closeable(true, anchor, now, timeout));
     }
@@ -886,7 +883,8 @@ mod tests {
         let now = ts(10_000).timestamp();
         let fqn = "proj:wg-1/tech-lead".to_string();
         let coord = (fqn.clone(), "C:/x".to_string());
-        let mut snap: std::collections::HashMap<String, ClockEntry> = std::collections::HashMap::new();
+        let mut snap: std::collections::HashMap<String, ClockEntry> =
+            std::collections::HashMap::new();
         snap.insert(
             fqn,
             ClockEntry {
@@ -943,8 +941,7 @@ mod tests {
         use crate::telegram::manager::{TelegramBridgeManager, TelegramBridgeState};
         use tauri::Listener;
 
-        const COORDINATOR_CWD: &str =
-            "C:\\repos\\myproj\\.ac\\wg-1-team\\__agent_lead";
+        const COORDINATOR_CWD: &str = "C:\\repos\\myproj\\.ac\\wg-1-team\\__agent_lead";
         const MEMBER_CWD: &str = "C:\\repos\\myproj\\.ac\\wg-1-team\\__agent_rust";
 
         let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
@@ -1055,8 +1052,7 @@ mod tests {
             observed.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
             vec!["session_destroyed", "session_destroyed", "session_switched"]
         );
-        let selection_payload: serde_json::Value =
-            serde_json::from_str(&observed[2].1).unwrap();
+        let selection_payload: serde_json::Value = serde_json::from_str(&observed[2].1).unwrap();
         assert!(selection_payload["id"].is_null());
         assert_eq!(selection_payload["source"], "autoClose");
         assert!(events_rx.try_recv().is_err());

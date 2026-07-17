@@ -286,7 +286,11 @@ impl IdleDetector {
     /// value was written, so it cannot have corrupted it. The skew is safe.
     pub fn purge_readiness(&self, ids: &[Uuid]) -> Vec<PurgeReadiness> {
         // Phase 1: clone the small maps, each under its own lock, then release.
-        let tuning = self.tuning.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let tuning = self
+            .tuning
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         let resizes = self
             .resize_grace
             .lock()
@@ -304,11 +308,11 @@ impl IdleDetector {
                 let t = tuning.get(id).copied().unwrap_or(IdleTuning::DEFAULT);
                 PurgeReadiness {
                     session_id: *id,
-                    activity_age: activity.get(id).and_then(|&x| now.checked_duration_since(x)),
-                    watcher_idle: idle_set.contains(id),
-                    last_resize_age: resizes
+                    activity_age: activity
                         .get(id)
                         .and_then(|&x| now.checked_duration_since(x)),
+                    watcher_idle: idle_set.contains(id),
+                    last_resize_age: resizes.get(id).and_then(|&x| now.checked_duration_since(x)),
                     resize_grace: t.resize_grace,
                     idle_threshold: t.idle_threshold,
                     silence_age: silence.get(id).and_then(|&x| now.checked_duration_since(x)),
@@ -527,9 +531,12 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let busy_calls = Arc::new(AtomicUsize::new(0));
         let busy_calls_cb = Arc::clone(&busy_calls);
-        let detector = IdleDetector::new(move |_| {}, move |_| {
-            busy_calls_cb.fetch_add(1, Ordering::SeqCst);
-        });
+        let detector = IdleDetector::new(
+            move |_| {},
+            move |_| {
+                busy_calls_cb.fetch_add(1, Ordering::SeqCst);
+            },
+        );
         let id = Uuid::new_v4();
 
         detector.touch_silence(id);

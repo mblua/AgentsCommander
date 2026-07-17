@@ -56,7 +56,7 @@ fn classify_existing_root(status: &SessionStatus, has_pty: bool) -> ExistingRoot
 async fn rollback_pre_created_session<R: tauri::Runtime>(
     _app: &AppHandle<R>,
     _session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
-    pty_mgr: &Arc<Mutex<PtyManager>>,
+    _pty_mgr: &Arc<Mutex<PtyManager>>,
     id: Uuid,
     reason: &str,
 ) {
@@ -65,14 +65,9 @@ async fn rollback_pre_created_session<R: tauri::Runtime>(
         id,
         reason
     );
-
-    if let Err(e) = pty_mgr.lock().unwrap().kill(id) {
-        log::warn!(
-            "[session] Failed to clean PTY state while rolling back {}: {}",
-            id,
-            e
-        );
-    }
+    // The reserved create ticket or inline transaction owns the one common
+    // backend-kind-aware rollback after this setup body returns. Killing here
+    // would race that finalizer and perform the same teardown twice.
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1092,7 +1087,8 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             let pty = pty_mgr.lock().unwrap_or_else(|e| e.into_inner());
             pty.mark_spawning(&cwd, &session_label)
         };
-        crate::config::archive_gate::enforce_unarchived_for_spawn(app, &cwd, &session_label).await?;
+        crate::config::archive_gate::enforce_unarchived_for_spawn(app, &cwd, &session_label)
+            .await?;
         let (agent_id, agent_label) = {
             if let Some(spawn) = resolved_spawn.as_ref() {
                 (
@@ -1304,7 +1300,10 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             session.communication = Some(communication);
         }
 
-        if let Err(e) = crate::config::archive_gate::enforce_unarchived_for_spawn(app, &cwd, &session_label).await {
+        if let Err(e) =
+            crate::config::archive_gate::enforce_unarchived_for_spawn(app, &cwd, &session_label)
+                .await
+        {
             let err = e.to_string();
             release_resource_launch_permit(&resource_monitor, &mut resource_permit);
             drop(mgr);
@@ -2785,6 +2784,30 @@ fn count_working_members(members: &[(bool /*live*/, bool /*waiting_for_input*/)]
         .count()
 }
 
+async fn execute_manual_coordinator_destroy<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    coordinator_id: Uuid,
+    member_ids: Vec<Uuid>,
+    cascade: bool,
+) -> Result<DestroyOutcome, String> {
+    let mut planned_ids = if cascade { member_ids } else { Vec::new() };
+    planned_ids.push(coordinator_id);
+    let outcome =
+        destroy_sessions_with_source(app, planned_ids, DestructionSource::ManualClose, false)
+            .await?;
+    for (failed_id, error) in &outcome.failed {
+        if *failed_id != coordinator_id {
+            log::warn!(
+                "[manual-close] member destroy {} failed: {}",
+                &failed_id.to_string()[..8],
+                error
+            );
+        }
+    }
+    outcome.clone().into_single_result(coordinator_id)?;
+    Ok(outcome)
+}
+
 /// #588 Manually close a coordinator (and, when the cascade setting is on, its
 /// team). Sets the MANUALLY-CLOSED marker on the coordinator regardless of the
 /// cascade setting. When cascade is on and confirmation has not been given and at
@@ -2875,20 +2898,11 @@ pub async fn close_coordinator(
         }
     }
 
-    // Perform the close. Live members first (avoids intermediate auto-activation
-    // churn), coordinator last. Mirrors the auto-close destroy loop.
-    if cascade {
-        for mid in live_ids {
-            if let Err(e) = destroy_session_inner(&app, mid).await {
-                log::warn!(
-                    "[manual-close] member destroy {} failed: {}",
-                    &mid.to_string()[..8],
-                    e
-                );
-            }
-        }
-    }
-    destroy_session_inner(&app, uuid).await?;
+    // Submit the complete cascade as one destruction transaction. The full
+    // planned set is excluded from fallback ranking, member failures are known
+    // before the one final manual selection, and no doomed sibling can become an
+    // intermediate canonical target.
+    execute_manual_coordinator_destroy(&app, uuid, live_ids, cascade).await?;
 
     // Set the manual marker on the coordinator FQN and persist immediately (this
     // command is not on the auto-close tick, so flush_clocks won't run).
@@ -3181,7 +3195,17 @@ async fn teardown_old_for_restart<R: tauri::Runtime>(
     old_was_dormant: bool,
 ) -> Result<bool, RestartTeardownError> {
     if !transaction.runtime_snapshot(session_id).has_pty {
-        return Ok(!old_was_dormant);
+        if old_was_dormant {
+            return Ok(false);
+        }
+        transaction
+            .app()
+            .state::<DetachedSessionsState>()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&session_id);
+        detach_restart_telegram(transaction, session_id).await;
+        return Ok(true);
     }
 
     let resource_monitor = transaction
@@ -3505,7 +3529,9 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
             if old_lost {
                 finalize_failed_restart(transaction, uuid, old_selected, intent).await?;
             }
-            return Err(format!("restart replacement returned an invalid id: {error}"));
+            return Err(format!(
+                "restart replacement returned an invalid id: {error}"
+            ));
         }
     };
     let live = match transaction.live_decision(new_uuid) {
@@ -4193,11 +4219,11 @@ mod tests {
     use super::{
         classify_existing_root, claude_projects_dir_for_config_dir, compute_profile_outdated,
         container_path_context_for_cwd, count_working_members, effective_restart_requested_profile,
-        inject_codex_resume, injected_claude_config_dir_for_copy, resolve_actual_agent,
-        resolve_agent_command, resolve_agent_from_shell, resolve_claude_projects_dir,
-        resolve_restart_selected_agent_id, resolve_root_agent_command,
-        resume_probe_target_for_config_dir, should_inject_continue, CreateSelectionIntent,
-        ExistingRootAction,
+        execute_manual_coordinator_destroy, inject_codex_resume,
+        injected_claude_config_dir_for_copy, resolve_actual_agent, resolve_agent_command,
+        resolve_agent_from_shell, resolve_claude_projects_dir, resolve_restart_selected_agent_id,
+        resolve_root_agent_command, resume_probe_target_for_config_dir, should_inject_continue,
+        CreateSelectionIntent, ExistingRootAction,
     };
     use crate::config::settings::{AgentConfig, AppSettings, ProfileCellConfig};
     use crate::pty::backend::{PtyBackend, SessionBackendKind};
@@ -4218,6 +4244,7 @@ mod tests {
     use std::process::Command;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
     use uuid::Uuid;
 
     #[test]
@@ -4782,6 +4809,116 @@ mod tests {
         spawned: Mutex<Vec<Uuid>>,
         spawn_count: AtomicUsize,
         fail_spawn_number: AtomicUsize,
+        gate_spawn_number: AtomicUsize,
+        gate_started: Mutex<Option<tokio::sync::oneshot::Sender<Uuid>>>,
+        gate_release: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    }
+
+    struct BarrierDestroyBackend {
+        live: Mutex<HashSet<Uuid>>,
+        fail_kill: Mutex<HashSet<Uuid>>,
+        kills: Mutex<Vec<Uuid>>,
+        started: Mutex<Option<tokio::sync::oneshot::Sender<Uuid>>>,
+        release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    }
+
+    impl BarrierDestroyBackend {
+        fn new(
+            started: tokio::sync::oneshot::Sender<Uuid>,
+            release: std::sync::mpsc::Receiver<()>,
+        ) -> Self {
+            Self {
+                live: Mutex::new(HashSet::new()),
+                fail_kill: Mutex::new(HashSet::new()),
+                kills: Mutex::new(Vec::new()),
+                started: Mutex::new(Some(started)),
+                release: Mutex::new(Some(release)),
+            }
+        }
+
+        fn fail_kill_for(&self, session_id: Uuid) {
+            self.fail_kill.lock().unwrap().insert(session_id);
+        }
+    }
+
+    impl crate::pty::backend::PtyBackend for BarrierDestroyBackend {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn spawn(
+            &self,
+            spec: crate::pty::backend::BackendSpawnSpec,
+        ) -> futures::future::BoxFuture<'_, Result<(), crate::errors::AppError>> {
+            Box::pin(async move {
+                self.live.lock().unwrap().insert(spec.id);
+                Ok(())
+            })
+        }
+
+        fn write(&self, id: Uuid, _data: &[u8]) -> Result<(), crate::errors::AppError> {
+            self.live
+                .lock()
+                .unwrap()
+                .contains(&id)
+                .then_some(())
+                .ok_or_else(|| crate::errors::AppError::SessionNotFound(id.to_string()))
+        }
+
+        fn resize(&self, id: Uuid, _cols: u16, _rows: u16) -> Result<(), crate::errors::AppError> {
+            self.write(id, &[])
+        }
+
+        fn kill(&self, id: Uuid) -> Result<(), crate::errors::AppError> {
+            self.kills.lock().unwrap().push(id);
+            if let Some(started) = self.started.lock().unwrap().take() {
+                let _ = started.send(id);
+                if let Some(release) = self.release.lock().unwrap().take() {
+                    release
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .map_err(|error| {
+                            crate::errors::AppError::PtyError(format!(
+                                "destroy barrier release failed: {error}"
+                            ))
+                        })?;
+                }
+            }
+            if self.fail_kill.lock().unwrap().contains(&id) {
+                return Err(crate::errors::AppError::PtyError(
+                    "synthetic live teardown failure".to_string(),
+                ));
+            }
+            self.live.lock().unwrap().remove(&id);
+            Ok(())
+        }
+
+        fn has_session(&self, id: Uuid) -> bool {
+            self.live.lock().unwrap().contains(&id)
+        }
+
+        fn get_screen_snapshot(&self, _id: Uuid) -> Option<crate::pty::output::PtyScreenSnapshot> {
+            None
+        }
+
+        fn get_pty_size(&self, id: Uuid) -> Option<(u16, u16)> {
+            self.has_session(id).then_some((30, 120))
+        }
+
+        fn register_response_watcher(
+            &self,
+            _session_id: Uuid,
+            _request_id: String,
+            _response_dir: std::path::PathBuf,
+        ) {
+        }
+
+        fn terminate_job_for_session(&self, _id: Uuid) -> bool {
+            false
+        }
+
+        fn kill_all_jobs(&self) -> (usize, usize) {
+            (0, 0)
+        }
     }
 
     impl ScriptedSpawnBackend {
@@ -4789,6 +4926,20 @@ mod tests {
             self.fail_spawn_number.store(number, Ordering::SeqCst);
         }
 
+        fn gate_spawn(
+            &self,
+            number: usize,
+            started: tokio::sync::oneshot::Sender<Uuid>,
+            release: tokio::sync::oneshot::Receiver<()>,
+        ) {
+            self.gate_spawn_number.store(number, Ordering::SeqCst);
+            *self.gate_started.lock().unwrap() = Some(started);
+            *self.gate_release.lock().unwrap() = Some(release);
+        }
+
+        fn lose_route(&self, session_id: Uuid) {
+            self.live.lock().unwrap().remove(&session_id);
+        }
     }
 
     impl crate::pty::backend::PtyBackend for ScriptedSpawnBackend {
@@ -4803,6 +4954,15 @@ mod tests {
             Box::pin(async move {
                 let number = self.spawn_count.fetch_add(1, Ordering::SeqCst) + 1;
                 self.spawned.lock().unwrap().push(spec.id);
+                if self.gate_spawn_number.load(Ordering::SeqCst) == number {
+                    if let Some(started) = self.gate_started.lock().unwrap().take() {
+                        let _ = started.send(spec.id);
+                    }
+                    let release = self.gate_release.lock().unwrap().take();
+                    if let Some(release) = release {
+                        let _ = release.await;
+                    }
+                }
                 if self.fail_spawn_number.load(Ordering::SeqCst) == number {
                     return Err(crate::errors::AppError::PtyError(
                         "synthetic scripted spawn failure".to_string(),
@@ -4822,12 +4982,7 @@ mod tests {
                 .ok_or_else(|| crate::errors::AppError::SessionNotFound(id.to_string()))
         }
 
-        fn resize(
-            &self,
-            id: Uuid,
-            _cols: u16,
-            _rows: u16,
-        ) -> Result<(), crate::errors::AppError> {
+        fn resize(&self, id: Uuid, _cols: u16, _rows: u16) -> Result<(), crate::errors::AppError> {
             self.write(id, &[])
         }
 
@@ -4876,11 +5031,10 @@ mod tests {
             shutdown.token().clone(),
         );
         let output_senders = Arc::new(Mutex::new(HashMap::new()));
-        let telegram: crate::telegram::manager::TelegramBridgeState = Arc::new(
-            tokio::sync::Mutex::new(crate::telegram::manager::TelegramBridgeManager::new(
-                output_senders,
-            )),
-        );
+        let telegram: crate::telegram::manager::TelegramBridgeState =
+            Arc::new(tokio::sync::Mutex::new(
+                crate::telegram::manager::TelegramBridgeManager::new(output_senders),
+            ));
         let app = tauri::test::mock_builder()
             .manage(Arc::new(tokio::sync::RwLock::new(settings)))
             .manage(Arc::new(
@@ -4968,6 +5122,185 @@ mod tests {
             .await;
     }
 
+    async fn create_manual_cascade_fixture(
+        app: &tauri::App<tauri::test::MockRuntime>,
+        session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+        pty_mgr: &Arc<Mutex<crate::pty::manager::PtyManager>>,
+        root: &std::path::Path,
+    ) -> [Uuid; 4] {
+        let mut ids = Vec::new();
+        for name in ["external", "member-a", "member-b", "coordinator"] {
+            let cwd = root.join(name);
+            std::fs::create_dir_all(&cwd).unwrap();
+            let info =
+                create_scripted_session(app, session_mgr, pty_mgr, &cwd.to_string_lossy()).await;
+            ids.push(Uuid::parse_str(&info.id).unwrap());
+        }
+        ids.try_into().expect("four cascade fixture ids")
+    }
+
+    #[tokio::test]
+    async fn manual_coordinator_cascade_barrier_publishes_only_one_final_selection() {
+        use tauri::Manager;
+
+        let cwd = tempfile::tempdir().unwrap();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let backend = Arc::new(BarrierDestroyBackend::new(started_tx, release_rx));
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend,
+        )));
+        let app = session_test_app(
+            test_settings(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+        let [external, member_a, member_b, coordinator_id] =
+            create_manual_cascade_fixture(&app, &session_mgr, &pty_mgr, cwd.path()).await;
+        app.state::<crate::session::selection::SelectionCoordinator>()
+            .transition(crate::session::selection::SelectionRequest::user_switch(
+                member_a,
+            ))
+            .await
+            .unwrap();
+        let events = capture_session_lifecycle(&app);
+        let close = {
+            let app = app.handle().clone();
+            tokio::spawn(async move {
+                execute_manual_coordinator_destroy(
+                    &app,
+                    coordinator_id,
+                    vec![member_a, member_b],
+                    true,
+                )
+                .await
+            })
+        };
+
+        assert_eq!(started_rx.await.unwrap(), member_a);
+        assert_eq!(
+            session_mgr.read().await.selection_payload().await.id(),
+            Some(member_a),
+            "selection must remain stable while the cascade is barrier-held"
+        );
+        assert!(events.try_recv().is_err());
+        release_tx.send(()).unwrap();
+        let outcome = close
+            .await
+            .expect("join cascade close")
+            .expect("cascade succeeds");
+        assert_eq!(
+            outcome.destroyed_ids,
+            vec![member_a, member_b, coordinator_id]
+        );
+        let selection = session_mgr.read().await.selection_payload().await;
+        assert_eq!(selection.id(), Some(external));
+        assert_eq!(
+            selection.source(),
+            crate::session::selection::SelectionSource::ManualClose
+        );
+        let observed = (0..4)
+            .map(|_| {
+                events
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .unwrap()
+                    .0
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            observed,
+            vec![
+                "session_destroyed",
+                "session_destroyed",
+                "session_destroyed",
+                "session_switched",
+            ]
+        );
+        assert!(events.try_recv().is_err());
+        close_test_coordinator(&app).await;
+    }
+
+    #[tokio::test]
+    async fn manual_coordinator_cascade_failed_selected_member_stays_selected_without_fallback() {
+        use tauri::Manager;
+
+        let cwd = tempfile::tempdir().unwrap();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let backend = Arc::new(BarrierDestroyBackend::new(started_tx, release_rx));
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(
+            test_settings(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+        let [_external, member_a, member_b, coordinator_id] =
+            create_manual_cascade_fixture(&app, &session_mgr, &pty_mgr, cwd.path()).await;
+        app.state::<crate::session::selection::SelectionCoordinator>()
+            .transition(crate::session::selection::SelectionRequest::user_switch(
+                member_a,
+            ))
+            .await
+            .unwrap();
+        backend.fail_kill_for(member_a);
+        let revision = session_mgr
+            .read()
+            .await
+            .selection_payload()
+            .await
+            .revision();
+        let events = capture_session_lifecycle(&app);
+        let close = {
+            let app = app.handle().clone();
+            tokio::spawn(async move {
+                execute_manual_coordinator_destroy(
+                    &app,
+                    coordinator_id,
+                    vec![member_a, member_b],
+                    true,
+                )
+                .await
+            })
+        };
+        assert_eq!(started_rx.await.unwrap(), member_a);
+        release_tx.send(()).unwrap();
+        let outcome = close
+            .await
+            .expect("join failed-member cascade")
+            .expect("coordinator still closes");
+
+        assert!(outcome
+            .failed
+            .iter()
+            .any(|(session_id, error)| *session_id == member_a
+                && error.contains("synthetic live teardown failure")));
+        assert_eq!(outcome.destroyed_ids, vec![member_b, coordinator_id]);
+        assert!(session_mgr
+            .read()
+            .await
+            .get_session(member_a)
+            .await
+            .is_some());
+        let selection = session_mgr.read().await.selection_payload().await;
+        assert_eq!(selection.id(), Some(member_a));
+        assert_eq!(selection.revision(), revision);
+        let observed = (0..2)
+            .map(|_| {
+                events
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .unwrap()
+                    .0
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(observed, vec!["session_destroyed", "session_destroyed"]);
+        assert!(events.try_recv().is_err());
+        close_test_coordinator(&app).await;
+    }
+
     #[tokio::test]
     async fn restart_success_publishes_created_destroyed_selection_in_order() {
         use tauri::Manager;
@@ -4983,13 +5316,9 @@ mod tests {
             Arc::clone(&session_mgr),
             Arc::clone(&pty_mgr),
         );
-        let old = create_scripted_session(
-            &app,
-            &session_mgr,
-            &pty_mgr,
-            &cwd.path().to_string_lossy(),
-        )
-        .await;
+        let old =
+            create_scripted_session(&app, &session_mgr, &pty_mgr, &cwd.path().to_string_lossy())
+                .await;
         let old_id = Uuid::parse_str(&old.id).unwrap();
         let carried = SessionCommunication {
             kind: SessionCommunicationKind::RaiseHand,
@@ -5027,24 +5356,151 @@ mod tests {
         assert_eq!(replacement.communication, Some(carried));
         let selection = session_mgr.read().await.selection_payload().await;
         assert_eq!(selection.id(), Some(replacement_id));
-        assert_eq!(selection.source(), crate::session::selection::SelectionSource::Restart);
+        assert_eq!(
+            selection.source(),
+            crate::session::selection::SelectionSource::Restart
+        );
 
         let observed = (0..3)
-            .map(|_| events.recv_timeout(std::time::Duration::from_secs(1)).unwrap())
+            .map(|_| {
+                events
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .unwrap()
+            })
             .collect::<Vec<_>>();
         assert_eq!(
-            observed.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
+            observed
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
             vec!["session_created", "session_destroyed", "session_switched"]
         );
         assert!(events.try_recv().is_err());
-        let created_payload: serde_json::Value =
-            serde_json::from_str(&observed[0].1).unwrap();
+        let created_payload: serde_json::Value = serde_json::from_str(&observed[0].1).unwrap();
         assert_eq!(created_payload["communication"]["kind"], "raiseHand");
-        let selection_payload: serde_json::Value =
-            serde_json::from_str(&observed[2].1).unwrap();
+        let selection_payload: serde_json::Value = serde_json::from_str(&observed[2].1).unwrap();
         assert_eq!(selection_payload["id"], replacement.id);
         assert_eq!(selection_payload["source"], "restart");
         assert_eq!(selection_payload["userInitiated"], true);
+        close_test_coordinator(&app).await;
+    }
+
+    #[tokio::test]
+    async fn restart_after_route_loss_cleans_old_external_state_once_before_replacement() {
+        use tauri::Manager;
+
+        let cwd = tempfile::tempdir().unwrap();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(ScriptedSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(
+            test_settings(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+        let old =
+            create_scripted_session(&app, &session_mgr, &pty_mgr, &cwd.path().to_string_lossy())
+                .await;
+        let old_id = Uuid::parse_str(&old.id).unwrap();
+        session_mgr
+            .read()
+            .await
+            .set_telegram_bot_id(old_id, Some("old-bot".to_string()))
+            .await;
+        let telegram = app.state::<crate::telegram::manager::TelegramBridgeState>();
+        telegram.lock().await.insert_test_bridge(old_id, "old-bot");
+        app.state::<crate::DetachedSessionsState>()
+            .lock()
+            .unwrap()
+            .insert(old_id);
+
+        backend.lose_route(old_id);
+        pty_mgr.lock().unwrap().remove_route_if_kind(
+            old_id,
+            crate::pty::backend::SessionBackendKind::LocalProcess,
+        );
+        let (spawn_started_tx, spawn_started_rx) = tokio::sync::oneshot::channel();
+        let (spawn_release_tx, spawn_release_rx) = tokio::sync::oneshot::channel();
+        backend.gate_spawn(2, spawn_started_tx, spawn_release_rx);
+        let events = capture_session_lifecycle(&app);
+        let restart = {
+            let app_handle = app.handle().clone();
+            let session_mgr = Arc::clone(&session_mgr);
+            let pty_mgr = Arc::clone(&pty_mgr);
+            let settings = app
+                .state::<crate::config::settings::SettingsState>()
+                .inner()
+                .clone();
+            tokio::spawn(async move {
+                super::restart_session_inner_with_activation(
+                    &app_handle,
+                    &session_mgr,
+                    &pty_mgr,
+                    &settings,
+                    old_id,
+                    None,
+                    None,
+                    Some(false),
+                    true,
+                )
+                .await
+            })
+        };
+
+        let replacement_id = spawn_started_rx.await.expect("replacement spawn starts");
+        assert!(!telegram.lock().await.has_bridge(old_id));
+        assert_eq!(telegram.lock().await.test_detach_count(old_id), 1);
+        assert!(!app
+            .state::<crate::DetachedSessionsState>()
+            .lock()
+            .unwrap()
+            .contains(&old_id));
+        let mut route_loss = {
+            let sender = app
+                .state::<crate::session::selection::SelectionCoordinator>()
+                .container_lifecycle_sender();
+            tokio::spawn(async move { sender.route_lost(old_id, 91).await })
+        };
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut route_loss)
+                .await
+                .is_err(),
+            "late route-loss reconciliation must serialize behind restart"
+        );
+        spawn_release_tx.send(()).unwrap();
+        let replacement = restart
+            .await
+            .expect("join restart")
+            .expect("restart succeeds after old route loss");
+        assert_eq!(replacement.id, replacement_id.to_string());
+        assert_eq!(
+            route_loss
+                .await
+                .expect("join route-loss callback")
+                .expect("late route-loss callback"),
+            crate::session::selection::CriticalAdmissionOutcome::Completed(())
+        );
+        assert_eq!(telegram.lock().await.test_detach_count(old_id), 1);
+        assert!(session_mgr.read().await.get_session(old_id).await.is_none());
+        assert_eq!(
+            session_mgr.read().await.selection_payload().await.id(),
+            Some(replacement_id)
+        );
+        let observed = (0..3)
+            .map(|_| {
+                events
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .unwrap()
+                    .0
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            observed,
+            vec!["session_created", "session_destroyed", "session_switched"]
+        );
+        assert!(events.try_recv().is_err());
         close_test_coordinator(&app).await;
     }
 
@@ -5063,13 +5519,9 @@ mod tests {
             Arc::clone(&session_mgr),
             Arc::clone(&pty_mgr),
         );
-        let old = create_scripted_session(
-            &app,
-            &session_mgr,
-            &pty_mgr,
-            &cwd.path().to_string_lossy(),
-        )
-        .await;
+        let old =
+            create_scripted_session(&app, &session_mgr, &pty_mgr, &cwd.path().to_string_lossy())
+                .await;
         let old_id = Uuid::parse_str(&old.id).unwrap();
         let events = capture_session_lifecycle(&app);
         let settings = app.state::<crate::config::settings::SettingsState>();
@@ -5089,7 +5541,10 @@ mod tests {
         )
         .await
         .expect_err("restart teardown must fail");
-        assert!(error.contains("Cannot start a session in archived project"), "{error}");
+        assert!(
+            error.contains("Cannot start a session in archived project"),
+            "{error}"
+        );
         assert!(backend.has_session(old_id));
         assert_eq!(backend.spawn_count.load(Ordering::SeqCst), 1);
         assert_eq!(session_mgr.read().await.list_sessions().await.len(), 1);
@@ -5116,13 +5571,9 @@ mod tests {
             Arc::clone(&session_mgr),
             Arc::clone(&pty_mgr),
         );
-        let old = create_scripted_session(
-            &app,
-            &session_mgr,
-            &pty_mgr,
-            &cwd.path().to_string_lossy(),
-        )
-        .await;
+        let old =
+            create_scripted_session(&app, &session_mgr, &pty_mgr, &cwd.path().to_string_lossy())
+                .await;
         let old_id = Uuid::parse_str(&old.id).unwrap();
         let events = capture_session_lifecycle(&app);
         backend.fail_spawn(2);
@@ -5141,11 +5592,17 @@ mod tests {
         )
         .await
         .expect_err("replacement spawn must fail");
-        assert!(error.contains("synthetic scripted spawn failure"), "{error}");
+        assert!(
+            error.contains("synthetic scripted spawn failure"),
+            "{error}"
+        );
         assert!(session_mgr.read().await.list_sessions().await.is_empty());
         let selection = session_mgr.read().await.selection_payload().await;
         assert_eq!(selection.id(), None);
-        assert_eq!(selection.source(), crate::session::selection::SelectionSource::Restart);
+        assert_eq!(
+            selection.source(),
+            crate::session::selection::SelectionSource::Restart
+        );
         assert!(!backend.has_session(old_id));
 
         let destroyed = events
@@ -5178,13 +5635,9 @@ mod tests {
             Arc::clone(&session_mgr),
             Arc::clone(&pty_mgr),
         );
-        let old = create_scripted_session(
-            &app,
-            &session_mgr,
-            &pty_mgr,
-            &cwd.path().to_string_lossy(),
-        )
-        .await;
+        let old =
+            create_scripted_session(&app, &session_mgr, &pty_mgr, &cwd.path().to_string_lossy())
+                .await;
         let old_id = Uuid::parse_str(&old.id).unwrap();
         backend.kill(old_id).unwrap();
         app.state::<crate::session::selection::SelectionCoordinator>()
@@ -5261,6 +5714,13 @@ mod tests {
 
         assert!(err.contains("synthetic spawn failure"), "{err}");
         assert!(session_mgr.read().await.list_sessions().await.is_empty());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while backend.killed().len() != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("reserved rollback kills the failed spawn exactly once");
         assert_eq!(backend.killed(), backend.spawned());
         assert_eq!(backend.killed().len(), 1);
     }
@@ -5425,8 +5885,9 @@ mod tests {
             .split("#[cfg(test)]\nmod tests")
             .next()
             .expect("production session source");
-        let gate_call = "crate::config::archive_gate::enforce_unarchived_for_spawn(app, &cwd, &session_label).await";
-        let count = production.matches(gate_call).count();
+        let normalized = production.split_whitespace().collect::<String>();
+        let gate_call = "crate::config::archive_gate::enforce_unarchived_for_spawn(app,&cwd,&session_label).await";
+        let count = normalized.matches(gate_call).count();
 
         assert_eq!(
             count, 2,
@@ -5445,20 +5906,23 @@ mod tests {
             .split("#[cfg(test)]\nmod tests")
             .next()
             .expect("production session source");
-        let mark = production
-            .find("let spawn_mark = {")
+        let normalized = production.split_whitespace().collect::<String>();
+        let mark = normalized
+            .find("letspawn_mark={")
             .expect("spawn mark before archive gate");
-        let first_gate = production
-            .find("crate::config::archive_gate::enforce_unarchived_for_spawn(app, &cwd, &session_label).await?;")
+        let first_gate = normalized
+            .find("crate::config::archive_gate::enforce_unarchived_for_spawn(app,&cwd,&session_label).await?;")
             .expect("first archive gate");
-        let spawn = production
-            .find("let spawn_result = PtyManager::spawn(pty_mgr, session.backend_kind, spawn_spec).await;")
+        let spawn = normalized
+            .find(
+                "letspawn_result=PtyManager::spawn(pty_mgr,session.backend_kind,spawn_spec).await;",
+            )
             .expect("spawn call");
-        let drop_mark = production
+        let drop_mark = normalized
             .find("drop(spawn_mark);")
             .expect("spawn mark drop");
-        let spawn_error = production
-            .find("if let Err(e) = spawn_result {")
+        let spawn_error = normalized
+            .find("ifletErr(e)=spawn_result{")
             .expect("spawn error handling");
 
         assert!(mark < first_gate, "spawn mark must cover archive gate A");
