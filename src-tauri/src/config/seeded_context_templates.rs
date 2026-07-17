@@ -1761,6 +1761,39 @@ mod tests {
         )
         .expect("write seeded v3 state");
 
+        // Pin the E4 row 3 preconditions before syncing. Every assertion after the sync
+        // call also passes on row 4 (:831-836), which auto-updates to the same v4 body
+        // when there is no entry at all, and `load_state` (:552-565) turns an unparseable
+        // fixture into a trusted empty map rather than an error. So without this block a
+        // fixture that never parses still leaves the test green while exercising row 4.
+        let spec = project_spec_by_filename(COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+            .expect("coordinator spec by filename");
+        let pre_sync = load_state(&workspace, true).expect("load the hand-written v3 state");
+        let entry = pre_sync
+            .trusted_entry(spec)
+            .expect("the v3 fixture must parse into a trusted coordinator entry (row 3)");
+        let v3_sha256 = hash_text(COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE);
+        let v4_sha256 = hash_text(get_default_coordinator_template());
+        assert_eq!(
+            entry.current_version, 3,
+            "row 3 requires the fixture to describe a seeded v3 coordinator"
+        );
+        assert_eq!(
+            entry.last_seeded_sha256.as_deref(),
+            Some(v3_sha256.as_str()),
+            "row 3 requires lastSeededSha256 to match the pristine v3 body on disk"
+        );
+        assert_ne!(
+            v3_sha256, v4_sha256,
+            "row 3 requires the seeded hash to differ from the current v4 default"
+        );
+        assert!(
+            is_known_generated_coordinator_template(
+                COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE
+            ),
+            "row 3 requires the pristine v3 body to be recognized as generated"
+        );
+
         sync_project_context_template_for_read(&workspace, COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
             .expect("sync for read");
 
