@@ -2141,6 +2141,7 @@ pub fn get_default_coordinator_template() -> &'static str {
      - Keep your base role; coordination is an additional assignment, not a replacement.\n\
      - Receive team work requests and clarify scope, outcome, constraints, and acceptance criteria.\n\
      - Route each part of a request to the team member best prepared for it by role, skills, and current assignment; delegate instead of absorbing technical work when a more specialized agent is available.\n\
+     - To reach another workgroup, message its coordinator, never its members, and only when your role, the user, or the Root Agent authorizes it; replying to a coordinator who messaged you first is always authorized.\n\
      - Sequence work, track progress, surface blockers, and keep ownership clear.\n\
      - Follow up after assignment to verify the assigned agent is active and working; contact silent or inactive assigned agents up to three total attempts.\n\
      - Require assigned agents to explicitly report completion, outcome, blockers, and verification before treating delegated work as complete; never infer completion solely from files/logs/artifacts/status flags when the agent has not reported the outcome.\n\
@@ -6283,6 +6284,37 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let shared = get_default_agent_template();
         assert!(!shared.contains("## Raising Your Hand"));
         assert!(!shared.contains("raise-hand --token"));
+    }
+
+    #[test]
+    fn coordinator_template_carries_cross_workgroup_rule() {
+        // #1030: the user-approved cross-workgroup bullet, verbatim. Asserted as
+        // ONE exact string rather than fragments: a body keeping the routing and
+        // reply fragments but dropping the "only when your role, the user, or the
+        // Root Agent authorizes it" clause between them would satisfy a fragment
+        // test while violating the approved rule, and that qualifier is the whole
+        // point. The looser anchor count rejects a second, differently worded
+        // variant, which the exact count alone accepts.
+        const RULE: &str = "- To reach another workgroup, message its coordinator, never its members, and only when your role, the user, or the Root Agent authorizes it; replying to a coordinator who messaged you first is always authorized.\n";
+        let tpl = get_default_coordinator_template();
+        assert_eq!(
+            tpl.matches(RULE).count(),
+            1,
+            "the exact approved bullet must appear exactly once"
+        );
+        assert_eq!(
+            tpl.matches("- To reach another workgroup,").count(),
+            1,
+            "exactly one cross-workgroup bullet may exist; a second variant contradicts the approved rule"
+        );
+        assert!(
+            !tpl.contains('\u{2014}'),
+            "coordinator template must stay em-dash-free"
+        );
+        assert!(
+            !get_default_agent_template().contains(RULE),
+            "the rule is coordinator-only"
+        );
     }
 
     #[test]
