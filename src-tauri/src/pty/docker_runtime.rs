@@ -10,14 +10,21 @@ use uuid::Uuid;
 use crate::errors::AppError;
 use crate::pty::container_runtime::{
     ContainerCleanupReport, ContainerDiagnostics, ContainerRuntime, ContainerRuntimeControl,
-    ContainerRuntimeHandle, ContainerStartRequest, ContainerStateSnapshot, DEFAULT_API_HELPER_PATH,
-    DEFAULT_BRIDGE_ENTRYPOINT, SESSION_LABEL, CONTAINER_STOP_TIMEOUT,
+    ContainerRuntimeHandle, ContainerStartRequest, ContainerStateSnapshot, CONTAINER_STOP_TIMEOUT,
+    DEFAULT_API_HELPER_PATH, DEFAULT_BRIDGE_ENTRYPOINT, SESSION_LABEL,
 };
 
 const DOCKER_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const DOCKER_COMMAND_FINALIZATION_RESERVE: Duration = Duration::from_secs(5);
 const DOCKER_COMMAND_POLL: Duration = Duration::from_millis(10);
 const DOCKER_COMMAND_OUTPUT_BYTE_LIMIT: usize = 64 * 1024;
+
+fn normalized_app_error_text(error: &AppError) -> String {
+    match error {
+        AppError::PtyError(message) => message.clone(),
+        _ => error.to_string(),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DockerCommandSpec {
@@ -249,8 +256,7 @@ impl DockerCommandOwnership {
     }
 }
 
-static PROCESS_RETAINED_DOCKER_COMMANDS: OnceLock<Mutex<Vec<DockerCommandOwner>>> =
-    OnceLock::new();
+static PROCESS_RETAINED_DOCKER_COMMANDS: OnceLock<Mutex<Vec<DockerCommandOwner>>> = OnceLock::new();
 
 impl Drop for DockerCommandOwnership {
     fn drop(&mut self) {
@@ -632,7 +638,8 @@ impl DockerRuntime {
         shutdown_behavior: DockerCommandShutdownBehavior,
     ) -> Result<DockerCommandOutput, DockerCommandError> {
         let started_at = Instant::now();
-        let default_deadline = started_at + DOCKER_COMMAND_TIMEOUT + DOCKER_COMMAND_FINALIZATION_RESERVE;
+        let default_deadline =
+            started_at + DOCKER_COMMAND_TIMEOUT + DOCKER_COMMAND_FINALIZATION_RESERVE;
         let hard_deadline = control
             .shutdown_deadline()
             .map(|deadline| deadline.min(default_deadline))
@@ -872,11 +879,7 @@ impl DockerRuntime {
                         == DockerCommandShutdownBehavior::CancelOnShutdown
                         && control.shutdown_requested();
                     if canceled || now >= effective_deadline {
-                        self.terminate_or_retain_command(
-                            owner,
-                            dynamic_hard_deadline,
-                            canceled,
-                        );
+                        self.terminate_or_retain_command(owner, dynamic_hard_deadline, canceled);
                         let reason = if canceled {
                             "canceled by shutdown"
                         } else if control.shutdown_requested() {
@@ -921,14 +924,7 @@ impl DockerRuntime {
                 });
             }
             None => {
-                self.command_ownership.retain(owner);
-                return Err(DockerCommandError {
-                    source: AppError::PtyError(format!(
-                        "container runtime command readers exceeded the absolute deadline program={}",
-                        spec.program
-                    )),
-                    spawned: true,
-                });
+                return Err(self.retain_reader_owner_at_deadline(owner));
             }
         };
         let DockerCommandOutput { stdout, stderr } = output;
@@ -962,6 +958,17 @@ impl DockerRuntime {
         }
     }
 
+    fn retain_reader_owner_at_deadline(&self, owner: DockerCommandOwner) -> DockerCommandError {
+        let program = owner.program.clone();
+        self.command_ownership.retain(owner);
+        DockerCommandError {
+            source: AppError::PtyError(format!(
+                "readers exceeded the absolute deadline program={program}"
+            )),
+            spawned: true,
+        }
+    }
+
     fn run_command(&self, spec: DockerCommandSpec) -> Result<String, AppError> {
         let output = self.run_command_output(spec)?;
         Ok(String::from_utf8_lossy(&output.stdout.bytes)
@@ -978,15 +985,14 @@ impl DockerRuntime {
         reason: &'static str,
         hard_deadline: Instant,
     ) -> Result<String, DockerCommandError> {
-        let output = self
-            .run_command_output_with_context(
-                spec,
-                control,
-                shutdown_behavior,
-                Some(session_id),
-                reason,
-                hard_deadline,
-            )?;
+        let output = self.run_command_output_with_context(
+            spec,
+            control,
+            shutdown_behavior,
+            Some(session_id),
+            reason,
+            hard_deadline,
+        )?;
         Ok(String::from_utf8_lossy(&output.stdout.bytes)
             .trim()
             .to_string())
@@ -1110,7 +1116,7 @@ impl DockerRuntime {
                 );
             }
             Ok(Err(error)) => {
-                let message = error.to_string();
+                let message = normalized_app_error_text(&error);
                 let mut state = entry
                     .state
                     .lock()
@@ -1149,17 +1155,34 @@ impl DockerRuntime {
         let cleanup_control = ContainerRuntimeControl::default();
         cleanup_control.request_shutdown(deadline);
         self.attempt_retained_start_cleanup(entry, &cleanup_control);
-        let retained = self
+        let retained_entry = self
             .retained_start_cleanups
             .entries
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .contains_key(&session_id);
-        AppError::PtyError(format!(
-            "{}; deterministic cleanup session={} state={}",
-            primary,
+            .get(&session_id)
+            .cloned();
+        let cleanup_error = retained_entry.as_ref().and_then(|entry| {
+            entry
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .last_error
+                .as_deref()
+                .map(crate::pty::container_runtime::redact_container_diagnostic_text)
+        });
+        let retained = retained_entry.is_some();
+        let primary_text = crate::pty::container_runtime::redact_container_diagnostic_text(
+            &normalized_app_error_text(&primary),
+        );
+        AppError::Other(format!(
+            "{}; deterministic cleanup session={} state={}{}",
+            primary_text,
             session_id,
-            if retained { "retained" } else { "terminal" }
+            if retained { "retained" } else { "terminal" },
+            cleanup_error
+                .map(|error| format!(" cleanupError={error}"))
+                .unwrap_or_default()
         ))
     }
 }
@@ -1189,27 +1212,6 @@ fn join_command_reader(
                 "container runtime command {stream_name} read failed: {error}"
             ))
         })
-}
-
-fn terminate_docker_child(
-    child: &mut std::process::Child,
-    spec: &DockerCommandSpec,
-    canceled: bool,
-) -> Result<(), AppError> {
-    if let Err(error) = child.kill() {
-        log::debug!(
-            "[container-runtime] Docker command kill returned program={} canceled={} error={}",
-            spec.program,
-            canceled,
-            error
-        );
-    }
-    child.wait().map(|_| ()).map_err(|error| {
-        AppError::PtyError(format!(
-            "container runtime command reap failed program={} canceled={}: {}",
-            spec.program, canceled, error
-        ))
-    })
 }
 
 #[cfg(test)]
@@ -1265,32 +1267,41 @@ impl ContainerRuntime for DockerRuntime {
             session_id,
             container_id: Self::container_name(session_id),
         };
-        match self.run_command_with_control(
-            self.build_run_command(&request)?,
-            control,
-            DockerCommandShutdownBehavior::CancelOnShutdown,
-            session_id,
-            "start",
-            control.shutdown_deadline().unwrap_or_else(|| Instant::now() + DOCKER_COMMAND_TIMEOUT),
-        ) {
-            Ok(stdout) => {
-                let container_id = stdout
-                    .lines()
-                    .next()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .ok_or_else(|| {
-                        AppError::PtyError(
-                            "container runtime returned an empty container id".to_string(),
-                        )
-                    })?
-                    .to_string();
-                Ok(ContainerRuntimeHandle {
-                    session_id,
-                    container_id,
-                })
+        let deadline = control.shutdown_deadline().unwrap_or_else(|| {
+            Instant::now() + DOCKER_COMMAND_TIMEOUT + DOCKER_COMMAND_FINALIZATION_RESERVE
+        });
+        let command = self.build_run_command(&request)?;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.run_command_with_control(
+                command,
+                control,
+                DockerCommandShutdownBehavior::CancelOnShutdown,
+                session_id,
+                "start",
+                deadline,
+            )
+        }));
+        match result {
+            Ok(Ok(stdout)) => {
+                let container_id = stdout.lines().next().map(str::trim).unwrap_or_default();
+                if Self::valid_container_id(container_id) {
+                    return Ok(ContainerRuntimeHandle {
+                        session_id,
+                        container_id: container_id.to_string(),
+                    });
+                }
+                let primary = if container_id.is_empty() {
+                    AppError::PtyError(
+                        "container runtime returned an empty container id".to_string(),
+                    )
+                } else {
+                    AppError::PtyError(
+                        "container runtime returned a malformed container id".to_string(),
+                    )
+                };
+                Err(self.ambiguous_start_error(primary, cleanup_handle, deadline))
             }
-            Err(error) if control.shutdown_requested() => {
+            Ok(Err(error)) if control.shutdown_requested() => {
                 log::debug!(
                     "[container-runtime] Docker start canceled session={}; returning owned cleanup handle: {}",
                     session_id,
@@ -1298,7 +1309,18 @@ impl ContainerRuntime for DockerRuntime {
                 );
                 Ok(cleanup_handle)
             }
-            Err(error) => Err(error.source),
+            Ok(Err(error)) if error.spawned => {
+                Err(self.ambiguous_start_error(error.source, cleanup_handle, deadline))
+            }
+            Ok(Err(error)) => Err(error.source),
+            Err(_) => Err(self.ambiguous_start_error(
+                AppError::PtyError(
+                    "container runtime start panicked after Docker command ownership began"
+                        .to_string(),
+                ),
+                cleanup_handle,
+                deadline,
+            )),
         }
     }
 
@@ -1315,7 +1337,9 @@ impl ContainerRuntime for DockerRuntime {
                 DockerCommandShutdownBehavior::CancelOnShutdown,
                 handle.session_id,
                 "stop",
-                control.shutdown_deadline().unwrap_or_else(|| Instant::now() + timeout),
+                control
+                    .shutdown_deadline()
+                    .unwrap_or_else(|| Instant::now() + timeout),
             ) {
                 if control.shutdown_requested() {
                     log::debug!(
@@ -1338,7 +1362,9 @@ impl ContainerRuntime for DockerRuntime {
             DockerCommandShutdownBehavior::ContinueUntilDeadline,
             handle.session_id,
             "force-remove",
-            control.shutdown_deadline().unwrap_or_else(|| Instant::now() + timeout),
+            control
+                .shutdown_deadline()
+                .unwrap_or_else(|| Instant::now() + timeout),
         )
         .map(|_| ())
         .map_err(|error| error.source)
@@ -1410,6 +1436,44 @@ impl ContainerRuntime for DockerRuntime {
             )));
         }
         Ok(report)
+    }
+
+    fn retry_retained_cleanups(&self, control: &ContainerRuntimeControl) {
+        let deadline = control
+            .shutdown_deadline()
+            .unwrap_or_else(|| Instant::now() + CONTAINER_STOP_TIMEOUT);
+        let entries = self
+            .retained_start_cleanups
+            .entries
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for entry in entries {
+            if Instant::now() >= deadline {
+                break;
+            }
+            self.attempt_retained_start_cleanup(entry, control);
+        }
+        if Instant::now() < deadline {
+            self.command_ownership.retry_until(deadline);
+        }
+    }
+
+    fn retained_cleanup_sessions(&self) -> Vec<Uuid> {
+        let mut sessions = self
+            .retained_start_cleanups
+            .entries
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        sessions.extend(self.command_ownership.retained_sessions());
+        sessions.sort();
+        sessions.dedup();
+        sessions
     }
 }
 
@@ -1614,6 +1678,200 @@ mod tests {
         assert_eq!(commands.len(), 2);
         assert_eq!(commands[0].args, vec!["stop", "--time", "5", "abc123"]);
         assert_eq!(commands[1].args, vec!["rm", "-f", "abc123"]);
+    }
+
+    #[test]
+    fn ambiguous_start_outcomes_cleanup_the_deterministic_name() {
+        let cases = vec![
+            (
+                "timeout",
+                ScriptedDockerCommandResult::SpawnedError("primary timeout".to_string()),
+                "primary timeout",
+            ),
+            (
+                "command-error",
+                ScriptedDockerCommandResult::SpawnedError("primary command error".to_string()),
+                "primary command error",
+            ),
+            (
+                "reader-error",
+                ScriptedDockerCommandResult::ReaderError("primary reader error".to_string()),
+                "primary reader error",
+            ),
+            (
+                "empty-output",
+                ScriptedDockerCommandResult::Output {
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                },
+                "empty container id",
+            ),
+            (
+                "malformed-output",
+                ScriptedDockerCommandResult::Output {
+                    stdout: b"not-a-container-id\n".to_vec(),
+                    stderr: Vec::new(),
+                },
+                "malformed container id",
+            ),
+        ];
+
+        for (case, start_result, primary) in cases {
+            let recorded = Arc::new(Mutex::new(Vec::new()));
+            let runtime = DockerRuntime::with_scripted_commands(
+                "docker-test",
+                Arc::clone(&recorded),
+                vec![
+                    start_result,
+                    ScriptedDockerCommandResult::Output {
+                        stdout: Vec::new(),
+                        stderr: Vec::new(),
+                    },
+                ],
+            );
+
+            let error = runtime
+                .start(request(), &ContainerRuntimeControl::default())
+                .expect_err("ambiguous start must preserve the primary failure")
+                .to_string();
+            assert!(error.contains(primary), "case={case} error={error}");
+            assert!(
+                error.contains("state=terminal"),
+                "case={case} error={error}"
+            );
+            assert!(runtime.retained_cleanup_sessions().is_empty(), "{case}");
+
+            let commands = recorded
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
+            assert_eq!(commands.len(), 2, "{case}");
+            assert_eq!(commands[0].args.first().map(String::as_str), Some("run"));
+            assert_eq!(
+                commands[1].args,
+                vec![
+                    "rm",
+                    "-f",
+                    "agentscommander-11111111111141118111111111111111"
+                ],
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn ambiguous_start_cleanup_failure_is_retained_and_retried_once() {
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let runtime = DockerRuntime::with_scripted_commands(
+            "docker-test",
+            Arc::clone(&recorded),
+            vec![
+                ScriptedDockerCommandResult::SpawnedError("primary start timeout".to_string()),
+                ScriptedDockerCommandResult::SpawnedError("cleanup denied".to_string()),
+                ScriptedDockerCommandResult::Output {
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                },
+            ],
+        );
+        let session_id = request().session_id;
+
+        let error = runtime
+            .start(request(), &ContainerRuntimeControl::default())
+            .expect_err("failed deterministic cleanup keeps the start failed")
+            .to_string();
+        assert!(error.starts_with("primary start timeout;"), "{error}");
+        assert!(error.contains("state=retained"), "{error}");
+        assert!(error.contains("cleanupError=cleanup denied"), "{error}");
+        assert_eq!(runtime.retained_cleanup_sessions(), vec![session_id]);
+
+        let retry_control = ContainerRuntimeControl::default();
+        retry_control.request_shutdown(Instant::now() + Duration::from_secs(1));
+        runtime.retry_retained_cleanups(&retry_control);
+        assert!(runtime.retained_cleanup_sessions().is_empty());
+        assert_eq!(
+            recorded
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .len(),
+            3
+        );
+
+        runtime.retry_retained_cleanups(&retry_control);
+        assert_eq!(
+            recorded
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .len(),
+            3,
+            "a terminal deterministic target must not be stopped twice"
+        );
+    }
+
+    #[test]
+    fn permanently_blocked_command_readers_are_retained_at_the_deadline() {
+        let runtime = DockerRuntime::new();
+        let session_id = Uuid::new_v4();
+        let ready = Arc::new(std::sync::Barrier::new(3));
+        let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let spawn_reader = |name: &'static str| {
+            let ready = Arc::clone(&ready);
+            let release = Arc::clone(&release);
+            let active = Arc::clone(&runtime.active_readers);
+            std::thread::Builder::new()
+                .name(name.to_string())
+                .spawn(move || {
+                    let _active = ActiveDockerReaderGuard::new(active);
+                    ready.wait();
+                    let (released, changed) = &*release;
+                    let mut released = released.lock().unwrap_or_else(|error| error.into_inner());
+                    while !*released {
+                        released = changed
+                            .wait(released)
+                            .unwrap_or_else(|error| error.into_inner());
+                    }
+                    Ok(CappedCommandStream::default())
+                })
+                .expect("spawn deterministic blocked Docker reader")
+        };
+        let mut owner = DockerCommandOwner {
+            child: None,
+            stdout: Some(spawn_reader("blocked-docker-stdout")),
+            stderr: Some(spawn_reader("blocked-docker-stderr")),
+            session_id: Some(session_id),
+            reason: "permanently-blocked-reader-test",
+            program: "docker-reader-fixture".to_string(),
+            active_child: None,
+        };
+        ready.wait();
+        assert_eq!(runtime.active_reader_count(), 2);
+
+        let budget = Duration::from_millis(300);
+        let started_at = Instant::now();
+        assert!(owner.collect_output_until(started_at + budget).is_none());
+        let error = runtime.retain_reader_owner_at_deadline(owner).to_string();
+        let elapsed = started_at.elapsed();
+
+        assert!(
+            error.contains("readers exceeded the absolute deadline"),
+            "{error}"
+        );
+        assert!(
+            elapsed <= budget + Duration::from_millis(300),
+            "blocked reader return exceeded its absolute deadline: {elapsed:?}"
+        );
+        assert_eq!(runtime.active_child_count(), 0);
+        assert_eq!(runtime.active_reader_count(), 2);
+        assert_eq!(runtime.retained_cleanup_sessions(), vec![session_id]);
+
+        let (released, changed) = &*release;
+        *released.lock().unwrap_or_else(|error| error.into_inner()) = true;
+        changed.notify_all();
+        runtime
+            .command_ownership
+            .retry_until(Instant::now() + Duration::from_secs(1));
+        assert_eq!(runtime.active_reader_count(), 0);
+        assert!(runtime.retained_cleanup_sessions().is_empty());
     }
 
     #[test]

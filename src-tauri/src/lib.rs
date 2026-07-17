@@ -2194,14 +2194,70 @@ pub fn run(
                     // #632 A - kill every agent's Job Object: atomically terminates
                     // each jobbed session's whole descendant tree via the job handle.
                     // This is the durable, orphan-free guarantee for jobbed sessions.
-                    let (container_shutdown, jobs_killed, jobless_sessions) = {
-                        let pty_mgr = app_handle.state::<Arc<Mutex<PtyManager>>>();
-                        let guard = pty_mgr.lock().unwrap_or_else(|e| e.into_inner());
-                        let container_shutdown = guard.stop_all_started_containers_blocking(
-                            std::time::Duration::from_secs(SHUTDOWN_CLEANUP_BUDGET_SECS),
-                        );
-                        let (jobs_killed, jobless_sessions) = guard.kill_all_jobs();
-                        (container_shutdown, jobs_killed, jobless_sessions)
+                    let pty_mgr = app_handle.state::<Arc<Mutex<PtyManager>>>();
+                    let pty_lock_budget =
+                        std::time::Duration::from_secs(SHUTDOWN_CLEANUP_BUDGET_SECS);
+                    let container_backend = {
+                        let deadline = std::time::Instant::now() + pty_lock_budget;
+                        loop {
+                            match pty_mgr.try_lock() {
+                                Ok(guard) => break Some(guard.container_backend()),
+                                Err(std::sync::TryLockError::Poisoned(error)) => {
+                                    break Some(error.into_inner().container_backend());
+                                }
+                                Err(std::sync::TryLockError::WouldBlock)
+                                    if std::time::Instant::now() < deadline =>
+                                {
+                                    std::thread::sleep(std::time::Duration::from_millis(2));
+                                }
+                                Err(std::sync::TryLockError::WouldBlock) => break None,
+                            }
+                        }
+                    };
+                    let mut container_shutdown = match container_backend {
+                        Some(container_backend) => container_backend
+                            .stop_all_started_containers_blocking(pty_lock_budget),
+                        None => {
+                            log::error!(
+                                "[shutdown] PTY owner lock reached the global cleanup deadline before container ownership transfer"
+                            );
+                            crate::pty::container_backend::ContainerShutdownReport {
+                                terminal: false,
+                                retained: vec![
+                                    "reason=global-pty-owner state=retained".to_string(),
+                                ],
+                            }
+                        }
+                    };
+                    let jobs = {
+                        let deadline = std::time::Instant::now() + pty_lock_budget;
+                        loop {
+                            match pty_mgr.try_lock() {
+                                Ok(guard) => break Some(guard.kill_all_jobs()),
+                                Err(std::sync::TryLockError::Poisoned(error)) => {
+                                    break Some(error.into_inner().kill_all_jobs());
+                                }
+                                Err(std::sync::TryLockError::WouldBlock)
+                                    if std::time::Instant::now() < deadline =>
+                                {
+                                    std::thread::sleep(std::time::Duration::from_millis(2));
+                                }
+                                Err(std::sync::TryLockError::WouldBlock) => break None,
+                            }
+                        }
+                    };
+                    let (jobs_killed, jobless_sessions) = match jobs {
+                        Some(counts) => counts,
+                        None => {
+                            log::error!(
+                                "[shutdown] PTY owner lock reached the job cleanup deadline state=retained"
+                            );
+                            container_shutdown.terminal = false;
+                            container_shutdown
+                                .retained
+                                .push("reason=global-job-owner state=retained".to_string());
+                            (0, 0)
+                        }
                     };
                     log::info!(
                         "[shutdown] terminated {jobs_killed} agent job object(s); {jobless_sessions} session(s) had no job"

@@ -532,7 +532,7 @@ struct CoordinatorInner {
     retained_workers: Mutex<Vec<tauri::async_runtime::JoinHandle<()>>>,
     retained_cleanup_tasks:
         Mutex<Vec<tokio::task::JoinHandle<crate::pty::container_backend::ContainerShutdownReport>>>,
-    retained_rollback_tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    retained_rollback_tasks: Mutex<Vec<tokio::task::JoinHandle<Vec<String>>>>,
     cleanup_pty: Mutex<Option<Weak<Mutex<PtyManager>>>>,
     cleanup_container_backend: Mutex<Option<Weak<ContainerTransportBackend>>>,
 }
@@ -1238,9 +1238,8 @@ impl SelectionCoordinator {
                             log::error!(
                                 "[selection] aborted coordinator worker retained after absolute deadline state=retained"
                             );
-                            retained.push(
-                                "reason=coordinator-worker-abort state=retained".to_string(),
-                            );
+                            retained
+                                .push("reason=coordinator-worker-abort state=retained".to_string());
                             self.inner
                                 .retained_workers
                                 .lock()
@@ -1253,15 +1252,12 @@ impl SelectionCoordinator {
         }
 
         retained.extend(cleanup_pending_creates_after_join(&self.inner, deadline).await);
-        retained.extend(
-            seal_and_drain_container_shutdown_work_after_join(&self.inner, deadline).await,
-        );
+        retained
+            .extend(seal_and_drain_container_shutdown_work_after_join(&self.inner, deadline).await);
         match self.inner.critical_keys.try_lock() {
             Ok(mut keys) => keys.clear(),
             Err(error) => {
-                log::error!(
-                    "[selection] critical key lock unavailable after worker join: {error}"
-                );
+                log::error!("[selection] critical key lock unavailable after worker join: {error}");
                 retained.push("reason=critical-key-clear state=retained".to_string());
             }
         }
@@ -2237,7 +2233,7 @@ fn begin_container_shutdown(inner: &Arc<CoordinatorInner>, deadline: Instant) ->
         }
     };
     if let Some(container_backend) = container_backend {
-        container_backend.begin_shutdown(deadline);
+        return container_backend.begin_shutdown(deadline);
     }
     true
 }
@@ -2246,32 +2242,6 @@ async fn cleanup_pending_creates_after_join(
     inner: &Arc<CoordinatorInner>,
     deadline: Instant,
 ) -> Vec<String> {
-    let mut retained = Vec::new();
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    let manager = match tokio::time::timeout(remaining, inner.manager.read()).await {
-        Ok(manager) => manager.clone(),
-        Err(_) => {
-            log::error!(
-                "[selection] pending-create manager acquisition reached absolute deadline reason=pending-manager-read state=retained"
-            );
-            retained.push("reason=pending-manager-read state=retained".to_string());
-            return retained;
-        }
-    };
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    let bindings = match tokio::time::timeout(remaining, manager.pending_create_bindings()).await {
-        Ok(bindings) => bindings,
-        Err(_) => {
-            log::error!(
-                "[selection] pending-create enumeration reached absolute deadline reason=pending-enumeration state=retained"
-            );
-            retained.push("reason=pending-enumeration state=retained".to_string());
-            return retained;
-        }
-    };
-    if bindings.is_empty() {
-        return retained;
-    }
     let pty = match inner.cleanup_pty.try_lock() {
         Ok(pty) => pty.as_ref().and_then(Weak::upgrade),
         Err(error) => {
@@ -2279,109 +2249,103 @@ async fn cleanup_pending_creates_after_join(
                 "[selection] pending-create PTY ownership lock unavailable: {}",
                 error
             );
-            retained.push("reason=pending-pty-owner state=retained".to_string());
-            None
+            return vec!["reason=pending-pty-owner state=retained".to_string()];
         }
     };
-    log::warn!(
-        "[selection] cleaning {} pending create(s) after worker join",
-        bindings.len()
-    );
-    for binding in bindings {
-        if Instant::now() >= deadline {
-            log::error!(
-                "[selection] pending-create rollback reached shared shutdown deadline session={} reason=pending-create-rollback state=retained",
-                binding.session_id()
+    let Some(pty) = pty else {
+        log::error!(
+            "[selection] pending-create PTY owner unavailable after worker join state=retained"
+        );
+        return vec!["reason=pending-pty-owner state=retained".to_string()];
+    };
+    let manager = Arc::clone(&inner.manager);
+    let mut cleanup = tokio::spawn(async move {
+        let manager = manager.read().await.clone();
+        let bindings = manager.pending_create_bindings().await;
+        if !bindings.is_empty() {
+            log::warn!(
+                "[selection] cleaning {} pending create(s) after worker join",
+                bindings.len()
             );
-            retained.push(format!(
-                "session={} reason=pending-create-rollback state=retained",
-                binding.session_id()
-            ));
-            continue;
         }
-        let session_id = binding.session_id();
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let backend_kind = match tokio::time::timeout(
-            remaining,
-            manager.get_pending_session(binding),
-        )
-        .await
-        {
-            Ok(session) => session.map(|session| session.backend_kind),
-            Err(_) => {
-                log::error!(
-                    "[selection] pending-create classification reached absolute deadline session={} reason=pending-classification state=retained",
-                    session_id
-                );
-                retained.push(format!(
-                    "session={session_id} reason=pending-classification state=retained"
-                ));
+        let mut retained = Vec::new();
+        for binding in bindings {
+            let session_id = binding.session_id();
+            let Some(backend_kind) = manager
+                .get_pending_session(binding)
+                .await
+                .map(|session| session.backend_kind)
+            else {
                 continue;
-            }
-        };
-        let Some(backend_kind) = backend_kind else {
-            continue;
-        };
-
-        if let Some(pty) = pty.clone() {
-            let mut kill = tokio::task::spawn_blocking(move || {
-                let pty = pty.lock().unwrap_or_else(|error| error.into_inner());
-                if let Err(error) = pty.kill_for_kind(session_id, backend_kind) {
-                    log::debug!(
-                        "[selection] pending create PTY cleanup session={} result={}",
-                        session_id,
-                        error
-                    );
-                }
-            });
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            match tokio::time::timeout(remaining, &mut kill).await {
+            };
+            let kill_pty = Arc::clone(&pty);
+            let kill = tokio::task::spawn_blocking(move || {
+                kill_pty
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .kill_for_kind(session_id, backend_kind)
+            })
+            .await;
+            match kill {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => {
                     log::error!(
-                        "[selection] pending-create PTY cleanup task failed session={}: {}",
+                        "[selection] pending-create PTY cleanup failed session={} reason=pending-pty-kill state=retained error={}",
                         session_id,
                         error
-                    );
-                }
-                Err(_) => {
-                    log::error!(
-                        "[selection] pending-create PTY cleanup retained after absolute deadline session={} reason=pending-pty-kill state=retained",
-                        session_id
                     );
                     retained.push(format!(
                         "session={session_id} reason=pending-pty-kill state=retained"
                     ));
-                    inner
-                        .retained_rollback_tasks
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .push(kill);
+                    continue;
+                }
+                Err(error) => {
+                    log::error!(
+                        "[selection] pending-create PTY cleanup task failed session={} reason=pending-pty-kill state=retained error={}",
+                        session_id,
+                        error
+                    );
+                    retained.push(format!(
+                        "session={session_id} reason=pending-pty-kill state=retained"
+                    ));
                     continue;
                 }
             }
-        }
-
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        match tokio::time::timeout(remaining, manager.rollback_pending_create(binding)).await {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => log::warn!(
-                "[selection] pending create manager rollback failed session={}: {}",
-                session_id,
-                error
-            ),
-            Err(_) => {
-                log::error!(
-                    "[selection] pending-create manager rollback reached absolute deadline session={} reason=pending-manager-rollback state=retained",
-                    session_id
+            if let Err(error) = manager.rollback_pending_create(binding).await {
+                log::warn!(
+                    "[selection] pending create manager rollback failed session={} reason=pending-manager-rollback state=retained error={}",
+                    session_id,
+                    error
                 );
                 retained.push(format!(
                     "session={session_id} reason=pending-manager-rollback state=retained"
                 ));
             }
         }
+        retained
+    });
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    match tokio::time::timeout(remaining, &mut cleanup).await {
+        Ok(Ok(retained)) => retained,
+        Ok(Err(error)) => {
+            log::error!(
+                "[selection] pending-create cleanup owner failed reason=pending-cleanup-task state=retained error={}",
+                error
+            );
+            vec!["reason=pending-cleanup-task state=retained".to_string()]
+        }
+        Err(_) => {
+            log::error!(
+                "[selection] pending-create cleanup owner retained after absolute deadline reason=pending-cleanup-await state=retained"
+            );
+            inner
+                .retained_rollback_tasks
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(cleanup);
+            vec!["reason=pending-cleanup-await state=retained".to_string()]
+        }
     }
-    retained
 }
 
 async fn seal_and_drain_container_shutdown_work_after_join(
@@ -2620,6 +2584,14 @@ mod tests {
         active_starts: AtomicUsize,
         active_stops: AtomicUsize,
         deadline_seen: AtomicBool,
+        stop_outcomes: Mutex<std::collections::VecDeque<CanceledStartStopOutcome>>,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum CanceledStartStopOutcome {
+        Success,
+        Error,
+        Panic,
     }
 
     struct AtomicActivityGuard<'a> {
@@ -2730,7 +2702,7 @@ mod tests {
             control: &crate::pty::container_runtime::ContainerRuntimeControl,
         ) -> Result<(), crate::errors::AppError> {
             let _active = AtomicActivityGuard::enter(&self.active_stops);
-            self.stop_calls.fetch_add(1, Ordering::SeqCst);
+            let call = self.stop_calls.fetch_add(1, Ordering::SeqCst) + 1;
             if let Some(started) = self
                 .stop_started
                 .lock()
@@ -2739,10 +2711,26 @@ mod tests {
             {
                 let _ = started.send(());
             }
-            hold_runtime_stop_until_budget(control, self.stop_hold);
+            if call == 1 {
+                hold_runtime_stop_until_budget(control, self.stop_hold);
+            }
             self.deadline_seen
                 .store(control.shutdown_deadline().is_some(), Ordering::SeqCst);
-            Ok(())
+            match self
+                .stop_outcomes
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .pop_front()
+                .unwrap_or(CanceledStartStopOutcome::Success)
+            {
+                CanceledStartStopOutcome::Success => Ok(()),
+                CanceledStartStopOutcome::Error => Err(crate::errors::AppError::Other(
+                    "injected canceled-start stop failure".to_string(),
+                )),
+                CanceledStartStopOutcome::Panic => {
+                    panic!("injected canceled-start stop panic")
+                }
+            }
         }
 
         fn cleanup_labeled_orphans(
@@ -3055,11 +3043,6 @@ mod tests {
                 .finish();
         }
 
-        tokio::time::timeout(Duration::from_secs(1), stop_started_rx)
-            .await
-            .expect("container stop is invoked during coordinator close")
-            .expect("container stop-start signal is delivered");
-        assert_eq!(runtime.stop_calls.load(Ordering::SeqCst), 1);
         tokio::time::timeout(Duration::from_secs(2), close)
             .await
             .expect("coordinator close obeys the shared shutdown deadline")
@@ -3084,11 +3067,16 @@ mod tests {
                 .expect_err("shutdown finalizer returns unavailable"),
             SelectionCoordinatorError::Unavailable.to_string()
         );
-        assert_eq!(runtime.stop_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(runtime.stop_calls.load(Ordering::SeqCst), 0);
         assert_eq!(runtime.active_stops.load(Ordering::SeqCst), 0);
-        assert!(runtime.deadline_seen.load(Ordering::SeqCst));
         assert!(!container_backend.contains_transport_state_for_test(pending.id));
         assert_eq!(container_backend.detached_cleanup_count_for_test(), 0);
+        assert_eq!(
+            container_backend.retained_runtime_cleanup_sessions_for_test(),
+            vec![pending.id],
+            "post-seal pending cleanup must remain owned for the authorized global sweep: {:?}",
+            container_backend.retained_cleanup_contexts_for_test()
+        );
         let aggregate = manager_handle.aggregate_snapshot().await;
         assert!(aggregate.pending_ids.is_empty());
         assert!(aggregate.sessions.is_empty());
@@ -3097,19 +3085,35 @@ mod tests {
             .unwrap_or_else(|error| error.into_inner())
             .has_session(pending.id));
 
-        pty.lock()
+        let global_report = pty
+            .lock()
             .unwrap_or_else(|error| error.into_inner())
             .stop_all_started_containers_blocking(Duration::from_secs(1));
+        assert!(
+            global_report.terminal,
+            "retained={:?}",
+            global_report.retained
+        );
+        tokio::time::timeout(Duration::from_secs(1), stop_started_rx)
+            .await
+            .expect("global sweep invokes the retained container stop")
+            .expect("container stop-start signal is delivered");
         assert_eq!(
             runtime.stop_calls.load(Ordering::SeqCst),
             1,
-            "later global sweep must be a no-op for the joined rollback"
+            "the single production global sweep must stop the retained handle exactly once"
         );
+        assert_eq!(runtime.active_stops.load(Ordering::SeqCst), 0);
+        assert!(runtime.deadline_seen.load(Ordering::SeqCst));
+        assert!(container_backend
+            .retained_cleanup_sessions_for_test()
+            .is_empty());
     }
 
     async fn assert_real_pending_container_start_shutdown_waits_for_stop(
         capped: bool,
         fail_worker_spawn: bool,
+        first_stop_outcome: CanceledStartStopOutcome,
     ) {
         use crate::pty::backend::SessionBackendKind;
         use crate::pty::container_backend::ContainerTransportBackend;
@@ -3132,6 +3136,10 @@ mod tests {
             active_starts: AtomicUsize::new(0),
             active_stops: AtomicUsize::new(0),
             deadline_seen: AtomicBool::new(false),
+            stop_outcomes: Mutex::new(std::collections::VecDeque::from([
+                first_stop_outcome,
+                CanceledStartStopOutcome::Success,
+            ])),
         });
         let token_dir = tempfile::TempDir::new().expect("create container token directory");
         let token_manager =
@@ -3336,6 +3344,27 @@ mod tests {
         assert_eq!(runtime.active_stops.load(Ordering::SeqCst), 0);
         assert!(runtime.deadline_seen.load(Ordering::SeqCst));
         assert!(!container_backend.contains_transport_state_for_test(pending_id));
+        let retry_expected = first_stop_outcome != CanceledStartStopOutcome::Success;
+        let retained_contexts = container_backend.retained_cleanup_contexts_for_test();
+        assert_eq!(
+            container_backend.retained_runtime_cleanup_sessions_for_test(),
+            if retry_expected {
+                vec![pending_id]
+            } else {
+                Vec::new()
+            },
+            "the deterministic canceled-start handle must remain owned after a nonterminal stop: {:?}",
+            retained_contexts
+        );
+        assert!(
+            retained_contexts.iter().all(|context| {
+                context.contains("runtimeHandle=false")
+                    || (retry_expected
+                        && context.contains(&pending_id.to_string())
+                        && context.contains("runtimeHandle=true"))
+            }),
+            "retained cleanup must identify runtime-backed ownership separately from non-runtime residue: {retained_contexts:?}"
+        );
         assert_eq!(
             container_backend.shutdown_work_state_for_test(),
             (true, 0, 0)
@@ -3356,14 +3385,26 @@ mod tests {
             .backend_kind(pending_id)
             .is_none());
 
-        pty.lock()
+        if fail_worker_spawn {
+            container_backend.clear_shutdown_worker_spawn_failure_for_test();
+        }
+        let global_report = pty
+            .lock()
             .unwrap_or_else(|error| error.into_inner())
             .stop_all_started_containers_blocking(Duration::from_secs(1));
+        assert!(
+            global_report.terminal,
+            "retained={:?}",
+            global_report.retained
+        );
         assert_eq!(
             runtime.stop_calls.load(Ordering::SeqCst),
-            1,
-            "later global sweep must be a no-op after the real start is joined"
+            if retry_expected { 2 } else { 1 },
+            "the single production global sweep must retry only a nonterminal deterministic owner"
         );
+        assert!(container_backend
+            .retained_cleanup_sessions_for_test()
+            .is_empty());
     }
 
     fn production_prefix(source: &str) -> &str {
@@ -4507,7 +4548,12 @@ mod tests {
 
     #[tokio::test]
     async fn normal_shutdown_drain_joins_real_pending_container_start_and_stop_exactly_once() {
-        assert_real_pending_container_start_shutdown_waits_for_stop(false, false).await;
+        assert_real_pending_container_start_shutdown_waits_for_stop(
+            false,
+            false,
+            CanceledStartStopOutcome::Success,
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -4719,6 +4765,21 @@ mod tests {
         assert_eq!(backend.kill_count(pending.id), 1);
         assert!(!backend.has_session(pending.id));
         assert!(!pty.lock().unwrap().has_session(pending.id));
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if manager_handle
+                    .aggregate_snapshot()
+                    .await
+                    .pending_ids
+                    .is_empty()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("retained pending-create rollback reaches terminal manager state");
         let aggregate = manager_handle.aggregate_snapshot().await;
         assert!(aggregate.pending_ids.is_empty());
         assert!(aggregate.sessions.is_empty());
@@ -4733,12 +4794,42 @@ mod tests {
 
     #[tokio::test]
     async fn capped_shutdown_abort_joins_real_pending_container_start_and_stop_exactly_once() {
-        assert_real_pending_container_start_shutdown_waits_for_stop(true, false).await;
+        assert_real_pending_container_start_shutdown_waits_for_stop(
+            true,
+            false,
+            CanceledStartStopOutcome::Success,
+        )
+        .await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn canceled_real_start_worker_spawn_failure_falls_back_without_losing_handle() {
-        assert_real_pending_container_start_shutdown_waits_for_stop(true, true).await;
+        assert_real_pending_container_start_shutdown_waits_for_stop(
+            true,
+            true,
+            CanceledStartStopOutcome::Success,
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canceled_real_start_stop_error_retains_and_retries_the_deterministic_handle() {
+        assert_real_pending_container_start_shutdown_waits_for_stop(
+            true,
+            true,
+            CanceledStartStopOutcome::Error,
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canceled_real_start_stop_panic_retains_and_retries_the_deterministic_handle() {
+        assert_real_pending_container_start_shutdown_waits_for_stop(
+            true,
+            true,
+            CanceledStartStopOutcome::Panic,
+        )
+        .await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
