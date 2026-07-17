@@ -74,10 +74,6 @@ import "./styles/sidebar.css";
 import "../shared/styles/toast.css";
 
 interface SidebarAppProps {
-  /**
-   * True when mounted inside MainApp's unified layout. Skips window-level
-   * initializers; those are main-window concerns.
-   */
   embedded?: boolean;
   railSide?: MainSidebarSide;
 }
@@ -113,7 +109,6 @@ function consumeWarningCount(counts: Map<string, number>, warning: SessionWarnin
 }
 
 export function blockContextMenu(e: Event): void {
-  // Allow native menus where users expect text Copy/Paste.
   if (e.target instanceof Element && e.target.closest(".terminal-host, .project-filter-row")) return;
   e.preventDefault();
 }
@@ -141,11 +136,6 @@ function projectPanelForPath(
   return header?.closest<HTMLElement>(".project-panel") ?? null;
 }
 
-/**
- * #941 — align the newly selected project's header with the top of the shared
- * sidebar scrollport. The primitive semantic key deliberately suppresses raw
- * store/config emissions and same-selection re-clicks.
- */
 export function createSidebarSelectionScrollReset(
   scrollContainer: () => HTMLDivElement | undefined,
 ): void {
@@ -157,8 +147,6 @@ export function createSidebarSelectionScrollReset(
     const projectPath = workgroupGroupsStore.activeProjectPath();
     if (!projectPath) return;
 
-    // Collapse/expand and the filtered rows update in the same click. Position
-    // only after those Solid updates settle, and discard a superseded fast click.
     queueMicrotask(() => {
       if (disposed || selectionKey() !== key) return;
       const container = scrollContainer();
@@ -167,8 +155,6 @@ export function createSidebarSelectionScrollReset(
       const projectPanel = projectPanelForPath(container, projectPath);
       if (projectPanel) {
         const containerTop = container.getBoundingClientRect().top;
-        // The panel starts at its sticky header. Measure the non-sticky panel
-        // because a pinned header's rect cannot reveal its logical scroll offset.
         const projectTop = projectPanel.getBoundingClientRect().top;
         container.scrollTop = Math.max(0, container.scrollTop + projectTop - containerTop);
       }
@@ -184,10 +170,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
   const [showOnboarding, setShowOnboarding] = createSignal(false);
   const [loopToast, setLoopToast] = createSignal<LoopToast | null>(null);
   const [settingsRailSide, setSettingsRailSide] = createSignal<MainSidebarSide>("right");
-  // #695 — one-at-a-time seeded context-template update modal. `seen` is keyed
-  // by `(projectPath, filename, defaultSha256, fileSha256)` so a resolved or
-  // skipped update is not re-shown, while a genuinely new pending update (the
-  // user edited the file again, or the baked default bumped) gets a fresh key.
   const [activeContextTemplateUpdate, setActiveContextTemplateUpdate] =
     createSignal<ContextTemplateUpdate | null>(null);
   const [contextTemplateUpdateBusy, setContextTemplateUpdateBusy] = createSignal(false);
@@ -205,7 +187,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
   const railSide = () => props.railSide ?? settingsRailSide();
   let sidebarScrollableEl: HTMLDivElement | undefined;
   createSidebarSelectionScrollReset(() => sidebarScrollableEl);
-  // #592 - debounce handle for the profile-drift re-list (collapses bursts).
   let profileDriftRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   const handleMainSidebarSideChange = (event: Event) => {
     const side = (event as CustomEvent<{ side?: MainSidebarSide }>).detail?.side;
@@ -214,7 +195,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
 
   const handleRaiseTerminal = async (e: MouseEvent) => {
     if (!isTauri || props.embedded || !raiseTerminalEnabled) return;
-    // Don't steal focus from interactive elements
     const tag = (e.target as HTMLElement).tagName;
     if (tag === "SELECT" || tag === "INPUT" || tag === "TEXTAREA" || tag === "BUTTON") return;
     const now = Date.now();
@@ -236,13 +216,8 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     }, 3000);
   };
 
-  // #609 — sticky "npm update available" toaster. Per-mount dedup state so the
-  // startup event + the getUpdateStatus snapshot never double-toast a version.
   const showUpdateToast = createUpdateToaster();
 
-  // #695 — seeded context-template update flow. The exact removal key (grinch
-  // fix #5) includes the file hash so a resolved older modal never silently
-  // drops a newer pending update for the same project/file/default.
   const contextTemplateUpdateKey = (update: ContextTemplateUpdate) =>
     `${update.projectPath}\n${update.filename}\n${update.currentDefaultSha256}\n${update.currentFileSha256}`;
 
@@ -267,10 +242,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     }
   };
 
-  // Drop exactly the resolved update from the store and close the modal. The
-  // createEffect below then surfaces the next unseen pending update, one at a
-  // time. Removal and `seen` both key on the file hash, so a concurrent newer
-  // pending update survives (grinch fix #5).
   const resolveContextTemplateUpdate = (update: ContextTemplateUpdate) => {
     projectStore.removeContextTemplateUpdate(
       update.projectPath,
@@ -290,8 +261,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       await ProjectAPI.keepCustomContextTemplate(update);
       resolveContextTemplateUpdate(update);
     } catch (e) {
-      // Keep the modal open so the user can retry; the backend made no durable
-      // change, so re-showing the same notice later would be correct anyway.
       setContextTemplateUpdateError(formatContextTemplateError(e));
     } finally {
       setContextTemplateUpdateBusy(false);
@@ -306,8 +275,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     try {
       const result = await ProjectAPI.overwriteContextTemplateWithDefault(update);
       resolveContextTemplateUpdate(update);
-      // Sticky info toast — the user must be able to find the `.bak` the old
-      // file was preserved as.
       toastStore.info(
         `${update.label} overwritten with the new default. Your previous version was saved to ${result.backupPath}`,
         { durationMs: null }
@@ -319,10 +286,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     }
   };
 
-  // Surface the next pending context-template update whenever no modal is open.
-  // Short-circuiting on an active modal keeps it one-at-a-time; closing the
-  // modal re-runs this effect, which re-reads projectStore.projects and picks
-  // up any update queued while the previous one was open.
   createEffect(() => {
     if (activeContextTemplateUpdate()) return;
     const next = nextContextTemplateUpdate();
@@ -332,12 +295,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     setActiveContextTemplateUpdate(next);
   });
 
-  // #592 - pull the backend-computed drift flag and surgically patch each
-  // session. Uses setProfileOutdated (never setSessions) so the frontend-only
-  // pendingReview field is preserved. list_sessions recomputes profileOutdated
-  // from the persisted replica hash vs the current config, so this surfaces drift
-  // from ANY source: a profile event, an external settings.json edit, or
-  // pre-existing drift restored at boot.
   const refreshProfileOutdated = async () => {
     try {
       const list = await SessionAPI.list();
@@ -348,9 +305,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       console.error("Failed to refresh profile drift:", e);
     }
   };
-  // Debounce so a burst (a workgroup spawn emitting many session_created, or a
-  // broad-scope profile apply touching many replicas) collapses into a single
-  // list_sessions round-trip.
   const scheduleProfileOutdatedRefresh = () => {
     if (profileDriftRefreshTimer) clearTimeout(profileDriftRefreshTimer);
     profileDriftRefreshTimer = setTimeout(() => {
@@ -358,10 +312,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       void refreshProfileOutdated();
     }, 250);
   };
-  // Re-check drift when the window regains focus / becomes visible. The robust
-  // catch-all for a cell edited OUTSIDE the app (a hand edit to settings.json,
-  // or any path that does not emit coding_agent_profiles_updated): the badge
-  // lights up as soon as the user returns to AC.
   const handleWindowFocusDriftRefresh = () => {
     if (document.visibilityState === "hidden") return;
     scheduleProfileOutdatedRefresh();
@@ -403,14 +353,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
   };
 
   onMount(async () => {
-    // #289 / dark-default — dark is the base CSS, so first paint is dark with
-    // no optimistic class; the persisted-preference check after
-    // SettingsAPI.get() below opts into light only for users who chose it last
-    // session. Guarded with !props.embedded because MainApp owns the
-    // documentElement classList when this is mounted inside the unified layout
-    // — same pattern as zoom/geometry.
-    // #912: subscribe before the startup warning drain. The backend appends
-    // before live emit, so exact live/drained duplicates are collapsed below.
     unlisteners.push(await onSessionEnvWarning(handleLiveSessionWarning));
     void drainBufferedSessionWarnings();
 
@@ -440,11 +382,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
         void refreshProfileOutdated();
       })
     );
-    // #609 npm update notification. Subscribe BEFORE snapshotting so a startup
-    // emit fired during mount is never dropped; showUpdateToast dedups on
-    // version (subscribe-then-snapshot order). The snapshot
-    // is fire-and-forget so its IPC round-trip never delays the listener
-    // registrations that follow in this onMount.
     unlisteners.push(
       await onNpmUpdateAvailable((info) => showUpdateToast(info))
     );
@@ -455,7 +392,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       .catch((err) => {
         console.error("[update-check] getUpdateStatus failed:", err);
       });
-    // #714 screenshot capture saved/failed toasts + startup hotkey-status warning.
     unlisteners.push(...(await wireScreenshotListeners()));
     unlisteners.push(
       await onCodingAgentEnvSettingsUpdated(() => {
@@ -470,9 +406,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
         if (data.agentPath) {
           void projectStore.reloadProjectIfLoaded(data.agentPath);
         } else {
-          // Broad-scope apply (#384) touched many replicas with no single
-          // agentPath — reload every loaded project so discovery refreshes
-          // currentCodingAgentId/currentProfile everywhere.
           for (const proj of projectStore.projects) {
             void projectStore.reloadProject(proj.path);
           }
@@ -498,7 +431,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       cleanupGeometry = await initWindowGeometry("sidebar");
     }
 
-    // Apply window settings
     const appSettings = await SettingsAPI.get();
     setSettingsRailSide(appSettings.mainSidebarSide === "left" ? "left" : "right");
     if (!props.embedded) {
@@ -507,13 +439,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     raiseTerminalEnabled = appSettings.raiseTerminalOnClick;
     sessionsStore.setCoordSortByActivity(appSettings.coordSortByActivity ?? false);
     sessionsStore.setAlwaysShowSelectedWorkgroup(appSettings.alwaysShowSelectedWorkgroup ?? true);
-    // #965 (RC-3) — restore the rail's collapse snapshot. MUST run before
-    // projectStore.initFromSettings() populates the rail: that ordering is the only
-    // thing preventing an expand-then-collapse flash, because onMount runs AFTER the
-    // first paint. Deliberately NOT inside the `!props.embedded` guard above — the
-    // rail is live in the browser client and in the unified main window too.
     railCollapseStore.hydrateFromSettings(appSettings);
-    // Apply sidebar style from settings (remap removed themes to default)
     const style = appSettings.sidebarStyle;
     const removedThemes = ["classic", "signal-grid"];
     document.documentElement.dataset.sidebarStyle = (!style || removedThemes.includes(style)) ? "noir-minimal" : style;
@@ -525,7 +451,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       document.addEventListener("mousedown", handleRaiseTerminal);
     }
 
-    // Block the default browser context menu globally — custom menus are used instead
     document.addEventListener("contextmenu", blockContextMenu);
     window.addEventListener("main-sidebar-side-change", handleMainSidebarSideChange);
 
@@ -535,19 +460,11 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       } catch {}
     }
 
-    // Load settings into reactive store (for voice-to-text visibility etc.)
     await settingsStore.load();
 
-    // Feature #110 — start watching for team busy→all-idle transitions.
-    // Mounted after settingsStore.load() so the very first effect run
-    // already sees the user's teamIdleBeepEnabled choice; the watcher's
-    // own initialization guard separately suppresses any startup beep.
-    // primeAudio() arms the AudioContext on first user gesture so the
-    // very first beep isn't swallowed by browser autoplay policy.
     primeAudio();
     stopTeamIdleWatcher = startTeamIdleWatcher();
 
-    // First-run: show onboarding if no coding agents configured and not previously dismissed
     if (
       (!appSettings.agents || appSettings.agents.length === 0) &&
       !appSettings.onboardingDismissed
@@ -555,14 +472,12 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       setShowOnboarding(true);
     }
 
-    // Load saved project if any
     await projectStore.initFromSettings(
       appSettings.projectPaths ?? [],
       appSettings.projectPath ?? null,
       appSettings.archivedProjectPaths ?? [],
     );
 
-    // Load all repos for inactive agent display
     try {
       const allRepos = await ReposAPI.search("");
       sessionsStore.setRepos(allRepos.filter((r) => r.agents.length > 0));
@@ -574,36 +489,24 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       })
     );
 
-    // Load initial sessions
     const sessions = await SessionAPI.list();
     sessionsStore.setSessions(sessions);
 
     const activeId = await SessionAPI.getActive();
     sessionsStore.setActiveId(activeId);
 
-    // #592 - surface profile drift edited OUTSIDE the app (a hand edit to
-    // settings.json, or any path that does not emit coding_agent_profiles_updated)
-    // the moment the user returns to AC. The in-app edit events still refresh
-    // immediately; this is the robust catch-all for everything else.
     window.addEventListener("focus", handleWindowFocusDriftRefresh);
     document.addEventListener("visibilitychange", handleWindowFocusDriftRefresh);
 
-    // Listen for events
     unlisteners.push(
       await onSessionCreated((session) => {
         sessionsStore.addSession(session);
-        // New session is auto-activated if it's the first one
         if (
           sessionsStore.sessions.length === 1 &&
           !isExitedStatus(session.status)
         ) {
           sessionsStore.setActiveId(session.id);
         }
-        // #592 - session_created carries profileOutdated=false (From<&Session>
-        // cannot compute drift). A session restored at boot with pre-existing
-        // drift must re-derive it from list_sessions, which would otherwise be
-        // clobbered to false by the addSession upsert. Debounced so a workgroup
-        // spawn burst collapses into one re-list.
         scheduleProfileOutdatedRefresh();
       })
     );
@@ -611,9 +514,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     unlisteners.push(
       await onSessionDestroyed(({ id }) => {
         sessionsStore.removeSession(id);
-        // Detached-window cleanup: if the session had a detached window,
-        // its destroy also closes that window. Clear the store flag so
-        // UI (icons, menu items) doesn't linger in detached state.
         sessionsStore.setDetached(id, false);
       })
     );
@@ -630,10 +530,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       )
     );
 
-    // Hydrate detachedIds from backend (G.8 race safety — covers detach
-    // events that fired before this component mounted, e.g. from the
-    // Phase-3 restore path or from a prior detach survived across a
-    // SidebarApp re-mount in the unified window).
     try {
       const ids = await WindowAPI.listDetached();
       ids.forEach((id) => sessionsStore.setDetached(id, true));
@@ -672,14 +568,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       })
     );
 
-    // #1033 - snapshot-seed every agent session no event has spoken for yet. The engine
-    // emits ONLY on change (pty/context_scrape/mod.rs), so a session already sitting at a
-    // value when this window mounted will never send one, and a listener alone leaves it
-    // reading N/A forever. Registered AFTER the listener, and hydrateSessionContext is a
-    // no-op on an existing key, so a slow invoke cannot overwrite a fresher event.
-    // Absent-key check, never a truthiness check: a hydrated `null` and a hydrated `0`
-    // are both answers. try/catch mirrors the repo-search fan-out at :564-567 so one
-    // rejected invoke cannot abort the rest of onMount.
     try {
       await Promise.all(
         sessionsStore.sessions
@@ -711,11 +599,9 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       })
     );
 
-    // Load initial bridge state
     const bridges = await TelegramAPI.listBridges();
     bridgesStore.setBridges(bridges);
 
-    // Telegram bridge events
     unlisteners.push(
       await onTelegramBridgeAttached((info) => {
         bridgesStore.addBridge(info);

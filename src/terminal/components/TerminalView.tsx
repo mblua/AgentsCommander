@@ -31,86 +31,34 @@ interface SessionTerminal {
   fitAddon: FitAddon;
   inputBuffer: string;
   snapshotReplayRequested: boolean;
-  /**
-   * A `get_screen_snapshot` round-trip is in flight AND the screen can still be
-   * rebuilt from it. Never gates rendering (#955) — it only says whether the
-   * retained live events are still complete enough to reconcile against.
-   */
   snapshotReplayPending: boolean;
   snapshotResizeSuppressed: boolean;
   snapshotSettleTimer: ReturnType<typeof setTimeout> | null;
   hasRenderedOutput: boolean;
   replayStatus: HTMLDivElement;
-  /** Live events already written to xterm, retained only to rebuild (#955). */
   pendingSnapshotEvents: PtyOutputEvent[];
   pendingSnapshotBytes: number;
   lastAppliedSequence: number | null;
-  /**
-   * #973. The size the PTY was OPENED at, when this is the first terminal built
-   * for a session the view sized itself. Null for a re-attach, and for every
-   * session created with no tile to measure.
-   */
   spawnViewport: PtyViewport | null;
-  /**
-   * #973. The size the PTY is at, as far as this view knows: the size it was
-   * opened at, then whatever resize we last sent. Null means "unknown", and the
-   * next resize is always sent.
-   */
   lastSentViewport: PtyViewport | null;
-  /** #973. One drift warning per terminal, not one per resize. */
   spawnDriftReported: boolean;
-  /**
-   * #973. The pending re-send of a resize the PTY never got, and how many times
-   * we have tried. Rolling the dedup back on failure is not enough on its own:
-   * after the dedup, the failed call is usually the ONLY one of its burst, so
-   * there is no subsequent resize for the rollback to un-suppress.
-   */
   resizeRetryTimer: ReturnType<typeof setTimeout> | null;
   resizeRetryAttempts: number;
 }
 
 interface TerminalViewProps {
-  /**
-   * If set, this TerminalView is inside a detached window locked to one
-   * session. Disables the main-window pre-warm listener (plan §A2.3.G6).
-   */
   lockedSessionId?: string;
 }
 
 const SNAPSHOT_UNAVAILABLE_MESSAGE =
   "Terminal buffer unavailable. Resize the window to request a repaint.";
 
-// #955: `get_screen_snapshot` is an IPC round-trip, and it used to gate every
-// byte a new terminal rendered. On a saturated webview main thread it was
-// measured taking seconds — and, in the capture on the issue, never settling at
-// all: the agent painted continuously into a permanently black tile.
-//
-// The gate is gone. Live bytes render on arrival, and the snapshot reconciles
-// afterwards. These two bounds are what remains of the round-trip:
-//
-// 1. A settle deadline, purely diagnostic. It gates nothing; it sizes the
-//    round-trip in the log and lets a terminal that has still shown *nothing*
-//    say so instead of sitting black.
 const SNAPSHOT_SETTLE_WARN_MS = 500;
-// 2. A retention budget. Live events are held (in addition to being rendered)
-//    so the screen can be rebuilt into the snapshot's frame of reference when
-//    the snapshot loses the race. Past this many bytes the live stream has
-//    repainted the screen many times over, the snapshot is worthless, and
-//    holding more would leak if the round-trip never settles.
 const SNAPSHOT_RECONCILE_LIMIT_BYTES = 2 * 1024 * 1024;
 
-// #973. A `pty_resize` that fails leaves the PTY at a size the terminal is not —
-// the exact bug class this issue exists to close, arrived at from the other end.
-// So a failed resize is re-sent, with a linear back-off, and bounded: a resize
-// that can never succeed (the session is gone, the backend is gone) must not
-// retry forever. Exhausting the budget is reported at error level, because a PTY
-// stranded at the wrong size must not look like a PTY that was resized.
 const PTY_RESIZE_RETRY_DELAY_MS = 120;
 const PTY_RESIZE_MAX_RETRIES = 3;
 
-// WebGL context budget: ~16 per document. Canvas fallback activates silently
-// when the budget is exhausted (e.g. after ~16 concurrent sessions in main).
-// See plan §DW.9.
 const TerminalView: Component<TerminalViewProps> = (props) => {
   let hostRef!: HTMLDivElement;
   let activeSessionId: string | null = null;
@@ -121,14 +69,6 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
 
   const terminals = new Map<string, SessionTerminal>();
 
-  /**
-   * #973 diagnostic. The PTY was opened at the size the view had already fitted
-   * to, so a later fit that disagrees means the two measurements drifted apart —
-   * a scrollbar, a font metric settling late, an extra layout pass, a DPI quirk.
-   * The resize still goes out (correctness first), but it lands inside the
-   * child's startup, which is the whole bug. This is the line that says it
-   * happened, on a real box, instead of us assuming it never does.
-   */
   const reportSpawnSizeDrift = (
     sessionId: string,
     entry: SessionTerminal,
@@ -157,15 +97,6 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     }
   };
 
-  /**
-   * #973 — re-send a resize the PTY never got.
-   *
-   * It re-sends the size the terminal IS when the timer fires, not the size that
-   * failed. The view may have moved on in the meantime, and what has to be true at
-   * the end is that the PTY is where the terminal is now. That also makes the retry
-   * self-cancelling: if a later resize already landed on that size, `sendPtyResize`
-   * dedups this one away and nothing is sent.
-   */
   const scheduleResizeRetry = (sessionId: string, entry: SessionTerminal) => {
     if (entry.resizeRetryTimer !== null) {
       return;
@@ -185,8 +116,6 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     entry.resizeRetryTimer = setTimeout(() => {
       entry.resizeRetryTimer = null;
 
-      // Disposed, or replaced by a re-attach: that terminal's size is not this
-      // terminal's business any more.
       if (terminals.get(sessionId) !== entry) {
         return;
       }
@@ -195,17 +124,6 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     }, PTY_RESIZE_RETRY_DELAY_MS * attempt);
   };
 
-  /**
-   * #973 — the ONE place a resize reaches the PTY, and it only does so when the
-   * size actually moved.
-   *
-   * A single attach used to fire 5-20 `pty_resize` calls: `syncViewport` sent one
-   * unconditionally, from a double `requestAnimationFrame` AND a `ResizeObserver`,
-   * and xterm's own `onResize` sent another. dev-rust measured that a redundant
-   * SAME-size burst is harmless (0/10 blank) while one row of real drift is not
-   * (6/10) — so both halves matter: send nothing when nothing changed, and when
-   * something did change, say it exactly once.
-   */
   const sendPtyResize = (
     sessionId: string,
     entry: SessionTerminal,
@@ -224,20 +142,14 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
 
     void PtyAPI.resize(sessionId, cols, rows)
       .then(() => {
-        // The channel works. Whatever budget an earlier failure burned is returned.
         entry.resizeRetryAttempts = 0;
       })
       .catch((err: unknown) => {
-        // A FAILED resize must not poison the cache: if it did, the retry below
-        // would be deduped away as a no-op and the PTY would sit at the wrong size
-        // forever. (dev-rust hit exactly this trap in the backend's own dedup.)
         if (entry.lastSentViewport === sent) {
           entry.lastSentViewport = previous;
         }
         console.warn(`[terminal] pty_resize ${sessionId} failed:`, err);
 
-        // ...and un-suppressing a resize nobody is going to send again is not a
-        // retry. Send it again.
         scheduleResizeRetry(sessionId, entry);
       });
   };
@@ -254,24 +166,6 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     }
   };
 
-  /**
-   * #973 — the size a terminal created RIGHT NOW would fit to, handed to
-   * `create_session` so the PTY is opened at it and nothing has to resize a child
-   * that is still starting up.
-   *
-   * This is not a prediction. `proposeDimensions()` is the exact computation the
-   * new terminal's own post-mount `fit()` will run, and it is run here against a
-   * tile that is already on screen in the same `.terminal-host`: every
-   * `.terminal-instance` is `position: absolute; inset: 0`, so a new one gets the
-   * identical box; `createTerminalOptions` is the same for all of them; and the
-   * font metrics are already resolved, because this terminal has been rendering
-   * with them. Same inputs, same computation, same answer.
-   *
-   * Null whenever any of that stops being true — nothing is active, the tile is
-   * `display: none` (a pre-warmed or backgrounded session measures a 0 box), or
-   * xterm itself reports it has not been laid out yet. The caller then sends no
-   * size, which is strictly better than sending a wrong one.
-   */
   const measureFittedViewport = (): PtyViewport | null => {
     if (!activeSessionId) {
       return null;
@@ -390,11 +284,6 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     entry.pendingSnapshotBytes = 0;
   };
 
-  /**
-   * Retain a live event that has ALREADY been written to xterm, so the screen
-   * can be rebuilt from the snapshot's frame of reference once it lands. This
-   * buffer never withholds output (#955) — it exists only to reconcile.
-   */
   const retainForSnapshotReconcile = (
     entry: SessionTerminal,
     event: PtyOutputEvent
@@ -407,13 +296,6 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     }
   };
 
-  /**
-   * #955: live PTY bytes are written the instant they arrive. They are NEVER
-   * gated on the snapshot round-trip — that gate was the defect: every newly
-   * created terminal stayed black for as long as `get_screen_snapshot` took to
-   * settle, which on a saturated IPC channel was forever, while the agent
-   * painted underneath and the bytes piled up in an array.
-   */
   const writeLivePtyOutput = (entry: SessionTerminal, event: PtyOutputEvent) => {
     const sequence = eventSequence(event);
 
@@ -452,16 +334,10 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
   };
 
   interface SnapshotSettle {
-    /** The retained live events were still complete: a rebuild is safe. */
     reconcilable: boolean;
     retainedEvents: PtyOutputEvent[];
   }
 
-  /**
-   * Conclude the snapshot round-trip, whatever its outcome. Returns the live
-   * events retained while it was in flight, or null if the terminal was
-   * replaced/disposed underneath it.
-   */
   const concludeSnapshotFetch = (
     sessionId: string,
     entry: SessionTerminal
@@ -500,15 +376,6 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     console.debug(line);
   };
 
-  /**
-   * Live output already painted this terminal, so the snapshot lost the race.
-   * A snapshot is a FULL-SCREEN repaint (`vt100::Screen::contents_formatted`),
-   * so writing it on top of live bytes would duplicate them. Rebuild instead:
-   * reset, lay down the snapshot (everything up to its sequence), then replay
-   * the live events that came after it. The sequence dedup drops the ones the
-   * snapshot already contains, so the result is exactly what the un-raced path
-   * renders — no duplicated and no missing output.
-   */
   const rebuildFromSnapshot = (
     entry: SessionTerminal,
     snapshot: PtyScreenSnapshot,
@@ -516,8 +383,6 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
   ) => {
     entry.terminal.reset();
     entry.hasRenderedOutput = false;
-    // Rewind, do not raise: the retained events after the snapshot's sequence
-    // must replay, and markAppliedSequence() only ever moves the watermark up.
     entry.lastAppliedSequence = snapshot.sequence;
 
     writeTerminalBytes(entry, new Uint8Array(snapshot.data));
@@ -533,8 +398,6 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     const { reconcilable, retainedEvents } = settle;
 
     if (!snapshot || snapshot.data.length === 0) {
-      // Nothing to seed with. Whatever live output has arrived stands, and the
-      // dedup makes this flush a no-op for anything already on screen.
       flushPendingEvents(entry, retainedEvents);
       if (!entry.hasRenderedOutput) {
         setReplayStatus(entry, SNAPSHOT_UNAVAILABLE_MESSAGE);
@@ -543,9 +406,6 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     }
 
     if (entry.hasRenderedOutput && !reconcilable) {
-      // The retention budget was spent, so the live events after the snapshot's
-      // sequence are no longer held and a rebuild would drop them. The live
-      // stream has long since repainted the screen: keep it, drop the snapshot.
       console.warn(
         `[terminal] snapshot ${sessionId} discarded: live output outran the reconcile budget`
       );
@@ -563,8 +423,6 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     if (entry.hasRenderedOutput) {
       rebuildFromSnapshot(entry, snapshot, retainedEvents);
     } else {
-      // The snapshot won the race into a clean terminal: seed it and let the
-      // retained events (if any) land on top. This is the re-attach path.
       writeTerminalBytes(entry, new Uint8Array(snapshot.data));
       markAppliedSequence(entry, snapshot.sequence);
       flushPendingEvents(entry, retainedEvents);
@@ -585,8 +443,6 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     entry.pendingSnapshotEvents = [];
     entry.pendingSnapshotBytes = 0;
 
-    // #955 diagnostic: size the round-trip. The gate is gone, but a slow settle
-    // still points straight at a saturated IPC channel / webview main thread.
     const requestedAt = performance.now();
 
     clearSnapshotSettleTimer(entry);
@@ -600,8 +456,6 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
         `[terminal] snapshot ${sessionId} still pending after ${SNAPSHOT_SETTLE_WARN_MS}ms, pendingEvents=${entry.pendingSnapshotEvents.length}`
       );
 
-      // Live output keeps rendering regardless — that is the fix. Only a
-      // terminal that has shown nothing at all has anything to report.
       if (!entry.hasRenderedOutput) {
         setReplayStatus(entry, SNAPSHOT_UNAVAILABLE_MESSAGE);
       }
@@ -648,10 +502,6 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     container.hidden = true;
     hostRef.appendChild(container);
 
-    // #973. The PTY was opened at the size this view fitted to, so start xterm AT
-    // that size. Without this it would start at xterm's 80x24 default and the very
-    // first fit would resize it — firing, through `onResize`, exactly the resize
-    // into the child's startup that opening at the right size exists to avoid.
     const spawnViewport = takeSpawnViewport(sessionId);
     const terminal = new Terminal({
       ...createTerminalOptions(isTauri),
@@ -677,7 +527,6 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       });
       terminal.loadAddon(webglAddon);
     } catch {
-      // Canvas renderer fallback is automatic.
     }
 
     const entry: SessionTerminal = {
@@ -695,30 +544,18 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       pendingSnapshotBytes: 0,
       lastAppliedSequence: null,
       spawnViewport,
-      // The PTY is already at the size it was opened at. That is the baseline the
-      // post-mount fit is deduped against, and the reason it sends nothing at all.
       lastSentViewport: spawnViewport,
       spawnDriftReported: false,
       resizeRetryTimer: null,
       resizeRetryAttempts: 0,
     };
 
-    // Per-terminal keyboard shortcuts. Match keys via event.key (layout-aware,
-    // matches the convention in shared/shortcuts.ts) so Dvorak/Colemak/AZERTY
-    // users press the key labeled C/V in their layout, not the QWERTY position.
     terminal.attachCustomKeyEventHandler((event) => {
-      // IME composition: hand the keystroke back to xterm so its internal
-      // _compositionHelper can finish the multi-keystroke sequence. Some CJK
-      // IMEs chord Ctrl+Shift during composition; intercepting would corrupt
-      // the IME state.
       if (event.isComposing) return true;
 
       const isCtrlShift = event.ctrlKey && event.shiftKey;
       const key = event.key.toLowerCase();
 
-      // Ctrl+Shift+C → copy xterm selection to system clipboard. With no
-      // selection, return true so the event falls through (in dev, WebView2
-      // opens DevTools; in production, nothing happens).
       if (isCtrlShift && key === "c") {
         if (event.type === "keydown") {
           if (!terminal.hasSelection()) return true;
@@ -729,13 +566,9 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
             .catch((err) => console.warn("[copy] write failed:", err?.name ?? "Error"));
           return false;
         }
-        // keyup mirror: re-check selection (stateless; selection persists post-copy).
         return terminal.hasSelection() ? false : true;
       }
 
-      // Ctrl+Shift+V → paste system clipboard via terminal.paste() so the
-      // payload is wrapped in bracketed-paste markers. clipboard.readText()
-      // is async; re-check session and dispose state inside .then.
       if (isCtrlShift && key === "v") {
         if (event.type === "keydown") {
           event.preventDefault();
@@ -746,10 +579,6 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
               if (!text) return;
               if (activeSessionId !== sessionId) return; // session switched during await
               if (terminal.element?.isConnected !== true) return; // terminal not in DOM (pre-open or post-dispose detached)
-              // Strip both 7-bit ESC[200~/201~ and 8-bit C1 \x9b 200~/201~
-              // forms — defense-in-depth against future shells that activate
-              // 8-bit recognition. xterm@6.0.0 does NOT sanitize internally
-              // (CVE-2019-11848 redux). See plan #104 §1.1.D / §6.8.
               const sanitized = text.replace(/\x9b20[01]~|\x1b\[20[01]~/g, "");
               terminal.paste(sanitized);
             })
@@ -759,7 +588,6 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
         return false;
       }
 
-      // Shift+Enter → send LF (soft newline) instead of CR (submit)
       if (event.key === "Enter" && event.shiftKey) {
         if (event.type === "keydown" && activeSessionId === sessionId) {
           const encoder = new TextEncoder();
@@ -813,10 +641,6 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     next.terminal.focus();
 
     if (isBrowser) {
-      // Browser mode: fit xterm to container and resize PTY to match.
-      // The program receives SIGWINCH and redraws at the new size.
-      // We skip the snapshot replay because it was rendered for the
-      // native terminal's dimensions and would look garbled here.
       requestAnimationFrame(() => {
         if (sessionId !== activeSessionId) return;
         syncViewport(sessionId);
@@ -853,11 +677,6 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       disposeSessionTerminal(id);
     });
 
-    // Plan §A2.3.G6 pre-warm: in main-window mode, subscribe to
-    // terminal_detached events and pre-create hidden xterm entries so
-    // pty_output for detached sessions accumulates in main's cache. On
-    // re-attach, showSessionTerminal promotes the pre-warmed entry to
-    // visible with full scrollback intact. Skip in detached windows.
     if (!props.lockedSessionId) {
       unlistenTerminalDetached = await onTerminalDetached(({ sessionId }) => {
         if (!terminals.has(sessionId)) {

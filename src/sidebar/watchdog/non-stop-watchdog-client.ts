@@ -5,28 +5,12 @@ import { workgroupGroupsStore, nonStopDisplayName, nonStopMatchesWorkgroup } fro
 import { splitWorkgroupsByWorking } from "../components/workgroup-session";
 import { projectStore } from "../stores/project";
 
-// #777 Non-stop watchdog client (hybrid design, D1). The frontend owns ONLY the
-// disparity detection. #882: the working/not-working partition comes from
-// splitWorkgroupsByWorking(), the same single function the rail counter calls,
-// which derives from session state and not from the dot's CSS class. So parity
-// with the rail counter is by construction and cannot drift, and a visual tweak
-// to the status dot can no longer change when this fires. The backend owns the
-// tolerance timer and actuation. Detection is reactive (a Solid effect that
-// re-runs on any session/config/project change), which is immune to Chromium's
-// hidden-window timer throttling; the keepalive setInterval is only a
-// non-critical backstop.
 
 const KEEPALIVE_MS = 10_000;
 
-/** Compute the current watchdog snapshot from the live stores. Exported for unit
- *  testing the disparity/parity detection directly (the createEffect + keepalive
- *  wiring in startNonStopWatchdogClient is audited by review, mirroring the
- *  team-idle-watcher convention). */
 export function buildSnapshot(): NonStopReport[] {
   const reports: NonStopReport[] = [];
   for (const project of projectStore.projects) {
-    // (dev-webpage-ui #3) Load the groups config ourselves; do not depend on the
-    // rail's mount order. Idempotent + dedupes in-flight (workgroup-groups.ts).
     void workgroupGroupsStore.ensureLoaded(project.path);
     const ns = workgroupGroupsStore.config(project.path).nonStop;
     if (!ns || !ns.show) continue;
@@ -61,16 +45,9 @@ export function startNonStopWatchdogClient(): void {
     const json = JSON.stringify(snapshot);
     if (json === lastJson) return; // dedupe unchanged snapshots
     lastJson = json;
-    // Fire-and-forget: a failed report must never throw (the keepalive retries,
-    // and the backend times from its own clock once armed).
     void NonStopAPI.report(snapshot).catch(() => {});
   };
-  // Reactive: recomputes whenever session state, groups config, or the project
-  // list changes. This is the throttle-immune onset/clear detector (event-driven,
-  // not a polled timer) and fires the first report on mount.
   createEffect(push);
-  // Light keepalive backstop: refreshes config + confirms liveness. Non-critical
-  // for timing (the backend times from its own clock once armed).
   const timer = setInterval(() => {
     lastJson = ""; // force a resend even if unchanged
     push();

@@ -2,59 +2,11 @@ export interface SessionRepo {
   label: string;
   sourcePath: string;
   branch: string | null;
-  /**
-   * #1028 - worktree dirty: untracked, unstaged, or staged-but-uncommitted changes.
-   * `true` paints the badge letters red; `false` = backend says clean; `null` = never
-   * successfully detected for this path since the backend process started. A failed
-   * detection HOLDS the last known answer (git_watcher::remember_dirty), so `null`
-   * means "no first answer yet", not "flaked once". Both `false` and `null` render
-   * violet - only the badge `title` distinguishes them.
-   *
-   * REQUIRED, not `dirty?:`, deliberately. `SessionRepo` has no `Default` in Rust, so
-   * every backend construction site is compile-forced to state a value; a `?` throws
-   * that guarantee away on the TS side at `configuredReplicaRepoBadges`
-   * (components/replica-repo-badges.ts), the one production builder of this type on
-   * the cold path, where omitting the `dirty:` line would raise no tsc error and ship
-   * a permanently violet feed. `branch` above is the same shape against a Rust
-   * `Option<String>`. Cost is a `dirty: null` in test literals; that is the trade.
-   */
   dirty: boolean | null;
 }
 
-/**
- * #943 B2 - live per-repo branches, keyed by repo SOURCE PATH.
- *
- * A missing key = the live layer knows nothing about that repo (no event has
- * landed yet, or it was added to `config.json` since the last watcher tick). An
- * explicit `null` = the layer knows the repo and has no branch for it (detached
- * HEAD, not a work tree, git missing, detection timed out).
- *
- * Keyed by path and NEVER by index, even though the backend emits the branches
- * positionally: the payload is stored and re-read against a LATER discovery
- * snapshot, so a reorder/removal in `config.json` `repos` would make a positional
- * merge paint repo A's branch onto repo B for up to one 15s tick.
- */
 export type RepoBranchByPath = Record<string, string | null>;
 
-/**
- * #1028 - live per-repo worktree-dirty, keyed by repo SOURCE PATH.
- *
- * A missing key = the live layer knows nothing about that repo (no event has
- * landed yet, or it was added to `config.json` since the last watcher tick), and
- * the caller resolves it to `null`: there is no single-repo shorthand for dirty to
- * fall back to, unlike `RepoBranchByPath`. An explicit `null` = the layer knows the
- * repo and the backend has never successfully detected its dirty state. Both miss
- * and explicit-null render violet, so the two collapse on screen by design.
- *
- * `false` is a THIRD, distinct value and must survive the trip: it means "detected,
- * clean". It renders identically to `null`, so a `??`-to-`||` slip that turns it
- * into `null` is invisible on the badge and only the `title` exposes it.
- *
- * Keyed by path and NEVER by index, for the same reason as `RepoBranchByPath`: the
- * payload is stored and re-read against a LATER discovery snapshot, so a
- * reorder/removal in `config.json` `repos` would make a positional merge paint repo
- * A's dirty state onto repo B for up to one 15s tick.
- */
 export type RepoDirtyByPath = Record<string, boolean | null>;
 
 export type SessionCommunicationKind = "raiseHand";
@@ -93,7 +45,6 @@ export interface Session {
   effectiveProfile: string | null;
   profileFallbackChain: string[];
   profileFallbackApplied: boolean;
-  /** #592 - backend-computed: loaded profile cell != current config. */
   profileOutdated?: boolean;
 }
 
@@ -101,18 +52,6 @@ export type SessionStatus = "active" | "running" | "idle" | { exited: number };
 
 export type CodingAgentKind = "claude" | "codex" | "gemini";
 
-/**
- * #1033 - payload of the `session_context` event (`lib.rs:456`).
- *
- * `percent` is `number | null` and NEVER `percent?: number`. The Rust side
- * (`pty/context_scrape/mod.rs:69-78`) deliberately carries no
- * `skip_serializing_if` on it, so `None` serializes as an explicit
- * `"percent": null` rather than an absent key. Typing it optional here would
- * re-introduce *absent* as a third state beside `null` and `0`, in a feature
- * whose one hard rule is that unavailable is exactly one thing.
- *
- * `0` is a REAL reading and must survive the trip; only `null` means unavailable.
- */
 export interface SessionContextPayload {
   sessionId: string;
   percent: number | null;
@@ -174,13 +113,6 @@ export interface PtyOutputEvent {
   sequence?: number;
 }
 
-/**
- * #973 — the terminal size the view has already fitted to, handed to
- * `create_session` so the PTY is OPENED at it and no resize has to reach a
- * child that is still starting up. Mirrors the Rust `PtyViewport`
- * (`pty/backend.rs`), which the command takes as two flat optional fields:
- * both must arrive, and a zero dimension falls back to 120x30.
- */
 export interface PtyViewport {
   cols: number;
   rows: number;
@@ -194,12 +126,6 @@ export interface PtyScreenSnapshot {
   sequence: number;
 }
 
-/**
- * #598 — per-agent config-folder seed. Mirrors the Rust `ConfigSeedConfig`
- * (`#[serde(rename_all = "camelCase")]`): `enabled` (serde default true) and
- * `dest` (serde default ""). Lives on `AgentConfig` ONLY — nothing on
- * `ProfileCellConfig` / `CodingAgentProfilesConfig`.
- */
 export interface ConfigSeedConfig {
   enabled: boolean;
   dest: string;
@@ -207,7 +133,6 @@ export interface ConfigSeedConfig {
 
 export interface AgentBackendConfig {
   kind?: SessionBackendKind;
-  /** #868 - per-agent Docker image; empty/undefined requires AGENTSCOMMANDER_CONTAINER_IMAGE at launch. */
   image?: string;
 }
 
@@ -217,57 +142,13 @@ export interface AgentConfig {
   command: string;
   color: string;
   envs: CodingAgentEnv[];
-  /**
-   * v2 (#384): renamed from `isolateCodexHome`. Until adapters support other
-   * providers, only Codex consumes this flag. Serialized as `isolatedHome`.
-   */
   isolatedHome: boolean;
-  /**
-   * #529 — instructions filename written to the agent root at launch (content =
-   * AC context + Role.md). Empty/undefined falls back to the command-derived
-   * default (Claude → CLAUDE.md, Gemini → GEMINI.md, else AGENTS.md). The empty
-   * string is normalized to omitted before save, so it is never persisted.
-   */
   instructionsFilename?: string;
-  /**
-   * #598 — optional config-folder seed. When `enabled` and `dest` is non-empty,
-   * AC copies a template config folder (chosen by convention, precedence
-   * profile > matrix > coding-agent base) into the replica at spawn,
-   * overwriting it every launch. `dest` is the destination folder NAME under
-   * the replica root (e.g. ".claude"). Dropped to omitted before save when
-   * disabled or `dest` is empty (mirrors `instructionsFilename`), so an
-   * inactive seed is never persisted as a sentinel.
-   */
   configSeed?: ConfigSeedConfig;
-  /**
-   * #1033 - best-effort pattern AC runs over the rows this agent draws in its
-   * terminal, to read its context-window usage for the CTX badge. Capture group 1
-   * is the percentage.
-   *
-   * Absent means the badge is OFF for this agent. Unlike `instructionsFilename`,
-   * there is NO fallback default anywhere in the backend, so blank does not mean
-   * "use the default shown": blank means off.
-   *
-   * Stored VERBATIM and never trimmed. A pattern's leading whitespace is a
-   * load-bearing column anchor, and a trim deletes it while every normal case
-   * keeps reading correctly - so the damage is invisible. Empty/whitespace-only is
-   * dropped to omitted before save (mirroring `instructionsFilename`'s contract,
-   * NOT its trim), so it is never persisted as a sentinel.
-   *
-   * Rust `regex` grammar, NOT JS `RegExp`: the two disagree in both directions, so
-   * nothing on this side validates it. An unusable pattern reads `CTX N/A` and its
-   * reason reaches `app.log` only. Serialized as `contextRegex`; placed before
-   * `backend` to mirror the Rust field order (`config/settings.rs:79-80`).
-   */
   contextRegex?: string;
   backend?: AgentBackendConfig;
 }
 
-/**
- * `"system"` is the v2 name for AgentsCommander-managed rows. The legacy v1
- * value `"agentsCommander"` is migrated to `"system"` by the backend on load,
- * so the frontend only ever sees v2 values after `SettingsAPI.get()`.
- */
 export type CodingAgentEnvSource = "user" | "system";
 
 export interface CodingAgentEnv {
@@ -277,21 +158,9 @@ export interface CodingAgentEnv {
   enabled: boolean;
 }
 
-/**
- * #769 — a built-in coding-agent catalog entry, returned by the backend
- * `get_coding_agent_catalog` command (source of truth: the seeded, user-editable
- * `<config_dir>/coding-agents/agents.json`). Replaces the old hardcoded
- * `AGENT_PRESETS`. Maps onto `Omit<AgentConfig, "id">` plus `{ key, description,
- * removable }`; `definitionToSeed()` performs that projection for the "+ Add"
- * flow. `envs`, `isolatedHome`, and `removable` are always present (the backend
- * fills serde defaults); `instructionsFilename` / `configSeed` are omitted from
- * the JSON when unset.
- */
 export interface CodingAgentDefinition {
-  /** Stable catalog identity, `^[a-z0-9-]+$`, unique; doubles as a testid/CSS token. */
   key: string;
   label: string;
-  /** "Coding Agent by …" subtitle shown on the onboarding card. */
   description: string;
   color: string;
   command: string;
@@ -299,16 +168,9 @@ export interface CodingAgentDefinition {
   envs: CodingAgentEnv[];
   isolatedHome: boolean;
   configSeed?: ConfigSeedConfig;
-  /** Whether the user may delete this built-in (all Phase-1 built-ins are true). */
   removable: boolean;
 }
 
-/**
- * #769 Phase 2 — result of `reseed_coding_agent_default`: the config-folder
- * `dest` that was restored to the shipped default, plus the absolute path of the
- * timestamped `.bak` of the prior master (empty string when the master was absent
- * so nothing needed backing up).
- */
 export interface ReseedResult {
   dest: string;
   backupPath: string;
@@ -316,28 +178,18 @@ export interface ReseedResult {
 
 export interface CodingAgentProfilesConfig {
   schemaVersion: number;
-  /** v2 (#384): renamed from `letters`. Keyed by profile slot letter A–Z. */
   profileSlots: Record<string, ProfileSlotConfig>;
-  /** v2 (#384): renamed from `agentDefaults`. agentId → default profile letter. */
   defaultProfileByAgent: Record<string, string>;
-  /** v2 (#384): renamed from `matrix`. agentId → letter → cell. */
   profilesByAgent: Record<string, Record<string, ProfileCellConfig>>;
-  /** #548: agentId → letter → override label. Empty/absent for a cell means
-   *  inherit (primigenio label, else the legacy slot label, else the letter). */
   profileLabelsByAgent: Record<string, Record<string, string>>;
 }
 
 export interface ProfileSlotConfig {
-  /** v2 (#384): renamed from `name`. Human display label of the profile slot. */
   label: string;
 }
 
 export interface ProfileCellConfig {
   enabled: boolean;
-  /**
-   * v2 (#384): one complete invocation string per profile, replacing the v1
-   * `argv` array. An empty string falls back to `agents[].command` at launch.
-   */
   command: string;
   env: Record<string, string>;
   notes: string;
@@ -407,7 +259,6 @@ export type SessionWarningKind = (typeof SESSION_WARNING_KINDS)[number];
 
 export interface SessionWarning {
   sessionId: string;
-  /** Environment key, or a protocol sentinel such as CONTAINER_TRANSPORT_PROTOCOL. */
   key: string;
   kind: SessionWarningKind;
   message: string;
@@ -422,10 +273,6 @@ export interface WindowGeometry {
   height: number;
 }
 
-/** #714 Frozen monitor image + metadata handed to one screenshot-overlay window.
- *  Mirrors the Rust `ScreenshotOverlayState` (serde camelCase). `width`/`height`
- *  are PHYSICAL image pixels (the captured bitmap), which the overlay maps
- *  pointer coordinates onto proportionally. */
 export interface ScreenshotOverlayState {
   captureId: string;
   monitorId: number;
@@ -440,8 +287,6 @@ export interface ScreenshotOverlayState {
   targetDirectory: string;
 }
 
-/** #714 Physical, monitor-local crop rectangle sent to the backend on release.
- *  Mirrors the Rust `ScreenshotSelection`. */
 export interface ScreenshotSelection {
   captureId: string;
   monitorId: number;
@@ -451,20 +296,16 @@ export interface ScreenshotSelection {
   height: number;
 }
 
-/** #714 Success payload for `screenshot_capture_saved` + the confirm command. */
 export interface ScreenshotCaptureResult {
   path: string;
   sessionId: string;
   sessionName: string;
 }
 
-/** #714 Failure payload for the `screenshot_capture_failed` event. */
 export interface ScreenshotCaptureFailedEvent {
   message: string;
 }
 
-/** #714 Global-hotkey registration status. `error` is null when registered (or
- *  not yet attempted). Mirrors the Rust `ScreenshotHotkeyStatus`. */
 export interface ScreenshotHotkeyStatus {
   configured: string;
   registered: boolean;
@@ -473,10 +314,6 @@ export interface ScreenshotHotkeyStatus {
 
 export type MainSidebarSide = "left" | "right";
 
-/** #612 LIVE log verbosity for `agentscommander*` targets. The 5 canonical
- *  lowercase wire values shared with the Rust side (`log_level: Option<String>`)
- *  and the `log_level_changed` event payload. Defined once here and imported by
- *  `console-capture.ts` / `ipc.ts` / `SettingsModal.tsx`. */
 export type LogLevel = "error" | "warn" | "info" | "debug" | "trace";
 
 export type WebServerOwnershipState =
@@ -540,8 +377,6 @@ export interface AppSettings {
   mainSidebarWidth: number;
   mainSidebarSide: MainSidebarSide;
   mainAlwaysOnTop: boolean;
-  // #587 — whether the Resource Monitor occupies the main central pane (vs the
-  // terminal). Restored on startup; default false (terminal).
   mainResourceMonitorAttached: boolean;
   webServerEnabled: boolean;
   webServerPort: number;
@@ -551,8 +386,6 @@ export interface AppSettings {
   apiServerBind: string;
   projectPath: string | null;
   projectPaths: string[];
-  /** #881 - projects hidden from the sidebar. Disk-authoritative: the backend
-   *  preserve-writer discards whatever this field carries on a whole-object save. */
   archivedProjectPaths: string[];
   sidebarStyle: string;
   onboardingDismissed: boolean;
@@ -561,13 +394,7 @@ export interface AppSettings {
   autoGenerateTaskTitle: boolean;
   agentTemplatesPath: string | null;
   themeLight: boolean;
-  /** #965 - rail project sections the user explicitly collapsed (header click).
-   *  NOT the ProjectPanel's collapse. Normalized project paths (see
-   *  `normalizeProjectPathForCompare`). Written only by `setRailCollapse`; a
-   *  whole-object save cannot change it (Rust restores it from live memory).
-   *  Optional so existing partial-AppSettings fixtures keep compiling. */
   railCollapsedProjects?: string[];
-  /** #965 - collapsed state of the rail's cross-project Favorites section. */
   railFavoritesCollapsed?: boolean;
   specBoardEnabled: boolean;
   resourceMonitorEnabled: boolean;
@@ -578,46 +405,20 @@ export interface AppSettings {
   agentProcessKillPrivateBytes: number;
   resourceKeepLastSnapshot: boolean;
   resourceBackoffPolling: boolean;
-  /** #552 coordinator idle-badge color thresholds, in minutes. Mirror of the
-   *  Rust `coordinator_idle_badge_*_minutes` fields (camelCase via serde).
-   *  Color helper requires yellow < red (validated at Settings save time). */
   coordinatorIdleBadgeYellowMinutes: number;
   coordinatorIdleBadgeRedMinutes: number;
-  /** #552 auto-close lifecycle clock: when enabled, a team whose sessions go
-   *  fully silent for `coordinatorAutoCloseMinutes` is terminated. */
   coordinatorAutoCloseEnabled: boolean;
   coordinatorAutoCloseMinutes: number;
-  /** #817 When true, background auto-close skips sessions with a Telegram
-   *  assignment. Default false preserves legacy behavior. */
   coordinatorAutoCloseSkipTelegramAssigned: boolean;
-  /** #588 When true, manually closing a coordinator also closes its team. */
   coordinatorCascadeCloseEnabled: boolean;
-  /** #609 Check npm on startup (<=1x/24h) and notify when a newer published
-   *  version of @mblua/agentscommander is available. Default true. */
   npmUpdateNotificationsEnabled: boolean;
-  /** #640 Global master for auto self-handoff-and-clear. ON => class default
-   *  applies (coordinator/Root on, specialists off). Per-agent overrides in
-   *  autoSelfClearByAgent. */
   autoSelfClearEnabled: boolean;
-  /** #640 Per-agent override of the class default, keyed by agent name. */
   autoSelfClearByAgent: Record<string, boolean>;
-  /** #930 When true (default), container coding-agent sessions copy the host
-   *  user's credential file for that agent into the replica config dir at spawn
-   *  and delete it on teardown. When false, the user supplies credentials
-   *  themselves (e.g. a CLAUDE_CODE_OAUTH_TOKEN env row). Mirrors the Rust
-   *  `container_credentials_from_host` field (camelCase via serde). */
   containerCredentialsFromHost: boolean;
-  /** #612 LIVE log level for agentscommander targets. null (legacy/unset) => "info". */
   logLevel: LogLevel | null;
-  /** #714 Native global hotkey for screenshot capture (e.g. "Ctrl+Q"). Optional
-   *  here only to ease partial-settings test construction; the Rust
-   *  `#[serde(default)]` always emits it, so it is present at runtime. */
   screenshotCaptureHotkey?: string;
 }
 
-/** #609 "npm update available" payload. Mirrors the Rust `UpdateInfo` struct
- *  (serde camelCase): carried by the `npm_update_available` event and returned
- *  by `get_update_status` (null when up-to-date / not yet checked / disabled). */
 export interface UpdateInfo {
   currentVersion: string;
   latestVersion: string;
@@ -671,14 +472,8 @@ export interface ResourceProcessSnapshot {
 export interface ResourceAgentGroupSnapshot {
   sessionId: string;
   name: string;
-  /** #516 - workgroup label (e.g. "wg-5-dev-team"), "Root agent" for root-agent
-   * groups, or `null` for non-WG / ad-hoc / unparseable launches. Always present. */
   workgroup: string | null;
-  /** #516 - bare agent name (e.g. "dev-rust"), or `null` when the launch cwd
-   * carries no replica identity. Always present. */
   agent: string | null;
-  /** #566 - project folder name (e.g. "AgentsCommander_ac"), or `null` for
-   * origin / ad-hoc / unparseable launches. Always present. */
   project: string | null;
   rootPid?: number | null;
   rootIdentity?: ResourceProcessIdentity | null;
@@ -721,23 +516,7 @@ export interface ResourceKillResult {
   killedPids?: number[];
   quarantined: boolean;
   message: string;
-  /**
-   * #647 D: true when the kill quarantined AND a failure carried the exact
-   * ACCESS_DENIED code (`win32 error 5`) — a security product is stripping
-   * PROCESS_TERMINATE. The per-PID detail stays in `message`; this only ADDS
-   * the AV-exclusion guidance in the UI, so a non-security failure is never
-   * hidden. Mirrors Rust `ResourceKillResult.blocked_by_security` (serde
-   * camelCase). `#[serde(default)]` backend-side, so always present on the wire.
-   */
   blockedBySecurity: boolean;
-  /**
-   * #647 (Step 7): true ONLY when `kill_resource_group` verified the tree dead,
-   * tore down the PTY/job, and flipped the tile to Exited. Success keys off THIS,
-   * NOT `!quarantined`: a `Terminating` early-return (a concurrent kill still
-   * settling) reports `quarantined === false` but is NOT a finalized success, so
-   * treating it as one would close the modal over a still-Running zombie tile.
-   * Mirrors Rust `ResourceKillResult.finalized` (`#[serde(default)]`).
-   */
   finalized: boolean;
 }
 
@@ -789,10 +568,6 @@ export interface UiAutomationDiagnostics {
   topmost?: UiAutomationTarget | null;
   expiresAtUnixMs?: number | null;
   nowUnixMs?: number;
-  /** #944 - set only on `hover`. `from`/`to` are data-ac-testid values (null when the
-   *  pointer came from / went to nothing). `events` is the dispatched type sequence,
-   *  in order: it is the assertion surface for the ordering tests and the only way a
-   *  harness can tell "the hover moved nothing" (changed: false) from a real move. */
   hover?: {
     from: string | null;
     to: string | null;
@@ -834,14 +609,12 @@ export type UiAutomationResponse =
       diagnostics?: UiAutomationDiagnostics;
     };
 
-// Team grouping for sidebar
 export interface TeamSessionGroup {
   team: Team;
   coordinator: Session | null;
   members: Session[];
 }
 
-// Team types (from discovery)
 
 export interface TeamMember {
   name: string;
@@ -857,7 +630,6 @@ export interface Team {
   visible?: boolean;
 }
 
-// Sidebar store state
 export interface SessionsState {
   sessions: Session[];
   activeId: string | null;
@@ -869,26 +641,10 @@ export interface SessionsState {
   repos: RepoMatch[];
   coordSortByActivity: boolean;
   lastActivityBySessionId: Record<string, number>;
-  /**
-   * #1033 - live per-session context-window reading, keyed by session id.
-   * Frontend-only and fed by the `session_context` event, so it is structurally
-   * out of reach of `setSessions`'s wholesale replace (unlike a field on
-   * `Session`, which the backend does not carry anyway).
-   *
-   * A missing key = no event and no snapshot has spoken for this session yet. An
-   * explicit `null` = the engine says the reading is unavailable. Both render
-   * `CTX N/A`, so the two collapse on screen by design.
-   *
-   * `0` is a THIRD, distinct value and must survive the trip: it means a real
-   * reading of zero and renders `CTX 0%`. A `??`-to-`||` slip, or a truthiness
-   * test anywhere on this value's path, turns a true `0%` into `N/A` and is
-   * invisible on screen.
-   */
   contextPercentBySessionId: Record<string, number | null>;
   hydrated: boolean;
 }
 
-// Phone communication types
 
 export interface PhoneMessage {
   id: string;
@@ -914,7 +670,6 @@ export interface AgentInfo {
   isCoordinatorOf: string[];
 }
 
-// AC discovery types
 
 export interface AcAgentMatrix {
   name: string;
@@ -938,31 +693,13 @@ export interface AcAgentReplica {
   repoPaths: string[];
   repoBranch?: string;
   isCoordinator: boolean;
-  /** #384: per-replica stable coding-agent selection (`tooling.currentCodingAgent`). */
   currentCodingAgentId?: string;
-  /** #384: per-replica profile letter (`tooling.profile`, then legacy override). */
   currentProfile?: string;
-  /** #552/#580 RFC3339 timestamp of the unified team-idle anchor, i.e. the
-   *  backend's `max(last_user_message_at, last_activity_at)` — the field now
-   *  means "team idle since" (reset when you message the coordinator, any member
-   *  is active, or the coordinator is active), NOT just the user's last message
-   *  (#580; rename to idleSinceAt deferred). `undefined` when none. Only
-   *  meaningful when `isCoordinator`. Drives the idle badge; read from the
-   *  persisted CoordinatorClocks store (survives restart + dormant). */
   lastUserMessageAt?: string;
-  /** #552 RFC3339 time this coordinator's team was auto-closed for inactivity,
-   *  or undefined. Only meaningful when `isCoordinator`. Drives the neutral
-   *  "auto-closed" pill; cleared on reopen. */
   autoClosedAt?: string;
-  /** #588 RFC3339 time this coordinator was manually closed, or undefined. Only
-   *  meaningful when `isCoordinator`. Drives the MANUALLY-CLOSED pill; cleared
-   *  on reopen. Visually identical to the auto-closed pill, different label. */
   manuallyClosedAt?: string;
 }
 
-/** #588 Result of the `close_coordinator` command. When `closed` is false the
- *  backend refused to cascade-close a coordinator whose team has working members
- *  without confirmation; `workingCount` is how many are still working. */
 export interface CoordinatorCloseOutcome {
   closed: boolean;
   workingCount: number;
@@ -982,31 +719,23 @@ export interface WorkgroupGroup {
   id: string;
   name: string;
   regex: string;
-  /** #965 - pinned into the rail's cross-project Favorites section. Absent on
-   *  legacy configs (Rust `#[serde(default)]`). */
   favorite?: boolean;
 }
 
 export interface NonStopTelegramConfig {
   enabled: boolean;
-  /** Resolves against AppSettings.telegramBots by id; null/absent => first configured bot. */
   botId?: string | null;
 }
 
 export interface NonStopSoundConfig {
   enabled: boolean;
-  /** Beep duration in seconds. Default 3. Clamped 1..=60. */
   seconds: number;
 }
 
 export interface NonStopGroupConfig {
-  /** Rail visibility AND watchdog-active. Single toggle (#777 D3/D4). Default false. */
   show: boolean;
-  /** Display name. Default "Alert me!". */
   name: string;
-  /** Membership regex, dynamic like user groups. Default "(?!)" (matches nothing). */
   regex: string;
-  /** Grace window before firing. Default 30. Clamped 1..=3600. */
   toleranceSeconds: number;
   telegram: NonStopTelegramConfig;
   sound: NonStopSoundConfig;
@@ -1016,7 +745,6 @@ export interface WorkgroupGroupsConfig {
   groups: WorkgroupGroup[];
   showAll: boolean;
   showUngrouped: boolean;
-  /** #777 built-in optional Non-stop group. Absent on legacy configs. */
   nonStop?: NonStopGroupConfig | null;
 }
 
@@ -1025,7 +753,6 @@ export interface ProjectGroupsUpdatedPayload {
   config: WorkgroupGroupsConfig;
 }
 
-/** #777 frontend -> backend watchdog signal; one entry per project with an ACTIVE Non-stop group. */
 export interface NonStopReport {
   projectPath: string;
   groupName: string;
@@ -1133,12 +860,7 @@ export interface AcDiscoveryResult {
   contextTemplateUpdates: ContextTemplateUpdate[];
 }
 
-// ---------------------------------------------------------------------------
-// Broad-scope coding-agent profile assignment (#384 §7)
-// Mirrors src-tauri/src/commands/config.rs DTOs (all camelCase via serde).
-// ---------------------------------------------------------------------------
 
-/** `"replica"` | `"kind"` | `"workgroup"` — matches Rust `ProfileAssignmentScope`. */
 export type ProfileAssignmentScope = "replica" | "kind" | "workgroup";
 
 export interface ProfileAssignmentTarget {
@@ -1148,7 +870,6 @@ export interface ProfileAssignmentTarget {
   replicaPath: string;
   identityPath: string;
   originProject: string | null;
-  /** Every live session whose working directory resolves to this replica. */
   liveSessionIds: string[];
 }
 
@@ -1157,13 +878,6 @@ export interface PreviewCodingAgentProfileSelectionRequest {
   codingAgentId: string;
   profile: string;
   scope: ProfileAssignmentScope;
-  /**
-   * #384: the preview `targetFingerprint` is hashed over `restartSessions` (plan
-   * §7, test #29), and apply re-validates that fingerprint — so the preview must
-   * carry the restart choice or the two fingerprints can never match. The §7
-   * Rust DTO listing omits this field; backend must include `restart_sessions`
-   * here for the fingerprint to be consistent. (Flagged to tech-lead/dev-rust.)
-   */
   restartSessions: boolean;
 }
 
@@ -1171,9 +885,7 @@ export interface PreviewCodingAgentProfileSelectionResult {
   scope: ProfileAssignmentScope;
   targetCount: number;
   liveSessionCount: number;
-  /** Hash of (codingAgentId, profile, restart, sorted canonical target paths). */
   targetFingerprint: string;
-  /** Backend confirmation hint; frontend broad scopes use a checkbox confirmation gate. */
   requiresExplicitConfirmation: boolean;
   targets: ProfileAssignmentTarget[];
   warnings: string[];
@@ -1185,9 +897,7 @@ export interface ApplyCodingAgentProfileSelectionRequest {
   profile: string;
   scope: ProfileAssignmentScope;
   restartSessions: boolean;
-  /** Required for `kind`/`workgroup`; `null` allowed for single-target `replica`. */
   confirmedTargetFingerprint?: string | null;
-  /** Legacy typed confirmation field; frontend sends `null` and relies on fingerprint + checkbox confirmation. */
   typedConfirmation?: string | null;
 }
 
@@ -1204,7 +914,6 @@ export interface ApplyCodingAgentProfileSelectionResult {
   restartedCount: number;
   updatedReplicaPaths: string[];
   restartedSessionIds: string[];
-  /** Sessions destroyed during restart that could not be recreated — surfaced as errors. */
   destroyedButNotRecreatedSessionIds: string[];
   targetFingerprint: string;
   warnings: string[];
@@ -1228,7 +937,6 @@ export interface AcProjectRefreshRequestedPayload {
   reason: AcProjectRefreshReason;
 }
 
-// Team wizard shared types (used by NewTeamModal and EditTeamModal)
 
 export interface TeamWizardAgentEntry {
   name: string;
@@ -1249,10 +957,6 @@ export interface TeamConfigResult {
   repos: { url: string; agents: string[] }[];
 }
 
-// ---------------------------------------------------------------------------
-// Workgroup-delete blocker report (BLOCKERS: sentinel payload)
-// Mirrors src-tauri/src/commands/wg_delete_diagnostic.rs structs.
-// ---------------------------------------------------------------------------
 
 export interface BlockerSession {
   sessionId: string;
@@ -1296,10 +1000,6 @@ export interface BlockerReport {
   externalProcesses?: BlockerProcess[];
 }
 
-// ---------------------------------------------------------------------------
-// Task mutation result
-// Mirrors src-tauri/src/commands/task.rs::TaskUpdateResult.
-// ---------------------------------------------------------------------------
 
 export interface TaskUpdateResult {
   workgroupRoot: string;
@@ -1321,27 +1021,17 @@ export type WorkgroupTaskUpdatedEvent =
       sessionIds: string[];
     };
 
-// ---------------------------------------------------------------------------
-// Project registration result (#191 — shared open/new project flow)
-// Mirrors src-tauri/src/config/projects.rs::ProjectRegistration.
-// ---------------------------------------------------------------------------
 
 export interface ProjectRegistration {
-  /** Absolute path that was added (or matched) in projectPaths. */
   path: string;
-  /** True when this call appended a new entry, false when already present. */
   registered: boolean;
-  /** True when this call created .ac/ on disk (always false for openProject). */
   created: boolean;
 }
 
-/** Mirrors src-tauri/src/config/projects.rs::ArchivedProject (#881). */
 export interface ArchivedProject {
   path: string;
   folderName: string;
-  /** The directory still exists on disk. */
   exists: boolean;
-  /** The directory still has a `.ac/` Project AC Root. */
   hasWorkspace: boolean;
 }
 
@@ -1352,45 +1042,28 @@ export type ArchiveChangeReason =
   | "open"
   | "remove";
 
-/** Mirrors src-tauri/src/commands/ac_discovery.rs::ProjectArchiveChanged (#881). */
 export interface ProjectArchiveChanged {
   path: string;
   folderName: string;
   archived: boolean;
   reason: ArchiveChangeReason;
-  /** Only for reason === "autoUnarchive". */
   sessionName?: string;
 }
 
-// ---------------------------------------------------------------------------
-// Error-log modal (#264)
-// Mirrors src-tauri/src/logging.rs::ErrorLogEntry.
-// ---------------------------------------------------------------------------
 
 export interface ErrorLogEntry {
-  /** Local timestamp string, e.g. "2026-05-21 15:56:11.123". */
   timestamp: string;
-  /** Always "ERROR" today — kept for forward-compat and copy output. */
   level: string;
-  /** Log target, e.g. "agentscommander_lib::commands::entity_creation". */
   target: string;
-  /** Full message; may contain newlines (multi-line git errors etc.). */
   message: string;
 }
 
-// ---------------------------------------------------------------------------
-// Role template picker (#271)
-// Mirrors src-tauri/src/commands/role_templates.rs::RoleTemplateMeta.
-// ---------------------------------------------------------------------------
 
 export interface RoleTemplateMeta {
-  /** Source-qualified id: "agency:<stem>" or "local:<folder>". */
   id: string;
-  /** "agency" | "local". */
   source: "agency" | "local";
   name: string;
   description: string;
-  /** Display grouping label, e.g. "Engineering" or "Local". */
   category: string;
   color?: string | null;
   emoji?: string | null;

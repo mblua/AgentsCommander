@@ -2,7 +2,6 @@ import { createSignal } from "solid-js";
 import { VoiceAPI, PtyAPI, DebugAPI, SettingsAPI } from "./ipc";
 import { getConsoleText } from "./console-capture";
 
-// Module-level reactive state (one instance per JS context / window)
 const [recordingSessionId, setRecordingSessionId] = createSignal<string | null>(null);
 const [processingSessionId, setProcessingSessionId] = createSignal<string | null>(null);
 const [micError, setMicError] = createSignal<string | null>(null);
@@ -12,7 +11,6 @@ const [autoExecuteSessionId, setAutoExecuteSessionId] = createSignal<string | nu
 const [autoExecuteCountdown, setAutoExecuteCountdown] = createSignal(0);
 const [typingWarnSessionId, setTypingWarnSessionId] = createSignal<string | null>(null);
 
-// Internal state (not reactive, not exported)
 let recorder: MediaRecorder | null = null;
 let currentStream: MediaStream | null = null;
 let audioCtx: AudioContext | null = null;
@@ -41,7 +39,6 @@ function startAudioLevelMonitor(stream: MediaStream) {
       setAudioLevel(avg);
     }, 50);
   } catch {
-    // Audio context not available
   }
 }
 
@@ -78,14 +75,11 @@ function cleanupRecording() {
 }
 
 async function start(sessionId: string) {
-  // Cancel any pending state from a previous session
   cancelAutoExecute();
   cancelTypingWarning();
 
-  // Stop any existing recording first
   if (recordingSessionId()) {
     stop();
-    // Wait a tick for onstop to fire
     await new Promise((r) => setTimeout(r, 50));
   }
 
@@ -122,8 +116,6 @@ async function start(sessionId: string) {
     rec.onstop = async () => {
       const stoppedSessionId = recordingSessionId();
 
-      // Stop tracking IMMEDIATELY — must await to guarantee the backend
-      // clears the flag before the transcription's own pty_write executes.
       if (stoppedSessionId) await VoiceAPI.markRecording(stoppedSessionId, false);
 
       stream.getTracks().forEach((t) => t.stop());
@@ -146,12 +138,10 @@ async function start(sessionId: string) {
           const encoder = new TextEncoder();
           await PtyAPI.write(stoppedSessionId, encoder.encode(text));
 
-          // Check if user typed during recording
           const hadTyping = await VoiceAPI.hadTyping(stoppedSessionId);
           if (hadTyping) {
             showTypingWarning(stoppedSessionId);
           } else {
-            // Auto-execute: send Enter after configurable delay
             try {
               const settings = await SettingsAPI.get();
               if (settings.voiceAutoExecute) {
@@ -159,7 +149,6 @@ async function start(sessionId: string) {
                 startAutoExecuteCountdown(stoppedSessionId, delay);
               }
             } catch {
-              // Settings fetch failed, skip auto-execute
             }
           }
         }
@@ -174,7 +163,6 @@ async function start(sessionId: string) {
       }
     };
 
-    // Tell backend to start tracking PTY writes for this session
     void VoiceAPI.markRecording(sessionId, true);
     rec.start();
   } catch (err: any) {
@@ -196,19 +184,16 @@ function stop() {
   }
 }
 
-/** Cancel recording — discard audio without processing */
 function cancel() {
   const sid = recordingSessionId();
   cancelAutoExecute();
   cancelTypingWarning();
   if (recorder) {
-    // Detach onstop so it doesn't trigger transcription
     recorder.onstop = null;
     if (recorder.state !== "inactive") {
       recorder.stop();
     }
   }
-  // Stop tracking before cleanup to prevent permanent leak
   if (sid) void VoiceAPI.markRecording(sid, false);
   cleanupRecording();
 }
@@ -278,7 +263,6 @@ export function formatRecordingTime(s: number): string {
 }
 
 export const voiceRecorder = {
-  // State (reactive signals)
   recordingSessionId,
   processingSessionId,
   micError,
@@ -288,7 +272,6 @@ export const voiceRecorder = {
   autoExecuteCountdown,
   typingWarnSessionId,
 
-  // Actions
   start,
   stop,
   cancel,

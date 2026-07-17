@@ -5,8 +5,6 @@ import { settingsStore } from "../../shared/stores/settings";
 import { newAgentId, definitionToSeed } from "../../shared/agent-presets";
 import { codingAgentsStore } from "../stores/coding-agents";
 
-// Custom Agent is not a catalog entry: it triggers the inline name/command
-// fields and is always offered last, so it stays a client-side definition.
 const CUSTOM_PRESET: CodingAgentDefinition = {
   key: "custom",
   label: "Custom Agent",
@@ -19,27 +17,11 @@ const CUSTOM_PRESET: CodingAgentDefinition = {
 };
 
 export interface CodingAgentQuickConfigurationProps {
-  /** Header title, supplied by the consumer (Welcome passes "Welcome"). */
   title: string;
-  /** Intro copy rendered above the preset cards. */
   message: string;
-  /** Closes the modal. Fired by the success state's "Get started" action. */
   onClose: () => void;
-  /**
-   * #975 — cancellation is opt-in. When omitted, no Cancel button renders and
-   * Escape stays inert, so a consumer can require an explicit choice. When
-   * supplied, Cancel renders and Escape invokes this same callback, keeping
-   * pointer and keyboard dismissal identical. The callback owns closing.
-   */
   onCancel?: () => void;
-  /**
-   * #975 — consumer-owned settings changes, folded into the single atomic
-   * update that persists the new agent. This keeps consumer-specific state
-   * (such as Welcome's onboardingDismissed) out of this component while
-   * preserving the pre-existing one-write semantics.
-   */
   onBeforeSave?: (settings: AppSettings) => AppSettings;
-  /** Overrides the dialog's accessible name. Defaults to `title`. */
   ariaLabel?: string;
 }
 
@@ -49,12 +31,8 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
   const [done, setDone] = createSignal(false);
   const [addedLabel, setAddedLabel] = createSignal("");
 
-  // #769 — the catalog is backend-owned; the store is pre-seeded with the
-  // fallback so the card list (and the #768 no-scroll fit) renders immediately,
-  // with no wrong-length flash before the async fetch resolves.
   const allPresets = () => [...codingAgentsStore.catalog(), CUSTOM_PRESET];
 
-  // Custom agent fields
   const [customLabel, setCustomLabel] = createSignal("");
   const [customCommand, setCustomCommand] = createSignal("");
 
@@ -98,7 +76,6 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
         ...settings,
         agents: [...settings.agents, agent],
       };
-      // #975 — the consumer decides what else rides along in this same write.
       const updated = props.onBeforeSave ? props.onBeforeSave(withAgent) : withAgent;
       await SettingsAPI.update(updated);
       settingsStore.refresh();
@@ -114,20 +91,13 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Escape") {
-      // #975 — Escape resolves to whatever dismissal affordance the footer
-      // actually renders. The success state renders only "Get started", so
-      // Escape closes there and must not re-enter the consumer's cancel path:
-      // that would be a second settings write after a completed save.
       if (done()) {
         props.onClose();
         return;
       }
-      // Selecting state: Cancel renders only when the consumer supplies the
-      // callback, so without one Escape stays inert — no back-door dismissal.
       props.onCancel?.();
       return;
     }
-    // Focus trap: keep Tab cycling within the modal
     if (e.key === "Tab" && modalRef) {
       const focusable = modalRef.querySelectorAll<HTMLElement>(
         'button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])'

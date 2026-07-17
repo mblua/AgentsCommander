@@ -11,19 +11,8 @@ import {
 import { drawOverlay } from "./render";
 import "./styles/screenshot-overlay.css";
 
-// #714 Selection must be at least this many physical px on each side to count as
-// a real drag; a smaller release is treated as a mis-click and cancels locally
-// (the backend also rejects width/height < 2). Mirrors the plan's 2px floor.
 const MIN_SELECTION_PX = 2;
 
-/**
- * #714 Per-monitor screenshot selection overlay. One instance renders in each
- * `?window=screenshot-overlay&captureId=<dashed-uuid>&monitorId=<n>` window. It
- * draws the frozen monitor image the backend captured, lets the user rubber-band
- * a rectangle with a pixel magnifier, and sends the physical crop back. The Rust
- * side owns ALL lifecycle/cleanup (confirm/cancel/WindowEvent::Destroyed); the
- * frontend cancel-on-unmount is best-effort only.
- */
 const ScreenshotOverlayApp: Component = () => {
   let canvas: HTMLCanvasElement | undefined;
 
@@ -32,9 +21,6 @@ const ScreenshotOverlayApp: Component = () => {
     const captureId = params.get("captureId") ?? "";
     const monitorId = Number(params.get("monitorId"));
 
-    // Mutable interaction state (plain locals, not signals: drawing is fully
-    // imperative and runs off pointer events + rAF, so reactivity would only add
-    // overhead).
     let overlay: ScreenshotOverlayState | null = null;
     let image: HTMLImageElement | null = null;
     let ctx: CanvasRenderingContext2D | null = null;
@@ -48,20 +34,15 @@ const ScreenshotOverlayApp: Component = () => {
     const cancelOnce = (reason: string): void => {
       if (settled) return;
       settled = true;
-      // Fire-and-forget: the backend destroys every overlay window; a stale id is
-      // a harmless no-op there.
       void ScreenshotAPI.cancel(captureId).catch((err) => {
         console.error(`[screenshot-overlay] cancel (${reason}) failed:`, err);
       });
     };
 
-    // Grab focus so the ESC keydown reaches THIS overlay even though the hotkey
-    // fired while another app was focused. Best-effort (jsdom/OS may no-op).
     const focusOverlay = (): void => {
       try {
         window.focus();
       } catch {
-        /* focus is best-effort */
       }
     };
 
@@ -73,9 +54,6 @@ const ScreenshotOverlayApp: Component = () => {
       });
     };
 
-    // Physical-px-per-CSS-px ratio, so on-screen sizes (border, magnifier) stay
-    // constant regardless of monitor DPI (the canvas backing store is physical
-    // px, displayed at the monitor's logical size).
     const physicalPerCss = (): number => {
       if (!canvas || !overlay) return 1;
       const rect = canvas.getBoundingClientRect();
@@ -85,8 +63,6 @@ const ScreenshotOverlayApp: Component = () => {
     const draw = (): void => {
       if (!ctx || !overlay || !image) return;
       const { width, height } = overlay;
-      // The drag endpoint IS the hover point while dragging (both are set from
-      // the same pointer move), so `hover` doubles as the live drag corner.
       const selection =
         dragStart && hover
           ? clampSelectionToBounds(
@@ -124,7 +100,6 @@ const ScreenshotOverlayApp: Component = () => {
       try {
         canvas?.setPointerCapture(e.pointerId);
       } catch {
-        /* pointer capture is best-effort */
       }
       scheduleDraw();
     };
@@ -135,8 +110,6 @@ const ScreenshotOverlayApp: Component = () => {
       scheduleDraw();
     };
 
-    // Focus on ENTER (not on every move) so ESC reaches the overlay the cursor is
-    // over, without an OS window call on each pointermove during a drag.
     const onPointerEnter = (): void => {
       if (!settled) focusOverlay();
     };
@@ -147,7 +120,6 @@ const ScreenshotOverlayApp: Component = () => {
       try {
         if (activePointerId !== null) canvas?.releasePointerCapture(activePointerId);
       } catch {
-        /* best-effort */
       }
       activePointerId = null;
 
@@ -158,7 +130,6 @@ const ScreenshotOverlayApp: Component = () => {
       );
 
       if (selection.width < MIN_SELECTION_PX || selection.height < MIN_SELECTION_PX) {
-        // Treat a tiny drag as a mis-click: reset and keep the overlay open.
         dragStart = null;
         scheduleDraw();
         return;
@@ -173,7 +144,6 @@ const ScreenshotOverlayApp: Component = () => {
         width: selection.width,
         height: selection.height,
       }).catch((err) => {
-        // Backend owns teardown + a failure event; just log locally.
         console.error("[screenshot-overlay] confirmSelection failed:", err);
       });
     };
@@ -191,8 +161,6 @@ const ScreenshotOverlayApp: Component = () => {
       }
     };
 
-    // Register teardown synchronously so it binds to this owner even though the
-    // async setup below resolves later.
     onCleanup(() => {
       disposed = true;
       if (rafId !== 0) cancelAnimationFrame(rafId);
@@ -204,7 +172,6 @@ const ScreenshotOverlayApp: Component = () => {
         canvas.removeEventListener("pointerenter", onPointerEnter);
         canvas.removeEventListener("pointerleave", onPointerLeave);
       }
-      // Best-effort only — Rust's WindowEvent::Destroyed is the authority.
       cancelOnce("unmount");
     });
 
@@ -213,8 +180,6 @@ const ScreenshotOverlayApp: Component = () => {
       try {
         state = await ScreenshotAPI.getOverlayState(captureId, monitorId);
       } catch (err) {
-        // Stale/starting capture: nothing to render. Rust cleans up on
-        // cancel/destroy, so just leave the (transparent) window.
         console.error("[screenshot-overlay] getOverlayState failed:", err);
         return;
       }
@@ -226,8 +191,6 @@ const ScreenshotOverlayApp: Component = () => {
       try {
         await img.decode();
       } catch {
-        // decode() can reject in non-browser test envs (or for odd encodings);
-        // fall through and draw best-effort so interaction still works.
       }
       if (disposed || !canvas) return;
       image = img;

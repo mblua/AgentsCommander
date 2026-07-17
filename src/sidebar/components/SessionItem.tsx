@@ -50,22 +50,14 @@ const SessionItem: Component<{
     return settingsStore.current?.agents?.find((a) => a.id === props.session.agentId)?.label ?? null;
   };
   const profileBadge = () => sessionProfileBadge(props.session);
-  // #1033 - settingsStore.current is a signal, so saving a pattern makes the badge
-  // appear or disappear with no reload.
   const ctxVisible = () =>
     contextBadgeConfigured(settingsStore.current?.agents, props.session.agentId);
   const ctxPercent = () => sessionsStore.contextPercentBySessionId[props.session.id];
-  // #548: unify with the ProjectPanel quick-access tooltip — resolve the name of
-  // the EFFECTIVE profile via the SAME shared resolver (no second resolver, no
-  // badge-string parsing). Plain function, matching profileBadge.
   const profileBadgeTitle = () => {
     const badge = profileBadge();
     if (!badge) return undefined;
     const cfg = settingsStore.current?.codingAgentProfiles;
     const letter = props.session.effectiveProfile || props.session.requestedProfile;
-    // Graceful degrade: before settings load there is no cfg; keep today's
-    // letter-only tooltip rather than dropping it. Once loaded, show the resolved
-    // name (same shape as the ProjectPanel quick-access tooltip).
     if (!cfg || !letter) return `Profile ${badge}`;
     return profileDisplayLabel(cfg, settingsStore.current?.agents ?? [], props.session.agentId, letter);
   };
@@ -117,8 +109,6 @@ const SessionItem: Component<{
   };
 
   const handleClick = async () => {
-    // #587 — cover an embedded RM with the terminal even when switch_session
-    // no-ops on the already-active session (which emits no session_switched).
     centralViewStore.showTerminal();
     await SessionAPI.switch(props.session.id);
     if (isTauri) {
@@ -199,9 +189,6 @@ const SessionItem: Component<{
 
   const handleClose = (e: MouseEvent) => {
     e.stopPropagation();
-    // #588 route through the shared helper: closing a coordinator from the
-    // session list marks + (settings-gated) cascades + confirms when busy. For a
-    // non-coordinator this is identical to the previous SessionAPI.destroy.
     void requestCoordinatorClose(props.session);
   };
 
@@ -282,12 +269,6 @@ const SessionItem: Component<{
 
   const isInactive = () => props.session.id.startsWith("inactive-");
 
-  /** Derive short display name from workingDirectory.
-   *  Project AC Root paths: "agent-name@origin-project" (e.g. "code-reviewer@phi_phibridge")
-   *  Other paths: "parentFolder/name" (last 2 segments)
-   *
-   *  Project AC Root parsing is delegated to extractProjectName. The innermost
-   *  .ac segment wins, matching the titlebar helpers. */
   const displayName = () => {
     const wd = props.session.workingDirectory;
     if (wd) {
