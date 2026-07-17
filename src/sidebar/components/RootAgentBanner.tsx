@@ -12,6 +12,8 @@ import {
 import { sessionsStore } from "../stores/sessions";
 import { bridgesStore } from "../stores/bridges";
 import { settingsStore } from "../../shared/stores/settings";
+import ContextBadge from "./ContextBadge";
+import { contextBadgeConfigured } from "./session-context";
 import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder";
 import type { Session, TelegramBotConfig } from "../../shared/types";
 import { sessionProfileBadge } from "../../shared/profile-utils";
@@ -74,6 +76,15 @@ const RootAgentBanner: Component = () => {
     if (!r.agentId) return null;
     return settingsStore.current?.agents?.find((a) => a.id === r.agentId)?.label ?? null;
   });
+
+  // #1033 - the CTX badge, keyed off the root session. Same shared gate as the other
+  // two surfaces; a resolver written against props.session would not compile here.
+  const ctxVisible = () =>
+    contextBadgeConfigured(settingsStore.current?.agents, rootSession()?.agentId);
+  const ctxPercent = () => {
+    const r = rootSession();
+    return r ? sessionsStore.contextPercentBySessionId[r.id] : undefined;
+  };
 
   const bridge = () => {
     const r = rootSession();
@@ -413,6 +424,12 @@ const RootAgentBanner: Component = () => {
               </Show>
               <Show when={profileBadge()}>
                 {(badge) => <span class="profile-badge root-profile-badge">{badge()}</span>}
+              </Show>
+              <Show when={ctxVisible()}>
+                <ContextBadge
+                  percent={ctxPercent()}
+                  testId="rootAgent.contextBadge"
+                />
               </Show>
               {/* #592 - drift reload for the Root Agent (loaded profile cell no
                   longer matches its current config). Reuses the restart path, which

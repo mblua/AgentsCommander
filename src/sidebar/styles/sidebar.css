@@ -758,6 +758,28 @@ html, body, #root {
   white-space: nowrap;
 }
 
+/* #1033 - context-window reading. A signal, never a control: no cursor, no hover
+   affordance, no colour that encodes a value, no threshold, no animation. */
+.ctx-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: var(--sidebar-border);
+  color: var(--sidebar-fg-dim);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  line-height: 1;
+  white-space: nowrap;
+}
+.ctx-badge.unavailable {
+  opacity: 0.4;
+}
+
 /* #592 - drift indicator: amber, clickable (Reload). */
 .profile-outdated-badge {
   display: inline-flex;
