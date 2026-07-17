@@ -103,8 +103,10 @@ The CLI validates routing **before** delivery. If the call would be rejected the
 | Sender | Allowed recipients |
 |---|---|
 | Worker (non-coordinator) | The team's coordinator + peers sharing a team. |
-| Coordinator | Any team member; other coordinators only via the Root Agent. |
+| Coordinator | Any team member; any other coordinator directly, with no Root Agent relay; the Root Agent directly, from a verified workgroup coordinator replica. |
 | Root Agent | Verified WG coordinator replicas only. |
+
+**Known deviation, tracked in #1041:** "sharing a team" currently ignores the workgroup number, so two replicas of the same team in different workgroups can address each other directly, bypassing both coordinators. This is a defect, not intended behavior, and it contradicts the coordinator-only rule above. #1041 makes the same-team rule workgroup-aware; when it lands, this note is removed. Reaching a *different* team's workgroup is already coordinator-to-coordinator only.
 
 `reachable: false` peers appear in `list-peers-lean` (so you know they exist) but cannot be addressed directly.
 
