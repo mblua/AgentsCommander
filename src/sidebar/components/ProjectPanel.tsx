@@ -28,6 +28,7 @@ import {
   effectiveManuallyClosedAt,
   effectiveRepoBranch,
   effectiveRepoBranchByPath,
+  effectiveRepoDirtyByPath,
   replicaVolatileStore,
 } from "../stores/replica-volatile";
 import { normalizeProjectPathForCompare } from "../stores/project-refresh";
@@ -70,6 +71,7 @@ import {
   automationIdPart,
   configuredReplicaRepoBadges,
   formatReplicaRepoBadgeLabel,
+  formatReplicaRepoBadgeTitle,
   repoLabelFromPath,
 } from "./replica-repo-badges";
 import { sessionDotClass } from "./session-status";
@@ -232,6 +234,10 @@ function configuredReplicaRepoBadgesLive(
       repoBranch: effectiveRepoBranch(replica),
       // #943 B2 - per-repo branches for cold multi-repo replicas, keyed by path.
       repoBranchByPath: effectiveRepoBranchByPath(replica),
+      // #1028 - per-repo worktree-dirty on the same cold feed. This is what turns a
+      // DORMANT coordinator row red: Gate A polls every replica whether or not a
+      // session exists.
+      repoDirtyByPath: effectiveRepoDirtyByPath(replica),
     },
     workgroup
   );
@@ -415,11 +421,13 @@ const ProjectPanel: Component = () => {
     unlistenBranch = await onDiscoveryBranchUpdated((data) => {
       // #943 B2 - one atomic write: the single-repo shorthand plus the per-repo
       // branches, merged BY PATH (never by index - see the store).
+      // #1028 - per-repo dirty rides the same payload and the same atomic write.
       replicaVolatileStore.applyDiscoveryBranchUpdate(
         data.replicaPath,
         data.branch,
         data.repoPaths,
-        data.repoBranches
+        data.repoBranches,
+        data.repoDirty
       );
     });
     // #552 coordinator idle badge + auto-closed pill. Discovery reload
@@ -2660,8 +2668,10 @@ const ProjectPanel: Component = () => {
                     <For each={repoBadges()}>
                       {(repo, index) => (
                         <span
-                          class="ac-discovery-badge branch"
-                          title={repo.sourcePath}
+                          // #1028 - `=== true`, not a truthy check: `false` (clean)
+                          // and `null` (not yet detected) must both stay violet.
+                          class={`ac-discovery-badge branch${repo.dirty === true ? " dirty" : ""}`}
+                          title={formatReplicaRepoBadgeTitle(repo)}
                           data-ac-testid={repoBadgeTestId(repo.label, index())}
                         >
                           {formatReplicaRepoBadgeLabel(repo)}

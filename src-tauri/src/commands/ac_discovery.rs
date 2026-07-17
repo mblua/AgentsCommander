@@ -335,9 +335,15 @@ fn detect_git_branch_sync(dir: &str) -> Option<String> {
 const BRANCH_POLL_INTERVAL: Duration = Duration::from_secs(15);
 const DETECT_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// #280 §3.3 — per-path counter for `detect_branch` timeouts. Mirrors the
+/// #280 §3.3 - per-path counter for `detect_git_status` timeouts (#1028 renamed
+/// the detection; the counter and its policy are unchanged). Mirrors the
 /// `git_watcher.rs` helper but lives in a separate module-local map so the
 /// two watchers track their own paths independently (different scan sets).
+///
+/// #1028 note: this counter stays per-watcher on purpose, unlike
+/// `git_watcher::remember_dirty`'s SHARED map. Sharing would make "1st + every 50th"
+/// fire at the wrong times for both watchers; that reasoning is about a throttle
+/// counter and does not transfer to a fact about a worktree.
 fn note_discovery_timeout(path: &str) -> u64 {
     use std::sync::OnceLock;
     static TIMEOUT_COUNTS: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
@@ -384,6 +390,19 @@ struct DiscoveryBranchPayload {
     /// to the previous repo list. A positional merge would then paint repo A's branch
     /// onto repo B, silently. Matching on the path cannot.
     repo_paths: Vec<String>,
+    /// #1028 - per-repo worktree-dirty, positionally parallel to `repo_paths` exactly as
+    /// `repo_branches` is, and keyed by path by the consumer for the same reason.
+    /// `Some(true)` paints the badge letters red; `None` = never successfully detected
+    /// for that path (rendered violet, like clean).
+    ///
+    /// This rides the feed `repo_branches` already established, which is what covers
+    /// DORMANT coordinator rows: Gate A runs for every replica whether or not a session
+    /// exists, so a dormant row's dirtiness was already being computed and thrown away.
+    /// Gate B below cannot cover them (it is inside `if let Some(session_id)`).
+    ///
+    /// This struct's `PartialEq` gates the emit, so adding the field is also what makes
+    /// a dirty flip re-emit with no gate change.
+    repo_dirty: Vec<Option<bool>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -631,23 +650,34 @@ impl DiscoveryBranchWatcher {
                 };
 
                 // Parallelize per-repo detection (Grinch #16). Each call individually bounded by
-                // detect_branch_with_timeout (2s). Without join_all this was M*N*2s worst case.
-                let branches: Vec<Option<String>> = join_all(
+                // detect_status_with_timeout (2s). Without join_all this was M*N*2s worst case.
+                let statuses: Vec<Option<crate::pty::git_watcher::GitStatus>> = join_all(
                     entry
                         .repos
                         .iter()
-                        .map(|(_, path)| Self::detect_branch_with_timeout(path)),
+                        .map(|(_, path)| Self::detect_status_with_timeout(path)),
                 )
                 .await;
 
                 let refreshed: Vec<SessionRepo> = entry
                     .repos
                     .iter()
-                    .zip(branches)
-                    .map(|((label, path), branch)| SessionRepo {
+                    .zip(statuses)
+                    .map(|((label, path), status)| SessionRepo {
                         label: label.clone(),
                         source_path: path.clone(),
-                        branch,
+                        // #1028 - `branch` keeps its old behaviour exactly: a failed
+                        // detection reports `None`, with no hold.
+                        branch: status.as_ref().and_then(|s| s.branch.clone()),
+                        // #1028 - identical shape to GitWatcher::poll, over the SAME
+                        // shared map. Both badge writers must compute `dirty` the same
+                        // way: they take turns writing this vec, and if only one of them
+                        // computed it the other would write `None` every 15s and flicker
+                        // the badge violet twice a cycle.
+                        dirty: crate::pty::git_watcher::remember_dirty(
+                            path,
+                            status.as_ref().map(|s| s.dirty),
+                        ),
                     })
                     .collect();
 
@@ -668,6 +698,7 @@ impl DiscoveryBranchWatcher {
                     },
                     repo_branches: refreshed.iter().map(|r| r.branch.clone()).collect(),
                     repo_paths: refreshed.iter().map(|r| r.source_path.clone()).collect(),
+                    repo_dirty: refreshed.iter().map(|r| r.dirty).collect(),
                 };
                 // Gate on the whole payload. Comparing only the single-repo `branch`
                 // (what this did before B2) means a multi-repo replica whose repo just
@@ -907,8 +938,26 @@ impl DiscoveryBranchWatcher {
         }
     }
 
-    async fn detect_branch_with_timeout(working_dir: &str) -> Option<String> {
-        match tokio::time::timeout(DETECT_TIMEOUT, Self::detect_branch(working_dir)).await {
+    /// #1028 - detection is the shared `git_watcher::detect_git_status`, which replaced
+    /// this watcher's own near-identical `detect_branch` copy. The two copies had already
+    /// diverged (one set a ceiling env, this one did not), and both badge writers must
+    /// compute `dirty` identically.
+    ///
+    /// The timeout wrapper stays here rather than merging with GitWatcher's: this one
+    /// owns `note_discovery_timeout` and the `[DiscoveryBranchWatcher]` tag, which is
+    /// what keeps the two watchers distinguishable in app.log.
+    ///
+    /// Because `timeout` DROPS the future on expiry, `detect_git_status` never returns
+    /// here and cannot remember anything itself: `poll` applies the dirty hold.
+    async fn detect_status_with_timeout(
+        working_dir: &str,
+    ) -> Option<crate::pty::git_watcher::GitStatus> {
+        match tokio::time::timeout(
+            DETECT_TIMEOUT,
+            crate::pty::git_watcher::detect_git_status(working_dir),
+        )
+        .await
+        {
             Ok(result) => result,
             Err(_) => {
                 let n = note_discovery_timeout(working_dir);
@@ -918,7 +967,7 @@ impl DiscoveryBranchWatcher {
                 // distinguishable in app.log.
                 if n == 1 || n.is_multiple_of(50) {
                     log::warn!(
-                        "[DiscoveryBranchWatcher] detect_branch timed out for {} (>{}s); occurrence={} (logging 1st + every 50th)",
+                        "[DiscoveryBranchWatcher] detect_git_status timed out for {} (>{}s); occurrence={} (logging 1st + every 50th)",
                         working_dir,
                         DETECT_TIMEOUT.as_secs(),
                         n
@@ -926,32 +975,6 @@ impl DiscoveryBranchWatcher {
                 }
                 None
             }
-        }
-    }
-
-    async fn detect_branch(dir: &str) -> Option<String> {
-        #[cfg(windows)]
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-        let mut cmd = tokio::process::Command::new("git");
-        crate::pty::credentials::scrub_credentials_from_tokio_command(&mut cmd);
-        cmd.args(["rev-parse", "--abbrev-ref", "HEAD"])
-            .current_dir(dir)
-            .kill_on_drop(true);
-
-        #[cfg(windows)]
-        cmd.creation_flags(CREATE_NO_WINDOW);
-
-        match cmd.output().await {
-            Ok(out) if out.status.success() => {
-                let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if branch.is_empty() || branch == "HEAD" {
-                    None
-                } else {
-                    Some(branch)
-                }
-            }
-            _ => None,
         }
     }
 }
@@ -3722,26 +3745,44 @@ mod tests {
 
     // --- #943 Module B2: the widened ac_discovery_branch_updated payload ---
 
-    fn b2_payload(branch: Option<&str>, repos: &[(&str, Option<&str>)]) -> DiscoveryBranchPayload {
+    /// Repo tuple: (path, branch, dirty). #1028 added the third column.
+    fn b2_payload(
+        branch: Option<&str>,
+        repos: &[(&str, Option<&str>, Option<bool>)],
+    ) -> DiscoveryBranchPayload {
         DiscoveryBranchPayload {
             replica_path: "C:/proj/.ac/wg-1-team/__agent_coord".to_string(),
             branch: branch.map(str::to_string),
-            repo_branches: repos.iter().map(|(_, b)| b.map(str::to_string)).collect(),
-            repo_paths: repos.iter().map(|(p, _)| p.to_string()).collect(),
+            repo_branches: repos
+                .iter()
+                .map(|(_, b, _)| b.map(str::to_string))
+                .collect(),
+            repo_paths: repos.iter().map(|(p, _, _)| p.to_string()).collect(),
+            repo_dirty: repos.iter().map(|(_, _, d)| *d).collect(),
         }
     }
 
     /// The wire contract the frontend codes against. `#[serde(rename_all =
-    /// "camelCase")]` must produce exactly these four keys, `None` must serialize
+    /// "camelCase")]` must produce exactly these five keys, `None` must serialize
     /// as `null` (not omitted: the consumer distinguishes "unknown branch" from
-    /// "missing entry"), and `repoBranches[i]` must line up with `repoPaths[i]`.
+    /// "missing entry"), and `repoBranches[i]` / `repoDirty[i]` must line up with
+    /// `repoPaths[i]`.
+    ///
+    /// #1028: this is the one test that can catch a `repo_dirty` vs `repoDirty` wire
+    /// name mismatch. A frontend test cannot: its payload is written to match the TS
+    /// interface, so if Rust emitted `repo_dirty` the frontend test would still pass
+    /// and every badge in production would go permanently violet.
     #[test]
     fn discovery_branch_payload_wire_shape_is_camel_case_with_explicit_nulls() {
         let payload = b2_payload(
             None,
             &[
-                ("C:/wg/repo-AgentsCommander", Some("feature/943")),
-                ("C:/wg/repo-webpage", None),
+                (
+                    "C:/wg/repo-AgentsCommander",
+                    Some("feature/943"),
+                    Some(true),
+                ),
+                ("C:/wg/repo-webpage", None, None),
             ],
         );
 
@@ -3754,6 +3795,7 @@ mod tests {
                 "branch": null,
                 "repoBranches": ["feature/943", null],
                 "repoPaths": ["C:/wg/repo-AgentsCommander", "C:/wg/repo-webpage"],
+                "repoDirty": [true, null],
             })
         );
     }
@@ -3762,7 +3804,7 @@ mod tests {
     /// and `repo_branches` carries the same value so a consumer can read either.
     #[test]
     fn discovery_branch_payload_keeps_the_single_repo_shorthand() {
-        let payload = b2_payload(Some("main"), &[("C:/wg/repo-solo", Some("main"))]);
+        let payload = b2_payload(Some("main"), &[("C:/wg/repo-solo", Some("main"), None)]);
         let value = serde_json::to_value(&payload).expect("serialize");
 
         assert_eq!(value["branch"], serde_json::json!("main"));
@@ -3778,20 +3820,58 @@ mod tests {
         let before = b2_payload(
             None,
             &[
-                ("C:/wg/repo-a", Some("main")),
-                ("C:/wg/repo-b", Some("main")),
+                ("C:/wg/repo-a", Some("main"), None),
+                ("C:/wg/repo-b", Some("main"), None),
             ],
         );
         let after = b2_payload(
             None,
             &[
-                ("C:/wg/repo-a", Some("feature/943")),
-                ("C:/wg/repo-b", Some("main")),
+                ("C:/wg/repo-a", Some("feature/943"), None),
+                ("C:/wg/repo-b", Some("main"), None),
             ],
         );
 
         assert_eq!(before.branch, after.branch, "multi-repo: both stay None");
         assert_ne!(before, after, "per-repo drift must re-emit");
+    }
+
+    /// #1028 - a dirty flip with every branch identical must re-emit, or the badge
+    /// never turns red on a cold row. `PartialEq` over the whole payload is what
+    /// delivers this, which is why `repo_dirty` had to join the payload rather than
+    /// ride a separate event: no gate change was needed, but the field must be IN the
+    /// compared value.
+    #[test]
+    fn discovery_branch_payload_gate_fires_on_dirty_flip() {
+        let clean = b2_payload(
+            None,
+            &[
+                ("C:/wg/repo-a", Some("main"), Some(false)),
+                ("C:/wg/repo-b", Some("main"), Some(false)),
+            ],
+        );
+        let dirtied = b2_payload(
+            None,
+            &[
+                ("C:/wg/repo-a", Some("main"), Some(true)),
+                ("C:/wg/repo-b", Some("main"), Some(false)),
+            ],
+        );
+        let unknown = b2_payload(
+            None,
+            &[
+                ("C:/wg/repo-a", Some("main"), None),
+                ("C:/wg/repo-b", Some("main"), Some(false)),
+            ],
+        );
+
+        assert_eq!(
+            clean.repo_branches, dirtied.repo_branches,
+            "only dirty moved"
+        );
+        assert_ne!(clean, dirtied, "clean -> dirty must re-emit");
+        assert_ne!(dirtied, unknown, "dirty -> unknown must re-emit");
+        assert_ne!(clean, unknown, "false and null are distinct on the wire");
     }
 
     /// A repo-set change with identical branch text must also fire: swapping a repo
@@ -3803,22 +3883,22 @@ mod tests {
         let before = b2_payload(
             None,
             &[
-                ("C:/wg/repo-a", Some("main")),
-                ("C:/wg/repo-b", Some("main")),
+                ("C:/wg/repo-a", Some("main"), None),
+                ("C:/wg/repo-b", Some("main"), None),
             ],
         );
         let swapped = b2_payload(
             None,
             &[
-                ("C:/wg/repo-a", Some("main")),
-                ("C:/wg/repo-c", Some("main")),
+                ("C:/wg/repo-a", Some("main"), None),
+                ("C:/wg/repo-c", Some("main"), None),
             ],
         );
         let reordered = b2_payload(
             None,
             &[
-                ("C:/wg/repo-b", Some("main")),
-                ("C:/wg/repo-a", Some("main")),
+                ("C:/wg/repo-b", Some("main"), None),
+                ("C:/wg/repo-a", Some("main"), None),
             ],
         );
 
