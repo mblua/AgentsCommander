@@ -101,6 +101,23 @@ export type SessionStatus = "active" | "running" | "idle" | { exited: number };
 
 export type CodingAgentKind = "claude" | "codex" | "gemini";
 
+/**
+ * #1033 - payload of the `session_context` event (`lib.rs:456`).
+ *
+ * `percent` is `number | null` and NEVER `percent?: number`. The Rust side
+ * (`pty/context_scrape/mod.rs:69-78`) deliberately carries no
+ * `skip_serializing_if` on it, so `None` serializes as an explicit
+ * `"percent": null` rather than an absent key. Typing it optional here would
+ * re-introduce *absent* as a third state beside `null` and `0`, in a feature
+ * whose one hard rule is that unavailable is exactly one thing.
+ *
+ * `0` is a REAL reading and must survive the trip; only `null` means unavailable.
+ */
+export interface SessionContextPayload {
+  sessionId: string;
+  percent: number | null;
+}
+
 export interface SessionGroup {
   id: string;
   name: string;
@@ -222,6 +239,27 @@ export interface AgentConfig {
    * inactive seed is never persisted as a sentinel.
    */
   configSeed?: ConfigSeedConfig;
+  /**
+   * #1033 - best-effort pattern AC runs over the rows this agent draws in its
+   * terminal, to read its context-window usage for the CTX badge. Capture group 1
+   * is the percentage.
+   *
+   * Absent means the badge is OFF for this agent. Unlike `instructionsFilename`,
+   * there is NO fallback default anywhere in the backend, so blank does not mean
+   * "use the default shown": blank means off.
+   *
+   * Stored VERBATIM and never trimmed. A pattern's leading whitespace is a
+   * load-bearing column anchor, and a trim deletes it while every normal case
+   * keeps reading correctly - so the damage is invisible. Empty/whitespace-only is
+   * dropped to omitted before save (mirroring `instructionsFilename`'s contract,
+   * NOT its trim), so it is never persisted as a sentinel.
+   *
+   * Rust `regex` grammar, NOT JS `RegExp`: the two disagree in both directions, so
+   * nothing on this side validates it. An unusable pattern reads `CTX N/A` and its
+   * reason reaches `app.log` only. Serialized as `contextRegex`; placed before
+   * `backend` to mirror the Rust field order (`config/settings.rs:79-80`).
+   */
+  contextRegex?: string;
   backend?: AgentBackendConfig;
 }
 
@@ -831,6 +869,22 @@ export interface SessionsState {
   repos: RepoMatch[];
   coordSortByActivity: boolean;
   lastActivityBySessionId: Record<string, number>;
+  /**
+   * #1033 - live per-session context-window reading, keyed by session id.
+   * Frontend-only and fed by the `session_context` event, so it is structurally
+   * out of reach of `setSessions`'s wholesale replace (unlike a field on
+   * `Session`, which the backend does not carry anyway).
+   *
+   * A missing key = no event and no snapshot has spoken for this session yet. An
+   * explicit `null` = the engine says the reading is unavailable. Both render
+   * `CTX N/A`, so the two collapse on screen by design.
+   *
+   * `0` is a THIRD, distinct value and must survive the trip: it means a real
+   * reading of zero and renders `CTX 0%`. A `??`-to-`||` slip, or a truthiness
+   * test anywhere on this value's path, turns a true `0%` into `N/A` and is
+   * invisible on screen.
+   */
+  contextPercentBySessionId: Record<string, number | null>;
   hydrated: boolean;
 }
 

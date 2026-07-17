@@ -1,4 +1,4 @@
-import { createMemo, createSignal } from "solid-js";
+import { batch, createMemo, createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 import { NO_TEAM } from "../../shared/constants";
 import type { RepoMatch, Session, SessionCommunication, SessionRepo, SessionsState, Team, TeamSessionGroup } from "../../shared/types";
@@ -24,6 +24,7 @@ const [state, setState] = createStore<SessionsState>({
   repos: [],
   coordSortByActivity: false,
   lastActivityBySessionId: {},
+  contextPercentBySessionId: {},
   hydrated: false,
 });
 
@@ -439,6 +440,9 @@ export const sessionsStore = {
   get lastActivityBySessionId() {
     return state.lastActivityBySessionId;
   },
+  get contextPercentBySessionId() {
+    return state.contextPercentBySessionId;
+  },
   get hydrated() {
     return state.hydrated;
   },
@@ -505,6 +509,53 @@ export const sessionsStore = {
 
   markActivity(sessionId: string) {
     setState("lastActivityBySessionId", (prev) => ({ ...prev, [sessionId]: performance.now() }));
+  },
+
+  /**
+   * #1033 - a `session_context` event landed. `null` is stored as `null`, never
+   * dropped: it is the engine's explicit "unavailable", and it must overwrite a
+   * stale reading. Touches no part of `state.sessions`, so `setSessions`'s
+   * wholesale replace cannot reach it and #592's setSessions warning does not
+   * apply.
+   */
+  setSessionContext(sessionId: string, percent: number | null) {
+    setState("contextPercentBySessionId", (prev) => ({ ...prev, [sessionId]: percent }));
+  },
+
+  /**
+   * #1033 - snapshot-seed a session no event has spoken for. A no-op when the key
+   * already exists, which is what lets App.tsx register the listener FIRST and
+   * hydrate afterwards without a slow invoke clobbering a fresher event.
+   *
+   * The guard is key PRESENCE, never truthiness: a stored `0` is a real reading
+   * and a stored `null` is a real answer, and both must count as spoken for. A
+   * `!prev[sessionId]` here would let a stale snapshot overwrite a true `0%`.
+   */
+  hydrateSessionContext(sessionId: string, percent: number | null) {
+    setState("contextPercentBySessionId", (prev) =>
+      sessionId in prev ? prev : { ...prev, [sessionId]: percent },
+    );
+  },
+
+  /**
+   * #1033 - the reading map is event-fed and outlives a render, so it leaks between
+   * tests in the same file exactly as #943 B2's volatile layer did: order-dependent
+   * and silently wrong rather than red. Not a production path; setSessions cannot
+   * clear this map by design.
+   */
+  resetContextReadingsForTests() {
+    batch(() => {
+      // Deletes each key rather than setState(path, {}). Measured: Solid MERGES an
+      // object into the value at a path, whether passed directly or returned from
+      // an updater, so both `{}` forms are a silent no-op here. Mirrors
+      // replicaVolatileStore.clearAll, which clears its keyed map the same way.
+      //
+      // The key must be DELETED and not set to null: a present null is a real
+      // answer, and hydrateSessionContext would then no-op on it.
+      for (const id of Object.keys(state.contextPercentBySessionId)) {
+        setState("contextPercentBySessionId", id, undefined as unknown as null);
+      }
+    });
   },
 
   toggleTeamCollapsed(teamId: string) {
