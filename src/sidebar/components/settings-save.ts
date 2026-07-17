@@ -41,6 +41,26 @@ function normalizeAgentConfigSeed(agent: AgentConfig): AgentConfig {
 }
 
 /**
+ * #1033 - normalize the optional context regex. Mirrors
+ * normalizeAgentInstructionsFilename's CONTRACT (drop the key rather than persist
+ * an empty-string sentinel, since Rust's skip_serializing_if = "Option::is_none"
+ * does not omit Some("")) but deliberately NOT its trim.
+ *
+ * A regex's leading whitespace is load-bearing: a user who writes the column-2
+ * anchor as two literal spaces instead of `^ {2}` has it silently deleted by a
+ * trim, and the pattern then matches agent prose anywhere on the row. Measured
+ * against regex 1.12.3: trimming turns the typed-in-the-input-box false positive
+ * from None into Some(99) while the real statusline keeps reading correctly, so
+ * the damage is invisible in every normal case. Whitespace-only is still dropped
+ * (it cannot compile: no capture group), so the sentinel rule is unaffected.
+ */
+function normalizeAgentContextRegex(agent: AgentConfig): AgentConfig {
+  if (agent.contextRegex && agent.contextRegex.trim()) return agent; // kept BYTE-FOR-BYTE
+  const { contextRegex: _drop, ...rest } = agent;
+  return rest;
+}
+
+/**
  * #868 - normalize the optional runtime backend. The editor preserves a hidden
  * image in the live draft while toggling Container <-> Local, but Local must
  * persist exactly like the historical default: no `backend` object at all.
@@ -95,6 +115,7 @@ export function mergeSettingsForSavePreservingProjects(
     agents: draft.agents
       .map(normalizeAgentInstructionsFilename)
       .map(normalizeAgentConfigSeed)
+      .map(normalizeAgentContextRegex)
       .map(normalizeAgentBackend),
     projectPaths: fresh.projectPaths ?? [],
     projectPath: fresh.projectPath ?? null,

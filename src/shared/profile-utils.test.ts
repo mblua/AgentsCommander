@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { AgentConfig, CodingAgentProfilesConfig } from "./types";
 import {
+  CLAUDE_CONTEXT_REGEX,
+  CODEX_CONTEXT_REGEX,
   commandExecutableBasename,
   composeEffectiveCommand,
   defaultInstructionsFilename,
@@ -22,6 +24,7 @@ import {
   sessionProfileBadge,
   shouldOfferRestartAfterAssign,
   stringifyArgv,
+  suggestedContextRegex,
   validateEnvRows,
 } from "./profile-utils";
 
@@ -421,5 +424,49 @@ describe("profileBadgeKind (#526/#527 shared Config/Selection taxonomy)", () => 
     };
     // A disabled cell is not a live config → B resolves back to A.
     expect(profileBadgeKind(config, "codex", "B")).toBe("fallback");
+  });
+
+  // #1033 - the suggested context pattern (plan SS9.1).
+  //
+  // The glyphs are asserted as \u escapes on purpose: a literal in this file could be
+  // mangled by an encoding round-trip and still LOOK right, while an escape pins the
+  // code point itself. U+2593 must never appear anywhere - it does not occur in the
+  // real output, and the issue's own probe fixtures used it and tested fiction.
+  it("suggests the captured Claude pattern verbatim (the_claude_suggestion_is_the_captured_pattern)", () => {
+    expect(suggestedContextRegex("claude")).toBe(CLAUDE_CONTEXT_REGEX);
+    expect(CLAUDE_CONTEXT_REGEX).toContain("░"); // LIGHT SHADE
+    expect(CLAUDE_CONTEXT_REGEX).toContain("█"); // FULL BLOCK
+    expect(CLAUDE_CONTEXT_REGEX).not.toContain("▓"); // never real output
+  });
+
+  it("suggests the captured Codex pattern verbatim (the_codex_suggestion_is_the_captured_pattern)", () => {
+    expect(suggestedContextRegex("codex")).toBe(CODEX_CONTEXT_REGEX);
+    expect(CODEX_CONTEXT_REGEX).toContain("·"); // MIDDLE DOT, adjacent to the capture
+    expect(CODEX_CONTEXT_REGEX).not.toContain("▓");
+  });
+
+  it("resolves a wrapped or suffixed claude the same way the filename default does (a_docker_wrapped_claude_still_resolves)", () => {
+    // The same shapes defaultInstructionsFilename pins, since both reuse
+    // executableTokenBasename over every token.
+    expect(suggestedContextRegex("claude --model sonnet")).toBe(CLAUDE_CONTEXT_REGEX);
+    expect(suggestedContextRegex("cmd.exe /c claude")).toBe(CLAUDE_CONTEXT_REGEX);
+    expect(suggestedContextRegex("cmd.exe /c claude --continue")).toBe(CLAUDE_CONTEXT_REGEX);
+    expect(suggestedContextRegex("claude-mb")).toBe(CLAUDE_CONTEXT_REGEX);
+    expect(suggestedContextRegex("C:\\tools\\claude.exe")).toBe(CLAUDE_CONTEXT_REGEX);
+    expect(suggestedContextRegex("codex --sandbox workspace-write")).toBe(CODEX_CONTEXT_REGEX);
+    // claude > codex precedence, mirroring the Rust detector.
+    expect(suggestedContextRegex("codex --base gemini")).toBe(CODEX_CONTEXT_REGEX);
+  });
+
+  it("suggests nothing for an agent no capture covered (an_unknown_agent_gets_no_suggestion)", () => {
+    // Deliberately NOT defaultInstructionsFilename's "AGENTS.md"-style fallback: a
+    // wrong filename costs a renamed file, a wrong pattern costs a silently wrong
+    // percentage. No evidence, no guess.
+    expect(suggestedContextRegex("gemini")).toBeNull();
+    expect(suggestedContextRegex("gemini --yolo")).toBeNull();
+    expect(suggestedContextRegex("nonsense")).toBeNull();
+    expect(suggestedContextRegex("opencode")).toBeNull();
+    expect(suggestedContextRegex("my-agent-cli --flag")).toBeNull();
+    expect(suggestedContextRegex("")).toBeNull();
   });
 });
