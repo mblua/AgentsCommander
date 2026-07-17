@@ -137,6 +137,12 @@ mod tests {
     /// the round-1 capture used: portable-pty 0.8.1 + vt100 0.15.2,
     /// `Parser::new(rows, cols, 0)`, rows read back with `contents_between`. The bar really
     /// does shrink 10 -> 6 -> 4 blocks at 120 -> 80 -> 40, exactly as recorded.
+    /// Note the SECOND percent on this row (`Usage ... 8%`). What keeps the reading on
+    /// the context segment is the literal `Context [░█]+ ` before the capture group: the
+    /// pattern has no `.*`, so it can only match where the word `Context` actually is, and
+    /// `Usage ... 8%` is not preceded by it. Measured, because the obvious answer is wrong:
+    /// the column-2 anchor does NOTHING here (delete it and this row still reads 0), and it
+    /// does not save you either (`^ {2}.*(\d{1,3})%` keeps the anchor and reads 8).
     const REAL_80: &str = "  Context ░░░░░░ 0% │ Usage ░░░░░░ 8% (resets in 3h 21m)";
 
     /// At 40 cols claude-hud DROPS the `│ Usage ...` segment rather than wrapping it, so the
@@ -151,15 +157,6 @@ mod tests {
         assert_eq!(extract_with(CLAUDE, &[REAL_40]), Some(0));
     }
 
-    /// The wide rows carry a SECOND percent - `Usage ... 8%` - exactly like Codex's
-    /// `weekly 83% left`. The column-2 anchor is what keeps the reading on the context
-    /// segment: Some(0), never Some(8).
-    #[test]
-    fn the_usage_percent_on_the_same_row_is_never_read_as_context() {
-        assert_eq!(extract_with(CLAUDE, &[REAL_80]), Some(0));
-        assert_ne!(extract_with(CLAUDE, &[REAL_80]), Some(8));
-    }
-
     #[test]
     fn zero_and_hundred_extract_despite_a_missing_glyph() {
         // `[░█]+` must not require BOTH glyphs: the ends of the range only have one.
@@ -170,9 +167,17 @@ mod tests {
         );
     }
 
+    /// Codex is glyphless and puts a SECOND `%` on the row (`weekly 83% left`).
+    ///
+    /// What excludes it is the literal `\u{b7} Context ` immediately before the capture group -
+    /// `weekly 83%` is not preceded by it. NOT ` used`: measured, dropping ` used` from the
+    /// pattern still reads Some(0). ` used` is harmless, but it is not the defence, and a
+    /// pattern that leans on it instead of on the literal prefix is not protected. What
+    /// Codex's `.*` DOES buy is real exposure: `^ {2}.*(\d{1,3})% ` reads Some(3) off this
+    /// row - greedy `.*` eats the `8` and leaves `3` - so the literal prefix is the whole
+    /// defence and must stay adjacent to the capture group.
     #[test]
     fn codex_row_extracts_context_not_weekly() {
-        // Codex is glyphless and puts a SECOND `%` on the row. ` used` is what excludes it.
         assert_eq!(
             extract_with(CODEX, &["  Ready · Context 0% used · weekly 83% left"]),
             Some(0)
