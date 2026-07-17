@@ -90,6 +90,18 @@ impl PtyManager {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn new_for_test_with_container_backend(
+        local_backend: Arc<dyn PtyBackend>,
+        container_backend: Arc<ContainerTransportBackend>,
+    ) -> Self {
+        Self {
+            registry: Arc::new(Mutex::new(SpawnRegistry::default())),
+            local_backend,
+            container_backend,
+        }
+    }
+
     pub fn backend_for_kind(&self, kind: SessionBackendKind) -> Arc<dyn PtyBackend> {
         match kind {
             SessionBackendKind::LocalProcess => self.local_backend.clone(),
@@ -112,6 +124,11 @@ impl PtyManager {
     pub fn stop_all_started_containers_blocking(&self, budget: std::time::Duration) {
         self.container_backend
             .stop_all_started_containers_blocking(budget);
+    }
+
+    pub(crate) fn drain_container_cleanup_threads_blocking(&self) {
+        self.container_backend
+            .drain_detached_cleanup_threads_blocking();
     }
 
     pub fn record_route(&self, id: Uuid, kind: SessionBackendKind) {

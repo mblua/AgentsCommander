@@ -371,6 +371,34 @@ struct CriticalAdmissionKey {
     kind: CriticalAdmissionKind,
 }
 
+struct CriticalAdmissionGuard {
+    inner: Weak<CoordinatorInner>,
+    key: CriticalAdmissionKey,
+}
+
+impl CriticalAdmissionGuard {
+    fn new(inner: &Arc<CoordinatorInner>, key: CriticalAdmissionKey) -> Self {
+        Self {
+            inner: Arc::downgrade(inner),
+            key,
+        }
+    }
+}
+
+impl Drop for CriticalAdmissionGuard {
+    fn drop(&mut self) {
+        if let Some(inner) = self.inner.upgrade() {
+            remove_critical_key(&inner, self.key);
+        }
+    }
+}
+
+struct CriticalAdmissionReservation {
+    admission: OwnedSemaphorePermit,
+    slot: mpsc::OwnedPermit<CoordinatorEnvelope>,
+    guard: CriticalAdmissionGuard,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CriticalAdmissionOutcome<T> {
     Completed(T),
@@ -486,7 +514,7 @@ struct CoordinatorEnvelope {
     job: CoordinatorJob,
     _admission: OwnedSemaphorePermit,
     _create_ticket: Option<OwnedSemaphorePermit>,
-    critical_key: Option<CriticalAdmissionKey>,
+    _critical_admission: Option<CriticalAdmissionGuard>,
 }
 
 struct CoordinatorInner {
@@ -609,7 +637,7 @@ impl SelectionCoordinator {
             job: CoordinatorJob::Transition { request, response },
             _admission: admission,
             _create_ticket: None,
-            critical_key: None,
+            _critical_admission: None,
         }));
         receiver
             .await
@@ -628,7 +656,7 @@ impl SelectionCoordinator {
             job: CoordinatorJob::Destroy { request, response },
             _admission: admission,
             _create_ticket: None,
-            critical_key: None,
+            _critical_admission: None,
         }));
         receiver
             .await
@@ -647,7 +675,7 @@ impl SelectionCoordinator {
             job: CoordinatorJob::RestartLifecycle { request, response },
             _admission: admission,
             _create_ticket: None,
-            critical_key: None,
+            _critical_admission: None,
         }));
         receiver
             .await
@@ -666,7 +694,7 @@ impl SelectionCoordinator {
             job: CoordinatorJob::RootLifecycle { request, response },
             _admission: admission,
             _create_ticket: None,
-            critical_key: None,
+            _critical_admission: None,
         }));
         receiver
             .await
@@ -700,7 +728,7 @@ impl SelectionCoordinator {
             },
             _admission: admission,
             _create_ticket: None,
-            critical_key: None,
+            _critical_admission: None,
         }));
         receiver
             .await
@@ -726,7 +754,7 @@ impl SelectionCoordinator {
             },
             _admission: admission,
             _create_ticket: None,
-            critical_key: None,
+            _critical_admission: None,
         }));
         receiver
             .await
@@ -745,7 +773,7 @@ impl SelectionCoordinator {
             },
             _admission: admission,
             _create_ticket: None,
-            critical_key: None,
+            _critical_admission: None,
         }));
         receiver
             .await
@@ -761,7 +789,7 @@ impl SelectionCoordinator {
             job: CoordinatorJob::Snapshot { response },
             _admission: admission,
             _create_ticket: None,
-            critical_key: None,
+            _critical_admission: None,
         }));
         receiver
             .await
@@ -860,7 +888,7 @@ impl SelectionCoordinator {
             },
             _admission: admission,
             _create_ticket: None,
-            critical_key: None,
+            _critical_admission: None,
         }));
         // Restore now owns FIFO position one. Normal and critical work may be
         // admitted, but the worker cannot execute it until restore releases the
@@ -875,6 +903,45 @@ impl SelectionCoordinator {
         Ok(RestoreBarrierGuard {
             release: Some(release),
         })
+    }
+
+    async fn reserve_critical_admission(
+        &self,
+        key: CriticalAdmissionKey,
+    ) -> Result<Option<CriticalAdmissionReservation>, String> {
+        let guard = {
+            let mut keys = self
+                .inner
+                .critical_keys
+                .lock()
+                .map_err(|_| SelectionCoordinatorError::Unavailable.to_string())?;
+            if !keys.insert(key) {
+                return Ok(None);
+            }
+            CriticalAdmissionGuard::new(&self.inner, key)
+        };
+
+        let admission = tokio::select! {
+            permit = Arc::clone(&self.inner.admission).acquire_owned() => {
+                permit.map_err(|_| SelectionCoordinatorError::Unavailable.to_string())?
+            }
+            _ = self.inner.shutdown.cancelled() => {
+                return Err(SelectionCoordinatorError::Unavailable.to_string());
+            }
+        };
+        let slot = tokio::select! {
+            permit = self.inner.sender.clone().reserve_owned() => {
+                permit.map_err(|_| SelectionCoordinatorError::Unavailable.to_string())?
+            }
+            _ = self.inner.shutdown.cancelled() => {
+                return Err(SelectionCoordinatorError::Unavailable.to_string());
+            }
+        };
+        Ok(Some(CriticalAdmissionReservation {
+            admission,
+            slot,
+            guard,
+        }))
     }
 
     async fn submit_route_loss(
@@ -902,46 +969,13 @@ impl SelectionCoordinator {
             session_id,
             kind: CriticalAdmissionKind::RouteLoss,
         };
-        {
-            let mut keys = self
-                .inner
-                .critical_keys
-                .lock()
-                .map_err(|_| SelectionCoordinatorError::Unavailable.to_string())?;
-            if !keys.insert(key) {
-                return Ok(CriticalAdmissionOutcome::AlreadyPending);
-            }
-        }
-
-        let admission = tokio::select! {
-            permit = Arc::clone(&self.inner.admission).acquire_owned() => {
-                match permit {
-                    Ok(permit) => permit,
-                    Err(_) => {
-                        self.remove_critical_key(key);
-                        return Err(SelectionCoordinatorError::Unavailable.to_string());
-                    }
-                }
-            }
-            _ = self.inner.shutdown.cancelled() => {
-                self.remove_critical_key(key);
-                return Err(SelectionCoordinatorError::Unavailable.to_string());
-            }
-        };
-        let slot = tokio::select! {
-            permit = self.inner.sender.clone().reserve_owned() => {
-                match permit {
-                    Ok(permit) => permit,
-                    Err(_) => {
-                        self.remove_critical_key(key);
-                        return Err(SelectionCoordinatorError::Unavailable.to_string());
-                    }
-                }
-            }
-            _ = self.inner.shutdown.cancelled() => {
-                self.remove_critical_key(key);
-                return Err(SelectionCoordinatorError::Unavailable.to_string());
-            }
+        let Some(CriticalAdmissionReservation {
+            admission,
+            slot,
+            guard,
+        }) = self.reserve_critical_admission(key).await?
+        else {
+            return Ok(CriticalAdmissionOutcome::AlreadyPending);
         };
         let (response, receiver) = oneshot::channel();
         drop(slot.send(CoordinatorEnvelope {
@@ -952,7 +986,7 @@ impl SelectionCoordinator {
             },
             _admission: admission,
             _create_ticket: None,
-            critical_key: Some(key),
+            _critical_admission: Some(guard),
         }));
         receiver
             .await
@@ -984,46 +1018,13 @@ impl SelectionCoordinator {
             session_id,
             kind: CriticalAdmissionKind::WatchdogKill,
         };
-        {
-            let mut keys = self
-                .inner
-                .critical_keys
-                .lock()
-                .map_err(|_| SelectionCoordinatorError::Unavailable.to_string())?;
-            if !keys.insert(key) {
-                return Ok(CriticalAdmissionOutcome::AlreadyPending);
-            }
-        }
-
-        let admission = tokio::select! {
-            permit = Arc::clone(&self.inner.admission).acquire_owned() => {
-                match permit {
-                    Ok(permit) => permit,
-                    Err(_) => {
-                        self.remove_critical_key(key);
-                        return Err(SelectionCoordinatorError::Unavailable.to_string());
-                    }
-                }
-            }
-            _ = self.inner.shutdown.cancelled() => {
-                self.remove_critical_key(key);
-                return Err(SelectionCoordinatorError::Unavailable.to_string());
-            }
-        };
-        let slot = tokio::select! {
-            permit = self.inner.sender.clone().reserve_owned() => {
-                match permit {
-                    Ok(permit) => permit,
-                    Err(_) => {
-                        self.remove_critical_key(key);
-                        return Err(SelectionCoordinatorError::Unavailable.to_string());
-                    }
-                }
-            }
-            _ = self.inner.shutdown.cancelled() => {
-                self.remove_critical_key(key);
-                return Err(SelectionCoordinatorError::Unavailable.to_string());
-            }
+        let Some(CriticalAdmissionReservation {
+            admission,
+            slot,
+            guard,
+        }) = self.reserve_critical_admission(key).await?
+        else {
+            return Ok(CriticalAdmissionOutcome::AlreadyPending);
         };
         let (response, receiver) = oneshot::channel();
         drop(slot.send(CoordinatorEnvelope {
@@ -1034,7 +1035,7 @@ impl SelectionCoordinator {
             },
             _admission: admission,
             _create_ticket: None,
-            critical_key: Some(key),
+            _critical_admission: Some(guard),
         }));
         let result = receiver
             .await
@@ -1066,41 +1067,13 @@ impl SelectionCoordinator {
             session_id,
             kind: CriticalAdmissionKind::BackgroundCleanup,
         };
-        {
-            let mut keys = self
-                .inner
-                .critical_keys
-                .lock()
-                .map_err(|_| SelectionCoordinatorError::Unavailable.to_string())?;
-            if !keys.insert(key) {
-                return Ok(CriticalAdmissionOutcome::AlreadyPending);
-            }
-        }
-        let admission = tokio::select! {
-            permit = Arc::clone(&self.inner.admission).acquire_owned() => match permit {
-                Ok(permit) => permit,
-                Err(_) => {
-                    self.remove_critical_key(key);
-                    return Err(SelectionCoordinatorError::Unavailable.to_string());
-                }
-            },
-            _ = self.inner.shutdown.cancelled() => {
-                self.remove_critical_key(key);
-                return Err(SelectionCoordinatorError::Unavailable.to_string());
-            }
-        };
-        let slot = tokio::select! {
-            permit = self.inner.sender.clone().reserve_owned() => match permit {
-                Ok(permit) => permit,
-                Err(_) => {
-                    self.remove_critical_key(key);
-                    return Err(SelectionCoordinatorError::Unavailable.to_string());
-                }
-            },
-            _ = self.inner.shutdown.cancelled() => {
-                self.remove_critical_key(key);
-                return Err(SelectionCoordinatorError::Unavailable.to_string());
-            }
+        let Some(CriticalAdmissionReservation {
+            admission,
+            slot,
+            guard,
+        }) = self.reserve_critical_admission(key).await?
+        else {
+            return Ok(CriticalAdmissionOutcome::AlreadyPending);
         };
         let (response, receiver) = oneshot::channel();
         drop(slot.send(CoordinatorEnvelope {
@@ -1114,28 +1087,12 @@ impl SelectionCoordinator {
             },
             _admission: admission,
             _create_ticket: None,
-            critical_key: Some(key),
+            _critical_admission: Some(guard),
         }));
         let result = receiver
             .await
             .map_err(|_| SelectionCoordinatorError::Unavailable.to_string())??;
         Ok(CriticalAdmissionOutcome::Completed(result))
-    }
-
-    fn remove_critical_key(&self, key: CriticalAdmissionKey) {
-        match self.inner.critical_keys.lock() {
-            Ok(mut keys) => {
-                keys.remove(&key);
-            }
-            Err(error) => {
-                log::error!(
-                    "[selection] failed to remove critical admission key session={} kind={:?}: {}",
-                    key.session_id,
-                    key.kind,
-                    error
-                );
-            }
-        }
     }
 
     #[cfg(test)]
@@ -1149,6 +1106,38 @@ impl SelectionCoordinator {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .contains(&CriticalAdmissionKey { session_id, kind })
+    }
+
+    #[cfg(test)]
+    async fn critical_probe_for_test(
+        &self,
+        session_id: Uuid,
+        kind: CriticalAdmissionKind,
+    ) -> Result<CriticalAdmissionOutcome<()>, String> {
+        let manager = self.inner.manager.read().await.clone();
+        if !manager.contains_public_or_pending(session_id).await {
+            return Ok(CriticalAdmissionOutcome::Completed(()));
+        }
+        let key = CriticalAdmissionKey { session_id, kind };
+        let Some(CriticalAdmissionReservation {
+            admission,
+            slot,
+            guard,
+        }) = self.reserve_critical_admission(key).await?
+        else {
+            return Ok(CriticalAdmissionOutcome::AlreadyPending);
+        };
+        let (response, receiver) = oneshot::channel();
+        drop(slot.send(CoordinatorEnvelope {
+            job: CoordinatorJob::Snapshot { response },
+            _admission: admission,
+            _create_ticket: None,
+            _critical_admission: Some(guard),
+        }));
+        receiver
+            .await
+            .map_err(|_| SelectionCoordinatorError::Unavailable.to_string())??;
+        Ok(CriticalAdmissionOutcome::Completed(()))
     }
 
     pub fn container_lifecycle_sender(&self) -> ContainerLifecycleSender {
@@ -1204,6 +1193,7 @@ impl SelectionCoordinator {
         }
 
         cleanup_pending_creates_after_join(&self.inner).await;
+        drain_container_cleanup_threads_after_join(&self.inner).await;
         match self.inner.critical_keys.lock() {
             Ok(mut keys) => keys.clear(),
             Err(error) => {
@@ -1247,7 +1237,7 @@ impl AutoCloseBatchTicket {
             },
             _admission: admission,
             _create_ticket: None,
-            critical_key: None,
+            _critical_admission: None,
         }));
         receiver
             .await
@@ -1343,7 +1333,7 @@ impl CreateFinalizationTicket {
             },
             _admission: admission,
             _create_ticket: Some(create_ticket),
-            critical_key: None,
+            _critical_admission: None,
         }));
         self.completed = true;
         receiver
@@ -1375,7 +1365,7 @@ impl Drop for CreateFinalizationTicket {
             job: CoordinatorJob::RollbackCreate { binding },
             _admission: admission,
             _create_ticket: Some(create_ticket),
-            critical_key: None,
+            _critical_admission: None,
         }));
         self.completed = true;
     }
@@ -1617,7 +1607,7 @@ async fn worker_loop<R: Runtime>(
             biased;
             _ = inner.shutdown.cancelled() => {
                 receiver.close();
-                drain_after_shutdown(&transaction, &inner, &mut receiver).await;
+                drain_after_shutdown(&transaction, &mut receiver).await;
                 break;
             }
             envelope = receiver.recv() => envelope,
@@ -1625,13 +1615,12 @@ async fn worker_loop<R: Runtime>(
         let Some(envelope) = envelope else {
             break;
         };
-        execute_envelope(&transaction, &inner, envelope).await;
+        execute_envelope(&transaction, envelope).await;
     }
 }
 
 async fn drain_after_shutdown<R: Runtime>(
     transaction: &SelectionTransaction<R>,
-    inner: &Arc<CoordinatorInner>,
     receiver: &mut mpsc::Receiver<CoordinatorEnvelope>,
 ) {
     while let Some(envelope) = receiver.recv().await {
@@ -1729,15 +1718,11 @@ async fn drain_after_shutdown<R: Runtime>(
                 }
             }
         }
-        if let Some(key) = envelope.critical_key {
-            remove_critical_key(inner, key);
-        }
     }
 }
 
 async fn execute_envelope<R: Runtime>(
     transaction: &SelectionTransaction<R>,
-    inner: &Arc<CoordinatorInner>,
     envelope: CoordinatorEnvelope,
 ) {
     match envelope.job {
@@ -1859,9 +1844,6 @@ async fn execute_envelope<R: Runtime>(
                 log::warn!("[selection] restore barrier released by dropped owner");
             }
         }
-    }
-    if let Some(key) = envelope.critical_key {
-        remove_critical_key(inner, key);
     }
 }
 
@@ -2193,6 +2175,29 @@ async fn cleanup_pending_creates_after_join(inner: &Arc<CoordinatorInner>) {
     }
 }
 
+async fn drain_container_cleanup_threads_after_join(inner: &Arc<CoordinatorInner>) {
+    let pty = inner
+        .cleanup_pty
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .and_then(Weak::upgrade);
+    let Some(pty) = pty else {
+        return;
+    };
+    let task = tokio::task::spawn_blocking(move || {
+        pty.lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .drain_container_cleanup_threads_blocking();
+    });
+    if let Err(error) = task.await {
+        log::error!(
+            "[selection] container cleanup thread drain failed after coordinator join: {}",
+            error
+        );
+    }
+}
+
 async fn execute_route_loss<R: Runtime>(
     transaction: &SelectionTransaction<R>,
     session_id: Uuid,
@@ -2336,6 +2341,7 @@ pub(crate) fn publish_session_communication<R: Runtime>(
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::AtomicUsize;
 
     #[derive(Default)]
     struct LifecycleTestBackend {
@@ -2360,6 +2366,56 @@ mod tests {
                 .get(&session_id)
                 .copied()
                 .unwrap_or_default()
+        }
+    }
+
+    struct GatedStopRuntime {
+        stop_started: Mutex<Option<oneshot::Sender<()>>>,
+        stop_release: Mutex<std::sync::mpsc::Receiver<()>>,
+        stop_calls: AtomicUsize,
+    }
+
+    impl crate::pty::container_runtime::ContainerRuntime for GatedStopRuntime {
+        fn start(
+            &self,
+            request: crate::pty::container_runtime::ContainerStartRequest,
+        ) -> Result<crate::pty::container_runtime::ContainerRuntimeHandle, crate::errors::AppError>
+        {
+            Ok(crate::pty::container_runtime::ContainerRuntimeHandle {
+                session_id: request.session_id,
+                container_id: format!("container-{}", request.session_id),
+            })
+        }
+
+        fn stop(
+            &self,
+            _handle: &crate::pty::container_runtime::ContainerRuntimeHandle,
+            _timeout: Duration,
+        ) -> Result<(), crate::errors::AppError> {
+            self.stop_calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(started) = self
+                .stop_started
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take()
+            {
+                let _ = started.send(());
+            }
+            self.stop_release
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .recv()
+                .map_err(|error| crate::errors::AppError::Other(error.to_string()))?;
+            Ok(())
+        }
+
+        fn cleanup_labeled_orphans(
+            &self,
+            _live_sessions: &HashSet<Uuid>,
+            _timeout: Duration,
+        ) -> Result<crate::pty::container_runtime::ContainerCleanupReport, crate::errors::AppError>
+        {
+            Ok(crate::pty::container_runtime::ContainerCleanupReport::default())
         }
     }
 
@@ -2424,6 +2480,258 @@ mod tests {
         fn kill_all_jobs(&self) -> (usize, usize) {
             (0, 0)
         }
+    }
+
+    #[derive(Clone, Copy)]
+    enum CriticalWaitPoint {
+        AdmissionPermit,
+        QueueSlot,
+    }
+
+    async fn assert_cancelled_critical_waiter_releases_key(
+        kind: CriticalAdmissionKind,
+        wait_point: CriticalWaitPoint,
+    ) {
+        use crate::pty::backend::SessionBackendKind;
+
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let session = manager
+            .read()
+            .await
+            .create_session(
+                "shell".to_string(),
+                Vec::new(),
+                "C:/critical-cancellation".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create critical-cancellation fixture");
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(manager)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build critical-cancellation app");
+        coordinator
+            .start(app.handle().clone())
+            .expect("start critical-cancellation coordinator");
+        coordinator
+            .inner
+            .phase
+            .store(CoordinatorPhase::Running as u8, Ordering::Release);
+
+        let reservations = (0..COORDINATOR_QUEUE_CAPACITY)
+            .map(|_| {
+                coordinator
+                    .reserve_auto_close()
+                    .expect("reserve physical queue slot")
+            })
+            .collect::<Vec<_>>();
+        let held_admission = match wait_point {
+            CriticalWaitPoint::AdmissionPermit => Some(
+                Arc::clone(&coordinator.inner.admission)
+                    .try_acquire_owned()
+                    .expect("hold final logical admission permit"),
+            ),
+            CriticalWaitPoint::QueueSlot => None,
+        };
+
+        let waiter = {
+            let coordinator = coordinator.clone();
+            tokio::spawn(async move { coordinator.critical_probe_for_test(session.id, kind).await })
+        };
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let registered = coordinator.critical_key_registered_for_test(session.id, kind);
+                let reached_wait = match wait_point {
+                    CriticalWaitPoint::AdmissionPermit => registered,
+                    CriticalWaitPoint::QueueSlot => {
+                        registered && coordinator.inner.admission.available_permits() == 0
+                    }
+                };
+                if reached_wait {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("critical waiter reaches requested cancellation point");
+
+        waiter.abort();
+        assert!(waiter
+            .await
+            .expect_err("waiter must be aborted")
+            .is_cancelled());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while coordinator.critical_key_registered_for_test(session.id, kind) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("aborted waiter removes its critical admission key");
+
+        drop(held_admission);
+        drop(reservations);
+        assert_eq!(
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                coordinator.critical_probe_for_test(session.id, kind),
+            )
+            .await
+            .expect("fresh same-kind submission completes")
+            .expect("fresh same-kind submission succeeds"),
+            CriticalAdmissionOutcome::Completed(())
+        );
+        assert!(!coordinator.critical_key_registered_for_test(session.id, kind));
+        coordinator.close_and_join().await;
+    }
+
+    async fn assert_pending_container_shutdown_waits_for_stop(capped: bool) {
+        use crate::pty::backend::SessionBackendKind;
+        use crate::pty::container_backend::ContainerTransportBackend;
+        use crate::pty::container_runtime::ContainerRuntimeHandle;
+
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let (stop_started, stop_started_rx) = oneshot::channel();
+        let (stop_release, stop_release_rx) = std::sync::mpsc::channel();
+        let runtime = Arc::new(GatedStopRuntime {
+            stop_started: Mutex::new(Some(stop_started)),
+            stop_release: Mutex::new(stop_release_rx),
+            stop_calls: AtomicUsize::new(0),
+        });
+        let output_senders = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let idle_detector = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
+        let container_backend = Arc::new(ContainerTransportBackend::with_runtime(
+            output_senders,
+            idle_detector,
+            None,
+            None,
+            runtime.clone(),
+            None,
+        ));
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test_with_container_backend(
+            Arc::new(LifecycleTestBackend::default()),
+            container_backend.clone(),
+        )));
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(Arc::clone(&pty))
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build pending-container shutdown app");
+        coordinator
+            .start(app.handle().clone())
+            .expect("start pending-container shutdown coordinator");
+        let mut restore_guard = Some(
+            coordinator
+                .submit_restore_first()
+                .await
+                .expect("hold restore barrier"),
+        );
+        let manager_handle = manager.read().await.clone();
+        let mut ticket = coordinator
+            .reserve_create(TrustedCreateIntent::Background)
+            .await
+            .expect("reserve pending-container finalizer");
+        let pending = manager_handle
+            .create_pending_session(
+                &mut ticket,
+                "container".to_string(),
+                Vec::new(),
+                "C:/pending-container-shutdown".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::ContainerTransport,
+            )
+            .await
+            .expect("create pending-container manager row");
+        let _transport_receiver =
+            container_backend.insert_active_runtime_handle_for_test(ContainerRuntimeHandle {
+                session_id: pending.id,
+                container_id: format!("container-{}", pending.id),
+            });
+        pty.lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .record_route(pending.id, SessionBackendKind::ContainerTransport);
+
+        let finalizer = tokio::spawn(async move { ticket.finalize(Vec::new()).await });
+        let mut close = {
+            let coordinator = coordinator.clone();
+            tokio::spawn(async move {
+                if capped {
+                    coordinator
+                        .close_and_join_with_budget(Duration::from_millis(25))
+                        .await;
+                } else {
+                    coordinator.close_and_join().await;
+                }
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !coordinator.inner.shutdown.is_cancelled() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("pending-container shutdown signal becomes visible");
+        if !capped {
+            restore_guard
+                .take()
+                .expect("normal-drain restore guard")
+                .finish();
+        }
+
+        tokio::time::timeout(Duration::from_secs(1), stop_started_rx)
+            .await
+            .expect("container stop is invoked during coordinator close")
+            .expect("container stop-start signal is delivered");
+        assert_eq!(runtime.stop_calls.load(Ordering::SeqCst), 1);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut close)
+                .await
+                .is_err(),
+            "coordinator close must remain pending until container stop finishes"
+        );
+
+        stop_release.send(()).expect("release gated container stop");
+        close.await.expect("join coordinator close task");
+        if let Some(guard) = restore_guard.take() {
+            guard.finish();
+        }
+        assert_eq!(
+            finalizer
+                .await
+                .expect("join pending-container finalizer")
+                .expect_err("shutdown finalizer returns unavailable"),
+            SelectionCoordinatorError::Unavailable.to_string()
+        );
+        assert_eq!(runtime.stop_calls.load(Ordering::SeqCst), 1);
+        assert!(!container_backend.contains_transport_state_for_test(pending.id));
+        assert_eq!(container_backend.detached_cleanup_count_for_test(), 0);
+        let aggregate = manager_handle.aggregate_snapshot().await;
+        assert!(aggregate.pending_ids.is_empty());
+        assert!(aggregate.sessions.is_empty());
+        assert!(!pty
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .has_session(pending.id));
+
+        pty.lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .stop_all_started_containers_blocking(Duration::from_secs(1));
+        assert_eq!(
+            runtime.stop_calls.load(Ordering::SeqCst),
+            1,
+            "later global sweep must be a no-op for the joined rollback"
+        );
     }
 
     fn production_prefix(source: &str) -> &str {
@@ -3204,6 +3512,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn route_loss_admission_wait_cancellation_releases_critical_key() {
+        assert_cancelled_critical_waiter_releases_key(
+            CriticalAdmissionKind::RouteLoss,
+            CriticalWaitPoint::AdmissionPermit,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn route_loss_queue_slot_wait_cancellation_releases_critical_key() {
+        assert_cancelled_critical_waiter_releases_key(
+            CriticalAdmissionKind::RouteLoss,
+            CriticalWaitPoint::QueueSlot,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn watchdog_admission_wait_cancellation_releases_critical_key() {
+        assert_cancelled_critical_waiter_releases_key(
+            CriticalAdmissionKind::WatchdogKill,
+            CriticalWaitPoint::AdmissionPermit,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn watchdog_queue_slot_wait_cancellation_releases_critical_key() {
+        assert_cancelled_critical_waiter_releases_key(
+            CriticalAdmissionKind::WatchdogKill,
+            CriticalWaitPoint::QueueSlot,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn background_cleanup_admission_wait_cancellation_releases_critical_key() {
+        assert_cancelled_critical_waiter_releases_key(
+            CriticalAdmissionKind::BackgroundCleanup,
+            CriticalWaitPoint::AdmissionPermit,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn background_cleanup_queue_slot_wait_cancellation_releases_critical_key() {
+        assert_cancelled_critical_waiter_releases_key(
+            CriticalAdmissionKind::BackgroundCleanup,
+            CriticalWaitPoint::QueueSlot,
+        )
+        .await;
+    }
+
+    #[tokio::test]
     async fn full_queue_critical_route_waiter_is_deduplicated_and_runs_after_capacity_returns() {
         use crate::pty::backend::SessionBackendKind;
 
@@ -3507,6 +3869,11 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn normal_shutdown_drain_joins_pending_container_stop_exactly_once() {
+        assert_pending_container_shutdown_waits_for_stop(false).await;
+    }
+
+    #[tokio::test]
     async fn cancelled_and_panicked_post_spawn_creates_roll_back_without_ghost_events() {
         use crate::pty::backend::SessionBackendKind;
         use tauri::Listener;
@@ -3720,6 +4087,11 @@ mod tests {
         assert!(aggregate.sessions.is_empty());
         assert!(coordinator.inner.critical_keys.lock().unwrap().is_empty());
         assert!(coordinator.inner.worker.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn capped_shutdown_abort_joins_pending_container_stop_exactly_once() {
+        assert_pending_container_shutdown_waits_for_stop(true).await;
     }
 
     #[tokio::test]

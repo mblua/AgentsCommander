@@ -189,15 +189,8 @@ impl Drop for ContainerSpawnCancellationGuard<'_> {
             .take()
         {
             if let Some(runtime) = self.backend.runtime.clone() {
-                std::thread::spawn(move || {
-                    if let Err(error) = runtime.stop(&handle, CONTAINER_STOP_TIMEOUT) {
-                        log::warn!(
-                            "[container-transport] canceled late runtime stop failed session={}: {}",
-                            handle.session_id,
-                            error
-                        );
-                    }
-                });
+                self.backend
+                    .spawn_tracked_runtime_stop(runtime, handle, "canceled-late-runtime");
             }
         }
         if let Some(resources) = self.backend.remove_session_state(self.session_id) {
@@ -225,6 +218,7 @@ pub struct ContainerTransportBackend {
     tuning: ContainerTransportTuning,
     runtime: Option<Arc<dyn ContainerRuntime>>,
     token_manager: Option<ContainerApiTokenManager>,
+    detached_cleanup_threads: Arc<Mutex<Vec<std::thread::JoinHandle<()>>>>,
     #[cfg(test)]
     runtime_settings_override: Option<crate::config::settings::AppSettings>,
     #[cfg(test)]
@@ -262,6 +256,7 @@ impl ContainerTransportBackend {
             tuning,
             runtime: None,
             token_manager: None,
+            detached_cleanup_threads: Arc::new(Mutex::new(Vec::new())),
             #[cfg(test)]
             runtime_settings_override: None,
             #[cfg(test)]
@@ -915,6 +910,57 @@ impl ContainerTransportBackend {
         AppError::PtyError(message)
     }
 
+    fn spawn_tracked_runtime_stop(
+        &self,
+        runtime: Arc<dyn ContainerRuntime>,
+        handle: ContainerRuntimeHandle,
+        reason: &'static str,
+    ) {
+        let session_id = handle.session_id;
+        let task = std::thread::spawn(move || {
+            if let Err(error) = runtime.stop(&handle, CONTAINER_STOP_TIMEOUT) {
+                log::warn!(
+                    "[container-transport] {} stop failed for session {}: {}",
+                    reason,
+                    handle.session_id,
+                    error
+                );
+            }
+        });
+        let mut tracked = self
+            .detached_cleanup_threads
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        tracked.retain(|existing| !existing.is_finished());
+        tracked.push(task);
+        drop(tracked);
+        log::debug!(
+            "[container-transport] tracking detached stop session={} reason={}",
+            session_id,
+            reason
+        );
+    }
+
+    pub(crate) fn drain_detached_cleanup_threads_blocking(&self) {
+        loop {
+            let tasks = {
+                let mut tracked = self
+                    .detached_cleanup_threads
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                std::mem::take(&mut *tracked)
+            };
+            if tasks.is_empty() {
+                return;
+            }
+            for task in tasks {
+                if task.join().is_err() {
+                    log::warn!("[container-transport] detached cleanup thread panicked");
+                }
+            }
+        }
+    }
+
     fn cleanup_removed_resources_async(
         &self,
         resources: RemovedSessionResources,
@@ -932,16 +978,7 @@ impl ContainerTransportBackend {
         }
         drop(resources.logical_resource_slot);
         if let (Some(runtime), Some(handle)) = (self.runtime.clone(), resources.runtime_handle) {
-            std::thread::spawn(move || {
-                if let Err(err) = runtime.stop(&handle, CONTAINER_STOP_TIMEOUT) {
-                    log::warn!(
-                        "[container-transport] {} stop failed for session {}: {}",
-                        reason,
-                        handle.session_id,
-                        err
-                    );
-                }
-            });
+            self.spawn_tracked_runtime_stop(runtime, handle, reason);
         }
     }
 
@@ -1183,6 +1220,48 @@ impl ContainerTransportBackend {
             .unwrap()
             .get(&session_id)
             .cloned()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_active_runtime_handle_for_test(
+        &self,
+        handle: ContainerRuntimeHandle,
+    ) -> mpsc::Receiver<HostToBridgeFrame> {
+        let session_id = handle.session_id;
+        let (sender, receiver) = mpsc::channel(8);
+        self.sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(
+                session_id,
+                ContainerSessionState::Active(ActiveSession {
+                    output_target: PtyOutputTarget::noop(),
+                    sender,
+                    rows: 30,
+                    cols: 120,
+                    runtime_handle: Some(handle),
+                    api_client_id: None,
+                    logical_resource_slot: None,
+                    container_credential_path: None,
+                }),
+            );
+        receiver
+    }
+
+    #[cfg(test)]
+    pub(crate) fn contains_transport_state_for_test(&self, session_id: Uuid) -> bool {
+        self.sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains_key(&session_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn detached_cleanup_count_for_test(&self) -> usize {
+        self.detached_cleanup_threads
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .len()
     }
 }
 
