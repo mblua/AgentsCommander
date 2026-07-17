@@ -428,10 +428,13 @@ describe("profileBadgeKind (#526/#527 shared Config/Selection taxonomy)", () => 
 
   // #1033 - the suggested context pattern (plan SS9.1).
   //
-  // The glyphs are asserted as \u escapes on purpose: a literal in this file could be
-  // mangled by an encoding round-trip and still LOOK right, while an escape pins the
-  // code point itself. U+2593 must never appear anywhere - it does not occur in the
-  // real output, and the issue's own probe fixtures used it and tested fiction.
+  // The glyphs below are literals, not code-point escapes. What proves they are the
+  // right code points is not this file: both constants are byte-identical to the
+  // plan's SS5.4 and were injected from it rather than retyped, so the bytes are
+  // verified at their source. These assertions pin the weaker, still-useful thing -
+  // that the shipped pattern carries a bar glyph and a middle dot at all, and that
+  // U+2593 never appears: it does not occur in the real output, and the issue's own
+  // probe fixtures used it and tested fiction.
   it("suggests the captured Claude pattern verbatim (the_claude_suggestion_is_the_captured_pattern)", () => {
     expect(suggestedContextRegex("claude")).toBe(CLAUDE_CONTEXT_REGEX);
     expect(CLAUDE_CONTEXT_REGEX).toContain("░"); // LIGHT SHADE
