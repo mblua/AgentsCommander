@@ -34,6 +34,7 @@ mod tests {
     /// Every element of each is load-bearing, and the tests below are what say so.
     const CLAUDE: &str = r"^ {2}Context [░█]+ (\d{1,3})%";
     const CODEX: &str = r"^ {2}.*· Context (\d{1,3})% used";
+    const PI: &str = r"^(?:.*? )?(\d{1,3})\.\d%/";
 
     /// The real statusline at cols=120, as far as the plan transcribes it. The plan elides
     /// the tail with `…` in prose and the capture itself did not survive the workgroup
@@ -50,6 +51,52 @@ mod tests {
         let compiled = compile(pattern).expect("pattern compiles");
         let owned: Vec<String> = rows.iter().map(|r| r.to_string()).collect();
         extract(&compiled, &owned)
+    }
+
+    #[test]
+    fn pi_current_footers_extract_integer_used_percentage() {
+        assert_eq!(
+            extract_with(
+                PI,
+                &["$0.000 (sub) 0.0%/372k                    (openai-codex) gpt-5.6-sol • max"]
+            ),
+            Some(0)
+        );
+        assert_eq!(extract_with(PI, &["42.7%/372k"]), Some(42));
+        assert_eq!(extract_with(PI, &["100.0%/372k"]), Some(100));
+        assert_eq!(
+            extract_with(
+                PI,
+                &["$1.234 98k CH83.4% 42.7%/372k (openai-codex) gpt-5.6-sol • max"]
+            ),
+            Some(42)
+        );
+        assert_eq!(
+            extract_with(
+                PI,
+                &["$0.125 24k 42.7%/(auto) (anthropic) claude-sonnet • high"]
+            ),
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn pi_unknown_and_incompatible_footers_fail_closed() {
+        for row in [
+            "?/372k",
+            "$0.000 (sub) 101.0%/372k",
+            "$0.000 (sub) 1000.0%/372k",
+            "$0.000 (sub) 42.70%/372k",
+            "$0.000 (sub) 42.7%",
+            "$0.000 98k CH83.4% (cache only)",
+            "$0.000 (sub) 42.7% of 372k",
+        ] {
+            assert_eq!(
+                extract_with(PI, &[row]),
+                None,
+                "row should fail closed: {row}"
+            );
+        }
     }
 
     #[test]
