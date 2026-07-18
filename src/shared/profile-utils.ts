@@ -327,6 +327,16 @@ export function hasEnabledEnvKey(rows: CodingAgentEnv[], key: string): boolean {
   return rows.some((row) => row.enabled && envKeyCompare(row.key) === target);
 }
 
+/**
+ * #1052 - env value display rule. A row's value is masked only when its key
+ * starts with PASSWORD, matched case-insensitively on the trimmed key. Reuses
+ * envKeyCompare (trim + uppercase) so the rule stays consistent with the rest
+ * of the env-key handling. Display-only; values are stored as plaintext.
+ */
+export function shouldMaskEnvValue(key: string): boolean {
+  return envKeyCompare(key).startsWith("PASSWORD");
+}
+
 export type EnvOrigin = "system" | "profile" | "accepted";
 
 const MANAGED_HOME_ENV_KEYS = new Set([
