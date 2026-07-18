@@ -3,6 +3,7 @@ import type { AgentConfig, CodingAgentProfilesConfig } from "./types";
 import {
   CLAUDE_CONTEXT_REGEX,
   CODEX_CONTEXT_REGEX,
+  PI_CONTEXT_REGEX,
   commandExecutableBasename,
   composeEffectiveCommand,
   defaultInstructionsFilename,
@@ -447,6 +448,24 @@ describe("profileBadgeKind (#526/#527 shared Config/Selection taxonomy)", () => 
     expect(suggestedContextRegex("codex")).toBe(CODEX_CONTEXT_REGEX);
     expect(CODEX_CONTEXT_REGEX).toContain("·"); // MIDDLE DOT, adjacent to the capture
     expect(CODEX_CONTEXT_REGEX).not.toContain("▓");
+  });
+
+  it("suggests the exact Pi slash-footer pattern for supported command shapes", () => {
+    expect(PI_CONTEXT_REGEX).toBe(String.raw`^(?:.*? )?(\d{1,3})\.\d%/`);
+    expect(suggestedContextRegex("pi")).toBe(PI_CONTEXT_REGEX);
+    expect(suggestedContextRegex("C:\\tools\\pi.exe")).toBe(PI_CONTEXT_REGEX);
+    expect(suggestedContextRegex("cmd.exe /c pi")).toBe(PI_CONTEXT_REGEX);
+  });
+
+  it("keeps Pi precedence over Claude and Codex model tokens", () => {
+    expect(suggestedContextRegex("pi --model claude-sonnet")).toBe(PI_CONTEXT_REGEX);
+    expect(suggestedContextRegex("pi --model codex-model")).toBe(PI_CONTEXT_REGEX);
+  });
+
+  it("does not treat Pi executable look-alikes as Pi", () => {
+    for (const command of ["pip", "pipx", "ping", "pixel"]) {
+      expect(suggestedContextRegex(command)).toBeNull();
+    }
   });
 
   it("resolves a wrapped or suffixed claude the same way the filename default does (a_docker_wrapped_claude_still_resolves)", () => {
