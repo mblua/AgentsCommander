@@ -22,6 +22,7 @@ import {
   resolveProfileLabel,
   resolveProfilePreview,
   sessionProfileBadge,
+  shouldMaskEnvValue,
   shouldOfferRestartAfterAssign,
   stringifyArgv,
   suggestedContextRegex,
@@ -471,5 +472,25 @@ describe("profileBadgeKind (#526/#527 shared Config/Selection taxonomy)", () => 
     expect(suggestedContextRegex("opencode")).toBeNull();
     expect(suggestedContextRegex("my-agent-cli --flag")).toBeNull();
     expect(suggestedContextRegex("")).toBeNull();
+  });
+});
+
+describe("shouldMaskEnvValue (#1052 env value masking rule)", () => {
+  it("masks keys that start with PASSWORD (case-insensitive, trimmed)", () => {
+    expect(shouldMaskEnvValue("PASSWORD")).toBe(true);
+    expect(shouldMaskEnvValue("PASSWORD_TOKEN_API")).toBe(true);
+    expect(shouldMaskEnvValue("PASSWORDS")).toBe(true);
+    expect(shouldMaskEnvValue("password_token")).toBe(true);
+    expect(shouldMaskEnvValue("Password")).toBe(true);
+    expect(shouldMaskEnvValue("PaSsWoRd")).toBe(true);
+    expect(shouldMaskEnvValue("  password_x  ")).toBe(true);
+  });
+  it("leaves other keys in plaintext", () => {
+    expect(shouldMaskEnvValue("")).toBe(false);
+    expect(shouldMaskEnvValue("   ")).toBe(false);
+    expect(shouldMaskEnvValue("CODEX_HOME")).toBe(false);
+    expect(shouldMaskEnvValue("OPENAI_API_KEY")).toBe(false);
+    expect(shouldMaskEnvValue("MY_PASSWORD")).toBe(false);
+    expect(shouldMaskEnvValue("DB_PASSWORD")).toBe(false);
   });
 });
