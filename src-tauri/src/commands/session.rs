@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::OnceLock;
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
@@ -22,20 +21,20 @@ use crate::resource_monitor::{
     AgentLaunchPermit, ResourceLaunchMetadata, ResourceLaunchRegistration, ResourceLimits,
     ResourceLogicalAgentSlot, ResourceMonitorState,
 };
-use crate::session::manager::SessionManager;
+use crate::session::manager::{
+    CommitDecision, LifecycleMutations, PendingCreateBinding, SessionManager,
+};
 use crate::session::profile::CodingAgentKind;
+use crate::session::selection::{
+    CriticalAdmissionOutcome, SelectionCause, SelectionCoordinator, SelectionRequest,
+    SelectionSource, SelectionTransaction, TrustedCreateIntent, TrustedRestartIntent,
+};
 use crate::session::session::{
     SessionCommunication, SessionCommunicationKind, SessionInfo, SessionRepo, SessionStatus,
 };
 use crate::session::warnings::{emit_session_warning, SessionWarning};
 use crate::telegram::manager::TelegramBridgeState;
 use crate::DetachedSessionsState;
-
-static ROOT_AGENT_SESSION_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-
-pub(crate) fn root_agent_session_lock() -> &'static tokio::sync::Mutex<()> {
-    ROOT_AGENT_SESSION_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExistingRootAction {
@@ -55,9 +54,9 @@ fn classify_existing_root(status: &SessionStatus, has_pty: bool) -> ExistingRoot
 }
 
 async fn rollback_pre_created_session<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
-    pty_mgr: &Arc<Mutex<PtyManager>>,
+    _app: &AppHandle<R>,
+    _session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    _pty_mgr: &Arc<Mutex<PtyManager>>,
     id: Uuid,
     reason: &str,
 ) {
@@ -66,37 +65,44 @@ async fn rollback_pre_created_session<R: tauri::Runtime>(
         id,
         reason
     );
+    // The reserved create ticket or inline transaction owns the one common
+    // backend-kind-aware rollback after this setup body returns. Killing here
+    // would race that finalizer and perform the same teardown twice.
+}
 
-    if let Err(e) = pty_mgr.lock().unwrap().kill(id) {
-        log::warn!(
-            "[session] Failed to clean PTY state while rolling back {}: {}",
-            id,
-            e
-        );
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreateSelectionIntent {
+    User,
+    Background,
+    Suppress,
+}
+
+impl CreateSelectionIntent {
+    fn trusted(self) -> Option<TrustedCreateIntent> {
+        match self {
+            Self::User => Some(TrustedCreateIntent::User),
+            Self::Background => Some(TrustedCreateIntent::Background),
+            Self::Suppress => None,
+        }
     }
+}
 
-    let mgr = session_mgr.read().await;
-    let was_active = mgr.get_active().await == Some(id);
-    match mgr.destroy_session(id).await {
-        Ok(Some(new_id)) => {
-            let _ = app.emit(
-                "session_switched",
-                serde_json::json!({ "id": new_id.to_string() }),
-            );
-        }
-        Ok(None) if was_active => {
-            let _ = app.emit(
-                "session_switched",
-                serde_json::json!({ "id": serde_json::Value::Null }),
-            );
-        }
-        Ok(None) => {}
-        Err(e) => {
-            log::warn!(
-                "[session] Failed to remove pre-created session {} after setup failure: {}",
-                id,
-                e
-            );
+struct DeferredCreateOutput {
+    info: SessionInfo,
+    binding: PendingCreateBinding,
+    warnings: Vec<SessionWarning>,
+}
+
+enum CreateCompletion {
+    Finalized(SessionInfo),
+    Deferred(DeferredCreateOutput),
+}
+
+impl CreateCompletion {
+    fn into_finalized(self) -> Result<SessionInfo, String> {
+        match self {
+            Self::Finalized(info) => Ok(info),
+            Self::Deferred(_) => Err("create unexpectedly deferred finalization".to_string()),
         }
     }
 }
@@ -954,368 +960,543 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     agent_label: Option<String>,
     skip_tooling_save: bool,
     git_repos: Vec<SessionRepo>,
-    mut skip_auto_resume: bool,
+    skip_auto_resume: bool,
     resolved_spawn: Option<AgentSpawnCommand>,
     // #973 - the size the view has already fitted to, when the caller has a view at all.
     // `None` keeps AC's historical 120x30. See `PtyViewport`.
     viewport: Option<PtyViewport>,
+    selection_intent: CreateSelectionIntent,
 ) -> Result<SessionInfo, String> {
+    create_session_inner_impl(
+        app,
+        session_mgr,
+        pty_mgr,
+        shell,
+        shell_args,
+        cwd,
+        session_name,
+        agent_id,
+        agent_label,
+        skip_tooling_save,
+        git_repos,
+        skip_auto_resume,
+        resolved_spawn,
+        viewport,
+        selection_intent,
+        None,
+        None,
+        None,
+        None,
+        false,
+    )
+    .await?
+    .into_finalized()
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_session_inner_for_restore<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: &Arc<Mutex<PtyManager>>,
+    shell: String,
+    shell_args: Vec<String>,
+    cwd: String,
+    session_name: Option<String>,
+    agent_id: Option<String>,
+    agent_label: Option<String>,
+    skip_tooling_save: bool,
+    git_repos: Vec<SessionRepo>,
+    skip_auto_resume: bool,
+    resolved_spawn: Option<AgentSpawnCommand>,
+    viewport: Option<PtyViewport>,
+    pending_start_fresh: Option<bool>,
+    pending_communication: Option<SessionCommunication>,
+) -> Result<SessionInfo, String> {
+    create_session_inner_impl(
+        transaction.app(),
+        session_mgr,
+        pty_mgr,
+        shell,
+        shell_args,
+        cwd,
+        session_name,
+        agent_id,
+        agent_label,
+        skip_tooling_save,
+        git_repos,
+        skip_auto_resume,
+        resolved_spawn,
+        viewport,
+        CreateSelectionIntent::Suppress,
+        pending_start_fresh,
+        pending_communication,
+        Some(transaction),
+        Some(SelectionCause::Restore),
+        false,
+    )
+    .await?
+    .into_finalized()
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn create_session_inner_impl<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: &Arc<Mutex<PtyManager>>,
+    shell: String,
+    shell_args: Vec<String>,
+    cwd: String,
+    session_name: Option<String>,
+    agent_id: Option<String>,
+    agent_label: Option<String>,
+    skip_tooling_save: bool,
+    git_repos: Vec<SessionRepo>,
+    mut skip_auto_resume: bool,
+    resolved_spawn: Option<AgentSpawnCommand>,
+    viewport: Option<PtyViewport>,
+    selection_intent: CreateSelectionIntent,
+    pending_start_fresh: Option<bool>,
+    pending_communication: Option<SessionCommunication>,
+    inline_transaction: Option<&SelectionTransaction<R>>,
+    inline_cause: Option<SelectionCause>,
+    defer_inline_finalization: bool,
+) -> Result<CreateCompletion, String> {
     let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
     let session_label = session_name.as_deref().unwrap_or(&shell).to_string();
-    let spawn_mark = {
-        let pty = pty_mgr.lock().unwrap_or_else(|e| e.into_inner());
-        pty.mark_spawning(&cwd, &session_label)
+    let coordinator = app
+        .try_state::<SelectionCoordinator>()
+        .ok_or_else(|| "selectionCoordinatorUnavailable".to_string())?;
+    let mut create_ticket = match inline_transaction {
+        Some(_) => None,
+        None => Some(match selection_intent.trusted() {
+            Some(intent) => coordinator
+                .reserve_create(intent)
+                .await
+                .map_err(|error| error.to_string())?,
+            None => coordinator
+                .reserve_suppressed_create()
+                .await
+                .map_err(|error| error.to_string())?,
+        }),
     };
-    crate::config::archive_gate::enforce_unarchived_for_spawn(app, &cwd, &session_label).await?;
-    let (agent_id, agent_label) = {
-        if let Some(spawn) = resolved_spawn.as_ref() {
-            (
-                Some(spawn.trusted_agent_id.clone()),
-                Some(spawn.trusted_agent_label.clone()),
-            )
-        } else {
-            let settings_state = app.state::<SettingsState>();
-            let cfg = settings_state.read().await;
-            resolve_actual_agent(
-                &shell,
-                &shell_args,
-                agent_id.as_deref(),
-                agent_label.as_deref(),
-                &cfg,
-            )
-        }
-    };
-
-    // Recompute is_coordinator from the current team snapshot. One source of truth —
-    // every caller of create_session_inner gets the same computation.
-    let teams = tokio::task::spawn_blocking(crate::config::teams::discover_teams)
-        .await
-        .map_err(|e| e.to_string())?;
-    let is_coordinator = crate::config::teams::is_coordinator_for_cwd(&cwd, &teams);
-    let is_root_agent = crate::config::root_agent::is_root_agent_path(&cwd);
-
-    // #552 seed the badge clock for a coordinator's first spawn so it shows 0m
-    // immediately, and clear any "auto-closed" marker. An auto-closed coordinator
-    // is DESTROYED, so its reopen flows through this create path (the "create
-    // in-place" branch of handleReplicaClick), NOT restart_session_inner.
-    // seed_if_absent never overwrites, so a respawn does NOT reset the badge.
-    if is_coordinator {
-        if let Some(clocks) =
-            app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
-        {
-            // agent_fqn_from_path returns String (teams.rs:80), not Option.
-            let fqn = crate::config::teams::agent_fqn_from_path(&cwd);
-            let now = chrono::Utc::now();
-            let (seeded, cleared_auto, cleared_manual) = {
-                let mut g = clocks.lock().unwrap_or_else(|e| e.into_inner());
+    let coordinator_shutdown = coordinator.shutdown_token();
+    let inline_pending_binding = Arc::new(Mutex::new(None));
+    let inline_pending_for_body = Arc::clone(&inline_pending_binding);
+    let create_body = async {
+        let spawn_mark = {
+            let pty = pty_mgr.lock().unwrap_or_else(|e| e.into_inner());
+            pty.mark_spawning(&cwd, &session_label)
+        };
+        crate::config::archive_gate::enforce_unarchived_for_spawn(app, &cwd, &session_label)
+            .await?;
+        let (agent_id, agent_label) = {
+            if let Some(spawn) = resolved_spawn.as_ref() {
                 (
-                    g.seed_if_absent(&fqn, now),
-                    g.clear_auto_closed(&fqn),
-                    g.clear_manually_closed(&fqn),
+                    Some(spawn.trusted_agent_id.clone()),
+                    Some(spawn.trusted_agent_label.clone()),
                 )
-            };
-            if seeded {
-                let _ = app.emit(
+            } else {
+                let settings_state = app.state::<SettingsState>();
+                let cfg = settings_state.read().await;
+                resolve_actual_agent(
+                    &shell,
+                    &shell_args,
+                    agent_id.as_deref(),
+                    agent_label.as_deref(),
+                    &cfg,
+                )
+            }
+        };
+
+        // Recompute is_coordinator from the current team snapshot. One source of truth:
+        // every caller of create_session_inner gets the same computation.
+        let teams = tokio::task::spawn_blocking(crate::config::teams::discover_teams)
+            .await
+            .map_err(|e| e.to_string())?;
+        let is_coordinator = crate::config::teams::is_coordinator_for_cwd(&cwd, &teams);
+        let is_root_agent = crate::config::root_agent::is_root_agent_path(&cwd);
+
+        // #552 seed the badge clock for a coordinator's first spawn so it shows 0m
+        // immediately, and clear any "auto-closed" marker. An auto-closed coordinator
+        // is DESTROYED, so its reopen flows through this create path (the "create
+        // in-place" branch of handleReplicaClick), NOT restart_session_inner.
+        // seed_if_absent never overwrites, so a respawn does NOT reset the badge.
+        if is_coordinator {
+            if let Some(clocks) =
+                app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
+            {
+                // agent_fqn_from_path returns String (teams.rs:80), not Option.
+                let fqn = crate::config::teams::agent_fqn_from_path(&cwd);
+                let now = chrono::Utc::now();
+                let (seeded, cleared_auto, cleared_manual) = {
+                    let mut g = clocks.lock().unwrap_or_else(|e| e.into_inner());
+                    (
+                        g.seed_if_absent(&fqn, now),
+                        g.clear_auto_closed(&fqn),
+                        g.clear_manually_closed(&fqn),
+                    )
+                };
+                if seeded {
+                    let _ = app.emit(
                     "coordinator_clock_updated",
                     serde_json::json!({ "replicaPath": cwd, "lastUserMessageAt": now.to_rfc3339() }),
                 );
-            }
-            if cleared_auto {
-                let _ = app.emit(
-                    "coordinator_auto_close_changed",
-                    serde_json::json!({ "replicaPath": cwd, "autoClosedAt": null }),
-                );
-            }
-            if cleared_manual {
-                let _ = app.emit(
-                    "coordinator_manual_close_changed",
-                    serde_json::json!({ "replicaPath": cwd, "manuallyClosedAt": null }),
-                );
+                }
+                if cleared_auto {
+                    let _ = app.emit(
+                        "coordinator_auto_close_changed",
+                        serde_json::json!({ "replicaPath": cwd, "autoClosedAt": null }),
+                    );
+                }
+                if cleared_manual {
+                    let _ = app.emit(
+                        "coordinator_manual_close_changed",
+                        serde_json::json!({ "replicaPath": cwd, "manuallyClosedAt": null }),
+                    );
+                }
             }
         }
-    }
 
-    // (#756) Durable fresh-intent mirror, consumed at the create path: the
-    // caller requested resume (#599 reopen passes skipAutoResume=false), but
-    // this cwd's coordinator carries a pending fresh boundary (restart or
-    // AC-driven /clear whose record died with an auto/manual close). Force a
-    // fresh spawn BEFORE any provider resume injection below (claude
-    // --continue, codex resume --last, gemini --resume latest);
-    // provider-agnostic by construction. The mirror is deliberately NOT cleared
-    // here: only post-boundary content (typed input or AC-injected content)
-    // drops it, so repeated close/reopen cycles with no content stay fresh.
-    let mut fresh_forced_by_mirror = false;
-    if is_coordinator && !skip_auto_resume {
-        if let Some(clocks) =
-            app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
-        {
-            let fqn = crate::config::teams::agent_fqn_from_path(&cwd);
-            let pending = {
-                let guard = clocks.lock().unwrap_or_else(|e| e.into_inner());
-                guard.start_fresh_at(&fqn)
-            };
-            if mirror_forces_fresh(skip_auto_resume, is_coordinator, pending.is_some()) {
-                log::info!(
+        // (#756) Durable fresh-intent mirror, consumed at the create path: the
+        // caller requested resume (#599 reopen passes skipAutoResume=false), but
+        // this cwd's coordinator carries a pending fresh boundary (restart or
+        // AC-driven /clear whose record died with an auto/manual close). Force a
+        // fresh spawn BEFORE any provider resume injection below (claude
+        // --continue, codex resume --last, gemini --resume latest);
+        // provider-agnostic by construction. The mirror is deliberately NOT cleared
+        // here: only post-boundary content (typed input or AC-injected content)
+        // drops it, so repeated close/reopen cycles with no content stay fresh.
+        let mut fresh_forced_by_mirror = false;
+        if is_coordinator && !skip_auto_resume {
+            if let Some(clocks) =
+                app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
+            {
+                let fqn = crate::config::teams::agent_fqn_from_path(&cwd);
+                let pending = {
+                    let guard = clocks.lock().unwrap_or_else(|e| e.into_inner());
+                    guard.start_fresh_at(&fqn)
+                };
+                if mirror_forces_fresh(skip_auto_resume, is_coordinator, pending.is_some()) {
+                    log::info!(
                     "[session] fresh-intent mirror pending for '{}' (boundary {}): forcing skip_auto_resume (#756)",
                     fqn,
                     pending.map(|d| d.to_rfc3339()).unwrap_or_default()
                 );
-                skip_auto_resume = true;
-                fresh_forced_by_mirror = true;
+                    skip_auto_resume = true;
+                    fresh_forced_by_mirror = true;
+                }
             }
         }
-    }
 
-    let agent_kind = CodingAgentKind::detect(&shell, &shell_args);
-    let is_agent_owned_launch = agent_id.is_some() || agent_kind.is_some() || is_root_agent;
-    let resource_monitor = app.state::<Arc<ResourceMonitorState>>().inner().clone();
-    let mut resource_permit = if is_agent_owned_launch {
-        let cfg = app.state::<SettingsState>().read().await.clone();
-        resource_monitor.try_reserve_agent_slot(ResourceLimits::from(&cfg))?
-    } else {
-        None
-    };
+        let agent_kind = CodingAgentKind::detect(&shell, &shell_args);
+        let is_agent_owned_launch = agent_id.is_some() || agent_kind.is_some() || is_root_agent;
+        let resource_monitor = app.state::<Arc<ResourceMonitorState>>().inner().clone();
+        let mut resource_permit = if is_agent_owned_launch {
+            let cfg = app.state::<SettingsState>().read().await.clone();
+            resource_monitor.try_reserve_agent_slot(ResourceLimits::from(&cfg))?
+        } else {
+            None
+        };
 
-    // Clone the manager handle so the outer RwLock guard drops before spawn awaits.
-    let mgr = session_mgr.read().await.clone();
-    let backend_kind = resolved_spawn
-        .as_ref()
-        .map(|spawn| SessionBackendKind::from(&spawn.backend))
-        .unwrap_or_default();
-    if is_root_agent && backend_kind == SessionBackendKind::ContainerTransport {
-        release_resource_launch_permit(&resource_monitor, &mut resource_permit);
-        return Err("root-agent cannot use container transport".to_string());
-    }
-    let container_path_context = if backend_kind == SessionBackendKind::ContainerTransport {
-        match container_path_context_for_cwd(&cwd) {
-            Ok(context) => Some(context),
-            Err(err) => {
-                release_resource_launch_permit(&resource_monitor, &mut resource_permit);
-                return Err(err);
-            }
+        // Clone the manager handle so the outer RwLock guard drops before spawn awaits.
+        let mgr = session_mgr.read().await.clone();
+        let backend_kind = resolved_spawn
+            .as_ref()
+            .map(|spawn| SessionBackendKind::from(&spawn.backend))
+            .unwrap_or_default();
+        if is_root_agent && backend_kind == SessionBackendKind::ContainerTransport {
+            release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+            return Err("root-agent cannot use container transport".to_string());
         }
-    } else {
-        None
-    };
-    // #935 - resolve the container's read-write repo bind mounts from its own
-    // per-agent config.json repos[] (plan Sec 2/4), on the CANONICAL host root.
-    // This runs BEFORE create_session below, so an inadmissible entry (an escape
-    // signature: a repos[] rewrite reaching a sibling replica or messaging/) hard-
-    // fails the spawn here with no session record, token, or container created
-    // (plan Sec 4.3/4.4). None for local-process sessions.
-    let container_repos = match container_path_context.as_ref() {
-        Some(context) => {
-            match crate::pty::container_repos::resolve_repo_mounts(std::path::Path::new(
-                &context.host_root,
-            )) {
-                Ok(resolution) => Some(resolution),
+        let container_path_context = if backend_kind == SessionBackendKind::ContainerTransport {
+            match container_path_context_for_cwd(&cwd) {
+                Ok(context) => Some(context),
                 Err(err) => {
                     release_resource_launch_permit(&resource_monitor, &mut resource_permit);
                     return Err(err);
                 }
             }
+        } else {
+            None
+        };
+        // #935 - resolve the container's read-write repo bind mounts from its own
+        // per-agent config.json repos[] (plan Sec 2/4), on the CANONICAL host root.
+        // This runs BEFORE create_session below, so an inadmissible entry (an escape
+        // signature: a repos[] rewrite reaching a sibling replica or messaging/) hard-
+        // fails the spawn here with no session record, token, or container created
+        // (plan Sec 4.3/4.4). None for local-process sessions.
+        let container_repos = match container_path_context.as_ref() {
+            Some(context) => {
+                match crate::pty::container_repos::resolve_repo_mounts(std::path::Path::new(
+                    &context.host_root,
+                )) {
+                    Ok(resolution) => Some(resolution),
+                    Err(err) => {
+                        release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+                        return Err(err);
+                    }
+                }
+            }
+            None => None,
+        };
+        let pending_result = if let Some(ticket) = create_ticket.as_mut() {
+            mgr.create_pending_session(
+                ticket,
+                shell.clone(),
+                shell_args.clone(),
+                cwd.clone(),
+                agent_id.clone(),
+                agent_label.clone(),
+                git_repos,
+                is_coordinator,
+                backend_kind,
+            )
+            .await
+            .map(|session| {
+                let binding = ticket
+                    .binding()
+                    .expect("manager bound the create ticket before returning");
+                (session, binding)
+            })
+            .map_err(|error| error.to_string())
+        } else if let Some(transaction) = inline_transaction {
+            transaction
+                .create_pending_session(
+                    shell.clone(),
+                    shell_args.clone(),
+                    cwd.clone(),
+                    agent_id.clone(),
+                    agent_label.clone(),
+                    git_repos,
+                    is_coordinator,
+                    backend_kind,
+                )
+                .await
+        } else {
+            Err("inline create transaction is unavailable".to_string())
+        };
+        let (mut session, pending_binding) = match pending_result {
+            Ok(created) => created,
+            Err(e) => {
+                release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+                return Err(e);
+            }
+        };
+        if inline_transaction.is_some() {
+            *inline_pending_for_body
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = Some(pending_binding);
         }
-        None => None,
-    };
-    let mut session = match mgr
-        .create_session(
-            shell.clone(),
-            shell_args.clone(),
-            cwd.clone(),
-            agent_id.clone(),
-            agent_label.clone(),
-            git_repos,
-            is_coordinator,
-            backend_kind,
-        )
-        .await
-    {
-        Ok(session) => session,
-        Err(e) => {
-            release_resource_launch_permit(&resource_monitor, &mut resource_permit);
-            return Err(e.to_string());
+        if let Some(value) = pending_start_fresh {
+            mgr.set_pending_start_fresh_on_restore(pending_binding, value)
+                .await
+                .map_err(|error| error.to_string())?;
+            session.start_fresh_on_restore = value;
         }
-    };
+        if let Some(communication) = pending_communication.clone() {
+            mgr.set_pending_communication(pending_binding, communication.clone())
+                .await
+                .map_err(|error| error.to_string())?;
+            session.communication = Some(communication);
+        }
 
-    if let Err(e) =
-        crate::config::archive_gate::enforce_unarchived_for_spawn(app, &cwd, &session_label).await
-    {
-        let err = e.to_string();
-        release_resource_launch_permit(&resource_monitor, &mut resource_permit);
-        drop(mgr);
-        rollback_pre_created_session(app, session_mgr, pty_mgr, session.id, &err).await;
-        return Err(err);
-    }
-
-    // (#756) Propagate the mirror-forced intent onto the NEW record: the
-    // startup-restore path reads ONLY the record, so without this an app close
-    // after the forced-fresh reopen would resume the pre-boundary conversation.
-    // No persist call here: the command, restart and both restore callers
-    // persist after inner returns; the wake/loop/web creates do not, which is
-    // fine because the mirror is already persisted and re-consumed by the
-    // guard above on every later create, and the record stamp reaches disk
-    // with the next persist-any.
-    if fresh_forced_by_mirror {
-        mgr.set_start_fresh_on_restore(session.id, true).await;
-    }
-
-    if is_root_agent {
-        mgr.set_is_root_agent(session.id, true).await;
-        session.is_root_agent = true;
-    }
-
-    if let Some(name) = session_name {
-        if let Err(e) = mgr.rename_session(session.id, name.clone()).await {
+        if let Err(e) =
+            crate::config::archive_gate::enforce_unarchived_for_spawn(app, &cwd, &session_label)
+                .await
+        {
             let err = e.to_string();
             release_resource_launch_permit(&resource_monitor, &mut resource_permit);
             drop(mgr);
             rollback_pre_created_session(app, session_mgr, pty_mgr, session.id, &err).await;
             return Err(err);
         }
-        session.name = name;
-    }
 
-    let id = session.id;
-    if let Some(spawn) = resolved_spawn.as_ref() {
-        let effective_codex_home = effective_codex_home_for_backend(
-            session.backend_kind,
-            container_path_context.as_ref().map(|context| &context.map),
-            spawn,
-        );
-        mgr.set_profile_metadata(
-            id,
-            Some(spawn.profile_resolution.requested_profile.clone()),
-            Some(spawn.profile_resolution.effective_profile.clone()),
-            spawn.profile_resolution.fallback_chain.clone(),
-            spawn.profile_resolution.fallback_applied,
-            effective_codex_home.clone(),
-            Some(spawn.profile_content_hash.clone()),
-        )
-        .await;
-        session.requested_profile = Some(spawn.profile_resolution.requested_profile.clone());
-        session.effective_profile = Some(spawn.profile_resolution.effective_profile.clone());
-        session.profile_fallback_chain = spawn.profile_resolution.fallback_chain.clone();
-        session.profile_fallback_applied = spawn.profile_resolution.fallback_applied;
-        session.effective_codex_home = effective_codex_home;
-        session.profile_content_hash = Some(spawn.profile_content_hash.clone());
-    }
-
-    let mut shell_args = shell_args;
-    let full_cmd = format!("{} {}", shell, shell_args.join(" "));
-    // #260: single detector (session/profile.rs). Replaces the old
-    // starts_with triple; this is the SAME call `strip_auto_injected_args`
-    // makes, so the persisted recipe and the runtime identity cannot disagree.
-    let context_target = match agent_kind {
-        Some(CodingAgentKind::Claude) => {
-            Some(crate::config::session_context::ManagedContextTarget::Claude)
+        // (#756) Propagate the mirror-forced intent onto the NEW record: the
+        // startup-restore path reads ONLY the record, so without this an app close
+        // after the forced-fresh reopen would resume the pre-boundary conversation.
+        // No persist call here: the command, restart and both restore callers
+        // persist after inner returns; the wake/loop/web creates do not, which is
+        // fine because the mirror is already persisted and re-consumed by the
+        // guard above on every later create, and the record stamp reaches disk
+        // with the next persist-any.
+        if fresh_forced_by_mirror {
+            mgr.set_pending_start_fresh_on_restore(pending_binding, true)
+                .await
+                .map_err(|error| error.to_string())?;
         }
-        Some(CodingAgentKind::Codex) => {
-            Some(crate::config::session_context::ManagedContextTarget::Codex)
-        }
-        Some(CodingAgentKind::Gemini) => {
-            Some(crate::config::session_context::ManagedContextTarget::Gemini)
-        }
-        None => None,
-    };
 
-    // Single source of truth — store the identity on the SessionManager record
-    // AND the local clone (the latter feeds the imminent `session_created` emit).
-    mgr.set_agent_kind(id, agent_kind).await;
-    session.agent_kind = agent_kind;
+        if is_root_agent {
+            mgr.set_pending_is_root_agent(pending_binding, true)
+                .await
+                .map_err(|error| error.to_string())?;
+            session.is_root_agent = true;
+        }
 
-    // #930 - resolve the host-credential copy-in plan for container coding agents
-    // BEFORE the resume probe and the container env translation, so both consumers
-    // observe the CLAUDE_CONFIG_DIR we may inject below. Gated by the global setting
-    // (default on) and the per-agent profile descriptor; None when off,
-    // non-container, an unrecognized agent, or the host file is absent. The plan is
-    // pure (env read + file-exists check); the actual copy runs later in the
-    // container backend spawn (spawn_runtime_backed), preserving copy-after-seed.
-    let spawn_cwd = container_path_context
-        .as_ref()
-        .map(|context| context.host_root.clone())
-        .unwrap_or_else(|| cwd.clone());
-    let container_credential = if session.backend_kind == SessionBackendKind::ContainerTransport {
-        let copy_enabled = app
-            .state::<SettingsState>()
-            .read()
+        if let Some(name) = session_name {
+            if let Err(e) = mgr
+                .rename_pending_session(pending_binding, name.clone())
+                .await
+            {
+                let err = e.to_string();
+                release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+                drop(mgr);
+                rollback_pre_created_session(app, session_mgr, pty_mgr, session.id, &err).await;
+                return Err(err);
+            }
+            session.name = name;
+        }
+
+        let id = session.id;
+        if let Some(spawn) = resolved_spawn.as_ref() {
+            let effective_codex_home = effective_codex_home_for_backend(
+                session.backend_kind,
+                container_path_context.as_ref().map(|context| &context.map),
+                spawn,
+            );
+            mgr.set_pending_profile_metadata(
+                pending_binding,
+                Some(spawn.profile_resolution.requested_profile.clone()),
+                Some(spawn.profile_resolution.effective_profile.clone()),
+                spawn.profile_resolution.fallback_chain.clone(),
+                spawn.profile_resolution.fallback_applied,
+                effective_codex_home.clone(),
+                Some(spawn.profile_content_hash.clone()),
+            )
             .await
-            .container_credentials_from_host;
-        if copy_enabled {
-            agent_kind
-                .and_then(|k| k.profile().container_credential)
-                .and_then(|src| crate::pty::container_credentials::resolve_plan(&src, &spawn_cwd))
+            .map_err(|error| error.to_string())?;
+            session.requested_profile = Some(spawn.profile_resolution.requested_profile.clone());
+            session.effective_profile = Some(spawn.profile_resolution.effective_profile.clone());
+            session.profile_fallback_chain = spawn.profile_resolution.fallback_chain.clone();
+            session.profile_fallback_applied = spawn.profile_resolution.fallback_applied;
+            session.effective_codex_home = effective_codex_home;
+            session.profile_content_hash = Some(spawn.profile_content_hash.clone());
+        }
+
+        let mut shell_args = shell_args;
+        let full_cmd = format!("{} {}", shell, shell_args.join(" "));
+        // #260: single detector (session/profile.rs). Replaces the old
+        // starts_with triple; this is the SAME call `strip_auto_injected_args`
+        // makes, so the persisted recipe and the runtime identity cannot disagree.
+        let context_target = match agent_kind {
+            Some(CodingAgentKind::Claude) => {
+                Some(crate::config::session_context::ManagedContextTarget::Claude)
+            }
+            Some(CodingAgentKind::Codex) => {
+                Some(crate::config::session_context::ManagedContextTarget::Codex)
+            }
+            Some(CodingAgentKind::Gemini) => {
+                Some(crate::config::session_context::ManagedContextTarget::Gemini)
+            }
+            None => None,
+        };
+
+        // Single source of truth: store the identity on the SessionManager record
+        // AND the local clone (the latter feeds the imminent `session_created` emit).
+        mgr.set_pending_agent_kind(pending_binding, agent_kind)
+            .await
+            .map_err(|error| error.to_string())?;
+        session.agent_kind = agent_kind;
+
+        // #930 - resolve the host-credential copy-in plan for container coding agents
+        // BEFORE the resume probe and the container env translation, so both consumers
+        // observe the CLAUDE_CONFIG_DIR we may inject below. Gated by the global setting
+        // (default on) and the per-agent profile descriptor; None when off,
+        // non-container, an unrecognized agent, or the host file is absent. The plan is
+        // pure (env read + file-exists check); the actual copy runs later in the
+        // container backend spawn (spawn_runtime_backed), preserving copy-after-seed.
+        let spawn_cwd = container_path_context
+            .as_ref()
+            .map(|context| context.host_root.clone())
+            .unwrap_or_else(|| cwd.clone());
+        let container_credential = if session.backend_kind == SessionBackendKind::ContainerTransport
+        {
+            let copy_enabled = app
+                .state::<SettingsState>()
+                .read()
+                .await
+                .container_credentials_from_host;
+            if copy_enabled {
+                agent_kind
+                    .and_then(|k| k.profile().container_credential)
+                    .and_then(|src| {
+                        crate::pty::container_credentials::resolve_plan(&src, &spawn_cwd)
+                    })
+            } else {
+                None
+            }
         } else {
             None
-        }
-    } else {
-        None
-    };
-    // #930 - when we WILL copy host creds and the user configured no
-    // CLAUDE_CONFIG_DIR (respecting an explicit value OR an explicit removal),
-    // default it to the copy directory so a default-on container authenticates with
-    // zero env rows. Injected as a host path; the container env translation maps it
-    // to /workspace/.claude and the resume probe then treats state as durable.
-    let user_has_claude_config_dir = resolved_spawn
-        .as_ref()
-        .map(|spawn| {
-            spawn.effective_env_value(CLAUDE_CONFIG_DIR_KEY).is_some()
-                || spawn.env_remove_keys.iter().any(|remove| {
-                    crate::config::settings::normalize_env_key_for_platform(remove)
-                        == crate::config::settings::normalize_env_key_for_platform(
-                            CLAUDE_CONFIG_DIR_KEY,
-                        )
-                })
-        })
-        .unwrap_or(false);
-    let injected_claude_config_dir = injected_claude_config_dir_for_copy(
-        container_credential.as_ref(),
-        user_has_claude_config_dir,
-    );
+        };
+        // #930 - when we WILL copy host creds and the user configured no
+        // CLAUDE_CONFIG_DIR (respecting an explicit value OR an explicit removal),
+        // default it to the copy directory so a default-on container authenticates with
+        // zero env rows. Injected as a host path; the container env translation maps it
+        // to /workspace/.claude and the resume probe then treats state as durable.
+        let user_has_claude_config_dir = resolved_spawn
+            .as_ref()
+            .map(|spawn| {
+                spawn.effective_env_value(CLAUDE_CONFIG_DIR_KEY).is_some()
+                    || spawn.env_remove_keys.iter().any(|remove| {
+                        crate::config::settings::normalize_env_key_for_platform(remove)
+                            == crate::config::settings::normalize_env_key_for_platform(
+                                CLAUDE_CONFIG_DIR_KEY,
+                            )
+                    })
+            })
+            .unwrap_or(false);
+        let injected_claude_config_dir = injected_claude_config_dir_for_copy(
+            container_credential.as_ref(),
+            user_has_claude_config_dir,
+        );
 
-    // Auto-inject --continue for Claude agents when AC has reason to believe a prior
-    // conversation exists for this session (issue #82: `is_dir()` alone is unsound;
-    // call sites pass `skip_auto_resume = true` for fresh creates).
-    // Issue #186: honor `CLAUDE_CONFIG_DIR` overrides set by `.cmd`/`.bat`/`.ps1`/`.sh`
-    // wrappers (e.g. `claude-mb`) so the probe locates the real transcript store.
-    // #894: local sessions keep the host probe, while container sessions probe
-    // only paths reachable through the bind mount. Missing or unmappable
-    // CLAUDE_CONFIG_DIR skips resume and is surfaced as a session env warning.
-    let resume_probe = resume_probe_target(
-        session.backend_kind,
-        container_path_context.as_ref().map(|context| &context.map),
-        resolved_spawn.as_ref(),
-        injected_claude_config_dir.as_deref(),
-        &shell,
-        &shell_args,
-        &cwd,
-    );
-    let resolved_claude_projects_dir = resume_probe.host_probe_path.clone();
-    mgr.set_resolved_claude_projects_dir(id, resolved_claude_projects_dir.clone())
-        .await;
-    session.resolved_claude_projects_dir = resolved_claude_projects_dir.clone();
-    let claude_project_exists = resume_probe
-        .host_probe_path
-        .as_ref()
-        .map(|p| p.is_dir())
-        .unwrap_or(false);
-    let is_claude = agent_kind == Some(CodingAgentKind::Claude);
-    let mut session_env_warnings: Vec<ContainerEnvWarning> = Vec::new();
-    if is_claude {
-        if let Some(warning) = resume_probe.warning {
-            session_env_warnings.push(warning);
+        // Auto-inject --continue for Claude agents when AC has reason to believe a prior
+        // conversation exists for this session (issue #82: `is_dir()` alone is unsound;
+        // call sites pass `skip_auto_resume = true` for fresh creates).
+        // Issue #186: honor `CLAUDE_CONFIG_DIR` overrides set by `.cmd`/`.bat`/`.ps1`/`.sh`
+        // wrappers (e.g. `claude-mb`) so the probe locates the real transcript store.
+        // #894: local sessions keep the host probe, while container sessions probe
+        // only paths reachable through the bind mount. Missing or unmappable
+        // CLAUDE_CONFIG_DIR skips resume and is surfaced as a session env warning.
+        let resume_probe = resume_probe_target(
+            session.backend_kind,
+            container_path_context.as_ref().map(|context| &context.map),
+            resolved_spawn.as_ref(),
+            injected_claude_config_dir.as_deref(),
+            &shell,
+            &shell_args,
+            &cwd,
+        );
+        let resolved_claude_projects_dir = resume_probe.host_probe_path.clone();
+        mgr.set_pending_resolved_claude_projects_dir(
+            pending_binding,
+            resolved_claude_projects_dir.clone(),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        session.resolved_claude_projects_dir = resolved_claude_projects_dir.clone();
+        let claude_project_exists = resume_probe
+            .host_probe_path
+            .as_ref()
+            .map(|p| p.is_dir())
+            .unwrap_or(false);
+        let is_claude = agent_kind == Some(CodingAgentKind::Claude);
+        let mut session_env_warnings: Vec<ContainerEnvWarning> = Vec::new();
+        if is_claude {
+            if let Some(warning) = resume_probe.warning {
+                session_env_warnings.push(warning);
+            }
         }
-    }
-    let will_inject_continue = should_inject_continue(
-        is_claude,
-        skip_auto_resume,
-        claude_project_exists,
-        &full_cmd,
-    );
-    // (#630/#631) Resume-decision trace. Widened beyond Claude: codex/gemini ride
-    // the same `skip_auto_resume` axis (below) and were equally invisible. INFO
-    // during the stabilization window; demote later.
-    if agent_kind.is_some() {
-        log::info!(
+        let will_inject_continue = should_inject_continue(
+            is_claude,
+            skip_auto_resume,
+            claude_project_exists,
+            &full_cmd,
+        );
+        // (#630/#631) Resume-decision trace. Widened beyond Claude: codex/gemini ride
+        // the same `skip_auto_resume` axis (below) and were equally invisible. INFO
+        // during the stabilization window; demote later.
+        if agent_kind.is_some() {
+            log::info!(
             "[session] resume-decision {} agent={:?} cwd={:?} projects_dir={:?} filesystem={} exists={} skip_auto_resume={} -> inject_continue={}",
             &id.to_string()[..8],
             agent_kind,
@@ -1326,509 +1507,578 @@ pub async fn create_session_inner<R: tauri::Runtime>(
             skip_auto_resume,
             will_inject_continue
         );
-    }
-    if will_inject_continue {
-        // #260 — Claude's resume flag from the CodingAgentProfile. resume_tokens
-        // is a 1-element const for Claude, so [0] is provably in bounds.
-        let continue_flag = CodingAgentKind::Claude.profile().resume_tokens[0];
-        if let Some(ref aid) = agent_id {
-            if executable_basename(&shell) == "cmd" {
-                if let Some(last) = shell_args.last_mut() {
-                    if executable_basename(last) == "claude"
-                        || last.to_lowercase().contains("claude")
-                    {
-                        *last = format!("{} {}", last, continue_flag);
-                        log::info!("Auto-injected --continue for agent '{}' (prior conversation exists, cmd path)", aid);
+        }
+        if will_inject_continue {
+            // #260: Claude's resume flag from the CodingAgentProfile. resume_tokens
+            // is a 1-element const for Claude, so [0] is provably in bounds.
+            let continue_flag = CodingAgentKind::Claude.profile().resume_tokens[0];
+            if let Some(ref aid) = agent_id {
+                if executable_basename(&shell) == "cmd" {
+                    if let Some(last) = shell_args.last_mut() {
+                        if executable_basename(last) == "claude"
+                            || last.to_lowercase().contains("claude")
+                        {
+                            *last = format!("{} {}", last, continue_flag);
+                            log::info!("Auto-injected --continue for agent '{}' (prior conversation exists, cmd path)", aid);
+                        }
                     }
+                } else {
+                    shell_args.push(continue_flag.to_string());
+                    log::info!(
+                        "Auto-injected --continue for agent '{}' (prior conversation exists)",
+                        aid
+                    );
                 }
-            } else {
-                shell_args.push(continue_flag.to_string());
-                log::info!(
-                    "Auto-injected --continue for agent '{}' (prior conversation exists)",
-                    aid
-                );
             }
         }
-    }
 
-    // (#756) Rider: on Claude spawns where AC suppresses resume, mint the fresh
-    // session's identity at spawn. Uuid::new_v4() satisfies the "unused UUID"
-    // requirement (Claude errors on a colliding --session-id; v4 collision is
-    // negligible and a fresh one is minted per spawn). Mutually exclusive with
-    // the --continue block above by construction (will_inject_continue requires
-    // skip_auto_resume=false). `full_cmd` predates both blocks' mutations, so
-    // the veto scan sees user-configured identity flags, never AC's own.
-    if should_inject_fresh_session_id(is_claude, skip_auto_resume, &full_cmd) {
-        if let Some(ref aid) = agent_id {
-            let fresh_session_id = Uuid::new_v4();
-            if executable_basename(&shell) == "cmd" {
-                if let Some(last) = shell_args.last_mut() {
-                    if executable_basename(last) == "claude"
-                        || last.to_lowercase().contains("claude")
-                    {
-                        *last = format!("{} --session-id {}", last, fresh_session_id);
-                        log::info!(
+        // (#756) Rider: on Claude spawns where AC suppresses resume, mint the fresh
+        // session's identity at spawn. Uuid::new_v4() satisfies the "unused UUID"
+        // requirement (Claude errors on a colliding --session-id; v4 collision is
+        // negligible and a fresh one is minted per spawn). Mutually exclusive with
+        // the --continue block above by construction (will_inject_continue requires
+        // skip_auto_resume=false). `full_cmd` predates both blocks' mutations, so
+        // the veto scan sees user-configured identity flags, never AC's own.
+        if should_inject_fresh_session_id(is_claude, skip_auto_resume, &full_cmd) {
+            if let Some(ref aid) = agent_id {
+                let fresh_session_id = Uuid::new_v4();
+                if executable_basename(&shell) == "cmd" {
+                    if let Some(last) = shell_args.last_mut() {
+                        if executable_basename(last) == "claude"
+                            || last.to_lowercase().contains("claude")
+                        {
+                            *last = format!("{} --session-id {}", last, fresh_session_id);
+                            log::info!(
                             "Auto-injected --session-id {} for agent '{}' (fresh spawn, cmd path, #756)",
                             fresh_session_id,
                             aid
                         );
+                        }
                     }
+                } else {
+                    shell_args.push("--session-id".to_string());
+                    shell_args.push(fresh_session_id.to_string());
+                    log::info!(
+                        "Auto-injected --session-id {} for agent '{}' (fresh spawn, #756)",
+                        fresh_session_id,
+                        aid
+                    );
                 }
-            } else {
-                shell_args.push("--session-id".to_string());
-                shell_args.push(fresh_session_id.to_string());
-                log::info!(
-                    "Auto-injected --session-id {} for agent '{}' (fresh spawn, #756)",
-                    fresh_session_id,
-                    aid
-                );
             }
         }
-    }
 
-    if agent_kind == Some(CodingAgentKind::Codex) && !skip_auto_resume {
-        if let Some(ref aid) = agent_id {
-            if inject_codex_resume(&shell, &mut shell_args) {
-                log::info!("Auto-injected `codex resume --last` for agent '{}'", aid);
+        if agent_kind == Some(CodingAgentKind::Codex) && !skip_auto_resume {
+            if let Some(ref aid) = agent_id {
+                if inject_codex_resume(&shell, &mut shell_args) {
+                    log::info!("Auto-injected `codex resume --last` for agent '{}'", aid);
+                }
             }
         }
-    }
 
-    if agent_kind == Some(CodingAgentKind::Gemini) && !skip_auto_resume {
-        if let Some(ref aid) = agent_id {
-            if inject_gemini_resume(&shell, &mut shell_args) {
-                log::info!("Auto-injected `gemini --resume latest` for agent '{}'", aid);
+        if agent_kind == Some(CodingAgentKind::Gemini) && !skip_auto_resume {
+            if let Some(ref aid) = agent_id {
+                if inject_gemini_resume(&shell, &mut shell_args) {
+                    log::info!("Auto-injected `gemini --resume latest` for agent '{}'", aid);
+                }
             }
         }
-    }
 
-    // #529 - resolve the instructions filename from the configured coding agent
-    // (falling back to detection for ad-hoc launches), plus the union of every
-    // configured agent's filename for cleanup. Computed under a single settings
-    // read guard that is dropped before any filesystem I/O (no guard across the
-    // materialize call).
-    let (target_filename, managed_filenames, auto_self_clear): (Option<String>, Vec<String>, bool) = {
-        let settings_state = app.state::<SettingsState>();
-        let cfg = settings_state.read().await;
-        let managed = crate::config::agent_command::managed_instructions_filenames(&cfg);
-        let target = crate::config::agent_command::resolve_target_filename(
-            agent_id.as_deref(),
-            &cfg,
-            context_target,
-        );
-        // #640 resolve under the same guard; no second lock, dropped before I/O.
-        // Class-aware default: ON for coordinator/Root, OFF for specialists,
-        // unless a per-agent override is set. Gated to coding-agent sessions.
-        let class_default_on =
-            is_coordinator || crate::config::root_agent::is_root_agent_dir_name(&cwd);
-        let auto_self_clear = agent_kind.is_some()
-            && crate::config::settings::resolve_auto_self_clear(
+        // #529 - resolve the instructions filename from the configured coding agent
+        // (falling back to detection for ad-hoc launches), plus the union of every
+        // configured agent's filename for cleanup. Computed under a single settings
+        // read guard that is dropped before any filesystem I/O (no guard across the
+        // materialize call).
+        let (target_filename, managed_filenames, auto_self_clear): (
+            Option<String>,
+            Vec<String>,
+            bool,
+        ) = {
+            let settings_state = app.state::<SettingsState>();
+            let cfg = settings_state.read().await;
+            let managed = crate::config::agent_command::managed_instructions_filenames(&cfg);
+            let target = crate::config::agent_command::resolve_target_filename(
+                agent_id.as_deref(),
                 &cfg,
-                &crate::config::coding_agent_profiles::agent_name_from_dir(std::path::Path::new(
-                    &cwd,
-                ))
-                .unwrap_or_default(),
-                class_default_on,
+                context_target,
             );
-        (target, managed, auto_self_clear)
-    };
-
-    if let Some(ref target_filename) = target_filename {
-        match crate::config::session_context::materialize_agent_context_file_with_filename(
-            &cwd,
-            target_filename,
-            &managed_filenames,
-            is_coordinator,
-            auto_self_clear,
-            container_repos.as_ref(),
-        ) {
-            Ok(_) => {}
-            Err(e) => {
-                log::error!("Replica context validation failed: {}", e);
-                use tauri_plugin_dialog::DialogExt;
-                // #537 facet (b) - the old copy blamed "context files missing",
-                // but the real cause is usually a transient config.json lock
-                // during replica identity repair. State what actually failed;
-                // the interpolated error carries the precise, retry-suggesting
-                // detail from format_publish_error.
-                let dialog_msg = format!(
-                    "Cannot launch session - failed to update replica config:\n\n{}",
-                    e
+            // #640 resolve under the same guard; no second lock, dropped before I/O.
+            // Class-aware default: ON for coordinator/Root, OFF for specialists,
+            // unless a per-agent override is set. Gated to coding-agent sessions.
+            let class_default_on =
+                is_coordinator || crate::config::root_agent::is_root_agent_dir_name(&cwd);
+            let auto_self_clear = agent_kind.is_some()
+                && crate::config::settings::resolve_auto_self_clear(
+                    &cfg,
+                    &crate::config::coding_agent_profiles::agent_name_from_dir(
+                        std::path::Path::new(&cwd),
+                    )
+                    .unwrap_or_default(),
+                    class_default_on,
                 );
-                app.dialog()
-                    .message(&dialog_msg)
-                    .title("Session Launch Error")
-                    .show(|_| {});
-                release_resource_launch_permit(&resource_monitor, &mut resource_permit);
-                drop(mgr);
-                rollback_pre_created_session(app, session_mgr, pty_mgr, id, &e).await;
-                return Err(e);
-            }
-        }
-    }
-
-    // Capture the effective arg vector BEFORE spawn so SessionInfo::from(&session)
-    // (emitted at line ~439 as "session_created") carries provider resume flags.
-    // Bind once, broadcast to two consumers: the store write is for later
-    // `mgr.get_session` callers; the local-clone write is for the imminent emit.
-    //
-    // DO NOT REMOVE OR GATE THIS CAPTURE. Issue #65 regression guard — removing
-    // or wrapping in a condition reintroduces the exact bug this plan fixes.
-    // See _plans/bug-statusbar-dynamic-launch-args.md §10 and §15 for rationale.
-    let effective = shell_args.clone();
-    mgr.set_effective_shell_args(id, effective.clone()).await;
-    session.effective_shell_args = Some(effective);
-
-    let extra_env = if agent_id.is_some() {
-        crate::pty::credentials::build_credentials_env(&session.token, &cwd)
-    } else {
-        Vec::new()
-    };
-    let mut configured_env: Vec<(String, String)> = resolved_spawn
-        .as_ref()
-        .map(|spawn| spawn.child_env.clone())
-        .unwrap_or_default();
-    // #930 - inject the copy directory as a host-path CLAUDE_CONFIG_DIR so the
-    // container env translation below maps it to /workspace/.claude and the copied
-    // token is actually read. Only present when we will copy and the user set none.
-    if let Some(dir) = injected_claude_config_dir.as_ref() {
-        configured_env.push((CLAUDE_CONFIG_DIR_KEY.to_string(), dir.clone()));
-    }
-    let env_remove_keys: Vec<String> = resolved_spawn
-        .as_ref()
-        .map(|spawn| spawn.env_remove_keys.clone())
-        .unwrap_or_default();
-    let mut env_unset: Vec<String> = Vec::new();
-    if session.backend_kind == SessionBackendKind::ContainerTransport {
-        if let Some(context) = container_path_context.as_ref() {
-            let translated = crate::pty::container_backend::container_child_env(
-                configured_env,
-                env_remove_keys.clone(),
-                &context.map,
-            );
-            configured_env = translated.child_env;
-            env_unset = translated.env_unset;
-            session_env_warnings.extend(translated.warnings);
-        }
-    }
-    let (resource_registration, logical_resource_slot): (
-        Option<ResourceLaunchRegistration>,
-        Option<ResourceLogicalAgentSlot>,
-    ) = match session.backend_kind {
-        SessionBackendKind::LocalProcess => resource_permit
-            .take()
-            .map(|permit| {
-                // #516 - human-readable WG + agent identity for the Resource Monitor row,
-                // derived from the deterministic spawn cwd (not the user-renamable
-                // session.name). Root agents carry no wg-/__agent_ segments, so label them
-                // explicitly with the bare replica dir name.
-                let (workgroup, agent) = {
-                    let (wg, ag) = crate::config::teams::workgroup_and_agent_from_path(&cwd);
-                    if wg.is_some() {
-                        (wg, ag)
-                    } else if is_root_agent {
-                        let bare = cwd
-                            .replace('\\', "/")
-                            .rsplit('/')
-                            .find(|s| !s.is_empty())
-                            .map(|s| s.to_string());
-                        (Some("Root agent".to_string()), bare)
-                    } else {
-                        (None, None)
-                    }
-                };
-                // #566 - project folder name for the Resource Monitor row, derived from
-                // the same deterministic spawn cwd as the (workgroup, agent) pair above.
-                let project = crate::config::teams::project_from_path(&cwd);
-                ResourceLaunchRegistration::new(
-                    resource_monitor.as_ref().clone(),
-                    permit,
-                    ResourceLaunchMetadata {
-                        session_id: id,
-                        name: session.name.clone(),
-                        agent_id: agent_id.clone(),
-                        agent_label: agent_label.clone(),
-                        workgroup,
-                        agent,
-                        project,
-                    },
-                )
-            })
-            .map(|registration| (Some(registration), None))
-            .unwrap_or((None, None)),
-        SessionBackendKind::ContainerTransport => (
-            None,
-            resource_permit
-                .take()
-                .map(|permit| resource_monitor.hold_logical_agent_slot(permit)),
-        ),
-    };
-
-    // #598 - seed the config folder before the PTY starts so the agent sees the
-    // templated config. Best-effort: never aborts the spawn. This is the single
-    // execution chokepoint every real spawn funnels through (create / replica /
-    // other variants, delivery / mailbox / web wakes); prevalidation never hits
-    // it because it discards the spawn. Per Q2 this runs on EVERY spawn,
-    // including loop/scheduler resume-wakes (overwrite every spawn).
-    if let Some(seed) = resolved_spawn.as_ref().and_then(|s| s.seed.as_ref()) {
-        // grinch HIGH-1: serialize the seed swap for ALL dests (not just
-        // `.claude`). Two same-replica spawns can run concurrently (e.g. a
-        // delivery tick + a mailbox wake) holding only `session_mgr.read()`,
-        // with no global spawn lock. Without serialization, spawn B's
-        // prefix-sweep of stale scratch (`clear_stale_seed_scratch`) could
-        // delete spawn A's in-flight temp/trash mid-swap and lose the config
-        // (breaking H1's "dest always fully-old or fully-new" + M3 isolation).
-        // Under this lock any other-id scratch is truly stale, so the
-        // leak-reclaim sweep stays safe. Clone the Arc out of State first so the
-        // owned guard does not borrow a State temporary (E0716).
-        let _seed_guard = {
-            let lock = app.state::<crate::ConfigSeedLockState>().inner().clone();
-            lock.lock_owned().await
+            (target, managed, auto_self_clear)
         };
 
-        let _ = crate::config::config_seed::perform_config_seed(seed, &id.to_string());
-    }
-
-    let viewport = viewport.unwrap_or(PtyViewport::DEFAULT);
-    let spawn_spec = BackendSpawnSpec {
-        id,
-        agent_id: agent_id.clone(),
-        // #942 - the CLI identity from the canonical detector (`agent_kind`, resolved
-        // at the top of this function). The profile id above cannot stand in for it:
-        // it is opaque, several profiles can drive the same CLI, and a coding-agent
-        // launch can carry no profile id at all.
-        coding_agent: agent_kind,
-        cmd: shell.clone(),
-        args: shell_args.clone(),
-        cwd: spawn_cwd.clone(),
-        selected_cwd: if spawn_cwd != cwd {
-            Some(cwd.clone())
-        } else {
-            None
-        },
-        // #973 - open the PTY at the size the terminal is actually going to be, so the
-        // frontend never has to resize a child that is still starting up. Callers with no
-        // view (restore loop, delivery loop, mailbox, CLI, tests) get PtyViewport::DEFAULT,
-        // which is the 120x30 AC always used.
-        cols: viewport.cols,
-        rows: viewport.rows,
-        container_image: resolved_spawn
-            .as_ref()
-            .and_then(|spawn| spawn.backend.image.clone()),
-        configured_env,
-        env_remove_keys,
-        env_unset,
-        extra_env,
-        idle_tuning: crate::session::profile::idle_tuning_for(agent_kind),
-        output_target: PtyOutputTarget::from_app_handle(app.clone()),
-        resource_registration,
-        logical_resource_slot,
-        container_credential,
-        container_repo_mounts: container_repos
-            .as_ref()
-            .map(|resolution| {
-                resolution
-                    .mounts()
-                    .map(|(host, container)| crate::pty::container_repos::ContainerRepoMount {
-                        host_path: host.to_path_buf(),
-                        container_path: container.to_string(),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default(),
-    };
-    let spawn_result = PtyManager::spawn(pty_mgr, session.backend_kind, spawn_spec).await;
-    drop(spawn_mark);
-    if let Err(e) = spawn_result {
-        let err = e.to_string();
-        drop(mgr);
-        rollback_pre_created_session(app, session_mgr, pty_mgr, id, &err).await;
-        return Err(err);
-    }
-
-    // #1032 - start sampling this session's context reading. This sits above the backend
-    // split and covers local and container alike, with no backend plumbing. `try_state`,
-    // not `state`: `state` panics when unmanaged, and test apps do not manage the scraper.
-    // An absent scraper is simply the feature being off.
-    //
-    // Sessions with no agent are never registered, so a plain shell costs nothing. There is
-    // no race with the parser here: the first sample is 5s away.
-    if let Some(agent_id) = agent_id.clone() {
-        if let Some(scraper) = app.try_state::<Arc<crate::pty::context_scrape::ContextScraper>>() {
-            scraper.register_session(id, agent_id);
+        if let Some(ref target_filename) = target_filename {
+            match crate::config::session_context::materialize_agent_context_file_with_filename(
+                &cwd,
+                target_filename,
+                &managed_filenames,
+                is_coordinator,
+                auto_self_clear,
+                container_repos.as_ref(),
+            ) {
+                Ok(_) => {}
+                Err(e) => {
+                    log::error!("Replica context validation failed: {}", e);
+                    use tauri_plugin_dialog::DialogExt;
+                    // #537 facet (b) - the old copy blamed "context files missing",
+                    // but the real cause is usually a transient config.json lock
+                    // during replica identity repair. State what actually failed;
+                    // the interpolated error carries the precise, retry-suggesting
+                    // detail from format_publish_error.
+                    let dialog_msg = format!(
+                        "Cannot launch session - failed to update replica config:\n\n{}",
+                        e
+                    );
+                    app.dialog()
+                        .message(&dialog_msg)
+                        .title("Session Launch Error")
+                        .show(|_| {});
+                    release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+                    drop(mgr);
+                    rollback_pre_created_session(app, session_mgr, pty_mgr, id, &e).await;
+                    return Err(e);
+                }
+            }
         }
-    }
 
-    // Auto-inject optional non-credential bootstrap text for agent sessions
-    // after PTY spawn. Credentials are already present in child environment
-    // variables; no credentials are written through PTY.
-    //
-    // Currently the only bootstrap payload is the Coordinator auto-title prompt.
-    if agent_id.is_some() && !is_coordinator {
-        log::debug!(
-            "[session] No bootstrap injection for non-coordinator agent session {}",
-            id
-        );
-    }
-    if agent_id.is_some() && is_coordinator {
-        let auto_title_enabled = false; /*
-                                            let settings_state = app.state::<SettingsState>();
-                                            let cfg = settings_state.read().await;
-                                            cfg.auto_generate_task_title
-                                        };*/
+        // Capture the effective arg vector BEFORE spawn so SessionInfo::from(&session)
+        // (emitted at line ~439 as "session_created") carries provider resume flags.
+        // Bind once, broadcast to two consumers: the store write is for later
+        // `mgr.get_session` callers; the local-clone write is for the imminent emit.
+        //
+        // DO NOT REMOVE OR GATE THIS CAPTURE. Issue #65 regression guard: removing
+        // or wrapping in a condition reintroduces the exact bug this plan fixes.
+        // See _plans/bug-statusbar-dynamic-launch-args.md §10 and §15 for rationale.
+        let effective = shell_args.clone();
+        mgr.set_pending_effective_shell_args(pending_binding, effective.clone())
+            .await
+            .map_err(|error| error.to_string())?;
+        session.effective_shell_args = Some(effective);
 
-        if auto_title_enabled {
-            let app_clone = app.clone();
-            let session_id = id;
-            let cwd_clone = cwd.clone();
+        let extra_env = if agent_id.is_some() {
+            crate::pty::credentials::build_credentials_env(&session.token, &cwd)
+        } else {
+            Vec::new()
+        };
+        let mut configured_env: Vec<(String, String)> = resolved_spawn
+            .as_ref()
+            .map(|spawn| spawn.child_env.clone())
+            .unwrap_or_default();
+        // #930 - inject the copy directory as a host-path CLAUDE_CONFIG_DIR so the
+        // container env translation below maps it to /workspace/.claude and the copied
+        // token is actually read. Only present when we will copy and the user set none.
+        if let Some(dir) = injected_claude_config_dir.as_ref() {
+            configured_env.push((CLAUDE_CONFIG_DIR_KEY.to_string(), dir.clone()));
+        }
+        let env_remove_keys: Vec<String> = resolved_spawn
+            .as_ref()
+            .map(|spawn| spawn.env_remove_keys.clone())
+            .unwrap_or_default();
+        let mut env_unset: Vec<String> = Vec::new();
+        if session.backend_kind == SessionBackendKind::ContainerTransport {
+            if let Some(context) = container_path_context.as_ref() {
+                let translated = crate::pty::container_backend::container_child_env(
+                    configured_env,
+                    env_remove_keys.clone(),
+                    &context.map,
+                );
+                configured_env = translated.child_env;
+                env_unset = translated.env_unset;
+                session_env_warnings.extend(translated.warnings);
+            }
+        }
+        let (resource_registration, logical_resource_slot): (
+            Option<ResourceLaunchRegistration>,
+            Option<ResourceLogicalAgentSlot>,
+        ) = match session.backend_kind {
+            SessionBackendKind::LocalProcess => resource_permit
+                .take()
+                .map(|permit| {
+                    // #516 - human-readable WG + agent identity for the Resource Monitor row,
+                    // derived from the deterministic spawn cwd (not the user-renamable
+                    // session.name). Root agents carry no wg-/__agent_ segments, so label them
+                    // explicitly with the bare replica dir name.
+                    let (workgroup, agent) = {
+                        let (wg, ag) = crate::config::teams::workgroup_and_agent_from_path(&cwd);
+                        if wg.is_some() {
+                            (wg, ag)
+                        } else if is_root_agent {
+                            let bare = cwd
+                                .replace('\\', "/")
+                                .rsplit('/')
+                                .find(|s| !s.is_empty())
+                                .map(|s| s.to_string());
+                            (Some("Root agent".to_string()), bare)
+                        } else {
+                            (None, None)
+                        }
+                    };
+                    // #566 - project folder name for the Resource Monitor row, derived from
+                    // the same deterministic spawn cwd as the (workgroup, agent) pair above.
+                    let project = crate::config::teams::project_from_path(&cwd);
+                    ResourceLaunchRegistration::new(
+                        resource_monitor.as_ref().clone(),
+                        permit,
+                        ResourceLaunchMetadata {
+                            session_id: id,
+                            name: session.name.clone(),
+                            agent_id: agent_id.clone(),
+                            agent_label: agent_label.clone(),
+                            workgroup,
+                            agent,
+                            project,
+                        },
+                    )
+                })
+                .map(|registration| (Some(registration), None))
+                .unwrap_or((None, None)),
+            SessionBackendKind::ContainerTransport => (
+                None,
+                resource_permit
+                    .take()
+                    .map(|permit| resource_monitor.hold_logical_agent_slot(permit)),
+            ),
+        };
 
-            tokio::spawn(async move {
-                let prompt = match build_title_prompt_appendage(&cwd_clone) {
-                    Ok(Some(prompt)) => {
-                        log::info!(
-                            "[session] Auto-title prompt built for session {}",
-                            session_id
-                        );
-                        prompt
-                    }
-                    Ok(None) => {
-                        log::info!(
+        // #598 - seed the config folder before the PTY starts so the agent sees the
+        // templated config. Best-effort: never aborts the spawn. This is the single
+        // execution chokepoint every real spawn funnels through (create / replica /
+        // other variants, delivery / mailbox / web wakes); prevalidation never hits
+        // it because it discards the spawn. Per Q2 this runs on EVERY spawn,
+        // including loop/scheduler resume-wakes (overwrite every spawn).
+        if let Some(seed) = resolved_spawn.as_ref().and_then(|s| s.seed.as_ref()) {
+            // grinch HIGH-1: serialize the seed swap for ALL dests (not just
+            // `.claude`). Two same-replica spawns can run concurrently (e.g. a
+            // delivery tick + a mailbox wake) holding only `session_mgr.read()`,
+            // with no global spawn lock. Without serialization, spawn B's
+            // prefix-sweep of stale scratch (`clear_stale_seed_scratch`) could
+            // delete spawn A's in-flight temp/trash mid-swap and lose the config
+            // (breaking H1's "dest always fully-old or fully-new" + M3 isolation).
+            // Under this lock any other-id scratch is truly stale, so the
+            // leak-reclaim sweep stays safe. Clone the Arc out of State first so the
+            // owned guard does not borrow a State temporary (E0716).
+            let _seed_guard = {
+                let lock = app.state::<crate::ConfigSeedLockState>().inner().clone();
+                lock.lock_owned().await
+            };
+            let _ = crate::config::config_seed::perform_config_seed(seed, &id.to_string());
+        }
+
+        let viewport = viewport.unwrap_or(PtyViewport::DEFAULT);
+        let spawn_spec = BackendSpawnSpec {
+            id,
+            agent_id: agent_id.clone(),
+            // #942 - the CLI identity from the canonical detector (`agent_kind`, resolved
+            // at the top of this function). The profile id above cannot stand in for it:
+            // it is opaque, several profiles can drive the same CLI, and a coding-agent
+            // launch can carry no profile id at all.
+            coding_agent: agent_kind,
+            cmd: shell.clone(),
+            args: shell_args.clone(),
+            cwd: spawn_cwd.clone(),
+            selected_cwd: if spawn_cwd != cwd {
+                Some(cwd.clone())
+            } else {
+                None
+            },
+            // #973 - open the PTY at the size the terminal is actually going to be, so the
+            // frontend never has to resize a child that is still starting up. Callers with no
+            // view (restore loop, delivery loop, mailbox, CLI, tests) get PtyViewport::DEFAULT,
+            // which is the 120x30 AC always used.
+            cols: viewport.cols,
+            rows: viewport.rows,
+            container_image: resolved_spawn
+                .as_ref()
+                .and_then(|spawn| spawn.backend.image.clone()),
+            configured_env,
+            env_remove_keys,
+            env_unset,
+            extra_env,
+            idle_tuning: crate::session::profile::idle_tuning_for(agent_kind),
+            output_target: PtyOutputTarget::from_app_handle(app.clone()),
+            resource_registration,
+            logical_resource_slot,
+            container_credential,
+            container_repo_mounts: container_repos
+                .as_ref()
+                .map(|resolution| {
+                    resolution
+                        .mounts()
+                        .map(
+                            |(host, container)| crate::pty::container_repos::ContainerRepoMount {
+                                host_path: host.to_path_buf(),
+                                container_path: container.to_string(),
+                            },
+                        )
+                        .collect()
+                })
+                .unwrap_or_default(),
+        };
+        let spawn_result = PtyManager::spawn(pty_mgr, session.backend_kind, spawn_spec).await;
+        drop(spawn_mark);
+        if let Err(e) = spawn_result {
+            let err = e.to_string();
+            drop(mgr);
+            rollback_pre_created_session(app, session_mgr, pty_mgr, id, &err).await;
+            return Err(err);
+        }
+
+        // #1032 - start sampling this session's context reading. This sits above the backend
+        // split and covers local and container alike, with no backend plumbing. `try_state`,
+        // not `state`: `state` panics when unmanaged, and test apps do not manage the scraper.
+        // An absent scraper is simply the feature being off.
+        //
+        // Sessions with no agent are never registered, so a plain shell costs nothing. There is
+        // no race with the parser here: the first sample is 5s away.
+        if let Some(agent_id) = agent_id.clone() {
+            if let Some(scraper) =
+                app.try_state::<Arc<crate::pty::context_scrape::ContextScraper>>()
+            {
+                scraper.register_session(id, agent_id);
+            }
+        }
+
+        // Auto-inject optional non-credential bootstrap text for agent sessions
+        // after PTY spawn. Credentials are already present in child environment
+        // variables; no credentials are written through PTY.
+        //
+        // Currently the only bootstrap payload is the Coordinator auto-title prompt.
+        if agent_id.is_some() && !is_coordinator {
+            log::debug!(
+                "[session] No bootstrap injection for non-coordinator agent session {}",
+                id
+            );
+        }
+        if agent_id.is_some() && is_coordinator {
+            let auto_title_enabled = false; /*
+                                                let settings_state = app.state::<SettingsState>();
+                                                let cfg = settings_state.read().await;
+                                                cfg.auto_generate_task_title
+                                            };*/
+
+            if auto_title_enabled {
+                let app_clone = app.clone();
+                let session_id = id;
+                let cwd_clone = cwd.clone();
+
+                tokio::spawn(async move {
+                    let prompt = match build_title_prompt_appendage(&cwd_clone) {
+                        Ok(Some(prompt)) => {
+                            log::info!(
+                                "[session] Auto-title prompt built for session {}",
+                                session_id
+                            );
+                            prompt
+                        }
+                        Ok(None) => {
+                            log::info!(
                             "[session] Auto-title prompt skipped (gate not passed) for session {}",
                             session_id
                         );
-                        return;
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "[session] Auto-title prompt skipped for session {}: {}",
-                            session_id,
-                            e
-                        );
-                        return;
-                    }
-                };
-
-                let max_wait = std::time::Duration::from_secs(30);
-                let poll = std::time::Duration::from_millis(500);
-                let start = std::time::Instant::now();
-
-                loop {
-                    if start.elapsed() >= max_wait {
-                        log::warn!(
-                            "[session] Timeout waiting for idle before auto-title prompt injection for session {}",
-                            session_id
-                        );
-                        break;
-                    }
-                    tokio::time::sleep(poll).await;
-
-                    let session_mgr = app_clone.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                    let mgr = session_mgr.read().await;
-                    let sessions = mgr.list_sessions().await;
-                    match sessions.iter().find(|s| s.id == session_id.to_string()) {
-                        Some(s) if s.waiting_for_input => break,
-                        Some(_) => {}
-                        None => {
+                            return;
+                        }
+                        Err(e) => {
                             log::warn!(
-                                "[session] Session {} gone before auto-title prompt injection",
-                                session_id
+                                "[session] Auto-title prompt skipped for session {}: {}",
+                                session_id,
+                                e
                             );
                             return;
                         }
-                    }
-                }
+                    };
 
-                match crate::pty::inject::inject_text_into_session(&app_clone, session_id, &prompt)
-                    .await
-                {
-                    Ok(()) => {
-                        log::info!(
-                            "[session] Auto-title prompt injected for session {}",
+                    let max_wait = std::time::Duration::from_secs(30);
+                    let poll = std::time::Duration::from_millis(500);
+                    let start = std::time::Instant::now();
+
+                    loop {
+                        if start.elapsed() >= max_wait {
+                            log::warn!(
+                            "[session] Timeout waiting for idle before auto-title prompt injection for session {}",
                             session_id
                         );
+                            break;
+                        }
+                        tokio::time::sleep(poll).await;
+
+                        let session_mgr =
+                            app_clone.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                        let mgr = session_mgr.read().await;
+                        let sessions = mgr.list_sessions().await;
+                        match sessions.iter().find(|s| s.id == session_id.to_string()) {
+                            Some(s) if s.waiting_for_input => break,
+                            Some(_) => {}
+                            None => {
+                                log::warn!(
+                                    "[session] Session {} gone before auto-title prompt injection",
+                                    session_id
+                                );
+                                return;
+                            }
+                        }
                     }
-                    Err(e) => {
-                        log::warn!(
-                            "[session] Failed to inject auto-title prompt for {}: {}",
-                            session_id,
-                            e
-                        );
+
+                    match crate::pty::inject::inject_text_into_session(
+                        &app_clone, session_id, &prompt,
+                    )
+                    .await
+                    {
+                        Ok(()) => {
+                            log::info!(
+                                "[session] Auto-title prompt injected for session {}",
+                                session_id
+                            );
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "[session] Failed to inject auto-title prompt for {}: {}",
+                                session_id,
+                                e
+                            );
+                        }
                     }
-                }
-            });
+                });
+            }
         }
-    }
 
-    let info = SessionInfo::from(&session);
-    let _ = app.emit("session_created", info.clone());
-    for warning in &session_env_warnings {
-        emit_session_warning(
-            app,
-            SessionWarning::new(
-                id,
-                warning.key.clone(),
-                warning.kind,
-                warning.message.clone(),
-            ),
-        );
-    }
+        let finalization_warnings = session_env_warnings
+            .iter()
+            .map(|warning| {
+                SessionWarning::new(
+                    id,
+                    warning.key.clone(),
+                    warning.kind,
+                    warning.message.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
 
-    // 0.8.0: removed the "Show the terminal window when a session is created" branch.
-    // Under the unified-window model the main window is created up-front and stays
-    // visible; session creation has no window-show responsibility.
+        // 0.8.0: removed the "Show the terminal window when a session is created" branch.
+        // Under the unified-window model the main window is created up-front and stays
+        // visible; session creation has no window-show responsibility.
 
-    // Save lastCodingAgent + codingAgents (skip for temp sessions)
-    if !skip_tooling_save {
-        if let Some(ref aid) = agent_id {
-            // Resolve label: use provided agent_label, or look up from settings by agent_id.
-            // Without this fallback, callers that pass agent_id but no label (session-requests,
-            // web remote) would write app: "Unknown" into the per-instance config.json.
-            let resolved_label = match agent_label.as_deref() {
-                Some(l) => l.to_string(),
-                None => {
-                    let settings = app.state::<SettingsState>();
-                    let cfg = settings.read().await;
-                    resolve_agent_label(aid, &cfg).unwrap_or_else(|| {
-                        log::warn!(
+        // Save lastCodingAgent + codingAgents (skip for temp sessions)
+        if !skip_tooling_save {
+            if let Some(ref aid) = agent_id {
+                // Resolve label: use provided agent_label, or look up from settings by agent_id.
+                // Without this fallback, callers that pass agent_id but no label (session-requests,
+                // web remote) would write app: "Unknown" into the per-instance config.json.
+                let resolved_label = match agent_label.as_deref() {
+                    Some(l) => l.to_string(),
+                    None => {
+                        let settings = app.state::<SettingsState>();
+                        let cfg = settings.read().await;
+                        resolve_agent_label(aid, &cfg).unwrap_or_else(|| {
+                            log::warn!(
                             "Could not resolve label for agent_id='{}' — defaulting to 'Unknown'",
                             aid
                         );
-                        "Unknown".to_string()
-                    })
-                }
-            };
-            let session_id_str = id.to_string();
-            if let Err(e) = agent_config::set_last_coding_agent(
-                &cwd,
-                aid,
-                &resolved_label,
-                Some(&session_id_str),
-            ) {
-                log::warn!("Failed to save lastCodingAgent: {}", e);
-            }
-            // #592 - persist the loaded profile content-hash so drift survives an
-            // AC restart. Best-effort; never aborts the spawn. No-op off-replica.
-            if let Some(hash) = session.profile_content_hash.as_deref() {
-                log::debug!(
-                    "[profile-hash] spawn-persist: session={} agent={} hash={} cwd={:?}",
-                    id,
+                            "Unknown".to_string()
+                        })
+                    }
+                };
+                let session_id_str = id.to_string();
+                if let Err(e) = agent_config::set_last_coding_agent(
+                    &cwd,
                     aid,
-                    hash,
-                    cwd,
-                );
-                if let Err(e) =
-                    crate::config::coding_agent_profiles::set_replica_profile_content_hash(
-                        std::path::Path::new(&cwd),
+                    &resolved_label,
+                    Some(&session_id_str),
+                ) {
+                    log::warn!("Failed to save lastCodingAgent: {}", e);
+                }
+                // #592 - persist the loaded profile content-hash so drift survives an
+                // AC restart. Best-effort; never aborts the spawn. No-op off-replica.
+                if let Some(hash) = session.profile_content_hash.as_deref() {
+                    log::debug!(
+                        "[profile-hash] spawn-persist: session={} agent={} hash={} cwd={:?}",
+                        id,
+                        aid,
                         hash,
-                    )
-                {
-                    log::warn!("Failed to persist profileContentHash: {}", e);
+                        cwd,
+                    );
+                    if let Err(e) =
+                        crate::config::coding_agent_profiles::set_replica_profile_content_hash(
+                            std::path::Path::new(&cwd),
+                            hash,
+                        )
+                    {
+                        log::warn!("Failed to persist profileContentHash: {}", e);
+                    }
                 }
             }
         }
-    }
 
-    Ok(info)
+        if defer_inline_finalization {
+            if create_ticket.is_some() || inline_transaction.is_none() {
+                return Err(
+                    "deferred create finalization requires an inline transaction".to_string(),
+                );
+            }
+            let info = mgr
+                .get_pending_session(pending_binding)
+                .await
+                .map(|record| SessionInfo::from(&record))
+                .ok_or_else(|| "deferred create pending record disappeared".to_string())?;
+            inline_pending_for_body
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take();
+            return Ok(CreateCompletion::Deferred(DeferredCreateOutput {
+                info,
+                binding: pending_binding,
+                warnings: finalization_warnings,
+            }));
+        }
+
+        let finalized = if let Some(ticket) = create_ticket.take() {
+            ticket.finalize(finalization_warnings).await
+        } else {
+            let transaction = inline_transaction
+                .ok_or_else(|| "inline create transaction is unavailable".to_string())?;
+            let cause =
+                inline_cause.ok_or_else(|| "inline create cause is unavailable".to_string())?;
+            transaction
+                .finalize_inline_create(pending_binding, cause, finalization_warnings)
+                .await
+        };
+        if finalized.is_ok() && inline_transaction.is_some() {
+            inline_pending_for_body
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take();
+        }
+        finalized.map(CreateCompletion::Finalized)
+    };
+    let result = tokio::select! {
+        biased;
+        _ = coordinator_shutdown.cancelled() => {
+            Err("selectionCoordinatorUnavailable".to_string())
+        }
+        result = create_body => result,
+    };
+    if result.is_err() {
+        let binding = {
+            inline_pending_binding
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take()
+        };
+        if let (Some(transaction), Some(binding)) = (inline_transaction, binding) {
+            transaction.rollback_inline_create(binding).await;
+        }
+    }
+    result
 }
 
 pub(crate) fn build_configured_agent_spawn_for_cwd(
@@ -1990,14 +2240,9 @@ pub async fn create_session(
             (Some(c), Some(r)) => Some(PtyViewport::from_fit(c, r)),
             _ => None,
         },
+        CreateSelectionIntent::User,
     )
     .await?;
-
-    // Persist after creation
-    {
-        let mgr = session_mgr.read().await;
-        persist_current_state(&mgr).await;
-    }
 
     // Auto-attach Telegram bot if repo has .agentscommander/config.json
     let id = Uuid::parse_str(&info.id).unwrap();
@@ -2155,240 +2400,368 @@ pub(crate) async fn attach_local_config_telegram_if_any<R: tauri::Runtime>(
 
 /// Core session destruction logic shared by the Tauri command and the MailboxPoller.
 /// Kills PTY, detaches Telegram bridge, removes from SessionManager, persists, and emits events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DestructionSource {
+    ManualClose,
+    AutoClose,
+    SpawnRollback,
+    BackgroundCleanup,
+}
+
+impl DestructionSource {
+    fn cause(self) -> SelectionCause {
+        match self {
+            Self::ManualClose => SelectionCause::ManualClose,
+            Self::AutoClose => SelectionCause::AutoClose,
+            Self::SpawnRollback => SelectionCause::SpawnRollback,
+            Self::BackgroundCleanup => SelectionCause::BackgroundCleanup,
+        }
+    }
+
+    fn selection_source(self) -> SelectionSource {
+        match self {
+            Self::ManualClose => SelectionSource::ManualClose,
+            Self::AutoClose => SelectionSource::AutoClose,
+            Self::SpawnRollback => SelectionSource::SpawnRollback,
+            Self::BackgroundCleanup => SelectionSource::BackgroundCleanup,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DestroyRequest {
+    pub ids: Vec<Uuid>,
+    pub source: DestructionSource,
+    pub force_destroy_root: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct DestroyOutcome {
+    pub destroyed_ids: Vec<Uuid>,
+    pub retained_exited_ids: Vec<Uuid>,
+    pub failed: Vec<(Uuid, String)>,
+}
+
+impl DestroyOutcome {
+    pub fn succeeded(&self, id: Uuid) -> bool {
+        self.destroyed_ids.contains(&id) || self.retained_exited_ids.contains(&id)
+    }
+
+    fn into_single_result(self, id: Uuid) -> Result<(), String> {
+        if self.succeeded(id) {
+            return Ok(());
+        }
+        let message = self
+            .failed
+            .into_iter()
+            .find(|(failed_id, _)| *failed_id == id)
+            .map(|(_, message)| message)
+            .unwrap_or_else(|| "Session not found".to_string());
+        Err(message)
+    }
+}
+
 pub async fn destroy_session_inner<R: tauri::Runtime>(
     app: &AppHandle<R>,
     uuid: Uuid,
 ) -> Result<(), String> {
-    destroy_session_inner_with_options(app, uuid, false).await
+    destroy_sessions_with_source(app, vec![uuid], DestructionSource::ManualClose, false)
+        .await?
+        .into_single_result(uuid)
 }
 
-pub(crate) async fn force_destroy_session_inner<R: tauri::Runtime>(
+pub(crate) async fn background_destroy_session_inner<R: tauri::Runtime>(
     app: &AppHandle<R>,
     uuid: Uuid,
 ) -> Result<(), String> {
-    destroy_session_inner_with_options(app, uuid, true).await
+    let coordinator = app
+        .try_state::<SelectionCoordinator>()
+        .ok_or_else(|| "selectionCoordinatorUnavailable".to_string())?;
+    match coordinator.background_destroy(uuid).await? {
+        CriticalAdmissionOutcome::Completed(outcome) => outcome.into_single_result(uuid),
+        CriticalAdmissionOutcome::AlreadyPending => Ok(()),
+    }
 }
 
-async fn destroy_session_inner_with_options<R: tauri::Runtime>(
+pub(crate) async fn destroy_sessions_with_source<R: tauri::Runtime>(
     app: &AppHandle<R>,
-    uuid: Uuid,
+    ids: Vec<Uuid>,
+    source: DestructionSource,
     force_destroy_root: bool,
-) -> Result<(), String> {
-    let id = uuid.to_string();
-    let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-    let mgr = session_mgr.read().await;
-    let existing = mgr
-        .get_session(uuid)
+) -> Result<DestroyOutcome, String> {
+    let coordinator = app
+        .try_state::<SelectionCoordinator>()
+        .ok_or_else(|| "selectionCoordinatorUnavailable".to_string())?;
+    coordinator
+        .destroy(DestroyRequest {
+            ids,
+            source,
+            force_destroy_root,
+        })
         .await
-        .ok_or_else(|| "Session not found".to_string())?;
-    let is_root_agent = existing.is_root_agent
-        || crate::config::root_agent::is_root_agent_path(&existing.working_directory);
-    let was_active = matches!(existing.status, SessionStatus::Active);
+}
 
-    // Remove from detached set
-    {
-        let detached = app.state::<DetachedSessionsState>();
-        let mut detached_set = detached.lock().unwrap();
-        detached_set.remove(&uuid);
-    }
+pub(crate) async fn execute_destroy_transaction<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    request: DestroyRequest,
+) -> Result<DestroyOutcome, String> {
+    let planned = request
+        .ids
+        .iter()
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    let before = transaction.aggregate_snapshot().await;
+    let selected_id = before.selection.id();
+    let mut outcome = DestroyOutcome::default();
+    let mut mutations = LifecycleMutations::default();
+    let mut retained_marked = std::collections::HashSet::new();
 
-    // Auto-detach Telegram bridge if active
-    let mut bridge_shutdown = None;
-    {
-        let tg_mgr = app.state::<TelegramBridgeState>();
-        let mut tg = tg_mgr.lock().await;
-        if tg.has_bridge(uuid) {
-            bridge_shutdown = tg.detach(uuid).ok();
-            mgr.set_telegram_bot_id(uuid, None).await;
-            let _ = app.emit(
-                "telegram_bridge_detached",
-                serde_json::json!({ "sessionId": id }),
-            );
+    for session_id in request.ids.iter().copied() {
+        let Some(existing) = before
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .cloned()
+        else {
+            outcome
+                .failed
+                .push((session_id, "Session not found".to_string()));
+            continue;
+        };
+        let is_root_agent = existing.is_root_agent
+            || crate::config::root_agent::is_root_agent_path(&existing.working_directory);
+
+        {
+            let detached = transaction.app().state::<DetachedSessionsState>();
+            detached
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&session_id);
         }
-    }
-    if let Some(shutdown) = bridge_shutdown.take() {
-        shutdown.spawn_wait_or_abort();
-    }
 
-    {
-        let resource_monitor = app.state::<Arc<ResourceMonitorState>>().inner().clone();
-        if resource_monitor.has_registered_group(uuid) {
-            // #942 - the resource monitor kills the process tree by pid, without going
-            // through the PTY layer, and that cleanup can take seconds. Publish the
-            // pre-stop witness first: without it, a child that had ALREADY died on its
-            // own (the #942 symptom) would be observed dead during the cleanup, charged
-            // to our kill, and its head bytes dropped. The guard is scoped: no std Mutex
-            // is held across the await below.
-            {
-                let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
-                let pty = pty_mgr.lock().unwrap_or_else(|e| e.into_inner());
-                pty.publish_stop_witness(uuid, "session-destroy");
+        let bridge_shutdown = {
+            let telegram = transaction.app().state::<TelegramBridgeState>();
+            let mut telegram = telegram.lock().await;
+            if telegram.has_bridge(session_id) {
+                telegram.detach(session_id).ok()
+            } else {
+                None
             }
-            let cleanup_started = std::time::Instant::now();
+        };
+        if let Some(shutdown) = bridge_shutdown {
+            transaction
+                .manager()
+                .await
+                .set_telegram_bot_id(session_id, None)
+                .await;
+            if let Err(error) = transaction.app().emit(
+                "telegram_bridge_detached",
+                serde_json::json!({ "sessionId": session_id.to_string() }),
+            ) {
+                log::warn!(
+                    "[session] telegram detach publication failed session={} source={:?}: {}",
+                    session_id,
+                    request.source,
+                    error
+                );
+            }
+            shutdown.spawn_wait_or_abort();
+        }
+
+        let resource_monitor = transaction
+            .app()
+            .state::<Arc<ResourceMonitorState>>()
+            .inner()
+            .clone();
+        if resource_monitor.has_registered_group(session_id) {
+            {
+                let pty = transaction.app().state::<Arc<Mutex<PtyManager>>>();
+                pty.lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .publish_stop_witness(session_id, "session-destroy");
+            }
             let monitor = Arc::clone(&resource_monitor);
-            let result = tokio::task::spawn_blocking(move || {
+            match tokio::task::spawn_blocking(move || {
                 monitor.kill_group(
-                    uuid,
+                    session_id,
                     crate::resource_monitor::ResourceKillReason::SessionDestroy,
                 )
             })
             .await
-            .map_err(|e| e.to_string())??;
-            log::info!(
-                "[session] destroy resource cleanup for {} took {}ms (quarantined={})",
-                id,
-                cleanup_started.elapsed().as_millis(),
-                result.quarantined
-            );
-            if result.quarantined {
-                log::warn!(
-                    "[session] Resource cleanup for {} quarantined: {}",
-                    id,
-                    result.message
-                );
-            }
-        }
-    }
-
-    // Kill the PTY first
-    {
-        let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
-        pty_mgr
-            .lock()
-            .unwrap()
-            .kill(uuid)
-            .map_err(|e| e.to_string())?;
-    }
-
-    if is_root_agent && !force_destroy_root {
-        mgr.set_is_root_agent(uuid, true).await;
-        let cleared_raise_hand = mgr.mark_exited(uuid, 0).await;
-        if cleared_raise_hand {
-            let _ = app.emit(
-                "session_communication_changed",
-                serde_json::json!({
-                    "sessionId": uuid.to_string(),
-                    "communication": null,
-                }),
-            );
-        }
-        mgr.clear_active_if(uuid).await;
-        let dormant_info = mgr.get_session(uuid).await.map(|s| SessionInfo::from(&s));
-
-        let _ = app.emit("session_destroyed", serde_json::json!({ "id": id }));
-        if let Some(info) = dormant_info {
-            let _ = app.emit("session_created", info);
-        }
-
-        let detached_label = format!("terminal-{}", id.replace('-', ""));
-        if let Some(detached_win) = app.get_webview_window(&detached_label) {
-            let _ = detached_win.destroy();
-        }
-
-        if was_active {
-            let sessions = mgr.list_sessions().await;
-            let fallback = {
-                let detached = app.state::<DetachedSessionsState>();
-                let set = detached.lock().unwrap();
-                sessions.iter().find_map(|s| {
-                    if s.id == id || matches!(s.status, SessionStatus::Exited(_)) {
-                        return None;
+            {
+                Ok(Ok(result)) => {
+                    if result.quarantined {
+                        log::warn!(
+                            "[session] resource cleanup quarantined session={} source={:?}: {}",
+                            session_id,
+                            request.source,
+                            result.message
+                        );
                     }
-                    Uuid::parse_str(&s.id).ok().filter(|u| !set.contains(u))
-                })
-            };
-            if let Some(fb) = fallback {
-                let _ = mgr.switch_session(fb).await;
-                let _ = app.emit(
-                    "session_switched",
-                    serde_json::json!({ "id": fb.to_string() }),
-                );
-            } else {
-                mgr.clear_active().await;
-                let _ = app.emit(
-                    "session_switched",
-                    serde_json::json!({ "id": serde_json::Value::Null }),
-                );
+                }
+                Ok(Err(error)) => log::warn!(
+                    "[session] resource cleanup failed session={} source={:?}: {}",
+                    session_id,
+                    request.source,
+                    error
+                ),
+                Err(error) => log::warn!(
+                    "[session] resource cleanup task failed session={} source={:?}: {}",
+                    session_id,
+                    request.source,
+                    error
+                ),
             }
         }
 
-        persist_current_state(&mgr).await;
-
-        return Ok(());
-    }
-
-    let new_active = mgr.destroy_session(uuid).await.map_err(|e| e.to_string())?;
-
-    // Persist after destruction
-    persist_current_state(&mgr).await;
-
-    // (#871) Drop the substantive-input tracker entry for this uuid so the
-    // per-session map does not grow monotonically. Dormant roots keep their
-    // uuid, so the early-return branch above intentionally does not reset.
-    if let Some(state) = app.try_state::<crate::pty::input_activity::SubstantiveInputState>() {
-        state.lock().unwrap_or_else(|e| e.into_inner()).reset(uuid);
-    }
-
-    let _ = app.emit("session_destroyed", serde_json::json!({ "id": id }));
-
-    // Close any detached terminal window for this session.
-    // R.2: `destroy()` — not `close()` — so the Phase 2 `onCloseRequested` handler
-    // on the detached window is bypassed. Triggering the handler here would call
-    // `attach_terminal` on a session that's been destroyed (benign no-op per
-    // A2.2.G5) but emits extra window-lifecycle noise for no gain.
-    let detached_label = format!("terminal-{}", id.replace('-', ""));
-    if let Some(detached_win) = app.get_webview_window(&detached_label) {
-        let _ = detached_win.destroy();
-    }
-
-    // If a new session was auto-activated, emit switch event.
-    // Plan §A2.2.G2: the manager's `order.first()` choice is unaware of
-    // `DetachedSessionsState`; if the next-active is a detached session, emitting
-    // its id to main would cause main + the detached window to both own an xterm
-    // for the same session (duplicate display + keystroke routing ambiguity). Filter
-    // here — if detached, walk the list for the first non-detached session instead.
-    if let Some(new_id) = new_active {
-        let is_detached = {
-            let detached = app.state::<DetachedSessionsState>();
-            let set = detached.lock().unwrap();
-            set.contains(&new_id)
-        };
-        if is_detached {
-            let sessions = mgr.list_sessions().await;
-            let fallback = {
-                let detached = app.state::<DetachedSessionsState>();
-                let set = detached.lock().unwrap();
-                sessions
-                    .iter()
-                    .find_map(|s| Uuid::parse_str(&s.id).ok().filter(|u| !set.contains(u)))
-            };
-            if let Some(fb) = fallback {
-                let _ = mgr.switch_session(fb).await;
-                let _ = app.emit(
-                    "session_switched",
-                    serde_json::json!({ "id": fb.to_string() }),
-                );
-            } else {
-                mgr.clear_active().await;
-                let _ = app.emit(
-                    "session_switched",
-                    serde_json::json!({ "id": serde_json::Value::Null }),
-                );
+        let kill_result = transaction
+            .app()
+            .state::<Arc<Mutex<PtyManager>>>()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .kill(session_id);
+        let still_has_pty = transaction.runtime_snapshot(session_id).has_pty;
+        if let Err(error) = kill_result {
+            if still_has_pty {
+                outcome.failed.push((session_id, error.to_string()));
+                continue;
             }
-        } else {
-            let _ = app.emit(
-                "session_switched",
-                serde_json::json!({ "id": new_id.to_string() }),
+            log::warn!(
+                "[session] teardown reported an error after PTY loss session={} source={:?}: {}",
+                session_id,
+                request.source,
+                error
             );
         }
+
+        if is_root_agent && !request.force_destroy_root {
+            mutations.set_detached_intent(session_id, false);
+            if !matches!(existing.status, SessionStatus::Exited(_)) {
+                mutations.mark_exited(session_id, 0);
+                retained_marked.insert(session_id);
+            }
+            outcome.retained_exited_ids.push(session_id);
+        } else {
+            mutations.remove(session_id);
+            outcome.destroyed_ids.push(session_id);
+        }
     }
 
-    // 0.8.0: removed the "Hide the terminal window when no sessions remain" branch.
-    // Under the unified-window model the main window stays visible (sidebar remains
-    // usable for creating/opening sessions); the embedded terminal pane shows an
-    // empty-state placeholder when no active session exists.
+    let selected_was_torn_down = selected_id.is_some_and(|selected| outcome.succeeded(selected));
+    let decision = if !selected_was_torn_down {
+        CommitDecision::Keep
+    } else {
+        match request.source {
+            DestructionSource::ManualClose => {
+                let final_snapshot = transaction.aggregate_snapshot().await;
+                let mut fallback = None;
+                for candidate_id in &final_snapshot.order {
+                    let Some(candidate) = final_snapshot
+                        .sessions
+                        .iter()
+                        .find(|candidate| candidate.id == *candidate_id)
+                    else {
+                        continue;
+                    };
+                    if planned.contains(&candidate.id) {
+                        log::info!(
+                            "[selection] fallback candidate={} status={:?} hasPty=false detached=false excluded=true reason=plannedForDestruction",
+                            candidate.id,
+                            candidate.status
+                        );
+                        continue;
+                    }
+                    if matches!(candidate.status, SessionStatus::Exited(_)) {
+                        log::info!(
+                            "[selection] fallback candidate={} status={:?} hasPty=false detached=false excluded=false reason=exited",
+                            candidate.id,
+                            candidate.status
+                        );
+                        continue;
+                    }
+                    let runtime = transaction.runtime_snapshot(candidate.id);
+                    if runtime.detached {
+                        log::info!(
+                            "[selection] fallback candidate={} status={:?} hasPty={} detached=true excluded=false reason=detached",
+                            candidate.id,
+                            candidate.status,
+                            runtime.has_pty
+                        );
+                        continue;
+                    }
+                    if !runtime.has_pty {
+                        log::info!(
+                            "[selection] fallback candidate={} status={:?} hasPty=false detached=false excluded=false reason=missingPty",
+                            candidate.id,
+                            candidate.status
+                        );
+                        continue;
+                    }
+                    fallback = transaction.live_decision(candidate.id);
+                    if fallback.is_some() {
+                        break;
+                    }
+                }
+                fallback.unwrap_or(CommitDecision::Clear)
+            }
+            DestructionSource::AutoClose
+            | DestructionSource::SpawnRollback
+            | DestructionSource::BackgroundCleanup => CommitDecision::Clear,
+        }
+    };
 
-    Ok(())
+    let committed = transaction
+        .commit(decision, request.source.cause(), mutations)
+        .await?;
+    if !outcome.destroyed_ids.is_empty() || !outcome.retained_exited_ids.is_empty() {
+        transaction
+            .persist(request.source.selection_source(), selected_id)
+            .await;
+    }
+
+    for session_id in outcome
+        .destroyed_ids
+        .iter()
+        .chain(outcome.retained_exited_ids.iter())
+        .copied()
+    {
+        transaction.publish_destroyed(session_id);
+        let label = format!("terminal-{}", session_id.to_string().replace('-', ""));
+        if let Some(window) = transaction.app().get_webview_window(&label) {
+            if let Err(error) = window.destroy() {
+                log::warn!(
+                    "[session] detached window destroy failed session={} source={:?}: {}",
+                    session_id,
+                    request.source,
+                    error
+                );
+            }
+        }
+        if let Some(activity) = transaction
+            .app()
+            .try_state::<crate::pty::input_activity::SubstantiveInputState>()
+        {
+            activity
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .reset(session_id);
+        }
+    }
+    for row in committed.changed_rows.iter().filter(|row| {
+        Uuid::parse_str(&row.id)
+            .ok()
+            .is_some_and(|id| retained_marked.contains(&id))
+    }) {
+        transaction.publish_created(row);
+    }
+    for session_id in &committed.cleared_raise_hand_ids {
+        transaction.publish_communication_cleared(*session_id);
+    }
+    if let Some(selection) = committed.selection.as_ref() {
+        transaction.publish_selection(selection);
+    }
+
+    Ok(outcome)
 }
 
 #[tauri::command]
@@ -2423,6 +2796,30 @@ fn count_working_members(members: &[(bool /*live*/, bool /*waiting_for_input*/)]
         .iter()
         .filter(|(live, waiting)| *live && !*waiting)
         .count()
+}
+
+async fn execute_manual_coordinator_destroy<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    coordinator_id: Uuid,
+    member_ids: Vec<Uuid>,
+    cascade: bool,
+) -> Result<DestroyOutcome, String> {
+    let mut planned_ids = if cascade { member_ids } else { Vec::new() };
+    planned_ids.push(coordinator_id);
+    let outcome =
+        destroy_sessions_with_source(app, planned_ids, DestructionSource::ManualClose, false)
+            .await?;
+    for (failed_id, error) in &outcome.failed {
+        if *failed_id != coordinator_id {
+            log::warn!(
+                "[manual-close] member destroy {} failed: {}",
+                &failed_id.to_string()[..8],
+                error
+            );
+        }
+    }
+    outcome.clone().into_single_result(coordinator_id)?;
+    Ok(outcome)
 }
 
 /// #588 Manually close a coordinator (and, when the cascade setting is on, its
@@ -2515,20 +2912,11 @@ pub async fn close_coordinator(
         }
     }
 
-    // Perform the close. Live members first (avoids intermediate auto-activation
-    // churn), coordinator last. Mirrors the auto-close destroy loop.
-    if cascade {
-        for mid in live_ids {
-            if let Err(e) = destroy_session_inner(&app, mid).await {
-                log::warn!(
-                    "[manual-close] member destroy {} failed: {}",
-                    &mid.to_string()[..8],
-                    e
-                );
-            }
-        }
-    }
-    destroy_session_inner(&app, uuid).await?;
+    // Submit the complete cascade as one destruction transaction. The full
+    // planned set is excluded from fallback ranking, member failures are known
+    // before the one final manual selection, and no doomed sibling can become an
+    // intermediate canonical target.
+    execute_manual_coordinator_destroy(&app, uuid, live_ids, cascade).await?;
 
     // Set the manual marker on the coordinator FQN and persist immediately (this
     // command is not on the auto-close tick, so flush_clocks won't run).
@@ -2668,6 +3056,17 @@ fn resolve_restart_selected_agent_id(
     current_selection.or_else(|| stored_agent_id.map(str::to_string))
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct RestartJobRequest {
+    pub session_id: Uuid,
+    pub agent_id: Option<String>,
+    pub requested_profile: Option<String>,
+    pub skip_auto_resume: Option<bool>,
+    pub activate_after: bool,
+    pub intent: TrustedRestartIntent,
+    pub communication_override: Option<SessionCommunication>,
+}
+
 /// Restart a session: destroy the existing one and recreate it with the same
 /// configuration but a fresh PTY. By default suppresses provider auto-resume
 /// (true user-intent restart — fresh conversation).
@@ -2728,6 +3127,251 @@ pub async fn restart_session_inner_with_activation<R: tauri::Runtime>(
     skip_auto_resume: Option<bool>,
     activate_after: bool,
 ) -> Result<SessionInfo, String> {
+    restart_session_inner_with_intent(
+        app,
+        session_mgr,
+        pty_mgr,
+        settings,
+        uuid,
+        agent_id,
+        requested_profile,
+        skip_auto_resume,
+        activate_after,
+        TrustedRestartIntent::User,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn restart_session_inner_with_intent<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    _session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    _pty_mgr: &Arc<Mutex<PtyManager>>,
+    _settings: &SettingsState,
+    uuid: Uuid,
+    agent_id: Option<String>,
+    requested_profile: Option<String>,
+    skip_auto_resume: Option<bool>,
+    activate_after: bool,
+    intent: TrustedRestartIntent,
+    communication_override: Option<SessionCommunication>,
+) -> Result<SessionInfo, String> {
+    app.state::<SelectionCoordinator>()
+        .restart_lifecycle(RestartJobRequest {
+            session_id: uuid,
+            agent_id,
+            requested_profile,
+            skip_auto_resume,
+            activate_after,
+            intent,
+            communication_override,
+        })
+        .await
+}
+
+struct RestartTeardownError {
+    message: String,
+    old_lost: bool,
+}
+
+async fn detach_restart_telegram<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    session_id: Uuid,
+) {
+    let bridge_shutdown = {
+        let telegram = transaction.app().state::<TelegramBridgeState>();
+        let mut telegram = telegram.lock().await;
+        if telegram.has_bridge(session_id) {
+            telegram.detach(session_id).ok()
+        } else {
+            None
+        }
+    };
+    if let Some(shutdown) = bridge_shutdown {
+        if let Err(error) = transaction.app().emit(
+            "telegram_bridge_detached",
+            serde_json::json!({ "sessionId": session_id.to_string() }),
+        ) {
+            log::warn!(
+                "[restart] telegram detach publication failed session={}: {}",
+                session_id,
+                error
+            );
+        }
+        shutdown.spawn_wait_or_abort();
+    }
+}
+
+async fn teardown_old_for_restart<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    session_id: Uuid,
+    old_was_dormant: bool,
+) -> Result<bool, RestartTeardownError> {
+    if !transaction.runtime_snapshot(session_id).has_pty {
+        if old_was_dormant {
+            return Ok(false);
+        }
+        transaction
+            .app()
+            .state::<DetachedSessionsState>()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&session_id);
+        detach_restart_telegram(transaction, session_id).await;
+        return Ok(true);
+    }
+
+    let resource_monitor = transaction
+        .app()
+        .state::<Arc<ResourceMonitorState>>()
+        .inner()
+        .clone();
+    if resource_monitor.has_registered_group(session_id) {
+        transaction
+            .app()
+            .state::<Arc<Mutex<PtyManager>>>()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .publish_stop_witness(session_id, "session-restart");
+        let monitor = Arc::clone(&resource_monitor);
+        match tokio::task::spawn_blocking(move || {
+            monitor.kill_group(
+                session_id,
+                crate::resource_monitor::ResourceKillReason::SessionDestroy,
+            )
+        })
+        .await
+        {
+            Ok(Ok(result)) if result.quarantined => log::warn!(
+                "[restart] resource cleanup quarantined session={}: {}",
+                session_id,
+                result.message
+            ),
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => log::warn!(
+                "[restart] resource cleanup failed session={}: {}",
+                session_id,
+                error
+            ),
+            Err(error) => log::warn!(
+                "[restart] resource cleanup task failed session={}: {}",
+                session_id,
+                error
+            ),
+        }
+    }
+
+    let kill_result = transaction
+        .app()
+        .state::<Arc<Mutex<PtyManager>>>()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .kill(session_id);
+    let old_lost = !transaction.runtime_snapshot(session_id).has_pty;
+    if !old_lost {
+        let message = kill_result
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| "old PTY remained live after restart teardown".to_string());
+        return Err(RestartTeardownError {
+            message,
+            old_lost: false,
+        });
+    }
+    if let Err(error) = kill_result {
+        log::warn!(
+            "[restart] teardown reported an error after PTY loss session={}: {}",
+            session_id,
+            error
+        );
+    }
+    transaction
+        .app()
+        .state::<DetachedSessionsState>()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .remove(&session_id);
+    detach_restart_telegram(transaction, session_id).await;
+    Ok(true)
+}
+
+fn publish_restart_destroyed<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    session_id: Uuid,
+) {
+    transaction.publish_destroyed(session_id);
+    let label = format!("terminal-{}", session_id.to_string().replace('-', ""));
+    if let Some(window) = transaction.app().get_webview_window(&label) {
+        if let Err(error) = window.destroy() {
+            log::warn!(
+                "[restart] detached window destroy failed session={}: {}",
+                session_id,
+                error
+            );
+        }
+    }
+    if let Some(activity) = transaction
+        .app()
+        .try_state::<crate::pty::input_activity::SubstantiveInputState>()
+    {
+        activity
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .reset(session_id);
+    }
+}
+
+async fn finalize_failed_restart<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    session_id: Uuid,
+    selected: bool,
+    intent: TrustedRestartIntent,
+) -> Result<(), String> {
+    detach_restart_telegram(transaction, session_id).await;
+    let mut mutations = LifecycleMutations::default();
+    mutations.remove(session_id);
+    let committed = transaction
+        .commit(
+            if selected {
+                CommitDecision::Clear
+            } else {
+                CommitDecision::Keep
+            },
+            SelectionCause::Restart(intent),
+            mutations,
+        )
+        .await?;
+    transaction
+        .persist(SelectionSource::Restart, Some(session_id))
+        .await;
+    publish_restart_destroyed(transaction, session_id);
+    if let Some(selection) = committed.selection.as_ref() {
+        transaction.publish_selection(selection);
+    }
+    Ok(())
+}
+
+pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    request: RestartJobRequest,
+) -> Result<SessionInfo, String> {
+    let app = transaction.app();
+    let session_mgr = app
+        .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+        .inner()
+        .clone();
+    let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+    let settings = app.state::<SettingsState>().inner().clone();
+    let RestartJobRequest {
+        session_id: uuid,
+        agent_id,
+        requested_profile,
+        skip_auto_resume,
+        activate_after,
+        intent,
+        communication_override,
+    } = request;
     // 1. Read config from existing session BEFORE destroying it
     let (
         shell,
@@ -2742,9 +3386,12 @@ pub async fn restart_session_inner_with_activation<R: tauri::Runtime>(
         stored_requested_profile,
         stored_start_fresh,
         stored_communication,
+        old_status,
+        old_selected,
     ) = {
         let mgr = session_mgr.read().await;
         let session = mgr.get_session(uuid).await.ok_or("Session not found")?;
+        let old_selected = mgr.selection_payload().await.id() == Some(uuid);
         (
             session.shell.clone(),
             session.shell_args.clone(),
@@ -2759,14 +3406,11 @@ pub async fn restart_session_inner_with_activation<R: tauri::Runtime>(
             session.requested_profile.clone(),
             session.start_fresh_on_restore, // (#630/#631) honor an unconsumed durable fresh intent
             session.communication.clone(),  // (#747) candidate raised-hand carry across the reopen
+            session.status.clone(),
+            old_selected,
         )
     };
 
-    let _root_guard = if is_root_agent {
-        Some(root_agent_session_lock().lock().await)
-    } else {
-        None
-    };
     let cwd = if is_root_agent {
         crate::config::root_agent::ensure_root_agent_dir()?
     } else {
@@ -2815,13 +3459,6 @@ pub async fn restart_session_inner_with_activation<R: tauri::Runtime>(
         (shell, clean_args, stored_agent_label)
     };
 
-    // 3. Destroy the old session (resolves all State<> internally from app)
-    if is_root_agent {
-        force_destroy_session_inner(app, uuid).await?;
-    } else {
-        destroy_session_inner(app, uuid).await?;
-    }
-
     // (#630/#631) Fresh on an explicit "Restart Session" (None -> true), OR if the
     // session still carries an unconsumed durable fresh intent. Root agents are
     // scoped out (separate restore path ignores the marker, §8): they are never
@@ -2829,37 +3466,147 @@ pub async fn restart_session_inner_with_activation<R: tauri::Runtime>(
     // today's `effective_restart_skip_auto_resume`.
     let restart_start_fresh =
         restart_skip_auto_resume_with_intent(stored_start_fresh, skip_auto_resume);
+    let carried_communication = communication_override
+        .or_else(|| carry_communication_for_restart(stored_communication, restart_start_fresh));
 
-    // 4. Create new session with same config, or switch to the selected coding agent.
-    let session_info = create_session_inner(
+    // 3. Release the old runtime slot while retaining its canonical manager row.
+    // Dormant rows skip teardown and remain retryable until replacement success.
+    let old_was_dormant = matches!(old_status, SessionStatus::Exited(_));
+    let old_lost = match teardown_old_for_restart(transaction, uuid, old_was_dormant).await {
+        Ok(old_lost) => old_lost,
+        Err(error) => {
+            if error.old_lost {
+                if let Err(finalize_error) =
+                    finalize_failed_restart(transaction, uuid, old_selected, intent).await
+                {
+                    return Err(format!(
+                        "{}; restart failure finalization failed: {}",
+                        error.message, finalize_error
+                    ));
+                }
+            }
+            return Err(error.message);
+        }
+    };
+
+    // 4. Spawn the replacement as a pending, unannounced row.
+    let completion = create_session_inner_impl(
         app,
-        session_mgr,
-        pty_mgr,
+        &session_mgr,
+        &pty_mgr,
         shell,
         shell_args,
         cwd.clone(),
         Some(name),
         selected_agent_id,
         agent_label,
-        false, // skip_tooling_save
+        false,
         git_repos,
         restart_start_fresh,
         resolved_spawn,
-        // #973 - headless caller: no terminal to measure, keep 120x30.
         None,
+        CreateSelectionIntent::Suppress,
+        (!is_root_agent).then_some(restart_start_fresh),
+        carried_communication,
+        Some(transaction),
+        Some(SelectionCause::Restart(intent)),
+        true,
     )
-    .await?;
+    .await;
+    let deferred = match completion {
+        Ok(CreateCompletion::Deferred(deferred)) => deferred,
+        Ok(CreateCompletion::Finalized(_)) => {
+            let error = "restart replacement was published before atomic finalization".to_string();
+            if old_lost {
+                finalize_failed_restart(transaction, uuid, old_selected, intent).await?;
+            }
+            return Err(error);
+        }
+        Err(error) => {
+            if old_lost {
+                if let Err(finalize_error) =
+                    finalize_failed_restart(transaction, uuid, old_selected, intent).await
+                {
+                    return Err(format!(
+                        "{}; restart failure finalization failed: {}",
+                        error, finalize_error
+                    ));
+                }
+            }
+            return Err(error);
+        }
+    };
+    let new_uuid = match Uuid::parse_str(&deferred.info.id) {
+        Ok(id) => id,
+        Err(error) => {
+            transaction.rollback_inline_create(deferred.binding).await;
+            if old_lost {
+                finalize_failed_restart(transaction, uuid, old_selected, intent).await?;
+            }
+            return Err(format!(
+                "restart replacement returned an invalid id: {error}"
+            ));
+        }
+    };
+    let live = match transaction.live_decision(new_uuid) {
+        Some(CommitDecision::Live(live)) => live,
+        _ => {
+            transaction.rollback_inline_create(deferred.binding).await;
+            if old_lost {
+                finalize_failed_restart(transaction, uuid, old_selected, intent).await?;
+            }
+            return Err("restart replacement is not displayable".to_string());
+        }
+    };
 
-    let new_uuid = Uuid::parse_str(&session_info.id).map_err(|e| e.to_string())?;
-
-    // (#630/#631) Stamp the honored fresh intent onto the recreated session so it
-    // survives the next app restart. Skipped for root agents (scoped out, §8): the
-    // root restore path ignores the marker, so we do not persist a field we ignore.
-    // The `persist_current_state` in step 7 below writes it durably.
-    if !is_root_agent {
-        let mgr = session_mgr.read().await;
-        mgr.set_start_fresh_on_restore(new_uuid, restart_start_fresh)
-            .await;
+    // 5. Finalize the replacement, remove the old row, and decide selection in
+    // one manager commit. Neither lifecycle row was public before this point.
+    let mut mutations = LifecycleMutations::default();
+    mutations.finalize_live(deferred.binding, live);
+    mutations.remove(uuid);
+    let decision = if old_selected || activate_after {
+        CommitDecision::Live(live)
+    } else {
+        CommitDecision::Keep
+    };
+    let committed = match transaction
+        .commit(decision, SelectionCause::Restart(intent), mutations)
+        .await
+    {
+        Ok(committed) => committed,
+        Err(error) => {
+            transaction.rollback_inline_create(deferred.binding).await;
+            if old_lost {
+                finalize_failed_restart(transaction, uuid, old_selected, intent).await?;
+            }
+            return Err(error);
+        }
+    };
+    let session_info = committed
+        .finalized_rows
+        .iter()
+        .find(|row| row.id == new_uuid.to_string())
+        .cloned()
+        .ok_or_else(|| "restart finalization did not produce the replacement row".to_string())?;
+    transaction
+        .persist(SelectionSource::Restart, Some(new_uuid))
+        .await;
+    transaction.publish_created(&session_info);
+    if !old_lost {
+        detach_restart_telegram(transaction, uuid).await;
+        transaction
+            .app()
+            .state::<DetachedSessionsState>()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&uuid);
+    }
+    publish_restart_destroyed(transaction, uuid);
+    if let Some(selection) = committed.selection.as_ref() {
+        transaction.publish_selection(selection);
+    }
+    for warning in deferred.warnings {
+        emit_session_warning(app, warning);
     }
 
     // (#756) C3: mirror the honored fresh intent into the coordinator clocks so
@@ -2872,55 +3619,11 @@ pub async fn restart_session_inner_with_activation<R: tauri::Runtime>(
         crate::commands::pty::write_start_fresh_mirror_for_session(app, new_uuid, true).await;
     }
 
-    // (#747) Carry a visible raised hand across the destroy+create reopen when
-    // the conversation resumes (Branch-A wake of a dormant session). Explicit
-    // fresh restarts drop it. Emitted so the sidebar syncs (the session_created
-    // from create_session_inner carried communication: None). The
-    // persist_current_state in step 7 below writes it durably.
-    if let Some(communication) =
-        carry_communication_for_restart(stored_communication, restart_start_fresh)
-    {
-        let mgr = session_mgr.read().await;
-        if mgr
-            .restore_communication(new_uuid, communication.clone())
-            .await
-        {
-            let _ = app.emit(
-                "session_communication_changed",
-                serde_json::json!({
-                    "sessionId": new_uuid.to_string(),
-                    "communication": communication,
-                }),
-            );
-        }
-    }
-
-    if activate_after {
-        // 5. Explicitly activate the new session.
-        //    destroy_session_inner may have auto-activated a sibling.
-        //    create_session_inner only auto-activates if active.is_none().
-        //    With multiple sessions, the new session would NOT be active without this.
-        {
-            let mgr = session_mgr.read().await;
-            let _ = mgr.switch_session(new_uuid).await;
-        }
-        let _ = app.emit(
-            "session_switched",
-            serde_json::json!({ "id": session_info.id, "userInitiated": true }),
-        );
-    }
-
     // 6. Re-attach Telegram bridge from live persisted intent, or fall back to repo config.
     if telegram_bot_id.is_some() {
         attach_persisted_telegram_if_configured(app, new_uuid, telegram_bot_id.as_deref()).await;
     } else {
         attach_local_config_telegram_if_any(app, new_uuid, &cwd).await;
-    }
-
-    // 7. Persist state — create_session_inner does NOT persist
-    {
-        let mgr = session_mgr.read().await;
-        persist_current_state(&mgr).await;
     }
 
     Ok(session_info)
@@ -2957,7 +3660,7 @@ pub async fn restart_session(
 #[tauri::command]
 pub async fn switch_session(
     app: AppHandle,
-    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
+    _session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
     detached: State<'_, DetachedSessionsState>,
     id: String,
 ) -> Result<(), String> {
@@ -2969,8 +3672,6 @@ pub async fn switch_session(
         detached_set.contains(&uuid)
     };
     if is_detached {
-        let mgr = session_mgr.read().await;
-        mgr.clear_active_if(uuid).await;
         let label = format!("terminal-{}", id.replace('-', ""));
         if let Some(win) = app.get_webview_window(&label) {
             let _ = win.set_focus();
@@ -2978,16 +3679,12 @@ pub async fn switch_session(
         return Ok(());
     }
 
-    let mgr = session_mgr.read().await;
-    mgr.switch_session(uuid).await.map_err(|e| e.to_string())?;
-
-    // Persist after switch (updates was_active)
-    persist_current_state(&mgr).await;
-
-    let _ = app.emit(
-        "session_switched",
-        serde_json::json!({ "id": id, "userInitiated": true }),
-    );
+    let coordinator = app
+        .try_state::<SelectionCoordinator>()
+        .ok_or_else(|| "selectionCoordinatorUnavailable".to_string())?;
+    coordinator
+        .transition(SelectionRequest::user_switch(uuid))
+        .await?;
 
     Ok(())
 }
@@ -3275,22 +3972,18 @@ fn resolve_agent_from_shell(
 
 #[tauri::command]
 pub async fn get_active_session(
-    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
-    detached: State<'_, DetachedSessionsState>,
-) -> Result<Option<String>, String> {
-    let mgr = session_mgr.read().await;
-    let Some(active_id) = mgr.get_active().await else {
-        return Ok(None);
-    };
-    let is_detached = {
-        let set = detached.lock().unwrap();
-        set.contains(&active_id)
-    };
-    if is_detached {
-        mgr.clear_active_if(active_id).await;
-        return Ok(None);
-    }
-    Ok(Some(active_id.to_string()))
+    coordinator: State<'_, SelectionCoordinator>,
+) -> Result<crate::session::selection::SessionSelection, String> {
+    coordinator.snapshot().await
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RootJobRequest {
+    pub requested_agent_id: Option<String>,
+    pub requested_profile: Option<String>,
+    pub skip_auto_resume_for_new_session: bool,
+    pub intent: TrustedCreateIntent,
+    pub select_after: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3298,103 +3991,159 @@ pub(crate) async fn create_root_agent_inner(
     app: &AppHandle,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
     pty_mgr: &Arc<Mutex<PtyManager>>,
-    _tg_mgr: &TelegramBridgeState,
+    tg_mgr: &TelegramBridgeState,
     settings: &SettingsState,
     requested_agent_id: Option<String>,
     requested_profile: Option<String>,
     skip_auto_resume_for_new_session: bool,
 ) -> Result<SessionInfo, String> {
-    let _guard = root_agent_session_lock().lock().await;
-    let root_agent_path = crate::config::root_agent::ensure_root_agent_dir()?;
+    create_root_agent_inner_with_intent(
+        app,
+        session_mgr,
+        pty_mgr,
+        tg_mgr,
+        settings,
+        requested_agent_id,
+        requested_profile,
+        skip_auto_resume_for_new_session,
+        TrustedCreateIntent::User,
+        true,
+    )
+    .await
+}
 
-    let existing = {
-        let mgr = session_mgr.read().await;
-        let sessions = mgr.list_sessions().await;
-        sessions.into_iter().find(|s| {
-            s.is_root_agent || crate::config::root_agent::is_root_agent_path(&s.working_directory)
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_root_agent_inner_with_intent(
+    app: &AppHandle,
+    _session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    _pty_mgr: &Arc<Mutex<PtyManager>>,
+    _tg_mgr: &TelegramBridgeState,
+    _settings: &SettingsState,
+    requested_agent_id: Option<String>,
+    requested_profile: Option<String>,
+    skip_auto_resume_for_new_session: bool,
+    intent: TrustedCreateIntent,
+    select_after: bool,
+) -> Result<SessionInfo, String> {
+    app.state::<SelectionCoordinator>()
+        .root_lifecycle(RootJobRequest {
+            requested_agent_id,
+            requested_profile,
+            skip_auto_resume_for_new_session,
+            intent,
+            select_after,
         })
-    };
-    let mut waking_existing = false;
-    let mut restored_telegram_bot_id: Option<String> = None;
-    let last_coding_agent = crate::config::root_agent::read_last_coding_agent(&root_agent_path);
-    let mut resolved_root_agent_command: Option<ResolvedRootAgentCommand> = None;
+        .await
+}
+
+pub(crate) async fn execute_root_transaction<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    request: RootJobRequest,
+) -> Result<SessionInfo, String> {
+    let app = transaction.app();
+    let session_mgr = app
+        .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+        .inner()
+        .clone();
+    let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+    let settings = app.state::<SettingsState>().inner().clone();
+    let root_agent_path = crate::config::root_agent::ensure_root_agent_dir()?;
+    let existing = session_mgr
+        .read()
+        .await
+        .list_sessions()
+        .await
+        .into_iter()
+        .find(|session| {
+            session.is_root_agent
+                || crate::config::root_agent::is_root_agent_path(&session.working_directory)
+        });
 
     if let Some(existing) = existing {
-        let uuid = Uuid::parse_str(&existing.id).map_err(|e| e.to_string())?;
-        {
-            let mgr = session_mgr.read().await;
-            mgr.set_is_root_agent(uuid, true).await;
-        }
-
-        let has_pty = pty_mgr.lock().unwrap().has_session(uuid);
+        let session_id = Uuid::parse_str(&existing.id).map_err(|error| error.to_string())?;
+        session_mgr
+            .read()
+            .await
+            .set_is_root_agent(session_id, true)
+            .await;
+        let has_pty = pty_mgr
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .has_session(session_id);
         match classify_existing_root(&existing.status, has_pty) {
             ExistingRootAction::ReuseLive => {
-                log::info!(
-                    "[root-agent] Reusing existing live session {} at {}",
-                    existing.id,
-                    existing.working_directory
-                );
-                let mgr = session_mgr.read().await;
-                if let Some(updated) = mgr.get_session(uuid).await {
-                    persist_current_state(&mgr).await;
-                    return Ok(SessionInfo::from(&updated));
+                if request.select_after {
+                    let decision = transaction
+                        .live_decision(session_id)
+                        .ok_or_else(|| "Root session has no displayable PTY".to_string())?;
+                    let committed = transaction
+                        .commit(
+                            decision,
+                            SelectionCause::UserSwitch,
+                            LifecycleMutations::default(),
+                        )
+                        .await?;
+                    if let Some(selection) = committed.selection.as_ref() {
+                        transaction
+                            .persist(SelectionSource::UserSwitch, Some(session_id))
+                            .await;
+                        transaction.publish_selection(selection);
+                    }
                 }
-                return Ok(existing);
+                return session_mgr
+                    .read()
+                    .await
+                    .get_session(session_id)
+                    .await
+                    .map(|session| SessionInfo::from(&session))
+                    .ok_or_else(|| "Root session disappeared during reuse".to_string());
             }
-            ExistingRootAction::WakeDormant => {
-                resolved_root_agent_command = Some({
-                    let cfg = settings.read().await;
-                    resolve_root_agent_command(
-                        &cfg,
-                        requested_agent_id.as_deref(),
-                        last_coding_agent.as_deref(),
-                    )?
-                });
-                waking_existing = true;
-                restored_telegram_bot_id = existing.telegram_bot_id.clone();
-                log::info!(
-                    "[root-agent] Waking dormant root session {} with provider resume",
-                    existing.id
+            ExistingRootAction::WakeDormant | ExistingRootAction::DiscardMissingPty => {
+                let wake_dormant = matches!(
+                    classify_existing_root(&existing.status, has_pty),
+                    ExistingRootAction::WakeDormant
                 );
-                force_destroy_session_inner(app, uuid).await?;
-            }
-            ExistingRootAction::DiscardMissingPty => {
-                resolved_root_agent_command = Some({
-                    let cfg = settings.read().await;
-                    resolve_root_agent_command(
-                        &cfg,
-                        requested_agent_id.as_deref(),
-                        last_coding_agent.as_deref(),
-                    )?
-                });
-                log::warn!(
-                    "[root-agent] Discarding root session {} because it has status {:?} but no PTY",
-                    existing.id,
-                    existing.status
-                );
-                force_destroy_session_inner(app, uuid).await?;
+                let restart_intent = match request.intent {
+                    TrustedCreateIntent::User => TrustedRestartIntent::User,
+                    TrustedCreateIntent::Background => TrustedRestartIntent::Background,
+                };
+                return execute_restart_transaction(
+                    transaction,
+                    RestartJobRequest {
+                        session_id,
+                        agent_id: request.requested_agent_id,
+                        requested_profile: request.requested_profile,
+                        skip_auto_resume: Some(if wake_dormant {
+                            false
+                        } else {
+                            request.skip_auto_resume_for_new_session
+                        }),
+                        activate_after: request.select_after,
+                        intent: restart_intent,
+                        communication_override: None,
+                    },
+                )
+                .await;
             }
         }
     }
 
-    let (shell, shell_args, agent_id, agent_label) =
-        if let Some(resolved) = resolved_root_agent_command {
-            resolved
-        } else {
-            let cfg = settings.read().await;
-            resolve_root_agent_command(
-                &cfg,
-                requested_agent_id.as_deref(),
-                last_coding_agent.as_deref(),
-            )?
-        };
-    let resolved_spawn = if let Some(aid) = agent_id.as_deref() {
-        let cfg = settings.read().await;
+    let last_coding_agent = crate::config::root_agent::read_last_coding_agent(&root_agent_path);
+    let (shell, shell_args, agent_id, agent_label) = {
+        let settings = settings.read().await;
+        resolve_root_agent_command(
+            &settings,
+            request.requested_agent_id.as_deref(),
+            last_coding_agent.as_deref(),
+        )?
+    };
+    let resolved_spawn = if let Some(agent_id) = agent_id.as_deref() {
+        let settings = settings.read().await;
         build_configured_agent_spawn_for_cwd(
-            &cfg,
-            aid,
+            &settings,
+            agent_id,
             &root_agent_path,
-            requested_profile.as_deref(),
+            request.requested_profile.as_deref(),
         )?
     } else {
         None
@@ -3408,11 +4157,10 @@ pub(crate) async fn create_root_agent_inner(
     } else {
         (shell, shell_args, agent_label)
     };
-
-    let info = create_session_inner(
+    let info = create_session_inner_impl(
         app,
-        session_mgr,
-        pty_mgr,
+        &session_mgr,
+        &pty_mgr,
         shell,
         shell_args,
         root_agent_path.clone(),
@@ -3421,29 +4169,38 @@ pub(crate) async fn create_root_agent_inner(
         agent_label,
         false,
         Vec::new(),
-        if waking_existing {
-            false
-        } else {
-            skip_auto_resume_for_new_session
-        },
+        request.skip_auto_resume_for_new_session,
         resolved_spawn,
-        // #973 - headless caller: no terminal to measure, keep 120x30.
         None,
+        CreateSelectionIntent::Suppress,
+        None,
+        None,
+        Some(transaction),
+        Some(SelectionCause::SessionCreated(request.intent)),
+        false,
     )
-    .await?;
-
-    {
-        let mgr = session_mgr.read().await;
-        persist_current_state(&mgr).await;
+    .await?
+    .into_finalized()?;
+    let session_id = Uuid::parse_str(&info.id).map_err(|error| error.to_string())?;
+    if request.select_after {
+        let decision = transaction
+            .live_decision(session_id)
+            .ok_or_else(|| "new Root session has no displayable PTY".to_string())?;
+        let committed = transaction
+            .commit(
+                decision,
+                SelectionCause::SessionCreated(request.intent),
+                LifecycleMutations::default(),
+            )
+            .await?;
+        if let Some(selection) = committed.selection.as_ref() {
+            transaction
+                .persist(SelectionSource::SessionCreated, Some(session_id))
+                .await;
+            transaction.publish_selection(selection);
+        }
     }
-
-    let id = Uuid::parse_str(&info.id).map_err(|e| format!("Invalid session UUID: {}", e))?;
-    if restored_telegram_bot_id.is_some() {
-        attach_persisted_telegram_if_configured(app, id, restored_telegram_bot_id.as_deref()).await;
-    } else {
-        attach_local_config_telegram_if_any(app, id, &root_agent_path).await;
-    }
-
+    attach_local_config_telegram_if_any(app, session_id, &root_agent_path).await;
     Ok(info)
 }
 
@@ -3476,27 +4233,32 @@ mod tests {
     use super::{
         classify_existing_root, claude_projects_dir_for_config_dir, compute_profile_outdated,
         container_path_context_for_cwd, count_working_members, effective_restart_requested_profile,
-        inject_codex_resume, resolve_actual_agent, resolve_agent_command, resolve_agent_from_shell,
-        resolve_claude_projects_dir, resolve_restart_selected_agent_id, resolve_root_agent_command,
-        injected_claude_config_dir_for_copy, resume_probe_target_for_config_dir,
-        should_inject_continue, ExistingRootAction,
+        execute_manual_coordinator_destroy, inject_codex_resume,
+        injected_claude_config_dir_for_copy, resolve_actual_agent, resolve_agent_command,
+        resolve_agent_from_shell, resolve_claude_projects_dir, resolve_restart_selected_agent_id,
+        resolve_root_agent_command, resume_probe_target_for_config_dir, should_inject_continue,
+        CreateSelectionIntent, ExistingRootAction,
     };
     use crate::config::settings::{AgentConfig, AppSettings, ProfileCellConfig};
-    use crate::pty::backend::SessionBackendKind;
+    use crate::pty::backend::{PtyBackend, SessionBackendKind};
     use crate::pty::container_backend::container_child_env;
     use crate::pty::container_credentials::ContainerCredentialPlan;
     use crate::pty::container_paths::{
         ContainerPathMap, CLAUDE_CONFIG_DIR_KEY, WARNING_KIND_NO_VALUE,
     };
     use crate::session::manager::SessionManager;
-    use crate::session::session::{SessionInfo, SessionStatus};
-    use std::collections::BTreeMap;
+    use crate::session::session::{
+        SessionCommunication, SessionCommunicationKind, SessionInfo, SessionStatus,
+    };
+    use std::collections::{BTreeMap, HashMap, HashSet};
     #[cfg(windows)]
     use std::path::Path;
     use std::path::PathBuf;
     #[cfg(windows)]
     use std::process::Command;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
     use uuid::Uuid;
 
     #[test]
@@ -4065,26 +4827,901 @@ mod tests {
         }
     }
 
-    fn session_test_app(settings: AppSettings) -> tauri::App<tauri::test::MockRuntime> {
-        tauri::test::mock_builder()
+    #[derive(Default)]
+    struct ScriptedSpawnBackend {
+        live: Mutex<HashSet<Uuid>>,
+        spawned: Mutex<Vec<Uuid>>,
+        spawn_count: AtomicUsize,
+        fail_spawn_number: AtomicUsize,
+        gate_spawn_number: AtomicUsize,
+        gate_started: Mutex<Option<tokio::sync::oneshot::Sender<Uuid>>>,
+        gate_release: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    }
+
+    struct BarrierDestroyBackend {
+        live: Mutex<HashSet<Uuid>>,
+        fail_kill: Mutex<HashSet<Uuid>>,
+        kills: Mutex<Vec<Uuid>>,
+        started: Mutex<Option<tokio::sync::oneshot::Sender<Uuid>>>,
+        release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    }
+
+    impl BarrierDestroyBackend {
+        fn new(
+            started: tokio::sync::oneshot::Sender<Uuid>,
+            release: std::sync::mpsc::Receiver<()>,
+        ) -> Self {
+            Self {
+                live: Mutex::new(HashSet::new()),
+                fail_kill: Mutex::new(HashSet::new()),
+                kills: Mutex::new(Vec::new()),
+                started: Mutex::new(Some(started)),
+                release: Mutex::new(Some(release)),
+            }
+        }
+
+        fn fail_kill_for(&self, session_id: Uuid) {
+            self.fail_kill.lock().unwrap().insert(session_id);
+        }
+    }
+
+    impl crate::pty::backend::PtyBackend for BarrierDestroyBackend {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn spawn(
+            &self,
+            spec: crate::pty::backend::BackendSpawnSpec,
+        ) -> futures::future::BoxFuture<'_, Result<(), crate::errors::AppError>> {
+            Box::pin(async move {
+                self.live.lock().unwrap().insert(spec.id);
+                Ok(())
+            })
+        }
+
+        fn write(&self, id: Uuid, _data: &[u8]) -> Result<(), crate::errors::AppError> {
+            self.live
+                .lock()
+                .unwrap()
+                .contains(&id)
+                .then_some(())
+                .ok_or_else(|| crate::errors::AppError::SessionNotFound(id.to_string()))
+        }
+
+        fn resize(&self, id: Uuid, _cols: u16, _rows: u16) -> Result<(), crate::errors::AppError> {
+            self.write(id, &[])
+        }
+
+        fn kill(&self, id: Uuid) -> Result<(), crate::errors::AppError> {
+            self.kills.lock().unwrap().push(id);
+            if let Some(started) = self.started.lock().unwrap().take() {
+                let _ = started.send(id);
+                if let Some(release) = self.release.lock().unwrap().take() {
+                    release
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .map_err(|error| {
+                            crate::errors::AppError::PtyError(format!(
+                                "destroy barrier release failed: {error}"
+                            ))
+                        })?;
+                }
+            }
+            if self.fail_kill.lock().unwrap().contains(&id) {
+                return Err(crate::errors::AppError::PtyError(
+                    "synthetic live teardown failure".to_string(),
+                ));
+            }
+            self.live.lock().unwrap().remove(&id);
+            Ok(())
+        }
+
+        fn has_session(&self, id: Uuid) -> bool {
+            self.live.lock().unwrap().contains(&id)
+        }
+
+        fn get_screen_snapshot(&self, _id: Uuid) -> Option<crate::pty::output::PtyScreenSnapshot> {
+            None
+        }
+
+        fn get_pty_size(&self, id: Uuid) -> Option<(u16, u16)> {
+            self.has_session(id).then_some((30, 120))
+        }
+
+        fn get_screen_rows(&self, _id: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
+            crate::pty::context_scrape::ScreenRowsRead::SessionOver
+        }
+
+        fn register_response_watcher(
+            &self,
+            _session_id: Uuid,
+            _request_id: String,
+            _response_dir: std::path::PathBuf,
+        ) {
+        }
+
+        fn terminate_job_for_session(&self, _id: Uuid) -> bool {
+            false
+        }
+
+        fn kill_all_jobs(&self) -> (usize, usize) {
+            (0, 0)
+        }
+    }
+
+    impl ScriptedSpawnBackend {
+        fn fail_spawn(&self, number: usize) {
+            self.fail_spawn_number.store(number, Ordering::SeqCst);
+        }
+
+        fn gate_spawn(
+            &self,
+            number: usize,
+            started: tokio::sync::oneshot::Sender<Uuid>,
+            release: tokio::sync::oneshot::Receiver<()>,
+        ) {
+            self.gate_spawn_number.store(number, Ordering::SeqCst);
+            *self.gate_started.lock().unwrap() = Some(started);
+            *self.gate_release.lock().unwrap() = Some(release);
+        }
+
+        fn lose_route(&self, session_id: Uuid) {
+            self.live.lock().unwrap().remove(&session_id);
+        }
+    }
+
+    impl crate::pty::backend::PtyBackend for ScriptedSpawnBackend {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn spawn(
+            &self,
+            spec: crate::pty::backend::BackendSpawnSpec,
+        ) -> futures::future::BoxFuture<'_, Result<(), crate::errors::AppError>> {
+            Box::pin(async move {
+                let number = self.spawn_count.fetch_add(1, Ordering::SeqCst) + 1;
+                self.spawned.lock().unwrap().push(spec.id);
+                if self.gate_spawn_number.load(Ordering::SeqCst) == number {
+                    if let Some(started) = self.gate_started.lock().unwrap().take() {
+                        let _ = started.send(spec.id);
+                    }
+                    let release = self.gate_release.lock().unwrap().take();
+                    if let Some(release) = release {
+                        let _ = release.await;
+                    }
+                }
+                if self.fail_spawn_number.load(Ordering::SeqCst) == number {
+                    return Err(crate::errors::AppError::PtyError(
+                        "synthetic scripted spawn failure".to_string(),
+                    ));
+                }
+                self.live.lock().unwrap().insert(spec.id);
+                Ok(())
+            })
+        }
+
+        fn write(&self, id: Uuid, _data: &[u8]) -> Result<(), crate::errors::AppError> {
+            self.live
+                .lock()
+                .unwrap()
+                .contains(&id)
+                .then_some(())
+                .ok_or_else(|| crate::errors::AppError::SessionNotFound(id.to_string()))
+        }
+
+        fn resize(&self, id: Uuid, _cols: u16, _rows: u16) -> Result<(), crate::errors::AppError> {
+            self.write(id, &[])
+        }
+
+        fn kill(&self, id: Uuid) -> Result<(), crate::errors::AppError> {
+            self.live.lock().unwrap().remove(&id);
+            Ok(())
+        }
+
+        fn has_session(&self, id: Uuid) -> bool {
+            self.live.lock().unwrap().contains(&id)
+        }
+
+        fn get_screen_snapshot(&self, _id: Uuid) -> Option<crate::pty::output::PtyScreenSnapshot> {
+            None
+        }
+
+        fn get_pty_size(&self, id: Uuid) -> Option<(u16, u16)> {
+            self.has_session(id).then_some((30, 120))
+        }
+
+        fn get_screen_rows(&self, _id: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
+            crate::pty::context_scrape::ScreenRowsRead::SessionOver
+        }
+
+        fn register_response_watcher(
+            &self,
+            _session_id: Uuid,
+            _request_id: String,
+            _response_dir: std::path::PathBuf,
+        ) {
+        }
+
+        fn terminate_job_for_session(&self, _id: Uuid) -> bool {
+            false
+        }
+
+        fn kill_all_jobs(&self) -> (usize, usize) {
+            (0, 0)
+        }
+    }
+
+    fn session_test_app(
+        settings: AppSettings,
+        session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+        pty_mgr: Arc<Mutex<crate::pty::manager::PtyManager>>,
+    ) -> tauri::App<tauri::test::MockRuntime> {
+        let shutdown = crate::shutdown::ShutdownSignal::new();
+        let coordinator = crate::session::selection::SelectionCoordinator::new(
+            Arc::clone(&session_mgr),
+            shutdown.token().clone(),
+        );
+        let output_senders = Arc::new(Mutex::new(HashMap::new()));
+        let telegram: crate::telegram::manager::TelegramBridgeState =
+            Arc::new(tokio::sync::Mutex::new(
+                crate::telegram::manager::TelegramBridgeManager::new(output_senders),
+            ));
+        let app = tauri::test::mock_builder()
             .manage(Arc::new(tokio::sync::RwLock::new(settings)))
             .manage(Arc::new(
                 crate::resource_monitor::ResourceMonitorState::new(),
             ))
+            .manage(session_mgr)
+            .manage(pty_mgr)
+            .manage(crate::DetachedSessionsState::default())
+            .manage(telegram)
+            .manage(crate::session::warnings::new_session_warning_state())
+            .manage(coordinator.clone())
+            .manage(shutdown)
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("build session test app")
+            .expect("build session test app");
+        coordinator
+            .start(app.handle().clone())
+            .expect("start coordinator");
+        let bootstrap = coordinator.clone();
+        std::thread::spawn(move || {
+            tauri::async_runtime::block_on(async move {
+                bootstrap
+                    .submit_restore_first()
+                    .await
+                    .expect("open coordinator")
+                    .finish();
+            });
+        })
+        .join()
+        .expect("join coordinator bootstrap");
+        app
+    }
+
+    async fn create_scripted_session(
+        app: &tauri::App<tauri::test::MockRuntime>,
+        session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+        pty_mgr: &Arc<Mutex<crate::pty::manager::PtyManager>>,
+        cwd: &str,
+    ) -> SessionInfo {
+        super::create_session_inner(
+            app.handle(),
+            session_mgr,
+            pty_mgr,
+            "test-shell".to_string(),
+            Vec::new(),
+            cwd.to_string(),
+            Some("restart fixture".to_string()),
+            None,
+            None,
+            true,
+            Vec::new(),
+            true,
+            None,
+            None,
+            CreateSelectionIntent::User,
+        )
+        .await
+        .expect("create scripted session")
+    }
+
+    fn capture_session_lifecycle(
+        app: &tauri::App<tauri::test::MockRuntime>,
+    ) -> std::sync::mpsc::Receiver<(String, String)> {
+        use tauri::Listener;
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        for event_name in [
+            "session_created",
+            "session_destroyed",
+            "session_switched",
+            "session_communication_changed",
+        ] {
+            let sender = sender.clone();
+            app.listen_any(event_name, move |event| {
+                let _ = sender.send((event_name.to_string(), event.payload().to_string()));
+            });
+        }
+        receiver
+    }
+
+    async fn close_test_coordinator(app: &tauri::App<tauri::test::MockRuntime>) {
+        use tauri::Manager;
+
+        app.state::<crate::session::selection::SelectionCoordinator>()
+            .close_and_join()
+            .await;
+    }
+
+    async fn create_manual_cascade_fixture(
+        app: &tauri::App<tauri::test::MockRuntime>,
+        session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+        pty_mgr: &Arc<Mutex<crate::pty::manager::PtyManager>>,
+        root: &std::path::Path,
+    ) -> [Uuid; 4] {
+        let mut ids = Vec::new();
+        for name in ["external", "member-a", "member-b", "coordinator"] {
+            let cwd = root.join(name);
+            std::fs::create_dir_all(&cwd).unwrap();
+            let info =
+                create_scripted_session(app, session_mgr, pty_mgr, &cwd.to_string_lossy()).await;
+            ids.push(Uuid::parse_str(&info.id).unwrap());
+        }
+        ids.try_into().expect("four cascade fixture ids")
+    }
+
+    #[tokio::test]
+    async fn manual_coordinator_cascade_barrier_publishes_only_one_final_selection() {
+        use tauri::Manager;
+
+        let cwd = tempfile::tempdir().unwrap();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let backend = Arc::new(BarrierDestroyBackend::new(started_tx, release_rx));
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend,
+        )));
+        let app = session_test_app(
+            test_settings(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+        let [external, member_a, member_b, coordinator_id] =
+            create_manual_cascade_fixture(&app, &session_mgr, &pty_mgr, cwd.path()).await;
+        app.state::<crate::session::selection::SelectionCoordinator>()
+            .transition(crate::session::selection::SelectionRequest::user_switch(
+                member_a,
+            ))
+            .await
+            .unwrap();
+        let events = capture_session_lifecycle(&app);
+        let close = {
+            let app = app.handle().clone();
+            tokio::spawn(async move {
+                execute_manual_coordinator_destroy(
+                    &app,
+                    coordinator_id,
+                    vec![member_a, member_b],
+                    true,
+                )
+                .await
+            })
+        };
+
+        assert_eq!(started_rx.await.unwrap(), member_a);
+        assert_eq!(
+            session_mgr.read().await.selection_payload().await.id(),
+            Some(member_a),
+            "selection must remain stable while the cascade is barrier-held"
+        );
+        assert!(events.try_recv().is_err());
+        release_tx.send(()).unwrap();
+        let outcome = close
+            .await
+            .expect("join cascade close")
+            .expect("cascade succeeds");
+        assert_eq!(
+            outcome.destroyed_ids,
+            vec![member_a, member_b, coordinator_id]
+        );
+        let selection = session_mgr.read().await.selection_payload().await;
+        assert_eq!(selection.id(), Some(external));
+        assert_eq!(
+            selection.source(),
+            crate::session::selection::SelectionSource::ManualClose
+        );
+        let observed = (0..4)
+            .map(|_| {
+                events
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .unwrap()
+                    .0
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            observed,
+            vec![
+                "session_destroyed",
+                "session_destroyed",
+                "session_destroyed",
+                "session_switched",
+            ]
+        );
+        assert!(events.try_recv().is_err());
+        close_test_coordinator(&app).await;
+    }
+
+    #[tokio::test]
+    async fn manual_coordinator_cascade_failed_selected_member_stays_selected_without_fallback() {
+        use tauri::Manager;
+
+        let cwd = tempfile::tempdir().unwrap();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let backend = Arc::new(BarrierDestroyBackend::new(started_tx, release_rx));
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(
+            test_settings(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+        let [_external, member_a, member_b, coordinator_id] =
+            create_manual_cascade_fixture(&app, &session_mgr, &pty_mgr, cwd.path()).await;
+        app.state::<crate::session::selection::SelectionCoordinator>()
+            .transition(crate::session::selection::SelectionRequest::user_switch(
+                member_a,
+            ))
+            .await
+            .unwrap();
+        backend.fail_kill_for(member_a);
+        let revision = session_mgr
+            .read()
+            .await
+            .selection_payload()
+            .await
+            .revision();
+        let events = capture_session_lifecycle(&app);
+        let close = {
+            let app = app.handle().clone();
+            tokio::spawn(async move {
+                execute_manual_coordinator_destroy(
+                    &app,
+                    coordinator_id,
+                    vec![member_a, member_b],
+                    true,
+                )
+                .await
+            })
+        };
+        assert_eq!(started_rx.await.unwrap(), member_a);
+        release_tx.send(()).unwrap();
+        let outcome = close
+            .await
+            .expect("join failed-member cascade")
+            .expect("coordinator still closes");
+
+        assert!(outcome
+            .failed
+            .iter()
+            .any(|(session_id, error)| *session_id == member_a
+                && error.contains("synthetic live teardown failure")));
+        assert_eq!(outcome.destroyed_ids, vec![member_b, coordinator_id]);
+        assert!(session_mgr
+            .read()
+            .await
+            .get_session(member_a)
+            .await
+            .is_some());
+        let selection = session_mgr.read().await.selection_payload().await;
+        assert_eq!(selection.id(), Some(member_a));
+        assert_eq!(selection.revision(), revision);
+        let observed = (0..2)
+            .map(|_| {
+                events
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .unwrap()
+                    .0
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(observed, vec!["session_destroyed", "session_destroyed"]);
+        assert!(events.try_recv().is_err());
+        close_test_coordinator(&app).await;
+    }
+
+    #[tokio::test]
+    async fn restart_success_publishes_created_destroyed_selection_in_order() {
+        use tauri::Manager;
+
+        let cwd = tempfile::tempdir().unwrap();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(ScriptedSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(
+            test_settings(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+        let old =
+            create_scripted_session(&app, &session_mgr, &pty_mgr, &cwd.path().to_string_lossy())
+                .await;
+        let old_id = Uuid::parse_str(&old.id).unwrap();
+        let carried = SessionCommunication {
+            kind: SessionCommunicationKind::RaiseHand,
+            visible: true,
+            updated_at: "2026-07-16T00:00:00Z".to_string(),
+        };
+        session_mgr
+            .read()
+            .await
+            .set_communication_for_test(old_id, carried.clone())
+            .await;
+        let events = capture_session_lifecycle(&app);
+        let settings = app.state::<crate::config::settings::SettingsState>();
+
+        let replacement = super::restart_session_inner_with_activation(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            settings.inner(),
+            old_id,
+            None,
+            None,
+            Some(false),
+            true,
+        )
+        .await
+        .expect("restart succeeds");
+        let replacement_id = Uuid::parse_str(&replacement.id).unwrap();
+        assert_ne!(replacement_id, old_id);
+        assert!(!backend.has_session(old_id));
+        assert!(backend.has_session(replacement_id));
+        let rows = session_mgr.read().await.list_sessions().await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, replacement.id);
+        assert_eq!(replacement.communication, Some(carried));
+        let selection = session_mgr.read().await.selection_payload().await;
+        assert_eq!(selection.id(), Some(replacement_id));
+        assert_eq!(
+            selection.source(),
+            crate::session::selection::SelectionSource::Restart
+        );
+
+        let observed = (0..3)
+            .map(|_| {
+                events
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            observed
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["session_created", "session_destroyed", "session_switched"]
+        );
+        assert!(events.try_recv().is_err());
+        let created_payload: serde_json::Value = serde_json::from_str(&observed[0].1).unwrap();
+        assert_eq!(created_payload["communication"]["kind"], "raiseHand");
+        let selection_payload: serde_json::Value = serde_json::from_str(&observed[2].1).unwrap();
+        assert_eq!(selection_payload["id"], replacement.id);
+        assert_eq!(selection_payload["source"], "restart");
+        assert_eq!(selection_payload["userInitiated"], true);
+        close_test_coordinator(&app).await;
+    }
+
+    #[tokio::test]
+    async fn restart_after_route_loss_cleans_old_external_state_once_before_replacement() {
+        use tauri::Manager;
+
+        let cwd = tempfile::tempdir().unwrap();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(ScriptedSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(
+            test_settings(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+        let old =
+            create_scripted_session(&app, &session_mgr, &pty_mgr, &cwd.path().to_string_lossy())
+                .await;
+        let old_id = Uuid::parse_str(&old.id).unwrap();
+        session_mgr
+            .read()
+            .await
+            .set_telegram_bot_id(old_id, Some("old-bot".to_string()))
+            .await;
+        let telegram = app.state::<crate::telegram::manager::TelegramBridgeState>();
+        telegram.lock().await.insert_test_bridge(old_id, "old-bot");
+        app.state::<crate::DetachedSessionsState>()
+            .lock()
+            .unwrap()
+            .insert(old_id);
+
+        backend.lose_route(old_id);
+        pty_mgr.lock().unwrap().remove_route_if_kind(
+            old_id,
+            crate::pty::backend::SessionBackendKind::LocalProcess,
+        );
+        let (spawn_started_tx, spawn_started_rx) = tokio::sync::oneshot::channel();
+        let (spawn_release_tx, spawn_release_rx) = tokio::sync::oneshot::channel();
+        backend.gate_spawn(2, spawn_started_tx, spawn_release_rx);
+        let events = capture_session_lifecycle(&app);
+        let restart = {
+            let app_handle = app.handle().clone();
+            let session_mgr = Arc::clone(&session_mgr);
+            let pty_mgr = Arc::clone(&pty_mgr);
+            let settings = app
+                .state::<crate::config::settings::SettingsState>()
+                .inner()
+                .clone();
+            tokio::spawn(async move {
+                super::restart_session_inner_with_activation(
+                    &app_handle,
+                    &session_mgr,
+                    &pty_mgr,
+                    &settings,
+                    old_id,
+                    None,
+                    None,
+                    Some(false),
+                    true,
+                )
+                .await
+            })
+        };
+
+        let replacement_id = spawn_started_rx.await.expect("replacement spawn starts");
+        assert!(!telegram.lock().await.has_bridge(old_id));
+        assert_eq!(telegram.lock().await.test_detach_count(old_id), 1);
+        assert!(!app
+            .state::<crate::DetachedSessionsState>()
+            .lock()
+            .unwrap()
+            .contains(&old_id));
+        let mut route_loss = {
+            let sender = app
+                .state::<crate::session::selection::SelectionCoordinator>()
+                .container_lifecycle_sender();
+            tokio::spawn(async move { sender.route_lost(old_id, 91).await })
+        };
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut route_loss)
+                .await
+                .is_err(),
+            "late route-loss reconciliation must serialize behind restart"
+        );
+        spawn_release_tx.send(()).unwrap();
+        let replacement = restart
+            .await
+            .expect("join restart")
+            .expect("restart succeeds after old route loss");
+        assert_eq!(replacement.id, replacement_id.to_string());
+        assert_eq!(
+            route_loss
+                .await
+                .expect("join route-loss callback")
+                .expect("late route-loss callback"),
+            crate::session::selection::CriticalAdmissionOutcome::Completed(())
+        );
+        assert_eq!(telegram.lock().await.test_detach_count(old_id), 1);
+        assert!(session_mgr.read().await.get_session(old_id).await.is_none());
+        assert_eq!(
+            session_mgr.read().await.selection_payload().await.id(),
+            Some(replacement_id)
+        );
+        let observed = (0..3)
+            .map(|_| {
+                events
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .unwrap()
+                    .0
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            observed,
+            vec!["session_created", "session_destroyed", "session_switched"]
+        );
+        assert!(events.try_recv().is_err());
+        close_test_coordinator(&app).await;
+    }
+
+    #[tokio::test]
+    async fn restart_pre_teardown_failure_preserves_old_row_route_selection_and_events() {
+        use tauri::Manager;
+
+        let cwd = tempfile::tempdir().unwrap();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(ScriptedSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(
+            test_settings(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+        let old =
+            create_scripted_session(&app, &session_mgr, &pty_mgr, &cwd.path().to_string_lossy())
+                .await;
+        let old_id = Uuid::parse_str(&old.id).unwrap();
+        let events = capture_session_lifecycle(&app);
+        let settings = app.state::<crate::config::settings::SettingsState>();
+        settings.write().await.archived_project_paths =
+            vec![cwd.path().to_string_lossy().to_string()];
+
+        let error = super::restart_session_inner_with_activation(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            settings.inner(),
+            old_id,
+            None,
+            None,
+            Some(true),
+            true,
+        )
+        .await
+        .expect_err("restart teardown must fail");
+        assert!(
+            error.contains("Cannot start a session in archived project"),
+            "{error}"
+        );
+        assert!(backend.has_session(old_id));
+        assert_eq!(backend.spawn_count.load(Ordering::SeqCst), 1);
+        assert_eq!(session_mgr.read().await.list_sessions().await.len(), 1);
+        assert_eq!(
+            session_mgr.read().await.selection_payload().await.id(),
+            Some(old_id)
+        );
+        assert!(events.try_recv().is_err());
+        close_test_coordinator(&app).await;
+    }
+
+    #[tokio::test]
+    async fn restart_post_teardown_spawn_failure_destroys_old_and_publishes_one_null() {
+        use tauri::Manager;
+
+        let cwd = tempfile::tempdir().unwrap();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(ScriptedSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(
+            test_settings(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+        let old =
+            create_scripted_session(&app, &session_mgr, &pty_mgr, &cwd.path().to_string_lossy())
+                .await;
+        let old_id = Uuid::parse_str(&old.id).unwrap();
+        let events = capture_session_lifecycle(&app);
+        backend.fail_spawn(2);
+        let settings = app.state::<crate::config::settings::SettingsState>();
+
+        let error = super::restart_session_inner_with_activation(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            settings.inner(),
+            old_id,
+            None,
+            None,
+            Some(true),
+            true,
+        )
+        .await
+        .expect_err("replacement spawn must fail");
+        assert!(
+            error.contains("synthetic scripted spawn failure"),
+            "{error}"
+        );
+        assert!(session_mgr.read().await.list_sessions().await.is_empty());
+        let selection = session_mgr.read().await.selection_payload().await;
+        assert_eq!(selection.id(), None);
+        assert_eq!(
+            selection.source(),
+            crate::session::selection::SelectionSource::Restart
+        );
+        assert!(!backend.has_session(old_id));
+
+        let destroyed = events
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("old destroy event");
+        let switched = events
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("restart null event");
+        assert_eq!(destroyed.0, "session_destroyed");
+        assert_eq!(switched.0, "session_switched");
+        assert!(events.try_recv().is_err());
+        let selection_payload: serde_json::Value = serde_json::from_str(&switched.1).unwrap();
+        assert!(selection_payload["id"].is_null());
+        assert_eq!(selection_payload["source"], "restart");
+        close_test_coordinator(&app).await;
+    }
+
+    #[tokio::test]
+    async fn dormant_restart_failure_retains_exact_exit_and_emits_no_lifecycle_event() {
+        use tauri::Manager;
+
+        let cwd = tempfile::tempdir().unwrap();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(ScriptedSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(
+            test_settings(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+        let old =
+            create_scripted_session(&app, &session_mgr, &pty_mgr, &cwd.path().to_string_lossy())
+                .await;
+        let old_id = Uuid::parse_str(&old.id).unwrap();
+        backend.kill(old_id).unwrap();
+        app.state::<crate::session::selection::SelectionCoordinator>()
+            .container_lifecycle_sender()
+            .route_lost(old_id, 23)
+            .await
+            .expect("reconcile dormant route");
+        let events = capture_session_lifecycle(&app);
+        backend.fail_spawn(2);
+        let settings = app.state::<crate::config::settings::SettingsState>();
+
+        super::restart_session_inner_with_activation(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            settings.inner(),
+            old_id,
+            None,
+            None,
+            Some(false),
+            true,
+        )
+        .await
+        .expect_err("dormant replacement spawn must fail");
+        let retained = session_mgr
+            .read()
+            .await
+            .get_session(old_id)
+            .await
+            .expect("dormant old row retained");
+        assert_eq!(retained.status, SessionStatus::Exited(23));
+        let selection = session_mgr.read().await.selection_payload().await;
+        assert_eq!(selection.id(), Some(old_id));
+        assert_eq!(selection.status(), Some(&SessionStatus::Exited(23)));
+        assert!(events.try_recv().is_err());
+        close_test_coordinator(&app).await;
     }
 
     #[tokio::test]
     async fn create_session_inner_rolls_back_pre_created_session_on_spawn_error() {
         let temp = tempfile::tempdir().unwrap();
-        let app = session_test_app(test_settings());
-        let app_handle = app.handle().clone();
         let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
         let backend = Arc::new(FailingSpawnBackend::default());
         let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
             backend.clone(),
         )));
+        let app = session_test_app(
+            test_settings(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+        let app_handle = app.handle().clone();
 
         let err = super::create_session_inner(
             &app_handle,
@@ -4102,12 +5739,20 @@ mod tests {
             None,
             // #973 - headless caller: no terminal to measure, keep 120x30.
             None,
+            CreateSelectionIntent::User,
         )
         .await
         .expect_err("spawn should fail");
 
         assert!(err.contains("synthetic spawn failure"), "{err}");
         assert!(session_mgr.read().await.list_sessions().await.is_empty());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while backend.killed().len() != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("reserved rollback kills the failed spawn exactly once");
         assert_eq!(backend.killed(), backend.spawned());
         assert_eq!(backend.killed().len(), 1);
     }
@@ -4129,13 +5774,17 @@ mod tests {
     #[tokio::test]
     async fn create_session_opens_the_pty_at_the_size_the_view_supplied() {
         let temp = tempfile::tempdir().unwrap();
-        let app = session_test_app(test_settings());
-        let app_handle = app.handle().clone();
         let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
         let backend = Arc::new(FailingSpawnBackend::default());
         let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
             backend.clone(),
         )));
+        let app = session_test_app(
+            test_settings(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+        let app_handle = app.handle().clone();
 
         let _ = super::create_session_inner(
             &app_handle,
@@ -4152,6 +5801,7 @@ mod tests {
             true,
             None,
             Some(crate::pty::backend::PtyViewport::from_fit(74, 23)),
+            CreateSelectionIntent::User,
         )
         .await;
 
@@ -4171,13 +5821,17 @@ mod tests {
     #[tokio::test]
     async fn create_session_without_a_view_keeps_the_historical_120x30() {
         let temp = tempfile::tempdir().unwrap();
-        let app = session_test_app(test_settings());
-        let app_handle = app.handle().clone();
         let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
         let backend = Arc::new(FailingSpawnBackend::default());
         let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
             backend.clone(),
         )));
+        let app = session_test_app(
+            test_settings(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+        let app_handle = app.handle().clone();
 
         let _ = super::create_session_inner(
             &app_handle,
@@ -4194,6 +5848,7 @@ mod tests {
             true,
             None,
             None, // no view
+            CreateSelectionIntent::User,
         )
         .await;
 
@@ -4213,13 +5868,17 @@ mod tests {
     #[tokio::test]
     async fn a_degenerate_fitted_size_falls_back_instead_of_opening_a_zero_column_pty() {
         let temp = tempfile::tempdir().unwrap();
-        let app = session_test_app(test_settings());
-        let app_handle = app.handle().clone();
         let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
         let backend = Arc::new(FailingSpawnBackend::default());
         let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
             backend.clone(),
         )));
+        let app = session_test_app(
+            test_settings(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+        let app_handle = app.handle().clone();
 
         let _ = super::create_session_inner(
             &app_handle,
@@ -4236,6 +5895,7 @@ mod tests {
             true,
             None,
             Some(crate::pty::backend::PtyViewport::from_fit(0, 0)),
+            CreateSelectionIntent::User,
         )
         .await;
 
@@ -4257,8 +5917,9 @@ mod tests {
             .split("#[cfg(test)]\nmod tests")
             .next()
             .expect("production session source");
-        let gate_call = "crate::config::archive_gate::enforce_unarchived_for_spawn(app, &cwd, &session_label).await";
-        let count = production.matches(gate_call).count();
+        let normalized = production.split_whitespace().collect::<String>();
+        let gate_call = "crate::config::archive_gate::enforce_unarchived_for_spawn(app,&cwd,&session_label).await";
+        let count = normalized.matches(gate_call).count();
 
         assert_eq!(
             count, 2,
@@ -4277,20 +5938,23 @@ mod tests {
             .split("#[cfg(test)]\nmod tests")
             .next()
             .expect("production session source");
-        let mark = production
-            .find("let spawn_mark = {")
+        let normalized = production.split_whitespace().collect::<String>();
+        let mark = normalized
+            .find("letspawn_mark={")
             .expect("spawn mark before archive gate");
-        let first_gate = production
-            .find("crate::config::archive_gate::enforce_unarchived_for_spawn(app, &cwd, &session_label).await?;")
+        let first_gate = normalized
+            .find("crate::config::archive_gate::enforce_unarchived_for_spawn(app,&cwd,&session_label).await?;")
             .expect("first archive gate");
-        let spawn = production
-            .find("let spawn_result = PtyManager::spawn(pty_mgr, session.backend_kind, spawn_spec).await;")
+        let spawn = normalized
+            .find(
+                "letspawn_result=PtyManager::spawn(pty_mgr,session.backend_kind,spawn_spec).await;",
+            )
             .expect("spawn call");
-        let drop_mark = production
+        let drop_mark = normalized
             .find("drop(spawn_mark);")
             .expect("spawn mark drop");
-        let spawn_error = production
-            .find("if let Err(e) = spawn_result {")
+        let spawn_error = normalized
+            .find("ifletErr(e)=spawn_result{")
             .expect("spawn error handling");
 
         assert!(mark < first_gate, "spawn mark must cover archive gate A");
@@ -4322,8 +5986,6 @@ mod tests {
         let cwd = temp.path().to_string_lossy().to_string();
         let expected_cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
 
-        let app = session_test_app(test_settings());
-        let app_handle = app.handle().clone();
         let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = tokio::sync::oneshot::channel();
@@ -4331,6 +5993,12 @@ mod tests {
         let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
             backend.clone(),
         )));
+        let app = session_test_app(
+            test_settings(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+        let app_handle = app.handle().clone();
 
         let task = {
             let app_handle = app_handle.clone();
@@ -4353,6 +6021,7 @@ mod tests {
                     true,
                     None,
                     None, // #973 - no view in this test: 120x30
+                    CreateSelectionIntent::User,
                 )
                 .await
             })
@@ -4400,8 +6069,6 @@ mod tests {
         let cwd = temp.path().to_string_lossy().to_string();
         let expected_cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
 
-        let app = session_test_app(test_settings());
-        let app_handle = app.handle().clone();
         let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = tokio::sync::oneshot::channel();
@@ -4409,6 +6076,12 @@ mod tests {
         let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
             backend.clone(),
         )));
+        let app = session_test_app(
+            test_settings(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+        let app_handle = app.handle().clone();
 
         let task = {
             let app_handle = app_handle.clone();
@@ -4431,6 +6104,7 @@ mod tests {
                     true,
                     None,
                     None, // #973 - no view in this test: 120x30
+                    CreateSelectionIntent::User,
                 )
                 .await
             })
@@ -4475,13 +6149,13 @@ mod tests {
         let probe = source
             .find("crate::config::archive_gate::probe_spawn_refusal(app, &cwd).await?;")
             .expect("restart probe call");
-        let destroy = source
-            .find("// 3. Destroy the old session")
-            .expect("destroy step marker");
+        let replacement_spawn = source
+            .find("// 3. Spawn and validate the replacement")
+            .expect("replacement spawn marker");
 
         assert!(
-            probe < destroy,
-            "restart must probe archive refusal before destroying the dormant row"
+            probe < replacement_spawn,
+            "restart must probe archive refusal before spawning or destroying a session"
         );
     }
 

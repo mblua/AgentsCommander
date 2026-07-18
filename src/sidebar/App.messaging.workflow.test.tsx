@@ -13,17 +13,18 @@ import {
   session,
   waitFor,
 } from "../shared/testing/ui-harness";
+import { liveSelection, SESSION_A } from "../shared/testing/session-selection";
 
 const projectPath = "C:\\Project";
 const agentPath = `${projectPath}\\.ac\\_agent_General`;
 const generalSession = session({
-  id: "session-1",
+  id: SESSION_A,
   name: "General",
   workingDirectory: agentPath,
   status: "active",
 });
 const bridgePayload = bridge({
-  sessionId: "session-1",
+  sessionId: SESSION_A,
   botId: "bot-1",
   botLabel: "Ops Bot",
   color: "#4ade80",
@@ -69,7 +70,7 @@ function setupMessagingTransport(fake: FakeTransport): void {
   fake.resolve("get_project_groups", { groups: [], showAll: true, showUngrouped: true });
   fake.resolve("search_repos", []);
   fake.resolve("list_sessions", [generalSession]);
-  fake.resolve("get_active_session", "session-1");
+  fake.resolve("get_active_session", liveSelection(SESSION_A));
   fake.resolve("list_detached_sessions", []);
   fake.resolve("telegram_list_bridges", []);
   fake.resolve("telegram_attach", bridgePayload);
@@ -106,7 +107,7 @@ describe("SidebarApp Telegram messaging workflow", () => {
 
       await waitFor(() =>
         expect(fake.lastCall("telegram_attach")?.args).toEqual({
-          sessionId: "session-1",
+          sessionId: SESSION_A,
           botId: "bot-1",
         })
       );
@@ -143,11 +144,11 @@ describe("SidebarApp Telegram messaging workflow", () => {
 
       await waitFor(() =>
         expect(fake.lastCall("telegram_detach")?.args).toEqual({
-          sessionId: "session-1",
+          sessionId: SESSION_A,
         })
       );
 
-      fake.emitFromBackend("telegram_bridge_detached", { sessionId: "session-1" });
+      fake.emitFromBackend("telegram_bridge_detached", { sessionId: SESSION_A });
 
       await waitFor(() => {
         expect(rendered.root.querySelector(".session-item-telegram.active")).toBeNull();

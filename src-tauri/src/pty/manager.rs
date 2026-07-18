@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, TryLockError};
 
 use uuid::Uuid;
 
@@ -19,6 +19,12 @@ use crate::telegram::manager::OutputSenderMap;
 pub(crate) struct PendingSpawn {
     pub cwd: String,
     pub label: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PtyRouteRemovalError {
+    Busy,
+    LockPoisoned,
 }
 
 #[derive(Default)]
@@ -52,7 +58,7 @@ impl PtyManager {
         idle_detector: Arc<IdleDetector>,
         git_watcher: Arc<GitWatcher>,
         ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
-        session_mgr: Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>,
+        lifecycle_sender: Option<crate::session::selection::ContainerLifecycleSender>,
     ) -> Self {
         let local_backend = Arc::new(LocalProcessBackend::new(
             output_senders.clone(),
@@ -64,7 +70,7 @@ impl PtyManager {
             output_senders,
             idle_detector,
             ws_broadcaster,
-            session_mgr,
+            lifecycle_sender,
             Arc::new(DockerRuntime::new()),
             ContainerApiTokenManager::at_config_dir(),
         ));
@@ -79,9 +85,6 @@ impl PtyManager {
     pub(crate) fn new_for_test(local_backend: Arc<dyn PtyBackend>) -> Self {
         let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
         let idle_detector = IdleDetector::new(|_| {}, |_| {});
-        let session_mgr = Arc::new(tokio::sync::RwLock::new(
-            crate::session::manager::SessionManager::new(),
-        ));
         Self {
             registry: Arc::new(Mutex::new(SpawnRegistry::default())),
             local_backend,
@@ -89,8 +92,20 @@ impl PtyManager {
                 output_senders,
                 idle_detector,
                 None,
-                session_mgr,
+                None,
             )),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test_with_container_backend(
+        local_backend: Arc<dyn PtyBackend>,
+        container_backend: Arc<ContainerTransportBackend>,
+    ) -> Self {
+        Self {
+            registry: Arc::new(Mutex::new(SpawnRegistry::default())),
+            local_backend,
+            container_backend,
         }
     }
 
@@ -113,9 +128,12 @@ impl PtyManager {
         self.container_backend.cleanup_labeled_orphans_on_startup();
     }
 
-    pub fn stop_all_started_containers_blocking(&self, budget: std::time::Duration) {
+    pub fn stop_all_started_containers_blocking(
+        &self,
+        budget: std::time::Duration,
+    ) -> super::container_backend::ContainerShutdownReport {
         self.container_backend
-            .stop_all_started_containers_blocking(budget);
+            .stop_all_started_containers_blocking(budget)
     }
 
     pub fn record_route(&self, id: Uuid, kind: SessionBackendKind) {
@@ -131,6 +149,37 @@ impl PtyManager {
         if registry.routes.get(&id).copied() == Some(kind) {
             registry.routes.remove(&id);
         }
+    }
+
+    pub(crate) fn try_remove_route_if_kind(
+        &self,
+        id: Uuid,
+        kind: SessionBackendKind,
+    ) -> Result<(), PtyRouteRemovalError> {
+        let mut registry = match self.registry.try_lock() {
+            Ok(registry) => registry,
+            Err(TryLockError::Poisoned(_)) => return Err(PtyRouteRemovalError::LockPoisoned),
+            Err(TryLockError::WouldBlock) => return Err(PtyRouteRemovalError::Busy),
+        };
+        if registry.routes.get(&id).copied() == Some(kind) {
+            registry.routes.remove(&id);
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn poison_route_registry_for_test(&self) {
+        let registry = Arc::clone(&self.registry);
+        let result = std::panic::catch_unwind(move || {
+            let _registry_guard = registry.lock().unwrap();
+            panic!("poison the PTY route registry for deterministic test coverage");
+        });
+        assert!(result.is_err(), "route-registry poison fixture must panic");
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_route_registry_poison_for_test(&self) {
+        self.registry.clear_poison();
     }
 
     fn kind_for_session(&self, id: Uuid) -> Result<SessionBackendKind, AppError> {
@@ -234,8 +283,18 @@ impl PtyManager {
             .get(&id)
             .copied()
             .unwrap_or(SessionBackendKind::LocalProcess);
-        let result = self.backend_for_kind(kind).kill(id);
-        self.remove_route_if_kind(id, kind);
+        self.kill_for_kind(id, kind)
+    }
+
+    /// Clean a pending create through its manager-record backend kind even when
+    /// route registration never completed. Cancellation and shutdown rollback
+    /// use this for both local and container-backed sessions.
+    pub(crate) fn kill_for_kind(&self, id: Uuid, kind: SessionBackendKind) -> Result<(), AppError> {
+        let backend = self.backend_for_kind(kind);
+        let result = backend.kill(id);
+        if result.is_ok() || !backend.has_session(id) {
+            self.remove_route_if_kind(id, kind);
+        }
         result
     }
 

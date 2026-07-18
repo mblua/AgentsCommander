@@ -51,7 +51,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use agentscommander_lib::commands::pty::get_screen_snapshot;
-use agentscommander_lib::commands::session::{create_session_inner, destroy_session_inner};
+use agentscommander_lib::commands::session::{
+    create_session_inner, destroy_session_inner, CreateSelectionIntent,
+};
 use agentscommander_lib::config::settings::{AppSettings, SettingsState};
 use agentscommander_lib::pty::git_watcher::GitWatcher;
 use agentscommander_lib::pty::idle_detector::IdleDetector;
@@ -59,6 +61,7 @@ use agentscommander_lib::pty::inject::inject_text_into_session;
 use agentscommander_lib::pty::manager::PtyManager;
 use agentscommander_lib::resource_monitor::ResourceMonitorState;
 use agentscommander_lib::session::manager::SessionManager;
+use agentscommander_lib::session::selection::SelectionCoordinator;
 use agentscommander_lib::shutdown::ShutdownSignal;
 use agentscommander_lib::telegram::manager::{
     OutputSenderMap, TelegramBridgeManager, TelegramBridgeState,
@@ -209,7 +212,7 @@ fn make_ctx(repo_root: &Path) -> HarnessCtx {
         Arc::clone(&idle),
         Arc::clone(&git_watcher),
         None,
-        Arc::clone(&session_mgr),
+        None,
     )));
 
     let detached: DetachedSessionsState = Arc::new(Mutex::new(HashSet::new()));
@@ -219,6 +222,8 @@ fn make_ctx(repo_root: &Path) -> HarnessCtx {
     ));
     let config_seed_lock: ConfigSeedLockState = Arc::new(tokio::sync::Mutex::new(()));
     let shutdown = ShutdownSignal::new();
+    let selection_coordinator =
+        SelectionCoordinator::new(Arc::clone(&session_mgr), shutdown.token().clone());
 
     let app = tauri::Builder::default()
         .any_thread()
@@ -228,6 +233,7 @@ fn make_ctx(repo_root: &Path) -> HarnessCtx {
         ))
         .manage(settings)
         .manage(Arc::clone(&session_mgr))
+        .manage(selection_coordinator.clone())
         .manage(tg_mgr)
         .manage(detached)
         .manage(voice)
@@ -244,6 +250,22 @@ fn make_ctx(repo_root: &Path) -> HarnessCtx {
         .manage(Arc::clone(&idle))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build harness app");
+
+    selection_coordinator
+        .start(app.handle().clone())
+        .expect("start selection coordinator");
+    let bootstrap = selection_coordinator.clone();
+    std::thread::spawn(move || {
+        tauri::async_runtime::block_on(async move {
+            bootstrap
+                .submit_restore_first()
+                .await
+                .expect("open selection coordinator")
+                .finish();
+        });
+    })
+    .join()
+    .expect("join selection bootstrap");
 
     idle.start(shutdown.clone());
 
@@ -366,7 +388,7 @@ fn wake_body(file: &Path, trial: usize, attempt: usize) -> String {
 
 #[derive(Default, Clone, Copy)]
 struct SignalTally {
-    fp: usize, // signal said consumed, GT said not
+    fp: usize,  // signal said consumed, GT said not
     fn_: usize, // signal said not-consumed, GT said consumed
     total: usize,
 }
@@ -394,7 +416,11 @@ async fn settle_like_b(ctx: &HarnessCtx, id: Uuid, max_wait: Duration) {
     // alive_age. Kept in sync with mailbox.rs STARTUP_SETTLE_THRESHOLD (pub(crate),
     // unreachable from this integration-test crate, so hardcoded like FRESH_IDLE_GUARD).
     const STARTUP_THRESHOLD: Duration = Duration::from_secs(20);
-    if ctx.idle.alive_age(id).is_some_and(|a| a < STARTUP_THRESHOLD) {
+    if ctx
+        .idle
+        .alive_age(id)
+        .is_some_and(|a| a < STARTUP_THRESHOLD)
+    {
         // Starting: route to the sustained-idle settle, mirroring prod's #611 path
         // (cold-spawn params: 90s cap, 2s hold). FIDELITY CAVEAT (grinch F2): this
         // wait_for_settle proxy is STRICTER than prod's idle-only settle_until_ready
@@ -469,6 +495,7 @@ async fn run_startup_probe(cfg: &HarnessConfig, ctx: &HarnessCtx) {
             true,
             None,
             None,
+            CreateSelectionIntent::User,
         )
         .await
         {
@@ -499,7 +526,10 @@ async fn run_startup_probe(cfg: &HarnessConfig, ctx: &HarnessCtx) {
         let _ = destroy_session_inner(ctx.app.handle(), id).await;
     }
 
-    println!("\n--- STARTUP-PROBE RESULT (agent='{}') ---", cfg.agent_label);
+    println!(
+        "\n--- STARTUP-PROBE RESULT (agent='{}') ---",
+        cfg.agent_label
+    );
     if first_ready.is_empty() {
         println!("no samples (no session reached sustained paste-ready)");
     } else {
@@ -576,6 +606,7 @@ async fn run_live_reuse(cfg: &HarnessConfig, ctx: &HarnessCtx) {
             true,
             None,
             None,
+            CreateSelectionIntent::User,
         )
         .await
         {
@@ -595,8 +626,8 @@ async fn run_live_reuse(cfg: &HarnessConfig, ctx: &HarnessCtx) {
         let warm_count = if cfg.live_warmup == "on" {
             let boot = Instant::now() + Duration::from_secs(45);
             wait_for_settle(ctx, id, Duration::from_millis(3500), boot).await;
-            let _ =
-                inject_text_into_session(ctx.app.handle(), id, &wake_body(&gt_file, trial, 0)).await;
+            let _ = inject_text_into_session(ctx.app.handle(), id, &wake_body(&gt_file, trial, 0))
+                .await;
             let warm_deadline = Instant::now() + cfg.gt_timeout;
             while gt_marker_count(&gt_file) < 1 && Instant::now() < warm_deadline {
                 tokio::time::sleep(Duration::from_millis(500)).await;
@@ -636,7 +667,10 @@ async fn run_live_reuse(cfg: &HarnessConfig, ctx: &HarnessCtx) {
         if !consumed {
             dropped += 1;
         }
-        println!("trial {trial}: live-reuse wake#2 (settle={}) consumed={consumed}", cfg.live_settle);
+        println!(
+            "trial {trial}: live-reuse wake#2 (settle={}) consumed={consumed}",
+            cfg.live_settle
+        );
         let _ = destroy_session_inner(ctx.app.handle(), id).await;
     }
 
@@ -716,6 +750,7 @@ async fn measure_wake_consumption_signals() {
             true,
             None,
             None,
+            CreateSelectionIntent::User,
         )
         .await
         {
@@ -772,7 +807,11 @@ async fn measure_wake_consumption_signals() {
             if idle_at_inject && !watcher_idle(&ctx.idle, id) {
                 s1 = true; // bare flip: idle -> busy after inject
             }
-            if idle_at_inject && ctx.idle.has_printable_activity_since(id, submit_completed_at) {
+            if idle_at_inject
+                && ctx
+                    .idle
+                    .has_printable_activity_since(id, submit_completed_at)
+            {
                 s2 = true;
             }
             if idle_at_inject {
@@ -864,7 +903,11 @@ async fn measure_wake_consumption_signals() {
     );
     println!(
         "redeliver mode '{}': recovered {}/{} drops, duplicated {}/{} drops",
-        cfg.redeliver_mode, redeliver_recovered, redeliver_measured, redeliver_duplicated, redeliver_measured
+        cfg.redeliver_mode,
+        redeliver_recovered,
+        redeliver_measured,
+        redeliver_duplicated,
+        redeliver_measured
     );
     println!("=== end ===\n");
 }

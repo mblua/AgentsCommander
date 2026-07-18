@@ -1,4 +1,4 @@
-import { Component, createMemo, createSignal, Show, For, onCleanup } from "solid-js";
+import { Component, createEffect, createMemo, createSignal, Show, For, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import iconUrl from "../../../src-tauri/icons/64x64.png";
 import { isTauri } from "../../shared/platform";
@@ -46,6 +46,11 @@ const RootAgentBanner: Component = () => {
   const hasLivePty = createMemo(() => {
     const r = rootSession();
     return !!r && typeof r.status === "string";
+  });
+
+  createEffect(() => {
+    const root = rootSession();
+    if (root && typeof root.status !== "string") voiceRecorder.revokeSession(root.id);
   });
 
   const dotClass = createMemo(() => {
@@ -240,6 +245,7 @@ const RootAgentBanner: Component = () => {
 
   const handleMicClick = (e: MouseEvent) => {
     e.stopPropagation();
+    if (!hasLivePty()) return;
     if (!settingsStore.voiceEnabled) {
       emitOpenSettings("integrations").catch(console.error);
       return;
@@ -272,6 +278,7 @@ const RootAgentBanner: Component = () => {
 
   const handleDetachToggle = async (e: MouseEvent) => {
     e.stopPropagation();
+    if (!hasLivePty()) return;
     const r = rootSession();
     if (!r) return;
     try {
@@ -288,6 +295,7 @@ const RootAgentBanner: Component = () => {
   const handleContextDetachToggle = async () => {
     setShowContextMenu(false);
     cleanupContextMenu();
+    if (!hasLivePty()) return;
     const r = rootSession();
     if (!r) return;
     try {
@@ -303,6 +311,7 @@ const RootAgentBanner: Component = () => {
 
   const handleTelegramClick = async (e: MouseEvent) => {
     e.stopPropagation();
+    if (!hasLivePty()) return;
     const r = rootSession();
     if (!r) return;
     const b = bridge();
@@ -322,19 +331,25 @@ const RootAgentBanner: Component = () => {
 
   const handleBotSelect = async (botId: string) => {
     setShowBotMenu(false);
+    if (!hasLivePty()) return;
     const r = rootSession();
     if (!r) return;
     await TelegramAPI.attach(r.id, botId);
   };
 
-  const handleClose = (e: MouseEvent) => {
+  const handleClose = async (e: MouseEvent) => {
     e.stopPropagation();
     const r = rootSession();
-    if (!r) return;
-    if (voiceRecorder.recordingSessionId() === r.id) {
-      voiceRecorder.cancel();
+    if (!r || busy()) return;
+    setBusy(true);
+    voiceRecorder.revokeSession(r.id);
+    try {
+      await SessionAPI.destroy(r.id);
+    } catch (error) {
+      console.error("[RootAgentBanner] Failed to close Root Agent:", error);
+    } finally {
+      setBusy(false);
     }
-    SessionAPI.destroy(r.id);
   };
 
   return (
@@ -537,16 +552,16 @@ const RootAgentBanner: Component = () => {
                 </For>
               </div>
             </Show>
-            <button
-              class="session-item-close"
-              onClick={handleClose}
-              title="Close session"
-              data-ac-testid="rootAgent.destroy"
-              data-ac-role="button"
-            >
-              &#x2715;
-            </button>
           </Show>
+          <button
+            class="session-item-close"
+            onClick={(event) => void handleClose(event)}
+            title="Close session"
+            data-ac-testid="rootAgent.destroy"
+            data-ac-role="button"
+          >
+            &#x2715;
+          </button>
         </Show>
       </div>
       <Show when={showAgentPicker()}>

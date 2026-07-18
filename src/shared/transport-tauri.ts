@@ -1,4 +1,4 @@
-import type { Transport } from "./transport";
+import type { Transport, TransportConnectionState, UnlistenFn } from "./transport";
 
 /// Transport implementation using Tauri's native IPC.
 /// Uses dynamic imports to avoid failing in non-Tauri environments.
@@ -36,5 +36,13 @@ export class TauriTransport implements Transport {
   async emit<T>(event: string, payload: T): Promise<void> {
     await this.ready;
     await this.emitImpl!(event, payload);
+  }
+
+  connectionState(): TransportConnectionState {
+    return { state: "connected", generation: 0 };
+  }
+
+  onConnectionState(_callback: (state: TransportConnectionState) => void): UnlistenFn {
+    return () => undefined;
   }
 }

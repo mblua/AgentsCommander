@@ -1,19 +1,23 @@
-import { Component, onMount, onCleanup, createMemo, Show } from "solid-js";
-import type { UnlistenFn } from "../shared/transport";
+import { Component, createMemo, onCleanup, onMount, Show } from "solid-js";
+import type { SessionSelection } from "../shared/types";
+import type { TransportConnectionState, UnlistenFn } from "../shared/transport";
 import { isTauri } from "../shared/platform";
 import {
-  SessionAPI,
-  WindowAPI,
-  onSessionSwitched,
-  onSessionCreated,
+  getTransportConnectionState,
+  isSelectionCoordinatorBusyError,
   onSessionDestroyed,
   onSessionRenamed,
+  onSessionSwitched,
   onThemeChanged,
+  onTransportConnectionState,
   onWorkgroupTaskUpdated,
+  SessionAPI,
+  WindowAPI,
 } from "../shared/ipc";
 import { registerShortcuts, unregisterShortcuts } from "../shared/shortcuts";
+import { voiceRecorder } from "../shared/voice-recorder";
 import { initZoom } from "../shared/zoom";
-import { initWindowGeometry, initDetachedWindowGeometry } from "../shared/window-geometry";
+import { initDetachedWindowGeometry, initWindowGeometry } from "../shared/window-geometry";
 import { settingsStore } from "../shared/stores/settings";
 import { terminalStore } from "./stores/terminal";
 import { homeStore } from "../main/stores/home";
@@ -33,182 +37,349 @@ interface TerminalAppProps {
   embedded?: boolean;
 }
 
+const HYDRATION_RETRY_DELAYS = [50, 100, 250, 500, 1000] as const;
+
 const TerminalApp: Component<TerminalAppProps> = (props) => {
   const unlisteners: UnlistenFn[] = [];
-  let shortcutHandler: ((e: KeyboardEvent) => void) | null = null;
+  let disposed = false;
+  let shortcutHandler: ((event: KeyboardEvent) => void) | null = null;
   let cleanupZoom: (() => void) | null = null;
   let cleanupGeometry: (() => void) | null = null;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let retryAttempt = 0;
+  let hydrationInFlightGeneration: number | null = null;
+  let observedConnection: TransportConnectionState = {
+    state: "disconnected",
+    generation: -1,
+  };
+  const mountDisposed = Symbol("terminalAppMountDisposed");
 
+  const isCentral = () => !props.lockedSessionId;
   const isHomeShown = createMemo(
-    () => !!(props.embedded && !props.detached && !props.lockedSessionId && homeStore.visible)
+    () => !!(props.embedded && !props.detached && !props.lockedSessionId && homeStore.visible),
   );
+  const shouldMountTerminal = createMemo(() => {
+    if (props.lockedSessionId) return terminalStore.activeSessionId === props.lockedSessionId;
+    return (
+      terminalStore.selectionMode === "live" &&
+      terminalStore.bindingState !== "unavailable"
+    );
+  });
 
-  const loadActiveSession = async () => {
-    if (props.lockedSessionId) {
-      const sessions = await SessionAPI.list();
-      const session = sessions.find((s) => s.id === props.lockedSessionId);
-      if (session) {
-        terminalStore.setActiveSession(session.id, session.name, session.shell, session.effectiveShellArgs, session.workingDirectory, session.workgroupTask ?? null, session.isRootAgent);
-      } else {
-        terminalStore.setActiveSession(null, "", "", null, "", null, false);
-      }
+  const addUnlistener = (unlisten: UnlistenFn): void => {
+    if (disposed) {
+      unlisten();
       return;
     }
+    unlisteners.push(unlisten);
+  };
 
-    const activeId = await SessionAPI.getActive();
-    if (activeId) {
+  const register = async (registration: Promise<UnlistenFn>): Promise<void> => {
+    const unlisten = await registration;
+    if (disposed) {
+      unlisten();
+      throw mountDisposed;
+    }
+    unlisteners.push(unlisten);
+  };
+
+  const cancelRetry = (): void => {
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+  };
+
+  const reconcileSelection = async (
+    selection: SessionSelection,
+    generation: number,
+    allowEqualReconnect: boolean,
+  ): Promise<boolean> => {
+    if (disposed) return false;
+    const accepted = terminalStore.reserveSelection(
+      selection,
+      generation,
+      allowEqualReconnect,
+    );
+    if (!accepted) return false;
+
+    cancelRetry();
+    retryAttempt = 0;
+    voiceRecorder.revokeLiveBinding();
+    if (selection.mode !== "live") return true;
+
+    try {
       const sessions = await SessionAPI.list();
-      const active = sessions.find((s) => s.id === activeId);
-      if (active) {
-        terminalStore.setActiveSession(active.id, active.name, active.shell, active.effectiveShellArgs, active.workingDirectory, active.workgroupTask ?? null, active.isRootAgent);
+      if (disposed || !terminalStore.matchesSelection(selection, generation)) return true;
+      const session = sessions.find((candidate) => candidate.id === selection.id);
+      if (!session || typeof session.status !== "string") {
+        voiceRecorder.revokeSession(selection.id);
+        terminalStore.markUnavailable(selection, generation);
+        return true;
       }
-    } else {
-      terminalStore.setActiveSession(null, "", "", null, "", null, false);
+      terminalStore.bindLive(selection, generation, session);
+    } catch (error) {
+      if (!disposed && terminalStore.matchesSelection(selection, generation)) {
+        console.error("[selection] Failed to resolve live session metadata:", error);
+        voiceRecorder.revokeSession(selection.id);
+        terminalStore.markUnavailable(selection, generation);
+      }
+    }
+    return true;
+  };
+
+  const scheduleHydrationRetry = (generation: number): void => {
+    if (disposed || retryTimer || observedConnection.state !== "connected") return;
+    if (
+      observedConnection.generation !== generation ||
+      terminalStore.awaitingHydrationGeneration !== generation
+    ) {
+      return;
+    }
+    const delay = HYDRATION_RETRY_DELAYS[Math.min(retryAttempt, HYDRATION_RETRY_DELAYS.length - 1)];
+    retryAttempt += 1;
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      void requestHydration(generation);
+    }, delay);
+  };
+
+  const requestHydration = async (generation: number): Promise<void> => {
+    if (
+      disposed ||
+      observedConnection.state !== "connected" ||
+      observedConnection.generation !== generation ||
+      hydrationInFlightGeneration === generation ||
+      !terminalStore.beginHydration(generation)
+    ) {
+      return;
+    }
+    hydrationInFlightGeneration = generation;
+    try {
+      const selection = await SessionAPI.getSelection();
+      if (
+        disposed ||
+        observedConnection.state !== "connected" ||
+        observedConnection.generation !== generation ||
+        terminalStore.awaitingHydrationGeneration !== generation
+      ) {
+        return;
+      }
+      await reconcileSelection(selection, generation, true);
+    } catch (error) {
+      if (
+        disposed ||
+        observedConnection.state !== "connected" ||
+        observedConnection.generation !== generation ||
+        terminalStore.awaitingHydrationGeneration !== generation
+      ) {
+        return;
+      }
+      if (isSelectionCoordinatorBusyError(error)) {
+        scheduleHydrationRetry(generation);
+      } else {
+        terminalStore.cancelHydration(generation);
+        terminalStore.suspendLiveBinding();
+        voiceRecorder.revokeLiveBinding();
+        console.error("[selection] Selection hydration failed:", error);
+      }
+    } finally {
+      if (hydrationInFlightGeneration === generation) {
+        hydrationInFlightGeneration = null;
+      }
+    }
+  };
+
+  const applyConnectionState = (state: TransportConnectionState): void => {
+    if (disposed) return;
+    if (state.generation < observedConnection.generation) return;
+    if (
+      state.generation === observedConnection.generation &&
+      state.state === observedConnection.state
+    ) {
+      return;
+    }
+    const generationChanged = state.generation !== observedConnection.generation;
+    observedConnection = { ...state };
+    terminalStore.observeConnection(state);
+    cancelRetry();
+    retryAttempt = 0;
+    if (state.state === "disconnected" || generationChanged) {
+      voiceRecorder.revokeLiveBinding();
+    }
+    if (state.state === "disconnected") {
+      return;
+    }
+    void requestHydration(state.generation);
+  };
+
+  const loadLockedSession = async (): Promise<void> => {
+    try {
+      const sessions = await SessionAPI.list();
+      if (disposed) return;
+      const session = sessions.find((candidate) => candidate.id === props.lockedSessionId);
+      if (session && typeof session.status === "string") {
+        terminalStore.bindLockedSession(session);
+      } else {
+        terminalStore.clearLockedSession();
+      }
+    } catch (error) {
+      if (!disposed) {
+        console.error("[detached] Failed to hydrate locked session:", error);
+        terminalStore.clearLockedSession();
+      }
     }
   };
 
   onMount(async () => {
+    try {
     shortcutHandler = registerShortcuts();
 
-    unlisteners.push(
-      await onSessionDestroyed(async ({ id }) => {
+    if (isCentral()) {
+      await register(
+        onSessionSwitched((selection, deliveryGeneration) => {
+          void reconcileSelection(selection, deliveryGeneration, false);
+        }),
+      );
+      if (disposed) return;
+      await register(onTransportConnectionState(applyConnectionState));
+      if (disposed) return;
+    }
+
+    await register(
+      onSessionDestroyed(({ id }) => {
+        voiceRecorder.revokeSession(id);
         if (props.lockedSessionId && id === props.lockedSessionId) {
           if (isTauri) {
-            const { getCurrentWindow } = await import("@tauri-apps/api/window");
-            getCurrentWindow().destroy();
+            void import("@tauri-apps/api/window").then(({ getCurrentWindow }) =>
+              getCurrentWindow().destroy(),
+            ).catch((error: unknown) => {
+              console.error("[detached] Failed to close destroyed session window:", error);
+            });
           }
           return;
         }
-        if (!props.lockedSessionId) {
-          await loadActiveSession();
-        }
-      })
+        if (isCentral()) terminalStore.safetySuspendDestroyed(id);
+      }),
     );
+    if (disposed) return;
+
+    if (isCentral()) {
+      applyConnectionState(getTransportConnectionState());
+    } else {
+      await loadLockedSession();
+    }
 
     if (isTauri && props.detached && props.lockedSessionId) {
       const sessionId = props.lockedSessionId;
       const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      if (disposed) return;
       const win = getCurrentWindow();
-      const unlistenCloseRequested = await win.onCloseRequested(async (e) => {
-        e.preventDefault();
-        try {
-          await WindowAPI.attach(sessionId);
-        } catch (err) {
-          console.error("[detached] attach failed during close; destroying window:", err);
-          try { await win.destroy(); } catch { /* best-effort */ }
-        }
-      });
-      unlisteners.push(unlistenCloseRequested);
+      addUnlistener(
+        await win.onCloseRequested(async (event) => {
+          event.preventDefault();
+          try {
+            await WindowAPI.attach(sessionId);
+          } catch (error) {
+            console.error("[detached] attach failed during close; destroying window:", error);
+            try {
+              await win.destroy();
+            } catch (destroyError) {
+              console.error("[detached] fallback window destroy failed:", destroyError);
+            }
+          }
+        }),
+      );
+      if (disposed) return;
     }
 
     if (!props.embedded) {
       cleanupZoom = await initZoom(props.detached ? "detached" : "terminal");
-      if (props.detached && props.lockedSessionId) {
-        cleanupGeometry = await initDetachedWindowGeometry(props.lockedSessionId);
-      } else {
-        cleanupGeometry = await initWindowGeometry("terminal");
+      if (disposed) {
+        cleanupZoom();
+        cleanupZoom = null;
+        return;
+      }
+      cleanupGeometry = props.detached && props.lockedSessionId
+        ? await initDetachedWindowGeometry(props.lockedSessionId)
+        : await initWindowGeometry("terminal");
+      if (disposed) {
+        cleanupGeometry();
+        cleanupGeometry = null;
+        return;
       }
     }
+
     await settingsStore.load();
+    if (disposed) return;
     if (!props.embedded) {
-      document.documentElement.classList.toggle("light-theme", !!settingsStore.current?.themeLight);
-    }
-    await loadActiveSession();
-
-    if (!props.lockedSessionId) {
-      unlisteners.push(
-        await onSessionSwitched(async ({ id }) => {
-          if (!id) {
-            terminalStore.setActiveSession(null, "", "", null, "", null, false);
-            return;
-          }
-          const sessions = await SessionAPI.list();
-          const session = sessions.find((s) => s.id === id);
-          if (session) {
-            terminalStore.setActiveSession(
-              session.id,
-              session.name,
-              session.shell,
-              session.effectiveShellArgs,
-              session.workingDirectory,
-              session.workgroupTask ?? null,
-              session.isRootAgent
-            );
-          }
-        })
-      );
-
-      unlisteners.push(
-        await onSessionCreated((session) => {
-          if (!terminalStore.activeSessionId) {
-            terminalStore.setActiveSession(
-              session.id,
-              session.name,
-              session.shell,
-              session.effectiveShellArgs,
-              session.workingDirectory,
-              session.workgroupTask ?? null,
-              session.isRootAgent
-            );
-          }
-        })
+      document.documentElement.classList.toggle(
+        "light-theme",
+        !!settingsStore.current?.themeLight,
       );
     }
 
-    unlisteners.push(
-      await onSessionRenamed(({ id, name }) => {
-        if (id === terminalStore.activeSessionId) {
-          terminalStore.setActiveSession(id, name);
-        }
-      })
+    await register(
+      onSessionRenamed(({ id, name }) => terminalStore.renameBoundSession(id, name)),
     );
 
-
-    const normalizePathForCompare = (p: string): string => {
-      let s = p;
-      if (s.startsWith("\\\\?\\")) s = s.slice(4);
-      else if (s.startsWith("//?/")) s = s.slice(4);
-      return s.replace(/\\/g, "/").toLowerCase();
+    const normalizePathForCompare = (path: string): string => {
+      let normalized = path;
+      if (normalized.startsWith("\\\\?\\")) normalized = normalized.slice(4);
+      else if (normalized.startsWith("//?/")) normalized = normalized.slice(4);
+      return normalized.replace(/\\/g, "/").toLowerCase();
     };
-    unlisteners.push(
-      await onWorkgroupTaskUpdated((data) => {
+    await register(
+      onWorkgroupTaskUpdated((data) => {
         if (data.source === "poll") {
           const targetId = props.lockedSessionId ?? terminalStore.activeSessionId;
-          if (!targetId) return;
-          if (!data.sessionIds.includes(targetId)) return;
+          if (!targetId || !data.sessionIds.includes(targetId)) return;
           terminalStore.setActiveWorkgroupTask(data.task);
-        }
-        else if (data.source === "manual") {
-          const wgRoot = data.workgroupRoot;
+        } else if (data.source === "manual") {
+          const workgroupRoot = data.workgroupRoot;
           const cwd = terminalStore.activeWorkingDirectory;
-          if (!cwd || !wgRoot) return;
-          const cwdNorm = normalizePathForCompare(cwd);
-          const wgNorm = normalizePathForCompare(wgRoot);
-          if (cwdNorm === wgNorm || cwdNorm.startsWith(wgNorm + "/")) {
+          if (!cwd || !workgroupRoot) return;
+          const cwdNormalized = normalizePathForCompare(cwd);
+          const rootNormalized = normalizePathForCompare(workgroupRoot);
+          if (
+            cwdNormalized === rootNormalized ||
+            cwdNormalized.startsWith(`${rootNormalized}/`)
+          ) {
             terminalStore.setActiveWorkgroupTask(data.task);
           }
         }
-      })
+      }),
     );
 
     if (!props.embedded) {
-      unlisteners.push(
-        await onThemeChanged(({ light }) => {
-          if (light) {
-            document.documentElement.classList.add("light-theme");
-          } else {
-            document.documentElement.classList.remove("light-theme");
-          }
-        })
+      await register(
+        onThemeChanged(({ light }) =>
+          document.documentElement.classList.toggle("light-theme", light),
+        ),
       );
+    }
+    } catch (error) {
+      if (error !== mountDisposed) throw error;
     }
   });
 
   onCleanup(() => {
-    unlisteners.forEach((u) => u());
+    disposed = true;
+    cancelRetry();
+    terminalStore.cancelHydration();
+    unlisteners.forEach((unlisten) => unlisten());
     if (shortcutHandler) unregisterShortcuts(shortcutHandler);
-    if (cleanupZoom) cleanupZoom();
-    if (cleanupGeometry) cleanupGeometry();
+    cleanupZoom?.();
+    cleanupGeometry?.();
+  });
+
+  const emptyMessage = createMemo(() => {
+    if (props.lockedSessionId) return "Session closed";
+    if (terminalStore.selectionMode === "dormant") {
+      return "Session exited. Wake it from the sidebar.";
+    }
+    if (terminalStore.selectionMode === "live") return "Session unavailable";
+    return "No active session";
   });
 
   return (
@@ -216,48 +387,39 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
       class="terminal-layout"
       data-ac-testid="terminal.root"
       data-ac-role="surface"
-      data-ac-state={terminalStore.activeSessionId ? "active" : "empty"}
+      data-ac-state={
+        terminalStore.activeSessionId
+          ? "active"
+          : terminalStore.selectionMode === "dormant"
+            ? "dormant"
+            : terminalStore.bindingState
+      }
     >
       <Show when={!props.embedded}>
         <Titlebar detached={props.detached} lockedSessionId={props.lockedSessionId} />
       </Show>
-      {/* #771 — the TASK panel is hidden entirely for the Root Agent
-          (Agent's Commander); LAST PROMPT stays for every agent. Gated on the
-          terminalStore flag (not sessionsStore) so it works in the standalone
-          and detached terminal windows too, which don't load sidebar state. */}
       <Show when={!terminalStore.activeIsRootAgent}>
         <WorkgroupTask />
       </Show>
       <LastPrompt sessionId={props.lockedSessionId} />
       <div class="terminal-content-area">
         <Show
-          when={terminalStore.activeSessionId}
+          when={shouldMountTerminal()}
           fallback={
-            <div
-              class="terminal-empty"
-              data-ac-testid="terminal.empty"
-              data-ac-role="status"
-            >
-              <span>
-                {props.detached
-                  ? "Session closed"
-                  : "No active session"}
-              </span>
+            <div class="terminal-empty" data-ac-testid="terminal.empty" data-ac-role="status">
+              <span>{emptyMessage()}</span>
             </div>
           }
         >
           <TerminalView lockedSessionId={props.lockedSessionId} />
+          <Show when={!props.lockedSessionId && terminalStore.bindingState === "pending"}>
+            <div class="terminal-empty terminal-pending" data-ac-testid="terminal.pending">
+              <span>Loading session…</span>
+            </div>
+          </Show>
         </Show>
       </div>
       <StatusBar detached={props.detached} />
-      {/* Home overlay (issue #164). Sibling of WorkgroupTask/LastPrompt and
-          .terminal-content-area inside .terminal-layout (the positioned
-          containing block). Painted on top so it visually covers TASK /
-          LAST PROMPT and the terminal area, but those panels remain mounted
-          underneath — toggling Home must not change the height of
-          .terminal-content-area or trigger TerminalView's ResizeObserver
-          (which would SIGWINCH the PTY). TerminalView is never unmounted
-          while Home is visible. Detached/locked windows never render Home. */}
       <Show when={isHomeShown()}>
         <HomeView />
       </Show>

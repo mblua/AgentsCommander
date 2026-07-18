@@ -32,9 +32,10 @@ vi.hoisted(() => {
   });
 });
 
-import { isRuntimeStringStatus, preserveVisibleOrder, reconcileVisibleOrderKeys, upsertSessionList } from "./sessions-helpers";
+import { applySelectionToSessionList, isRuntimeStringStatus, preserveVisibleOrder, reconcileVisibleOrderKeys, upsertSessionList } from "./sessions-helpers";
 import { sessionsStore } from "./sessions";
 import { rootAgentCodingAgentAction } from "../components/root-agent-action";
+import { dormantSelection, liveSelection, noneSelection, SESSION_A, SESSION_B, TEST_EPOCH, TEST_EPOCH_2 } from "../../shared/testing/session-selection";
 
 function mkSession(id: string, status: SessionStatus, overrides: Partial<Session> = {}): Session {
   return {
@@ -79,78 +80,56 @@ describe("isRuntimeStringStatus", () => {
   });
 });
 
-/**
- * Simulates the mutation that sessionsStore.setActiveId applies to the
- * sessions array. Mirrors the predicates used inside sessions.ts so the
- * Exited-preservation contract is locked down without spinning up a
- * SolidJS root (vitest has no Solid render harness here).
- */
-function applySetActiveIdMutation(sessions: Session[], id: string | null): Session[] {
-  return sessions.map((s) => {
-    if (s.id === id) {
-      const status: SessionStatus = isRuntimeStringStatus(s.status) ? "active" : s.status;
-      return { ...s, status, pendingReview: false };
-    }
-    if (s.status === "active") {
-      return { ...s, status: "running" as SessionStatus };
-    }
-    return s;
-  });
-}
-
-describe("setActiveId mutation (#274 dormant-root preservation)", () => {
-  it("preserves Exited object status when the dormant root is selected", () => {
-    const sessions = [mkSession("root", { exited: 0 }, { isRootAgent: true })];
-    const next = applySetActiveIdMutation(sessions, "root");
-    expect(next[0].status).toEqual({ exited: 0 });
+describe("applySelectionToSessionList", () => {
+  it("promotes only the live target and demotes the previous active row", () => {
+    const applied = applySelectionToSessionList(
+      [mkSession(SESSION_A, "active"), mkSession(SESSION_B, "idle")],
+      liveSelection(SESSION_B, 2),
+    );
+    expect(applied.activeId).toBe(SESSION_B);
+    expect(applied.sessions.find((session) => session.id === SESSION_A)?.status).toBe("running");
+    expect(applied.sessions.find((session) => session.id === SESSION_B)?.status).toBe("active");
   });
 
-  it("preserves Exited({exited:1}) when the dormant root is selected", () => {
-    const sessions = [mkSession("root", { exited: 1 }, { isRootAgent: true })];
-    const next = applySetActiveIdMutation(sessions, "root");
-    expect(next[0].status).toEqual({ exited: 1 });
-  });
-
-  it("clears pendingReview on the newly selected session even when Exited", () => {
-    const sessions = [mkSession("root", { exited: 0 }, { isRootAgent: true, pendingReview: true })];
-    const next = applySetActiveIdMutation(sessions, "root");
-    expect(next[0].pendingReview).toBe(false);
-    expect(next[0].status).toEqual({ exited: 0 });
-  });
-
-  it("promotes a runtime-string-status selection to active", () => {
-    const sessions = [
-      mkSession("a", "idle"),
-      mkSession("b", "running"),
-    ];
-    const next = applySetActiveIdMutation(sessions, "b");
-    expect(next.find((s) => s.id === "b")!.status).toBe("active");
-  });
-
-  it("demotes the previously active session to running", () => {
-    const sessions = [
-      mkSession("a", "active"),
-      mkSession("b", "idle"),
-    ];
-    const next = applySetActiveIdMutation(sessions, "b");
-    expect(next.find((s) => s.id === "a")!.status).toBe("running");
-    expect(next.find((s) => s.id === "b")!.status).toBe("active");
-  });
-
-  it("after setActiveId on a dormant root, rootAgentCodingAgentAction still picks skipAutoResume:false", () => {
-    // Regression: setActiveId used to overwrite { exited } with "active",
-    // which made rootAgentCodingAgentAction treat the root as live and skip
-    // provider resume. Verify the Exited object survives the mutation so
-    // the wake path is preserved end-to-end.
-    const sessions = [mkSession("root-id", { exited: 0 }, { isRootAgent: true })];
-    const next = applySetActiveIdMutation(sessions, "root-id");
-    const action = rootAgentCodingAgentAction(next[0], "claude");
+  it("preserves the exact dormant exit code and clears pending review", () => {
+    const applied = applySelectionToSessionList(
+      [mkSession(SESSION_A, { exited: 1 }, { isRootAgent: true, pendingReview: true })],
+      dormantSelection(SESSION_A, 2, 137),
+    );
+    expect(applied.activeId).toBe(SESSION_A);
+    expect(applied.sessions[0].status).toEqual({ exited: 137 });
+    expect(applied.sessions[0].pendingReview).toBe(false);
+    const action = rootAgentCodingAgentAction(applied.sessions[0], "claude");
     expect(action).toEqual({
       kind: "restart",
-      id: "root-id",
+      id: SESSION_A,
       agentId: "claude",
       skipAutoResume: false,
     });
+  });
+
+  it("clears highlight for none", () => {
+    const applied = applySelectionToSessionList(
+      [mkSession(SESSION_A, "active")],
+      noneSelection(2),
+    );
+    expect(applied.activeId).toBeNull();
+    expect(applied.sessions[0].status).toBe("running");
+  });
+
+  it("refuses to re-promote an exited row from a stored live payload", () => {
+    const applied = applySelectionToSessionList(
+      [mkSession(SESSION_A, { exited: 9 })],
+      liveSelection(SESSION_A, 2),
+    );
+    expect(applied.activeId).toBeNull();
+    expect(applied.sessions[0].status).toEqual({ exited: 9 });
+  });
+
+  it("retains selection authority without highlighting a missing row", () => {
+    const applied = applySelectionToSessionList([], liveSelection(SESSION_A, 2));
+    expect(applied.activeId).toBeNull();
+    expect(applied.sessions).toEqual([]);
   });
 });
 
@@ -204,6 +183,67 @@ describe("upsertSessionList (#274 banner-reuse hydration)", () => {
     const next = upsertSessionList(sessions, returned);
     expect(next.find((s) => s.isRootAgent)).toBeDefined();
     expect(next[0].agentLabel).toBe("claude");
+  });
+});
+
+describe("sessionsStore authoritative ordering", () => {
+  function connect(): void {
+    sessionsStore.resetSelectionForTests();
+    sessionsStore.setSessions([
+      mkSession(SESSION_A, "running"),
+      mkSession(SESSION_B, "running"),
+    ]);
+    sessionsStore.observeConnection({ state: "connected", generation: 0 });
+  }
+
+  it("ignores older and normal equal revisions", () => {
+    connect();
+    expect(sessionsStore.applySelection(liveSelection(SESSION_B, 2), 0)).toBe(true);
+    expect(sessionsStore.applySelection(liveSelection(SESSION_A, 1), 0)).toBe(false);
+    expect(sessionsStore.applySelection(liveSelection(SESSION_A, 2), 0)).toBe(false);
+    expect(sessionsStore.activeId).toBe(SESSION_B);
+  });
+
+  it("lets a new epoch supersede a high revision and permanently retires the old epoch", () => {
+    connect();
+    expect(sessionsStore.applySelection(liveSelection(SESSION_A, 500, TEST_EPOCH), 0)).toBe(true);
+    expect(sessionsStore.applySelection(liveSelection(SESSION_B, 1, TEST_EPOCH_2), 0)).toBe(true);
+    expect(sessionsStore.applySelection(liveSelection(SESSION_A, 501, TEST_EPOCH), 0)).toBe(false);
+    expect(sessionsStore.activeId).toBe(SESSION_B);
+  });
+
+  it("allows one exact equal reconnect rebind only for the awaited generation", () => {
+    connect();
+    expect(sessionsStore.applySelection(liveSelection(SESSION_A, 2), 0)).toBe(true);
+    sessionsStore.observeConnection({ state: "disconnected", generation: 0 });
+    sessionsStore.observeConnection({ state: "connected", generation: 1 });
+    expect(sessionsStore.beginHydration(1)).toBe(true);
+    expect(sessionsStore.applySelection(liveSelection(SESSION_A, 2), 1, true)).toBe(true);
+    expect(sessionsStore.applySelection(liveSelection(SESSION_A, 2), 1, true)).toBe(false);
+  });
+
+  it("does not reproject the previous generation from a row update before reconnect hydration", () => {
+    connect();
+    expect(sessionsStore.applySelection(liveSelection(SESSION_A, 2), 0)).toBe(true);
+    sessionsStore.observeConnection({ state: "disconnected", generation: 0 });
+    sessionsStore.observeConnection({ state: "connected", generation: 1 });
+    expect(sessionsStore.beginHydration(1)).toBe(true);
+    sessionsStore.addSession(mkSession(SESSION_A, "active"));
+    expect(sessionsStore.activeId).toBeNull();
+    expect(sessionsStore.sessions.find((row) => row.id === SESSION_A)?.status).toBe("running");
+    expect(sessionsStore.applySelection(liveSelection(SESSION_A, 2), 1, true)).toBe(true);
+    expect(sessionsStore.activeId).toBe(SESSION_A);
+  });
+
+  it("reapplies stored selection after upsert but lets an exited upsert win", () => {
+    connect();
+    sessionsStore.setSessions([]);
+    expect(sessionsStore.applySelection(liveSelection(SESSION_A, 2), 0)).toBe(true);
+    sessionsStore.addSession(mkSession(SESSION_A, "running"));
+    expect(sessionsStore.activeId).toBe(SESSION_A);
+    sessionsStore.addSession(mkSession(SESSION_A, { exited: 17 }));
+    expect(sessionsStore.activeId).toBeNull();
+    expect(sessionsStore.sessions[0].status).toEqual({ exited: 17 });
   });
 });
 

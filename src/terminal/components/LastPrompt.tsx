@@ -1,7 +1,7 @@
 import { Component, createMemo, onMount, onCleanup } from "solid-js";
 import { createStore } from "solid-js/store";
 import type { UnlistenFn } from "../../shared/transport";
-import { onLastPrompt, onSessionCreated, onSessionSwitched, SessionAPI } from "../../shared/ipc";
+import { onLastPrompt, onSessionCreated, SessionAPI } from "../../shared/ipc";
 import { terminalStore } from "../stores/terminal";
 
 interface LastPromptProps {
@@ -12,7 +12,6 @@ const LastPrompt: Component<LastPromptProps> = (props) => {
   const [prompts, setPrompts] = createStore<Record<string, string>>({});
   let unlistenLastPrompt: UnlistenFn | null = null;
   let unlistenSessionCreated: UnlistenFn | null = null;
-  let unlistenSessionSwitched: UnlistenFn | null = null;
 
   const getSessionId = () => props.sessionId ?? terminalStore.activeSessionId;
 
@@ -36,7 +35,6 @@ const LastPrompt: Component<LastPromptProps> = (props) => {
     });
 
     unlistenSessionCreated = await onSessionCreated(loadPrompts);
-    unlistenSessionSwitched = await onSessionSwitched(loadPrompts);
 
     // Load persisted last prompts from backend after setting up listeners
     await loadPrompts();
@@ -45,7 +43,6 @@ const LastPrompt: Component<LastPromptProps> = (props) => {
   onCleanup(() => {
     unlistenLastPrompt?.();
     unlistenSessionCreated?.();
-    unlistenSessionSwitched?.();
   });
 
   return (

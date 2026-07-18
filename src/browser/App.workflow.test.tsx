@@ -12,6 +12,7 @@ import {
   session,
   waitFor,
 } from "../shared/testing/ui-harness";
+import { liveSelection, SESSION_A } from "../shared/testing/session-selection";
 
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
@@ -60,7 +61,7 @@ vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 
 const projectPath = "C:\\Project";
 const architectSession = session({
-  id: "session-architect",
+  id: SESSION_A,
   name: "wg-1-dev-team/architect",
   workingDirectory: `${projectPath}\\.ac\\wg-1-dev-team\\__agent_architect`,
   isCoordinator: true,
@@ -132,7 +133,7 @@ function setupBrowserTransport(
   fake.resolve("get_project_groups", groupsConfig());
   fake.resolve("search_repos", []);
   fake.resolve("list_sessions", [architectSession]);
-  fake.resolve("get_active_session", architectSession.id);
+  fake.resolve("get_active_session", liveSelection(architectSession.id));
   fake.resolve("list_detached_sessions", []);
   fake.resolve("telegram_list_bridges", []);
   fake.resolve("pty_resize", undefined);

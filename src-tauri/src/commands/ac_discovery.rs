@@ -2620,7 +2620,7 @@ mod tests {
             idle_detector,
             git_watcher,
             Some(broadcaster),
-            Arc::clone(&session_mgr),
+            None,
         )));
         (app, settings_state, receiver, session_mgr, pty_mgr)
     }

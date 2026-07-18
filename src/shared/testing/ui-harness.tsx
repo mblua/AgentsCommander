@@ -241,7 +241,7 @@ export function resetUiStoresForTests(): void {
   // deliberately out of setSessions' reach, so it survives into the next test.
   sessionsStore.resetContextReadingsForTests();
   sessionsStore.setSessions([]);
-  sessionsStore.setActiveId(null);
+  sessionsStore.resetSelectionForTests();
   sessionsStore.setTeams([]);
   sessionsStore.setRepos([]);
   sessionsStore.setAlwaysShowSelectedWorkgroup(true);
@@ -255,7 +255,7 @@ export function resetUiStoresForTests(): void {
   railCollapseStore.resetForTests();
   codingAgentsStore.resetForTests();
   bridgesStore.setBridges([]);
-  terminalStore.setActiveSession(null, "", "", null, "", null, false);
+  terminalStore.resetForTests();
   terminalStore.setActiveWorkgroupTask(null);
   autoUnarchiveStore.acknowledge();
   toastStore.clear();

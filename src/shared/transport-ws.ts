@@ -1,4 +1,4 @@
-import type { Transport, UnlistenFn } from "./transport";
+import type { Transport, TransportConnectionState, UnlistenFn } from "./transport";
 
 interface PendingRequest {
   resolve: (value: unknown) => void;
@@ -15,6 +15,8 @@ export class WsTransport implements Transport {
   private reconnectDelay = 1000;
   private maxReconnectDelay = 10000;
   private connected = false;
+  private generation = 0;
+  private connectionListeners = new Set<(state: TransportConnectionState) => void>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
   private url: string;
@@ -40,9 +42,12 @@ export class WsTransport implements Transport {
           socket.close();
           return;
         }
+        if (this.connected) return;
         this.connected = true;
+        this.generation += 1;
         this.reconnectDelay = 1000;
         console.debug("[ws-transport] Connected");
+        this.publishConnectionState();
       };
 
       socket.onmessage = (event) => {
@@ -57,8 +62,10 @@ export class WsTransport implements Transport {
       socket.onclose = () => {
         if (this.ws !== socket) return;
         this.ws = null;
+        const wasConnected = this.connected;
         this.connected = false;
         this.rejectAllPending("WebSocket closed");
+        if (wasConnected) this.publishConnectionState();
         this.scheduleReconnect();
       };
 
@@ -114,6 +121,30 @@ export class WsTransport implements Transport {
       socket.close();
     }
     this.rejectAllPending("WebSocket closed");
+    this.connectionListeners.clear();
+  }
+
+  connectionState(): TransportConnectionState {
+    return {
+      state: this.connected ? "connected" : "disconnected",
+      generation: this.generation,
+    };
+  }
+
+  onConnectionState(callback: (state: TransportConnectionState) => void): UnlistenFn {
+    this.connectionListeners.add(callback);
+    return () => this.connectionListeners.delete(callback);
+  }
+
+  private publishConnectionState(): void {
+    const snapshot = this.connectionState();
+    for (const callback of Array.from(this.connectionListeners)) {
+      try {
+        callback(snapshot);
+      } catch (error) {
+        console.error("[ws-transport] Connection listener error:", error);
+      }
+    }
   }
 
   private rejectAllPending(reason: string) {

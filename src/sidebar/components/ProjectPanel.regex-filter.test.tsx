@@ -269,7 +269,7 @@ describe("ProjectPanel regex filter", () => {
         status: "running",
       }),
     ]);
-    sessionsStore.setActiveId("coord-session");
+    sessionsStore.setVisibleActiveIdForTests("coord-session");
 
     const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
@@ -513,7 +513,7 @@ describe("ProjectPanel regex filter", () => {
         gitRepos: [{ label: "rustrepo", sourcePath: "C:\\repo-rust", branch: "peerbranch", dirty: null }],
       }),
     ]);
-    sessionsStore.setActiveId("coord-session");
+    sessionsStore.setVisibleActiveIdForTests("coord-session");
 
     const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
@@ -679,7 +679,7 @@ describe("ProjectPanel regex filter", () => {
         profileFallbackApplied: true,
       }),
     ]);
-    sessionsStore.setActiveId("coord-session");
+    sessionsStore.setVisibleActiveIdForTests("coord-session");
 
     const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use agentscommander_lib::commands::pty::{get_screen_snapshot, PtyScreenSnapshotPayload};
 use agentscommander_lib::commands::session::{
-    create_session_inner, destroy_session_inner, restart_session_inner,
+    create_session_inner, destroy_session_inner, restart_session_inner, CreateSelectionIntent,
 };
 use agentscommander_lib::config::sessions_persistence::{
     load_sessions, persist_current_state_result,
@@ -22,6 +22,7 @@ use agentscommander_lib::pty::idle_detector::IdleDetector;
 use agentscommander_lib::pty::manager::PtyManager;
 use agentscommander_lib::resource_monitor::ResourceMonitorState;
 use agentscommander_lib::session::manager::SessionManager;
+use agentscommander_lib::session::selection::SelectionCoordinator;
 use agentscommander_lib::session::session::{SessionInfo, SessionStatus};
 use agentscommander_lib::shutdown::ShutdownSignal;
 use agentscommander_lib::telegram::manager::{
@@ -252,7 +253,7 @@ fn make_test_app(
         idle_detector,
         Arc::clone(&git_watcher),
         None,
-        Arc::clone(&session_mgr),
+        None,
     )));
 
     let detached_sessions: DetachedSessionsState = Arc::new(Mutex::new(HashSet::new()));
@@ -262,6 +263,8 @@ fn make_test_app(
     ));
     let config_seed_lock: ConfigSeedLockState = Arc::new(tokio::sync::Mutex::new(()));
     let shutdown_signal = ShutdownSignal::new();
+    let selection_coordinator =
+        SelectionCoordinator::new(Arc::clone(&session_mgr), shutdown_signal.token().clone());
 
     let captured = Arc::clone(captured_output);
     let captured_sequences = Arc::clone(captured_sequences);
@@ -274,6 +277,7 @@ fn make_test_app(
         ))
         .manage(settings)
         .manage(Arc::clone(&session_mgr))
+        .manage(selection_coordinator.clone())
         .manage(tg_mgr)
         .manage(detached_sessions)
         .manage(voice_tracking)
@@ -291,6 +295,22 @@ fn make_test_app(
         .manage(Arc::clone(&pty_mgr))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build pty lifecycle test app");
+
+    selection_coordinator
+        .start(app.handle().clone())
+        .expect("start selection coordinator");
+    let bootstrap = selection_coordinator.clone();
+    std::thread::spawn(move || {
+        tauri::async_runtime::block_on(async move {
+            bootstrap
+                .submit_restore_first()
+                .await
+                .expect("open selection coordinator")
+                .finish();
+        });
+    })
+    .join()
+    .expect("join selection bootstrap");
 
     app.listen_any("pty_output", move |event| {
         let raw = event.payload().to_string();
@@ -755,6 +775,7 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
             false,
             None,
             None, // #973 - no view in this test: 120x30
+            CreateSelectionIntent::User,
         )
         .await
         .unwrap_or_else(|e| {
@@ -854,6 +875,7 @@ fn claude_launch_materializes_context_without_prompt_file_arg() {
             true,
             None,
             None, // #973 - no view in this test: 120x30
+            CreateSelectionIntent::User,
         )
         .await
         .unwrap_or_else(|e| panic!("Claude launch failed: {e}"));
@@ -919,6 +941,7 @@ impl LifecycleFixture {
             true,
             None,
             None, // #973 - no view in this test: 120x30
+            CreateSelectionIntent::User,
         )
         .await
     }

@@ -1,21 +1,33 @@
-import { batch, createMemo, createSignal } from "solid-js";
-import { createStore } from "solid-js/store";
+import { createMemo, createSignal } from "solid-js";
+import { createStore, reconcile } from "solid-js/store";
 import { NO_TEAM } from "../../shared/constants";
-import type { RepoMatch, Session, SessionCommunication, SessionRepo, SessionsState, Team, TeamSessionGroup } from "../../shared/types";
+import type { RepoMatch, Session, SessionCommunication, SessionRepo, SessionSelection, SessionsState, Team, TeamSessionGroup } from "../../shared/types";
+import type { TransportConnectionState } from "../../shared/transport";
 import { projectStore } from "./project";
 import { normalizeProjectPathForCompare } from "./project-refresh";
 import { SettingsAPI } from "../../shared/ipc";
 import { settingsStore } from "../../shared/stores/settings";
-import { isRuntimeStringStatus, reconcileVisibleOrderKeys, upsertSessionList } from "./sessions-helpers";
+import { applySelectionToSessionList, reconcileVisibleOrderKeys, upsertSessionList } from "./sessions-helpers";
 
 const [toggleInFlight, setToggleInFlight] = createSignal(false);
 const [sidebarPointerInside, setSidebarPointerInside] = createSignal(false);
 const [lastCoordinatorVisibleOrderByProject, setLastCoordinatorVisibleOrderByProject] = createSignal<Record<string, string[]>>({});
 const [frozenCoordinatorVisibleOrderByProject, setFrozenCoordinatorVisibleOrderByProject] = createSignal<Record<string, string[]>>({});
+// Independent of selection ordering: every full-row upsert/removal invalidates
+// an older wholesale list snapshot, even when the local membership is unchanged.
+let rowMembershipGeneration = 0;
 
 const [state, setState] = createStore<SessionsState>({
   sessions: [],
   activeId: null,
+  selection: null,
+  selectionEpoch: null,
+  selectionRevision: -1,
+  selectionConnectionGeneration: null,
+  retiredSelectionEpochs: [],
+  connectionGeneration: -1,
+  transportConnected: false,
+  awaitingHydrationGeneration: null,
   teams: [],
   teamFilter: null,
   showInactive: false,
@@ -27,6 +39,29 @@ const [state, setState] = createStore<SessionsState>({
   contextPercentBySessionId: {},
   hydrated: false,
 });
+
+function projectStoredSelection(sessions: Session[]): void {
+  if (
+    !state.transportConnected ||
+    !state.selection ||
+    state.selectionConnectionGeneration !== state.connectionGeneration
+  ) {
+    setState("sessions", sessions.map((session) =>
+      session.status === "active"
+        ? { ...session, status: "running" as const }
+        : session,
+    ));
+    setState("activeId", null);
+    return;
+  }
+  const applied = applySelectionToSessionList(sessions, state.selection);
+  setState("sessions", applied.sessions);
+  setState("activeId", applied.activeId);
+}
+
+function advanceRowMembershipGeneration(): void {
+  rowMembershipGeneration += 1;
+}
 
 function normalizePath(p: string): string {
   return p.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
@@ -259,6 +294,27 @@ export const sessionsStore = {
   get activeId() {
     return state.activeId;
   },
+  get selection() {
+    return state.selection;
+  },
+  get selectionEpoch() {
+    return state.selectionEpoch;
+  },
+  get selectionRevision() {
+    return state.selectionRevision;
+  },
+  get selectionConnectionGeneration() {
+    return state.selectionConnectionGeneration;
+  },
+  get connectionGeneration() {
+    return state.connectionGeneration;
+  },
+  get transportConnected() {
+    return state.transportConnected;
+  },
+  get awaitingHydrationGeneration() {
+    return state.awaitingHydrationGeneration;
+  },
   get teams() {
     return state.teams;
   },
@@ -286,36 +342,143 @@ export const sessionsStore = {
   get collapsedTeams() {
     return collapsedTeams();
   },
+  get rowMembershipGeneration() {
+    return rowMembershipGeneration;
+  },
 
   setSessions(sessions: Session[]) {
-    setState("sessions", sessions);
+    advanceRowMembershipGeneration();
+    projectStoredSelection(sessions);
+  },
+
+  setSessionsIfRowMembershipUnchanged(
+    sessions: Session[],
+    expectedGeneration: number,
+  ): boolean {
+    if (rowMembershipGeneration !== expectedGeneration) return false;
+    advanceRowMembershipGeneration();
+    projectStoredSelection(sessions);
+    return true;
   },
 
   addSession(session: Session) {
-    setState("sessions", (prev) => upsertSessionList(prev, session));
+    advanceRowMembershipGeneration();
+    projectStoredSelection(upsertSessionList(state.sessions, session));
   },
 
   removeSession(id: string) {
-    setState("sessions", (prev) => prev.filter((s) => s.id !== id));
+    // A destroy event is newer membership evidence even when the row is not
+    // currently present; an older pending list may still contain that ID.
+    advanceRowMembershipGeneration();
+    projectStoredSelection(state.sessions.filter((session) => session.id !== id));
+    if (state.activeId === id) setState("activeId", null);
   },
 
-  setActiveId(id: string | null) {
-    const prev = state.activeId;
-    console.debug(`[idle-fe] setActiveId: ${id?.slice(0,8)} (prev: ${prev?.slice(0,8)})`);
+  observeConnection(connection: TransportConnectionState): boolean {
+    if (connection.generation < state.connectionGeneration) return false;
+    const connected = connection.state === "connected";
+    const generationChanged = connection.generation !== state.connectionGeneration;
+    const changed =
+      generationChanged ||
+      connected !== state.transportConnected;
+    setState("connectionGeneration", connection.generation);
+    setState("transportConnected", connected);
+    if (!connected || generationChanged) {
+      setState("awaitingHydrationGeneration", null);
+      setState("activeId", null);
+      setState("sessions", (sessions) =>
+        sessions.map((session) =>
+          session.status === "active"
+            ? { ...session, status: "running" as const }
+            : session,
+        ),
+      );
+    }
+    return changed;
+  },
+
+  beginHydration(generation: number): boolean {
+    if (
+      generation !== state.connectionGeneration ||
+      !state.transportConnected
+    ) {
+      return false;
+    }
+    setState("awaitingHydrationGeneration", generation);
+    return true;
+  },
+
+  cancelHydration(generation?: number): void {
+    if (
+      generation === undefined ||
+      state.awaitingHydrationGeneration === generation
+    ) {
+      setState("awaitingHydrationGeneration", null);
+    }
+  },
+
+  applySelection(
+    selection: SessionSelection,
+    generation: number,
+    allowEqualReconnect = false,
+  ): boolean {
+    if (
+      generation !== state.connectionGeneration ||
+      !state.transportConnected
+    ) {
+      return false;
+    }
+    if (state.selectionEpoch === selection.epoch) {
+      if (selection.revision < state.selectionRevision) return false;
+      if (selection.revision === state.selectionRevision) {
+        if (
+          !allowEqualReconnect ||
+          state.awaitingHydrationGeneration !== generation
+        ) {
+          return false;
+        }
+      }
+    } else {
+      if (state.retiredSelectionEpochs.includes(selection.epoch)) return false;
+      const previousEpoch = state.selectionEpoch;
+      if (previousEpoch) {
+        setState("retiredSelectionEpochs", (epochs) => [
+          ...epochs,
+          previousEpoch,
+        ]);
+      }
+    }
+    setState("selection", selection);
+    setState("selectionEpoch", selection.epoch);
+    setState("selectionRevision", selection.revision);
+    setState("selectionConnectionGeneration", generation);
+    setState("awaitingHydrationGeneration", null);
+    const applied = applySelectionToSessionList(state.sessions, selection);
+    setState("sessions", applied.sessions);
+    setState("activeId", applied.activeId);
+    return true;
+  },
+
+  setVisibleActiveIdForTests(id: string | null): void {
+    if (import.meta.env.MODE !== "test") {
+      throw new Error("setVisibleActiveIdForTests is test-only");
+    }
     setState("activeId", id);
-    setState(
-      "sessions",
-      (s) => s.id === id && isRuntimeStringStatus(s.status),
-      "status",
-      "active"
-    );
-    setState("sessions", (s) => s.id === id, "pendingReview", false);
-    setState(
-      "sessions",
-      (s) => s.id !== id && s.status === "active",
-      "status",
-      "running"
-    );
+  },
+
+  resetSelectionForTests(): void {
+    if (import.meta.env.MODE !== "test") {
+      throw new Error("resetSelectionForTests is test-only");
+    }
+    setState("selection", null);
+    setState("selectionEpoch", null);
+    setState("selectionRevision", -1);
+    setState("selectionConnectionGeneration", null);
+    setState("retiredSelectionEpochs", []);
+    setState("connectionGeneration", -1);
+    setState("transportConnected", false);
+    setState("awaitingHydrationGeneration", null);
+    setState("activeId", null);
   },
 
   renameSession(id: string, name: string) {
@@ -485,11 +648,11 @@ export const sessionsStore = {
   },
 
   resetContextReadingsForTests() {
-    batch(() => {
-      for (const id of Object.keys(state.contextPercentBySessionId)) {
-        setState("contextPercentBySessionId", id, undefined as unknown as null);
-      }
-    });
+    const emptyReadings: Record<string, number | null> = {};
+    setState(
+      "contextPercentBySessionId",
+      reconcile(emptyReadings),
+    );
   },
 
   toggleTeamCollapsed(teamId: string) {

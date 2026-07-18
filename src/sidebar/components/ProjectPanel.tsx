@@ -2100,6 +2100,12 @@ const ProjectPanel: Component = () => {
             return profileDisplayLabel(cfg, settingsStore.current?.agents ?? [], agentId, letter);
           };
           const isLive = () => isSessionLive(session());
+          createEffect(() => {
+            const current = session();
+            if (current && !isSessionLive(current)) {
+              voiceRecorder.revokeSession(current.id);
+            }
+          });
           const bridge = () => { const s = session(); return s ? bridgesStore.getBridge(s.id) : undefined; };
           const isDetached = () => { const s = session(); return s ? sessionsStore.isDetached(s.id) : false; };
           const isRecording = () => { const s = session(); return s ? voiceRecorder.recordingSessionId() === s.id : false; };
@@ -2109,6 +2115,7 @@ const ProjectPanel: Component = () => {
 
           const handleMicClick = (e: MouseEvent) => {
             e.stopPropagation();
+            if (!isLive()) return;
             if (!settingsStore.voiceEnabled) {
               emitOpenSettings("integrations").catch(console.error);
               return;
@@ -2122,6 +2129,7 @@ const ProjectPanel: Component = () => {
           };
           const handleDetach = async (e: MouseEvent) => {
             e.stopPropagation();
+            if (!isLive()) return;
             const s = session();
             if (!s) return;
             try {
@@ -2136,6 +2144,7 @@ const ProjectPanel: Component = () => {
           };
           const handleTelegramClick = async (e: MouseEvent) => {
             e.stopPropagation();
+            if (!isLive()) return;
             const s = session();
             if (!s) return;
             const b = bridge();
@@ -2154,6 +2163,7 @@ const ProjectPanel: Component = () => {
           };
           const handleBotSelect = async (botId: string) => {
             setShowBotMenu(false);
+            if (!isLive()) return;
             const s = session();
             if (s) await TelegramAPI.attach(s.id, botId);
           };
@@ -2329,6 +2339,8 @@ const ProjectPanel: Component = () => {
                     </For>
                   </div>
                 </Show>
+              </Show>
+              <Show when={session()}>
                 <button class="session-item-close" onClick={handleClose} title="Close session">&#x2715;</button>
               </Show>
             </div>

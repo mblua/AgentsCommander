@@ -379,7 +379,6 @@ async fn handle_bridge_message(
 mod tests {
     use super::*;
     use crate::pty::idle_detector::IdleDetector;
-    use crate::session::manager::SessionManager;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
@@ -394,9 +393,7 @@ mod tests {
         let output_senders: crate::telegram::manager::OutputSenderMap =
             Arc::new(Mutex::new(HashMap::new()));
         let idle_detector = IdleDetector::new(|_| {}, |_| {});
-        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
-        let backend =
-            ContainerTransportBackend::new(output_senders, idle_detector, None, session_mgr);
+        let backend = ContainerTransportBackend::new(output_senders, idle_detector, None, None);
         let session_id = Uuid::new_v4();
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         let reported_version = TRANSPORT_PROTOCOL_VERSION - 1;

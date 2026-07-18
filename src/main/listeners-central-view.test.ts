@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { SessionSelection } from "../shared/types";
+import { liveSelection, SESSION_A, userLiveSelection, userNoneSelection } from "../shared/testing/session-selection";
 
-type SwitchedPayload = { id: string | null; userInitiated?: boolean };
+type SwitchedPayload = SessionSelection;
 
 // Capture the listener callbacks so cases can fire crafted payloads through the
 // same code path the backend would use (mirrors listeners-home.test.ts).
@@ -44,7 +46,7 @@ describe("wireCentralViewListeners (issue #587)", () => {
   it("session_switched with userInitiated=true and a real id reveals the terminal", async () => {
     centralViewStore.setInitialView("resourceMonitor");
     await wireCentralViewListeners();
-    m.switchedCb!({ id: "abc", userInitiated: true });
+    m.switchedCb!(userLiveSelection(SESSION_A));
     expect(centralViewStore.isResourceMonitor).toBe(false);
     expect(m.setAttached).toHaveBeenCalledWith(false);
   });
@@ -52,10 +54,10 @@ describe("wireCentralViewListeners (issue #587)", () => {
   // HIGH-1 regression guard: a NON-user switch must NOT flip away from RM — it
   // would persist `false` and corrupt the restored mainResourceMonitorAttached
   // choice (and yank the RM view away mid-use).
-  it("session_switched WITHOUT userInitiated leaves RM in place (restore / auto-promote)", async () => {
+  it("restore session_switched leaves RM in place", async () => {
     centralViewStore.setInitialView("resourceMonitor");
     await wireCentralViewListeners();
-    m.switchedCb!({ id: "abc" });
+    m.switchedCb!(liveSelection(SESSION_A));
     expect(centralViewStore.isResourceMonitor).toBe(true);
     expect(m.setAttached).not.toHaveBeenCalled();
   });
@@ -63,7 +65,7 @@ describe("wireCentralViewListeners (issue #587)", () => {
   it("session_switched with userInitiated=false leaves RM in place", async () => {
     centralViewStore.setInitialView("resourceMonitor");
     await wireCentralViewListeners();
-    m.switchedCb!({ id: "abc", userInitiated: false });
+    m.switchedCb!(liveSelection(SESSION_A));
     expect(centralViewStore.isResourceMonitor).toBe(true);
     expect(m.setAttached).not.toHaveBeenCalled();
   });
@@ -71,7 +73,7 @@ describe("wireCentralViewListeners (issue #587)", () => {
   it("session_switched with id=null leaves RM in place even when userInitiated=true", async () => {
     centralViewStore.setInitialView("resourceMonitor");
     await wireCentralViewListeners();
-    m.switchedCb!({ id: null, userInitiated: true });
+    m.switchedCb!(userNoneSelection());
     expect(centralViewStore.isResourceMonitor).toBe(true);
     expect(m.setAttached).not.toHaveBeenCalled();
   });

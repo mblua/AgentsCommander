@@ -21,6 +21,8 @@ pub struct TelegramBridgeManager {
     bridges: HashMap<Uuid, BridgeHandle>,
     bot_assignments: HashMap<String, Uuid>,
     output_senders: OutputSenderMap,
+    #[cfg(test)]
+    detach_counts: HashMap<Uuid, usize>,
 }
 
 pub type TelegramBridgeState = Arc<tokio::sync::Mutex<TelegramBridgeManager>>;
@@ -80,6 +82,8 @@ impl TelegramBridgeManager {
             bridges: HashMap::new(),
             bot_assignments: HashMap::new(),
             output_senders,
+            #[cfg(test)]
+            detach_counts: HashMap::new(),
         }
     }
 
@@ -155,6 +159,10 @@ impl TelegramBridgeManager {
         }
 
         self.bot_assignments.retain(|_, sid| *sid != session_id);
+        #[cfg(test)]
+        {
+            *self.detach_counts.entry(session_id).or_default() += 1;
+        }
 
         Ok(BridgeShutdown {
             session_id,
@@ -172,6 +180,36 @@ impl TelegramBridgeManager {
 
     pub fn has_bridge(&self, session_id: Uuid) -> bool {
         self.bridges.contains_key(&session_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_test_bridge(&mut self, session_id: Uuid, bot_id: &str) {
+        let (output_sender, _output_receiver) = tokio::sync::mpsc::channel(1);
+        let info = BridgeInfo {
+            bot_id: bot_id.to_string(),
+            bot_label: bot_id.to_string(),
+            session_id: session_id.to_string(),
+            status: BridgeStatus::Active,
+            color: "#000000".to_string(),
+        };
+        self.bot_assignments.insert(bot_id.to_string(), session_id);
+        self.bridges.insert(
+            session_id,
+            BridgeHandle {
+                info,
+                cancel: tokio_util::sync::CancellationToken::new(),
+                output_sender,
+                tasks: Vec::new(),
+            },
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_detach_count(&self, session_id: Uuid) -> usize {
+        self.detach_counts
+            .get(&session_id)
+            .copied()
+            .unwrap_or_default()
     }
 
     /// Cancel all active bridges. Called during app shutdown.

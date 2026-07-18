@@ -20,9 +20,7 @@ use crate::session::manager::SessionManager;
 use crate::session::session::SessionInfo;
 use crate::web::auth::WebAccessToken;
 use crate::web::broadcast::WsBroadcaster;
-use crate::{
-    ApiServerHandle, ApiServerTask, WebServerHandle,
-};
+use crate::{ApiServerHandle, ApiServerTask, WebServerHandle};
 
 const HOME_MARKDOWN_URL: &str =
     "https://raw.githubusercontent.com/mblua/AgentsCommander/main/docs/home-en.md";
@@ -793,7 +791,7 @@ pub(crate) async fn apply_coding_agent_profile_selection_inner(
                 let Ok(uuid) = uuid::Uuid::parse_str(session_id) else {
                     continue;
                 };
-                match crate::commands::session::restart_session_inner_with_activation(
+                match crate::commands::session::restart_session_inner_with_intent(
                     app,
                     session_mgr,
                     pty_mgr,
@@ -803,6 +801,8 @@ pub(crate) async fn apply_coding_agent_profile_selection_inner(
                     Some(normalized_profile.clone()),
                     Some(true),
                     false,
+                    crate::session::selection::TrustedRestartIntent::Background,
+                    None,
                 )
                 .await
                 {
@@ -1972,7 +1972,7 @@ mod tests {
             idle_detector,
             git_watcher,
             None,
-            session_mgr,
+            None,
         )));
         app.manage(pty_mgr);
         app
@@ -3158,10 +3158,9 @@ mod tests {
         stale.rail_collapsed_projects = Vec::new();
         stale.rail_favorites_collapsed = false;
 
-        let saved =
-            persist_protected_settings_update_with_saver(&state, stale, |c| Ok(c.clone()))
-                .await
-                .expect("persist");
+        let saved = persist_protected_settings_update_with_saver(&state, stale, |c| Ok(c.clone()))
+            .await
+            .expect("persist");
 
         assert_eq!(saved.rail_collapsed_projects, vec!["c:/foo".to_string()]);
         assert!(saved.rail_favorites_collapsed);

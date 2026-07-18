@@ -11,6 +11,7 @@ use crate::config::settings::SettingsState;
 use crate::pty::idle_detector::IdleDetector;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
+use crate::session::selection::{SelectionCoordinator, SelectionCoordinatorError};
 
 const TICK: Duration = Duration::from_secs(60);
 /// (#580) A just-woken session replays scrollback for ~1-2s; exclude its first
@@ -150,7 +151,12 @@ fn resolve_member_anchor(
 /// unified anchor is idle past the timeout. `anchor_secs` is the output of
 /// `team_idle_since_secs`; i64::MIN (no anchor) is never closeable. Pure, so the
 /// kill rule is unit-tested directly (§8.1) instead of re-implemented in a test.
-fn team_is_closeable(established: bool, anchor_secs: i64, now_secs: i64, timeout_secs: i64) -> bool {
+fn team_is_closeable(
+    established: bool,
+    anchor_secs: i64,
+    now_secs: i64,
+    timeout_secs: i64,
+) -> bool {
     established && anchor_secs != i64::MIN && (now_secs - anchor_secs) > timeout_secs
 }
 
@@ -179,7 +185,7 @@ fn destroyed_is_team_coordinator(destroyed_id: Uuid, coord_id_of_team: Option<Uu
     coord_id_of_team == Some(destroyed_id)
 }
 
-async fn tick(app: &AppHandle, last_emitted: &mut HashMap<String, i64>) {
+async fn tick<R: tauri::Runtime>(app: &AppHandle<R>, last_emitted: &mut HashMap<String, i64>) {
     let settings = app.state::<SettingsState>();
     let (enabled, timeout_min, skip_telegram_assigned) = {
         let s = settings.read().await;
@@ -256,8 +262,7 @@ async fn tick(app: &AppHandle, last_emitted: &mut HashMap<String, i64>) {
         let mut g = clocks.lock().unwrap_or_else(|e| e.into_inner());
         for (team, (fqn, _)) in &coord_refs {
             if let Some(sil) = team_sil.get(team) {
-                if let Some(c) =
-                    DateTime::<Utc>::from_timestamp(now_secs - sil.as_secs() as i64, 0)
+                if let Some(c) = DateTime::<Utc>::from_timestamp(now_secs - sil.as_secs() as i64, 0)
                 {
                     g.note_activity(fqn, c); // monotonic; dirties only on a real move
                 }
@@ -282,7 +287,11 @@ async fn tick(app: &AppHandle, last_emitted: &mut HashMap<String, i64>) {
             e.and_then(|e| e.last_user_message_at),
             e.and_then(|e| e.last_activity_at),
             anchor,
-            if anchor == i64::MIN { 0 } else { now_secs - anchor }
+            if anchor == i64::MIN {
+                0
+            } else {
+                now_secs - anchor
+            }
         ); // Decision D: debug-only, no new IPC field
         if anchor != i64::MIN && last_emitted.get(team).copied() != Some(anchor) {
             last_emitted.insert(team.clone(), anchor);
@@ -310,12 +319,8 @@ async fn tick(app: &AppHandle, last_emitted: &mut HashMap<String, i64>) {
                 skip_telegram_assigned,
                 telegram_protected.contains(id),
             );
-            let anchor = resolve_member_anchor(
-                coord_refs.get(team),
-                &snap,
-                idle.silence_age(*id),
-                now_secs,
-            );
+            let anchor =
+                resolve_member_anchor(coord_refs.get(team), &snap, idle.silence_age(*id), now_secs);
             should_close_member(
                 is_telegram_protected,
                 established_teams.contains(team),
@@ -327,10 +332,26 @@ async fn tick(app: &AppHandle, last_emitted: &mut HashMap<String, i64>) {
         .map(|(id, _)| *id)
         .collect();
 
+    if to_close.is_empty() {
+        return;
+    }
+    let coordinator = app.state::<SelectionCoordinator>();
+    let ticket = match coordinator.reserve_auto_close() {
+        Ok(ticket) => ticket,
+        Err(SelectionCoordinatorError::Busy) => {
+            log::info!("[auto-close] coordinator busy; deferred idle batch to next tick");
+            return;
+        }
+        Err(error) => {
+            log::warn!("[auto-close] coordinator unavailable: {error}");
+            return;
+        }
+    };
+
     // (#589) Teams whose COORDINATOR'S OWN session was auto-closed this tick. A
     // team where only a non-coordinator member was reaped is deliberately absent,
     // so the surviving coordinator row is never stamped AUTO-CLOSED.
-    let mut coord_closed_teams: HashSet<String> = HashSet::new();
+    let mut confirmed = Vec::new();
     for id in to_close {
         // TOCTOU re-check (G2): skip if a user message advanced the anchor since
         // the snapshot, OR this member emitted within REPAINT_GRACE. The second
@@ -346,8 +367,7 @@ async fn tick(app: &AppHandle, last_emitted: &mut HashMap<String, i64>) {
                 None => i64::MIN,
             }
         }; // guard dropped before the destroy await
-        let anchor_fresh =
-            fresh_anchor != i64::MIN && (now_secs - fresh_anchor) <= timeout_secs;
+        let anchor_fresh = fresh_anchor != i64::MIN && (now_secs - fresh_anchor) <= timeout_secs;
         let emitted_recently = idle.silence_age(id).is_some_and(|a| a < REPAINT_GRACE);
         if anchor_fresh || emitted_recently {
             log::info!(
@@ -366,21 +386,41 @@ async fn tick(app: &AppHandle, last_emitted: &mut HashMap<String, i64>) {
                 continue;
             }
         }
-        if let Err(e) = crate::commands::session::destroy_session_inner(app, id).await {
-            log::warn!("[auto-close] destroy {} failed: {}", &id.to_string()[..8], e);
-        } else {
-            log::info!(
-                "[auto-close] terminated idle session {}",
-                &id.to_string()[..8]
-            );
-            // (#589) Record the team for the AUTO-CLOSED mark ONLY when the
-            // destroyed session IS this team's coordinator. A sibling member
-            // reaped while the coordinator survives must NOT stamp the live
-            // coordinator row; it keeps its idle counter.
-            if let Some(team) = id_to_team.get(&id) {
-                if destroyed_is_team_coordinator(id, coord_ids.get(team).copied()) {
-                    coord_closed_teams.insert(team.clone());
-                }
+        confirmed.push(id);
+    }
+
+    let outcome = match ticket.finalize(confirmed).await {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            log::warn!("[auto-close] batch finalization failed: {error}");
+            return;
+        }
+    };
+    for (id, error) in &outcome.failed {
+        log::warn!(
+            "[auto-close] destroy {} failed: {}",
+            &id.to_string()[..8],
+            error
+        );
+    }
+    let mut coord_closed_teams: HashSet<String> = HashSet::new();
+    for id in outcome
+        .destroyed_ids
+        .iter()
+        .chain(outcome.retained_exited_ids.iter())
+        .copied()
+    {
+        log::info!(
+            "[auto-close] terminated idle session {}",
+            &id.to_string()[..8]
+        );
+        // (#589) Record the team for the AUTO-CLOSED mark ONLY when the
+        // destroyed session IS this team's coordinator. A sibling member
+        // reaped while the coordinator survives must NOT stamp the live
+        // coordinator row; it keeps its idle counter.
+        if let Some(team) = id_to_team.get(&id) {
+            if destroyed_is_team_coordinator(id, coord_ids.get(team).copied()) {
+                coord_closed_teams.insert(team.clone());
             }
         }
     }
@@ -418,7 +458,7 @@ async fn tick(app: &AppHandle, last_emitted: &mut HashMap<String, i64>) {
     }
 }
 
-fn flush_clocks(app: &AppHandle) {
+fn flush_clocks<R: tauri::Runtime>(app: &AppHandle<R>) {
     if let Some(clocks) =
         app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
     {
@@ -440,6 +480,83 @@ fn flush_clocks(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct AutoCloseBackend {
+        live: Mutex<HashSet<Uuid>>,
+    }
+
+    impl AutoCloseBackend {
+        fn set_live(&self, id: Uuid) {
+            self.live.lock().unwrap().insert(id);
+        }
+    }
+
+    impl crate::pty::backend::PtyBackend for AutoCloseBackend {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn spawn(
+            &self,
+            spec: crate::pty::backend::BackendSpawnSpec,
+        ) -> futures::future::BoxFuture<'_, Result<(), crate::errors::AppError>> {
+            Box::pin(async move {
+                self.set_live(spec.id);
+                Ok(())
+            })
+        }
+
+        fn write(&self, id: Uuid, _data: &[u8]) -> Result<(), crate::errors::AppError> {
+            self.live
+                .lock()
+                .unwrap()
+                .contains(&id)
+                .then_some(())
+                .ok_or_else(|| crate::errors::AppError::SessionNotFound(id.to_string()))
+        }
+
+        fn resize(&self, id: Uuid, _cols: u16, _rows: u16) -> Result<(), crate::errors::AppError> {
+            self.write(id, &[])
+        }
+
+        fn kill(&self, id: Uuid) -> Result<(), crate::errors::AppError> {
+            self.live.lock().unwrap().remove(&id);
+            Ok(())
+        }
+
+        fn has_session(&self, id: Uuid) -> bool {
+            self.live.lock().unwrap().contains(&id)
+        }
+
+        fn get_screen_snapshot(&self, _id: Uuid) -> Option<crate::pty::output::PtyScreenSnapshot> {
+            None
+        }
+
+        fn get_pty_size(&self, id: Uuid) -> Option<(u16, u16)> {
+            self.has_session(id).then_some((30, 120))
+        }
+
+        fn get_screen_rows(&self, _id: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
+            crate::pty::context_scrape::ScreenRowsRead::SessionOver
+        }
+
+        fn register_response_watcher(
+            &self,
+            _session_id: Uuid,
+            _request_id: String,
+            _response_dir: std::path::PathBuf,
+        ) {
+        }
+
+        fn terminate_job_for_session(&self, _id: Uuid) -> bool {
+            false
+        }
+
+        fn kill_all_jobs(&self) -> (usize, usize) {
+            (0, 0)
+        }
+    }
 
     fn key(id: Uuid, team: &str) -> (Uuid, String) {
         (id, team.to_string())
@@ -594,8 +711,14 @@ mod tests {
 
     #[test]
     fn idle_since_secs_picks_max_present_component() {
-        assert_eq!(team_idle_since_secs(Some(ts(100)), None), ts(100).timestamp());
-        assert_eq!(team_idle_since_secs(None, Some(ts(200))), ts(200).timestamp());
+        assert_eq!(
+            team_idle_since_secs(Some(ts(100)), None),
+            ts(100).timestamp()
+        );
+        assert_eq!(
+            team_idle_since_secs(None, Some(ts(200))),
+            ts(200).timestamp()
+        );
         assert_eq!(
             team_idle_since_secs(Some(ts(100)), Some(ts(200))),
             ts(200).timestamp(),
@@ -614,7 +737,7 @@ mod tests {
     fn closeable_when_established_and_idle_past_timeout() {
         let now = ts(10_000).timestamp();
         let timeout = 3600; // 60 min
-        // 3700s idle > 3600s timeout.
+                            // 3700s idle > 3600s timeout.
         let anchor = team_idle_since_secs(Some(ts(10_000 - 3700)), None);
         assert!(team_is_closeable(true, anchor, now, timeout));
     }
@@ -764,7 +887,8 @@ mod tests {
         let now = ts(10_000).timestamp();
         let fqn = "proj:wg-1/tech-lead".to_string();
         let coord = (fqn.clone(), "C:/x".to_string());
-        let mut snap: std::collections::HashMap<String, ClockEntry> = std::collections::HashMap::new();
+        let mut snap: std::collections::HashMap<String, ClockEntry> =
+            std::collections::HashMap::new();
         snap.insert(
             fqn,
             ClockEntry {
@@ -809,5 +933,133 @@ mod tests {
             !destroyed_is_team_coordinator(member, None),
             "absent coordinator id must not mark the row"
         );
+    }
+
+    #[tokio::test]
+    async fn selected_idle_team_closes_as_one_batch_and_clears_selection_once() {
+        use crate::config::coordinator_clocks::CoordinatorClocks;
+        use crate::config::settings::{AppSettings, SettingsState};
+        use crate::pty::backend::{PtyBackend, SessionBackendKind};
+        use crate::resource_monitor::ResourceMonitorState;
+        use crate::session::selection::{SelectionCoordinator, SelectionMode, SelectionSource};
+        use crate::telegram::manager::{TelegramBridgeManager, TelegramBridgeState};
+        use tauri::Listener;
+
+        const COORDINATOR_CWD: &str = "C:\\repos\\myproj\\.ac\\wg-1-team\\__agent_lead";
+        const MEMBER_CWD: &str = "C:\\repos\\myproj\\.ac\\wg-1-team\\__agent_rust";
+
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let coordinator_session = manager
+            .read()
+            .await
+            .create_session(
+                "shell".to_string(),
+                Vec::new(),
+                COORDINATOR_CWD.to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        let member_session = manager
+            .read()
+            .await
+            .create_session(
+                "shell".to_string(),
+                Vec::new(),
+                MEMBER_CWD.to_string(),
+                Some("codex".to_string()),
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+
+        let backend = Arc::new(AutoCloseBackend::default());
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
+        for id in [coordinator_session.id, member_session.id] {
+            backend.set_live(id);
+            pty.lock()
+                .unwrap()
+                .record_route(id, SessionBackendKind::LocalProcess);
+        }
+        let idle = IdleDetector::new(|_| {}, |_| {});
+        for id in [coordinator_session.id, member_session.id] {
+            idle.set_auto_close_ages_for_test(
+                id,
+                Duration::from_secs(120),
+                Duration::from_secs(120),
+            );
+        }
+
+        let settings = AppSettings {
+            coordinator_auto_close_enabled: true,
+            coordinator_auto_close_minutes: 1,
+            coordinator_auto_close_skip_telegram_assigned: false,
+            ..AppSettings::default()
+        };
+        let settings: SettingsState = Arc::new(tokio::sync::RwLock::new(settings));
+        let clocks = Arc::new(Mutex::new(CoordinatorClocks::default()));
+        clocks.lock().unwrap().note_user_message(
+            "myproj:wg-1-team/lead",
+            Utc::now() - chrono::Duration::seconds(120),
+        );
+        let shutdown = crate::shutdown::ShutdownSignal::new();
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), shutdown.token().clone());
+        let output_senders = Arc::new(Mutex::new(HashMap::new()));
+        let telegram: TelegramBridgeState = Arc::new(tokio::sync::Mutex::new(
+            TelegramBridgeManager::new(output_senders),
+        ));
+        let app = tauri::test::mock_builder()
+            .manage(settings)
+            .manage(Arc::clone(&manager))
+            .manage(Arc::clone(&pty))
+            .manage(Arc::clone(&idle))
+            .manage(clocks)
+            .manage(crate::DetachedSessionsState::default())
+            .manage(telegram)
+            .manage(Arc::new(ResourceMonitorState::new()))
+            .manage(coordinator.clone())
+            .manage(shutdown)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build auto-close test app");
+        coordinator
+            .start(app.handle().clone())
+            .expect("start selection coordinator");
+        coordinator.submit_restore_first().await.unwrap().finish();
+
+        let (events_tx, events_rx) = std::sync::mpsc::channel();
+        for event_name in ["session_destroyed", "session_switched"] {
+            let events_tx = events_tx.clone();
+            app.listen_any(event_name, move |event| {
+                let _ = events_tx.send((event_name, event.payload().to_string()));
+            });
+        }
+
+        tick(app.handle(), &mut HashMap::new()).await;
+
+        assert!(manager.read().await.list_sessions().await.is_empty());
+        assert!(!backend.has_session(coordinator_session.id));
+        assert!(!backend.has_session(member_session.id));
+        let selection = manager.read().await.selection_payload().await;
+        assert_eq!(selection.mode(), SelectionMode::None);
+        assert_eq!(selection.source(), SelectionSource::AutoClose);
+        let observed = (0..3)
+            .map(|_| events_rx.recv_timeout(Duration::from_secs(1)).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            observed.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+            vec!["session_destroyed", "session_destroyed", "session_switched"]
+        );
+        let selection_payload: serde_json::Value = serde_json::from_str(&observed[2].1).unwrap();
+        assert!(selection_payload["id"].is_null());
+        assert_eq!(selection_payload["source"], "autoClose");
+        assert!(events_rx.try_recv().is_err());
+        coordinator.close_and_join().await;
     }
 }

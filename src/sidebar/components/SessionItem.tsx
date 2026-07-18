@@ -69,6 +69,7 @@ const SessionItem: Component<{
 
   const handleMicClick = (e: MouseEvent) => {
     e.stopPropagation();
+    if (!sessionHasLivePty()) return;
     if (!settingsStore.voiceEnabled) {
       emitOpenSettings("integrations").catch(console.error);
       return;
@@ -88,6 +89,7 @@ const SessionItem: Component<{
 
   const handleTelegramClick = async (e: MouseEvent) => {
     e.stopPropagation();
+    if (!sessionHasLivePty()) return;
     const b = bridge();
     if (b) {
       await TelegramAPI.detach(props.session.id);
@@ -105,6 +107,7 @@ const SessionItem: Component<{
 
   const handleBotSelect = async (botId: string) => {
     setShowBotMenu(false);
+    if (!sessionHasLivePty()) return;
     await TelegramAPI.attach(props.session.id, botId);
   };
 
@@ -162,6 +165,7 @@ const SessionItem: Component<{
 
   const handleDetachToggle = async (e: MouseEvent) => {
     e.stopPropagation();
+    if (!sessionHasLivePty()) return;
     try {
       if (isDetached()) {
         await WindowAPI.attach(props.session.id);
@@ -176,6 +180,7 @@ const SessionItem: Component<{
   const handleContextDetachToggle = async () => {
     setShowContextMenu(false);
     cleanupContextMenu();
+    if (!sessionHasLivePty()) return;
     try {
       if (isDetached()) {
         await WindowAPI.attach(props.session.id);
@@ -192,13 +197,13 @@ const SessionItem: Component<{
     void requestCoordinatorClose(props.session);
   };
 
-  let dismissContextMenu: (() => void) | null = null;
+  let dismissContextMenu: EventListener | null = null;
 
   const cleanupContextMenu = () => {
     if (dismissContextMenu) {
       window.removeEventListener("click", dismissContextMenu);
       window.removeEventListener("contextmenu", dismissContextMenu);
-      window.removeEventListener("keydown", dismissContextMenu as any);
+      window.removeEventListener("keydown", dismissContextMenu);
       dismissContextMenu = null;
     }
   };
@@ -230,7 +235,7 @@ const SessionItem: Component<{
     cleanupContextMenu();
     setContextMenuPos({ x: e.clientX, y: e.clientY });
     setShowContextMenu(true);
-    const dismiss = (ev?: Event) => {
+    const dismiss: EventListener = (ev) => {
       if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
       setShowContextMenu(false);
       cleanupContextMenu();
@@ -240,7 +245,7 @@ const SessionItem: Component<{
       positionContextMenu(e.clientX, e.clientY);
       window.addEventListener("click", dismiss);
       window.addEventListener("contextmenu", dismiss);
-      window.addEventListener("keydown", dismiss as any);
+      window.addEventListener("keydown", dismiss);
     });
   };
 
@@ -403,32 +408,34 @@ const SessionItem: Component<{
         </Show>
       </div>
       <Show when={!isInactive()}>
-        <Show when={isRecording()}>
+        <Show when={sessionHasLivePty()}>
+          <Show when={isRecording()}>
+            <button
+              class="session-item-mic-cancel"
+              onClick={handleCancelRecording}
+              title="Cancel recording"
+            >
+              &#x2715;
+            </button>
+          </Show>
           <button
-            class="session-item-mic-cancel"
-            onClick={handleCancelRecording}
-            title="Cancel recording"
+            class={`session-item-mic ${isRecording() ? "recording" : ""} ${isProcessing() ? "processing" : ""} ${voiceRecorder.micError() ? "error" : ""} ${!settingsStore.voiceEnabled ? "disabled" : ""}`}
+            onClick={handleMicClick}
+            title={
+              !settingsStore.voiceEnabled
+                ? "Enable voice-to-text in Settings and set a Gemini API key to use this."
+                : isRecording()
+                  ? "Stop recording"
+                  : isProcessing()
+                    ? "Transcribing..."
+                    : voiceRecorder.micError()
+                      ? voiceRecorder.micError()!
+                      : "Voice to text"
+            }
           >
-            &#x2715;
+            &#x1F399;
           </button>
         </Show>
-        <button
-          class={`session-item-mic ${isRecording() ? "recording" : ""} ${isProcessing() ? "processing" : ""} ${voiceRecorder.micError() ? "error" : ""} ${!settingsStore.voiceEnabled ? "disabled" : ""}`}
-          onClick={handleMicClick}
-          title={
-            !settingsStore.voiceEnabled
-              ? "Enable voice-to-text in Settings and set a Gemini API key to use this."
-              : isRecording()
-                ? "Stop recording"
-                : isProcessing()
-                  ? "Transcribing..."
-                  : voiceRecorder.micError()
-                    ? voiceRecorder.micError()!
-                    : "Voice to text"
-          }
-        >
-          &#x1F399;
-        </button>
         <button
           class="session-item-explorer"
           onClick={handleOpenExplorer}
@@ -436,44 +443,45 @@ const SessionItem: Component<{
         >
           &#x1F4C2;
         </button>
-        <button
-          class="session-item-detach"
-          classList={{ attached: isDetached() }}
-          onClick={handleDetachToggle}
-          title={isDetached() ? "Re-attach to main window" : "Open in new window"}
-          innerHTML={isDetached() ? "&#x2934;" : "&#x29C9;"}
-          data-ac-testid={`session.${props.session.id}.detachToggle`}
-          data-ac-role="button"
-          data-ac-state={isDetached() ? "detached" : "attached"}
-        />
-
-        <Show when={bridge()}>
-          <div
-            class="session-item-bridge-dot"
-            style={{ background: bridge()!.color }}
-            title={`Telegram: ${bridge()!.botLabel}`}
+        <Show when={sessionHasLivePty()}>
+          <button
+            class="session-item-detach"
+            classList={{ attached: isDetached() }}
+            onClick={handleDetachToggle}
+            title={isDetached() ? "Re-attach to main window" : "Open in new window"}
+            innerHTML={isDetached() ? "&#x2934;" : "&#x29C9;"}
+            data-ac-testid={`session.${props.session.id}.detachToggle`}
+            data-ac-role="button"
+            data-ac-state={isDetached() ? "detached" : "attached"}
           />
-        </Show>
-        <button
-          class={`session-item-telegram ${bridge() ? "active" : ""}`}
-          onClick={handleTelegramClick}
-          title={bridge() ? "Detach Telegram" : "Attach Telegram"}
-          style={bridge() ? { color: bridge()!.color } : {}}
-        ><TelegramIcon /></button>
-        <Show when={showBotMenu()}>
-          <div class="session-item-bot-menu" onClick={(e) => e.stopPropagation()}>
-            <For each={availableBots()}>
-              {(bot) => (
-                <button
-                  class="session-item-bot-option"
-                  onClick={() => handleBotSelect(bot.id)}
-                >
-                  <span class="settings-color-dot" style={{ background: bot.color }} />
-                  {bot.label}
-                </button>
-              )}
-            </For>
-          </div>
+          <Show when={bridge()}>
+            <div
+              class="session-item-bridge-dot"
+              style={{ background: bridge()!.color }}
+              title={`Telegram: ${bridge()!.botLabel}`}
+            />
+          </Show>
+          <button
+            class={`session-item-telegram ${bridge() ? "active" : ""}`}
+            onClick={handleTelegramClick}
+            title={bridge() ? "Detach Telegram" : "Attach Telegram"}
+            style={bridge() ? { color: bridge()!.color } : {}}
+          ><TelegramIcon /></button>
+          <Show when={showBotMenu()}>
+            <div class="session-item-bot-menu" onClick={(e) => e.stopPropagation()}>
+              <For each={availableBots()}>
+                {(bot) => (
+                  <button
+                    class="session-item-bot-option"
+                    onClick={() => handleBotSelect(bot.id)}
+                  >
+                    <span class="settings-color-dot" style={{ background: bot.color }} />
+                    {bot.label}
+                  </button>
+                )}
+              </For>
+            </div>
+          </Show>
         </Show>
         <button
           class="session-item-close"
@@ -578,16 +586,18 @@ const SessionItem: Component<{
                 </>
               )}
             </Show>
-            <div class="context-separator" />
-            <button
-              class="session-context-option"
-              onClick={handleContextDetachToggle}
-              data-ac-testid={`session.${props.session.id}.menu.detachToggle`}
-              data-ac-role="menuitem"
-              data-ac-state={isDetached() ? "detached" : "attached"}
-            >
-              {isDetached() ? "Re-attach to main" : "Open in new window"}
-            </button>
+            <Show when={sessionHasLivePty()}>
+              <div class="context-separator" />
+              <button
+                class="session-context-option"
+                onClick={handleContextDetachToggle}
+                data-ac-testid={`session.${props.session.id}.menu.detachToggle`}
+                data-ac-role="menuitem"
+                data-ac-state={isDetached() ? "detached" : "attached"}
+              >
+                {isDetached() ? "Re-attach to main" : "Open in new window"}
+              </button>
+            </Show>
           </div>
         </Portal>
       )}
