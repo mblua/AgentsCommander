@@ -518,6 +518,7 @@ fn blank_agent() -> AgentConfig {
         isolated_home: false,
         instructions_filename: None,
         config_seed: None,
+        context_regex: None,
         backend: Default::default(),
     }
 }
@@ -535,6 +536,9 @@ fn definition_to_agent_seed(def: &CodingAgentDefinition) -> AgentConfig {
         isolated_home: def.isolated_home,
         instructions_filename: def.instructions_filename.clone(),
         config_seed: def.config_seed.clone(),
+        // #1032 - presets carry no context regex: it is per-agent user config with no
+        // counterpart in a definition, so a seeded agent starts with the feature off.
+        context_regex: None,
         backend: Default::default(),
     }
 }

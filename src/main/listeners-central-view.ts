@@ -10,8 +10,8 @@ import { centralViewStore } from "./stores/centralView";
  * Listeners installed:
  * - `session_switched`: reveal the terminal (cover an embedded RM) ONLY when
  *   the backend marks the switch user-initiated (`userInitiated === true`) and
- *   it carries a real id. A non-user switch — boot restore, destroy
- *   auto-promote, detach sibling-switch, mailbox/coordinator switch — must NOT
+ *   it carries a real id. A non-user transition — boot restore, auto-close,
+ *   background cleanup, or liveness reconciliation — must NOT
  *   flip away from RM: `centralViewStore.showTerminal()` persists `false`, which
  *   would defeat the restored `mainResourceMonitorAttached` choice (plan §6) and
  *   yank the RM view away mid-use. This mirrors the Home listener's discriminator

@@ -10,9 +10,9 @@ import { homeStore } from "./stores/home";
  *
  * Listeners installed:
  * - `session_switched`: hides Home only when the backend marks the switch
- *   as user-initiated (`userInitiated === true`). Restore, destroy
- *   auto-promote, detach sibling-switch and other automatic bookkeeping
- *   emit without that flag, so they leave Home visible. See
+ *   as user-initiated (`userInitiated === true`). Restore, auto-close,
+ *   liveness reconciliation and other background transitions carry the
+ *   required false value, so they leave Home visible. See
  *   `_plans/183-home-first-startup.md`.
  * - `session_destroyed`: shows Home when the LAST session goes away
  *   (issue #164 contract). Yields a microtask so TerminalApp's destroy

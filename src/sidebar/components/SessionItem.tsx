@@ -13,6 +13,8 @@ import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder"
 import OpenAgentModal from "./OpenAgentModal";
 import AgentPickerModal from "./AgentPickerModal";
 import ProfileOutdatedBadge from "./ProfileOutdatedBadge";
+import ContextBadge from "./ContextBadge";
+import { contextBadgeConfigured } from "./session-context";
 import { TelegramIcon } from "./TelegramIcon";
 import { profileDisplayLabel, sessionProfileBadge } from "../../shared/profile-utils";
 import { sessionDotClass } from "./session-status";
@@ -48,17 +50,14 @@ const SessionItem: Component<{
     return settingsStore.current?.agents?.find((a) => a.id === props.session.agentId)?.label ?? null;
   };
   const profileBadge = () => sessionProfileBadge(props.session);
-  // #548: unify with the ProjectPanel quick-access tooltip — resolve the name of
-  // the EFFECTIVE profile via the SAME shared resolver (no second resolver, no
-  // badge-string parsing). Plain function, matching profileBadge.
+  const ctxVisible = () =>
+    contextBadgeConfigured(settingsStore.current?.agents, props.session.agentId);
+  const ctxPercent = () => sessionsStore.contextPercentBySessionId[props.session.id];
   const profileBadgeTitle = () => {
     const badge = profileBadge();
     if (!badge) return undefined;
     const cfg = settingsStore.current?.codingAgentProfiles;
     const letter = props.session.effectiveProfile || props.session.requestedProfile;
-    // Graceful degrade: before settings load there is no cfg; keep today's
-    // letter-only tooltip rather than dropping it. Once loaded, show the resolved
-    // name (same shape as the ProjectPanel quick-access tooltip).
     if (!cfg || !letter) return `Profile ${badge}`;
     return profileDisplayLabel(cfg, settingsStore.current?.agents ?? [], props.session.agentId, letter);
   };
@@ -70,6 +69,7 @@ const SessionItem: Component<{
 
   const handleMicClick = (e: MouseEvent) => {
     e.stopPropagation();
+    if (!sessionHasLivePty()) return;
     if (!settingsStore.voiceEnabled) {
       emitOpenSettings("integrations").catch(console.error);
       return;
@@ -89,6 +89,7 @@ const SessionItem: Component<{
 
   const handleTelegramClick = async (e: MouseEvent) => {
     e.stopPropagation();
+    if (!sessionHasLivePty()) return;
     const b = bridge();
     if (b) {
       await TelegramAPI.detach(props.session.id);
@@ -106,12 +107,11 @@ const SessionItem: Component<{
 
   const handleBotSelect = async (botId: string) => {
     setShowBotMenu(false);
+    if (!sessionHasLivePty()) return;
     await TelegramAPI.attach(props.session.id, botId);
   };
 
   const handleClick = async () => {
-    // #587 — cover an embedded RM with the terminal even when switch_session
-    // no-ops on the already-active session (which emits no session_switched).
     centralViewStore.showTerminal();
     await SessionAPI.switch(props.session.id);
     if (isTauri) {
@@ -165,6 +165,7 @@ const SessionItem: Component<{
 
   const handleDetachToggle = async (e: MouseEvent) => {
     e.stopPropagation();
+    if (!sessionHasLivePty()) return;
     try {
       if (isDetached()) {
         await WindowAPI.attach(props.session.id);
@@ -179,6 +180,7 @@ const SessionItem: Component<{
   const handleContextDetachToggle = async () => {
     setShowContextMenu(false);
     cleanupContextMenu();
+    if (!sessionHasLivePty()) return;
     try {
       if (isDetached()) {
         await WindowAPI.attach(props.session.id);
@@ -192,19 +194,16 @@ const SessionItem: Component<{
 
   const handleClose = (e: MouseEvent) => {
     e.stopPropagation();
-    // #588 route through the shared helper: closing a coordinator from the
-    // session list marks + (settings-gated) cascades + confirms when busy. For a
-    // non-coordinator this is identical to the previous SessionAPI.destroy.
     void requestCoordinatorClose(props.session);
   };
 
-  let dismissContextMenu: (() => void) | null = null;
+  let dismissContextMenu: EventListener | null = null;
 
   const cleanupContextMenu = () => {
     if (dismissContextMenu) {
       window.removeEventListener("click", dismissContextMenu);
       window.removeEventListener("contextmenu", dismissContextMenu);
-      window.removeEventListener("keydown", dismissContextMenu as any);
+      window.removeEventListener("keydown", dismissContextMenu);
       dismissContextMenu = null;
     }
   };
@@ -236,7 +235,7 @@ const SessionItem: Component<{
     cleanupContextMenu();
     setContextMenuPos({ x: e.clientX, y: e.clientY });
     setShowContextMenu(true);
-    const dismiss = (ev?: Event) => {
+    const dismiss: EventListener = (ev) => {
       if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
       setShowContextMenu(false);
       cleanupContextMenu();
@@ -246,7 +245,7 @@ const SessionItem: Component<{
       positionContextMenu(e.clientX, e.clientY);
       window.addEventListener("click", dismiss);
       window.addEventListener("contextmenu", dismiss);
-      window.addEventListener("keydown", dismiss as any);
+      window.addEventListener("keydown", dismiss);
     });
   };
 
@@ -275,12 +274,6 @@ const SessionItem: Component<{
 
   const isInactive = () => props.session.id.startsWith("inactive-");
 
-  /** Derive short display name from workingDirectory.
-   *  Project AC Root paths: "agent-name@origin-project" (e.g. "code-reviewer@phi_phibridge")
-   *  Other paths: "parentFolder/name" (last 2 segments)
-   *
-   *  Project AC Root parsing is delegated to extractProjectName. The innermost
-   *  .ac segment wins, matching the titlebar helpers. */
   const displayName = () => {
     const wd = props.session.workingDirectory;
     if (wd) {
@@ -387,6 +380,12 @@ const SessionItem: Component<{
                   </span>
                 )}
               </Show>
+              <Show when={ctxVisible()}>
+                <ContextBadge
+                  percent={ctxPercent()}
+                  testId={`session.${props.session.id}.contextBadge`}
+                />
+              </Show>
               <Show when={props.session.profileOutdated}>
                 <ProfileOutdatedBadge onReload={() => void restartSession()} />
               </Show>
@@ -409,32 +408,34 @@ const SessionItem: Component<{
         </Show>
       </div>
       <Show when={!isInactive()}>
-        <Show when={isRecording()}>
+        <Show when={sessionHasLivePty()}>
+          <Show when={isRecording()}>
+            <button
+              class="session-item-mic-cancel"
+              onClick={handleCancelRecording}
+              title="Cancel recording"
+            >
+              &#x2715;
+            </button>
+          </Show>
           <button
-            class="session-item-mic-cancel"
-            onClick={handleCancelRecording}
-            title="Cancel recording"
+            class={`session-item-mic ${isRecording() ? "recording" : ""} ${isProcessing() ? "processing" : ""} ${voiceRecorder.micError() ? "error" : ""} ${!settingsStore.voiceEnabled ? "disabled" : ""}`}
+            onClick={handleMicClick}
+            title={
+              !settingsStore.voiceEnabled
+                ? "Enable voice-to-text in Settings and set a Gemini API key to use this."
+                : isRecording()
+                  ? "Stop recording"
+                  : isProcessing()
+                    ? "Transcribing..."
+                    : voiceRecorder.micError()
+                      ? voiceRecorder.micError()!
+                      : "Voice to text"
+            }
           >
-            &#x2715;
+            &#x1F399;
           </button>
         </Show>
-        <button
-          class={`session-item-mic ${isRecording() ? "recording" : ""} ${isProcessing() ? "processing" : ""} ${voiceRecorder.micError() ? "error" : ""} ${!settingsStore.voiceEnabled ? "disabled" : ""}`}
-          onClick={handleMicClick}
-          title={
-            !settingsStore.voiceEnabled
-              ? "Enable voice-to-text in Settings and set a Gemini API key to use this."
-              : isRecording()
-                ? "Stop recording"
-                : isProcessing()
-                  ? "Transcribing..."
-                  : voiceRecorder.micError()
-                    ? voiceRecorder.micError()!
-                    : "Voice to text"
-          }
-        >
-          &#x1F399;
-        </button>
         <button
           class="session-item-explorer"
           onClick={handleOpenExplorer}
@@ -442,44 +443,45 @@ const SessionItem: Component<{
         >
           &#x1F4C2;
         </button>
-        <button
-          class="session-item-detach"
-          classList={{ attached: isDetached() }}
-          onClick={handleDetachToggle}
-          title={isDetached() ? "Re-attach to main window" : "Open in new window"}
-          innerHTML={isDetached() ? "&#x2934;" : "&#x29C9;"}
-          data-ac-testid={`session.${props.session.id}.detachToggle`}
-          data-ac-role="button"
-          data-ac-state={isDetached() ? "detached" : "attached"}
-        />
-
-        <Show when={bridge()}>
-          <div
-            class="session-item-bridge-dot"
-            style={{ background: bridge()!.color }}
-            title={`Telegram: ${bridge()!.botLabel}`}
+        <Show when={sessionHasLivePty()}>
+          <button
+            class="session-item-detach"
+            classList={{ attached: isDetached() }}
+            onClick={handleDetachToggle}
+            title={isDetached() ? "Re-attach to main window" : "Open in new window"}
+            innerHTML={isDetached() ? "&#x2934;" : "&#x29C9;"}
+            data-ac-testid={`session.${props.session.id}.detachToggle`}
+            data-ac-role="button"
+            data-ac-state={isDetached() ? "detached" : "attached"}
           />
-        </Show>
-        <button
-          class={`session-item-telegram ${bridge() ? "active" : ""}`}
-          onClick={handleTelegramClick}
-          title={bridge() ? "Detach Telegram" : "Attach Telegram"}
-          style={bridge() ? { color: bridge()!.color } : {}}
-        ><TelegramIcon /></button>
-        <Show when={showBotMenu()}>
-          <div class="session-item-bot-menu" onClick={(e) => e.stopPropagation()}>
-            <For each={availableBots()}>
-              {(bot) => (
-                <button
-                  class="session-item-bot-option"
-                  onClick={() => handleBotSelect(bot.id)}
-                >
-                  <span class="settings-color-dot" style={{ background: bot.color }} />
-                  {bot.label}
-                </button>
-              )}
-            </For>
-          </div>
+          <Show when={bridge()}>
+            <div
+              class="session-item-bridge-dot"
+              style={{ background: bridge()!.color }}
+              title={`Telegram: ${bridge()!.botLabel}`}
+            />
+          </Show>
+          <button
+            class={`session-item-telegram ${bridge() ? "active" : ""}`}
+            onClick={handleTelegramClick}
+            title={bridge() ? "Detach Telegram" : "Attach Telegram"}
+            style={bridge() ? { color: bridge()!.color } : {}}
+          ><TelegramIcon /></button>
+          <Show when={showBotMenu()}>
+            <div class="session-item-bot-menu" onClick={(e) => e.stopPropagation()}>
+              <For each={availableBots()}>
+                {(bot) => (
+                  <button
+                    class="session-item-bot-option"
+                    onClick={() => handleBotSelect(bot.id)}
+                  >
+                    <span class="settings-color-dot" style={{ background: bot.color }} />
+                    {bot.label}
+                  </button>
+                )}
+              </For>
+            </div>
+          </Show>
         </Show>
         <button
           class="session-item-close"
@@ -584,16 +586,18 @@ const SessionItem: Component<{
                 </>
               )}
             </Show>
-            <div class="context-separator" />
-            <button
-              class="session-context-option"
-              onClick={handleContextDetachToggle}
-              data-ac-testid={`session.${props.session.id}.menu.detachToggle`}
-              data-ac-role="menuitem"
-              data-ac-state={isDetached() ? "detached" : "attached"}
-            >
-              {isDetached() ? "Re-attach to main" : "Open in new window"}
-            </button>
+            <Show when={sessionHasLivePty()}>
+              <div class="context-separator" />
+              <button
+                class="session-context-option"
+                onClick={handleContextDetachToggle}
+                data-ac-testid={`session.${props.session.id}.menu.detachToggle`}
+                data-ac-role="menuitem"
+                data-ac-state={isDetached() ? "detached" : "attached"}
+              >
+                {isDetached() ? "Re-attach to main" : "Open in new window"}
+              </button>
+            </Show>
           </div>
         </Portal>
       )}

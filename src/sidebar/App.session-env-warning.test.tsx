@@ -12,6 +12,7 @@ import {
   session,
   waitFor,
 } from "../shared/testing/ui-harness";
+import { liveSelection, SESSION_A } from "../shared/testing/session-selection";
 
 const projectPath = "C:\\Project";
 const agentPath = `${projectPath}\\.ac\\_agent_General`;
@@ -41,13 +42,13 @@ function setupTransport(fake: FakeTransport): void {
   fake.resolve("search_repos", []);
   fake.resolve("list_sessions", [
     session({
-      id: "session-1",
+      id: SESSION_A,
       name: "General",
       workingDirectory: agentPath,
       status: "active",
     }),
   ]);
-  fake.resolve("get_active_session", "session-1");
+  fake.resolve("get_active_session", liveSelection(SESSION_A));
   fake.resolve("list_detached_sessions", []);
   fake.resolve("telegram_list_bridges", []);
   fake.resolve("drain_session_warnings", []);
@@ -78,7 +79,7 @@ describe("SidebarApp session environment warnings", () => {
       const message =
         "container session: CLAUDE_CONFIG_DIR='/workspace/.claude' looks like a container path. Set CLAUDE_CONFIG_DIR=%AC_REPLICA_ROOT%\\.claude.";
       fake.emitFromBackend("session_env_warning", {
-        sessionId: "session-1",
+        sessionId: SESSION_A,
         key: "CLAUDE_CONFIG_DIR",
         kind: "container-path-in-host-field",
         message,
@@ -104,7 +105,7 @@ describe("SidebarApp session environment warnings", () => {
       "container session: no CLAUDE_CONFIG_DIR is set. Set CLAUDE_CONFIG_DIR=%AC_REPLICA_ROOT%\\.claude.";
     fake.resolve("drain_session_warnings", [
       {
-        sessionId: "session-1",
+        sessionId: SESSION_A,
         key: "CLAUDE_CONFIG_DIR",
         kind: "no-value",
         message,
@@ -133,7 +134,7 @@ describe("SidebarApp session environment warnings", () => {
     const fake = new FakeTransport();
     setupTransport(fake);
     const warning = {
-      sessionId: "session-1",
+      sessionId: SESSION_A,
       key: "CONTAINER_TRANSPORT_PROTOCOL",
       kind: "protocol-mismatch" as const,
       message: "Container image protocol is old. Rebuild the image.",

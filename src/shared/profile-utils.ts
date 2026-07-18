@@ -30,8 +30,6 @@ const EMPTY_CELL: ProfileCellConfig = {
   notes: "",
 };
 
-/** Display-only profile path placeholders. The backend is authoritative for real
- *  expansion + validation at launch (#576 / #384 F17). */
 export const AC_REPLICA_ROOT_PLACEHOLDER = "%AC_REPLICA_ROOT%";
 export const AC_WORKSPACE_ROOT_PLACEHOLDER = "%AC_WORKSPACE_ROOT%";
 export const AC_MATRIX_ROOT_PLACEHOLDER = "%AC_MATRIX_ROOT%";
@@ -57,17 +55,6 @@ export function sortedProfileLetters(profiles: CodingAgentProfilesConfig): strin
   return [...letters].sort();
 }
 
-/**
- * #548: the resolved display NAME for (agent, letter). Single source of truth for
- * label resolution, shared by the SettingsModal rails, the AgentPickerModal cards,
- * and the coordinator quick-access / session-row tooltips. Chain (resolve-on-read):
- *   1. the agent's own label,
- *   2. else the primigenio (agents[0]) agent's own label,
- *   3. else the legacy shared slot label (back-compat for pre-#548 configs),
- *   4. else "" (caller shows the bare letter).
- * `agents` MUST be in persisted order (agents[0] = primigenio); pass the raw
- * settings.agents array, never a sorted copy.
- */
 export function resolveProfileLabel(
   profiles: CodingAgentProfilesConfig,
   agents: AgentConfig[],
@@ -82,8 +69,6 @@ export function resolveProfileLabel(
   return own || inherited || legacy || "";
 }
 
-/** Presentation form for the picker cards and the tooltips:
- *  `${letter}-${NAME}` when a name resolves, else the bare letter. */
 export function profileDisplayLabel(
   profiles: CodingAgentProfilesConfig,
   agents: AgentConfig[],
@@ -119,18 +104,10 @@ export function profileCellOrDefault(
   return profiles.profilesByAgent[agentId]?.[letter] ?? EMPTY_CELL;
 }
 
-/** v2 (#384): the params string stored on a profile cell (#597: appended to the agent base command at launch). */
 export function profileCellCommandText(cell: ProfileCellConfig | null | undefined): string {
   return cell?.command ?? "";
 }
 
-/**
- * #597 - the effective launch command: the agent base command (the binary,
- * possibly with its own fixed args) followed by the profile cell command (extra
- * params). Each side is trimmed; a single space joins them when both are
- * non-empty; an empty side contributes nothing (no stray space). Mirrors the Rust
- * `compose_effective_command` so the UI preview matches what actually launches.
- */
 export function composeEffectiveCommand(base: string, cell: string): string {
   const b = base.trim();
   const c = cell.trim();
@@ -139,12 +116,10 @@ export function composeEffectiveCommand(base: string, cell: string): string {
   return `${b} ${c}`;
 }
 
-/** True when a value contains any AC path placeholder (display check). */
 export function hasAcPlaceholder(value: string): boolean {
   return AC_PLACEHOLDERS.some((token) => value.includes(token));
 }
 
-/** Display-only: the `.ac` workspace ancestor of a replica path, or null. */
 export function deriveWorkspaceRoot(replicaPath: string | null | undefined): string | null {
   if (!replicaPath) return null;
   const parts = replicaPath.replace(/\\/g, "/").replace(/\/+$/, "").split("/");
@@ -154,7 +129,6 @@ export function deriveWorkspaceRoot(replicaPath: string | null | undefined): str
   return parts.slice(0, idx + 1).join(sep);
 }
 
-/** Display-only: the matrix dir `<workspace>/_agent_<name>` for a WG replica path, or null. */
 export function deriveMatrixRoot(replicaPath: string | null | undefined): string | null {
   if (!replicaPath) return null;
   const workspace = deriveWorkspaceRoot(replicaPath);
@@ -168,12 +142,6 @@ export function deriveMatrixRoot(replicaPath: string | null | undefined): string
   return `${workspace}${sep}_agent_${name}`;
 }
 
-/**
- * Display-only preview of AC placeholder expansion against a known replica root.
- * Workspace and matrix are derived from the replica path. Returns the value
- * unchanged when no replica root is available; the backend performs the
- * authoritative expansion + absolute-path validation at launch.
- */
 export function expandAcPlaceholdersPreview(
   value: string,
   replicaRoot: string | null | undefined,
@@ -217,14 +185,8 @@ export function resolveProfilePreview(
   };
 }
 
-/** The data-driven profile-cell badge states. `invalid` (a live command parse
- *  error) is UI-local and layered on top by the caller; the rest are resolved
- *  from the persisted profile data. (#526/#527) */
 export type ProfileBadgeKind = "match" | "configured" | "fallback" | "missing" | "invalid";
 
-/** True when `letter` has an enabled cell on some coding agent OTHER than
- *  `agentId`. Distinguishes a MISSING slot (configured elsewhere, absent here)
- *  from a plain positional fallback. Excludes the agent itself. (#526/#527) */
 export function profileConfiguredElsewhere(
   profiles: CodingAgentProfilesConfig,
   agentId: string,
@@ -235,17 +197,6 @@ export function profileConfiguredElsewhere(
   );
 }
 
-/**
- * Profile-cell badge taxonomy shared 1:1 by the Config rails (SettingsModal) and
- * the Selection profile cards (AgentPickerModal), so both screens read the same
- * state for a given (agent, letter). Mirrors the B2C1a prototype:
- *   - A / baseline               → "match"      (always configured)
- *   - non-A with its own cell    → "configured" (direct match on a non-baseline slot)
- *   - non-A, absent, but the slot is configured on another agent → "missing"
- *   - non-A, absent, resolves through a lower letter             → "fallback"
- * The `invalid` state is not produced here — a live parse error is decided by the
- * caller and takes precedence.
- */
 export function profileBadgeKind(
   profiles: CodingAgentProfilesConfig,
   agentId: string,
@@ -254,8 +205,6 @@ export function profileBadgeKind(
   const cell = profiles.profilesByAgent[agentId]?.[letter];
   const configuredHere = letter === "A" || Boolean(cell?.enabled);
   if (configuredHere) {
-    // A is the baseline (MATCH); a non-A slot with its own enabled cell is a
-    // direct match on a non-baseline slot (CONFIGURED).
     return letter === "A" ? "match" : "configured";
   }
   if (profileConfiguredElsewhere(profiles, agentId, letter)) return "missing";
@@ -378,13 +327,8 @@ export function hasEnabledEnvKey(rows: CodingAgentEnv[], key: string): boolean {
   return rows.some((row) => row.enabled && envKeyCompare(row.key) === target);
 }
 
-/** Origin badge for an env value shown in the Config/Selection projections (#526/#527).
- *  - `system`   — AgentsCommander-managed home path (an AC path placeholder on a known home key)
- *  - `accepted` — a user literal absolute path kept as-is (nothing to expand)
- *  - `profile`  — a value defined by the profile cell (the common case) */
 export type EnvOrigin = "system" | "profile" | "accepted";
 
-/** Env keys AgentsCommander manages per replica (isolated home directories). */
 const MANAGED_HOME_ENV_KEYS = new Set([
   "CODEX_HOME",
   "CLAUDE_CONFIG_DIR",
@@ -394,14 +338,9 @@ const MANAGED_HOME_ENV_KEYS = new Set([
 
 function isLiteralAbsolutePath(value: string): boolean {
   const v = value.trim();
-  // Windows drive (C:\ or C:/), POSIX root, or UNC share.
   return /^[A-Za-z]:[\\/]/.test(v) || v.startsWith("/") || v.startsWith("\\\\");
 }
 
-/** Classify a profile-cell env value's origin for its badge. A managed home key
- *  using an AC path placeholder is AC-managed (`system`); a managed home key with a literal
- *  absolute path is a user-accepted override (`accepted`); everything else is a
- *  plain profile-defined value (`profile`). */
 export function profileEnvOrigin(key: string, value: string): EnvOrigin {
   if (MANAGED_HOME_ENV_KEYS.has(envKeyCompare(key))) {
     if (hasAcPlaceholder(value)) return "system";
@@ -416,11 +355,6 @@ export interface EffectiveEnvEntry {
   origin: EnvOrigin;
 }
 
-/** Merge a coding agent's enabled env rows with the selected profile cell's env
- *  into the effective env that is actually set at launch (#527 Env / EFFECTIVE).
- *  Agent rows form the base (source `system` → system badge, user → accepted);
- *  profile env overrides on key collision and carries the `profile` origin.
- *  AC path placeholders are expanded for display when a replica root is known. */
 export function effectiveEnvProjection(
   agentEnvs: CodingAgentEnv[] | undefined,
   profileEnv: Record<string, string> | undefined,
@@ -461,11 +395,6 @@ export function executableBasename(command: string): string {
   return executableTokenBasename(first);
 }
 
-/**
- * v2 (#384): basename of the executable token of a command string. Used as the
- * coding-agent subtitle in the Config Screen (binary name, not model/sandbox).
- * Identical resolution to {@link executableBasename}; named for the command-string model.
- */
 export function commandExecutableBasename(command: string): string {
   return executableBasename(command);
 }
@@ -474,34 +403,22 @@ export function isCodexAgent(agent: AgentConfig): boolean {
   return agent.id.toLowerCase() === "codex" || executableBasename(agent.command) === "codex";
 }
 
-/**
- * #529 — display-only default instructions filename derived from a coding
- * agent's launch command. Used solely as the Config Screen placeholder so a
- * blank field shows the default the backend will write at launch.
- *
- * Best-effort parity (G2) with the Rust resolver
- * (`default_instructions_filename_for_command` → `CodingAgentKind::detect`):
- * reduce EVERY whitespace token to its lowercased file-stem basename and match
- * by prefix in precedence **claude > codex > gemini**, scanning all tokens —
- * exactly what the Rust detector does. Scanning every token (not just the
- * first/last) is what gives parity on the common shapes including trailing
- * flags: `claude`, `claude --model sonnet`, `cmd.exe /c claude`, `claude-mb`,
- * an absolute-path `claude.exe`, `codex --yolo`, `opencode`, custom. The codex
- * branch returns `AGENTS.md` (same as the default) but is kept explicit so the
- * precedence is faithful — e.g. `codex ... gemini` resolves to `AGENTS.md`, not
- * `GEMINI.md`, matching Rust.
- *
- * This deliberately does NOT reproduce the full Rust shell-quote tokenizer, so
- * an exotic quoted path containing spaces may still diverge — acceptable for a
- * cosmetic placeholder, since the backend resolves the value authoritatively at
- * launch.
- */
 export function defaultInstructionsFilename(command: string): string {
   const stems = command.trim().split(/\s+/).filter(Boolean).map(executableTokenBasename);
   if (stems.some((s) => s.startsWith("claude"))) return "CLAUDE.md";
   if (stems.some((s) => s.startsWith("codex"))) return "AGENTS.md";
   if (stems.some((s) => s.startsWith("gemini"))) return "GEMINI.md";
   return "AGENTS.md";
+}
+
+export const CLAUDE_CONTEXT_REGEX = String.raw`^ {2}Context [░█]+ (\d{1,3})%`;
+export const CODEX_CONTEXT_REGEX = String.raw`^ {2}.*· Context (\d{1,3})% used`;
+
+export function suggestedContextRegex(command: string): string | null {
+  const stems = command.trim().split(/\s+/).filter(Boolean).map(executableTokenBasename);
+  if (stems.some((s) => s.startsWith("claude"))) return CLAUDE_CONTEXT_REGEX;
+  if (stems.some((s) => s.startsWith("codex"))) return CODEX_CONTEXT_REGEX;
+  return null;
 }
 
 export function agentNameFromPathOrSession(
@@ -542,13 +459,6 @@ export function isAcAgentPath(path: string | null | undefined): boolean {
   return parts.includes(".ac") && /^__?agent_/.test(leaf);
 }
 
-/**
- * True only for a workgroup replica directory, i.e. a `__agent_<name>` leaf whose
- * parent is a `wg-<name>` directory under an `.ac` root. Broad-scope assignment
- * (kind/workgroup) and backend preview/apply require a real WG replica anchor;
- * origin agents (single-underscore `_agent_<name>`) and normal repos do not
- * qualify. (#384 §7)
- */
 export function isWgReplicaPath(path: string | null | undefined): boolean {
   if (!path) return false;
   const parts = path.replace(/\\/g, "/").replace(/\/+$/, "").split("/");
@@ -557,14 +467,6 @@ export function isWgReplicaPath(path: string | null | undefined): boolean {
   return parts.includes(".ac") && /^__agent_/.test(leaf) && /^wg-/.test(parent);
 }
 
-/**
- * #537: After a replica-scope Coding Agent assignment is persisted, decide whether
- * to offer an immediate "Restart now?" prompt so the change applies without a manual
- * restart. We only offer it for `replica` scope (one unambiguous live session), when
- * the picker did not already restart (the checkbox path), and when the target is a WG
- * replica with a live PTY. A `{ exited }` status (object, not string) has nothing to
- * restart, so it is skipped. kind/workgroup scope never prompts here.
- */
 export function shouldOfferRestartAfterAssign(
   selection: { scope: ProfileAssignmentScope; restartSessions: boolean },
   session: Pick<Session, "status" | "workingDirectory"> | undefined,

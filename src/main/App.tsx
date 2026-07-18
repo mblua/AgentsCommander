@@ -80,8 +80,6 @@ const MainApp: Component = () => {
     divider.addEventListener("pointercancel", onUp);
   };
 
-  // Keyboard resize for a11y (plan §DW.10). ← / → adjust ±10px,
-  // Shift+← / Shift+→ ±40px, Home/End snap to clamp bounds.
   const onDividerKeyDown = (e: KeyboardEvent) => {
     const step = e.shiftKey ? 40 : 10;
     let next: number | null = null;
@@ -96,8 +94,6 @@ const MainApp: Component = () => {
     persistWidth(clamped);
   };
 
-  // Stateless detached-window count (plan §A3B.3 / G3-B1 — must NOT read
-  // sessionsStore because the store is Phase-2 and not authoritative anyway).
   async function countDetachedWindows(): Promise<number> {
     if (!isTauri) return 0;
     const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
@@ -126,9 +122,6 @@ const MainApp: Component = () => {
     }
   };
 
-  // Re-clamp splitter width when the OS resizes the window (e.g. monitor
-  // disconnect, Win+Arrow snap). Without this the saved width can exceed
-  // windowWidth - 300 and the terminal pane collapses (R2.5).
   const onWindowResize = () => {
     setSidebarWidth((w) => clampMainSidebarWidth(w, window.innerWidth));
   };
@@ -147,34 +140,19 @@ const MainApp: Component = () => {
     }
   };
 
-  // #777: start the Non-stop watchdog client ONCE for the main window. Called
-  // SYNCHRONOUSLY in MainApp's body (dev-webpage-ui #2) so its createEffect /
-  // onCleanup bind to MainApp's reactive owner and are torn down with the app.
-  // Must NOT move inside the async onMount below: after an await, createEffect /
-  // onCleanup would run outside the owner and leak the keepalive interval.
   startNonStopWatchdogClient();
 
   onMount(async () => {
-    // #289 / dark-default — dark is the base CSS, so the first frame is dark
-    // with no optimistic class; the SettingsAPI.get() block below opts into
-    // light only when the persisted preference says so. The embedded
-    // SidebarApp + TerminalApp each run their own corrective step on the same
-    // documentElement — idempotent overlap is fine.
 
-    // Main window owns zoom + geometry persistence. Embedded Sidebar+Terminal
-    // skip these initializers per DW.2.
     cleanupZoom = await initZoom("main");
     cleanupGeometry = await initWindowGeometry("main");
 
-    // Load splitter width + always-on-top from settings.
     try {
       const settings = await SettingsAPI.get();
       document.documentElement.classList.toggle("light-theme", settings.themeLight);
       const saved = settings.mainSidebarWidth ?? DEFAULT_MAIN_SIDEBAR_WIDTH;
       setSidebarWidth(clampMainSidebarWidth(saved, window.innerWidth));
       setSidebarSide(settings.mainSidebarSide === "left" ? "left" : DEFAULT_SIDEBAR_SIDE);
-      // #587 — restore the persisted central-view choice (RM attached vs
-      // terminal). setInitialView only sets the signal; it does not persist.
       centralViewStore.setInitialView(
         settings.mainResourceMonitorAttached ? "resourceMonitor" : "terminal"
       );
@@ -186,24 +164,14 @@ const MainApp: Component = () => {
       console.error("Failed to load main-window settings:", e);
     }
 
-    // Home auto-visibility contract (issue #183 + #164). Wired in a
-    // dedicated helper so the gating logic — especially the userInitiated
-    // discriminator on session_switched — is unit-testable in isolation.
     unlisteners.push(...(await wireHomeListeners()));
 
-    // #587 — central-view event contract (gated session_switched + RM attach).
-    // Extracted to a helper that mirrors wireHomeListeners so the userInitiated
-    // discriminator is unit-testable in isolation (see listeners-central-view.ts).
     unlisteners.push(...(await wireCentralViewListeners()));
 
     window.addEventListener("resize", onWindowResize);
     window.addEventListener("main-sidebar-width-change", onSidebarWidthChange);
     window.addEventListener("main-sidebar-side-change", onSidebarSideChange);
 
-    // Quit-confirmation guard (plan §A3B.3 / G.13 / G3-M1).
-    // - If 0 detached windows → let the close proceed (Tauri exits normally).
-    // - If ≥1 detached → preventDefault, open custom modal.
-    // Re-entry guard covers double-X / Alt+F4 while modal is already open.
     if (isTauri) {
       const { getCurrentWindow } = await import("@tauri-apps/api/window");
       const win = getCurrentWindow();

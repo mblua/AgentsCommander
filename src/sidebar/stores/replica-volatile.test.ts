@@ -6,6 +6,7 @@ import {
   effectiveManuallyClosedAt,
   effectiveRepoBranch,
   effectiveRepoBranchByPath,
+  effectiveRepoDirtyByPath,
   replicaVolatileStore,
 } from "./replica-volatile";
 
@@ -202,5 +203,141 @@ describe("replicaVolatileStore per-repo branches (#943 B2)", () => {
     replicaVolatileStore.applyDiscoveryBranchUpdate(COORD_A, null, [REPO_A], ["feature/943"]);
 
     expect(effectiveRepoBranchByPath({ path: COORD_B })).toBeUndefined();
+  });
+});
+
+// #1028 - the same `ac_discovery_branch_updated` event now also carries per-repo
+// worktree-dirty. It rides the B2 feed exactly, so it inherits B2's by-path merge
+// and, critically, B2's clearForPaths PRESERVE.
+describe("replicaVolatileStore per-repo dirty (#1028)", () => {
+  const REPO_A = "C:\\proj\\.ac\\wg-1-team\\repo-AgentsCommander";
+  const REPO_B = "C:\\proj\\.ac\\wg-1-team\\repo-webpage";
+
+  beforeEach(() => {
+    replicaVolatileStore.clearAll();
+  });
+
+  it("keys dirty by repo path and lands it in the same write as the branches", () => {
+    replicaVolatileStore.applyDiscoveryBranchUpdate(
+      COORD_A_EVENT, // event path: lower-cased, forward slashes (#552)
+      null,
+      [REPO_A, REPO_B],
+      ["feature/1028", null],
+      [true, null]
+    );
+
+    // The REPLICA key is normalized; the REPO keys are verbatim.
+    expect(effectiveRepoDirtyByPath({ path: COORD_A })).toEqual({
+      [REPO_A]: true,
+      [REPO_B]: null,
+    });
+  });
+
+  // The `?? null` vs `|| null` guard in zipByPath, and the ONLY reason this test can
+  // exist as a distinct case: `false` and `null` are byte-identical on the badge
+  // (both violet). If `false` collapsed to `null` here, nothing on screen would move
+  // and the only symptom would be every clean repo's tooltip reading "(status
+  // unknown)". Nothing else in the suite would notice.
+  it("preserves an explicit `false` (detected clean) instead of collapsing it to null", () => {
+    replicaVolatileStore.applyDiscoveryBranchUpdate(COORD_A, null, [REPO_A], [null], [false]);
+
+    const map = effectiveRepoDirtyByPath({ path: COORD_A });
+    expect(map).toEqual({ [REPO_A]: false });
+    // toEqual would pass on `undefined` too; pin the exact value.
+    expect(map?.[REPO_A]).toBe(false);
+  });
+
+  it("drops ONLY the dirty map when the dirty array disagrees in length", () => {
+    // The length guard is applied PER call, so a malformed `repoDirty` from a build
+    // that broke the backend's 1:1 invariant cannot take the branch map down with it.
+    replicaVolatileStore.applyDiscoveryBranchUpdate(
+      COORD_A,
+      null,
+      [REPO_A, REPO_B],
+      ["branch-a", "branch-b"],
+      [true] // 1 dirty for 2 repos
+    );
+
+    expect(effectiveRepoDirtyByPath({ path: COORD_A })).toEqual({});
+    expect(effectiveRepoBranchByPath({ path: COORD_A })).toEqual({
+      [REPO_A]: "branch-a",
+      [REPO_B]: "branch-b",
+    });
+  });
+
+  it("tolerates a payload from a backend that does not send the dirty array", () => {
+    replicaVolatileStore.applyDiscoveryBranchUpdate(COORD_A, null, [REPO_A], ["feature/x"]);
+
+    expect(effectiveRepoDirtyByPath({ path: COORD_A })).toEqual({});
+    expect(effectiveRepoBranchByPath({ path: COORD_A })).toEqual({ [REPO_A]: "feature/x" });
+  });
+
+  // AC 6, and the highest-risk item in the change. Same failure mode the B2 map has a
+  // HIGH bug on record for: `projectStore` calls clearForPaths on EVERY reload (loop
+  // tick, CLI refresh, entity creation), `repoDirtyByPath` has no `AcAgentReplica`
+  // counterpart to re-supply it, and Gate A only emits on a CHANGED payload - so a
+  // wiped map is never re-sent. The red would vanish on the first reload and not come
+  // back until the worktree changed on disk or the app restarted.
+  it("PRESERVES the dirty map across a discovery reload (AC 6)", () => {
+    replicaVolatileStore.applyDiscoveryBranchUpdate(COORD_A, null, [REPO_A], ["main"], [true]);
+
+    replicaVolatileStore.clearForPaths([COORD_A]);
+
+    expect(effectiveRepoDirtyByPath({ path: COORD_A })).toEqual({ [REPO_A]: true });
+  });
+
+  it("preserves BOTH maps across a reload, without smuggling back the snapshot fields", () => {
+    // The "discovery wins on reload" contract must keep holding for every field the
+    // snapshot re-supplies; preserving two maps must not resurrect a third field.
+    replicaVolatileStore.applyDiscoveryBranchUpdate(
+      COORD_A,
+      "feature/1028",
+      [REPO_A],
+      ["feature/1028"],
+      [false]
+    );
+    replicaVolatileStore.setAutoClosedAt(COORD_A, "2026-07-16T18:05:00Z");
+
+    replicaVolatileStore.clearForPaths([COORD_A]);
+
+    expect(effectiveRepoBranchByPath({ path: COORD_A })).toEqual({ [REPO_A]: "feature/1028" });
+    // A preserved `false` must stay `false`, not decay to "never detected".
+    expect(effectiveRepoDirtyByPath({ path: COORD_A })).toEqual({ [REPO_A]: false });
+    expect(effectiveRepoBranch({ path: COORD_A })).toBeUndefined();
+    expect(effectiveAutoClosedAt({ path: COORD_A })).toBeUndefined();
+  });
+
+  it("clearAll DOES drop the dirty map (the replicas themselves are gone)", () => {
+    replicaVolatileStore.applyDiscoveryBranchUpdate(COORD_A, null, [REPO_A], ["main"], [true]);
+
+    replicaVolatileStore.clearAll();
+
+    expect(effectiveRepoDirtyByPath({ path: COORD_A })).toBeUndefined();
+  });
+
+  it("does not leak one replica's dirty map to another", () => {
+    replicaVolatileStore.applyDiscoveryBranchUpdate(COORD_A, null, [REPO_A], ["main"], [true]);
+
+    expect(effectiveRepoDirtyByPath({ path: COORD_B })).toBeUndefined();
+  });
+
+  it("reads are reactive: a memo re-evaluates when dirty flips, without a row re-creation", () => {
+    createRoot((dispose) => {
+      const replica = { path: COORD_A };
+      const dirty = createMemo(() => effectiveRepoDirtyByPath(replica)?.[REPO_A]);
+      expect(dirty()).toBeUndefined();
+
+      replicaVolatileStore.applyDiscoveryBranchUpdate(COORD_A_EVENT, null, [REPO_A], ["main"], [
+        true,
+      ]);
+      expect(dirty()).toBe(true);
+
+      replicaVolatileStore.applyDiscoveryBranchUpdate(COORD_A_EVENT, null, [REPO_A], ["main"], [
+        false,
+      ]);
+      expect(dirty()).toBe(false);
+
+      dispose();
+    });
   });
 });

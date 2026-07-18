@@ -1,8 +1,9 @@
 use std::time::Duration;
 
 use crate::config::settings::{ResourceWatchdogAction, SettingsState};
-use crate::resource_monitor::types::{ResourceGroupState, ResourceKillReason, ResourceLimits};
+use crate::resource_monitor::types::{ResourceGroupState, ResourceLimits};
 use crate::resource_monitor::ResourceMonitorState;
+use crate::session::selection::{CriticalAdmissionOutcome, SelectionCoordinator};
 use crate::shutdown::ShutdownSignal;
 use serde::Serialize;
 use uuid::Uuid;
@@ -24,13 +25,18 @@ pub struct ResourceWatchdogDecision {
     pub kill_required: bool,
 }
 
-pub fn start(monitor: ResourceMonitorState, settings: SettingsState, shutdown: ShutdownSignal) {
+pub fn start(
+    monitor: ResourceMonitorState,
+    settings: SettingsState,
+    coordinator: SelectionCoordinator,
+    shutdown: ShutdownSignal,
+) {
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::select! {
                 _ = shutdown.token().cancelled() => break,
                 _ = tokio::time::sleep(next_delay(&monitor, &settings).await) => {
-                    run_tick(&monitor, &settings).await;
+                    run_tick(&monitor, &settings, &coordinator).await;
                 }
             }
         }
@@ -46,7 +52,11 @@ async fn next_delay(monitor: &ResourceMonitorState, settings: &SettingsState) ->
     }
 }
 
-async fn run_tick(monitor: &ResourceMonitorState, settings: &SettingsState) {
+async fn run_tick(
+    monitor: &ResourceMonitorState,
+    settings: &SettingsState,
+    coordinator: &SelectionCoordinator,
+) {
     let cfg = settings.read().await.clone();
     if !cfg.resource_monitor_enabled {
         return;
@@ -64,11 +74,7 @@ async fn run_tick(monitor: &ResourceMonitorState, settings: &SettingsState) {
         if group.state == ResourceGroupState::Quarantined
             && monitor.quarantine_retry_due(*session_id)
         {
-            let session_id = *session_id;
-            let monitor = monitor.clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                let _ = monitor.kill_group(session_id, ResourceKillReason::Watchdog);
-            });
+            submit_watchdog_kill(coordinator, *session_id).await;
         }
     }
 
@@ -77,11 +83,33 @@ async fn run_tick(monitor: &ResourceMonitorState, settings: &SettingsState) {
     }
     for decision in evaluate_watchdog_groups(&groups, limits) {
         if decision.kill_required {
-            let session_id = decision.session_id;
-            let monitor = monitor.clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                let _ = monitor.kill_group(session_id, ResourceKillReason::Watchdog);
-            });
+            submit_watchdog_kill(coordinator, decision.session_id).await;
+        }
+    }
+}
+
+async fn submit_watchdog_kill(coordinator: &SelectionCoordinator, session_id: Uuid) {
+    match coordinator.watchdog_resource_kill(session_id).await {
+        Ok(CriticalAdmissionOutcome::Completed(result)) => {
+            log::info!(
+                "[resource-watchdog] finalized session={} state={:?} finalized={}",
+                session_id,
+                result.state,
+                result.finalized
+            );
+        }
+        Ok(CriticalAdmissionOutcome::AlreadyPending) => {
+            log::debug!(
+                "[resource-watchdog] kill already pending or session no longer public session={}",
+                session_id
+            );
+        }
+        Err(error) => {
+            log::warn!(
+                "[resource-watchdog] coordinator kill failed session={}: {}",
+                session_id,
+                error
+            );
         }
     }
 }

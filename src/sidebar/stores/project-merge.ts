@@ -2,27 +2,7 @@ import type { AcDiscoveryResult, AcWorkgroup } from "../../shared/types";
 import type { ProjectState } from "./project";
 import { normalizeProjectPathForCompare } from "./project-refresh";
 
-/**
- * #748 — identity-preserving merge of a fresh discovery snapshot over the
- * loaded project state. ProjectPanel keys everything with reference-keyed
- * <For>s, so an object that changes reference is disposed and re-created in
- * the DOM — and a click whose press straddles that swap is lost (no `click`
- * for a detached mousedown target).
- *
- * DOM guarantee is PROJECT-granular: a fully identical snapshot returns the
- * existing project object itself (the store skips the write — zero DOM work),
- * and other projects always keep their reference. When something inside a
- * project DID change, that project's reference changes and its whole <For>
- * row re-renders; the nested entity references this merge still preserves do
- * not keep DOM alive in that case (the row's nested <For>s are fresh
- * instances) — they keep downstream memos/derivations cheap and make the
- * store contents diff-friendly. Finer-than-project DOM stability would need
- * the createStore+reconcile refactor that is explicitly out of scope here.
- */
 
-/** Structural equality for JSON-shaped discovery data (no functions/Dates).
- *  A key holding `undefined` and a missing key compare as equal, matching
- *  how the optional fields behave everywhere they are read. */
 export function deepEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return false;
@@ -48,12 +28,6 @@ export function deepEqual(a: unknown, b: unknown): boolean {
   return true;
 }
 
-/**
- * Keyed identity-preserving array merge: each incoming item keeps the existing
- * object reference when the entity (matched by key) is unchanged; only changed
- * or new entities take the incoming object. Returns the EXISTING array
- * reference when nothing changed at any position.
- */
 function mergeKeyedArray<T>(
   existing: readonly T[],
   incoming: readonly T[],
@@ -70,12 +44,9 @@ function mergeKeyedArray<T>(
     if (result !== existing[index]) changed = true;
     return result;
   });
-  // The only cast in this module: `existing` is only ever the caller's own
-  // mutable array, accepted as readonly for variance.
   return changed ? merged : (existing as T[]);
 }
 
-/** Preserve per-agent references inside a workgroup that changed elsewhere. */
 function mergeWorkgroup(oldWg: AcWorkgroup, newWg: AcWorkgroup): AcWorkgroup {
   if (deepEqual(oldWg, newWg)) return oldWg;
   const agents = mergeKeyedArray(oldWg.agents, newWg.agents, (agent) =>
@@ -84,8 +55,6 @@ function mergeWorkgroup(oldWg: AcWorkgroup, newWg: AcWorkgroup): AcWorkgroup {
   return { ...newWg, agents };
 }
 
-/** Merge a discovery result into the loaded project, preserving identity of
- *  every unchanged entity. Returns `existing` itself when nothing changed. */
 export function mergeDiscoveryResult(
   existing: ProjectState,
   result: AcDiscoveryResult

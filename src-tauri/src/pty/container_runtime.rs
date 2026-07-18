@@ -1,5 +1,6 @@
 use std::collections::HashSet;
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use uuid::Uuid;
 
@@ -11,6 +12,9 @@ pub const DEFAULT_BRIDGE_ENTRYPOINT: &str = "session-bridge";
 pub const DEFAULT_API_HELPER_PATH: &str = "/usr/local/bin/agentscommander-api-helper";
 pub const CONTAINER_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const DIAGNOSTIC_UI_LOG_LIMIT: usize = 500;
+const RETAINED_DIAGNOSTIC_VALUE_LIMIT: usize = 500;
+const RETAINED_DIAGNOSTIC_CONTEXT_LIMIT: usize = 2_000;
+pub(crate) const RETAINED_OWNER_REPORT_CAPACITY: usize = 256;
 const REDACTED_SECRET: &str = "[REDACTED]";
 // Keep AGENTSCOMMANDER_* entries in sync with DockerRuntime::build_run_command.
 // This list is separate because diagnostics must also scrub valid provider env keys.
@@ -34,6 +38,85 @@ const SENSITIVE_TOKEN_PREFIXES: &[&str] = &[
     "sk-ant-",
     "sk-proj-",
 ];
+
+#[derive(Clone)]
+pub struct ContainerRuntimeControl {
+    inner: Arc<ContainerRuntimeControlInner>,
+}
+
+#[derive(Default)]
+struct ContainerRuntimeControlState {
+    shutdown_deadline: Option<Instant>,
+}
+
+#[derive(Default)]
+struct ContainerRuntimeControlInner {
+    state: Mutex<ContainerRuntimeControlState>,
+    changed: Condvar,
+}
+
+impl Default for ContainerRuntimeControl {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(ContainerRuntimeControlInner::default()),
+        }
+    }
+}
+
+impl ContainerRuntimeControl {
+    pub fn request_shutdown(&self, deadline: Instant) {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.shutdown_deadline = Some(match state.shutdown_deadline {
+            Some(existing) => existing.min(deadline),
+            None => deadline,
+        });
+        self.inner.changed.notify_all();
+    }
+
+    pub fn shutdown_requested(&self) -> bool {
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .shutdown_deadline
+            .is_some()
+    }
+
+    pub fn shutdown_deadline(&self) -> Option<Instant> {
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .shutdown_deadline
+    }
+
+    pub fn remaining(&self) -> Option<Duration> {
+        self.shutdown_deadline()
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+    }
+
+    pub fn wait_for_shutdown(&self) -> Instant {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        loop {
+            if let Some(deadline) = state.shutdown_deadline {
+                return deadline;
+            }
+            state = self
+                .inner
+                .changed
+                .wait(state)
+                .unwrap_or_else(|error| error.into_inner());
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContainerStartRequest {
@@ -83,6 +166,91 @@ pub struct ContainerDiagnostics {
     pub inspect_error: Option<String>,
     pub log_tail: Option<String>,
     pub logs_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetainedContainerOwnerContext {
+    pub owner: &'static str,
+    pub session_id: Option<Uuid>,
+    pub reason: String,
+    pub program: Option<String>,
+    pub runtime_handle: Option<bool>,
+    pub state: &'static str,
+    pub in_flight: bool,
+    pub last_error: Option<String>,
+}
+
+impl RetainedContainerOwnerContext {
+    pub fn diagnostic(&self) -> String {
+        let session = self
+            .session_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "none".to_string());
+        let program = self
+            .program
+            .as_deref()
+            .map(normalize_retained_diagnostic_value)
+            .unwrap_or_else(|| "none".to_string());
+        let runtime_handle = self
+            .runtime_handle
+            .map(|present| present.to_string())
+            .unwrap_or_else(|| "none".to_string());
+        let mut diagnostic = format!(
+            "owner={} session={} reason={} program={} runtimeHandle={} state={} inFlight={}",
+            self.owner,
+            session,
+            normalize_retained_diagnostic_value(&self.reason),
+            program,
+            runtime_handle,
+            self.state,
+            self.in_flight
+        );
+        if let Some(error) = self.last_error.as_deref() {
+            diagnostic.push_str(" lastError=");
+            diagnostic.push_str(&normalize_retained_diagnostic_value(error));
+        }
+        diagnostic
+    }
+}
+
+fn normalize_retained_diagnostic_value(value: &str) -> String {
+    redact_and_truncate(value, RETAINED_DIAGNOSTIC_VALUE_LIMIT)
+        .replace('\r', "\\r")
+        .replace('\n', "\\n")
+}
+
+pub(crate) fn normalize_retained_owner_diagnostic(
+    default_owner: &'static str,
+    context: impl AsRef<str>,
+) -> String {
+    let context = redact_and_truncate(context.as_ref().trim(), RETAINED_DIAGNOSTIC_CONTEXT_LIMIT)
+        .replace('\r', "\\r")
+        .replace('\n', "\\n");
+    if context.starts_with("owner=") {
+        context
+    } else {
+        format!("owner={default_owner} {context}")
+    }
+}
+
+pub(crate) fn cap_retained_owner_diagnostics<I>(contexts: I) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut contexts = contexts.into_iter().collect::<Vec<_>>();
+    contexts.sort();
+    contexts.dedup();
+    if contexts.len() <= RETAINED_OWNER_REPORT_CAPACITY {
+        return contexts;
+    }
+
+    let retained_capacity = RETAINED_OWNER_REPORT_CAPACITY.saturating_sub(1);
+    let omitted = contexts.len().saturating_sub(retained_capacity);
+    contexts.truncate(retained_capacity);
+    contexts.push(format!(
+        "owner=diagnosticSummary session=none reason=retained-owner-report-truncated program=none runtimeHandle=none state=retained inFlight=false omittedCount={omitted}"
+    ));
+    contexts
 }
 
 impl ContainerDiagnostics {
@@ -171,9 +339,18 @@ impl ContainerDiagnostics {
 }
 
 pub trait ContainerRuntime: Send + Sync {
-    fn start(&self, request: ContainerStartRequest) -> Result<ContainerRuntimeHandle, AppError>;
+    fn start(
+        &self,
+        request: ContainerStartRequest,
+        control: &ContainerRuntimeControl,
+    ) -> Result<ContainerRuntimeHandle, AppError>;
 
-    fn stop(&self, handle: &ContainerRuntimeHandle, timeout: Duration) -> Result<(), AppError>;
+    fn stop(
+        &self,
+        handle: &ContainerRuntimeHandle,
+        timeout: Duration,
+        control: &ContainerRuntimeControl,
+    ) -> Result<(), AppError>;
 
     fn diagnostics(
         &self,
@@ -188,6 +365,18 @@ pub trait ContainerRuntime: Send + Sync {
         live_sessions: &HashSet<Uuid>,
         timeout: Duration,
     ) -> Result<ContainerCleanupReport, AppError>;
+
+    /// Retry deterministic cleanup targets retained by the runtime after an
+    /// ambiguous start result. Implementations that do not create an external
+    /// resource before returning `Err` have no retained work.
+    fn retry_retained_cleanups(&self, _control: &ContainerRuntimeControl) {}
+
+    /// Structured deterministic-cleanup and command ownership still retained
+    /// by the runtime. A non-empty result prevents shutdown persistence from
+    /// treating container cleanup as terminal.
+    fn retained_cleanup_contexts(&self) -> Vec<RetainedContainerOwnerContext> {
+        Vec::new()
+    }
 }
 
 pub fn container_image_from_env() -> Option<String> {
@@ -273,7 +462,7 @@ fn redact_and_truncate(value: &str, max_chars: usize) -> String {
     truncate_chars(&redact_container_diagnostic_text(value), max_chars)
 }
 
-fn redact_container_diagnostic_text(input: &str) -> String {
+pub(crate) fn redact_container_diagnostic_text(input: &str) -> String {
     let mut redacted = input.to_string();
     for key in SENSITIVE_LOG_KEYS {
         redacted = redact_key_values(&redacted, key);
@@ -349,6 +538,18 @@ fn redact_key_values(input: &str, key: &str) -> String {
                 (value_start, value_end)
             };
 
+        let redacted_end = value_start.saturating_add(REDACTED_SECRET.len());
+        let redacted_boundary = redacted_end == input.len()
+            || (redacted_end < bytes.len()
+                && (is_unquoted_secret_delimiter(bytes[redacted_end])
+                    || matches!(bytes[redacted_end], b'"' | b'\'')))
+            || input
+                .get(redacted_end..)
+                .is_some_and(|suffix| suffix.starts_with("\\n") || suffix.starts_with("\\r"));
+        if input[value_start..].starts_with(REDACTED_SECRET) && redacted_boundary {
+            search_start = redacted_end;
+            continue;
+        }
         if value_end > value_start {
             ranges.push((value_start, value_end));
         }
@@ -555,6 +756,32 @@ mod tests {
         assert!(full.contains("/usr/local/bin"), "{full}");
         assert!(ui.contains("--verbose"), "{ui}");
         assert!(full.contains("--verbose"), "{full}");
+    }
+
+    #[test]
+    fn retained_owner_redaction_is_idempotent() {
+        let raw = "owner=dockerCommand lastError=OPENAI_API_KEY=sk-proj-secret\nnested failure";
+        let once = normalize_retained_owner_diagnostic("containerShutdown", raw);
+        let twice = normalize_retained_owner_diagnostic("containerShutdown", &once);
+
+        assert_eq!(
+            once,
+            "owner=dockerCommand lastError=OPENAI_API_KEY=[REDACTED]\\nnested failure"
+        );
+        assert_eq!(twice, once);
+        assert!(!twice.contains("[REDACTED]]"), "{twice}");
+
+        let direct_once = redact_container_diagnostic_text(
+            "owner=dockerCommand lastError=OPENAI_API_KEY=sk-proj-secret",
+        );
+        assert_eq!(redact_container_diagnostic_text(&direct_once), direct_once);
+
+        let sentinel_prefix_only = "OPENAI_API_KEY=[REDACTED]-still-untrusted";
+        assert_ne!(
+            redact_container_diagnostic_text(sentinel_prefix_only),
+            sentinel_prefix_only,
+            "only an exact delimiter-bounded sentinel may bypass another redaction pass"
+        );
     }
 
     #[test]

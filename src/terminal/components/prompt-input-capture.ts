@@ -19,20 +19,11 @@ function findPasteEnd(data: string, fromIndex: number) {
     : { index: end8, marker: PASTE_END_8BIT };
 }
 
-// 8-bit C1 OSC introducer. OSC (7-bit `ESC ]`) is handled apart from the other
-// string controls because it alone accepts BEL as a terminator (see below).
 const OSC_INTRO_8BIT = "\x9d";
 
-// The remaining ECMA-48 "string" controls, which terminate ONLY at ST: DCS, SOS,
-// PM, APC. 7-bit finals after ESC: P (DCS), X (SOS), ^ (PM), _ (APC).
 const STRING_SEQ_INTRO_7BIT = new Set(["P", "X", "^", "_"]);
-// 8-bit C1 equivalents: \x90 (DCS), \x98 (SOS), \x9e (PM), \x9f (APC).
 const STRING_SEQ_INTRO_8BIT = new Set(["\x90", "\x98", "\x9e", "\x9f"]);
 
-// Bytes that begin a control sequence we must skip rather than capture as prompt
-// text: ESC (every 7-bit sequence), 8-bit CSI (\x9b, also the bracketed-paste
-// prefix handled before this check), and the 8-bit string introducers (OSC + the
-// ST-only family).
 function isControlIntroducer(char: string): boolean {
   return (
     char === "\x1b" ||
@@ -42,7 +33,6 @@ function isControlIntroducer(char: string): boolean {
   );
 }
 
-// CSI: consume up to and including the final byte (0x40–0x7e).
 function skipCsi(data: string, bodyStart: number): number {
   for (let i = bodyStart; i < data.length; i += 1) {
     const code = data.charCodeAt(i);
@@ -53,11 +43,6 @@ function skipCsi(data: string, bodyStart: number): number {
   return data.length;
 }
 
-// OSC/DCS/SOS/PM/APC: consume the whole "string" sequence up to its terminator.
-// All end at ST (`ESC \` or 8-bit \x9c); OSC additionally accepts BEL (\x07) —
-// the xterm convention OpenCode uses for its OSC-4 colour-palette reply (#533).
-// For DCS/SOS/PM/APC, `belTerminates` is false, so a stray BEL inside the payload
-// is consumed rather than mistaken for a terminator.
 function skipStringSequence(
   data: string,
   bodyStart: number,
@@ -89,8 +74,6 @@ function skipControlSequence(data: string, index: number): number {
     if (next !== undefined && STRING_SEQ_INTRO_7BIT.has(next)) {
       return skipStringSequence(data, index + 2, false); // DCS/SOS/PM/APC: ST only
     }
-    // Lone trailing ESC or a short escape this helper does not model — drop just
-    // the ESC, preserving prior behaviour for those cases.
     return index + 1;
   }
 

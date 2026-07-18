@@ -28,6 +28,7 @@ import {
   effectiveManuallyClosedAt,
   effectiveRepoBranch,
   effectiveRepoBranchByPath,
+  effectiveRepoDirtyByPath,
   replicaVolatileStore,
 } from "../stores/replica-volatile";
 import { normalizeProjectPathForCompare } from "../stores/project-refresh";
@@ -36,10 +37,6 @@ import {
   projectPanelCollapseKey,
   PROJECT_PANEL_COLLAPSE_KEY_SEP,
 } from "../stores/project-collapse";
-// #810 - PROJECT_PANEL_COLLAPSE_KEY_SEP, ProjectPanelCollapseSection, and
-// projectPanelCollapseKey moved to the project-collapse store (canonical
-// home). Re-exported here so any external importer that previously read them
-// from ProjectPanel keeps compiling.
 export {
   PROJECT_PANEL_COLLAPSE_KEY_SEP,
   projectPanelCollapseKey,
@@ -56,6 +53,8 @@ import { coordinatorIdleBadge } from "../../shared/coordinator-badge";
 import { COORD_IDLE_CLASS } from "./coordinator-badge-class";
 import SessionItem from "./SessionItem";
 import ProfileOutdatedBadge from "./ProfileOutdatedBadge";
+import ContextBadge from "./ContextBadge";
+import { contextBadgeConfigured } from "./session-context";
 import NewEntityAgentModal from "./NewEntityAgentModal";
 import NewTeamModal from "./NewTeamModal";
 import NewWorkgroupModal from "./NewWorkgroupModal";
@@ -70,6 +69,7 @@ import {
   automationIdPart,
   configuredReplicaRepoBadges,
   formatReplicaRepoBadgeLabel,
+  formatReplicaRepoBadgeTitle,
   repoLabelFromPath,
 } from "./replica-repo-badges";
 import { sessionDotClass } from "./session-status";
@@ -96,14 +96,9 @@ interface PendingLaunch {
   currentAgentId?: string;
   currentRequestedProfile?: string | null;
   scopeContext?: AgentPickerScopeContext;
-  /** #599 R1: reopening a coordinator destroyed by auto/manual close — resume. */
   resumeOnLaunch?: boolean;
 }
 
-/** #545: the broom has nothing to clear when the workgroup task title is
- *  empty/missing or the literal Clean sentinel. Title-only approximation of
- *  the backend's structural clean check; exact-match + case-sensitive on
- *  purpose (mirrors the backend `title: 'Clean'` sentinel). See plan G2/G4. */
 export const isTaskClean = (t?: string | null): boolean =>
   !t?.trim() || t.trim() === "Clean";
 
@@ -136,7 +131,6 @@ function sessionEffectiveStatusSearchText(session: Session): string {
   return dotClass === "exited" ? sessionStatusSearchText(session.status) : dotClass;
 }
 
-/** Build the gitRepos list for a replica. Order = replica.repoPaths order (invariant §3.1.2). */
 function buildGitRepos(replica: AcAgentReplica): SessionRepoInput[] {
   return (replica.repoPaths ?? []).map((p) => {
     return { label: repoLabelFromPath(p), sourcePath: p };
@@ -147,11 +141,6 @@ function hasValidRepoSourcePath(repo: Pick<SessionRepo, "sourcePath">): boolean 
   return typeof repo.sourcePath === "string" && repo.sourcePath.trim().length > 0;
 }
 
-/**
- * Build the AgentPicker scope context for a launching WG replica (#384 Frontend §5).
- * Broad-scope assignment is only offered when the launch resolves to a real WG
- * replica; the backend re-enumerates and is authoritative either way.
- */
 function replicaScopeContext(wg: AcWorkgroup, replica: AcAgentReplica): AgentPickerScopeContext {
   return {
     workgroupPath: wg.path,
@@ -163,9 +152,6 @@ function replicaScopeContext(wg: AcWorkgroup, replica: AcAgentReplica): AgentPic
   };
 }
 
-/** Derive scope context from a live replica session for the right-click "Coding
- *  Agent" action. Falls back to a single-path (no broad scope) context when the
- *  session is not a WG replica. */
 function deriveScopeContextFromSession(
   session: Session | undefined,
   sessionName: string,
@@ -179,7 +165,6 @@ function deriveScopeContextFromSession(
       currentProfile: session.requestedProfile,
     };
   }
-  // Workgroup dir = parent of the replica dir, preserving the original separators.
   const dirMatch = replicaPath.match(/^(.*)[\\/][^\\/]+[\\/]?$/);
   const slash = sessionName.indexOf("/");
   const wgName = slash >= 0 ? sessionName.slice(0, slash) : "";
@@ -195,9 +180,6 @@ function deriveScopeContextFromSession(
 }
 
 const CONTEXT_MENU_VIEWPORT_MARGIN = 8;
-// #977 - grace period before a pointer-leave closes the replica context menu.
-// Longer than the 180ms flyout timer: leaving the menu INTO a submenu arms both,
-// and the submenu's mouseenter must be able to cancel this one first.
 const CONTEXT_MENU_CLOSE_GRACE_MS = 250;
 
 function workgroupCollapseId(wg: AcWorkgroup, rowContext: string): string {
@@ -207,21 +189,8 @@ function workgroupCollapseId(wg: AcWorkgroup, rowContext: string): string {
   ].join(PROJECT_PANEL_COLLAPSE_KEY_SEP);
 }
 
-/**
- * #573 (grinch Step-7): upper bound for the post-assign restart await. The Tauri
- * IPC transport (`transport-tauri.ts`) has NO timeout, unlike `WsTransport.invoke`
- * (`transport-ws.ts`), which rejects after 30s with `Command timeout: <cmd>`. If
- * the backend `restart_session` neither resolves nor rejects (session-manager
- * write-lock stall, ConPTY respawn hang, dropped IPC reply), `restarting()` would
- * stay true forever and trap the modal (both buttons disabled + dismiss gated →
- * app-kill required). Racing this timeout lets the desktop modal self-heal exactly
- * as it already does on WS/remote — intentional parity, so mirror the WS value.
- * The WS 30s is a bare literal there (not exported), hence a local named const.
- */
 export const RESTART_TIMEOUT_MS = 30_000;
 
-/** #748 — resolve the repo badges' branch through the volatile live layer so a
- *  branch event updates badge text without touching row identity. */
 function configuredReplicaRepoBadgesLive(
   replica: AcAgentReplica,
   workgroup: Pick<AcWorkgroup, "repoPath">
@@ -230,8 +199,8 @@ function configuredReplicaRepoBadgesLive(
     {
       repoPaths: replica.repoPaths,
       repoBranch: effectiveRepoBranch(replica),
-      // #943 B2 - per-repo branches for cold multi-repo replicas, keyed by path.
       repoBranchByPath: effectiveRepoBranchByPath(replica),
+      repoDirtyByPath: effectiveRepoDirtyByPath(replica),
     },
     workgroup
   );
@@ -246,7 +215,6 @@ function replicaRepoMenuEntries(wg: AcWorkgroup, replica: AcAgentReplica): Sessi
   return repos.filter(hasValidRepoSourcePath);
 }
 
-/** Check if a session has a live PTY process (not exited, not offline) */
 function isSessionLive(session: Session | undefined): boolean {
   if (!session) return false;
   if (typeof session.status === "object" && "exited" in session.status) return false;
@@ -380,7 +348,6 @@ function coordinatorItemKey(item: { replica: AcAgentReplica; wg: AcWorkgroup }):
   return `${item.wg.path}\u0000${item.replica.path}`;
 }
 
-/** Get replicas in a workgroup that have active (live) sessions */
 function getActiveReplicasForWg(wg: AcWorkgroup): AcAgentReplica[] {
   return (wg.agents ?? []).filter(replica => isSessionLive(replicaSession(wg, replica)));
 }
@@ -392,45 +359,27 @@ function runningCoordinatorPeers(wg: AcWorkgroup, replica: AcAgentReplica): AcAg
 }
 
 const ProjectPanel: Component = () => {
-  // Listen for replica branch updates from the discovery watcher. TASK.md
-  // updates are wired in sidebar/App.tsx (it owns the listener for the
-  // canonical `workgroup_task_updated` event); ProjectPanel reads the
-  // resulting state through projectStore.
-  //
-  // #748 — these four events write to replicaVolatileStore, NOT projectStore.
-  // The old in-place patches rebuilt every project/workgroup reference, and the
-  // reference-keyed <For>s below then re-created the whole panel DOM per event
-  // — losing any click whose press straddled the swap. The volatile store is
-  // fine-grained (keyed by normalized replica path), so only the badge/pill
-  // reading the changed field re-runs; row identity is stable.
   let unlistenBranch: (() => void) | null = null;
   let unlistenClock: (() => void) | null = null;
   let unlistenAutoClose: (() => void) | null = null;
   let unlistenManualClose: (() => void) | null = null;
-  // #588 register this ProjectPanel as the confirm-modal host for THIS window, so
-  // the shared close helper opens the modal here (sidebar / web) but falls back to
-  // a plain destroy in a window with no host (the detached terminal webview).
   onCleanup(registerCoordinatorCloseModalHost());
   onMount(async () => {
     unlistenBranch = await onDiscoveryBranchUpdated((data) => {
-      // #943 B2 - one atomic write: the single-repo shorthand plus the per-repo
-      // branches, merged BY PATH (never by index - see the store).
       replicaVolatileStore.applyDiscoveryBranchUpdate(
         data.replicaPath,
         data.branch,
         data.repoPaths,
-        data.repoBranches
+        data.repoBranches,
+        data.repoDirty
       );
     });
-    // #552 coordinator idle badge + auto-closed pill. Discovery reload
-    // supersedes these overrides on any path miss (clearForPaths).
     unlistenClock = await onCoordinatorClockUpdated((data) => {
       replicaVolatileStore.setLastUserMessageAt(data.replicaPath, data.lastUserMessageAt);
     });
     unlistenAutoClose = await onCoordinatorAutoCloseChanged((data) => {
       replicaVolatileStore.setAutoClosedAt(data.replicaPath, data.autoClosedAt);
     });
-    // #588 manually-closed pill: same live layer as the auto-close marker.
     unlistenManualClose = await onCoordinatorManualCloseChanged((data) => {
       replicaVolatileStore.setManuallyClosedAt(data.replicaPath, data.manuallyClosedAt);
     });
@@ -453,20 +402,11 @@ const ProjectPanel: Component = () => {
     }));
   };
 
-  // #810 - project-level collapse lives in projectCollapseStore so the rail
-  // can drive auto-focus (collapse others, expand owner, scroll owner into
-  // view). Sub-section keys stay in the local collapsedByKey signal above.
   const isProjectPanelCollapsed = (projectPath: string) =>
     projectCollapseStore.isProjectCollapsed(projectPath);
   const toggleProjectPanelCollapsed = (projectPath: string) =>
     projectCollapseStore.toggleProjectCollapsed(projectPath);
 
-  // #537: post-assign "Restart now?" prompt. Hoisted to the stable ProjectPanel
-  // scope (NOT inside the projects <For>) so a background replica-list refresh,
-  // which replaces project object references and so re-creates each <For> row
-  // (disposing its local signals), cannot tear the modal down before the user
-  // answers. Mirrors the pendingLaunch picker below, hoisted for the same reason.
-  // The prompt closes only on Later / Restart now / overlay click.
   const [restartPrompt, setRestartPrompt] = createSignal<{
     sessionId: string;
     replicaName: string;
@@ -479,30 +419,14 @@ const ProjectPanel: Component = () => {
     teamName: string;
   } | null>(null);
   const closeEditTeamModal = () => setEditingTeamTarget(null);
-  // #573: in-flight + error state for the prompt's restart. The old code did a
-  // consume-and-clear (setRestartPrompt(null) before the async settled) with a
-  // bare `.catch(console.error)`, so a failed restart vanished silently and the
-  // user thought the new agent applied while the old one kept running. We now
-  // keep the modal open, surface the failure, and let the user retry — mirroring
-  // AgentPickerModal.apply() and Resource Monitor's confirmKill.
   const [restarting, setRestarting] = createSignal(false);
   const [restartError, setRestartError] = createSignal("");
 
-  // Restart the live session on the newly-assigned agent (same SessionAPI.restart
-  // the Restart button uses; honors currentCodingAgent, 0b03ad7). The `restarting`
-  // guard replaces the old early setRestartPrompt(null) as the double-fire guard:
-  // re-entry is refused while a restart is in flight. On success the modal closes;
-  // on failure it stays open with the error so the user can retry.
   const applyRestartPrompt = async () => {
     const prompt = restartPrompt();
     if (!prompt || restarting()) return;
     setRestarting(true);
     setRestartError("");
-    // #573 (grinch Step-7): bound the await with RESTART_TIMEOUT_MS. The Tauri IPC
-    // transport never times out, so a wedged backend would leave `restarting()`
-    // true forever and trap the modal (buttons disabled + dismiss gated). Racing a
-    // timeout guarantees `finally` runs within the bound, surfacing the error
-    // inline and re-enabling the modal — matching WsTransport.invoke's self-heal.
     let timeoutTimer: number | undefined;
     try {
       await Promise.race([
@@ -510,8 +434,6 @@ const ProjectPanel: Component = () => {
           agentId: prompt.agentId,
           requestedProfile: prompt.requestedProfile,
         }),
-        // Mirror WsTransport.invoke's reject (a bare `Command timeout: <cmd>`
-        // string) so launchErrorMessage yields identical copy on desktop and WS.
         new Promise<never>((_, reject) => {
           timeoutTimer = window.setTimeout(
             () => reject("Command timeout: restart_session"),
@@ -524,49 +446,25 @@ const ProjectPanel: Component = () => {
       console.error("Failed to restart session:", e);
       setRestartError(launchErrorMessage(e));
     } finally {
-      // Timer hygiene: cancel the pending timeout when the restart settles first,
-      // so a successful restart can't leave a dangling timer / late rejection.
       window.clearTimeout(timeoutTimer);
       setRestarting(false);
     }
   };
 
-  // Close the prompt, clearing any error. Refused while a restart is in flight so
-  // neither the Later button nor an overlay click can tear the modal down before
-  // the restart settles (the buttons are also disabled via `busy`).
   const dismissRestartPrompt = () => {
     if (restarting()) return;
     setRestartError("");
     setRestartPrompt(null);
   };
 
-  // #710: modal-open state hoisted OUT of the projects <For>. A background
-  // discovery refresh (reloadProject / branch / clock events) replaces each
-  // project object reference, so SolidJS disposes and re-creates every <For>
-  // row — and with it any signal declared inside the row callback. A modal
-  // whose open-flag lived on the row was therefore torn down mid-interaction
-  // (#710, same bug class as #537/#669). These signals live at the stable
-  // ProjectPanel scope (like pendingLaunch / restartPrompt / editingTeamTarget)
-  // and carry only STABLE identities (projectPath, loop id, session id,
-  // wg/replica path); the render blocks after the <For> re-resolve the live
-  // project/session/loop data from them, so a refresh updates the modal's data
-  // without unmounting it.
   const [newAgentTarget, setNewAgentTarget] = createSignal<{ projectPath: string } | null>(null);
   const [newTeamTarget, setNewTeamTarget] = createSignal<{ projectPath: string } | null>(null);
   const [newWorkgroupTarget, setNewWorkgroupTarget] = createSignal<{ projectPath: string } | null>(null);
   const [newLoopTarget, setNewLoopTarget] = createSignal<{ projectPath: string } | null>(null);
   const [editingLoopTarget, setEditingLoopTarget] = createSignal<{ projectPath: string; loopId: string } | null>(null);
   const [replicaCodingAgentTarget, setReplicaCodingAgentTarget] = createSignal<{ sessionId: string; sessionName: string } | null>(null);
-  // Coding Agent picker target for a gray/red (not-running) replica — #545.
-  // Carries stable paths (#710); the render block re-resolves the live wg/replica
-  // so a refresh that replaces those object refs keeps the picker open.
   const [inactiveCodingAgentTarget, setInactiveCodingAgentTarget] = createSignal<{ projectPath: string; wgPath: string; replicaPath: string } | null>(null);
 
-  // Resolve the live ProjectState for a hoisted modal from the stable path it
-  // carries. Every projectStore mutation maps over `projects` keyed by path
-  // (project.ts), so the entry stays findable across refreshes; this returns
-  // undefined only once the project is actually removed, which collapses the
-  // dependent modal (its <Show> turns falsy) — the correct "project gone" close.
   const findProjectByPath = (projectPath: string | null | undefined) => {
     if (!projectPath) return undefined;
     const normalized = normalizeProjectPathForCompare(projectPath);
@@ -575,11 +473,6 @@ const ProjectPanel: Component = () => {
     );
   };
 
-  // #710: re-resolve the live workgroup + replica for the inactive coding-agent
-  // picker from the stable identities in the target. A discovery refresh fully
-  // replaces the workgroups/agents arrays (project.ts reloadProject), so the old
-  // {wg, replica} object refs went stale and the row disposal closed the modal;
-  // matching by path re-finds them. Null (project/wg/replica gone) closes it.
   const inactiveCodingAgentResolved = createMemo(() => {
     const target = inactiveCodingAgentTarget();
     if (!target) return null;
@@ -589,9 +482,6 @@ const ProjectPanel: Component = () => {
     return proj && wg && replica ? { proj, wg, replica } : null;
   });
 
-  // #710: re-resolve the live loop for the edit-loop modal by id, so a refresh
-  // (which replaces the loops array) feeds the modal fresh data instead of
-  // disposing it. Null (loop deleted) closes the modal.
   const editingLoopResolved = createMemo(() => {
     const target = editingLoopTarget();
     if (!target) return null;
@@ -600,18 +490,6 @@ const ProjectPanel: Component = () => {
     return proj && loop ? { proj, loop } : null;
   });
 
-  // #710: top-level restart helper for the hoisted coding-agent picker's
-  // onSelect. Same bounded restart as the per-row restartReplicaSession below,
-  // minus the row-local context-menu cleanup (the menu is already gone by the
-  // time the picker resolves), so it can live at the stable ProjectPanel scope.
-  // #574 §15.1: bound the await with RESTART_TIMEOUT_MS, mirroring
-  // applyRestartPrompt. The Tauri IPC transport has no client-side timeout
-  // (transport-tauri.ts), so a wedged backend would never settle this await, the
-  // catch would never run, and NO toast would fire on desktop — the exact #574
-  // silent-failure class. WsTransport self-heals after 30s; this gives desktop
-  // the same guarantee. The bare "Command timeout: restart_session" reject
-  // string passes through launchErrorMessage verbatim, so desktop and WS get
-  // identical copy.
   const restartReplicaSessionCore = async (
     sessionId: string,
     agentId?: string,
@@ -635,8 +513,6 @@ const ProjectPanel: Component = () => {
       console.error("Failed to restart session:", e); // keep for logs
       toastStore.error(launchErrorMessage(e));
     } finally {
-      // Cancel the pending timeout when the restart settles first, so a
-      // successful restart can't leave a dangling timer / late rejection.
       window.clearTimeout(timeoutTimer);
     }
   };
@@ -645,12 +521,6 @@ const ProjectPanel: Component = () => {
     const existing = replicaSession(wg, replica);
     if (existing) {
       if (!isSessionLive(existing)) {
-        // Session exists but PTY has exited. Possible causes:
-        //  - deferred at startup by the #248 policy (non-coord, or coord that was
-        //    asleep at shutdown, or `restoreCoordinatorWakeState=false`)
-        //  - user closed it during the prior run
-        // Wake it with provider auto-resume so the prior conversation continues —
-        // this is NOT a user-intent "fresh conversation" restart.
         try {
           await SessionAPI.restart(existing.id, { skipAutoResume: false });
           if (isTauri) {
@@ -661,7 +531,6 @@ const ProjectPanel: Component = () => {
         }
         return;
       }
-      // Already instantiated and live — just switch to it
       await SessionAPI.switch(existing.id);
       if (isTauri) {
         const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
@@ -674,16 +543,6 @@ const ProjectPanel: Component = () => {
       return;
     }
 
-    // Not instantiated — create session in-place.
-    // #599 R1: a coordinator that was auto-closed (#552/#580) or manually closed
-    // (#588) is DESTROYED, so its reopen has no live/exited record and lands here
-    // instead of the restart-with-resume branch above. Both close markers are set
-    // only when AC tore down a coordinator that had been running, so their
-    // presence is the discriminator "reopen of an already-run replica" vs
-    // "genuinely fresh first launch". Carry a resume intent so the eventual
-    // create injects --continue (Claude still disk-gates it via claude_project_exists).
-    // #748: read through the volatile layer — a close event that has not been
-    // through a discovery reload yet lives only there.
     const gitRepos = buildGitRepos(replica);
     const resumeOnLaunch = !!(
       effectiveAutoClosedAt(replica) || effectiveManuallyClosedAt(replica)
@@ -763,10 +622,6 @@ const ProjectPanel: Component = () => {
       {(proj) => {
         const [showCtxMenu, setShowCtxMenu] = createSignal(false);
         const [ctxMenuPos, setCtxMenuPos] = createSignal({ x: 0, y: 0 });
-        // #710: New Agent/Team/Workgroup/Loop + Edit Loop open-state hoisted to
-        // the stable ProjectPanel scope (setNewAgentTarget/…/setEditingLoopTarget
-        // above) so a background refresh that re-creates this row can't dispose an
-        // open modal. Triggers below pass proj.path (and loop id) into them.
         const [teamCtxMenu, setTeamCtxMenu] = createSignal<{ team: AcTeam; x: number; y: number } | null>(null);
         const [deletingTeam, setDeletingTeam] = createSignal<AcTeam | null>(null);
         const [deleteError, setDeleteError] = createSignal("");
@@ -777,10 +632,6 @@ const ProjectPanel: Component = () => {
           | { kind: "inactive"; wg: AcWorkgroup; replica: AcAgentReplica; x: number; y: number }
           | null
         >(null);
-        // #710: live + inactive Coding Agent picker open-state hoisted to the
-        // stable ProjectPanel scope (replicaCodingAgentTarget /
-        // inactiveCodingAgentTarget above). The triggers below set them with
-        // stable identities (session id; project/wg/replica paths).
         const [deletingWg, setDeletingWg] = createSignal<AcWorkgroup | null>(null);
         const [wgDeleteError, setWgDeleteError] = createSignal("");
         const [wgDeleteInProgress, setWgDeleteInProgress] = createSignal(false);
@@ -802,36 +653,16 @@ const ProjectPanel: Component = () => {
         let groupFlyoutAnchorEl: HTMLElement | undefined;
         let groupFlyoutCloseTimer: number | undefined;
 
-        // #943 - repo Browse submenu.
-        //
-        // The flyout is keyed by the repo's INDEX in the open menu plus its
-        // sourcePath, and never holds a SessionRepo object: <For> is keyed by
-        // reference and the cold path (configuredReplicaRepoBadges) maps into
-        // FRESH objects on every evaluation, so a captured entry goes stale (and
-        // its <button> gets detached) whenever GitWatcher or a discovery branch
-        // event lands. The live entry is re-derived by index, identity-checked on
-        // sourcePath. Index, not label: two repos can share a label.
         const [repoFlyout, setRepoFlyout] = createSignal<{ index: number; sourcePath: string } | null>(null);
         const [repoFlyoutPos, setRepoFlyoutPos] = createSignal({ x: 0, y: 0 });
         let repoFlyoutEl: HTMLDivElement | undefined;
         let repoFlyoutAnchorEl: HTMLElement | undefined;
         let repoFlyoutCloseTimer: number | undefined;
-        // Set only while we programmatically return focus to the trigger after an
-        // Escape. Without it, `anchor.focus()` synchronously fires the trigger's
-        // onFocus, which re-opens the flyout we are trying to close.
         let suppressRepoFocusOpen = false;
 
-        // #943 - GitHub remote per repo source path, resolved once when the
-        // context menu opens. Missing key = still resolving (no arrow yet);
-        // null = resolved, no GitHub remote (no arrow, ever). `repoRemotesGen`
-        // orphans in-flight results from a menu that has already been replaced,
-        // so a stale answer cannot paint an arrow on the NEXT menu.
         const [repoRemotes, setRepoRemotes] = createSignal<Record<string, GithubRepoRef | null>>({});
         let repoRemotesGen = 0;
 
-        // Web/WS clients: `open_external_url` is a no-op stub on the host and
-        // `git_remote_url` is too (web/commands.rs), so the whole feature is
-        // desktop-only. Hide it rather than ship dead menu items.
         const browseSupported = () => isTauri;
 
         const resolveRepoRemotes = (repos: SessionRepo[]) => {
@@ -848,9 +679,6 @@ const ProjectPanel: Component = () => {
                 setRepoRemotes((prev) => ({ ...prev, [path]: parseGithubRemote(remote) }));
               })
               .catch((err) => {
-                // The command swallows every git failure into Ok(None), so a
-                // rejection here means an empty-path Err (unreachable) or a
-                // transport fault. Debug, not error: nothing is broken.
                 if (gen !== repoRemotesGen) return;
                 console.debug("[repo-browse] git_remote_url failed:", err);
                 setRepoRemotes((prev) => ({ ...prev, [path]: null }));
@@ -868,21 +696,8 @@ const ProjectPanel: Component = () => {
             { id: "main", label: "Browse Main", url: githubRepoUrl(ref) },
           ];
           const branch = repo.branch?.trim();
-          // PRODUCT RULE (user, #943), not an accident: tolerate BOTH `main` and
-          // `master`. A repo whose default branch is `master` already lands on
-          // `master` at the repo-root URL, so a second item pointing at the same
-          // page is noise. Everything else gets Browse Branch. Do NOT "fix" this
-          // back to a literal `!== "main"`.
-          //
-          // Exact match, no casefold: git refs are case-sensitive, so a branch
-          // literally named `Master` is a different, real branch and DOES get the
-          // item. "HEAD" is the detached-HEAD sentinel (both git readers map it to
-          // null; this is belt for the volatile override layer).
           if (branch && branch !== "main" && branch !== "master" && branch !== "HEAD") {
             const url = githubBranchUrl(ref, branch);
-            // null = the branch text is not a usable ref (`..`, empty). Rather
-            // than build a URL the browser would normalize into another repo, we
-            // simply do not offer the item.
             if (url) items.push({ id: "branch", label: "Browse Branch", url });
           }
           return items;
@@ -1015,9 +830,6 @@ const ProjectPanel: Component = () => {
           if (filterInputEl) focusOnMount(filterInputEl, { select: true });
         };
         const toggleFilter = () => {
-          // Magnifier acts as a toggle. Closing also drops any in-flight
-          // pattern so we never leave an active-but-hidden filter applied
-          // (the input is the only surface that reveals one is running).
           if (filterOpen()) {
             setFilterOpen(false);
             setFilterPattern("");
@@ -1076,15 +888,6 @@ const ProjectPanel: Component = () => {
           if (!regex) return true;
           return regex.test(joinSearchText(...parts));
         };
-        // Search text for the session fields visible on EVERY row that shows this
-        // session (shared by replica rows and agent SessionItems): name, agent
-        // label, and the status dot's state. Conditionally-rendered badges are
-        // contributed by the per-row callers under the gate that matches their
-        // render — repo/branch (replicaSearchText / sessionRepoSearchText) and the
-        // profile badge — so "what you match == what you see" (#515 bug 1).
-        // `shell` is dropped: it is never shown on any row. Status text comes
-        // from the same effective state as the dot, so stale live flags cannot
-        // index an exited row as waiting/pending.
         const sessionSearchText = (session: Session | undefined) => {
           if (!session) return "";
           return joinSearchText(
@@ -1093,10 +896,6 @@ const ProjectPanel: Component = () => {
             sessionEffectiveStatusSearchText(session)
           );
         };
-        // Repo/branch chips on an agent SessionItem render only for a coordinator
-        // session with repos (SessionItem gate `isCoordinator && !inactive &&
-        // gitRepos.length`). Gate the search text identically so a non-coordinator
-        // agent row is never surfaced by a branch it isn't showing (#515 bug 1).
         const sessionRepoSearchText = (session: Session | undefined) => {
           if (!session || !session.isCoordinator || session.id.startsWith("inactive-")) return "";
           return session.gitRepos.map((repo) => formatReplicaRepoBadgeLabel(repo)).join(" ");
@@ -1107,14 +906,6 @@ const ProjectPanel: Component = () => {
           if (!session.agentId) return null;
           return settingsStore.current?.agents?.find((a) => a.id === session.agentId)?.label ?? null;
         };
-        // #733/#515: single source of truth for a replica row's Coding Agent label
-        // and Profile badge, so the row render (renderReplicaItem) and the sidebar
-        // filter search text (replicaSearchText) can never diverge — a badge that is
-        // visible is always matchable. A live session wins and stays byte-identical
-        // to the pre-#733 behavior (reuses liveAgentLabel / sessionProfileBadge); a
-        // shut-down replica falls back to its persisted config (currentCodingAgentId
-        // ?? preferredAgentId — same precedence as the launch path at :616 — and
-        // currentProfile), mirroring repoBadges()' configured fallback.
         const resolveReplicaAgentLabel = (
           session: Session | undefined,
           replica: AcAgentReplica
@@ -1145,18 +936,10 @@ const ProjectPanel: Component = () => {
             taskTitle,
             stripFrontmatter(taskTitle ?? ""),
             replica.originProject ? `${replica.name}@${replica.originProject}` : replica.name,
-            // Repo/branch badges render only for coordinators (renderReplicaItem
-            // gate `isCoord() && repoBadges().length>0`). Match the same gate so a
-            // non-coordinator row is never surfaced by a badge it isn't showing
-            // (#515 bug 1).
             replica.isCoordinator
               ? repos.map((repo) => formatReplicaRepoBadgeLabel(repo)).join(" ")
               : null,
             resolveReplicaAgentLabel(session, replica),
-            // #733/#515: mirror the row badges via the shared resolvers so a dormant
-            // replica's persisted Coding Agent label + Profile letter are matchable
-            // exactly when they are visible (renderReplicaItem uses the same helpers).
-            // A live session keeps sessionProfileBadge's `X->Y` fallback text.
             resolveReplicaProfileBadge(session, replica),
             replica.isCoordinator ? "coordinator" : null,
             extraBadge,
@@ -1188,20 +971,7 @@ const ProjectPanel: Component = () => {
         const agentMatches = (agent: { name: string; path: string; preferredAgentId?: string }) => {
           const session = sessionsStore.findSessionByName(agent.name);
           const repoText = sessionRepoSearchText(session);
-          // The coding-agent badge shows the RESOLVED label (session.agentLabel,
-          // else the agentId→settings lookup). sessionSearchText only carries the
-          // raw agentLabel, so a session with a null agentLabel but a resolvable
-          // agentId would render the badge yet stay unmatchable. Include the
-          // resolved label here so the coding-agent badge is matchable wherever it
-          // renders — the headline #515 ask (filter agents by their coding agent).
-          // It is null exactly when no label resolves, i.e. when the badge is also
-          // hidden, so this never matches a badge that isn't shown.
           const codingAgentLabel = liveAgentLabel(session);
-          // On an agent SessionItem the profile badge lives inside the meta block,
-          // which renders only when an agent label resolves OR a coordinator's
-          // repos show (SessionItem outer <Show>). Mirror that gate so the filter
-          // never surfaces an agent by a profile badge it isn't showing (#515 bug
-          // 1) — unlike replica rows, which render it unconditionally.
           const metaVisible = !!codingAgentLabel || repoText !== "";
           return matchesFilterText(
             agentDisplayName(agent.name),
@@ -1246,14 +1016,6 @@ const ProjectPanel: Component = () => {
           return groupMatchesWorkgroup(wg, selected.id);
         };
         const groupVisibleWorkgroups = createMemo(() => proj.workgroups.filter(groupPredicate));
-        // Memoized so each section reads one cached pass per (filter, store)
-        // change instead of rebuilding search text + re-running regex.test on
-        // every access (these are read 3-4× per render). Dependencies are all
-        // reactive (filterPattern signal, sessionsStore, projectStore via proj),
-        // so sections still update live as the user types (#515 bug 3).
-        // NOTE: filteredCoordinatorItems is defined further down, right after the
-        // coordinatorItems memo it reads — createMemo runs eagerly, so it must
-        // follow that declaration (not lead it) to avoid a temporal dead zone.
         const filteredWorkgroups = createMemo(() => {
           const base = groupVisibleWorkgroups();
           if (!filterActive() || matchesFilterText("Workgroups")) return base;
@@ -1272,15 +1034,9 @@ const ProjectPanel: Component = () => {
           if (!wg || !groupPredicate(wg)) return false;
           return !filterActive() || matchesFilterText("Selected Workgroup") || workgroupMatches(wg, "Selected Workgroup");
         };
-        // Status line shown on each loop row — shared with the filter search
-        // text so what the regex matches always equals what the user sees.
         const loopStatusText = (loop: AcLoopSummary) =>
           loop.lastResult?.message ?? (loop.nextDueAt ? `Next: ${new Date(loop.nextDueAt).toLocaleString()}` : "No runs yet");
         const loopSearchText = (loop: AcLoopSummary) =>
-          // promptPreview is intentionally NOT matched: it renders only as the
-          // row's hover `title` (not visible text), so matching it would surface a
-          // loop with no on-screen reason — the case the comment above warned
-          // about (#515 bug 1).
           joinSearchText(
             loop.name,
             loop.workgroup,
@@ -1298,17 +1054,6 @@ const ProjectPanel: Component = () => {
         let replicaCtxMenuEl: HTMLDivElement | undefined;
         let dismissCtx: (() => void) | null = null;
 
-        // #977 - the menu closes when the pointer leaves it, after a grace period
-        // that any re-entry cancels (a quick cursor slip must not dismiss it).
-        //
-        // BOTH SUBMENUS RENDER IN THEIR OWN <Portal>, outside .session-context-menu:
-        // crossing from a submenu trigger into its flyout therefore fires the MENU's
-        // mouseleave, and a naive close would kill the menu (and the flyout with it,
-        // since the flyout Portal is a child of the menu's render block) exactly when
-        // the user reaches for it. The flyouts cancel this timer on mouseenter, so
-        // "pointer inside the menu OR inside an open submenu" reads as still-inside.
-        // Same schedule/cancel shape the flyouts already use for themselves, one
-        // level up. Click, click-outside and Escape are untouched.
         let replicaCtxMenuCloseTimer: number | undefined;
         const cancelReplicaCtxMenuClose = () => {
           if (replicaCtxMenuCloseTimer === undefined) return;
@@ -1317,11 +1062,6 @@ const ProjectPanel: Component = () => {
         };
 
         const cleanupCtx = () => {
-          // #977 - a pending pointer-leave close belongs to the menu that armed it.
-          // Every menu open handler and every dismiss path calls cleanupCtx() first,
-          // so cancelling here is what stops a stale timer from dismissing the NEXT
-          // menu (right-click a row, slide off, right-click another row inside the
-          // grace period) or from tearing that menu's dismiss listeners off with it.
           cancelReplicaCtxMenuClose();
           if (dismissCtx) {
             window.removeEventListener("click", dismissCtx);
@@ -1337,18 +1077,6 @@ const ProjectPanel: Component = () => {
           setReplicaCtxMenu(null);
           cleanupCtx();
         };
-        // A failed group action pins the Add to Group flyout open on pointer-leave
-        // (scheduleGroupFlyoutClose bails so the message stays readable). Closing the
-        // MENU would dispose that flyout and its error with it, so the close bails
-        // while the error is ON SCREEN - and the flyout is the only thing that renders
-        // one, so on screen means the flyout is open.
-        //
-        // groupFlyoutHasError() ALONE IS NOT THAT CONDITION. workgroupGroupsStore.error
-        // is a sticky PROJECT-WIDE flag: any failed groups write (another workgroup, the
-        // Edit-groups modal) or an invalid groups.toml at load sets it, and only a LATER
-        // successful save clears it. Bailing on it bare disables the pointer-leave close
-        // for every replica menu in the project, with nothing on screen to explain it,
-        // which is #977 itself reintroduced through the back door.
         const groupErrorPinned = () => groupFlyoutOpen() && groupFlyoutHasError();
         const scheduleReplicaCtxMenuClose = () => {
           cancelReplicaCtxMenuClose();
@@ -1493,14 +1221,6 @@ const ProjectPanel: Component = () => {
         const reclampRepoFlyout = () => {
           const anchor = repoFlyoutAnchorEl;
           if (!anchor?.isConnected || !repoFlyout()) return;
-          // The re-check INSIDE the deferred callback is the load-bearing one, and
-          // it is not paranoia: <For> is reference-keyed and the cold path mints
-          // fresh entry objects on every evaluation, so a GitWatcher tick or a
-          // discovery refresh re-creates the row - and detaches this anchor -
-          // between scheduling the frame and running it, while the pointer has not
-          // moved. getBoundingClientRect on a detached node is all zeros, which
-          // would fling the flyout to the top-left viewport margin. Guarding only
-          // at schedule time (as this did) never fires on that path at all.
           const clamp = () => {
             if (anchor !== repoFlyoutAnchorEl || !anchor.isConnected || !repoFlyout()) return;
             positionRepoFlyout(anchor);
@@ -1525,10 +1245,6 @@ const ProjectPanel: Component = () => {
           queueMicrotask(() => repoFlyoutEl?.querySelector("button")?.focus());
         };
 
-        /// Return focus to the trigger WITHOUT re-opening the flyout: `focus()`
-        /// fires the trigger's onFocus synchronously, and onFocus opens the
-        /// flyout. Dropping the refocus instead would strand focus on <body> and
-        /// make the menu untabbable, which is worse.
         const focusRepoTriggerQuietly = (anchor: HTMLElement | undefined) => {
           if (!anchor?.isConnected) return;
           suppressRepoFocusOpen = true;
@@ -1549,20 +1265,6 @@ const ProjectPanel: Component = () => {
           }
         };
 
-        // #943 - teardown on menu CLOSE. Covers the ~20 `setReplicaCtxMenu(null)`
-        // sites plus the window-level dismiss listener with one hook, and clears
-        // stale state so a reopened menu cannot inherit a flyout.
-        //
-        // It does NOT cover the menu -> menu switch (right-click A, then
-        // right-click B): the handlers overwrite the signal non-null -> non-null
-        // and `cleanupCtx()` has already removed the dismiss listener, so there is
-        // no null transition to observe. That case is handled in the handlers
-        // themselves (F.8), exactly as the group flyout already does it
-        // (`resetGroupMenuState()`). Both are required; neither is sufficient.
-        //
-        // Do NOT rewrite this as `createEffect(on(replicaCtxMenu, ...))`:
-        // `positionReplicaCtxMenu` rewrites the menu object on every reclamp, so
-        // an identity-keyed effect would close the flyout on churn.
         createEffect(() => {
           if (replicaCtxMenu()) return;
           closeRepoFlyout();
@@ -1577,8 +1279,6 @@ const ProjectPanel: Component = () => {
           agentId?: string,
           requestedProfile?: string | null,
         ) => {
-          // Row-local cleanup (the context menu that launched this is per-row),
-          // then defer to the hoisted core which owns the bounded restart + toast.
           setReplicaCtxMenu(null);
           cleanupCtx();
           await restartReplicaSessionCore(sessionId, agentId, requestedProfile);
@@ -1598,8 +1298,6 @@ const ProjectPanel: Component = () => {
           }
         };
 
-        // Narrow the replica context-menu union for the active vs gray/red
-        // (#545) render branches.
         const activeReplicaMenu = () => {
           const m = replicaCtxMenu();
           return m && m.kind === "active" ? m : null;
@@ -1609,11 +1307,6 @@ const ProjectPanel: Component = () => {
           return m && m.kind === "inactive" ? m : null;
         };
 
-        // Resolve any real (non-placeholder) session under this workgroup. Every
-        // replica in a workgroup shares one TASK.md and task_clean resolves it
-        // from the session cwd, so any live/exited sibling session clears the same
-        // title. This lets a never-launched (gray) replica reuse the existing
-        // session-id-based broom with no backend change (#545).
         const resolveWorkgroupSessionId = (wg: AcWorkgroup): string | null => {
           for (const peer of wg.agents) {
             const s = replicaSession(wg, peer);
@@ -1640,8 +1333,6 @@ const ProjectPanel: Component = () => {
           }
         };
 
-        // #777 F2: the built-in Non-stop slot as a flyout checkbox row. Mirrors
-        // toggleExistingGroup but targets the slot; if absent, adding materializes it.
         const nonStopChecked = (wg: AcWorkgroup) => {
           const ns = groupsConfig().nonStop;
           return !!ns && nonStopMatchesWorkgroup(ns, wg);
@@ -1837,20 +1528,7 @@ const ProjectPanel: Component = () => {
           </Show>
         );
 
-        // #943 - coordinator repo entries. Click still opens the local folder
-        // (unchanged); hover additionally opens the Browse flyout when the repo
-        // has a GitHub origin. Shared by the active and inactive menu branches.
-        //
-        // BOTH PARAMS ARE ACCESSORS, ON PURPOSE. `{helper(repoEntries(), "...")}`
-        // in JSX compiles to a tracking computation over the args, which rebuilds
-        // this entire subtree (and re-creates the <Portal>) whenever the entry
-        // list or the menu object changes identity. Passing functions gives that
-        // computation zero dependencies, so it runs once and <For> / the
-        // attribute getters do the reactive work.
         const renderRepoBrowseFlyout = (repos: () => SessionRepo[], testIdPrefix: () => string) => {
-          // The anchored entry can be re-created (cold path) or replaced
-          // (GitWatcher) while the flyout is open. Re-derive it by index every
-          // render and identity-check the sourcePath; null = it moved or vanished.
           const liveRepo = (): SessionRepo | null => {
             const fly = repoFlyout();
             if (!fly) return null;
@@ -1858,7 +1536,6 @@ const ProjectPanel: Component = () => {
             return candidate && candidate.sourcePath === fly.sourcePath ? candidate : null;
           };
 
-          // If the identity check breaks, the anchor node is gone too: close.
           createEffect(
             on(
               () => (repoFlyout() ? liveRepo() : null),
@@ -1885,9 +1562,6 @@ const ProjectPanel: Component = () => {
                       scheduleRepoFlyoutClose();
                       scheduleReplicaCtxMenuClose(); // #977 - re-armed; the menu cancels it on re-entry
                     }}
-                    // This Portal renders OUTSIDE .session-context-menu, so the
-                    // window-level dismiss listeners (bubble phase) would
-                    // otherwise see these events and kill the whole menu.
                     onClick={(e) => e.stopPropagation()}
                     onContextMenu={(e) => e.stopPropagation()}
                     onKeyDown={(e) => {
@@ -1935,8 +1609,6 @@ const ProjectPanel: Component = () => {
                         if (browseItems().length > 0) {
                           openRepoFlyout(index(), repo, e.currentTarget);
                         } else {
-                          // Moving from a browsable repo onto a non-browsable one
-                          // must not leave the previous flyout hanging.
                           closeRepoFlyout();
                         }
                       }}
@@ -1946,8 +1618,6 @@ const ProjectPanel: Component = () => {
                         if (browseItems().length > 0) openRepoFlyout(index(), repo, e.currentTarget);
                       }}
                       onKeyDown={(e) => {
-                        // Enter/Space keep the native button activation (open the
-                        // folder). Only ArrowRight enters the submenu.
                         if (e.key === "ArrowRight" && browseItems().length > 0) {
                           e.preventDefault();
                           e.stopPropagation();
@@ -1996,9 +1666,6 @@ const ProjectPanel: Component = () => {
           </>
         );
 
-        // Broom (clear task title) for a gray/red replica — reuses the
-        // active-agent TaskAPI.clean. The backend emits workgroup_task_updated,
-        // which sidebar/App.tsx applies to projectStore, refreshing the sidebar.
         const clearReplicaTaskTitle = async (wg: AcWorkgroup) => {
           setReplicaCtxMenu(null);
           cleanupCtx();
@@ -2007,9 +1674,6 @@ const ProjectPanel: Component = () => {
             if (sessionId) {
               await TaskAPI.clean(sessionId);
             } else {
-              // Cold workgroup: no live/exited session resolves the root, so
-              // address the wg-* root directly (#545). wg.path is always present
-              // (types.ts:431), even for a never-launched workgroup.
               await TaskAPI.cleanAt(wg.path);
             }
           } catch (e) {
@@ -2079,8 +1743,6 @@ const ProjectPanel: Component = () => {
 
         const hasTeams = () => proj.teams.length > 0;
         const projectAutomationId = () => automationIdPart(proj.path);
-        // #810 - the "project" section key moved to the project-collapse store.
-        // Sub-section keys below still use the local collapsedByKey signal.
         const selectedWorkgroupCollapsedKey = projectPanelCollapseKey(proj.path, "selected-workgroup");
         const workgroupsCollapsedKey = projectPanelCollapseKey(proj.path, "workgroups");
         const loopsCollapsedKey = projectPanelCollapseKey(proj.path, "loops");
@@ -2088,13 +1750,6 @@ const ProjectPanel: Component = () => {
         const teamsCollapsedKey = projectPanelCollapseKey(proj.path, "teams");
         const hasLoopTargets = () =>
           proj.workgroups.some((wg) => wg.agents.some((agent) => agent.isCoordinator));
-        // #748 — pair objects are the <For> keys of the coordinator list, so
-        // they must keep identity across memo re-runs (with coordSortByActivity
-        // on, every session busy→idle markActivity re-runs this memo; fresh
-        // pairs would dispose and re-create every coordinator row — the exact
-        // lost-click mechanism this fix removes). Reuse the cached pair while
-        // its replica+wg objects are unchanged; <For> then MOVES rows on
-        // reorder instead of re-creating them.
         const coordinatorPairCache = new Map<string, { replica: AcAgentReplica; wg: AcWorkgroup }>();
         const naturalCoordinatorItems = createMemo(() => {
           const result: { replica: AcAgentReplica; wg: AcWorkgroup }[] = [];
@@ -2156,9 +1811,6 @@ const ProjectPanel: Component = () => {
             return proj.workgroups.find(w => w.name === prev.name) ?? null;
         });
 
-        // Memoized like the other filtered collections (#515 bug 3); placed here
-        // because createMemo is eager and this reads the coordinatorItems memo
-        // defined just above.
         const filteredCoordinatorItems = createMemo(() => {
           const items = coordinatorItems();
           if (!filterActive()) return items;
@@ -2324,8 +1976,6 @@ const ProjectPanel: Component = () => {
             sessionName: session.name,
             wg,
             replica,
-            // Red/exited replicas get the full menu PLUS the broom; green/live
-            // gets the full menu with no broom (#545 rework).
             exited: !isSessionLive(session),
             x: e.clientX,
             y: e.clientY,
@@ -2345,10 +1995,6 @@ const ProjectPanel: Component = () => {
           });
         };
 
-        // Gray (never launched) replicas have no session at all, so the active
-        // menu's session-id path can't open. Show the minimal not-running menu
-        // instead: Coding Agent selector + broom. Red/exited replicas keep a real
-        // session and route to the full menu + broom instead (#545 rework).
         const handleReplicaInactiveContextMenu = (e: MouseEvent, wg: AcWorkgroup, replica: AcAgentReplica) => {
           e.preventDefault();
           e.stopPropagation();
@@ -2392,10 +2038,6 @@ const ProjectPanel: Component = () => {
           const isCoord = () => replica.isCoordinator;
           const session = () => replicaSession(wg, replica);
           const communication = createMemo(() => session()?.communication ?? null);
-          // #747: no liveness gate. A dormant restored coordinator keeps its
-          // persisted raised hand; every real-exit path clears communication
-          // and emits session_communication_changed, so exited-with-hand can
-          // only be the restored state.
           const showRaiseHand = createMemo(() =>
             isCoord() &&
             !!taskTitle &&
@@ -2408,17 +2050,6 @@ const ProjectPanel: Component = () => {
               ? s.gitRepos
               : configuredReplicaRepoBadgesLive(replica, wg);
           });
-          // #552/#580 coordinator idle badge. The value is now the unified
-          // team-idle anchor (#580): minutes since the whole team was last truly
-          // active — it pins to 0 when you message the coordinator, any member is
-          // active, or the coordinator is active. The backend carries that anchor
-          // in the EXISTING `lastUserMessageAt` field/event (rename deferred), so
-          // the FE derivation is unchanged. A createMemo (NOT an IIFE — the IIFE
-          // froze; confirmed blocker) so it subscribes to clockStore.nowMs (the
-          // live 30s tick) and settingsStore.current (threshold edits apply
-          // instantly). #748: the anchor reads through the volatile live layer
-          // (effectiveLastUserMessageAt), which the memo subscribes to — a clock
-          // event updates this badge in place instead of re-creating the row.
           const idleBadge = createMemo(() =>
             isCoord()
               ? coordinatorIdleBadge(
@@ -2428,42 +2059,12 @@ const ProjectPanel: Component = () => {
                 )
               : null
           );
-          // #552 auto-closed pill. Driven by the persisted autoClosedAt marker,
-          // read through the volatile live layer (#748). #580: MUTUALLY
-          // EXCLUSIVE with the minutes badge — when autoClosed() is true the
-          // counter is gated off (XOR below), so a closed team shows ONLY the
-          // gray AUTO-CLOSED pill; clearing the marker on reopen makes
-          // autoClosed() false and the counter returns.
-          // #589: ALSO gate on liveness. On raise the dot turns green from the
-          // sessionsStore (live session), but a discovery reload can still
-          // surface a stale marker (reloadProject supersedes the event-cleared
-          // override with a snapshot that may predate the clear), leaving the
-          // pill stuck while the dot is green. An auto-closed team is DESTROYED,
-          // so it is never live — there is no legitimate "live + auto-closed"
-          // state. Gating on `!live` hides the pill the moment the session goes
-          // live, reusing the exact signal the status dot reads, so it
-          // self-heals regardless of the stale marker; the XOR'd idle counter
-          // returns automatically. Inlined isSessionLive(session()) (===
-          // isLive() below) because createMemo runs EAGERLY and `isLive` is
-          // declared further down — calling it here would hit its temporal dead
-          // zone for a coordinator already auto-closed at mount.
           const autoClosed = createMemo(
             () => isCoord() && !!effectiveAutoClosedAt(replica) && !isSessionLive(session())
           );
-          // #588 manually-closed pill. Mirrors autoClosed, but ALSO gated on
-          // !isSessionLive(session()): a dormant coordinator has no live session
-          // so the pill shows; a reopened/raised coordinator is live so the pill
-          // hides immediately, independent of marker-clear event timing (the same
-          // stale-on-raise trap #589 fixes for AUTO-CLOSED). Use INLINE
-          // isSessionLive(session()), NOT isLive() — isLive is declared later and
-          // this memo is eager (TDZ).
           const manuallyClosed = createMemo(
             () => isCoord() && !!effectiveManuallyClosedAt(replica) && !isSessionLive(session())
           );
-          // #580 idle-badge tooltip. The auto-close clause is appended ONLY when
-          // the setting is enabled: Decision 3 keeps the badge (and its red >=60
-          // color) visible even when auto-close is OFF, where the team will NOT
-          // close — so an unconditional "auto-closes" claim would be wrong.
           const idleBadgeTitle = () =>
             "Time this team has been idle. Resets when you message the coordinator or any member is active (persists across restarts)." +
             (settingsStore.current?.coordinatorAutoCloseEnabled
@@ -2476,21 +2077,14 @@ const ProjectPanel: Component = () => {
             `replica.badges.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
           const repoBadgeTestId = (label: string, index: number) =>
             `replica.repoBadge.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}.${index}.${automationIdPart(label)}`;
-          // #733: the Coding Agent + Profile badges fall back to the persisted
-          // replica config when there is no live session, so a shut-down replica
-          // (incl. AUTO-/MANUALLY-CLOSED coordinators — no isCoord() gate, Maria's
-          // scope decision) still shows its last agent/profile. Both the render
-          // (here) and the sidebar filter (replicaSearchText) route through the
-          // shared resolveReplica* helpers so a visible badge is always matchable
-          // (#515). The live-session branch stays byte-identical.
           const liveAgentLabel = () => resolveReplicaAgentLabel(session(), replica);
           const profileBadge = () => resolveReplicaProfileBadge(session(), replica);
-          // #548: resolver-backed tooltip naming the EFFECTIVE profile (the one
-          // actually in effect) for this session's coding agent. Plain function
-          // (NOT createMemo) — row-local and recomputes on settings reload.
-          // #733: same session-less fallback as the two helpers above — the tooltip
-          // resolves from the persisted agent id + profile letter when there is no
-          // live session (cfg-missing still short-circuits to undefined, unchanged).
+          const ctxVisible = () =>
+            contextBadgeConfigured(settingsStore.current?.agents, session()?.agentId);
+          const ctxPercent = () => {
+            const s = session();
+            return s ? sessionsStore.contextPercentBySessionId[s.id] : undefined;
+          };
           const profileBadgeTitle = () => {
             const s = session();
             const cfg = settingsStore.current?.codingAgentProfiles;
@@ -2506,6 +2100,12 @@ const ProjectPanel: Component = () => {
             return profileDisplayLabel(cfg, settingsStore.current?.agents ?? [], agentId, letter);
           };
           const isLive = () => isSessionLive(session());
+          createEffect(() => {
+            const current = session();
+            if (current && !isSessionLive(current)) {
+              voiceRecorder.revokeSession(current.id);
+            }
+          });
           const bridge = () => { const s = session(); return s ? bridgesStore.getBridge(s.id) : undefined; };
           const isDetached = () => { const s = session(); return s ? sessionsStore.isDetached(s.id) : false; };
           const isRecording = () => { const s = session(); return s ? voiceRecorder.recordingSessionId() === s.id : false; };
@@ -2515,6 +2115,7 @@ const ProjectPanel: Component = () => {
 
           const handleMicClick = (e: MouseEvent) => {
             e.stopPropagation();
+            if (!isLive()) return;
             if (!settingsStore.voiceEnabled) {
               emitOpenSettings("integrations").catch(console.error);
               return;
@@ -2528,6 +2129,7 @@ const ProjectPanel: Component = () => {
           };
           const handleDetach = async (e: MouseEvent) => {
             e.stopPropagation();
+            if (!isLive()) return;
             const s = session();
             if (!s) return;
             try {
@@ -2542,6 +2144,7 @@ const ProjectPanel: Component = () => {
           };
           const handleTelegramClick = async (e: MouseEvent) => {
             e.stopPropagation();
+            if (!isLive()) return;
             const s = session();
             if (!s) return;
             const b = bridge();
@@ -2560,15 +2163,13 @@ const ProjectPanel: Component = () => {
           };
           const handleBotSelect = async (botId: string) => {
             setShowBotMenu(false);
+            if (!isLive()) return;
             const s = session();
             if (s) await TelegramAPI.attach(s.id, botId);
           };
           const handleClose = (e: MouseEvent) => {
             e.stopPropagation();
             const s = session();
-            // #588 route through the shared helper: a coordinator close marks +
-            // (settings-gated) cascades + confirms when busy; a non-coordinator
-            // is a plain destroy inside the helper (unchanged behavior).
             if (s) void requestCoordinatorClose(s);
           };
 
@@ -2580,9 +2181,6 @@ const ProjectPanel: Component = () => {
               onClick={() => handleReplicaClick(replica, wg)}
               onContextMenu={(e) => {
                 const s = session();
-                // Any real session (green/live OR red/exited) gets the full menu;
-                // red additionally shows the broom. Only gray (no session) falls
-                // into the minimal Coding Agent + broom menu (#545 rework).
                 if (s) {
                   handleReplicaContextMenu(e, s, wg, replica);
                 } else {
@@ -2660,8 +2258,8 @@ const ProjectPanel: Component = () => {
                     <For each={repoBadges()}>
                       {(repo, index) => (
                         <span
-                          class="ac-discovery-badge branch"
-                          title={repo.sourcePath}
+                          class={`ac-discovery-badge branch${repo.dirty === true ? " dirty" : ""}`}
+                          title={formatReplicaRepoBadgeTitle(repo)}
                           data-ac-testid={repoBadgeTestId(repo.label, index())}
                         >
                           {formatReplicaRepoBadgeLabel(repo)}
@@ -2674,6 +2272,12 @@ const ProjectPanel: Component = () => {
                   </Show>
                   <Show when={profileBadge()}>
                     {(badge) => <span class="profile-badge" title={profileBadgeTitle()}>{badge()}</span>}
+                  </Show>
+                  <Show when={ctxVisible()}>
+                    <ContextBadge
+                      percent={ctxPercent()}
+                      testId={`replica.contextBadge.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`}
+                    />
                   </Show>
                   {/* #592 - drift indicator for a WG replica session. Mirrors the
                       SessionItem badge: the backend marks profileOutdated in
@@ -2735,6 +2339,8 @@ const ProjectPanel: Component = () => {
                     </For>
                   </div>
                 </Show>
+              </Show>
+              <Show when={session()}>
                 <button class="session-item-close" onClick={handleClose} title="Close session">&#x2715;</button>
               </Show>
             </div>
@@ -3746,10 +3352,6 @@ const ProjectPanel: Component = () => {
                   style={{ left: `${replicaCtxMenu()!.x}px`, top: `${replicaCtxMenu()!.y}px` }}
                   onClick={(e) => e.stopPropagation()}
                   onMouseEnter={cancelReplicaCtxMenuClose}
-                  // #943 - a <For> row re-created under a stationary cursor is a
-                  // detached node and can never fire its own mouseleave. This
-                  // guarantees the flyout cannot hang. The flyout's onMouseEnter
-                  // cancels the 180ms timer when crossing the 4px gap.
                   onMouseLeave={() => {
                     scheduleRepoFlyoutClose();
                     scheduleReplicaCtxMenuClose(); // #977
@@ -3757,9 +3359,6 @@ const ProjectPanel: Component = () => {
                 >
                   <Show when={activeReplicaMenu()}>
                     {(menu) => {
-                      // Broom renders in EVERY replica dot state (#545). Disabled
-                      // only when the task title has nothing to clear (empty/missing
-                      // or the literal "Clean" sentinel); enabled otherwise.
                       const broomDisabled = () => isTaskClean(menu().wg.taskTitle);
                       const broomTitle = () =>
                         broomDisabled() ? "Nothing to clear" : "Clear task title";
@@ -4081,7 +3680,6 @@ const ProjectPanel: Component = () => {
                             if (myGen !== retryGen) return;
                             console.error("delete_workgroup failed:", e);
                             const msg = typeof e === "string" ? e : e?.message ?? "Failed to delete workgroup";
-                            // BLOCKERS: sentinel — render structured blocker list, no force-delete option.
                             if (msg.startsWith("BLOCKERS:")) {
                               try {
                                 const report = JSON.parse(msg.slice("BLOCKERS:".length)) as BlockerReport;
@@ -4098,7 +3696,6 @@ const ProjectPanel: Component = () => {
                                 return;
                               }
                             }
-                            // DIRTY_REPOS: sentinel prefix — switch to force-confirm mode
                             if (!forceDelete && msg.startsWith("DIRTY_REPOS:")) {
                               setWgDeleteError(msg.slice("DIRTY_REPOS:".length));
                               setWgDirtyRepos(true);
@@ -4248,26 +3845,15 @@ const ProjectPanel: Component = () => {
           sessionName={replicaCodingAgentTarget()!.sessionName}
           agentPath={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.workingDirectory}
           currentAgentId={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.agentId}
-          // #551 FIX 2: a live session's agent IS the explicit current
-          // coding agent, so it doubles as the redundancy baseline.
           explicitCurrentAgentId={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.agentId}
           currentRequestedProfile={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.requestedProfile}
           scopeContext={deriveScopeContextFromSession(
             sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId),
             replicaCodingAgentTarget()!.sessionName,
           )}
-          // #551: re-assigning the running agent+profile is a no-op and
-          // pops a needless restart prompt — disable it with a tooltip.
           disableRedundantReplicaAssign
-          // #592: but DRIFT (loaded cell != current config) makes a same-pair
-          // re-assign meaningful (re-stamp + relaunch), so it overrides the
-          // disable. Same backend profileOutdated the badge reads.
           targetProfileOutdated={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.profileOutdated}
           onSelect={async (selection) => {
-            // The picker already persisted the selection through the backend
-            // (config write) for WG replicas. For a non-WG agent session there
-            // is no backend persist path, so apply the change by restarting with
-            // the chosen agent/profile.
             const target = replicaCodingAgentTarget();
             setReplicaCodingAgentTarget(null);
             if (!target) return;
@@ -4280,14 +3866,8 @@ const ProjectPanel: Component = () => {
               );
               return;
             }
-            // #537: WG replica was persisted but the live session still runs the
-            // old agent. Offer an immediate restart when there is a live session.
             if (shouldOfferRestartAfterAssign(selection, session)) {
               const slash = target.sessionName.lastIndexOf("/");
-              // #573: clear any error left over from a prior failed restart
-              // so a fresh prompt never opens showing a stale message. (No
-              // need to reset `restarting`: dismiss is blocked while it is
-              // true, so the picker can't reopen to reach here mid-flight.)
               setRestartError("");
               setRestartPrompt({
                 sessionId: target.sessionId,
@@ -4314,22 +3894,11 @@ const ProjectPanel: Component = () => {
             sessionName={replicaSessionName(resolved().wg, resolved().replica)}
             agentPath={resolved().replica.path}
             currentAgentId={resolved().replica.currentCodingAgentId ?? resolved().replica.preferredAgentId}
-            // #551 FIX 2: redundancy keys off the EXPLICIT currentCodingAgentId
-            // only — never the preferredAgentId hint above. A never-assigned gray
-            // replica (no currentCodingAgentId) keeps "Assign" enabled so its
-            // preferred agent can be pinned in one click.
             explicitCurrentAgentId={resolved().replica.currentCodingAgentId ?? null}
             currentRequestedProfile={resolved().replica.currentProfile ?? null}
             scopeContext={replicaScopeContext(resolved().wg, resolved().replica)}
-            // #551: pre-launch "Set Coding Agent" opens pre-selected to the
-            // replica's current pair; re-assigning it is a no-op, so disable.
             disableRedundantReplicaAssign
             onSelect={async () => {
-              // WG replica: the picker already wrote the coding-agent selection
-              // via the backend (no restart — the agent isn't running). Capture
-              // the project path BEFORE clearing the target (which collapses the
-              // resolver), then reload so the chosen agent shows and is
-              // pre-selected at first launch.
               const projectPath = resolved().proj.path;
               setInactiveCodingAgentTarget(null);
               await projectStore.reloadProject(projectPath);
@@ -4410,8 +3979,6 @@ const ProjectPanel: Component = () => {
               agentId: selection.agent.id,
               requestedProfile: selection.requestedProfile,
               gitRepos: pending.gitRepos,
-              // #599 R1: resume the prior conversation when reopening a closed
-              // coordinator; omit (default skip) for a genuinely fresh launch.
               skipAutoResume: pending.resumeOnLaunch ? false : undefined,
             });
             await SessionAPI.switch(newSession.id);

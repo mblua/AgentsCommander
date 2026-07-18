@@ -11,6 +11,7 @@ import {
   session,
   waitFor,
 } from "../shared/testing/ui-harness";
+import { liveSelection, SESSION_A } from "../shared/testing/session-selection";
 
 // #592: the profile-drift badge must surface from the NORMAL list_sessions load
 // path, not only from a coding_agent_profiles_updated event. The canonical failure
@@ -42,7 +43,7 @@ function setupTransport(fake: FakeTransport, isOutdated: () => boolean): void {
   // between calls without any event being emitted.
   fake.onInvoke("list_sessions", () => [
     session({
-      id: "session-1",
+      id: SESSION_A,
       name: "General",
       workingDirectory: agentPath,
       status: "active",
@@ -51,7 +52,7 @@ function setupTransport(fake: FakeTransport, isOutdated: () => boolean): void {
       profileOutdated: isOutdated(),
     }),
   ]);
-  fake.resolve("get_active_session", "session-1");
+  fake.resolve("get_active_session", liveSelection(SESSION_A));
   fake.resolve("list_detached_sessions", []);
   fake.resolve("telegram_list_bridges", []);
 }

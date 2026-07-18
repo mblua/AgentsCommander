@@ -8,8 +8,17 @@ export interface Transport {
   ): Promise<() => void>;
   /** Emit an event to all windows */
   emit<T>(event: string, payload: T): Promise<void>;
+  /** Synchronous local connection snapshot; never sent through backend events. */
+  connectionState(): TransportConnectionState;
+  /** Optional local lifecycle subscription. */
+  onConnectionState?(callback: (state: TransportConnectionState) => void): UnlistenFn;
   /** Efficient binary PTY write (optional — falls back to invoke if absent) */
   writePtyBinary?(sessionId: string, data: Uint8Array): void;
 }
 
 export type UnlistenFn = () => void;
+
+export interface TransportConnectionState {
+  state: "connected" | "disconnected";
+  generation: number;
+}

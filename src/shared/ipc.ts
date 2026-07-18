@@ -3,13 +3,14 @@ import {
   measurePtyViewport,
   rememberSpawnViewport,
 } from "./terminal-viewport";
-import type { Transport, UnlistenFn } from "./transport";
+import type { Transport, TransportConnectionState, UnlistenFn } from "./transport";
 import { TauriTransport } from "./transport-tauri";
 import { WsTransport } from "./transport-ws";
 import type {
   Session,
   SessionCommunication,
   SessionRepo,
+  SessionContextPayload,
   SessionEnvWarningPayload,
   SessionWarning,
   PtyOutputEvent,
@@ -72,7 +73,9 @@ import type {
   WebServerOwnedStatus,
   ApiClientMintRequest,
   ApiClientMintResponse,
+  SessionSelection,
 } from "./types";
+import { decodeSessionSelection } from "./session-selection";
 
 export interface SessionRepoInput {
   label: string;
@@ -121,27 +124,12 @@ export interface CreateSessionOptions {
   agentId?: string;
   requestedProfile?: string | null;
   gitRepos?: SessionRepoInput[];
-  /**
-   * #599 R1. Forwarded to `create_session`. Omit (or pass `true`) for a
-   * genuinely fresh create — no provider auto-resume. Pass `false` only when
-   * reopening a coordinator that was destroyed by auto-close (#552/#580) or
-   * manual close (#588) so the prior Claude conversation continues.
-   */
   skipAutoResume?: boolean;
 }
 
 export interface RestartSessionOptions {
   agentId?: string;
   requestedProfile?: string | null;
-  /**
-   * Forwarded to the backend `restart_session` command. Omit (or pass `true`)
-   * for a true user-intent restart that starts a fresh conversation. Pass
-   * `false` when waking a deferred session — a session whose PTY is `Exited`
-   * either because it was deferred at startup (new-policy default, or the
-   * coord-was-asleep-at-shutdown branch of `restoreCoordinatorWakeState`) or
-   * because the user closed it during the prior run — to allow provider
-   * auto-resume (`claude --continue`, `codex resume --last`, `gemini --resume latest`).
-   */
   skipAutoResume?: boolean;
 }
 
@@ -154,14 +142,6 @@ export interface CreateRootAgentOptions {
  *  scope. Superseded by {@link ProfileAssignmentScope}. */
 export type ProfileSelectionScope = "default" | "instance";
 
-/**
- * Single stable payload for `coding_agent_profile_selection_updated`, emitted by
- * both the legacy `set_agent_default_profile`/`set_instance_profile_override`
- * commands and the new broad-scope apply (#384 §7). All fields beyond `scope`
- * are optional because broad-scope applies touch many replicas (no single
- * `agentPath`). `scope` is a plain string to tolerate both the legacy
- * default/instance emitters and the v2 replica/kind/workgroup apply.
- */
 export interface CodingAgentProfileSelectionUpdatedPayload {
   scope: ProfileAssignmentScope | ProfileSelectionScope | string;
   agentPath?: string;
@@ -174,23 +154,7 @@ export interface CodingAgentProfileSelectionUpdatedPayload {
 }
 
 export const SessionAPI = {
-  /**
-   * #973 — the ONLY create path with a terminal tile to measure, and so the only
-   * one that hands the backend a size. Every other caller (startup restore, the
-   * delivery loop, the phone mailbox, the root agent, the CLI, tests) has no view
-   * and keeps AC's historical 120x30.
-   *
-   * The size is measured, not predicted: {@link measurePtyViewport} runs the same
-   * `FitAddon.proposeDimensions()` the terminal's own post-mount fit will run,
-   * against the tile already on screen. Null when there is nothing to measure —
-   * then no size is sent, and a wrong size is worse than no size.
-   */
   create: async (opts?: CreateSessionOptions): Promise<Session> => {
-    // Browser mode is deliberately excluded. The web-mode `create_session`
-    // handler parses its args by hand and ignores cols/rows entirely: it always
-    // spawns at the 120x30 default. Recording a spawn size the PTY was never
-    // opened at would make the terminal's dedup skip the corrective resize and
-    // wedge that PTY at 120x30 forever.
     const viewport = isBrowser ? null : measurePtyViewport();
 
     const session = await transport.invoke<Session>("create_session", {
@@ -202,7 +166,6 @@ export const SessionAPI = {
       requestedProfile: opts?.requestedProfile ?? null,
       gitRepos: opts?.gitRepos ?? null,
       skipAutoResume: opts?.skipAutoResume ?? null,
-      // Both or neither: the backend builds a viewport only when both arrive.
       cols: viewport?.cols ?? null,
       rows: viewport?.rows ?? null,
     });
@@ -216,9 +179,6 @@ export const SessionAPI = {
 
   destroy: (id: string) => transport.invoke<void>("destroy_session", { id }),
 
-  /** #588 Manually close a coordinator. When the cascade setting is on and the
-   *  team has working members, the backend returns `{ closed: false, workingCount }`
-   *  so the caller can confirm; calling again with `confirmed: true` forces it. */
   closeCoordinator: (id: string, confirmed: boolean) =>
     transport.invoke<CoordinatorCloseOutcome>("close_coordinator", { id, confirmed }),
 
@@ -237,7 +197,10 @@ export const SessionAPI = {
 
   list: () => transport.invoke<Session[]>("list_sessions"),
 
-  getActive: () => transport.invoke<string | null>("get_active_session"),
+  getSelection: async (): Promise<SessionSelection> => {
+    const value = await transport.invoke<unknown>("get_active_session");
+    return decodeSessionSelection(value);
+  },
 
   drainWarnings: (sessionId?: string | null) =>
     transport.invoke<SessionWarning[]>("drain_session_warnings", {
@@ -257,12 +220,10 @@ export const SessionAPI = {
 export const PtyAPI = {
   write: (sessionId: string, data: Uint8Array) => {
     const transport = currentTransport();
-    // Use efficient binary transport if available (WS mode)
     if (transport.writePtyBinary) {
       transport.writePtyBinary(sessionId, data);
       return Promise.resolve();
     }
-    // Fallback: JSON-encoded number array (Tauri mode)
     return transport.invoke<void>("pty_write", {
       sessionId,
       data: Array.from(data),
@@ -275,40 +236,23 @@ export const PtyAPI = {
   getScreenSnapshot: (sessionId: string) =>
     transport.invoke<PtyScreenSnapshot | null>("get_screen_snapshot", { sessionId }),
 
-  /** Request screen snapshot replay for late-joining browser clients.
-   *  Returns PTY dimensions so the browser can mirror them. */
+  getSessionContext: (sessionId: string) =>
+    transport.invoke<number | null>("get_session_context", { sessionId }),
+
   subscribe: (sessionId: string) =>
     transport.invoke<{ rows: number; cols: number } | null>("subscribe_session", { sessionId }),
 
-  /** Get current PTY dimensions (rows, cols). */
   getPtySize: (sessionId: string) =>
     transport.invoke<{ rows: number; cols: number }>("get_pty_size", { sessionId }),
 };
 
 export const CodingAgentsAPI = {
-  /**
-   * #769 — the built-in coding-agent catalog. Resolves `Ok(list)` normally and
-   * on backend self-heal (missing/malformed `agents.json` → embedded default in
-   * memory, file never overwritten); a valid `Ok([])` (user removed all
-   * built-ins) is returned verbatim. Rejects only on a genuine config-dir
-   * failure, which is the sole case the store's fallback covers.
-   */
   getCatalog: () =>
     transport.invoke<CodingAgentDefinition[]>("get_coding_agent_catalog"),
 
-  /**
-   * #769 Phase 2 — lowercased command basenames that ship a non-empty default
-   * config-folder master (today `["claude","codex","opencode"]`). Backend-derived
-   * from the shipped masters; the re-seed button is gated on EXACT membership.
-   */
   listReseedableCommands: () =>
     transport.invoke<string[]>("list_reseedable_agent_commands"),
 
-  /**
-   * #769 Phase 2 — restore an agent's default config-folder master to the shipped
-   * default, backing up the prior master. Resolves `Ok(ReseedResult)`; rejects if
-   * `command` is not a reseedable built-in (gating is re-checked server-side).
-   */
   reseedDefault: (command: string) =>
     transport.invoke<ReseedResult>("reseed_coding_agent_default", { command }),
 };
@@ -335,28 +279,14 @@ export const SettingsAPI = {
     }),
   getWebServerOwnedStatus: () =>
     transport.invoke<WebServerOwnedStatus>("get_web_server_owned_status"),
-  // Narrow setters hold the SettingsState write lock through save_settings on
-  // the Rust side, eliminating the IPC-level read-modify-write race that a
-  // get+update round-trip would create against a concurrent update_settings
-  // from SettingsModal.
   setSoundsEnabled: (value: boolean) =>
     transport.invoke<void>("set_sounds_enabled", { value }),
   setThemeLight: (value: boolean) =>
     transport.invoke<void>("set_theme_light", { value }),
-  // #587 — narrow setter for the central-view toggle (RM attached vs terminal).
-  // Same write-lock pattern as the other narrow setters; avoids a get+update
-  // round-trip racing SettingsModal.
   setMainResourceMonitorAttached: (value: boolean) =>
     transport.invoke<void>("set_main_resource_monitor_attached", { value }),
-  // #965 — one narrow setter for the whole rail-collapse snapshot (explicitly
-  // collapsed project paths + the Favorites section bit). Same write-lock pattern.
-  // Called once per header click; no debounce (plan §0.2).
   setRailCollapse: (collapsedProjects: string[], favoritesCollapsed: boolean) =>
     transport.invoke<void>("set_rail_collapse", { collapsedProjects, favoritesCollapsed }),
-  // #612 — canonical command to change ONLY the log level: validates, persists
-  // logLevel, applies live + broadcasts `log_level_changed`. The SettingsModal
-  // uses the form Save path (save_settings_draft) instead; this is for
-  // programmatic / future quick-switch callers.
   setLogLevel: (level: LogLevel) =>
     transport.invoke<void>("set_log_level", { level }),
   updateCodingAgentProfiles: (profiles: CodingAgentProfilesConfig) =>
@@ -375,10 +305,6 @@ export const SettingsAPI = {
     transport.invoke<void>("set_agent_default_profile", { agentPath, profile }),
   setInstanceProfileOverride: (agentPath: string, profile: string | null) =>
     transport.invoke<void>("set_instance_profile_override", { agentPath, profile }),
-  // #384 §7 — broad-scope assignment. Preview enumerates targets + live sessions
-  // and returns a fingerprint; apply re-enumerates on the backend and rejects a
-  // stale `confirmedTargetFingerprint`. The frontend target list is display-only;
-  // the backend is authoritative for enumeration, writes, and restarts.
   previewCodingAgentProfileSelection: (
     request: PreviewCodingAgentProfileSelectionRequest,
   ) =>
@@ -411,10 +337,6 @@ export const ReposAPI = {
   search: (query: string) =>
     transport.invoke<RepoMatch[]>("search_repos", { query }),
 
-  /// #943 - `origin`'s URL for a repo path, userinfo already stripped by the
-  /// backend. `null` = no origin, not a work tree root, git missing, the 2s
-  /// backend timeout fired, or a web client (the WS dispatcher no-ops this).
-  /// The caller treats all of them the same: no Browse items.
   gitRemoteUrl: (path: string) =>
     transport.invoke<string | null>("git_remote_url", { path }),
 };
@@ -444,12 +366,34 @@ export function onSessionDestroyed(
 }
 
 export function onSessionSwitched(
-  callback: (data: { id: string | null; userInitiated?: boolean }) => void
+  callback: (data: SessionSelection, deliveryGeneration: number) => void
 ): Promise<UnlistenFn> {
-  return transport.listen<{ id: string | null; userInitiated?: boolean }>(
-    "session_switched",
-    callback
-  );
+  return transport.listen<unknown>("session_switched", (value) => {
+    let selection: SessionSelection;
+    try {
+      selection = decodeSessionSelection(value);
+    } catch (error) {
+      console.error("[selection] Dropped malformed session_switched payload:", error);
+      return;
+    }
+    const generation = currentTransport().connectionState().generation;
+    callback(selection, generation);
+  });
+}
+
+export function getTransportConnectionState(): TransportConnectionState {
+  return currentTransport().connectionState();
+}
+
+export function onTransportConnectionState(
+  callback: (state: TransportConnectionState) => void,
+): Promise<UnlistenFn> {
+  const subscribe = currentTransport().onConnectionState;
+  return Promise.resolve(subscribe ? subscribe.call(currentTransport(), callback) : () => undefined);
+}
+
+export function isSelectionCoordinatorBusyError(error: unknown): boolean {
+  return error === "selectionCoordinatorBusy";
 }
 
 export function onSessionRenamed(
@@ -470,7 +414,6 @@ export function onSessionCommunicationChanged(
   );
 }
 
-// Voice API
 export const VoiceAPI = {
   transcribe: (audio: number[], mimeType: string) =>
     transport.invoke<string>("voice_transcribe", { audio, mimeType }),
@@ -480,11 +423,9 @@ export const VoiceAPI = {
     transport.invoke<boolean>("voice_had_typing", { sessionId }),
 };
 
-// Debug API
 export const DebugAPI = {
   saveLogs: (content: string) =>
     transport.invoke<void>("save_debug_logs", { content }),
-  /** #264 — read-and-clear the backend's buffered ERROR-level log entries. */
   drainErrorLogs: () =>
     transport.invoke<ErrorLogEntry[]>("drain_error_logs"),
 };
@@ -503,61 +444,33 @@ export function onUiAutomationRequest(
   return transport.listen<UiAutomationRequest>("ui_automation_request", callback);
 }
 
-// #264 — content-free ping fired when a new ERROR-level log entry is captured.
-// The listener responds by calling DebugAPI.drainErrorLogs().
 export function onErrorLogEvent(
   callback: () => void
 ): Promise<UnlistenFn> {
   return transport.listen<unknown>("error_log_event", () => callback());
 }
 
-// Window API
 export const WindowAPI = {
   detach: (sessionId: string) =>
     transport.invoke<string>("detach_terminal", { sessionId }),
 
-  /**
-   * Re-attach a detached session to the main window. Closes the detached
-   * window, removes the session from DetachedSessionsState, switches main
-   * to that session. Rust contract (plan §A2.2.G5): silent no-op if the
-   * session was already destroyed.
-   */
   attach: (sessionId: string) =>
     transport.invoke<void>("attach_terminal", { sessionId }),
 
-  /**
-   * Stateless authoritative list of detached session UUIDs. Used for
-   * hydrating sessionsStore.detachedIds on SidebarApp mount (G.8 race
-   * safety).
-   */
   listDetached: () =>
     transport.invoke<string[]>("list_detached_sessions"),
 
-  /**
-   * Persist a detached window's geometry to its PersistedSession so it
-   * re-spawns at the same position+size after an app restart. Per plan
-   * §A2.4.Arb1 (R.6 option a) — backend stores the value on
-   * PersistedSession.detached_geometry and auto-GCs when the session is
-   * destroyed.
-   */
   setDetachedGeometry: (sessionId: string, geometry: WindowGeometry) =>
     transport.invoke<void>("set_detached_geometry", { sessionId, geometry }),
 
   openInExplorer: (path: string) =>
     transport.invoke<void>("open_in_explorer", { path }),
 
-  /**
-   * Focus the main unified window (raising it, recreating if missing).
-   * Rust command renamed from `ensure_terminal_window` → `focus_main_window`
-   * in v0.8 (dev-rust owns that rename). Per plan §A2.4.Arb3 / R.4.
-   */
   focusMain: () => transport.invoke<void>("focus_main_window"),
 
   /** @deprecated use focusMain(); back-compat alias, drop at v0.9 */
   ensureTerminal: () => transport.invoke<void>("focus_main_window"),
 
-  // Open an http/https URL in the user's default browser. Backend rejects
-  // non-http(s) schemes (issue #164).
   openExternal: (url: string) =>
     transport.invoke<void>("open_external_url", { url }),
 
@@ -568,9 +481,6 @@ export const WindowAPI = {
     transport.invoke<void>("dock_resource_monitor_window"),
 };
 
-// #714 Screenshot capture. All global-shortcut, clipboard, and window lifecycle
-// work stays in Rust; the frontend only fetches the frozen overlay state, sends
-// the confirmed crop, cancels, and reads/reloads the hotkey registration status.
 export const ScreenshotAPI = {
   getOverlayState: (captureId: string, monitorId: number) =>
     transport.invoke<ScreenshotOverlayState>("screenshot_get_overlay_state", {
@@ -595,7 +505,6 @@ export const ResourceMonitorAPI = {
     transport.invoke<ResourceKillResult>("kill_resource_group", { request }),
 };
 
-// Brief API (issue #162)
 export const TaskAPI = {
   getTitle: (sessionId: string) =>
     transport.invoke<string | null>("task_get_title", { sessionId }),
@@ -606,13 +515,10 @@ export const TaskAPI = {
   clean: (sessionId: string) =>
     transport.invoke<TaskUpdateResult>("task_clean", { sessionId }),
 
-  // #545: path-addressed clean for a cold workgroup with no live/exited session
-  // to resolve a session id from. Returns the same TaskUpdateResult as task_clean.
   cleanAt: (workgroupRoot: string) =>
     transport.invoke<TaskUpdateResult>("task_clean_at", { workgroupRoot }),
 };
 
-// Telegram Bridge API
 export const TelegramAPI = {
   attach: (sessionId: string, botId: string) =>
     transport.invoke<BridgeInfo>("telegram_attach", { sessionId, botId }),
@@ -628,8 +534,6 @@ export const TelegramAPI = {
   sendTest: (token: string) =>
     transport.invoke<number>("telegram_send_test", { token }),
 
-  // #282 — send an existing local file to the bot's configured chat.
-  // ≤ 10 MB jpg/jpeg/png/webp ⇒ sendPhoto; otherwise sendDocument up to 50 MB.
   sendImage: (botId: string, path: string, caption?: string) =>
     transport.invoke<void>("telegram_send_image", { botId, path, caption }),
 };
@@ -676,17 +580,12 @@ export function onSessionCoordinatorChanged(
   );
 }
 
-/// #943 B2 - `repoBranches` and `repoPaths` are parallel arrays of equal length,
-/// 1:1 by construction (ac_discovery.rs maps over `agent.repo_paths` and never
-/// filters, sorts or dedupes), with an explicit `null` for an unknown branch.
-/// Consumers must still merge BY PATH, not by position: this payload is stored and
-/// re-read against a later discovery snapshot. `branch` is the unchanged
-/// single-repo shorthand (null for a multi-repo replica).
 interface DiscoveryBranchUpdate {
   replicaPath: string;
   branch: string | null;
   repoBranches: (string | null)[];
   repoPaths: string[];
+  repoDirty: (boolean | null)[];
 }
 
 export function onDiscoveryBranchUpdated(
@@ -698,12 +597,6 @@ export function onDiscoveryBranchUpdated(
   );
 }
 
-// #552/#580 coordinator idle badge clock event. The backend emits the unified
-// team-idle anchor (#580: `max(last_user_message_at, last_activity_at)`) in the
-// `lastUserMessageAt` field — the field name is retained (rename deferred) but
-// it now means "team idle since", not just the user's last message. Mirrors
-// `ac_discovery_branch_updated` so ProjectPanel can patch the replica in place
-// without waiting for a full discovery reload.
 export function onCoordinatorClockUpdated(
   callback: (data: { replicaPath: string; lastUserMessageAt: string }) => void
 ): Promise<UnlistenFn> {
@@ -713,8 +606,6 @@ export function onCoordinatorClockUpdated(
   );
 }
 
-// #552 auto-closed pill: the auto-close task sets the marker (string timestamp)
-// when it terminates a team; reopen clears it (`autoClosedAt: null`).
 export function onCoordinatorAutoCloseChanged(
   callback: (data: { replicaPath: string; autoClosedAt: string | null }) => void
 ): Promise<UnlistenFn> {
@@ -724,8 +615,6 @@ export function onCoordinatorAutoCloseChanged(
   );
 }
 
-// #588 manually-closed pill: close_coordinator sets the marker (string
-// timestamp) when the user manually closes a coordinator; reopen clears it.
 export function onCoordinatorManualCloseChanged(
   callback: (data: { replicaPath: string; manuallyClosedAt: string | null }) => void
 ): Promise<UnlistenFn> {
@@ -771,6 +660,12 @@ export function onSessionBusy(
   return transport.listen<{ id: string }>("session_busy", callback);
 }
 
+export function onSessionContext(
+  callback: (data: SessionContextPayload) => void
+): Promise<UnlistenFn> {
+  return transport.listen<SessionContextPayload>("session_context", callback);
+}
+
 export function onTelegramBridgeAttached(
   callback: (data: BridgeInfo) => void
 ): Promise<UnlistenFn> {
@@ -804,7 +699,6 @@ export function onSessionEnvWarning(
   );
 }
 
-// Phone API
 export const PhoneAPI = {
   sendMessage: (from: string, to: string, body: string, team: string) =>
     transport.invoke<string>("phone_send_message", { from, to, body, team }),
@@ -815,7 +709,6 @@ export const PhoneAPI = {
     transport.invoke<void>("phone_ack_messages", { agentName, messageIds }),
 };
 
-// AC Discovery API
 export const AcDiscoveryAPI = {
   discover: () => transport.invoke<AcDiscoveryResult>("discover_ac_agents"),
 
@@ -826,7 +719,6 @@ export const AcDiscoveryAPI = {
     transport.invoke<void>("set_replica_context_files", { path, files }),
 };
 
-// Project API
 export const ProjectAPI = {
   checkPath: (path: string) =>
     transport.invoke<boolean>("check_project_path", { path }),
@@ -855,52 +747,23 @@ export const ProjectAPI = {
         currentDefaultSha256: update.currentDefaultSha256,
       }
     ),
-  /**
-   * Validate an existing AC project at `path` and register it in
-   * settings.projectPaths. Wraps the `open_project` Tauri command added in
-   * #191 — same backend logic as the CLI `open-project` verb.
-   */
   open: (path: string) =>
     transport.invoke<ProjectRegistration>("open_project", { path }),
-  /**
-   * Ensure an AC project at `path` (create `.ac/` Project AC Root if missing) and register
-   * it in settings.projectPaths. Wraps the `new_project` Tauri command added
-   * in #191 — same backend logic as the CLI `new-project` verb.
-   */
   new: (path: string) =>
     transport.invoke<ProjectRegistration>("new_project", { path }),
-  /**
-   * Remove the project registered at `path` from settings.projectPaths via the
-   * dedicated `remove_project` Tauri command (#778 Design S). Removal is
-   * disk-authoritative: the backend reconciles the list from disk before
-   * dropping `path`, so it never clobbers a CLI-registered project the way the
-   * retired whole-object settings save did. Removing a path not present is a
-   * successful no-op; the promise rejects with the backend error string on a
-   * hard failure (e.g. a G2 read abort when the settings file is locked).
-   */
   remove: (path: string) => transport.invoke<void>("remove_project", { path }),
-  /**
-   * #881 - hide the project at `path`. Rejects with a human-readable blocker
-   * message when the project still has live sessions, so callers must await it
-   * before mutating any local store.
-   */
   archive: (path: string) => transport.invoke<void>("archive_project", { path }),
-  /** #881 - restore an archived project and return its backend registration. */
   unarchive: (path: string) =>
     transport.invoke<ProjectRegistration>("unarchive_project", { path }),
-  /** #881 - archived projects decorated with on-disk existence flags. */
   listArchived: () =>
     transport.invoke<ArchivedProject[]>("list_archived_projects", {}),
 };
 
-/** #777 Non-stop watchdog: frontend pushes the full disparity snapshot; the
- *  backend owns the tolerance timer and actuation (Win32 beep + Telegram). */
 export const NonStopAPI = {
   report: (reports: NonStopReport[]) =>
     transport.invoke<void>("non_stop_report", { reports }),
 };
 
-// Project Loops API
 export const LoopAPI = {
   create: (projectPath: string, input: LoopCreateInput) =>
     transport.invoke<LoopConfigDetails>("create_loop", {
@@ -950,7 +813,6 @@ export const LoopAPI = {
     transport.invoke<LoopCronPreview>("preview_loop_cron", { expr }),
 };
 
-// Role template picker (#271)
 export const RoleTemplateAPI = {
   list: () => transport.invoke<RoleTemplateMeta[]>("list_role_templates"),
   status: () => transport.invoke<AgencyTemplatesStatus>("get_agency_templates_status"),
@@ -958,7 +820,6 @@ export const RoleTemplateAPI = {
     transport.invoke<AgencyTemplatesUpdateResult>("update_agency_templates"),
 };
 
-// Entity Creation API (agents, teams, workgroups)
 export const EntityAPI = {
   createAgentMatrix: (
     projectPath: string,
@@ -1022,7 +883,6 @@ export const EntityAPI = {
     ),
 };
 
-// Agent Creator API
 export const AgentCreatorAPI = {
   pickFolder: (defaultPath?: string) =>
     transport.invoke<string | null>("pick_folder", { defaultPath: defaultPath ?? null }),
@@ -1031,17 +891,14 @@ export const AgentCreatorAPI = {
     transport.invoke<string>("create_agent_folder", { parentPath, agentName }),
 };
 
-// Guide window
 export const GuideAPI = {
   open: () => transport.invoke<void>("open_guide_window"),
 };
 
-// Home content (issue #164)
 export const HomeAPI = {
   fetchMarkdown: () => transport.invoke<string>("fetch_home_markdown"),
 };
 
-// Theme sync across windows
 export function emitThemeChanged(light: boolean): Promise<void> {
   return transport.emit("theme_changed", { light });
 }
@@ -1052,9 +909,6 @@ export function onThemeChanged(
   return transport.listen<{ light: boolean }>("theme_changed", callback);
 }
 
-// #587 — the detached Resource Monitor window asks the main window to pull RM
-// back into the central pane. Fire-and-forget; main's listener sets the central
-// view. Mirrors the theme_changed emit/listen pair.
 export function emitResourceMonitorAttach(): Promise<void> {
   return transport.emit("resource_monitor_attach", {});
 }
@@ -1065,10 +919,6 @@ export function onResourceMonitorAttach(
   return transport.listen<unknown>("resource_monitor_attach", () => callback());
 }
 
-// Open the Settings modal (handled by sidebar ActionBar). Emitted from any
-// window — e.g. a disabled mic button asking the user to configure voice.
-// `section` targets a specific tab in SettingsModal (e.g. "integrations").
-// Omit to open on the default tab.
 export function emitOpenSettings(section?: string): Promise<void> {
   return transport.emit<{ section?: string }>(
     "open_settings",
@@ -1098,12 +948,6 @@ export function onCodingAgentProfilesUpdated(
   return transport.listen<unknown>("coding_agent_profiles_updated", () => callback());
 }
 
-/**
- * #786 — a `coding-agent` CLI mutation applied through the running GUI's
- * MailboxPoller emits this. Payload carries the op ("add"|"update"|"remove") and
- * the affected agent id (null is possible if the poller could not resolve one).
- * Mirrors the fire-and-refetch shape of onCodingAgentProfilesUpdated.
- */
 export function onCodingAgentSettingsUpdated(
   callback: (payload: { op: string; agentId: string | null }) => void
 ): Promise<UnlistenFn> {
@@ -1113,9 +957,6 @@ export function onCodingAgentSettingsUpdated(
   );
 }
 
-// #714 Screenshot capture result/failure events. Both emitted from the Rust
-// capture path; the sidebar renders them as toasts (the overlay window is
-// temporary and may be destroyed before the user reads anything).
 export function onScreenshotCaptureSaved(
   callback: (data: ScreenshotCaptureResult) => void
 ): Promise<UnlistenFn> {

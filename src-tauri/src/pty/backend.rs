@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::errors::AppError;
+use crate::pty::context_scrape::ScreenRowsRead;
 use crate::pty::output::{PtyOutputTarget, PtyScreenSnapshot};
 use crate::resource_monitor::{ResourceLaunchRegistration, ResourceLogicalAgentSlot};
 use crate::session::profile::{CodingAgentKind, IdleTuning};
@@ -133,6 +134,17 @@ pub trait PtyBackend: Any + Send + Sync {
     fn get_screen_snapshot(&self, id: Uuid) -> Option<PtyScreenSnapshot>;
 
     fn get_pty_size(&self, id: Uuid) -> Option<(u16, u16)>;
+
+    /// #1032 - the session's screen rows for the context scrape, plus what this backend
+    /// knows about whether there is still a session behind the id.
+    ///
+    /// - `Rows`: the live grid.
+    /// - `Unavailable`: no reading this tick, and NO claim about the session. Keep
+    ///   sampling it. A child that is alive but whose handle cannot be queried lands
+    ///   here, and calling that "over" would strand a live session forever.
+    /// - `SessionOver`: there is no session here any more. Report unavailable once, then
+    ///   stop sampling it.
+    fn get_screen_rows(&self, id: Uuid) -> ScreenRowsRead;
 
     fn register_response_watcher(
         &self,

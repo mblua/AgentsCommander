@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
 use crate::config::settings::SettingsState;
@@ -10,6 +10,11 @@ use crate::resource_monitor::types::{
     ResourceLimits, ResourceSnapshot,
 };
 use crate::resource_monitor::ResourceMonitorState;
+use crate::session::manager::{CommitDecision, LifecycleMutations};
+use crate::session::selection::{
+    SelectionCause, SelectionCoordinator, SelectionSource, SelectionTransaction,
+    TrustedResourceIntent,
+};
 
 #[tauri::command]
 pub async fn get_resource_snapshot(
@@ -40,19 +45,46 @@ pub async fn get_resource_snapshot(
 pub async fn kill_resource_group(
     app: AppHandle,
     request: ResourceKillRequest,
-    monitor: State<'_, Arc<ResourceMonitorState>>,
-    pty_mgr: State<'_, Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>>,
-    session_mgr: State<'_, Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>,
+    _monitor: State<'_, Arc<ResourceMonitorState>>,
+    _pty_mgr: State<'_, Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>>,
+    _session_mgr: State<'_, Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>,
 ) -> Result<ResourceKillResult, String> {
     let session_id = Uuid::parse_str(&request.session_id).map_err(|e| e.to_string())?;
-    let reason = request.reason;
+    if request.reason != ResourceKillReason::User {
+        return Err("resourceMonitor user command requires reason=user".to_string());
+    }
+    let coordinator = app
+        .try_state::<SelectionCoordinator>()
+        .ok_or_else(|| "selectionCoordinatorUnavailable".to_string())?;
+    coordinator
+        .resource_kill(session_id, TrustedResourceIntent::User)
+        .await
+}
+
+pub(crate) async fn execute_resource_kill_transaction<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    session_id: Uuid,
+    intent: TrustedResourceIntent,
+) -> Result<ResourceKillResult, String> {
+    let reason = match intent {
+        TrustedResourceIntent::User => ResourceKillReason::User,
+        TrustedResourceIntent::Watchdog => ResourceKillReason::Watchdog,
+    };
+    let pty_mgr = transaction
+        .app()
+        .state::<Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>>();
+    let monitor = transaction
+        .app()
+        .state::<Arc<ResourceMonitorState>>()
+        .inner()
+        .clone();
 
     // Fire the Job Object FIRST (pure: keeps the instance/job for a Retry). The
     // std-Mutex guard is dropped before any await.
     let job_fired = {
         pty_mgr
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .terminate_job_for_session(session_id)
     };
     log::info!(
@@ -76,26 +108,62 @@ pub async fn kill_resource_group(
         // backstop, reaps the child, tears down idle/git/watchers/parser), then flip
         // the tile to Exited. This is the only path that consumes the job.
         {
-            let _ = pty_mgr.lock().unwrap().kill(session_id);
+            if let Err(error) = pty_mgr
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .kill(session_id)
+            {
+                log::warn!(
+                    "[resource-monitor] PTY teardown failed after verified kill session={}: {}",
+                    session_id,
+                    error
+                );
+            }
         }
-        let mgr = session_mgr.read().await;
-        let cleared_raise_hand = mgr.mark_exited(session_id, 0).await;
-        if cleared_raise_hand {
-            let _ = tauri::Emitter::emit(
-                &app,
-                "session_communication_changed",
-                serde_json::json!({
-                    "sessionId": session_id.to_string(),
-                    "communication": null,
-                }),
-            );
+        transaction
+            .app()
+            .state::<crate::DetachedSessionsState>()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&session_id);
+        let window_label = format!("terminal-{}", session_id.to_string().replace('-', ""));
+        if let Some(window) = transaction.app().get_webview_window(&window_label) {
+            if let Err(error) = window.destroy() {
+                log::warn!(
+                    "[resource-monitor] detached window close failed session={}: {}",
+                    session_id,
+                    error
+                );
+            }
         }
-        mgr.clear_active_if(session_id).await;
-        if let Some(updated) = mgr.get_session(session_id).await {
-            let info = crate::session::session::SessionInfo::from(&updated);
-            let _ = tauri::Emitter::emit(&app, "session_created", info);
+        let snapshot = transaction.aggregate_snapshot().await;
+        let decision = if snapshot.selection.id() == Some(session_id) {
+            CommitDecision::Clear
+        } else {
+            CommitDecision::Keep
+        };
+        let mut mutations = LifecycleMutations::default();
+        mutations.mark_exited(session_id, 0);
+        let committed = transaction
+            .commit(decision, SelectionCause::ResourceMonitor(intent), mutations)
+            .await?;
+        if !committed.changed_rows.is_empty() {
+            transaction
+                .persist(SelectionSource::ResourceMonitor, Some(session_id))
+                .await;
+            transaction.publish_destroyed(session_id);
+            for row in &committed.changed_rows {
+                if row.id == session_id.to_string() {
+                    transaction.publish_created(row);
+                }
+            }
+            for cleared in &committed.cleared_raise_hand_ids {
+                transaction.publish_communication_cleared(*cleared);
+            }
+            if let Some(selection) = committed.selection.as_ref() {
+                transaction.publish_selection(selection);
+            }
         }
-        crate::config::sessions_persistence::persist_current_state(&mgr).await;
         result.finalized = true;
     } else {
         // NOT verified dead (kernel-AV residual, no job, or a concurrent kill that did
@@ -167,6 +235,8 @@ fn should_finalize_kill(state: ResourceGroupState) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{should_finalize_kill, verify_kill_settled};
+    use crate::pty::backend::{BackendSpawnSpec, PtyBackend, SessionBackendKind};
+    use crate::pty::manager::PtyManager;
     use crate::resource_monitor::registry::{
         ProcessTreeBackend, ResourceError, ResourceLaunchRegistration,
     };
@@ -175,10 +245,105 @@ mod tests {
         ResourceKillReason, ResourceLaunchMetadata, ResourceLimits, TerminateOutcome,
     };
     use crate::resource_monitor::ResourceMonitorState;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use crate::session::manager::SessionManager;
+    use crate::session::selection::{
+        CriticalAdmissionKind, CriticalAdmissionOutcome, SelectionCoordinator, SelectionMode,
+        SelectionSource, TrustedResourceIntent,
+    };
+    use crate::session::session::SessionStatus;
+    use crate::web::broadcast::WsBroadcaster;
+    use crate::DetachedSessionsState;
+    use futures::future::BoxFuture;
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Condvar, Mutex};
     use std::time::Duration;
+    use tauri::Listener;
+    use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
+
+    #[derive(Default)]
+    struct ResourcePtyBackend {
+        live: Mutex<HashSet<Uuid>>,
+        terminate_count: AtomicUsize,
+        kill_count: AtomicUsize,
+    }
+
+    impl ResourcePtyBackend {
+        fn set_live(&self, id: Uuid) {
+            self.live.lock().unwrap().insert(id);
+        }
+    }
+
+    impl PtyBackend for ResourcePtyBackend {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn spawn(
+            &self,
+            spec: BackendSpawnSpec,
+        ) -> BoxFuture<'_, Result<(), crate::errors::AppError>> {
+            Box::pin(async move {
+                self.set_live(spec.id);
+                Ok(())
+            })
+        }
+
+        fn write(&self, id: Uuid, _data: &[u8]) -> Result<(), crate::errors::AppError> {
+            self.has_session(id)
+                .then_some(())
+                .ok_or_else(|| crate::errors::AppError::SessionNotFound(id.to_string()))
+        }
+
+        fn resize(&self, id: Uuid, _cols: u16, _rows: u16) -> Result<(), crate::errors::AppError> {
+            self.write(id, &[])
+        }
+
+        fn kill(&self, id: Uuid) -> Result<(), crate::errors::AppError> {
+            self.kill_count.fetch_add(1, Ordering::SeqCst);
+            self.live.lock().unwrap().remove(&id);
+            Ok(())
+        }
+
+        fn has_session(&self, id: Uuid) -> bool {
+            self.live.lock().unwrap().contains(&id)
+        }
+
+        fn get_screen_snapshot(&self, _id: Uuid) -> Option<crate::pty::output::PtyScreenSnapshot> {
+            None
+        }
+
+        fn get_pty_size(&self, id: Uuid) -> Option<(u16, u16)> {
+            self.has_session(id).then_some((120, 30))
+        }
+
+        fn get_screen_rows(&self, _id: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
+            crate::pty::context_scrape::ScreenRowsRead::SessionOver
+        }
+
+        fn register_response_watcher(
+            &self,
+            _session_id: Uuid,
+            _request_id: String,
+            _response_dir: PathBuf,
+        ) {
+        }
+
+        fn terminate_job_for_session(&self, id: Uuid) -> bool {
+            if self.has_session(id) {
+                self.terminate_count.fetch_add(1, Ordering::SeqCst);
+                true
+            } else {
+                false
+            }
+        }
+
+        fn kill_all_jobs(&self) -> (usize, usize) {
+            (0, 0)
+        }
+    }
 
     #[test]
     fn finalizes_only_on_verified_terminated() {
@@ -383,5 +548,370 @@ mod tests {
 
         watchdog.join().unwrap().unwrap();
         releaser.join().unwrap();
+    }
+
+    async fn assert_serialized_resource_kills(watchdog_first: bool) {
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let session = manager
+            .read()
+            .await
+            .create_session(
+                "shell".to_string(),
+                Vec::new(),
+                "C:/resource-serialization".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        let pty_backend = Arc::new(ResourcePtyBackend::default());
+        pty_backend.set_live(session.id);
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(pty_backend.clone())));
+        pty.lock()
+            .unwrap()
+            .record_route(session.id, SessionBackendKind::LocalProcess);
+
+        let order_offset = if watchdog_first { 1 } else { 0 };
+        let root = ProcessIdentity {
+            pid: 5100 + order_offset,
+            creation_time_100ns: 700 + u64::from(order_offset),
+        };
+        let process_backend = Arc::new(GatedBackend::new(root));
+        let monitor = Arc::new(ResourceMonitorState::with_backend(
+            process_backend.clone() as Arc<dyn ProcessTreeBackend>
+        ));
+        register_running(monitor.as_ref(), session.id, root);
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(Arc::clone(&pty))
+            .manage(Arc::clone(&monitor))
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build serialized resource-kill app");
+        coordinator.start(app.handle().clone()).unwrap();
+        coordinator.submit_restore_first().await.unwrap().finish();
+        let manager_handle = manager.read().await.clone();
+        let before_revision = manager_handle.selection_payload().await.revision();
+        let (events_tx, events_rx) = std::sync::mpsc::channel();
+        for event_name in ["session_destroyed", "session_created", "session_switched"] {
+            let events_tx = events_tx.clone();
+            app.listen_any(event_name, move |_| {
+                let _ = events_tx.send(event_name);
+            });
+        }
+
+        struct ReleaseOnDrop(Arc<GatedBackend>);
+        impl Drop for ReleaseOnDrop {
+            fn drop(&mut self) {
+                self.0.release();
+            }
+        }
+        let _release_guard = ReleaseOnDrop(process_backend.clone());
+        process_backend.armed.store(true, Ordering::SeqCst);
+
+        if watchdog_first {
+            let watchdog = {
+                let coordinator = coordinator.clone();
+                tokio::spawn(async move { coordinator.watchdog_resource_kill(session.id).await })
+            };
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !process_backend.entered.load(Ordering::SeqCst) {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("watchdog resource kill enters the backend barrier");
+            let mut user = {
+                let coordinator = coordinator.clone();
+                tokio::spawn(async move {
+                    coordinator
+                        .resource_kill(session.id, TrustedResourceIntent::User)
+                        .await
+                })
+            };
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), &mut user)
+                    .await
+                    .is_err(),
+                "user finalizer must queue behind the held watchdog transaction"
+            );
+            process_backend.release();
+            let watchdog_result = watchdog.await.unwrap().unwrap();
+            assert!(matches!(
+                watchdog_result,
+                CriticalAdmissionOutcome::Completed(ref result) if result.finalized
+            ));
+            assert!(user.await.unwrap().unwrap().finalized);
+        } else {
+            let user = {
+                let coordinator = coordinator.clone();
+                tokio::spawn(async move {
+                    coordinator
+                        .resource_kill(session.id, TrustedResourceIntent::User)
+                        .await
+                })
+            };
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !process_backend.entered.load(Ordering::SeqCst) {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("user resource kill enters the backend barrier");
+            let mut watchdog = {
+                let coordinator = coordinator.clone();
+                tokio::spawn(async move { coordinator.watchdog_resource_kill(session.id).await })
+            };
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), &mut watchdog)
+                    .await
+                    .is_err(),
+                "watchdog finalizer must queue behind the held user transaction"
+            );
+            process_backend.release();
+            assert!(user.await.unwrap().unwrap().finalized);
+            let watchdog_result = watchdog.await.unwrap().unwrap();
+            assert!(matches!(
+                watchdog_result,
+                CriticalAdmissionOutcome::Completed(ref result) if result.finalized
+            ));
+        }
+
+        let row = manager_handle.get_session(session.id).await.unwrap();
+        assert_eq!(row.status, SessionStatus::Exited(0));
+        let selection = manager_handle.selection_payload().await;
+        assert_eq!(selection.mode(), SelectionMode::None);
+        assert_eq!(selection.id(), None);
+        assert_eq!(selection.source(), SelectionSource::ResourceMonitor);
+        assert_eq!(selection.user_initiated(), !watchdog_first);
+        assert_eq!(selection.revision(), before_revision + 1);
+        assert_eq!(
+            (0..3)
+                .map(|_| events_rx.recv_timeout(Duration::from_secs(1)).unwrap())
+                .collect::<Vec<_>>(),
+            vec!["session_destroyed", "session_created", "session_switched"]
+        );
+        assert!(events_rx.try_recv().is_err());
+        assert_eq!(pty_backend.terminate_count.load(Ordering::SeqCst), 1);
+        assert!(!pty.lock().unwrap().has_session(session.id));
+        coordinator.close_and_join().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn user_and_watchdog_resource_finalizers_serialize_in_both_orders() {
+        assert_serialized_resource_kills(false).await;
+        assert_serialized_resource_kills(true).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn full_queue_watchdog_waiter_deduplicates_then_runs_one_whole_finalizer() {
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let session = manager
+            .read()
+            .await
+            .create_session(
+                "shell".to_string(),
+                Vec::new(),
+                "C:/watchdog-capacity".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        let pty_backend = Arc::new(ResourcePtyBackend::default());
+        pty_backend.set_live(session.id);
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(pty_backend.clone())));
+        pty.lock()
+            .unwrap()
+            .record_route(session.id, SessionBackendKind::LocalProcess);
+        let root = ProcessIdentity {
+            pid: 5300,
+            creation_time_100ns: 900,
+        };
+        let process_backend = Arc::new(GatedBackend::new(root));
+        let monitor = Arc::new(ResourceMonitorState::with_backend(
+            process_backend.clone() as Arc<dyn ProcessTreeBackend>
+        ));
+        register_running(monitor.as_ref(), session.id, root);
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(Arc::clone(&pty))
+            .manage(monitor)
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build full-queue watchdog app");
+        coordinator.start(app.handle().clone()).unwrap();
+        let restore = coordinator.submit_restore_first().await.unwrap();
+        let mut reservations = (0..64)
+            .map(|_| coordinator.reserve_auto_close().unwrap())
+            .collect::<Vec<_>>();
+        let before_revision = manager.read().await.selection_payload().await.revision();
+        let (events_tx, events_rx) = std::sync::mpsc::channel();
+        for event_name in ["session_destroyed", "session_created", "session_switched"] {
+            let events_tx = events_tx.clone();
+            app.listen_any(event_name, move |_| {
+                let _ = events_tx.send(event_name);
+            });
+        }
+        struct ReleaseOnDrop(Arc<GatedBackend>);
+        impl Drop for ReleaseOnDrop {
+            fn drop(&mut self) {
+                self.0.release();
+            }
+        }
+        let _release_guard = ReleaseOnDrop(process_backend.clone());
+        process_backend.armed.store(true, Ordering::SeqCst);
+
+        let waiter = {
+            let coordinator = coordinator.clone();
+            tokio::spawn(async move { coordinator.watchdog_resource_kill(session.id).await })
+        };
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !coordinator
+                .critical_key_registered_for_test(session.id, CriticalAdmissionKind::WatchdogKill)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("watchdog waiter registers while logical capacity is full");
+        assert!(matches!(
+            coordinator
+                .watchdog_resource_kill(session.id)
+                .await
+                .unwrap(),
+            CriticalAdmissionOutcome::AlreadyPending
+        ));
+
+        drop(reservations.pop());
+        restore.finish();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !process_backend.entered.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("capacity release fairly admits one whole watchdog finalizer");
+        assert_eq!(
+            manager.read().await.selection_payload().await.revision(),
+            before_revision
+        );
+        assert_eq!(pty_backend.terminate_count.load(Ordering::SeqCst), 1);
+        process_backend.release();
+        let result = waiter.await.unwrap().unwrap();
+        assert!(matches!(
+            result,
+            CriticalAdmissionOutcome::Completed(ref result) if result.finalized
+        ));
+        drop(reservations);
+
+        let selection = manager.read().await.selection_payload().await;
+        assert_eq!(selection.revision(), before_revision + 1);
+        assert_eq!(selection.mode(), SelectionMode::None);
+        assert!(!selection.user_initiated());
+        assert_eq!(
+            (0..3)
+                .map(|_| events_rx.recv_timeout(Duration::from_secs(1)).unwrap())
+                .collect::<Vec<_>>(),
+            vec!["session_destroyed", "session_created", "session_switched"]
+        );
+        assert!(events_rx.try_recv().is_err());
+        assert!(matches!(
+            coordinator
+                .watchdog_resource_kill(session.id)
+                .await
+                .unwrap(),
+            CriticalAdmissionOutcome::Completed(_)
+        ));
+        assert!(events_rx.try_recv().is_err());
+        coordinator.close_and_join().await;
+    }
+
+    #[tokio::test]
+    async fn full_coordinator_rejects_user_resource_kill_before_any_side_effect() {
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let session = manager
+            .read()
+            .await
+            .create_session(
+                "shell".to_string(),
+                Vec::new(),
+                "C:/resource-busy".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        let pty_backend = Arc::new(ResourcePtyBackend::default());
+        pty_backend.set_live(session.id);
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(pty_backend.clone())));
+        pty.lock()
+            .unwrap()
+            .record_route(session.id, SessionBackendKind::LocalProcess);
+        let root = ProcessIdentity {
+            pid: 5200,
+            creation_time_100ns: 800,
+        };
+        let process_backend = Arc::new(GatedBackend::new(root));
+        let monitor = Arc::new(ResourceMonitorState::with_backend(
+            process_backend.clone() as Arc<dyn ProcessTreeBackend>
+        ));
+        register_running(monitor.as_ref(), session.id, root);
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(Arc::clone(&pty))
+            .manage(monitor)
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build busy resource-kill app");
+        coordinator.start(app.handle().clone()).unwrap();
+        let guard = coordinator.submit_restore_first().await.unwrap();
+        let reservations = (0..64)
+            .map(|_| coordinator.reserve_auto_close().unwrap())
+            .collect::<Vec<_>>();
+        let before = manager.read().await.selection_payload().await;
+
+        assert_eq!(
+            coordinator
+                .resource_kill(session.id, TrustedResourceIntent::User)
+                .await
+                .unwrap_err(),
+            "selectionCoordinatorBusy"
+        );
+        assert!(!process_backend.entered.load(Ordering::SeqCst));
+        assert_eq!(pty_backend.terminate_count.load(Ordering::SeqCst), 0);
+        assert_eq!(pty_backend.kill_count.load(Ordering::SeqCst), 0);
+        let after = manager.read().await.selection_payload().await;
+        assert_eq!(after.revision(), before.revision());
+        assert_eq!(after.id(), before.id());
+        assert_eq!(
+            manager
+                .read()
+                .await
+                .get_session(session.id)
+                .await
+                .unwrap()
+                .status,
+            SessionStatus::Active
+        );
+
+        drop(reservations);
+        guard.finish();
+        coordinator.close_and_join().await;
     }
 }

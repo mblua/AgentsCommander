@@ -12,7 +12,7 @@ export const homeStore = {
   get loading() { return loading(); },
   get error() { return error(); },
 
-  // Called once from MainApp.onMount after SessionAPI.getActive resolves.
+  // Legacy explicit initializer; callers should reason in selection modes.
   // After boot, visibility is user-controlled.
   setInitialVisibility(hasActiveSession: boolean) {
     setVisible(!hasActiveSession);

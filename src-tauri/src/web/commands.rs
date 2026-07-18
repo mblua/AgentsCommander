@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
 
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::Manager;
 use uuid::Uuid;
@@ -37,6 +38,47 @@ enum BrowserProjectCommand {
 enum WebCommandRoute {
     BrowserProject(BrowserProjectCommand),
     Other,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ThemeChangedPayload {
+    light: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResourceMonitorAttachPayload {}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenSettingsPayload {
+    #[serde(default)]
+    section: Option<String>,
+}
+
+fn validate_client_broadcast(event: &str, payload: &Value) -> Result<(), String> {
+    if !payload.is_object() {
+        return Err(format!("Invalid {event} payload: expected object"));
+    }
+    match event {
+        "theme_changed" => {
+            let decoded: ThemeChangedPayload = serde_json::from_value(payload.clone())
+                .map_err(|error| format!("Invalid theme_changed payload: {error}"))?;
+            let _ = decoded.light;
+        }
+        "resource_monitor_attach" => {
+            serde_json::from_value::<ResourceMonitorAttachPayload>(payload.clone())
+                .map_err(|error| format!("Invalid resource_monitor_attach payload: {error}"))?;
+        }
+        "open_settings" => {
+            let decoded: OpenSettingsPayload = serde_json::from_value(payload.clone())
+                .map_err(|error| format!("Invalid open_settings payload: {error}"))?;
+            let _ = decoded.section;
+        }
+        _ => return Err(format!("Client broadcast event is not allowed: {event}")),
+    }
+    Ok(())
 }
 
 fn route_web_command(cmd: &str) -> WebCommandRoute {
@@ -77,6 +119,13 @@ pub async fn dispatch(state: &WsState, id: u64, cmd: &str, args: &Value) -> Valu
 }
 
 async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Value, String> {
+    if state
+        .app_handle
+        .try_state::<Arc<crate::RestoreInProgress>>()
+        .is_some_and(|restore| restore.0.load(std::sync::atomic::Ordering::SeqCst))
+    {
+        return Err("selectionCoordinatorBusy".to_string());
+    }
     if let WebCommandRoute::BrowserProject(project_cmd) = route_web_command(cmd) {
         return dispatch_browser_project_command(state, project_cmd, args).await;
     }
@@ -90,24 +139,12 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
         }
 
         "get_active_session" => {
-            let mgr = state.session_mgr.read().await;
-            let active = mgr.get_active().await;
-            let active = if let Some(active_id) = active {
-                let is_detached = {
-                    let detached = state.app_handle.state::<crate::DetachedSessionsState>();
-                    let set = detached.lock().unwrap();
-                    set.contains(&active_id)
-                };
-                if is_detached {
-                    mgr.clear_active_if(active_id).await;
-                    None
-                } else {
-                    Some(active_id.to_string())
-                }
-            } else {
-                None
-            };
-            Ok(json!(active))
+            let selection = state
+                .app_handle
+                .state::<crate::session::selection::SelectionCoordinator>()
+                .snapshot()
+                .await?;
+            serde_json::to_value(selection).map_err(|error| error.to_string())
         }
 
         "drain_session_warnings" => {
@@ -188,6 +225,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                 // #973 - browser-mode create. The browser client pushes its fitted size after
                 // attach, not at create time, so this keeps AC's 120x30 for now.
                 None,
+                crate::commands::session::CreateSelectionIntent::User,
             )
             .await?;
 
@@ -199,37 +237,6 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
 
             crate::commands::session::destroy_session_inner(&state.app_handle, uuid).await?;
-            state
-                .broadcaster
-                .broadcast_event("session_destroyed", &json!({ "id": id }));
-
-            let active = {
-                let mgr = state.session_mgr.read().await;
-                if let Some(active_id) = mgr.get_active().await {
-                    let is_detached = {
-                        let detached = state.app_handle.state::<crate::DetachedSessionsState>();
-                        let set = detached.lock().unwrap();
-                        set.contains(&active_id)
-                    };
-                    if is_detached {
-                        mgr.clear_active_if(active_id).await;
-                        None
-                    } else {
-                        Some(active_id.to_string())
-                    }
-                } else {
-                    None
-                }
-            };
-            if let Some(active_id) = active {
-                state
-                    .broadcaster
-                    .broadcast_event("session_switched", &json!({ "id": active_id }));
-            } else {
-                state
-                    .broadcaster
-                    .broadcast_event("session_switched", &json!({ "id": Value::Null }));
-            }
 
             Ok(json!(null))
         }
@@ -238,30 +245,11 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             let id = require_str(args, "id")?;
             let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
 
-            let is_detached = {
-                let detached = state.app_handle.state::<crate::DetachedSessionsState>();
-                let set = detached.lock().unwrap();
-                set.contains(&uuid)
-            };
-            if is_detached {
-                let mgr = state.session_mgr.read().await;
-                mgr.clear_active_if(uuid).await;
-                let label = format!("terminal-{}", id.replace('-', ""));
-                if let Some(win) = state.app_handle.get_webview_window(&label) {
-                    win.set_focus().map_err(|e| e.to_string())?;
-                }
-                return Ok(json!(null));
-            }
-
-            let mgr = state.session_mgr.read().await;
-            mgr.switch_session(uuid).await.map_err(|e| e.to_string())?;
-
-            broadcast_all(
-                &state.app_handle,
-                &state.broadcaster,
-                "session_switched",
-                &json!({ "id": id, "userInitiated": true }),
-            );
+            state
+                .app_handle
+                .state::<crate::session::selection::SelectionCoordinator>()
+                .transition(crate::session::selection::SelectionRequest::user_switch(uuid))
+                .await?;
 
             Ok(json!(null))
         }
@@ -598,6 +586,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
         "broadcast_event" => {
             let event = require_str(args, "event")?;
             let payload = args.get("payload").cloned().unwrap_or(json!(null));
+            validate_client_broadcast(&event, &payload)?;
             broadcast_all(&state.app_handle, &state.broadcaster, &event, &payload);
             Ok(json!(null))
         }
@@ -929,6 +918,73 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
+    #[test]
+    fn client_broadcast_allowlist_requires_exact_typed_ui_payloads() {
+        for (event, payload) in [
+            ("theme_changed", json!({ "light": true })),
+            ("resource_monitor_attach", json!({})),
+            ("open_settings", json!({})),
+            ("open_settings", json!({ "section": "integrations" })),
+        ] {
+            assert!(
+                validate_client_broadcast(event, &payload).is_ok(),
+                "valid payload rejected for {event}: {payload}"
+            );
+        }
+
+        for (event, payload) in [
+            ("theme_changed", json!(null)),
+            ("theme_changed", json!([])),
+            ("theme_changed", json!({})),
+            ("theme_changed", json!({ "light": "true" })),
+            ("theme_changed", json!({ "light": true, "extra": 1 })),
+            ("resource_monitor_attach", json!(null)),
+            ("resource_monitor_attach", json!([])),
+            ("resource_monitor_attach", json!({ "extra": 1 })),
+            ("open_settings", json!(null)),
+            ("open_settings", json!([])),
+            ("open_settings", json!({ "section": 7 })),
+            ("open_settings", json!({ "section": "voice", "extra": 1 })),
+        ] {
+            assert!(
+                validate_client_broadcast(event, &payload).is_err(),
+                "invalid payload accepted for {event}: {payload}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn client_cannot_forge_backend_lifecycle_broadcasts() {
+        let (state, mut receiver) = ws_state_for(AppSettings::default());
+        for event in [
+            "session_switched",
+            "session_created",
+            "session_destroyed",
+            "session_communication_changed",
+        ] {
+            let response = dispatch(
+                &state,
+                17,
+                "broadcast_event",
+                &json!({
+                    "event": event,
+                    "payload": {
+                        "epoch": Uuid::new_v4(),
+                        "revision": 999999,
+                        "source": "userSwitch",
+                        "userInitiated": true,
+                    },
+                }),
+            )
+            .await;
+            assert!(response.get("error").is_some(), "forgery accepted: {event}");
+        }
+        assert!(
+            receiver.try_recv().is_err(),
+            "rejected lifecycle forgery reached WebSocket listeners"
+        );
+    }
+
     /// #973 - `pty_resize` is network-facing, and the old `as u16` cast SILENTLY TRUNCATED.
     /// `cols: 65536` reached the PTY as **0** and `cols: 65537` as **1**: a zero-column ConPTY
     /// (the very thing #973 exists to keep out) conjured from a number that looked fine on the
@@ -1088,7 +1144,7 @@ mod tests {
             idle_detector,
             git_watcher,
             Some(broadcaster.clone()),
-            Arc::clone(&session_mgr),
+            None,
         )));
         let settings = Arc::new(tokio::sync::RwLock::new(AppSettings::default()));
         let state = WsState {
@@ -1163,7 +1219,7 @@ mod tests {
             idle_detector,
             git_watcher,
             Some(broadcaster.clone()),
-            Arc::clone(&session_mgr),
+            None,
         )));
         let settings = Arc::new(tokio::sync::RwLock::new(settings));
         let state = WsState {
@@ -1186,6 +1242,7 @@ mod tests {
             isolated_home: false,
             instructions_filename: None,
             config_seed: None,
+            context_regex: None,
             backend: Default::default(),
         }
     }

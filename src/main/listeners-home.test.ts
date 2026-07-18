@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { SessionSelection } from "../shared/types";
+import { liveSelection, SESSION_A, userLiveSelection, userNoneSelection } from "../shared/testing/session-selection";
 
-type SwitchedPayload = { id: string | null; userInitiated?: boolean };
+type SwitchedPayload = SessionSelection;
 type DestroyedPayload = { id: string };
 
 // Capture the listener callbacks so individual cases can fire crafted
@@ -47,28 +49,28 @@ describe("wireHomeListeners (issue #183)", () => {
   it("session_switched with userInitiated=true and a real id hides Home", async () => {
     await wireHomeListeners();
     expect(homeStore.visible).toBe(true);
-    m.switchedCb!({ id: "abc", userInitiated: true });
+    m.switchedCb!(userLiveSelection(SESSION_A));
     expect(homeStore.visible).toBe(false);
   });
 
-  it("session_switched WITHOUT userInitiated leaves Home visible (restore / auto-promote)", async () => {
+  it("restore session_switched leaves Home visible", async () => {
     await wireHomeListeners();
     expect(homeStore.visible).toBe(true);
-    m.switchedCb!({ id: "abc" });
+    m.switchedCb!(liveSelection(SESSION_A));
     expect(homeStore.visible).toBe(true);
   });
 
   it("session_switched with userInitiated=false leaves Home visible", async () => {
     await wireHomeListeners();
     expect(homeStore.visible).toBe(true);
-    m.switchedCb!({ id: "abc", userInitiated: false });
+    m.switchedCb!(liveSelection(SESSION_A));
     expect(homeStore.visible).toBe(true);
   });
 
   it("session_switched with id=null leaves Home visible even when userInitiated=true", async () => {
     await wireHomeListeners();
     expect(homeStore.visible).toBe(true);
-    m.switchedCb!({ id: null, userInitiated: true });
+    m.switchedCb!(userNoneSelection());
     expect(homeStore.visible).toBe(true);
   });
 

@@ -1012,7 +1012,6 @@ pub(crate) fn next_sustained_idle_state(
     (Some(since), settled)
 }
 
-
 /// (#1001 PR2 / B) Extra settle beyond `idle_threshold` for the live-inject gate.
 /// A session only reports `waiting_for_input == true` after `idle_threshold`
 /// (~2500ms) of quiet, so a settle <= `idle_threshold` never bites (grinch G3).
@@ -1091,8 +1090,7 @@ pub(crate) enum SettleAction {
 /// this that is genuinely mid-turn (rare - a just-booted agent has no work yet),
 /// while under-estimating re-opens the still-starting drop. See the `startup_probe`
 /// mode in tests/wake_consumption_measure.rs.
-pub(crate) const STARTUP_SETTLE_THRESHOLD: std::time::Duration =
-    std::time::Duration::from_secs(20);
+pub(crate) const STARTUP_SETTLE_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// (#1001 PR2 P2 / B, option-a) Route a live wake by session age: a candidate whose
 /// PTY was registered less than `startup_threshold` ago is `Starting` (route to the
@@ -2838,14 +2836,7 @@ impl MailboxPoller {
                     .await
             };
             if cleared {
-                let _ = tauri::Emitter::emit(
-                    app,
-                    "session_communication_changed",
-                    serde_json::json!({
-                        "sessionId": orphan_id.to_string(),
-                        "communication": null,
-                    }),
-                );
+                crate::session::selection::publish_session_communication(app, orphan_id, None);
             }
         }
 
@@ -2861,13 +2852,10 @@ impl MailboxPoller {
                     .await
             };
             if restored {
-                let _ = tauri::Emitter::emit(
+                crate::session::selection::publish_session_communication(
                     app,
-                    "session_communication_changed",
-                    serde_json::json!({
-                        "sessionId": session_id.to_string(),
-                        "communication": communication,
-                    }),
+                    session_id,
+                    Some(&communication),
                 );
             }
         }
@@ -2987,7 +2975,7 @@ impl MailboxPoller {
                 .map_err(|e| e.to_string());
         }
 
-        crate::commands::session::destroy_session_inner(app, session_id).await
+        crate::commands::session::background_destroy_session_inner(app, session_id).await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3076,6 +3064,7 @@ impl MailboxPoller {
             resolved_spawn,
             // #973 - headless caller: no terminal to measure, keep 120x30.
             None,
+            crate::commands::session::CreateSelectionIntent::Background,
         )
         .await
     }
@@ -3252,8 +3241,7 @@ impl MailboxPoller {
             return; // hooked tests exercise the inject wiring, not real timers
         }
 
-        let Some(idle) =
-            app.try_state::<std::sync::Arc<crate::pty::idle_detector::IdleDetector>>()
+        let Some(idle) = app.try_state::<std::sync::Arc<crate::pty::idle_detector::IdleDetector>>()
         else {
             return;
         };
@@ -4946,13 +4934,10 @@ impl MailboxPoller {
         };
 
         if let Some(communication) = changed_communication {
-            let _ = tauri::Emitter::emit(
+            crate::session::selection::publish_session_communication(
                 app,
-                "session_communication_changed",
-                serde_json::json!({
-                    "sessionId": session_id.to_string(),
-                    "communication": communication,
-                }),
+                session_id,
+                Some(&communication),
             );
         }
 
@@ -5384,7 +5369,7 @@ impl MailboxPoller {
                         .await
                         .and_then(|s| s.communication.clone())
                 };
-                let result = crate::commands::session::restart_session_inner_with_activation(
+                let result = crate::commands::session::restart_session_inner_with_intent(
                     &app,
                     session_mgr.inner(),
                     pty_mgr.inner(),
@@ -5394,27 +5379,10 @@ impl MailboxPoller {
                     Some(profile),
                     Some(true),
                     true,
+                    crate::session::selection::TrustedRestartIntent::Background,
+                    carried_communication,
                 )
                 .await;
-                if let (Ok(info), Some(communication)) = (&result, carried_communication) {
-                    if let Ok(new_uuid) = Uuid::parse_str(&info.id) {
-                        let restored = {
-                            let mgr = session_mgr.read().await;
-                            mgr.restore_communication(new_uuid, communication.clone())
-                                .await
-                        };
-                        if restored {
-                            let _ = tauri::Emitter::emit(
-                                &app,
-                                "session_communication_changed",
-                                serde_json::json!({
-                                    "sessionId": info.id.clone(),
-                                    "communication": communication,
-                                }),
-                            );
-                        }
-                    }
-                }
                 result.map(|info| info.id)
             }
         };
@@ -5782,7 +5750,7 @@ impl MailboxPoller {
 
         #[cfg(not(test))]
         {
-            match crate::commands::session::destroy_session_inner(app, sid).await {
+            match crate::commands::session::background_destroy_session_inner(app, sid).await {
                 Ok(()) => {
                     log::info!("[mailbox] close-session: force-destroyed session {}", sid);
                     true
@@ -6357,6 +6325,7 @@ impl MailboxPoller {
                 resolved_spawn,
                 // #973 - headless caller: no terminal to measure, keep 120x30.
                 None,
+                crate::commands::session::CreateSelectionIntent::Background,
             )
             .await
             {
@@ -6573,6 +6542,10 @@ mod tests {
 
         fn get_pty_size(&self, _id: Uuid) -> Option<(u16, u16)> {
             Some((30, 120))
+        }
+
+        fn get_screen_rows(&self, _id: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
+            crate::pty::context_scrape::ScreenRowsRead::SessionOver
         }
 
         fn register_response_watcher(
@@ -7018,6 +6991,7 @@ mod tests {
             isolated_home: false,
             instructions_filename: None,
             config_seed: None,
+            context_regex: None,
             backend: Default::default(),
         }
     }
@@ -8035,7 +8009,10 @@ mod tests {
             Duration::from_secs(90),
         );
         assert_eq!(action, SettleAction::Wait);
-        assert_eq!(idle_since, None, "busy resets the settle clock (cold-spawn)");
+        assert_eq!(
+            idle_since, None,
+            "busy resets the settle clock (cold-spawn)"
+        );
     }
 
     #[test]
@@ -8050,7 +8027,11 @@ mod tests {
             Duration::from_millis(0),
             Duration::from_secs(90),
         );
-        assert_eq!(action, SettleAction::InjectNow, "idle held >= settle -> inject");
+        assert_eq!(
+            action,
+            SettleAction::InjectNow,
+            "idle held >= settle -> inject"
+        );
     }
 
     #[test]
@@ -8065,7 +8046,11 @@ mod tests {
             Duration::from_secs(91),
             Duration::from_secs(90),
         );
-        assert_eq!(action, SettleAction::InjectNow, "cap must never drop a delivery");
+        assert_eq!(
+            action,
+            SettleAction::InjectNow,
+            "cap must never drop a delivery"
+        );
     }
 
     // live_settle_action gates the LIVE path on real-time activity_age (grinch P1),
@@ -8087,7 +8072,11 @@ mod tests {
             Duration::from_millis(0),
             LSA_MAX_WAIT,
         );
-        assert_eq!(action, SettleAction::InjectNow, "busy/mid-turn injects at once");
+        assert_eq!(
+            action,
+            SettleAction::InjectNow,
+            "busy/mid-turn injects at once"
+        );
     }
 
     #[test]
@@ -8104,7 +8093,11 @@ mod tests {
                 Duration::from_millis(0),
                 LSA_MAX_WAIT,
             );
-            assert_eq!(action, SettleAction::Wait, "fresh-idle window must settle (age={age_ms})");
+            assert_eq!(
+                action,
+                SettleAction::Wait,
+                "fresh-idle window must settle (age={age_ms})"
+            );
         }
     }
 
@@ -8119,7 +8112,11 @@ mod tests {
             Duration::from_millis(0),
             LSA_MAX_WAIT,
         );
-        assert_eq!(action, SettleAction::InjectNow, "long-idle (ready) injects at once");
+        assert_eq!(
+            action,
+            SettleAction::InjectNow,
+            "long-idle (ready) injects at once"
+        );
     }
 
     #[test]
@@ -8159,7 +8156,11 @@ mod tests {
             Duration::from_millis(0),
             LSA_MAX_WAIT,
         );
-        assert_eq!(action, SettleAction::InjectNow, "untracked/gone -> best-effort inject");
+        assert_eq!(
+            action,
+            SettleAction::InjectNow,
+            "untracked/gone -> best-effort inject"
+        );
     }
 
     #[test]
@@ -8174,7 +8175,11 @@ mod tests {
             Duration::from_secs(11),
             LSA_MAX_WAIT,
         );
-        assert_eq!(action, SettleAction::InjectNow, "cap must never drop a delivery");
+        assert_eq!(
+            action,
+            SettleAction::InjectNow,
+            "cap must never drop a delivery"
+        );
     }
 
     // ── (#1001 PR2 P2 / option-a) live_wake_route: starting vs established ──
@@ -8250,7 +8255,11 @@ mod tests {
             Duration::from_millis(0),
             LSA_MAX_WAIT,
         );
-        assert_eq!(action, SettleAction::InjectNow, "established + busy -> inject now");
+        assert_eq!(
+            action,
+            SettleAction::InjectNow,
+            "established + busy -> inject now"
+        );
     }
 
     #[test]
@@ -8270,7 +8279,11 @@ mod tests {
             Duration::from_millis(0),
             LSA_MAX_WAIT,
         );
-        assert_eq!(action, SettleAction::Wait, "established + fresh-idle -> settle the remainder");
+        assert_eq!(
+            action,
+            SettleAction::Wait,
+            "established + fresh-idle -> settle the remainder"
+        );
     }
 
     // ── next_sustained_idle_state tests (#611 sustained-idle gate) ──
@@ -11932,7 +11945,11 @@ mod tests {
             .deliver_wake_with_origin(&app, &msg, WakeDeliveryOrigin::FilesystemPoller)
             .await;
 
-        assert!(result.is_ok(), "Observed must convert to Ok, got {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Observed must convert to Ok, got {:?}",
+            result
+        );
         assert_eq!(*hooks.inject_calls.lock().unwrap(), vec![live_id]);
         assert_no_spawn_or_destroy_events(&hooks);
     }

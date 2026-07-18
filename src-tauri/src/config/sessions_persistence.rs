@@ -10,7 +10,7 @@ use crate::config::settings::WindowGeometry;
 use crate::session::manager::SessionManager;
 use crate::session::profile::CodingAgentKind;
 use crate::session::session::{
-    SessionCommunication, SessionCommunicationKind, SessionStatus, TEMP_SESSION_PREFIX,
+    SessionCommunication, SessionCommunicationKind, SessionInfo, SessionStatus, TEMP_SESSION_PREFIX,
 };
 
 /// #291 — in-process mutex serializing all `save_sessions` calls.
@@ -691,6 +691,7 @@ fn load_sessions_from_path(path: &Path) -> Vec<PersistedSession> {
                                 label: prefix,
                                 source_path: source,
                                 branch: None,
+                                dirty: None,
                             });
                         }
                         (Some(source), None) => {
@@ -712,6 +713,7 @@ fn load_sessions_from_path(path: &Path) -> Vec<PersistedSession> {
                                 label,
                                 source_path: source,
                                 branch: None,
+                                dirty: None,
                             });
                         }
                         (None, Some(prefix)) if prefix == "multi-repo" => {
@@ -952,8 +954,13 @@ fn sessions_save_lock() -> &'static tokio::sync::Mutex<()> {
 /// Snapshot current live sessions into the persisted format.
 /// Strips auto-injected resume flags so they are re-evaluated on next restore.
 pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
-    let sessions = mgr.list_sessions().await;
-    let active_id = mgr.get_active().await.map(|id| id.to_string());
+    let aggregate = mgr.aggregate_snapshot().await;
+    let sessions = aggregate
+        .sessions
+        .iter()
+        .map(SessionInfo::from)
+        .collect::<Vec<_>>();
+    let active_id = aggregate.selection.id().map(|id| id.to_string());
 
     let all: Vec<PersistedSession> = sessions
         .iter()
@@ -1630,6 +1637,7 @@ mod tests {
     use crate::config::settings::AppSettings;
     use crate::session::manager::SessionManager;
     use crate::session::session::{SessionCommunication, SessionCommunicationKind, SessionStatus};
+    use std::sync::Arc;
     use std::time::Duration;
 
     /// §224 D.2 — the strip drops every runtime field but preserves the recipe
@@ -3462,6 +3470,7 @@ mod tests {
                         label: prefix,
                         source_path: source,
                         branch: None,
+                        dirty: None,
                     });
                 }
                 _ => {}
@@ -3601,6 +3610,7 @@ mod tests {
                         label: prefix,
                         source_path: source,
                         branch: None,
+                        dirty: None,
                     });
                 }
                 _ => {}
@@ -3772,5 +3782,68 @@ mod tests {
                 name
             );
         }
+    }
+
+    #[tokio::test]
+    async fn aggregate_persistence_snapshot_never_observes_half_of_removal_and_selection() {
+        let manager = Arc::new(SessionManager::new());
+        let first = manager
+            .create_session(
+                "shell-a".to_string(),
+                Vec::new(),
+                "C:/a".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        let second = manager
+            .create_session(
+                "shell-b".to_string(),
+                Vec::new(),
+                "C:/b".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        let first_id = first.id.to_string();
+        let second_id = second.id.to_string();
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let writer_manager = Arc::clone(&manager);
+        let writer_barrier = Arc::clone(&barrier);
+        let writer = tokio::spawn(async move {
+            writer_barrier.wait().await;
+            writer_manager
+                .destroy_session(second.id)
+                .await
+                .expect("atomic fixture destroy");
+        });
+
+        barrier.wait().await;
+        for _ in 0..128 {
+            let snapshot = snapshot_sessions(&manager).await;
+            let active = snapshot
+                .iter()
+                .filter(|session| session.was_active)
+                .collect::<Vec<_>>();
+            assert_eq!(active.len(), 1, "snapshot must have exactly one active row");
+            let ids = snapshot
+                .iter()
+                .filter_map(|session| session.id.as_deref())
+                .collect::<Vec<_>>();
+            assert!(ids.contains(&active[0].id.as_deref().unwrap()));
+            let old = snapshot.len() == 2 && active[0].id.as_deref() == Some(second_id.as_str());
+            let new = snapshot.len() == 1 && active[0].id.as_deref() == Some(first_id.as_str());
+            assert!(old || new, "observed half-committed persistence snapshot");
+            tokio::task::yield_now().await;
+        }
+        writer.await.unwrap();
     }
 }

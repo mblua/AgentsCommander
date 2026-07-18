@@ -1,13 +1,16 @@
 import { Component, createSignal, createEffect, createMemo, on, onMount, onCleanup, Show } from "solid-js";
 import { isTauri } from "../shared/platform";
 import type { UnlistenFn } from "../shared/transport";
+import type { TransportConnectionState } from "../shared/transport";
 import type {
   SessionStatus,
   ContextTemplateUpdate,
   MainSidebarSide,
   SessionWarning,
+  SessionSelection,
 } from "../shared/types";
 import {
+  PtyAPI,
   SessionAPI,
   SettingsAPI,
   TelegramAPI,
@@ -21,6 +24,7 @@ import {
   onSessionCommunicationChanged,
   onSessionIdle,
   onSessionBusy,
+  onSessionContext,
   onSessionGitRepos,
   onSessionCoordinatorChanged,
   onTelegramBridgeAttached,
@@ -38,6 +42,9 @@ import {
   onProjectGroupsUpdated,
   onProjectArchiveChanged,
   onNpmUpdateAvailable,
+  getTransportConnectionState,
+  isSelectionCoordinatorBusyError,
+  onTransportConnectionState,
 } from "../shared/ipc";
 import { taskFirstLine } from "../shared/markdown";
 import { registerShortcuts, unregisterShortcuts } from "../shared/shortcuts";
@@ -51,6 +58,7 @@ import { workgroupGroupsStore } from "./stores/workgroup-groups";
 import { normalizeProjectPathForCompare } from "./stores/project-refresh";
 import { startTeamIdleWatcher } from "./stores/team-idle-watcher";
 import { primeAudio } from "../shared/sound";
+import { voiceRecorder } from "../shared/voice-recorder";
 import { settingsStore } from "../shared/stores/settings";
 import { railCollapseStore } from "./stores/rail-collapse";
 import Titlebar from "./components/Titlebar";
@@ -72,13 +80,11 @@ import "./styles/sidebar.css";
 import "../shared/styles/toast.css";
 
 interface SidebarAppProps {
-  /**
-   * True when mounted inside MainApp's unified layout. Skips window-level
-   * initializers; those are main-window concerns.
-   */
   embedded?: boolean;
   railSide?: MainSidebarSide;
 }
+
+const HYDRATION_RETRY_DELAYS = [50, 100, 250, 500, 1000] as const;
 
 function isExitedStatus(status: SessionStatus): boolean {
   return typeof status === "object" && status !== null && "exited" in status;
@@ -111,7 +117,6 @@ function consumeWarningCount(counts: Map<string, number>, warning: SessionWarnin
 }
 
 export function blockContextMenu(e: Event): void {
-  // Allow native menus where users expect text Copy/Paste.
   if (e.target instanceof Element && e.target.closest(".terminal-host, .project-filter-row")) return;
   e.preventDefault();
 }
@@ -139,11 +144,6 @@ function projectPanelForPath(
   return header?.closest<HTMLElement>(".project-panel") ?? null;
 }
 
-/**
- * #941 — align the newly selected project's header with the top of the shared
- * sidebar scrollport. The primitive semantic key deliberately suppresses raw
- * store/config emissions and same-selection re-clicks.
- */
 export function createSidebarSelectionScrollReset(
   scrollContainer: () => HTMLDivElement | undefined,
 ): void {
@@ -155,8 +155,6 @@ export function createSidebarSelectionScrollReset(
     const projectPath = workgroupGroupsStore.activeProjectPath();
     if (!projectPath) return;
 
-    // Collapse/expand and the filtered rows update in the same click. Position
-    // only after those Solid updates settle, and discard a superseded fast click.
     queueMicrotask(() => {
       if (disposed || selectionKey() !== key) return;
       const container = scrollContainer();
@@ -165,8 +163,6 @@ export function createSidebarSelectionScrollReset(
       const projectPanel = projectPanelForPath(container, projectPath);
       if (projectPanel) {
         const containerTop = container.getBoundingClientRect().top;
-        // The panel starts at its sticky header. Measure the non-sticky panel
-        // because a pinned header's rect cannot reveal its logical scroll offset.
         const projectTop = projectPanel.getBoundingClientRect().top;
         container.scrollTop = Math.max(0, container.scrollTop + projectTop - containerTop);
       }
@@ -182,10 +178,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
   const [showOnboarding, setShowOnboarding] = createSignal(false);
   const [loopToast, setLoopToast] = createSignal<LoopToast | null>(null);
   const [settingsRailSide, setSettingsRailSide] = createSignal<MainSidebarSide>("right");
-  // #695 — one-at-a-time seeded context-template update modal. `seen` is keyed
-  // by `(projectPath, filename, defaultSha256, fileSha256)` so a resolved or
-  // skipped update is not re-shown, while a genuinely new pending update (the
-  // user edited the file again, or the baked default bumped) gets a fresh key.
   const [activeContextTemplateUpdate, setActiveContextTemplateUpdate] =
     createSignal<ContextTemplateUpdate | null>(null);
   const [contextTemplateUpdateBusy, setContextTemplateUpdateBusy] = createSignal(false);
@@ -203,7 +195,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
   const railSide = () => props.railSide ?? settingsRailSide();
   let sidebarScrollableEl: HTMLDivElement | undefined;
   createSidebarSelectionScrollReset(() => sidebarScrollableEl);
-  // #592 - debounce handle for the profile-drift re-list (collapses bursts).
   let profileDriftRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   const handleMainSidebarSideChange = (event: Event) => {
     const side = (event as CustomEvent<{ side?: MainSidebarSide }>).detail?.side;
@@ -212,7 +203,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
 
   const handleRaiseTerminal = async (e: MouseEvent) => {
     if (!isTauri || props.embedded || !raiseTerminalEnabled) return;
-    // Don't steal focus from interactive elements
     const tag = (e.target as HTMLElement).tagName;
     if (tag === "SELECT" || tag === "INPUT" || tag === "TEXTAREA" || tag === "BUTTON") return;
     const now = Date.now();
@@ -234,13 +224,8 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     }, 3000);
   };
 
-  // #609 — sticky "npm update available" toaster. Per-mount dedup state so the
-  // startup event + the getUpdateStatus snapshot never double-toast a version.
   const showUpdateToast = createUpdateToaster();
 
-  // #695 — seeded context-template update flow. The exact removal key (grinch
-  // fix #5) includes the file hash so a resolved older modal never silently
-  // drops a newer pending update for the same project/file/default.
   const contextTemplateUpdateKey = (update: ContextTemplateUpdate) =>
     `${update.projectPath}\n${update.filename}\n${update.currentDefaultSha256}\n${update.currentFileSha256}`;
 
@@ -265,10 +250,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     }
   };
 
-  // Drop exactly the resolved update from the store and close the modal. The
-  // createEffect below then surfaces the next unseen pending update, one at a
-  // time. Removal and `seen` both key on the file hash, so a concurrent newer
-  // pending update survives (grinch fix #5).
   const resolveContextTemplateUpdate = (update: ContextTemplateUpdate) => {
     projectStore.removeContextTemplateUpdate(
       update.projectPath,
@@ -288,8 +269,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       await ProjectAPI.keepCustomContextTemplate(update);
       resolveContextTemplateUpdate(update);
     } catch (e) {
-      // Keep the modal open so the user can retry; the backend made no durable
-      // change, so re-showing the same notice later would be correct anyway.
       setContextTemplateUpdateError(formatContextTemplateError(e));
     } finally {
       setContextTemplateUpdateBusy(false);
@@ -304,8 +283,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     try {
       const result = await ProjectAPI.overwriteContextTemplateWithDefault(update);
       resolveContextTemplateUpdate(update);
-      // Sticky info toast — the user must be able to find the `.bak` the old
-      // file was preserved as.
       toastStore.info(
         `${update.label} overwritten with the new default. Your previous version was saved to ${result.backupPath}`,
         { durationMs: null }
@@ -317,10 +294,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     }
   };
 
-  // Surface the next pending context-template update whenever no modal is open.
-  // Short-circuiting on an active modal keeps it one-at-a-time; closing the
-  // modal re-runs this effect, which re-reads projectStore.projects and picks
-  // up any update queued while the previous one was open.
   createEffect(() => {
     if (activeContextTemplateUpdate()) return;
     const next = nextContextTemplateUpdate();
@@ -330,12 +303,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     setActiveContextTemplateUpdate(next);
   });
 
-  // #592 - pull the backend-computed drift flag and surgically patch each
-  // session. Uses setProfileOutdated (never setSessions) so the frontend-only
-  // pendingReview field is preserved. list_sessions recomputes profileOutdated
-  // from the persisted replica hash vs the current config, so this surfaces drift
-  // from ANY source: a profile event, an external settings.json edit, or
-  // pre-existing drift restored at boot.
   const refreshProfileOutdated = async () => {
     try {
       const list = await SessionAPI.list();
@@ -346,9 +313,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       console.error("Failed to refresh profile drift:", e);
     }
   };
-  // Debounce so a burst (a workgroup spawn emitting many session_created, or a
-  // broad-scope profile apply touching many replicas) collapses into a single
-  // list_sessions round-trip.
   const scheduleProfileOutdatedRefresh = () => {
     if (profileDriftRefreshTimer) clearTimeout(profileDriftRefreshTimer);
     profileDriftRefreshTimer = setTimeout(() => {
@@ -356,10 +320,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       void refreshProfileOutdated();
     }, 250);
   };
-  // Re-check drift when the window regains focus / becomes visible. The robust
-  // catch-all for a cell edited OUTSIDE the app (a hand edit to settings.json,
-  // or any path that does not emit coding_agent_profiles_updated): the badge
-  // lights up as soon as the user returns to AC.
   const handleWindowFocusDriftRefresh = () => {
     if (document.visibilityState === "hidden") return;
     scheduleProfileOutdatedRefresh();
@@ -368,6 +328,145 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
   const liveWarningsDuringInitialDrain = new Map<string, number>();
   let initialWarningDrainActive = false;
   let disposed = false;
+  let hydrationRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let hydrationRetryAttempt = 0;
+  let hydrationInFlightGeneration: number | null = null;
+  let observedConnection: TransportConnectionState = {
+    state: "disconnected",
+    generation: -1,
+  };
+  const mountDisposed = Symbol("sidebarAppMountDisposed");
+
+  const addUnlistener = (unlisten: UnlistenFn): void => {
+    if (disposed) {
+      unlisten();
+      return;
+    }
+    unlisteners.push(unlisten);
+  };
+
+  const register = async (registration: Promise<UnlistenFn>): Promise<void> => {
+    const unlisten = await registration;
+    if (disposed) {
+      unlisten();
+      throw mountDisposed;
+    }
+    unlisteners.push(unlisten);
+  };
+
+  const cancelHydrationRetry = (): void => {
+    if (!hydrationRetryTimer) return;
+    clearTimeout(hydrationRetryTimer);
+    hydrationRetryTimer = null;
+  };
+
+  const applyAuthoritativeSelection = (
+    selection: SessionSelection,
+    generation: number,
+    allowEqualReconnect: boolean,
+  ): boolean => {
+    if (disposed) return false;
+    const accepted = sessionsStore.applySelection(
+      selection,
+      generation,
+      allowEqualReconnect,
+    );
+    if (!accepted) return false;
+    cancelHydrationRetry();
+    hydrationRetryAttempt = 0;
+    voiceRecorder.revokeLiveBinding();
+    if (selection.mode === "live" && sessionsStore.activeId !== selection.id) {
+      voiceRecorder.revokeSession(selection.id);
+    }
+    return true;
+  };
+
+  const scheduleHydrationRetry = (generation: number): void => {
+    if (
+      disposed ||
+      hydrationRetryTimer ||
+      observedConnection.state !== "connected" ||
+      observedConnection.generation !== generation ||
+      sessionsStore.awaitingHydrationGeneration !== generation
+    ) {
+      return;
+    }
+    const delay = HYDRATION_RETRY_DELAYS[
+      Math.min(hydrationRetryAttempt, HYDRATION_RETRY_DELAYS.length - 1)
+    ];
+    hydrationRetryAttempt += 1;
+    hydrationRetryTimer = setTimeout(() => {
+      hydrationRetryTimer = null;
+      void requestSelectionHydration(generation);
+    }, delay);
+  };
+
+  const requestSelectionHydration = async (generation: number): Promise<void> => {
+    if (
+      disposed ||
+      observedConnection.state !== "connected" ||
+      observedConnection.generation !== generation ||
+      hydrationInFlightGeneration === generation ||
+      !sessionsStore.beginHydration(generation)
+    ) {
+      return;
+    }
+    hydrationInFlightGeneration = generation;
+    try {
+      const selection = await SessionAPI.getSelection();
+      if (
+        disposed ||
+        observedConnection.state !== "connected" ||
+        observedConnection.generation !== generation ||
+        sessionsStore.awaitingHydrationGeneration !== generation
+      ) {
+        return;
+      }
+      applyAuthoritativeSelection(selection, generation, true);
+    } catch (error) {
+      if (
+        disposed ||
+        observedConnection.state !== "connected" ||
+        observedConnection.generation !== generation ||
+        sessionsStore.awaitingHydrationGeneration !== generation
+      ) {
+        return;
+      }
+      if (isSelectionCoordinatorBusyError(error)) {
+        scheduleHydrationRetry(generation);
+      } else {
+        sessionsStore.cancelHydration(generation);
+        console.error("[selection] Sidebar selection hydration failed:", error);
+      }
+    } finally {
+      if (hydrationInFlightGeneration === generation) {
+        hydrationInFlightGeneration = null;
+      }
+    }
+  };
+
+  const applyConnectionState = (connection: TransportConnectionState): void => {
+    if (disposed) return;
+    if (connection.generation < observedConnection.generation) return;
+    if (
+      connection.generation === observedConnection.generation &&
+      connection.state === observedConnection.state
+    ) {
+      return;
+    }
+    const generationChanged = connection.generation !== observedConnection.generation;
+    observedConnection = { ...connection };
+    sessionsStore.observeConnection(connection);
+    cancelHydrationRetry();
+    hydrationRetryAttempt = 0;
+    if (connection.state === "disconnected" || generationChanged) {
+      voiceRecorder.revokeLiveBinding();
+    }
+    if (connection.state === "disconnected") {
+      return;
+    }
+    void requestSelectionHydration(connection.generation);
+  };
 
   const surfaceSessionWarning = (warning: SessionWarning) => {
     if (disposed) return;
@@ -401,6 +500,35 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
   };
 
   onMount(async () => {
+    try {
+    // Selection authority and transport lifecycle are registered before every
+    // hydration/list await so an event cannot lose a race to an older snapshot.
+    await register(
+      onSessionSwitched((selection, deliveryGeneration) => {
+        applyAuthoritativeSelection(selection, deliveryGeneration, false);
+      }),
+    );
+    if (disposed) return;
+    await register(onTransportConnectionState(applyConnectionState));
+    if (disposed) return;
+    await register(
+      onSessionCreated((session) => {
+        sessionsStore.addSession(session);
+        if (isExitedStatus(session.status)) voiceRecorder.revokeSession(session.id);
+        scheduleProfileOutdatedRefresh();
+      }),
+    );
+    if (disposed) return;
+    await register(
+      onSessionDestroyed(({ id }) => {
+        voiceRecorder.revokeSession(id);
+        sessionsStore.removeSession(id);
+        sessionsStore.setDetached(id, false);
+      }),
+    );
+    if (disposed) return;
+    applyConnectionState(getTransportConnectionState());
+
     // #289 / dark-default — dark is the base CSS, so first paint is dark with
     // no optimistic class; the persisted-preference check after
     // SettingsAPI.get() below opts into light only for users who chose it last
@@ -409,21 +537,21 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     // — same pattern as zoom/geometry.
     // #912: subscribe before the startup warning drain. The backend appends
     // before live emit, so exact live/drained duplicates are collapsed below.
-    unlisteners.push(await onSessionEnvWarning(handleLiveSessionWarning));
+    await register(onSessionEnvWarning(handleLiveSessionWarning));
     void drainBufferedSessionWarnings();
 
-    unlisteners.push(
-      await onAcProjectRefreshRequested((data) => {
+    await register(
+      onAcProjectRefreshRequested((data) => {
         handleProjectRefreshRequested(data);
       })
     );
-    unlisteners.push(
-      await onProjectGroupsUpdated((data) => {
+    await register(
+      onProjectGroupsUpdated((data) => {
         workgroupGroupsStore.applyExternalUpdate(data.projectPath, data.config);
       })
     );
-    unlisteners.push(
-      await onProjectArchiveChanged((data) => {
+    await register(
+      onProjectArchiveChanged((data) => {
         void projectStore.applyArchiveChange(data).catch((error) => {
           console.error("[archive] Failed to apply project_archive_changed:", error);
         });
@@ -432,8 +560,8 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
         }
       })
     );
-    unlisteners.push(
-      await onCodingAgentProfilesUpdated(() => {
+    await register(
+      onCodingAgentProfilesUpdated(() => {
         settingsStore.refresh();
         void refreshProfileOutdated();
       })
@@ -443,42 +571,40 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     // version (subscribe-then-snapshot order). The snapshot
     // is fire-and-forget so its IPC round-trip never delays the listener
     // registrations that follow in this onMount.
-    unlisteners.push(
-      await onNpmUpdateAvailable((info) => showUpdateToast(info))
+    await register(
+      onNpmUpdateAvailable((info) => showUpdateToast(info))
     );
     void SettingsAPI.getUpdateStatus()
       .then((pending) => {
-        if (pending) showUpdateToast(pending);
+        if (!disposed && pending) showUpdateToast(pending);
       })
       .catch((err) => {
         console.error("[update-check] getUpdateStatus failed:", err);
       });
     // #714 screenshot capture saved/failed toasts + startup hotkey-status warning.
-    unlisteners.push(...(await wireScreenshotListeners()));
-    unlisteners.push(
-      await onCodingAgentEnvSettingsUpdated(() => {
+    for (const unlisten of await wireScreenshotListeners()) addUnlistener(unlisten);
+    if (disposed) return;
+    await register(
+      onCodingAgentEnvSettingsUpdated(() => {
         settingsStore.refresh();
         void refreshProfileOutdated();
       })
     );
-    unlisteners.push(
-      await onCodingAgentProfileSelectionUpdated((data) => {
+    await register(
+      onCodingAgentProfileSelectionUpdated((data) => {
         settingsStore.refresh();
         void refreshProfileOutdated();
         if (data.agentPath) {
           void projectStore.reloadProjectIfLoaded(data.agentPath);
         } else {
-          // Broad-scope apply (#384) touched many replicas with no single
-          // agentPath — reload every loaded project so discovery refreshes
-          // currentCodingAgentId/currentProfile everywhere.
           for (const proj of projectStore.projects) {
             void projectStore.reloadProject(proj.path);
           }
         }
       })
     );
-    unlisteners.push(
-      await onLoopEvent((data) => {
+    await register(
+      onLoopEvent((data) => {
         if (data.summary) {
           projectStore.upsertLoop(data.projectPath, data.summary);
         } else if (data.kind === "deleted") {
@@ -493,11 +619,21 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     shortcutHandler = registerShortcuts();
     if (!props.embedded) {
       cleanupZoom = await initZoom("sidebar");
+      if (disposed) {
+        cleanupZoom();
+        cleanupZoom = null;
+        return;
+      }
       cleanupGeometry = await initWindowGeometry("sidebar");
+      if (disposed) {
+        cleanupGeometry();
+        cleanupGeometry = null;
+        return;
+      }
     }
 
-    // Apply window settings
     const appSettings = await SettingsAPI.get();
+    if (disposed) return;
     setSettingsRailSide(appSettings.mainSidebarSide === "left" ? "left" : "right");
     if (!props.embedded) {
       document.documentElement.classList.toggle("light-theme", appSettings.themeLight);
@@ -505,25 +641,19 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     raiseTerminalEnabled = appSettings.raiseTerminalOnClick;
     sessionsStore.setCoordSortByActivity(appSettings.coordSortByActivity ?? false);
     sessionsStore.setAlwaysShowSelectedWorkgroup(appSettings.alwaysShowSelectedWorkgroup ?? true);
-    // #965 (RC-3) — restore the rail's collapse snapshot. MUST run before
-    // projectStore.initFromSettings() populates the rail: that ordering is the only
-    // thing preventing an expand-then-collapse flash, because onMount runs AFTER the
-    // first paint. Deliberately NOT inside the `!props.embedded` guard above — the
-    // rail is live in the browser client and in the unified main window too.
     railCollapseStore.hydrateFromSettings(appSettings);
-    // Apply sidebar style from settings (remap removed themes to default)
     const style = appSettings.sidebarStyle;
     const removedThemes = ["classic", "signal-grid"];
     document.documentElement.dataset.sidebarStyle = (!style || removedThemes.includes(style)) ? "noir-minimal" : style;
     if (!props.embedded && appSettings.sidebarAlwaysOnTop && isTauri) {
       const { getCurrentWindow } = await import("@tauri-apps/api/window");
       await getCurrentWindow().setAlwaysOnTop(true);
+      if (disposed) return;
     }
     if (!props.embedded) {
       document.addEventListener("mousedown", handleRaiseTerminal);
     }
 
-    // Block the default browser context menu globally — custom menus are used instead
     document.addEventListener("contextmenu", blockContextMenu);
     window.addEventListener("main-sidebar-side-change", handleMainSidebarSideChange);
 
@@ -531,21 +661,15 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       try {
         await applyWindowLayout("right");
       } catch {}
+      if (disposed) return;
     }
 
-    // Load settings into reactive store (for voice-to-text visibility etc.)
     await settingsStore.load();
+    if (disposed) return;
 
-    // Feature #110 — start watching for team busy→all-idle transitions.
-    // Mounted after settingsStore.load() so the very first effect run
-    // already sees the user's teamIdleBeepEnabled choice; the watcher's
-    // own initialization guard separately suppresses any startup beep.
-    // primeAudio() arms the AudioContext on first user gesture so the
-    // very first beep isn't swallowed by browser autoplay policy.
     primeAudio();
     stopTeamIdleWatcher = startTeamIdleWatcher();
 
-    // First-run: show onboarding if no coding agents configured and not previously dismissed
     if (
       (!appSettings.agents || appSettings.agents.length === 0) &&
       !appSettings.onboardingDismissed
@@ -553,31 +677,32 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       setShowOnboarding(true);
     }
 
-    // Load saved project if any
     await projectStore.initFromSettings(
       appSettings.projectPaths ?? [],
       appSettings.projectPath ?? null,
       appSettings.archivedProjectPaths ?? [],
     );
+    if (disposed) return;
 
-    // Load all repos for inactive agent display
     try {
       const allRepos = await ReposAPI.search("");
-      sessionsStore.setRepos(allRepos.filter((r) => r.agents.length > 0));
+      if (!disposed) sessionsStore.setRepos(allRepos.filter((r) => r.agents.length > 0));
     } catch {}
+    if (disposed) return;
 
-    unlisteners.push(
-      await onSessionCommunicationChanged(({ sessionId, communication }) => {
+    await register(
+      onSessionCommunicationChanged(({ sessionId, communication }) => {
         sessionsStore.setCommunication(sessionId, communication);
       })
     );
 
-    // Load initial sessions
+    const rowMembershipGeneration = sessionsStore.rowMembershipGeneration;
     const sessions = await SessionAPI.list();
-    sessionsStore.setSessions(sessions);
-
-    const activeId = await SessionAPI.getActive();
-    sessionsStore.setActiveId(activeId);
+    if (disposed) return;
+    sessionsStore.setSessionsIfRowMembershipUnchanged(
+      sessions,
+      rowMembershipGeneration,
+    );
 
     // #592 - surface profile drift edited OUTSIDE the app (a hand edit to
     // settings.json, or any path that does not emit coding_agent_profiles_updated)
@@ -587,91 +712,74 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     document.addEventListener("visibilitychange", handleWindowFocusDriftRefresh);
 
     // Listen for events
-    unlisteners.push(
-      await onSessionCreated((session) => {
-        sessionsStore.addSession(session);
-        // New session is auto-activated if it's the first one
-        if (
-          sessionsStore.sessions.length === 1 &&
-          !isExitedStatus(session.status)
-        ) {
-          sessionsStore.setActiveId(session.id);
-        }
-        // #592 - session_created carries profileOutdated=false (From<&Session>
-        // cannot compute drift). A session restored at boot with pre-existing
-        // drift must re-derive it from list_sessions, which would otherwise be
-        // clobbered to false by the addSession upsert. Debounced so a workgroup
-        // spawn burst collapses into one re-list.
-        scheduleProfileOutdatedRefresh();
-      })
-    );
-
-    unlisteners.push(
-      await onSessionDestroyed(({ id }) => {
-        sessionsStore.removeSession(id);
-        // Detached-window cleanup: if the session had a detached window,
-        // its destroy also closes that window. Clear the store flag so
-        // UI (icons, menu items) doesn't linger in detached state.
-        sessionsStore.setDetached(id, false);
-      })
-    );
-
-    unlisteners.push(
-      await onTerminalDetached(({ sessionId }) =>
+    await register(
+      onTerminalDetached(({ sessionId }) =>
         sessionsStore.setDetached(sessionId, true)
       )
     );
 
-    unlisteners.push(
-      await onTerminalAttached(({ sessionId }) =>
+    await register(
+      onTerminalAttached(({ sessionId }) =>
         sessionsStore.setDetached(sessionId, false)
       )
     );
 
-    // Hydrate detachedIds from backend (G.8 race safety — covers detach
-    // events that fired before this component mounted, e.g. from the
-    // Phase-3 restore path or from a prior detach survived across a
-    // SidebarApp re-mount in the unified window).
     try {
       const ids = await WindowAPI.listDetached();
-      ids.forEach((id) => sessionsStore.setDetached(id, true));
+      if (!disposed) ids.forEach((id) => sessionsStore.setDetached(id, true));
     } catch (e) {
       console.warn("[sidebar] listDetached hydration failed:", e);
     }
+    if (disposed) return;
 
-    unlisteners.push(
-      await onSessionSwitched(({ id }) => {
-        sessionsStore.setActiveId(id);
-      })
-    );
-
-    unlisteners.push(
-      await onSessionRenamed(({ id, name }) => {
+    await register(
+      onSessionRenamed(({ id, name }) => {
         sessionsStore.renameSession(id, name);
       })
     );
 
-    unlisteners.push(
-      await onSessionIdle(({ id }) => {
+    await register(
+      onSessionIdle(({ id }) => {
         sessionsStore.markActivity(id);
         sessionsStore.setSessionWaiting(id, true);
       })
     );
 
-    unlisteners.push(
-      await onSessionBusy(({ id }) => {
+    await register(
+      onSessionBusy(({ id }) => {
         sessionsStore.setSessionWaiting(id, false);
       })
     );
 
-    unlisteners.push(
-      await onSessionGitRepos(({ sessionId, repos }) => {
+    await register(
+      onSessionContext(({ sessionId, percent }) => {
+        sessionsStore.setSessionContext(sessionId, percent);
+      }),
+    );
+    if (disposed) return;
+
+    try {
+      await Promise.all(
+        sessionsStore.sessions
+          .filter((session) => session.agentId)
+          .map(async (session) => {
+            const percent = await PtyAPI.getSessionContext(session.id);
+            if (!disposed) {
+              sessionsStore.hydrateSessionContext(session.id, percent);
+            }
+          }),
+      );
+    } catch {}
+    if (disposed) return;
+
+    await register(
+      onSessionGitRepos(({ sessionId, repos }) => {
         sessionsStore.setGitRepos(sessionId, repos);
       })
     );
 
-    unlisteners.push(
-      await onWorkgroupTaskUpdated((data) => {
+    await register(
+      onWorkgroupTaskUpdated((data) => {
         const wgPath = data.workgroupRoot;
         if (wgPath) {
           projectStore.updateWorkgroupTask(wgPath, taskFirstLine(data.task), data.taskTitle);
@@ -679,39 +787,43 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       })
     );
 
-    unlisteners.push(
-      await onSessionCoordinatorChanged(({ sessionId, isCoordinator }) => {
+    await register(
+      onSessionCoordinatorChanged(({ sessionId, isCoordinator }) => {
         sessionsStore.setIsCoordinator(sessionId, isCoordinator);
       })
     );
 
-    // Load initial bridge state
     const bridges = await TelegramAPI.listBridges();
+    if (disposed) return;
     bridgesStore.setBridges(bridges);
 
     // Telegram bridge events
-    unlisteners.push(
-      await onTelegramBridgeAttached((info) => {
+    await register(
+      onTelegramBridgeAttached((info) => {
         bridgesStore.addBridge(info);
       })
     );
 
-    unlisteners.push(
-      await onTelegramBridgeDetached(({ sessionId }) => {
+    await register(
+      onTelegramBridgeDetached(({ sessionId }) => {
         bridgesStore.removeBridge(sessionId);
       })
     );
 
-    unlisteners.push(
-      await onTelegramBridgeError(({ sessionId, error }) => {
+    await register(
+      onTelegramBridgeError(({ sessionId, error }) => {
         console.error(`Bridge error for ${sessionId}: ${error}`);
       })
     );
-
+    } catch (error) {
+      if (error !== mountDisposed) throw error;
+    }
   });
 
   onCleanup(() => {
     disposed = true;
+    cancelHydrationRetry();
+    sessionsStore.cancelHydration();
     unlisteners.forEach((unlisten) => unlisten());
     if (shortcutHandler) unregisterShortcuts(shortcutHandler);
     if (cleanupZoom) cleanupZoom();

@@ -23,18 +23,10 @@ async function readGeometry(): Promise<WindowGeometry> {
   };
 }
 
-/**
- * Track window move/resize and persist geometry.
- * Returns a cleanup function for onCleanup.
- *
- * Per DW.7: saveTimeout is closure-local so a main window can run this
- * alongside an independent splitter-width debouncer without racing.
- */
 export async function initWindowGeometry(
   windowType: WindowType
 ): Promise<() => void> {
   if (!isTauri) {
-    // Browser: no window geometry tracking
     return () => {};
   }
 
@@ -67,14 +59,6 @@ export async function initWindowGeometry(
   };
 }
 
-/**
- * Track a DETACHED window's move/resize and persist geometry into the
- * corresponding PersistedSession.detached_geometry field (plan
- * §A2.4.Arb1). Separate from initWindowGeometry because the key is
- * per-session, not per-window-type.
- *
- * Returns a cleanup function for onCleanup.
- */
 export async function initDetachedWindowGeometry(
   sessionId: string
 ): Promise<() => void> {

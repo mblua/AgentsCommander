@@ -41,6 +41,23 @@ pub struct SessionRepo {
     /// Current branch. `None` until first watcher tick, or when detection fails.
     #[serde(default)]
     pub branch: Option<String>,
+    /// #1028 - worktree dirty: untracked, unstaged, or staged-but-uncommitted changes.
+    /// `Some(true)` paints the badge letters red. `None` = never successfully detected
+    /// for this path since process start, rendered violet like clean; a failed detection
+    /// holds the last known answer instead (`git_watcher::remember_dirty`), so `None`
+    /// means "no first answer yet", not "flaked once".
+    ///
+    /// `skip_deserializing`, not merely `default`: `dirty` is backend-authoritative and
+    /// must never be restored. A persisted `true` would otherwise paint a red badge at
+    /// launch from a worktree state that may be long gone, and `create_session` (a
+    /// `#[tauri::command]`, `commands/session.rs`) genuinely deserializes this struct
+    /// from frontend input, which would make the badge spoofable from a command payload.
+    /// Serializing is kept so the on-disk value stays self-describing in a bug report;
+    /// it is written and then ignored on read. NOTE: a test that round-trips `dirty`
+    /// through a write/read helper will get `None` back. That is this attribute, by
+    /// design, not a serde bug.
+    #[serde(default, skip_deserializing)]
+    pub dirty: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -476,5 +493,76 @@ mod tests {
         assert!(p.is_some());
         let p = p.unwrap().to_string_lossy().to_string();
         assert!(p.ends_with(r"\wg-3-team\TASK.md"));
+    }
+
+    // --- #1028: SessionRepo.dirty is backend-authoritative and never restored ---
+
+    /// The whole point of `skip_deserializing`. A `sessions.json` written before the app
+    /// closed can hold `dirty: true` from a worktree state that is long gone; restoring
+    /// it would paint a red badge at launch that no watcher tick asked for. It must come
+    /// back `None` (violet, "not yet known") and wait for a real detection.
+    ///
+    /// This also covers `create_session`, a `#[tauri::command]` that genuinely
+    /// deserializes `Vec<SessionRepo>` from frontend input: `dirty` is un-settable from a
+    /// command payload, so the badge cannot be spoofed. The frontend sends only
+    /// `{label, sourcePath}` today, so nothing is lost.
+    #[test]
+    fn session_repo_dirty_is_never_deserialized() {
+        let stale = r#"{"label":"A","sourcePath":"C:/a","branch":"main","dirty":true}"#;
+        let restored: SessionRepo = serde_json::from_str(stale).expect("deserialize");
+
+        assert_eq!(
+            restored.dirty, None,
+            "a persisted `true` must NOT restore red"
+        );
+        assert_eq!(
+            restored.branch.as_deref(),
+            Some("main"),
+            "branch still restores; only dirty is skipped"
+        );
+    }
+
+    /// Back-compat: `sessions.json` from before #1028 has no `dirty` key at all.
+    #[test]
+    fn session_repo_without_dirty_key_restores_as_none() {
+        let old = r#"{"label":"A","sourcePath":"C:/a","branch":"main"}"#;
+        let restored: SessionRepo = serde_json::from_str(old).expect("deserialize");
+        assert_eq!(restored.dirty, None);
+    }
+
+    /// Serialization is deliberately KEPT, so the wire and the on-disk file stay
+    /// self-describing: the key is always present, `None` as an explicit `null` rather
+    /// than an omitted key. The frontend reads `dirty === true`, and `skip_serializing_if`
+    /// would have stripped the key here while STILL letting a stale `true` through on
+    /// read, which is why it was rejected.
+    #[test]
+    fn session_repo_dirty_always_serializes_with_an_explicit_null() {
+        let dirty = SessionRepo {
+            label: "A".into(),
+            source_path: "C:/a".into(),
+            branch: Some("main".into()),
+            dirty: Some(true),
+        };
+        assert_eq!(
+            serde_json::to_value(&dirty).expect("serialize"),
+            serde_json::json!({
+                "label": "A",
+                "sourcePath": "C:/a",
+                "branch": "main",
+                "dirty": true,
+            })
+        );
+
+        let unknown = SessionRepo {
+            label: "A".into(),
+            source_path: "C:/a".into(),
+            branch: None,
+            dirty: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&unknown).expect("serialize")["dirty"],
+            serde_json::json!(null),
+            "key present as null, not omitted"
+        );
     }
 }
