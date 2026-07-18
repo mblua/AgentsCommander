@@ -66,6 +66,60 @@ pub(crate) fn combined_shutdown_retained_diagnostics(
     crate::pty::container_runtime::cap_retained_owner_diagnostics(selection.chain(container))
 }
 
+fn remove_container_route_until(
+    weak_pty_mgr: &std::sync::Weak<Mutex<PtyManager>>,
+    session_id: uuid::Uuid,
+    deadline: std::time::Instant,
+) -> Result<(), crate::pty::container_backend::RouteRemovalError> {
+    let Some(pty_mgr) = weak_pty_mgr.upgrade() else {
+        return Ok(());
+    };
+    loop {
+        if std::time::Instant::now() >= deadline {
+            return Err(crate::pty::container_backend::RouteRemovalError::Deadline(
+                "ptyManager",
+            ));
+        }
+        match pty_mgr.try_lock() {
+            Ok(pty_manager) => match pty_manager.try_remove_route_if_kind(
+                session_id,
+                crate::pty::backend::SessionBackendKind::ContainerTransport,
+            ) {
+                Ok(()) => return Ok(()),
+                Err(crate::pty::manager::PtyRouteRemovalError::LockPoisoned) => {
+                    return Err(
+                        crate::pty::container_backend::RouteRemovalError::LockPoisoned(
+                            "ptyRouteRegistry",
+                        ),
+                    );
+                }
+                Err(crate::pty::manager::PtyRouteRemovalError::Busy) => {}
+            },
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err(
+                    crate::pty::container_backend::RouteRemovalError::LockPoisoned("ptyManager"),
+                );
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {}
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(crate::pty::container_backend::RouteRemovalError::Deadline(
+                "ptyManager",
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2).min(remaining));
+    }
+}
+
+pub(crate) fn install_container_route_remover(pty_mgr: &Arc<Mutex<PtyManager>>) {
+    let weak_pty_mgr = Arc::downgrade(pty_mgr);
+    let container_backend = pty_mgr.lock().unwrap().container_backend();
+    container_backend.set_route_remover(Arc::new(move |session_id, deadline| {
+        remove_container_route_until(&weak_pty_mgr, session_id, deadline)
+    }));
+}
+
 /// Tracks which sessions are currently detached into their own windows.
 pub type DetachedSessionsState = Arc<Mutex<HashSet<uuid::Uuid>>>;
 
@@ -852,56 +906,7 @@ pub fn run(
                 Some(broadcaster_for_pty),
                 Some(selection_coordinator_for_setup.container_lifecycle_sender()),
             )));
-            {
-                let weak_pty_mgr = Arc::downgrade(&pty_mgr);
-                let container_backend = pty_mgr.lock().unwrap().container_backend();
-                container_backend.set_route_remover(Arc::new(move |session_id, deadline| {
-                    let Some(pty_mgr) = weak_pty_mgr.upgrade() else {
-                        return Ok(());
-                    };
-                    loop {
-                        if std::time::Instant::now() >= deadline {
-                            return Err(
-                                crate::pty::container_backend::RouteRemovalError::Deadline(
-                                    "ptyManager",
-                                ),
-                            );
-                        }
-                        match pty_mgr.try_lock() {
-                            Ok(pty_manager) => match pty_manager.try_remove_route_if_kind(
-                                session_id,
-                                crate::pty::backend::SessionBackendKind::ContainerTransport,
-                            ) {
-                                Ok(()) => return Ok(()),
-                                Err(crate::pty::manager::PtyRouteRemovalError::LockPoisoned) => {
-                                    return Err(crate::pty::container_backend::RouteRemovalError::LockPoisoned(
-                                        "ptyRouteRegistry",
-                                    ));
-                                }
-                                Err(crate::pty::manager::PtyRouteRemovalError::Busy) => {}
-                            },
-                            Err(std::sync::TryLockError::Poisoned(_)) => {
-                                return Err(
-                                    crate::pty::container_backend::RouteRemovalError::LockPoisoned(
-                                        "ptyManager",
-                                    ),
-                                );
-                            }
-                            Err(std::sync::TryLockError::WouldBlock) => {}
-                        }
-                        let remaining =
-                            deadline.saturating_duration_since(std::time::Instant::now());
-                        if remaining.is_zero() {
-                            return Err(
-                                crate::pty::container_backend::RouteRemovalError::Deadline(
-                                    "ptyManager",
-                                ),
-                            );
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(2).min(remaining));
-                    }
-                }));
-            }
+            install_container_route_remover(&pty_mgr);
             pty_mgr
                 .lock()
                 .unwrap()

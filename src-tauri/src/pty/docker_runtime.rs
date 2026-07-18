@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -70,7 +72,26 @@ struct DockerCommandOwner {
 
 #[derive(Default)]
 struct DockerCommandOwnership {
-    retained: Mutex<Vec<DockerCommandOwner>>,
+    next_id: AtomicU64,
+    entries: Mutex<Vec<DockerCommandOwnershipEntry>>,
+    #[cfg(test)]
+    retry_gate: Mutex<Option<DockerCommandRetryGate>>,
+}
+
+struct DockerCommandOwnershipEntry {
+    id: u64,
+    owner: Option<DockerCommandOwner>,
+    session_id: Option<Uuid>,
+    reason: &'static str,
+    program: String,
+    in_flight: bool,
+    last_error: Option<String>,
+}
+
+#[cfg(test)]
+struct DockerCommandRetryGate {
+    entered: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
 }
 
 #[derive(Default)]
@@ -195,74 +216,179 @@ impl DockerCommandOwner {
     }
 }
 
+impl DockerCommandOwnershipEntry {
+    fn new(id: u64, owner: DockerCommandOwner, last_error: Option<String>) -> Self {
+        Self {
+            id,
+            session_id: owner.session_id,
+            reason: owner.reason,
+            program: owner.program.clone(),
+            owner: Some(owner),
+            in_flight: false,
+            last_error,
+        }
+    }
+}
+
 impl DockerCommandOwnership {
-    fn retain(&self, owner: DockerCommandOwner) {
+    fn retain(&self, owner: DockerCommandOwner, last_error: Option<String>) {
         log::error!(
             "[container-runtime] Docker command ownership retained {} state=retained",
             owner.log_context()
         );
-        self.retained
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.entries
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .push(owner);
+            .push(DockerCommandOwnershipEntry::new(id, owner, last_error));
     }
 
     fn reap_finished(&self) {
-        let mut owners = self
-            .retained
+        let mut entries = self
+            .entries
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let mut retained = Vec::with_capacity(owners.len());
-        for mut owner in owners.drain(..) {
+        entries.retain_mut(|entry| {
+            if entry.in_flight {
+                return true;
+            }
+            let Some(owner) = entry.owner.as_mut() else {
+                entry.last_error = Some(
+                    "retained Docker command entry lost owner outside an in-flight retry"
+                        .to_string(),
+                );
+                return true;
+            };
             owner.reap_child_nonblocking();
             owner.reap_finished_readers();
-            if !owner.is_terminal() {
-                retained.push(owner);
-            }
-        }
-        *owners = retained;
+            !owner.is_terminal()
+        });
     }
 
     fn retry_until(&self, deadline: Instant) {
-        let pending = {
-            let mut owners = self
-                .retained
+        loop {
+            if Instant::now() >= deadline {
+                return;
+            }
+            let Some((id, mut owner, prior_error)) = ({
+                let mut entries = self
+                    .entries
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                entries
+                    .iter_mut()
+                    .find(|entry| !entry.in_flight && entry.owner.is_some())
+                    .and_then(|entry| {
+                        let owner = entry.owner.take()?;
+                        entry.in_flight = true;
+                        Some((entry.id, owner, entry.last_error.clone()))
+                    })
+            }) else {
+                return;
+            };
+
+            #[cfg(test)]
+            self.wait_at_retry_gate_for_test();
+
+            let outcome = catch_unwind(AssertUnwindSafe(|| owner.terminate_until(deadline, true)));
+            let (terminal, attempt_error) = match outcome {
+                Ok(true) => (true, None),
+                Ok(false) => (
+                    false,
+                    prior_error.or_else(|| {
+                        Some(
+                            "Docker command termination remained unresolved at cleanup deadline"
+                                .to_string(),
+                        )
+                    }),
+                ),
+                Err(_) => {
+                    log::error!(
+                        "[container-runtime] retained Docker command cleanup panicked {} state=retained",
+                        owner.log_context()
+                    );
+                    (false, Some("Docker command cleanup panicked".to_string()))
+                }
+            };
+
+            let mut entries = self
+                .entries
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            std::mem::take(&mut *owners)
-        };
-        let mut retained = Vec::new();
-        let mut pending = pending.into_iter();
-        while let Some(mut owner) = pending.next() {
-            if !owner.terminate_until(deadline, true) {
-                retained.push(owner);
-                retained.extend(pending);
-                break;
+            if let Some(index) = entries.iter().position(|entry| entry.id == id) {
+                if terminal {
+                    entries.remove(index);
+                } else {
+                    let entry = &mut entries[index];
+                    entry.owner = Some(owner);
+                    entry.in_flight = false;
+                    entry.last_error = attempt_error;
+                }
+            } else if !terminal {
+                log::error!(
+                    "[container-runtime] retained Docker command diagnostic entry disappeared during retry id={} state=retained",
+                    id
+                );
+                entries.push(DockerCommandOwnershipEntry::new(id, owner, attempt_error));
+            }
+            drop(entries);
+            if !terminal {
+                return;
             }
         }
-        self.retained
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .extend(retained);
     }
 
     fn retained_contexts(&self) -> Vec<RetainedContainerOwnerContext> {
         self.reap_finished();
-        self.retained
+        self.entries
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .iter()
-            .map(|owner| RetainedContainerOwnerContext {
+            .map(|entry| RetainedContainerOwnerContext {
                 owner: "dockerCommand",
-                session_id: owner.session_id,
-                reason: owner.reason.to_string(),
-                program: Some(owner.program.clone()),
+                session_id: entry.session_id,
+                reason: entry.reason.to_string(),
+                program: Some(entry.program.clone()),
                 runtime_handle: None,
-                state: "retained",
-                in_flight: false,
-                last_error: None,
+                state: if entry.in_flight {
+                    "inFlight"
+                } else {
+                    "retained"
+                },
+                in_flight: entry.in_flight,
+                last_error: entry.last_error.clone(),
             })
             .collect()
+    }
+
+    #[cfg(test)]
+    fn install_retry_gate_for_test(
+        &self,
+    ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        let (entered, entered_receiver) = std::sync::mpsc::channel();
+        let (release, release_receiver) = std::sync::mpsc::channel();
+        *self
+            .retry_gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(DockerCommandRetryGate {
+            entered,
+            release: release_receiver,
+        });
+        (entered_receiver, release)
+    }
+
+    #[cfg(test)]
+    fn wait_at_retry_gate_for_test(&self) {
+        let gate = self
+            .retry_gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        if let Some(gate) = gate {
+            if gate.entered.send(()).is_ok() {
+                let _ = gate.release.recv();
+            }
+        }
     }
 }
 
@@ -270,10 +396,21 @@ static PROCESS_RETAINED_DOCKER_COMMANDS: OnceLock<Mutex<Vec<DockerCommandOwner>>
 
 impl Drop for DockerCommandOwnership {
     fn drop(&mut self) {
-        let owners = self
-            .retained
+        let entries = self
+            .entries
             .get_mut()
             .unwrap_or_else(|error| error.into_inner());
+        let missing_owner_count = entries.iter().filter(|entry| entry.owner.is_none()).count();
+        if missing_owner_count > 0 {
+            log::error!(
+                "[container-runtime] Docker command ownership dropped with in-flight diagnostic entries count={}",
+                missing_owner_count
+            );
+        }
+        let mut owners = entries
+            .drain(..)
+            .filter_map(|entry| entry.owner)
+            .collect::<Vec<_>>();
         if owners.is_empty() {
             return;
         }
@@ -281,7 +418,7 @@ impl Drop for DockerCommandOwnership {
             .get_or_init(|| Mutex::new(Vec::new()))
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .append(owners);
+            .append(&mut owners);
     }
 }
 
@@ -379,6 +516,27 @@ pub struct DockerRuntime {
     active_readers: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
+#[cfg(test)]
+pub(crate) struct DockerCommandReaderReleaseForTest {
+    gate: Arc<(Mutex<bool>, std::sync::Condvar)>,
+}
+
+#[cfg(test)]
+impl DockerCommandReaderReleaseForTest {
+    pub(crate) fn release(&self) {
+        let (released, changed) = &*self.gate;
+        *released.lock().unwrap_or_else(|error| error.into_inner()) = true;
+        changed.notify_all();
+    }
+}
+
+#[cfg(test)]
+impl Drop for DockerCommandReaderReleaseForTest {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
 impl Default for DockerRuntime {
     fn default() -> Self {
         Self::new()
@@ -460,9 +618,60 @@ impl DockerRuntime {
     }
 
     #[cfg(test)]
-    fn active_reader_count(&self) -> usize {
+    pub(crate) fn active_reader_count(&self) -> usize {
         self.active_readers
             .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retain_blocked_command_readers_for_test(
+        &self,
+        reason: &'static str,
+        program: impl Into<String>,
+        last_error: impl Into<String>,
+    ) -> DockerCommandReaderReleaseForTest {
+        let ready = Arc::new(std::sync::Barrier::new(3));
+        let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let spawn_reader = |name: &'static str| {
+            let ready = Arc::clone(&ready);
+            let gate = Arc::clone(&gate);
+            let active = Arc::clone(&self.active_readers);
+            std::thread::Builder::new()
+                .name(name.to_string())
+                .spawn(move || {
+                    let _active = ActiveDockerReaderGuard::new(active);
+                    ready.wait();
+                    let (released, changed) = &*gate;
+                    let mut released = released.lock().unwrap_or_else(|error| error.into_inner());
+                    while !*released {
+                        released = changed
+                            .wait(released)
+                            .unwrap_or_else(|error| error.into_inner());
+                    }
+                    Ok(CappedCommandStream::default())
+                })
+                .expect("spawn deterministic blocked Docker reader")
+        };
+        let owner = DockerCommandOwner {
+            child: None,
+            stdout: Some(spawn_reader("blocked-docker-stdout")),
+            stderr: Some(spawn_reader("blocked-docker-stderr")),
+            session_id: None,
+            reason,
+            program: program.into(),
+            active_child: None,
+        };
+        ready.wait();
+        self.command_ownership
+            .retain(owner, Some(last_error.into()));
+        DockerCommandReaderReleaseForTest { gate }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_command_retry_gate_for_test(
+        &self,
+    ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        self.command_ownership.install_retry_gate_for_test()
     }
 
     pub fn build_run_command(
@@ -867,11 +1076,11 @@ impl DockerRuntime {
                 .map(|deadline| deadline.min(hard_deadline))
                 .unwrap_or(hard_deadline);
             let Some(child) = owner.child.as_mut() else {
-                self.command_ownership.retain(owner);
+                let message =
+                    "container runtime command child ownership became unavailable".to_string();
+                self.command_ownership.retain(owner, Some(message.clone()));
                 return Err(DockerCommandError {
-                    source: AppError::PtyError(
-                        "container runtime command child ownership became unavailable".to_string(),
-                    ),
+                    source: AppError::PtyError(message),
                     spawned: true,
                 });
             };
@@ -964,17 +1173,22 @@ impl DockerRuntime {
         canceled: bool,
     ) {
         if !owner.terminate_until(deadline, canceled) {
-            self.command_ownership.retain(owner);
+            let last_error = if canceled {
+                "Docker command termination remained unresolved after shutdown cancellation"
+            } else {
+                "Docker command termination remained unresolved at the absolute deadline"
+            };
+            self.command_ownership
+                .retain(owner, Some(last_error.to_string()));
         }
     }
 
     fn retain_reader_owner_at_deadline(&self, owner: DockerCommandOwner) -> DockerCommandError {
         let program = owner.program.clone();
-        self.command_ownership.retain(owner);
+        let message = format!("readers exceeded the absolute deadline program={program}");
+        self.command_ownership.retain(owner, Some(message.clone()));
         DockerCommandError {
-            source: AppError::PtyError(format!(
-                "readers exceeded the absolute deadline program={program}"
-            )),
+            source: AppError::PtyError(message),
             spawned: true,
         }
     }
@@ -1924,12 +2138,18 @@ mod tests {
         assert_eq!(context.runtime_handle, None);
         assert_eq!(context.state, "retained");
         assert!(!context.in_flight);
-        assert_eq!(context.last_error, None);
+        assert_eq!(
+            context.last_error.as_deref(),
+            Some("readers exceeded the absolute deadline program=docker-reader-fixture")
+        );
         let diagnostic = context.diagnostic();
         assert!(diagnostic.contains("owner=dockerCommand"));
         assert!(diagnostic.contains("session=none"));
         assert!(diagnostic.contains("reason=docker-command-reader"));
         assert!(diagnostic.contains("program=docker-reader-fixture"));
+        assert!(diagnostic.contains(
+            "lastError=readers exceeded the absolute deadline program=docker-reader-fixture"
+        ));
         assert!(!diagnostic.contains("00000000-0000-0000-0000-000000000000"));
 
         let (released, changed) = &*release;

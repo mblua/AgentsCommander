@@ -167,6 +167,21 @@ impl PtyManager {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(crate) fn poison_route_registry_for_test(&self) {
+        let registry = Arc::clone(&self.registry);
+        let result = std::panic::catch_unwind(move || {
+            let _registry_guard = registry.lock().unwrap();
+            panic!("poison the PTY route registry for deterministic test coverage");
+        });
+        assert!(result.is_err(), "route-registry poison fixture must panic");
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_route_registry_poison_for_test(&self) {
+        self.registry.clear_poison();
+    }
+
     fn kind_for_session(&self, id: Uuid) -> Result<SessionBackendKind, AppError> {
         self.registry
             .lock()

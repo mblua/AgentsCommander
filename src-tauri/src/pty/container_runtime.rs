@@ -538,6 +538,18 @@ fn redact_key_values(input: &str, key: &str) -> String {
                 (value_start, value_end)
             };
 
+        let redacted_end = value_start.saturating_add(REDACTED_SECRET.len());
+        let redacted_boundary = redacted_end == input.len()
+            || (redacted_end < bytes.len()
+                && (is_unquoted_secret_delimiter(bytes[redacted_end])
+                    || matches!(bytes[redacted_end], b'"' | b'\'')))
+            || input
+                .get(redacted_end..)
+                .is_some_and(|suffix| suffix.starts_with("\\n") || suffix.starts_with("\\r"));
+        if input[value_start..].starts_with(REDACTED_SECRET) && redacted_boundary {
+            search_start = redacted_end;
+            continue;
+        }
         if value_end > value_start {
             ranges.push((value_start, value_end));
         }
@@ -744,6 +756,32 @@ mod tests {
         assert!(full.contains("/usr/local/bin"), "{full}");
         assert!(ui.contains("--verbose"), "{ui}");
         assert!(full.contains("--verbose"), "{full}");
+    }
+
+    #[test]
+    fn retained_owner_redaction_is_idempotent() {
+        let raw = "owner=dockerCommand lastError=OPENAI_API_KEY=sk-proj-secret\nnested failure";
+        let once = normalize_retained_owner_diagnostic("containerShutdown", raw);
+        let twice = normalize_retained_owner_diagnostic("containerShutdown", &once);
+
+        assert_eq!(
+            once,
+            "owner=dockerCommand lastError=OPENAI_API_KEY=[REDACTED]\\nnested failure"
+        );
+        assert_eq!(twice, once);
+        assert!(!twice.contains("[REDACTED]]"), "{twice}");
+
+        let direct_once = redact_container_diagnostic_text(
+            "owner=dockerCommand lastError=OPENAI_API_KEY=sk-proj-secret",
+        );
+        assert_eq!(redact_container_diagnostic_text(&direct_once), direct_once);
+
+        let sentinel_prefix_only = "OPENAI_API_KEY=[REDACTED]-still-untrusted";
+        assert_ne!(
+            redact_container_diagnostic_text(sentinel_prefix_only),
+            sentinel_prefix_only,
+            "only an exact delimiter-bounded sentinel may bypass another redaction pass"
+        );
     }
 
     #[test]
