@@ -12,6 +12,9 @@ pub const DEFAULT_BRIDGE_ENTRYPOINT: &str = "session-bridge";
 pub const DEFAULT_API_HELPER_PATH: &str = "/usr/local/bin/agentscommander-api-helper";
 pub const CONTAINER_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const DIAGNOSTIC_UI_LOG_LIMIT: usize = 500;
+const RETAINED_DIAGNOSTIC_VALUE_LIMIT: usize = 500;
+const RETAINED_DIAGNOSTIC_CONTEXT_LIMIT: usize = 2_000;
+pub(crate) const RETAINED_OWNER_REPORT_CAPACITY: usize = 256;
 const REDACTED_SECRET: &str = "[REDACTED]";
 // Keep AGENTSCOMMANDER_* entries in sync with DockerRuntime::build_run_command.
 // This list is separate because diagnostics must also scrub valid provider env keys.
@@ -165,6 +168,91 @@ pub struct ContainerDiagnostics {
     pub logs_error: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetainedContainerOwnerContext {
+    pub owner: &'static str,
+    pub session_id: Option<Uuid>,
+    pub reason: String,
+    pub program: Option<String>,
+    pub runtime_handle: Option<bool>,
+    pub state: &'static str,
+    pub in_flight: bool,
+    pub last_error: Option<String>,
+}
+
+impl RetainedContainerOwnerContext {
+    pub fn diagnostic(&self) -> String {
+        let session = self
+            .session_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "none".to_string());
+        let program = self
+            .program
+            .as_deref()
+            .map(normalize_retained_diagnostic_value)
+            .unwrap_or_else(|| "none".to_string());
+        let runtime_handle = self
+            .runtime_handle
+            .map(|present| present.to_string())
+            .unwrap_or_else(|| "none".to_string());
+        let mut diagnostic = format!(
+            "owner={} session={} reason={} program={} runtimeHandle={} state={} inFlight={}",
+            self.owner,
+            session,
+            normalize_retained_diagnostic_value(&self.reason),
+            program,
+            runtime_handle,
+            self.state,
+            self.in_flight
+        );
+        if let Some(error) = self.last_error.as_deref() {
+            diagnostic.push_str(" lastError=");
+            diagnostic.push_str(&normalize_retained_diagnostic_value(error));
+        }
+        diagnostic
+    }
+}
+
+fn normalize_retained_diagnostic_value(value: &str) -> String {
+    redact_and_truncate(value, RETAINED_DIAGNOSTIC_VALUE_LIMIT)
+        .replace('\r', "\\r")
+        .replace('\n', "\\n")
+}
+
+pub(crate) fn normalize_retained_owner_diagnostic(
+    default_owner: &'static str,
+    context: impl AsRef<str>,
+) -> String {
+    let context = redact_and_truncate(context.as_ref().trim(), RETAINED_DIAGNOSTIC_CONTEXT_LIMIT)
+        .replace('\r', "\\r")
+        .replace('\n', "\\n");
+    if context.starts_with("owner=") {
+        context
+    } else {
+        format!("owner={default_owner} {context}")
+    }
+}
+
+pub(crate) fn cap_retained_owner_diagnostics<I>(contexts: I) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut contexts = contexts.into_iter().collect::<Vec<_>>();
+    contexts.sort();
+    contexts.dedup();
+    if contexts.len() <= RETAINED_OWNER_REPORT_CAPACITY {
+        return contexts;
+    }
+
+    let retained_capacity = RETAINED_OWNER_REPORT_CAPACITY.saturating_sub(1);
+    let omitted = contexts.len().saturating_sub(retained_capacity);
+    contexts.truncate(retained_capacity);
+    contexts.push(format!(
+        "owner=diagnosticSummary session=none reason=retained-owner-report-truncated program=none runtimeHandle=none state=retained inFlight=false omittedCount={omitted}"
+    ));
+    contexts
+}
+
 impl ContainerDiagnostics {
     pub fn unavailable(
         handle: &ContainerRuntimeHandle,
@@ -283,10 +371,10 @@ pub trait ContainerRuntime: Send + Sync {
     /// resource before returning `Err` have no retained work.
     fn retry_retained_cleanups(&self, _control: &ContainerRuntimeControl) {}
 
-    /// Sessions whose deterministic cleanup target or command ownership is
-    /// still retained by the runtime. A non-empty result prevents shutdown
-    /// persistence from treating container cleanup as terminal.
-    fn retained_cleanup_sessions(&self) -> Vec<Uuid> {
+    /// Structured deterministic-cleanup and command ownership still retained
+    /// by the runtime. A non-empty result prevents shutdown persistence from
+    /// treating container cleanup as terminal.
+    fn retained_cleanup_contexts(&self) -> Vec<RetainedContainerOwnerContext> {
         Vec::new()
     }
 }

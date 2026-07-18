@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, TryLockError};
 
 use uuid::Uuid;
 
@@ -19,6 +19,12 @@ use crate::telegram::manager::OutputSenderMap;
 pub(crate) struct PendingSpawn {
     pub cwd: String,
     pub label: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PtyRouteRemovalError {
+    Busy,
+    LockPoisoned,
 }
 
 #[derive(Default)]
@@ -143,6 +149,22 @@ impl PtyManager {
         if registry.routes.get(&id).copied() == Some(kind) {
             registry.routes.remove(&id);
         }
+    }
+
+    pub(crate) fn try_remove_route_if_kind(
+        &self,
+        id: Uuid,
+        kind: SessionBackendKind,
+    ) -> Result<(), PtyRouteRemovalError> {
+        let mut registry = match self.registry.try_lock() {
+            Ok(registry) => registry,
+            Err(TryLockError::Poisoned(_)) => return Err(PtyRouteRemovalError::LockPoisoned),
+            Err(TryLockError::WouldBlock) => return Err(PtyRouteRemovalError::Busy),
+        };
+        if registry.routes.get(&id).copied() == Some(kind) {
+            registry.routes.remove(&id);
+        }
+        Ok(())
     }
 
     fn kind_for_session(&self, id: Uuid) -> Result<SessionBackendKind, AppError> {

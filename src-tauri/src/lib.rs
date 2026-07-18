@@ -43,6 +43,29 @@ use voice::tracker::{VoiceTracker, VoiceTrackingState};
 use web::auth::WebAccessToken;
 use web::broadcast::WsBroadcaster;
 
+pub(crate) fn shutdown_persistence_allowed(
+    selection_persistence_safe: bool,
+    container_cleanup_terminal: bool,
+) -> bool {
+    selection_persistence_safe && container_cleanup_terminal
+}
+
+pub(crate) fn combined_shutdown_retained_diagnostics(
+    selection_retained: Vec<String>,
+    container_retained: Vec<String>,
+) -> Vec<String> {
+    let selection = selection_retained.into_iter().map(|context| {
+        crate::pty::container_runtime::normalize_retained_owner_diagnostic("selection", context)
+    });
+    let container = container_retained.into_iter().map(|context| {
+        crate::pty::container_runtime::normalize_retained_owner_diagnostic(
+            "containerShutdown",
+            context,
+        )
+    });
+    crate::pty::container_runtime::cap_retained_owner_diagnostics(selection.chain(container))
+}
+
 /// Tracks which sessions are currently detached into their own windows.
 pub type DetachedSessionsState = Arc<Mutex<HashSet<uuid::Uuid>>>;
 
@@ -832,12 +855,50 @@ pub fn run(
             {
                 let weak_pty_mgr = Arc::downgrade(&pty_mgr);
                 let container_backend = pty_mgr.lock().unwrap().container_backend();
-                container_backend.set_route_remover(Arc::new(move |session_id| {
-                    if let Some(pty_mgr) = weak_pty_mgr.upgrade() {
-                        pty_mgr.lock().unwrap().remove_route_if_kind(
-                            session_id,
-                            crate::pty::backend::SessionBackendKind::ContainerTransport,
-                        );
+                container_backend.set_route_remover(Arc::new(move |session_id, deadline| {
+                    let Some(pty_mgr) = weak_pty_mgr.upgrade() else {
+                        return Ok(());
+                    };
+                    loop {
+                        if std::time::Instant::now() >= deadline {
+                            return Err(
+                                crate::pty::container_backend::RouteRemovalError::Deadline(
+                                    "ptyManager",
+                                ),
+                            );
+                        }
+                        match pty_mgr.try_lock() {
+                            Ok(pty_manager) => match pty_manager.try_remove_route_if_kind(
+                                session_id,
+                                crate::pty::backend::SessionBackendKind::ContainerTransport,
+                            ) {
+                                Ok(()) => return Ok(()),
+                                Err(crate::pty::manager::PtyRouteRemovalError::LockPoisoned) => {
+                                    return Err(crate::pty::container_backend::RouteRemovalError::LockPoisoned(
+                                        "ptyRouteRegistry",
+                                    ));
+                                }
+                                Err(crate::pty::manager::PtyRouteRemovalError::Busy) => {}
+                            },
+                            Err(std::sync::TryLockError::Poisoned(_)) => {
+                                return Err(
+                                    crate::pty::container_backend::RouteRemovalError::LockPoisoned(
+                                        "ptyManager",
+                                    ),
+                                );
+                            }
+                            Err(std::sync::TryLockError::WouldBlock) => {}
+                        }
+                        let remaining =
+                            deadline.saturating_duration_since(std::time::Instant::now());
+                        if remaining.is_zero() {
+                            return Err(
+                                crate::pty::container_backend::RouteRemovalError::Deadline(
+                                    "ptyManager",
+                                ),
+                            );
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(2).min(remaining));
                     }
                 }));
             }
@@ -2409,7 +2470,10 @@ pub fn run(
                         );
                     }
 
-                    if selection_shutdown.persistence_safe && container_shutdown.terminal {
+                    if shutdown_persistence_allowed(
+                        selection_shutdown.persistence_safe,
+                        container_shutdown.terminal,
+                    ) {
                         log::info!("[shutdown] Persisting session state...");
                         let mgr_clone = session_mgr_for_exit.clone();
                         tauri::async_runtime::block_on(async move {
@@ -2418,10 +2482,10 @@ pub fn run(
                         });
                         log::info!("[shutdown] Session state persisted, process exiting");
                     } else {
-                        let mut retained = selection_shutdown.retained;
-                        retained.extend(container_shutdown.retained);
-                        retained.sort();
-                        retained.dedup();
+                        let retained = combined_shutdown_retained_diagnostics(
+                            selection_shutdown.retained,
+                            container_shutdown.retained,
+                        );
                         log::error!(
                             "[shutdown] final session persistence skipped because cleanup ownership is retained work=[{}]",
                             retained.join(", ")

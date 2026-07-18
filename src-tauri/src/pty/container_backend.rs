@@ -19,8 +19,8 @@ use crate::pty::container_paths::{
 };
 use crate::pty::container_runtime::{
     api_url_for_container, resolve_container_image, ContainerDiagnostics, ContainerRuntime,
-    ContainerRuntimeControl, ContainerRuntimeHandle, ContainerStartRequest, CONTAINER_STOP_TIMEOUT,
-    DEFAULT_CONTAINER_WORKDIR,
+    ContainerRuntimeControl, ContainerRuntimeHandle, ContainerStartRequest,
+    RetainedContainerOwnerContext, CONTAINER_STOP_TIMEOUT, DEFAULT_CONTAINER_WORKDIR,
 };
 use crate::pty::container_tokens::{ContainerApiToken, ContainerApiTokenManager};
 use crate::pty::context_scrape::ScreenRowsRead;
@@ -40,13 +40,31 @@ const CONTAINER_SHUTDOWN_QUEUE_CAPACITY: usize = 64;
 const CONTAINER_SHUTDOWN_FALLBACK_CAPACITY: usize = 1;
 const CONTAINER_SHUTDOWN_POLL: Duration = Duration::from_millis(2);
 const CONTAINER_GLOBAL_SWEEP_RETRY_BACKOFF: Duration = Duration::from_millis(10);
-const CONTAINER_SHUTDOWN_RETAINED_REPORT_CAPACITY: usize = 256;
 
 // Keep this re-export so session_transport and container_backend continue to
 // share exactly one normalization rule.
 pub(crate) use crate::pty::container_paths::root_key;
 
-type RouteRemover = Arc<dyn Fn(Uuid) + Send + Sync>;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RouteRemovalError {
+    Deadline(&'static str),
+    LockPoisoned(&'static str),
+}
+
+impl std::fmt::Display for RouteRemovalError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Deadline(owner) => {
+                write!(formatter, "route removal deadline reached owner={owner}")
+            }
+            Self::LockPoisoned(owner) => {
+                write!(formatter, "route removal lock poisoned owner={owner}")
+            }
+        }
+    }
+}
+
+type RouteRemover = Arc<dyn Fn(Uuid, Instant) -> Result<(), RouteRemovalError> + Send + Sync>;
 
 fn lock_mutex_until<'a, T>(mutex: &'a Mutex<T>, deadline: Instant) -> Option<MutexGuard<'a, T>> {
     loop {
@@ -205,8 +223,15 @@ struct RetainedContainerCleanup {
     reason: &'static str,
     runtime: Option<Arc<dyn ContainerRuntime>>,
     runtime_handle: Option<ContainerRuntimeHandle>,
+    route_removal: Mutex<RetainedRouteRemoval>,
     non_runtime: Mutex<Option<RetainedNonRuntimeCleanup>>,
     attempt: Mutex<RetainedContainerCleanupAttempt>,
+}
+
+enum RetainedRouteRemoval {
+    NotRequired,
+    Pending(RouteRemover),
+    Unavailable(String),
 }
 
 struct RetainedNonRuntimeCleanup {
@@ -221,6 +246,70 @@ struct RetainedContainerCleanupAttempt {
     in_flight: bool,
     last_epoch: Option<u64>,
     last_error: Option<String>,
+}
+
+impl RetainedContainerCleanup {
+    fn require_route_removal(&self, remover: Result<Option<RouteRemover>, RouteRemovalError>) {
+        let state = match remover {
+            Ok(Some(remover)) => RetainedRouteRemoval::Pending(remover),
+            Ok(None) => RetainedRouteRemoval::NotRequired,
+            Err(error) => RetainedRouteRemoval::Unavailable(error.to_string()),
+        };
+        match self.route_removal.lock() {
+            Ok(mut route_removal) => *route_removal = state,
+            Err(error) => {
+                log::error!(
+                    "[container-transport] route-removal ownership lock poisoned session={} reason={} state=retained",
+                    self.session_id,
+                    self.reason
+                );
+                *error.into_inner() = RetainedRouteRemoval::Unavailable(
+                    "route-removal ownership lock poisoned".to_string(),
+                );
+            }
+        }
+    }
+
+    fn remove_route_before_cleanup(
+        &self,
+        control: &ContainerRuntimeControl,
+    ) -> Result<(), AppError> {
+        let remover = match self.route_removal.lock() {
+            Ok(route_removal) => match &*route_removal {
+                RetainedRouteRemoval::NotRequired => return Ok(()),
+                RetainedRouteRemoval::Pending(remover) => Arc::clone(remover),
+                RetainedRouteRemoval::Unavailable(error) => {
+                    return Err(AppError::Other(format!(
+                        "route removal unavailable: {error}"
+                    )))
+                }
+            },
+            Err(_) => {
+                return Err(AppError::Other(
+                    "route-removal ownership lock poisoned".to_string(),
+                ))
+            }
+        };
+        let deadline = control.shutdown_deadline().ok_or_else(|| {
+            AppError::Other("route removal missing global-sweep deadline".to_string())
+        })?;
+        if Instant::now() >= deadline {
+            return Err(AppError::Other(
+                RouteRemovalError::Deadline("globalSweep").to_string(),
+            ));
+        }
+        remover(self.session_id, deadline)
+            .map_err(|error| AppError::Other(format!("route removal failed: {error}")))?;
+        match self.route_removal.lock() {
+            Ok(mut route_removal) => {
+                *route_removal = RetainedRouteRemoval::NotRequired;
+                Ok(())
+            }
+            Err(_) => Err(AppError::Other(
+                "route-removal ownership lock poisoned after removal".to_string(),
+            )),
+        }
+    }
 }
 
 impl RetainedContainerCleanupRegistry {
@@ -238,6 +327,7 @@ impl RetainedContainerCleanupRegistry {
             reason,
             runtime,
             runtime_handle: resources.runtime_handle,
+            route_removal: Mutex::new(RetainedRouteRemoval::NotRequired),
             non_runtime: Mutex::new(Some(RetainedNonRuntimeCleanup {
                 token_manager,
                 api_client_id: resources.api_client_id,
@@ -263,11 +353,8 @@ impl RetainedContainerCleanupRegistry {
             .collect()
     }
 
-    fn is_empty(&self) -> bool {
-        self.entries
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .is_empty()
+    fn is_empty_until(&self, deadline: Instant) -> Option<bool> {
+        lock_mutex_until(&self.entries, deadline).map(|entries| entries.is_empty())
     }
 
     fn entries_for_sweep(
@@ -303,46 +390,97 @@ impl RetainedContainerCleanupRegistry {
         fresh
     }
 
-    fn contexts(&self) -> Vec<String> {
-        let entries = self
-            .entries
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let total = entries.len();
+    fn contexts(&self) -> Vec<RetainedContainerOwnerContext> {
+        let (entries, registry_error) = match self.entries.try_lock() {
+            Ok(entries) => (entries, None),
+            Err(TryLockError::Poisoned(error)) => (
+                error.into_inner(),
+                Some("retained cleanup registry lock poisoned".to_string()),
+            ),
+            Err(TryLockError::WouldBlock) => {
+                return vec![RetainedContainerOwnerContext {
+                    owner: "containerCleanupRegistry",
+                    session_id: None,
+                    reason: "diagnostic-snapshot".to_string(),
+                    program: None,
+                    runtime_handle: None,
+                    state: "retained",
+                    in_flight: true,
+                    last_error: Some("retained cleanup registry lock unavailable".to_string()),
+                }]
+            }
+        };
         let mut contexts = entries
             .values()
-            .take(CONTAINER_SHUTDOWN_RETAINED_REPORT_CAPACITY)
             .map(|entry| {
-                let attempt = entry
-                    .attempt
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner());
-                format!(
-                    "session={} reason={} runtimeHandle={} state={}{}",
-                    entry.session_id,
-                    entry.reason,
-                    entry.runtime_handle.is_some(),
-                    if attempt.in_flight {
-                        "inFlight"
-                    } else {
-                        "retained"
+                let (in_flight, attempt_error) = match entry.attempt.try_lock() {
+                    Ok(attempt) => (attempt.in_flight, attempt.last_error.clone()),
+                    Err(TryLockError::Poisoned(error)) => {
+                        let attempt = error.into_inner();
+                        (
+                            attempt.in_flight,
+                            Some(
+                                attempt
+                                    .last_error
+                                    .as_deref()
+                                    .map(|last_error| {
+                                        format!("{last_error}; cleanup attempt state lock poisoned")
+                                    })
+                                    .unwrap_or_else(|| {
+                                        "cleanup attempt state lock poisoned".to_string()
+                                    }),
+                            ),
+                        )
+                    }
+                    Err(TryLockError::WouldBlock) => (
+                        true,
+                        Some("cleanup attempt state lock unavailable".to_string()),
+                    ),
+                };
+                let route_error = match entry.route_removal.try_lock() {
+                    Ok(route_removal) => match &*route_removal {
+                        RetainedRouteRemoval::Unavailable(error) => {
+                            Some(format!("route removal unavailable: {error}"))
+                        }
+                        RetainedRouteRemoval::NotRequired | RetainedRouteRemoval::Pending(_) => {
+                            None
+                        }
                     },
-                    attempt
-                        .last_error
-                        .as_deref()
-                        .map(|error| format!(
-                            " error={}",
-                            crate::pty::container_runtime::redact_container_diagnostic_text(error)
-                        ))
-                        .unwrap_or_default()
-                )
+                    Err(TryLockError::Poisoned(_)) => {
+                        Some("route-removal ownership lock poisoned".to_string())
+                    }
+                    Err(TryLockError::WouldBlock) => {
+                        Some("route-removal ownership lock unavailable".to_string())
+                    }
+                };
+                let last_error = match (attempt_error, route_error) {
+                    (Some(attempt), Some(route)) => Some(format!("{attempt}; {route}")),
+                    (Some(error), None) | (None, Some(error)) => Some(error),
+                    (None, None) => None,
+                };
+                RetainedContainerOwnerContext {
+                    owner: "containerCleanup",
+                    session_id: Some(entry.session_id),
+                    reason: entry.reason.to_string(),
+                    program: None,
+                    runtime_handle: Some(entry.runtime_handle.is_some()),
+                    state: if in_flight { "inFlight" } else { "retained" },
+                    in_flight,
+                    last_error,
+                }
             })
             .collect::<Vec<_>>();
-        if total > contexts.len() {
-            contexts.push(format!(
-                "reason=retained-cleanup-report-truncated count={} state=retained",
-                total - contexts.len()
-            ));
+        if let Some(last_error) = registry_error {
+            contexts.push(RetainedContainerOwnerContext {
+                owner: "containerCleanupRegistry",
+                session_id: None,
+                reason: "diagnostic-snapshot".to_string(),
+                program: None,
+                runtime_handle: None,
+                state: "retained",
+                in_flight: false,
+                last_error: Some(last_error),
+            });
         }
         contexts
     }
@@ -366,6 +504,7 @@ impl RetainedContainerCleanupRegistry {
         }
 
         let result = catch_unwind(AssertUnwindSafe(|| {
+            entry.remove_route_before_cleanup(control)?;
             if let Some(non_runtime) = entry
                 .non_runtime
                 .lock()
@@ -734,17 +873,14 @@ impl ContainerShutdownWorkRegistry {
         self.ensure_workers(&context) > 0
     }
 
-    fn has_owned_work(&self) -> bool {
-        let state = self
-            .shared
-            .state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        state.active_producers > 0
-            || !state.queued.is_empty()
-            || !state.retained.is_empty()
-            || !state.active.is_empty()
-            || state.worker_count > 0
+    fn has_owned_work_until(&self, deadline: Instant) -> Option<bool> {
+        lock_mutex_until(&self.shared.state, deadline).map(|state| {
+            state.active_producers > 0
+                || !state.queued.is_empty()
+                || !state.retained.is_empty()
+                || !state.active.is_empty()
+                || state.worker_count > 0
+        })
     }
 
     fn spawn_global_sweep_owned_with_control<F>(
@@ -1339,8 +1475,37 @@ impl ContainerTransportBackend {
         self.tuning
     }
 
-    pub fn set_route_remover(&self, remover: RouteRemover) {
-        *self.route_remover.lock().unwrap() = Some(remover);
+    pub(crate) fn set_route_remover(&self, remover: RouteRemover) {
+        match self.route_remover.lock() {
+            Ok(mut route_remover) => *route_remover = Some(remover),
+            Err(error) => {
+                log::error!(
+                    "[container-transport] route-remover registry lock poisoned during setup"
+                );
+                *error.into_inner() = Some(remover);
+            }
+        }
+    }
+
+    fn route_remover_until(
+        &self,
+        deadline: Instant,
+    ) -> Result<Option<RouteRemover>, RouteRemovalError> {
+        loop {
+            match self.route_remover.try_lock() {
+                Ok(route_remover) => return Ok(route_remover.clone()),
+                Err(TryLockError::Poisoned(_)) => {
+                    return Err(RouteRemovalError::LockPoisoned("routeRemoverRegistry"))
+                }
+                Err(TryLockError::WouldBlock) => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err(RouteRemovalError::Deadline("routeRemoverRegistry"));
+                    }
+                    std::thread::sleep(CONTAINER_SHUTDOWN_POLL.min(remaining));
+                }
+            }
+        }
     }
 
     pub(crate) fn consume_ticket(
@@ -1561,11 +1726,39 @@ impl ContainerTransportBackend {
         };
 
         self.cleanup_removed_resources_async(resources, "transport-sync-close");
-        let remover = self.route_remover.lock().unwrap().clone();
+        let remover = match self.route_remover.try_lock() {
+            Ok(route_remover) => route_remover.clone(),
+            Err(TryLockError::Poisoned(_)) => {
+                log::error!(
+                    "[container-transport] deferred route-remover registry lock poisoned session={} state=retained",
+                    session_id
+                );
+                None
+            }
+            Err(TryLockError::WouldBlock) => {
+                log::warn!(
+                    "[container-transport] deferred route-remover registry lock unavailable session={} state=retained",
+                    session_id
+                );
+                None
+            }
+        };
         let lifecycle_sender = self.lifecycle_sender.clone();
         tauri::async_runtime::spawn(async move {
             if let Some(remove) = remover {
-                remove(session_id);
+                let deadline = Instant::now() + CLEANUP_TASK_TIMEOUT;
+                match catch_unwind(AssertUnwindSafe(|| remove(session_id, deadline))) {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => log::warn!(
+                        "[container-transport] deferred sync route removal failed session={} error={}",
+                        session_id,
+                        error
+                    ),
+                    Err(_) => log::error!(
+                        "[container-transport] deferred sync route removal panicked session={}",
+                        session_id
+                    ),
+                }
             }
             if let Some(sender) = lifecycle_sender {
                 if let Err(error) = sender.route_lost(session_id, exit_code).await {
@@ -1591,6 +1784,32 @@ impl ContainerTransportBackend {
         removed.map(|state| resources_from_state(session_id, state))
     }
 
+    fn remove_session_state_until(
+        &self,
+        session_id: Uuid,
+        deadline: Instant,
+    ) -> Result<Option<RemovedSessionResources>, RouteRemovalError> {
+        let removed = loop {
+            match self.sessions.try_lock() {
+                Ok(mut sessions) => break sessions.remove(&session_id),
+                Err(TryLockError::Poisoned(_)) => {
+                    return Err(RouteRemovalError::LockPoisoned("containerSessionRegistry"))
+                }
+                Err(TryLockError::WouldBlock) => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err(RouteRemovalError::Deadline("containerSessionRegistry"));
+                    }
+                    std::thread::sleep(CONTAINER_SHUTDOWN_POLL.min(remaining));
+                }
+            }
+        };
+        if removed.is_some() {
+            self.fanout.remove_session(session_id);
+        }
+        Ok(removed.map(|state| resources_from_state(session_id, state)))
+    }
+
     /// #930 F1 - after copy-in, if a concurrent teardown already removed the
     /// session from the map, that teardown's `remove_copied` ran before the file
     /// physically existed (idempotent no-op), so delete the now-orphaned file
@@ -1608,9 +1827,31 @@ impl ContainerTransportBackend {
     }
 
     fn remove_route(&self, session_id: Uuid) {
-        let remover = self.route_remover.lock().unwrap().clone();
+        let deadline = Instant::now() + CLEANUP_TASK_TIMEOUT;
+        let remover = match self.route_remover_until(deadline) {
+            Ok(remover) => remover,
+            Err(error) => {
+                log::warn!(
+                    "[container-transport] route removal unavailable session={} error={}",
+                    session_id,
+                    error
+                );
+                return;
+            }
+        };
         if let Some(remove) = remover {
-            remove(session_id);
+            match catch_unwind(AssertUnwindSafe(|| remove(session_id, deadline))) {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => log::warn!(
+                    "[container-transport] route removal failed session={} error={}",
+                    session_id,
+                    error
+                ),
+                Err(_) => log::error!(
+                    "[container-transport] route removal panicked session={}",
+                    session_id
+                ),
+            }
         }
     }
 
@@ -2331,10 +2572,72 @@ impl ContainerTransportBackend {
         budget: Duration,
     ) -> ContainerShutdownReport {
         let deadline = Instant::now() + budget;
-        let session_ids = {
-            let sessions = self.sessions.lock().unwrap();
-            sessions.keys().copied().collect::<Vec<_>>()
+        let mut retained_residue = Vec::new();
+        let session_ids = loop {
+            match self.sessions.try_lock() {
+                Ok(sessions) => break sessions.keys().copied().collect::<Vec<_>>(),
+                Err(TryLockError::Poisoned(_)) => {
+                    retained_residue.push(
+                        RetainedContainerOwnerContext {
+                            owner: "installedContainerRegistry",
+                            session_id: None,
+                            reason: "global-shutdown".to_string(),
+                            program: None,
+                            runtime_handle: None,
+                            state: "installed",
+                            in_flight: false,
+                            last_error: Some(
+                                "container session registry lock poisoned".to_string(),
+                            ),
+                        }
+                        .diagnostic(),
+                    );
+                    break Vec::new();
+                }
+                Err(TryLockError::WouldBlock) => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        retained_residue.push(
+                            RetainedContainerOwnerContext {
+                                owner: "installedContainerRegistry",
+                                session_id: None,
+                                reason: "global-shutdown".to_string(),
+                                program: None,
+                                runtime_handle: None,
+                                state: "installed",
+                                in_flight: true,
+                                last_error: Some(
+                                    "container session registry deadline reached".to_string(),
+                                ),
+                            }
+                            .diagnostic(),
+                        );
+                        break Vec::new();
+                    }
+                    std::thread::sleep(CONTAINER_SHUTDOWN_POLL.min(remaining));
+                }
+            }
         };
+        let route_remover = if session_ids.is_empty() {
+            Ok(None)
+        } else {
+            self.route_remover_until(deadline)
+        };
+        if let Err(error) = &route_remover {
+            retained_residue.push(
+                RetainedContainerOwnerContext {
+                    owner: "routeRemoverRegistry",
+                    session_id: None,
+                    reason: "global-shutdown".to_string(),
+                    program: None,
+                    runtime_handle: None,
+                    state: "retained",
+                    in_flight: false,
+                    last_error: Some(error.to_string()),
+                }
+                .diagnostic(),
+            );
+        }
         let control = ContainerRuntimeControl::default();
         control.request_shutdown(deadline);
         for session_id in session_ids {
@@ -2345,13 +2648,30 @@ impl ContainerTransportBackend {
                 );
                 break;
             }
-            let Some(resources) = self.remove_session_state(session_id) else {
-                continue;
+            let resources = match self.remove_session_state_until(session_id, deadline) {
+                Ok(Some(resources)) => resources,
+                Ok(None) => continue,
+                Err(error) => {
+                    retained_residue.push(
+                        RetainedContainerOwnerContext {
+                            owner: "installedContainer",
+                            session_id: Some(session_id),
+                            reason: "global-shutdown".to_string(),
+                            program: None,
+                            runtime_handle: None,
+                            state: "installed",
+                            in_flight: false,
+                            last_error: Some(error.to_string()),
+                        }
+                        .diagnostic(),
+                    );
+                    break;
+                }
             };
             let entry = self.retain_removed_resources(resources, "global-shutdown-sweep");
-            self.remove_route(session_id);
+            entry.require_route_removal(route_remover.clone());
             log::debug!(
-                "[container-transport] global shutdown transferred installed handle session={} reason={} state=retained",
+                "[container-transport] global shutdown transferred installed handle and route-removal ownership session={} reason={} state=retained",
                 entry.session_id,
                 entry.reason
             );
@@ -2375,8 +2695,14 @@ impl ContainerTransportBackend {
             let runtime_has_retained = self
                 .runtime
                 .as_ref()
-                .is_some_and(|runtime| !runtime.retained_cleanup_sessions().is_empty());
-            if entries.is_empty() && !runtime_has_retained && !self.shutdown_work.has_owned_work() {
+                .is_some_and(|runtime| !runtime.retained_cleanup_contexts().is_empty());
+            if entries.is_empty()
+                && !runtime_has_retained
+                && !self
+                    .shutdown_work
+                    .has_owned_work_until(deadline)
+                    .unwrap_or(true)
+            {
                 break;
             }
             if !self.shutdown_work.start_global_sweep_epoch(deadline) {
@@ -2425,11 +2751,14 @@ impl ContainerTransportBackend {
             if !work_report.terminal || Instant::now() >= deadline {
                 break;
             }
-            let cleanup_remaining = !self.cleanup_ownership.is_empty();
+            let cleanup_remaining = !self
+                .cleanup_ownership
+                .is_empty_until(deadline)
+                .unwrap_or(false);
             let runtime_remaining = self
                 .runtime
                 .as_ref()
-                .is_some_and(|runtime| !runtime.retained_cleanup_sessions().is_empty());
+                .is_some_and(|runtime| !runtime.retained_cleanup_contexts().is_empty());
             if !cleanup_remaining && !runtime_remaining {
                 break;
             }
@@ -2444,26 +2773,88 @@ impl ContainerTransportBackend {
             }
             std::thread::sleep(CONTAINER_GLOBAL_SWEEP_RETRY_BACKOFF.min(remaining));
         }
-        let mut retained = work_report.retained;
-        let installed = self
-            .sessions
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .keys()
-            .copied()
-            .collect::<Vec<_>>();
+        let mut retained = retained_residue;
+        retained.extend(work_report.retained.into_iter().map(|context| {
+            if context.starts_with("owner=") {
+                context
+            } else {
+                format!("owner=containerShutdownWork {context}")
+            }
+        }));
+        match self.sessions.try_lock() {
+            Ok(sessions) => retained.extend(sessions.iter().map(|(id, state)| {
+                RetainedContainerOwnerContext {
+                    owner: "installedContainer",
+                    session_id: Some(*id),
+                    reason: "global-shutdown".to_string(),
+                    program: None,
+                    runtime_handle: Some(match state {
+                        ContainerSessionState::Pending(pending) => pending.runtime_handle.is_some(),
+                        ContainerSessionState::Attaching(attaching) => {
+                            attaching.runtime_handle.is_some()
+                        }
+                        ContainerSessionState::Active(active) => active.runtime_handle.is_some(),
+                    }),
+                    state: "installed",
+                    in_flight: false,
+                    last_error: None,
+                }
+                .diagnostic()
+            })),
+            Err(TryLockError::Poisoned(error)) => {
+                let sessions = error.into_inner();
+                retained.extend(sessions.iter().map(|(id, state)| {
+                    RetainedContainerOwnerContext {
+                        owner: "installedContainer",
+                        session_id: Some(*id),
+                        reason: "global-shutdown".to_string(),
+                        program: None,
+                        runtime_handle: Some(match state {
+                            ContainerSessionState::Pending(pending) => {
+                                pending.runtime_handle.is_some()
+                            }
+                            ContainerSessionState::Attaching(attaching) => {
+                                attaching.runtime_handle.is_some()
+                            }
+                            ContainerSessionState::Active(active) => {
+                                active.runtime_handle.is_some()
+                            }
+                        }),
+                        state: "installed",
+                        in_flight: false,
+                        last_error: Some("container session registry lock poisoned".to_string()),
+                    }
+                    .diagnostic()
+                }));
+            }
+            Err(TryLockError::WouldBlock) => retained.push(
+                RetainedContainerOwnerContext {
+                    owner: "installedContainerRegistry",
+                    session_id: None,
+                    reason: "global-shutdown".to_string(),
+                    program: None,
+                    runtime_handle: None,
+                    state: "installed",
+                    in_flight: true,
+                    last_error: Some(
+                        "container session registry diagnostic lock unavailable".to_string(),
+                    ),
+                }
+                .diagnostic(),
+            ),
+        }
         retained.extend(
-            installed
-                .iter()
-                .map(|id| format!("session={id} reason=global-shutdown state=installed")),
+            self.cleanup_ownership
+                .contexts()
+                .into_iter()
+                .map(|context| context.diagnostic()),
         );
-        retained.extend(self.cleanup_ownership.contexts());
         if let Some(runtime) = self.runtime.as_ref() {
             retained.extend(
                 runtime
-                    .retained_cleanup_sessions()
+                    .retained_cleanup_contexts()
                     .into_iter()
-                    .map(|id| format!("session={id} reason=ambiguous-start state=runtimeRetained")),
+                    .map(|context| context.diagnostic()),
             );
         }
         retained.sort();
@@ -2471,8 +2862,8 @@ impl ContainerTransportBackend {
         let terminal = work_report.terminal && retained.is_empty();
         if !terminal {
             log::error!(
-                "[container-transport] global shutdown cleanup retained unresolved ownership work=[{}]",
-                retained.join(", ")
+                "[container-transport] global shutdown cleanup retained unresolved ownership count={}",
+                retained.len()
             );
         }
         ContainerShutdownReport { terminal, retained }
@@ -2573,7 +2964,11 @@ impl ContainerTransportBackend {
 
     #[cfg(test)]
     pub(crate) fn retained_cleanup_contexts_for_test(&self) -> Vec<String> {
-        self.cleanup_ownership.contexts()
+        self.cleanup_ownership
+            .contexts()
+            .into_iter()
+            .map(|context| context.diagnostic())
+            .collect()
     }
 
     #[cfg(test)]
@@ -2942,7 +3337,7 @@ mod tests {
     use super::*;
     use crate::pty::backend::SessionBackendKind;
     use crate::pty::container_paths::CLAUDE_CONFIG_DIR_KEY;
-    use crate::pty::container_runtime::ContainerCleanupReport;
+    use crate::pty::container_runtime::{ContainerCleanupReport, RETAINED_OWNER_REPORT_CAPACITY};
     use crate::session::manager::SessionManager;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -3009,6 +3404,10 @@ mod tests {
     struct PermanentlyBlockedStopRuntime {
         stop_calls: AtomicUsize,
         active_deadline_seen: AtomicBool,
+    }
+
+    struct RetainedContextRuntime {
+        contexts: Vec<RetainedContainerOwnerContext>,
     }
 
     impl ContainerRuntime for GatedStartRuntime {
@@ -3135,6 +3534,40 @@ mod tests {
         }
     }
 
+    impl ContainerRuntime for RetainedContextRuntime {
+        fn start(
+            &self,
+            request: ContainerStartRequest,
+            _control: &ContainerRuntimeControl,
+        ) -> Result<ContainerRuntimeHandle, AppError> {
+            Ok(ContainerRuntimeHandle {
+                session_id: request.session_id,
+                container_id: format!("container-{}", request.session_id),
+            })
+        }
+
+        fn stop(
+            &self,
+            _handle: &ContainerRuntimeHandle,
+            _timeout: Duration,
+            _control: &ContainerRuntimeControl,
+        ) -> Result<(), AppError> {
+            Ok(())
+        }
+
+        fn cleanup_labeled_orphans(
+            &self,
+            _live_sessions: &HashSet<Uuid>,
+            _timeout: Duration,
+        ) -> Result<ContainerCleanupReport, AppError> {
+            Ok(ContainerCleanupReport::default())
+        }
+
+        fn retained_cleanup_contexts(&self) -> Vec<RetainedContainerOwnerContext> {
+            self.contexts.clone()
+        }
+    }
+
     fn backend_with_tuning(
         tuning: ContainerTransportTuning,
     ) -> (
@@ -3217,8 +3650,9 @@ mod tests {
         let (backend, session_mgr) = backend_with_tuning(tuning);
         let removed = Arc::new(AtomicUsize::new(0));
         let removed_for_cb = removed.clone();
-        backend.set_route_remover(Arc::new(move |_| {
+        backend.set_route_remover(Arc::new(move |_, _| {
             removed_for_cb.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }));
         let session = session_mgr
             .read()
@@ -3366,8 +3800,9 @@ mod tests {
         });
         let removed_routes = Arc::new(AtomicUsize::new(0));
         let route_count = Arc::clone(&removed_routes);
-        backend.set_route_remover(Arc::new(move |_| {
+        backend.set_route_remover(Arc::new(move |_, _| {
             route_count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }));
 
         assert!(backend.begin_shutdown(Instant::now()));
@@ -3413,8 +3848,9 @@ mod tests {
         });
         let removed_routes = Arc::new(AtomicUsize::new(0));
         let route_count = Arc::clone(&removed_routes);
-        backend.set_route_remover(Arc::new(move |_| {
+        backend.set_route_remover(Arc::new(move |_, _| {
             route_count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }));
 
         let report = backend.stop_all_started_containers_blocking(Duration::from_secs(1));
@@ -3448,8 +3884,9 @@ mod tests {
         });
         let removed_routes = Arc::new(AtomicUsize::new(0));
         let route_count = Arc::clone(&removed_routes);
-        backend.set_route_remover(Arc::new(move |_| {
+        backend.set_route_remover(Arc::new(move |_, _| {
             route_count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }));
 
         let budget = Duration::from_millis(150);
@@ -3477,24 +3914,205 @@ mod tests {
     }
 
     #[test]
-    fn high_cardinality_retained_scheduling_obeys_the_advertised_deadline() {
-        const RETAINED_ENTRIES: usize = 1_024;
+    fn blocked_global_sweep_route_remover_returns_at_deadline_with_retained_owner() {
+        let runtime = Arc::new(RecordingRuntime::default());
+        let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
+        let idle_detector = IdleDetector::new(|_| {}, |_| {});
+        let backend = Arc::new(ContainerTransportBackend::with_runtime(
+            output_senders,
+            idle_detector,
+            None,
+            None,
+            runtime.clone(),
+            None,
+        ));
+        let session_id = Uuid::new_v4();
+        let _receiver = backend.insert_active_runtime_handle_for_test(ContainerRuntimeHandle {
+            session_id,
+            container_id: format!("container-{session_id}"),
+        });
 
-        let (backend, _manager) = backend_with_tuning(ContainerTransportTuning::default());
-        for _ in 0..RETAINED_ENTRIES {
-            let session_id = Uuid::new_v4();
-            backend.cleanup_ownership.retain(
-                None,
-                None,
-                RemovedSessionResources {
-                    session_id,
-                    runtime_handle: None,
-                    api_client_id: None,
-                    logical_resource_slot: None,
-                    container_credential_path: None,
-                },
-                "high-cardinality-test",
+        let route_calls = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::clone(&route_calls);
+        let (route_entered, route_entered_rx) = std::sync::mpsc::channel();
+        let (route_release, route_release_rx) = std::sync::mpsc::channel();
+        let route_release_rx = Arc::new(Mutex::new(route_release_rx));
+        let release = Arc::clone(&route_release_rx);
+        backend.set_route_remover(Arc::new(move |removed_session, _| {
+            assert_eq!(removed_session, session_id);
+            calls.fetch_add(1, Ordering::SeqCst);
+            route_entered
+                .send(())
+                .expect("publish blocked route-remover entry");
+            release
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .recv()
+                .expect("release blocked route remover");
+            Ok(())
+        }));
+
+        let budget = Duration::from_millis(150);
+        let (report_sender, report_receiver) = std::sync::mpsc::channel();
+        let sweep_backend = Arc::clone(&backend);
+        let sweep = std::thread::spawn(move || {
+            let started_at = Instant::now();
+            let report = sweep_backend.stop_all_started_containers_blocking(budget);
+            report_sender
+                .send((started_at.elapsed(), report))
+                .expect("publish blocked route-remover report");
+        });
+
+        route_entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("global sweep enters the deterministic blocked route remover");
+        let (elapsed, report) = report_receiver
+            .recv_timeout(budget + Duration::from_millis(500))
+            .expect("global sweep returns while route remover remains blocked");
+        sweep.join().expect("join bounded global sweep caller");
+
+        assert!(!report.terminal, "retained={:?}", report.retained);
+        assert!(
+            elapsed <= budget + Duration::from_millis(400),
+            "blocked route remover exceeded the absolute deadline: {elapsed:?}"
+        );
+        assert!(!backend.contains_transport_state_for_test(session_id));
+        assert_eq!(
+            backend.retained_runtime_cleanup_sessions_for_test(),
+            vec![session_id]
+        );
+        assert!(runtime.stopped().is_empty());
+        assert_eq!(route_calls.load(Ordering::SeqCst), 1);
+        assert!(
+            report.retained.iter().any(|context| {
+                context.contains("owner=containerCleanup")
+                    && context.contains(&format!("session={session_id}"))
+                    && context.contains("runtimeHandle=true")
+                    && context.contains("state=inFlight")
+                    && context.contains("inFlight=true")
+            }),
+            "retained={:?}",
+            report.retained
+        );
+        assert!(!crate::shutdown_persistence_allowed(true, report.terminal));
+
+        route_release.send(()).expect("release route remover owner");
+        let cleanup_deadline = Instant::now() + Duration::from_secs(1);
+        while runtime.stopped() != vec![session_id] {
+            assert!(
+                Instant::now() < cleanup_deadline,
+                "retained cleanup did not finish after route-remover release"
             );
+            std::thread::yield_now();
+        }
+        while !backend
+            .retained_runtime_cleanup_sessions_for_test()
+            .is_empty()
+        {
+            assert!(
+                Instant::now() < cleanup_deadline,
+                "retained ownership did not become terminal after release"
+            );
+            std::thread::yield_now();
+        }
+        assert_eq!(route_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn poisoned_global_sweep_route_removal_is_structured_residue() {
+        let runtime = Arc::new(RecordingRuntime::default());
+        let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
+        let idle_detector = IdleDetector::new(|_| {}, |_| {});
+        let backend = ContainerTransportBackend::with_runtime(
+            output_senders,
+            idle_detector,
+            None,
+            None,
+            runtime.clone(),
+            None,
+        );
+        let session_id = Uuid::new_v4();
+        let _receiver = backend.insert_active_runtime_handle_for_test(ContainerRuntimeHandle {
+            session_id,
+            container_id: format!("container-{session_id}"),
+        });
+        backend.set_route_remover(Arc::new(|_, _| {
+            Err(RouteRemovalError::LockPoisoned("ptyManager"))
+        }));
+
+        let report = backend.stop_all_started_containers_blocking(Duration::from_millis(50));
+
+        assert!(!report.terminal, "retained={:?}", report.retained);
+        assert!(!backend.contains_transport_state_for_test(session_id));
+        assert_eq!(
+            backend.retained_runtime_cleanup_sessions_for_test(),
+            vec![session_id]
+        );
+        assert!(runtime.stopped().is_empty());
+        assert!(
+            report.retained.iter().any(|context| {
+                context.contains("owner=containerCleanup")
+                    && context.contains(&format!("session={session_id}"))
+                    && context.contains("runtimeHandle=true")
+                    && context.contains("route removal lock poisoned owner=ptyManager")
+            }),
+            "retained={:?}",
+            report.retained
+        );
+        assert!(!crate::shutdown_persistence_allowed(true, report.terminal));
+    }
+
+    #[test]
+    fn high_cardinality_retained_scheduling_obeys_the_advertised_deadline() {
+        const INSTALLED_ENTRIES: usize = 180;
+        const RUNTIME_ENTRIES: usize = 180;
+
+        let runtime_contexts = (0..RUNTIME_ENTRIES)
+            .map(|index| {
+                if index % 2 == 0 {
+                    RetainedContainerOwnerContext {
+                        owner: "ambiguousStartCleanup",
+                        session_id: Some(Uuid::from_u128(10_000 + index as u128)),
+                        reason: "ambiguous-start".to_string(),
+                        program: None,
+                        runtime_handle: Some(true),
+                        state: "retained",
+                        in_flight: false,
+                        last_error: None,
+                    }
+                } else {
+                    RetainedContainerOwnerContext {
+                        owner: "dockerCommand",
+                        session_id: None,
+                        reason: "docker-command".to_string(),
+                        program: Some(format!("docker-reader-{index}")),
+                        runtime_handle: None,
+                        state: "retained",
+                        in_flight: false,
+                        last_error: None,
+                    }
+                }
+            })
+            .collect();
+        let runtime = Arc::new(RetainedContextRuntime {
+            contexts: runtime_contexts,
+        });
+        let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
+        let idle_detector = IdleDetector::new(|_| {}, |_| {});
+        let backend = ContainerTransportBackend::with_runtime(
+            output_senders,
+            idle_detector,
+            None,
+            None,
+            runtime,
+            None,
+        );
+        for index in 0..INSTALLED_ENTRIES {
+            let session_id = Uuid::from_u128(20_000 + index as u128);
+            let _receiver = backend.insert_active_runtime_handle_for_test(ContainerRuntimeHandle {
+                session_id,
+                container_id: format!("container-{session_id}"),
+            });
         }
 
         let budget = Duration::ZERO;
@@ -3507,17 +4125,69 @@ mod tests {
             elapsed <= Duration::from_millis(250),
             "high-cardinality scheduling exceeded its advertised deadline: {elapsed:?}"
         );
-        assert!(
+        assert_eq!(
             report
                 .retained
                 .iter()
-                .any(|context| context.contains("reason=retained-cleanup-report-truncated")),
-            "retained={:?}",
-            report.retained
+                .filter(|context| context.contains("owner=installedContainer "))
+                .count(),
+            INSTALLED_ENTRIES
         );
         assert_eq!(
-            backend.retained_cleanup_sessions_for_test().len(),
-            RETAINED_ENTRIES
+            report
+                .retained
+                .iter()
+                .filter(|context| {
+                    context.contains("owner=ambiguousStartCleanup ")
+                        || context.contains("owner=dockerCommand ")
+                })
+                .count(),
+            RUNTIME_ENTRIES
+        );
+
+        let selection_retained = vec![
+            "reason=selection-coordinator state=retained".to_string(),
+            "owner=pendingCreate session=none reason=create state=retained".to_string(),
+        ];
+        let mut uncapped = selection_retained
+            .iter()
+            .map(|context| {
+                crate::pty::container_runtime::normalize_retained_owner_diagnostic(
+                    "selection",
+                    context,
+                )
+            })
+            .chain(report.retained.iter().map(|context| {
+                crate::pty::container_runtime::normalize_retained_owner_diagnostic(
+                    "containerShutdown",
+                    context,
+                )
+            }))
+            .collect::<Vec<_>>();
+        uncapped.sort();
+        uncapped.dedup();
+        assert!(uncapped
+            .iter()
+            .any(|context| context.starts_with("owner=selection ")));
+        assert!(uncapped
+            .iter()
+            .any(|context| context.starts_with("owner=installedContainer ")));
+        assert!(uncapped
+            .iter()
+            .any(|context| context.starts_with("owner=dockerCommand ")));
+        assert!(uncapped
+            .iter()
+            .any(|context| context.starts_with("owner=ambiguousStartCleanup ")));
+
+        let retained =
+            crate::combined_shutdown_retained_diagnostics(selection_retained, report.retained);
+        let expected_omitted = uncapped.len() - (RETAINED_OWNER_REPORT_CAPACITY - 1);
+        assert_eq!(retained.len(), RETAINED_OWNER_REPORT_CAPACITY);
+        assert_eq!(
+            retained.last().expect("omitted-count sentinel"),
+            &format!(
+                "owner=diagnosticSummary session=none reason=retained-owner-report-truncated program=none runtimeHandle=none state=retained inFlight=false omittedCount={expected_omitted}"
+            )
         );
     }
 
@@ -4288,8 +4958,9 @@ mod tests {
             let (backend, session_mgr) = backend_with_tuning(ContainerTransportTuning::default());
             let removed = Arc::new(AtomicUsize::new(0));
             let removed_for_cb = removed.clone();
-            backend.set_route_remover(Arc::new(move |_| {
+            backend.set_route_remover(Arc::new(move |_, _| {
                 removed_for_cb.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }));
             let session = session_mgr
                 .read()
@@ -4353,13 +5024,14 @@ mod tests {
 
         let weak_pty = Arc::downgrade(&pty);
         let (removed_tx, removed_rx) = std::sync::mpsc::channel();
-        backend.set_route_remover(Arc::new(move |session_id| {
+        backend.set_route_remover(Arc::new(move |session_id, _| {
             if let Some(pty) = weak_pty.upgrade() {
                 pty.lock()
                     .unwrap()
                     .remove_route_if_kind(session_id, SessionBackendKind::ContainerTransport);
             }
             let _ = removed_tx.send(());
+            Ok(())
         }));
 
         let guard = pty.lock().unwrap();

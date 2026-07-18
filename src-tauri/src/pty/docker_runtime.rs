@@ -10,8 +10,9 @@ use uuid::Uuid;
 use crate::errors::AppError;
 use crate::pty::container_runtime::{
     ContainerCleanupReport, ContainerDiagnostics, ContainerRuntime, ContainerRuntimeControl,
-    ContainerRuntimeHandle, ContainerStartRequest, ContainerStateSnapshot, CONTAINER_STOP_TIMEOUT,
-    DEFAULT_API_HELPER_PATH, DEFAULT_BRIDGE_ENTRYPOINT, SESSION_LABEL,
+    ContainerRuntimeHandle, ContainerStartRequest, ContainerStateSnapshot,
+    RetainedContainerOwnerContext, CONTAINER_STOP_TIMEOUT, DEFAULT_API_HELPER_PATH,
+    DEFAULT_BRIDGE_ENTRYPOINT, SESSION_LABEL,
 };
 
 const DOCKER_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
@@ -245,13 +246,22 @@ impl DockerCommandOwnership {
             .extend(retained);
     }
 
-    fn retained_sessions(&self) -> Vec<Uuid> {
+    fn retained_contexts(&self) -> Vec<RetainedContainerOwnerContext> {
         self.reap_finished();
         self.retained
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .iter()
-            .map(|owner| owner.session_id.unwrap_or_else(Uuid::nil))
+            .map(|owner| RetainedContainerOwnerContext {
+                owner: "dockerCommand",
+                session_id: owner.session_id,
+                reason: owner.reason.to_string(),
+                program: Some(owner.program.clone()),
+                runtime_handle: None,
+                state: "retained",
+                in_flight: false,
+                last_error: None,
+            })
             .collect()
     }
 }
@@ -1461,19 +1471,37 @@ impl ContainerRuntime for DockerRuntime {
         }
     }
 
-    fn retained_cleanup_sessions(&self) -> Vec<Uuid> {
-        let mut sessions = self
+    fn retained_cleanup_contexts(&self) -> Vec<RetainedContainerOwnerContext> {
+        let mut contexts = self
             .retained_start_cleanups
             .entries
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .keys()
-            .copied()
+            .values()
+            .map(|entry| {
+                let state = entry
+                    .state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                RetainedContainerOwnerContext {
+                    owner: "ambiguousStartCleanup",
+                    session_id: Some(entry.handle.session_id),
+                    reason: "ambiguous-start".to_string(),
+                    program: None,
+                    runtime_handle: Some(true),
+                    state: if state.in_flight {
+                        "inFlight"
+                    } else {
+                        "retained"
+                    },
+                    in_flight: state.in_flight,
+                    last_error: state.last_error.clone(),
+                }
+            })
             .collect::<Vec<_>>();
-        sessions.extend(self.command_ownership.retained_sessions());
-        sessions.sort();
-        sessions.dedup();
-        sessions
+        contexts.extend(self.command_ownership.retained_contexts());
+        contexts.sort_by_key(RetainedContainerOwnerContext::diagnostic);
+        contexts
     }
 }
 
@@ -1739,7 +1767,7 @@ mod tests {
                 error.contains("state=terminal"),
                 "case={case} error={error}"
             );
-            assert!(runtime.retained_cleanup_sessions().is_empty(), "{case}");
+            assert!(runtime.retained_cleanup_contexts().is_empty(), "{case}");
 
             let commands = recorded
                 .lock()
@@ -1767,7 +1795,9 @@ mod tests {
             Arc::clone(&recorded),
             vec![
                 ScriptedDockerCommandResult::SpawnedError("primary start timeout".to_string()),
-                ScriptedDockerCommandResult::SpawnedError("cleanup denied".to_string()),
+                ScriptedDockerCommandResult::SpawnedError(
+                    "cleanup denied OPENAI_API_KEY=sk-proj-super-secret".to_string(),
+                ),
                 ScriptedDockerCommandResult::Output {
                     stdout: Vec::new(),
                     stderr: Vec::new(),
@@ -1782,13 +1812,36 @@ mod tests {
             .to_string();
         assert!(error.starts_with("primary start timeout;"), "{error}");
         assert!(error.contains("state=retained"), "{error}");
-        assert!(error.contains("cleanupError=cleanup denied"), "{error}");
-        assert_eq!(runtime.retained_cleanup_sessions(), vec![session_id]);
+        assert!(
+            error.contains("cleanupError=cleanup denied OPENAI_API_KEY=[REDACTED]"),
+            "{error}"
+        );
+        assert!(!error.contains("sk-proj-super-secret"), "{error}");
+        let contexts = runtime.retained_cleanup_contexts();
+        assert_eq!(contexts.len(), 1);
+        let context = &contexts[0];
+        assert_eq!(context.owner, "ambiguousStartCleanup");
+        assert_eq!(context.session_id, Some(session_id));
+        assert_eq!(context.reason, "ambiguous-start");
+        assert_eq!(context.program, None);
+        assert_eq!(context.runtime_handle, Some(true));
+        assert_eq!(context.state, "retained");
+        assert!(!context.in_flight);
+        assert!(context
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("sk-proj-super-secret")));
+        let diagnostic = context.diagnostic();
+        assert!(diagnostic.contains("owner=ambiguousStartCleanup"));
+        assert!(diagnostic.contains("state=retained"));
+        assert!(diagnostic.contains("lastError=cleanup denied"));
+        assert!(diagnostic.contains("OPENAI_API_KEY=[REDACTED]"));
+        assert!(!diagnostic.contains("sk-proj-super-secret"));
 
         let retry_control = ContainerRuntimeControl::default();
         retry_control.request_shutdown(Instant::now() + Duration::from_secs(1));
         runtime.retry_retained_cleanups(&retry_control);
-        assert!(runtime.retained_cleanup_sessions().is_empty());
+        assert!(runtime.retained_cleanup_contexts().is_empty());
         assert_eq!(
             recorded
                 .lock()
@@ -1811,7 +1864,6 @@ mod tests {
     #[test]
     fn permanently_blocked_command_readers_are_retained_at_the_deadline() {
         let runtime = DockerRuntime::new();
-        let session_id = Uuid::new_v4();
         let ready = Arc::new(std::sync::Barrier::new(3));
         let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
         let spawn_reader = |name: &'static str| {
@@ -1838,8 +1890,8 @@ mod tests {
             child: None,
             stdout: Some(spawn_reader("blocked-docker-stdout")),
             stderr: Some(spawn_reader("blocked-docker-stderr")),
-            session_id: Some(session_id),
-            reason: "permanently-blocked-reader-test",
+            session_id: None,
+            reason: "docker-command-reader",
             program: "docker-reader-fixture".to_string(),
             active_child: None,
         };
@@ -1862,7 +1914,23 @@ mod tests {
         );
         assert_eq!(runtime.active_child_count(), 0);
         assert_eq!(runtime.active_reader_count(), 2);
-        assert_eq!(runtime.retained_cleanup_sessions(), vec![session_id]);
+        let contexts = runtime.retained_cleanup_contexts();
+        assert_eq!(contexts.len(), 1);
+        let context = &contexts[0];
+        assert_eq!(context.owner, "dockerCommand");
+        assert_eq!(context.session_id, None);
+        assert_eq!(context.reason, "docker-command-reader");
+        assert_eq!(context.program.as_deref(), Some("docker-reader-fixture"));
+        assert_eq!(context.runtime_handle, None);
+        assert_eq!(context.state, "retained");
+        assert!(!context.in_flight);
+        assert_eq!(context.last_error, None);
+        let diagnostic = context.diagnostic();
+        assert!(diagnostic.contains("owner=dockerCommand"));
+        assert!(diagnostic.contains("session=none"));
+        assert!(diagnostic.contains("reason=docker-command-reader"));
+        assert!(diagnostic.contains("program=docker-reader-fixture"));
+        assert!(!diagnostic.contains("00000000-0000-0000-0000-000000000000"));
 
         let (released, changed) = &*release;
         *released.lock().unwrap_or_else(|error| error.into_inner()) = true;
@@ -1871,7 +1939,7 @@ mod tests {
             .command_ownership
             .retry_until(Instant::now() + Duration::from_secs(1));
         assert_eq!(runtime.active_reader_count(), 0);
-        assert!(runtime.retained_cleanup_sessions().is_empty());
+        assert!(runtime.retained_cleanup_contexts().is_empty());
     }
 
     #[test]
