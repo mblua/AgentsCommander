@@ -696,9 +696,13 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       })
     );
 
+    const rowMembershipGeneration = sessionsStore.rowMembershipGeneration;
     const sessions = await SessionAPI.list();
     if (disposed) return;
-    sessionsStore.setSessions(sessions);
+    sessionsStore.setSessionsIfRowMembershipUnchanged(
+      sessions,
+      rowMembershipGeneration,
+    );
 
     // #592 - surface profile drift edited OUTSIDE the app (a hand edit to
     // settings.json, or any path that does not emit coding_agent_profiles_updated)

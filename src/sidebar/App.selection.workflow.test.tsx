@@ -88,6 +88,11 @@ function setup(fake: FakeTransport, sessions: ReturnType<typeof session>[]): voi
   fake.resolve("list_detached_sessions", []);
   fake.resolve("telegram_list_bridges", []);
   fake.resolve("drain_session_warnings", []);
+  fake.resolve("screenshot_get_hotkey_status", {
+    configured: "Ctrl+Q",
+    registered: true,
+    error: null,
+  });
 }
 
 describe("SidebarApp authoritative selection workflow", () => {
@@ -347,5 +352,104 @@ describe("SidebarApp authoritative selection workflow", () => {
     await Promise.resolve();
     expect(sessionsStore.sessions).toHaveLength(0);
     expect(sessionsStore.activeId).toBeNull();
+  });
+
+  it("keeps a created live row when an older empty initial list completes", async () => {
+    const fake = new FakeTransport();
+    const rows = deferred<ReturnType<typeof session>[]>();
+    setup(fake, []);
+    fake.onInvoke("list_sessions", () => rows.promise);
+    fake.resolve("get_active_session", initialSelection());
+    const applyInitialRows = vi.spyOn(
+      sessionsStore,
+      "setSessionsIfRowMembershipUnchanged",
+    );
+    const rendered = renderWithFakeTransport(() => <SidebarApp embedded />, fake);
+    try {
+      await waitFor(() => expect(fake.callsFor("list_sessions")).toHaveLength(1));
+      fake.emitFromBackend("session_switched", liveSelection(SESSION_A, 1));
+      fake.emitFromBackend(
+        "session_created",
+        session({ id: SESSION_A, status: "running" }),
+      );
+      expect(sessionsStore.sessions.map((value) => value.id)).toEqual([SESSION_A]);
+      expect(sessionsStore.sessions[0]?.status).toBe("active");
+      expect(sessionsStore.activeId).toBe(SESSION_A);
+
+      rows.resolve([]);
+      await waitFor(() => expect(applyInitialRows).toHaveBeenCalledOnce());
+
+      expect(applyInitialRows).toHaveReturnedWith(false);
+      expect(sessionsStore.sessions.map((value) => value.id)).toEqual([SESSION_A]);
+      expect(sessionsStore.sessions[0]?.status).toBe("active");
+      expect(sessionsStore.activeId).toBe(SESSION_A);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("does not resurrect a destroyed row from an older initial list", async () => {
+    const fake = new FakeTransport();
+    const rows = deferred<ReturnType<typeof session>[]>();
+    setup(fake, []);
+    fake.onInvoke("list_sessions", () => rows.promise);
+    fake.resolve("get_active_session", initialSelection());
+    const applyInitialRows = vi.spyOn(
+      sessionsStore,
+      "setSessionsIfRowMembershipUnchanged",
+    );
+    const rendered = renderWithFakeTransport(() => <SidebarApp embedded />, fake);
+    try {
+      await waitFor(() => expect(fake.callsFor("list_sessions")).toHaveLength(1));
+      fake.emitFromBackend("session_destroyed", { id: SESSION_A });
+      fake.emitFromBackend("session_switched", noneSelection(1));
+      expect(sessionsStore.sessions).toHaveLength(0);
+      expect(sessionsStore.activeId).toBeNull();
+
+      rows.resolve([session({ id: SESSION_A, status: "running" })]);
+      await waitFor(() => expect(applyInitialRows).toHaveBeenCalledOnce());
+
+      expect(applyInitialRows).toHaveReturnedWith(false);
+      expect(sessionsStore.sessions).toHaveLength(0);
+      expect(sessionsStore.sessions.find((value) => value.id === SESSION_A)?.status).toBeUndefined();
+      expect(sessionsStore.activeId).toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("preserves exited refresh status and final selection after an older initial list", async () => {
+    const fake = new FakeTransport();
+    const rows = deferred<ReturnType<typeof session>[]>();
+    setup(fake, []);
+    fake.onInvoke("list_sessions", () => rows.promise);
+    fake.resolve("get_active_session", liveSelection(SESSION_A, 1));
+    const applyInitialRows = vi.spyOn(
+      sessionsStore,
+      "setSessionsIfRowMembershipUnchanged",
+    );
+    const rendered = renderWithFakeTransport(() => <SidebarApp embedded />, fake);
+    try {
+      await waitFor(() => expect(fake.callsFor("list_sessions")).toHaveLength(1));
+      fake.emitFromBackend("session_destroyed", { id: SESSION_A });
+      fake.emitFromBackend(
+        "session_created",
+        session({ id: SESSION_A, status: { exited: 31 } }),
+      );
+      fake.emitFromBackend("session_switched", noneSelection(2));
+      expect(sessionsStore.sessions.map((value) => value.id)).toEqual([SESSION_A]);
+      expect(sessionsStore.sessions[0]?.status).toEqual({ exited: 31 });
+      expect(sessionsStore.activeId).toBeNull();
+
+      rows.resolve([session({ id: SESSION_A, status: "running" })]);
+      await waitFor(() => expect(applyInitialRows).toHaveBeenCalledOnce());
+
+      expect(applyInitialRows).toHaveReturnedWith(false);
+      expect(sessionsStore.sessions.map((value) => value.id)).toEqual([SESSION_A]);
+      expect(sessionsStore.sessions[0]?.status).toEqual({ exited: 31 });
+      expect(sessionsStore.activeId).toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
   });
 });

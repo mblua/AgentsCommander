@@ -13,6 +13,9 @@ const [toggleInFlight, setToggleInFlight] = createSignal(false);
 const [sidebarPointerInside, setSidebarPointerInside] = createSignal(false);
 const [lastCoordinatorVisibleOrderByProject, setLastCoordinatorVisibleOrderByProject] = createSignal<Record<string, string[]>>({});
 const [frozenCoordinatorVisibleOrderByProject, setFrozenCoordinatorVisibleOrderByProject] = createSignal<Record<string, string[]>>({});
+// Independent of selection ordering: every full-row upsert/removal invalidates
+// an older wholesale list snapshot, even when the local membership is unchanged.
+let rowMembershipGeneration = 0;
 
 const [state, setState] = createStore<SessionsState>({
   sessions: [],
@@ -54,6 +57,10 @@ function projectStoredSelection(sessions: Session[]): void {
   const applied = applySelectionToSessionList(sessions, state.selection);
   setState("sessions", applied.sessions);
   setState("activeId", applied.activeId);
+}
+
+function advanceRowMembershipGeneration(): void {
+  rowMembershipGeneration += 1;
 }
 
 function normalizePath(p: string): string {
@@ -335,16 +342,34 @@ export const sessionsStore = {
   get collapsedTeams() {
     return collapsedTeams();
   },
+  get rowMembershipGeneration() {
+    return rowMembershipGeneration;
+  },
 
   setSessions(sessions: Session[]) {
+    advanceRowMembershipGeneration();
     projectStoredSelection(sessions);
   },
 
+  setSessionsIfRowMembershipUnchanged(
+    sessions: Session[],
+    expectedGeneration: number,
+  ): boolean {
+    if (rowMembershipGeneration !== expectedGeneration) return false;
+    advanceRowMembershipGeneration();
+    projectStoredSelection(sessions);
+    return true;
+  },
+
   addSession(session: Session) {
+    advanceRowMembershipGeneration();
     projectStoredSelection(upsertSessionList(state.sessions, session));
   },
 
   removeSession(id: string) {
+    // A destroy event is newer membership evidence even when the row is not
+    // currently present; an older pending list may still contain that ID.
+    advanceRowMembershipGeneration();
     projectStoredSelection(state.sessions.filter((session) => session.id !== id));
     if (state.activeId === id) setState("activeId", null);
   },
