@@ -41,6 +41,7 @@ import {
   profileEnvOrigin,
   resolveProfileLabel,
   resolveProfilePreview,
+  shouldMaskEnvValue,
   sortedProfileLetters,
   suggestedContextRegex,
   validateEnvRows,
@@ -1730,7 +1731,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                   />
                   <input
                     class="settings-input settings-env-value"
-                    type="password"
+                    type={shouldMaskEnvValue(row.key) ? "password" : "text"}
                     value={row.value}
                     disabled={readOnly()}
                     onInput={(e) => updateAgentEnv(agentIndex, rowIndex(), "value", e.currentTarget.value)}
@@ -1819,12 +1820,12 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               data-ac-role="status"
               data-ac-state="user"
             >
-              User CODEX_HOME is active for this Codex agent. Values remain masked in Settings.
+              User CODEX_HOME is active for this Codex agent.
             </div>
           </Show>
         </Show>
         <div class="settings-hint">
-          Env values are stored as plaintext local settings and are masked here by default.
+          Env values are stored as plaintext local settings and shown here in plaintext, except rows whose key starts with PASSWORD, which stay masked.
         </div>
       </div>
     );
@@ -2528,6 +2529,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                   />
                   <input
                     class="settings-input settings-env-value"
+                    type={shouldMaskEnvValue(row().key) ? "password" : "text"}
                     value={row().value}
                     onInput={(e) => updateCellEnvRow(agent.id, letter, rowIndex, "value", e.currentTarget.value)}
                     placeholder="value"
