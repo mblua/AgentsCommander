@@ -8,6 +8,7 @@ import {
   AC_MATRIX_ROOT_PLACEHOLDER,
   AC_REPLICA_ROOT_PLACEHOLDER,
   AC_WORKSPACE_ROOT_PLACEHOLDER,
+  PI_CONTEXT_REGEX,
 } from "../../shared/profile-utils";
 
 vi.mock("../../shared/ipc", async () => {
@@ -234,6 +235,54 @@ describe("SettingsModal automation hooks", () => {
     expect(document.querySelector('[data-ac-testid="settings.agentRow.0.label"]')).toBeTruthy();
     expect(document.querySelector('[data-ac-testid="settings.agentPreset.codex"]')).toBeTruthy();
     expect(document.querySelector('[data-ac-testid="settings.agent.addCustom"]')).toBeTruthy();
+
+    dispose();
+  });
+
+  it("offers and saves the opt-in Pi context pattern without pre-seeding it", async () => {
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
+      agents: [
+        {
+          id: "pi",
+          label: "Pi",
+          command: "pi",
+          color: "#8b5cf6",
+          envs: [],
+          isolatedHome: false,
+        },
+      ],
+    }));
+
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "agents" }),
+      root,
+    );
+    await settle();
+    expandAgentRow(0);
+    await settle();
+
+    const contextRegex = byTestId<HTMLInputElement>(
+      "settings.agentRow.0.contextRegex",
+    );
+    expect(contextRegex.value).toBe("");
+    expect(contextRegex.placeholder).toBe(PI_CONTEXT_REGEX);
+
+    const suggest = byTestId<HTMLButtonElement>(
+      "settings.agentRow.0.contextRegex.suggest",
+    );
+    expect(suggest.textContent?.trim()).toBe("Use suggested pattern");
+
+    suggest.click();
+    await settle();
+    expect(contextRegex.value).toBe(PI_CONTEXT_REGEX);
+
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.agents[0]?.contextRegex).toBe(PI_CONTEXT_REGEX);
 
     dispose();
   });
