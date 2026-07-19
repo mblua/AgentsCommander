@@ -3408,15 +3408,31 @@ fn target_keys_for_delete(path: &Path) -> Vec<String> {
     }
 }
 
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+
+fn metadata_parts_are_link_or_reparse(is_symlink: bool, file_attributes: u32) -> bool {
+    is_symlink || file_attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
 pub(crate) fn metadata_is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
-    metadata.file_type().is_symlink() || delete_root_has_windows_reparse_point(metadata)
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata_parts_are_link_or_reparse(
+            metadata.file_type().is_symlink(),
+            metadata.file_attributes(),
+        )
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        metadata_parts_are_link_or_reparse(metadata.file_type().is_symlink(), 0)
+    }
 }
 
 #[cfg(target_os = "windows")]
 fn delete_root_has_windows_reparse_point(metadata: &std::fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
-    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    metadata_parts_are_link_or_reparse(false, metadata.file_attributes())
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -4316,6 +4332,13 @@ mod tests {
             validate_delete_root_not_link_or_reparse(&link).unwrap_err(),
             "delete_root_is_symlink"
         );
+    }
+
+    #[test]
+    fn synthetic_windows_reparse_attribute_is_always_classified_for_rejection() {
+        assert!(!metadata_parts_are_link_or_reparse(false, 0));
+        assert!(metadata_parts_are_link_or_reparse(false, 0x0000_0400));
+        assert!(metadata_parts_are_link_or_reparse(false, 0x0000_0410));
     }
 
     #[cfg(windows)]

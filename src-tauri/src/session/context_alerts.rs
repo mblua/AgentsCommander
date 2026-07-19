@@ -197,6 +197,12 @@ struct ErrorMarker {
     message: String,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ResolutionRecovery {
+    policy: bool,
+    runtime: bool,
+}
+
 struct SessionAlertState {
     fingerprint: Option<MemberIdentityFingerprint>,
     policy: Vec<u8>,
@@ -526,7 +532,7 @@ fn apply_numeric_resolution(
     percent: u8,
     resolution: MemberPolicyResolution,
     now: Instant,
-) {
+) -> ResolutionRecovery {
     match resolution {
         MemberPolicyResolution::Eligible(resolved) => {
             if resolved.fingerprint.session_id != session_id {
@@ -535,7 +541,7 @@ fn apply_numeric_resolution(
                     session_id,
                     resolved.fingerprint.session_id
                 );
-                return;
+                return ResolutionRecovery::default();
             }
             let changed_identity = state
                 .sessions
@@ -550,8 +556,7 @@ fn apply_numeric_resolution(
                 .entry(session_id)
                 .or_insert_with(SessionAlertState::empty);
             session.fingerprint = Some(resolved.fingerprint.clone());
-            clear_runtime_error(session, session_id);
-            let was_paused = clear_policy_error(session, session_id);
+            let recovery = clear_resolution_errors(session, session_id);
             reconcile_policy(
                 state,
                 in_flight,
@@ -560,13 +565,20 @@ fn apply_numeric_resolution(
                 &resolved.thresholds,
                 now,
             );
-            if was_paused {
+            if recovery.policy {
                 make_session_batches_due_now(state, session_id, now);
             }
             evaluate_numeric_sample(state, session_id, percent, now);
+            recovery
         }
-        MemberPolicyResolution::Disabled(_) | MemberPolicyResolution::PermanentIneligible(_) => {
+        MemberPolicyResolution::Disabled(fingerprint) => {
+            let recovery = clear_resolution_errors_for_identity(state, session_id, &fingerprint);
             state.remove_session(session_id, in_flight);
+            recovery
+        }
+        MemberPolicyResolution::PermanentIneligible(_) => {
+            state.remove_session(session_id, in_flight);
+            ResolutionRecovery::default()
         }
         MemberPolicyResolution::Paused {
             fingerprint,
@@ -587,6 +599,7 @@ fn apply_numeric_resolution(
                 .or_insert_with(SessionAlertState::empty);
             session.fingerprint = Some(fingerprint);
             set_policy_error(session, session_id, class, message);
+            ResolutionRecovery::default()
         }
         MemberPolicyResolution::RetryableFailure(message) => {
             let session = state
@@ -594,6 +607,7 @@ fn apply_numeric_resolution(
                 .entry(session_id)
                 .or_insert_with(SessionAlertState::empty);
             set_runtime_error(session, session_id, message);
+            ResolutionRecovery::default()
         }
     }
 }
@@ -643,13 +657,48 @@ fn set_runtime_error(session: &mut SessionAlertState, session_id: Uuid, message:
     }
 }
 
-fn clear_runtime_error(session: &mut SessionAlertState, session_id: Uuid) {
+fn clear_runtime_error(session: &mut SessionAlertState, session_id: Uuid) -> bool {
     if session.runtime_error.take().is_some() {
         log::info!(
             "[context-alert] resolution recovered session={}",
             session_id
         );
+        true
+    } else {
+        false
     }
+}
+
+fn clear_resolution_errors(
+    session: &mut SessionAlertState,
+    session_id: Uuid,
+) -> ResolutionRecovery {
+    ResolutionRecovery {
+        runtime: clear_runtime_error(session, session_id),
+        policy: clear_policy_error(session, session_id),
+    }
+}
+
+fn clear_resolution_errors_for_identity(
+    state: &mut ActorState,
+    session_id: Uuid,
+    fingerprint: &MemberIdentityFingerprint,
+) -> ResolutionRecovery {
+    let same_identity = fingerprint.session_id == session_id
+        && state.sessions.get(&session_id).is_some_and(|session| {
+            session
+                .fingerprint
+                .as_ref()
+                .is_none_or(|current| current == fingerprint)
+        });
+    if !same_identity {
+        return ResolutionRecovery::default();
+    }
+    state
+        .sessions
+        .get_mut(&session_id)
+        .map(|session| clear_resolution_errors(session, session_id))
+        .unwrap_or_default()
 }
 
 fn reconcile_policy(
@@ -841,19 +890,19 @@ async fn dispatch_due_batch(
     in_flight: &mut Option<InFlightSlot>,
     completion_tx: &mpsc::Sender<DeliveryCompletion>,
     shutdown: &CancellationToken,
-) {
+) -> ResolutionRecovery {
     if in_flight.is_some() {
-        return;
+        return ResolutionRecovery::default();
     }
     let now = clock.now();
     let Some((due_at, generation)) = state.earliest_due() else {
-        return;
+        return ResolutionRecovery::default();
     };
     if due_at > now {
-        return;
+        return ResolutionRecovery::default();
     }
     let Some(batch) = state.batches.get(&generation).cloned() else {
-        return;
+        return ResolutionRecovery::default();
     };
     let snapshot = AttemptSnapshot {
         generation,
@@ -866,7 +915,7 @@ async fn dispatch_due_batch(
     let attempt_cancellation = shutdown.child_token();
     let preparation = tokio::select! {
         biased;
-        _ = shutdown.cancelled() => return,
+        _ = shutdown.cancelled() => return ResolutionRecovery::default(),
         preparation = runtime.prepare_attempt(snapshot, attempt_cancellation.clone()) => preparation,
     };
 
@@ -880,7 +929,7 @@ async fn dispatch_due_batch(
                 == Some(&attempt.snapshot.fingerprint);
             if !fingerprint_matches {
                 state.remove_session(session_id, None);
-                return;
+                return ResolutionRecovery::default();
             }
             reconcile_policy(
                 state,
@@ -895,15 +944,16 @@ async fn dispatch_due_batch(
                     && current.fingerprint == attempt.snapshot.fingerprint
             });
             if !still_matches {
-                return;
+                return ResolutionRecovery::default();
             }
             if let Some(current) = state.batches.get_mut(&generation) {
                 current.in_flight = true;
             }
-            if let Some(session) = state.sessions.get_mut(&session_id) {
-                clear_policy_error(session, session_id);
-                clear_runtime_error(session, session_id);
-            }
+            let recovery = state
+                .sessions
+                .get_mut(&session_id)
+                .map(|session| clear_resolution_errors(session, session_id))
+                .unwrap_or_default();
             let runtime = Arc::clone(runtime);
             let tx = completion_tx.clone();
             let join = tauri::async_runtime::spawn(async move {
@@ -922,6 +972,7 @@ async fn dispatch_due_batch(
                 cancellation: attempt_cancellation,
                 join,
             });
+            recovery
         }
         AttemptPreparation::Cancel {
             reason,
@@ -934,17 +985,30 @@ async fn dispatch_due_batch(
             );
             match current_policy {
                 Some(policy) if policy.fingerprint == batch.fingerprint => {
-                    reconcile_policy(
+                    let recovery = clear_resolution_errors_for_identity(
                         state,
-                        None,
                         batch.session_id,
                         &policy.fingerprint,
-                        &policy.thresholds,
-                        now,
                     );
-                    state.remove_batch(generation);
+                    if policy.thresholds.is_empty() {
+                        state.remove_session(batch.session_id, None);
+                    } else {
+                        reconcile_policy(
+                            state,
+                            None,
+                            batch.session_id,
+                            &policy.fingerprint,
+                            &policy.thresholds,
+                            now,
+                        );
+                        state.remove_batch(generation);
+                    }
+                    recovery
                 }
-                _ => state.remove_session(batch.session_id, None),
+                _ => {
+                    state.remove_session(batch.session_id, None);
+                    ResolutionRecovery::default()
+                }
             }
         }
         AttemptPreparation::Paused {
@@ -959,15 +1023,17 @@ async fn dispatch_due_batch(
                 == Some(&fingerprint);
             if !same_identity {
                 state.remove_session(batch.session_id, None);
-                return;
+                return ResolutionRecovery::default();
             }
             if let Some(session) = state.sessions.get_mut(&batch.session_id) {
                 set_policy_error(session, batch.session_id, class, message.clone());
             }
             fail_batch(state, generation, now, &message);
+            ResolutionRecovery::default()
         }
         AttemptPreparation::RetryableFailure(message) => {
             fail_batch(state, generation, now, &message);
+            ResolutionRecovery::default()
         }
     }
 }
@@ -1202,10 +1268,13 @@ impl ProductionContextAlertRuntime {
         let resolution = self.resolve_member_policy_inner(snapshot.session_id).await;
         let policy = match resolution {
             MemberPolicyResolution::Eligible(policy) => policy,
-            MemberPolicyResolution::Disabled(_) => {
+            MemberPolicyResolution::Disabled(fingerprint) => {
                 return AttemptPreparation::Cancel {
                     reason: "context alert policy is disabled".to_string(),
-                    current_policy: None,
+                    current_policy: Some(ResolvedPolicy {
+                        fingerprint,
+                        thresholds: Vec::new(),
+                    }),
                 }
             }
             MemberPolicyResolution::PermanentIneligible(reason) => {
@@ -2346,6 +2415,127 @@ mod tests {
         assert!(!state.sessions.contains_key(&id));
         assert!(state.batches.is_empty());
         slot.join.await.unwrap();
+    }
+
+    #[test]
+    fn disabled_numeric_resolution_logs_policy_recovery_once_before_removing_state() {
+        let id = Uuid::new_v4();
+        let now = Instant::now();
+        let mut state = ActorState::new();
+
+        let first = apply_numeric_resolution(
+            &mut state,
+            None,
+            id,
+            80,
+            MemberPolicyResolution::Paused {
+                fingerprint: fingerprint(id),
+                class: "malformed",
+                message: "partial JSON".to_string(),
+            },
+            now,
+        );
+        assert_eq!(first, ResolutionRecovery::default());
+        assert!(state.sessions[&id].policy_error.is_some());
+
+        let recovered = apply_numeric_resolution(
+            &mut state,
+            None,
+            id,
+            80,
+            MemberPolicyResolution::Disabled(fingerprint(id)),
+            now,
+        );
+        assert_eq!(
+            recovered,
+            ResolutionRecovery {
+                policy: true,
+                runtime: false,
+            },
+            "the true policy transition is the single info recovery log"
+        );
+        assert!(!state.sessions.contains_key(&id));
+
+        let repeated = apply_numeric_resolution(
+            &mut state,
+            None,
+            id,
+            80,
+            MemberPolicyResolution::Disabled(fingerprint(id)),
+            now,
+        );
+        assert_eq!(
+            repeated,
+            ResolutionRecovery::default(),
+            "a later disabled sample has no stale marker to log again"
+        );
+    }
+
+    #[tokio::test]
+    async fn disabled_retry_cancellation_logs_policy_recovery_once_and_drops_state() {
+        let id = Uuid::new_v4();
+        let now = Instant::now();
+        let mut state = ActorState::new();
+        apply_numeric_resolution(&mut state, None, id, 80, eligible(id, &[50]), now);
+        apply_numeric_resolution(
+            &mut state,
+            None,
+            id,
+            80,
+            MemberPolicyResolution::Paused {
+                fingerprint: fingerprint(id),
+                class: "unreadable",
+                message: "config read failed".to_string(),
+            },
+            now,
+        );
+        assert!(state.sessions[&id].policy_error.is_some());
+        assert_eq!(state.batches.len(), 1);
+
+        let runtime = ScriptedRuntime::new();
+        runtime.set_policy(id, &[]);
+        let runtime_trait: Arc<dyn ContextAlertRuntime> = runtime.clone();
+        let clock: Arc<dyn AlertClock> = ManualClock::new(now);
+        let (completion_tx, _completion_rx) = mpsc::channel(1);
+        let shutdown = CancellationToken::new();
+        let mut in_flight = None;
+
+        let recovered = dispatch_due_batch(
+            &runtime_trait,
+            &clock,
+            &mut state,
+            &mut in_flight,
+            &completion_tx,
+            &shutdown,
+        )
+        .await;
+        assert_eq!(
+            recovered,
+            ResolutionRecovery {
+                policy: true,
+                runtime: false,
+            },
+            "disabled retry preparation clears and logs the policy marker once"
+        );
+        assert!(!state.sessions.contains_key(&id));
+        assert!(state.batches.is_empty());
+        assert_eq!(runtime.prepare_calls.lock().unwrap().len(), 1);
+
+        let repeated = dispatch_due_batch(
+            &runtime_trait,
+            &clock,
+            &mut state,
+            &mut in_flight,
+            &completion_tx,
+            &shutdown,
+        )
+        .await;
+        assert_eq!(repeated, ResolutionRecovery::default());
+        assert_eq!(
+            runtime.prepare_calls.lock().unwrap().len(),
+            1,
+            "removed disabled state cannot emit a duplicate recovery log"
+        );
     }
 
     #[test]
