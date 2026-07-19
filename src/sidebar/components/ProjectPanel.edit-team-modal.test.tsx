@@ -94,7 +94,7 @@ describe("ProjectPanel edit-team modal (#669)", () => {
     document.body.replaceChildren();
   });
 
-  it("keeps the edit team modal and unsaved repo edits open across project refreshes", async () => {
+  it("keeps the edit team modal, raw threshold node, and unsaved repo open across refreshes", async () => {
     const fake = new FakeTransport();
     setupTransport(fake);
 
@@ -113,6 +113,13 @@ describe("ProjectPanel edit-team modal (#669)", () => {
     click(findButtonByText("Next"));
 
     await waitFor(() => expect(repoInput()).toBeTruthy());
+    click(findButtonByText("Add threshold"));
+    const thresholdInput = document.body.querySelector<HTMLInputElement>(
+      ".team-context-alert-input",
+    );
+    if (!thresholdInput) throw new Error("Threshold input not found");
+    input(thresholdInput, "080");
+
     input(repoInput(), unsavedRepoUrl);
     click(findButtonByText("Add Repo"));
     await waitFor(() => expect(modalText()).toContain("unsaved-repo"));
@@ -124,5 +131,9 @@ describe("ProjectPanel edit-team modal (#669)", () => {
 
     expect(modalText()).toContain(`Edit Team: ${teamName}`);
     expect(modalText()).toContain("unsaved-repo");
+    expect(document.body.querySelector(".team-context-alert-input")).toBe(thresholdInput);
+    expect(thresholdInput.value).toBe("080");
+    expect(fake.callsFor("get_team_config")).toHaveLength(1);
+    expect(fake.callsFor("update_team")).toHaveLength(0);
   });
 });
