@@ -37,6 +37,9 @@ const MAX_LOCK_POLL: Duration = Duration::from_millis(50);
 const MAX_TEMP_INVENTORY_ENTRIES: usize = 4_096;
 const MAX_TEMP_DIAGNOSTIC_SAMPLES: usize = 32;
 
+#[cfg(windows)]
+const WINDOWS_NAMESPACE_POWER_LOSS_DURABILITY_CLAIMED: bool = false;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FileIdentity {
     volume: u64,
@@ -264,6 +267,38 @@ impl SeedManifestError {
             #[cfg(windows)]
             Self::WindowsPostPublishIdentityConflict { .. } => {
                 ManifestDegradedReason::IdentityConflict
+            }
+        }
+    }
+
+    fn diagnostic_kind(&self) -> &'static str {
+        match self {
+            Self::UnsafePath { .. } => "unsafe_path",
+            Self::BusyTimeout { .. } => "busy_timeout",
+            Self::LockIo { .. } => "lock_io",
+            Self::ResourceBound { .. } => "resource_bound",
+            Self::BoundedRead { .. } => "bounded_read",
+            Self::Parse(_) => "parse",
+            Self::Validation(_) => "validation",
+            Self::FutureSchema { .. } => "future_schema",
+            Self::ExternalEditConflict { .. } => "external_edit_conflict",
+            Self::ReadOnlyCanonical { .. } => "read_only_canonical",
+            Self::TempFile { .. } => "temp_file",
+            Self::AtomicReplace { .. } => "atomic_replace",
+            Self::Serialize(_) => "serialize",
+            Self::SerializedSizeMismatch { .. } => "serialized_size_mismatch",
+            Self::Io { .. } => "io",
+            #[cfg(windows)]
+            Self::WindowsNamespaceFailure { .. } => "windows_namespace_failure",
+            #[cfg(windows)]
+            Self::WindowsReplacePartial { .. } => "windows_replace_partial",
+            #[cfg(windows)]
+            Self::WindowsReplaceRecoveryRequired { .. } => "windows_replace_recovery_required",
+            #[cfg(windows)]
+            Self::WindowsMoveRecoveryRequired { .. } => "windows_move_recovery_required",
+            #[cfg(windows)]
+            Self::WindowsPostPublishIdentityConflict { .. } => {
+                "windows_post_publish_identity_conflict"
             }
         }
     }
@@ -1366,19 +1401,24 @@ fn serialize_state(state: &ManifestState) -> Result<Vec<u8>, SeedManifestError> 
 }
 
 fn parse_manifest_bytes(raw: &[u8]) -> Result<ManifestState, SeedManifestError> {
-    let text = std::str::from_utf8(raw)
-        .map_err(|error| SeedManifestError::Parse(format!("manifest is not UTF-8: {error}")))?;
+    let text = std::str::from_utf8(raw).map_err(|error| {
+        SeedManifestError::Parse(format!(
+            "manifest is not UTF-8 at byte offset {} with invalid_sequence_length={}",
+            error.valid_up_to(),
+            error.error_len().map_or(0, usize::from)
+        ))
+    })?;
     let wire: SeedManifestWire = toml::from_str(text).map_err(classify_toml_parse_error)?;
-    ManifestState::from_wire(wire)
+    ManifestState::from_wire(wire).map_err(sanitize_canonical_validation_error)
 }
 
 fn classify_toml_parse_error(error: toml::de::Error) -> SeedManifestError {
-    let message = error.to_string();
-    let bound = if message.contains("path bytes bound exceeded") {
+    let message = error.message();
+    let bound = if message.starts_with("path path bytes bound exceeded:") {
         Some(ResourceBoundKind::PathBytes)
-    } else if message.contains("scope bytes bound exceeded") {
+    } else if message.starts_with("scope scope bytes bound exceeded:") {
         Some(ResourceBoundKind::ScopeBytes)
-    } else if message.contains("rows bound exceeded") {
+    } else if message.starts_with("rows rows bound exceeded:") {
         Some(ResourceBoundKind::Rows)
     } else {
         None
@@ -1399,7 +1439,22 @@ fn classify_toml_parse_error(error: toml::de::Error) -> SeedManifestError {
             MAX_MANIFEST_ROWS,
             MAX_MANIFEST_ROWS.saturating_add(1),
         ),
-        _ => SeedManifestError::Parse(message),
+        _ => match error.span() {
+            Some(span) => SeedManifestError::Parse(format!(
+                "invalid TOML syntax or schema at byte range {}..{}",
+                span.start, span.end
+            )),
+            None => SeedManifestError::Parse("invalid TOML syntax or schema".to_string()),
+        },
+    }
+}
+
+fn sanitize_canonical_validation_error(error: SeedManifestError) -> SeedManifestError {
+    match error {
+        SeedManifestError::Validation(_) => SeedManifestError::Validation(
+            "canonical fields failed strict v1 validation".to_string(),
+        ),
+        other => other,
     }
 }
 
@@ -1540,6 +1595,35 @@ impl OpenedRegularFile {
         Self::from_file(path, file)
     }
 
+    fn from_lock_file(path: &Path, file: File) -> Result<Self, SeedManifestError> {
+        let facts = handle_facts(&file).map_err(|source| SeedManifestError::LockIo {
+            path: path.to_path_buf(),
+            saw_contention: false,
+            source,
+        })?;
+        if !facts.is_regular_file || facts.is_reparse {
+            return Err(SeedManifestError::UnsafePath {
+                path: path.to_path_buf(),
+                reason: "opened lock handle is not a real non-reparse regular file".to_string(),
+            });
+        }
+        Ok(Self {
+            path: path.to_path_buf(),
+            file,
+            identity: facts.identity,
+            links: facts.links,
+            length: facts.length,
+            attributes: facts.attributes,
+            creation_time: facts.creation_time,
+        })
+    }
+
+    fn open_existing_lock(path: &Path) -> Result<Self, SeedManifestError> {
+        let file = open_regular_no_follow(path, true, false)
+            .map_err(|source| classify_lock_open_error(path, source))?;
+        Self::from_lock_file(path, file)
+    }
+
     fn create_new(path: &Path) -> Result<Self, SeedManifestError> {
         let file = open_regular_no_follow(path, true, true).map_err(|source| {
             SeedManifestError::TempFile {
@@ -1600,6 +1684,26 @@ fn classify_open_error(
         _ => SeedManifestError::Io {
             operation,
             path: path.to_path_buf(),
+            source,
+        },
+    }
+}
+
+fn classify_lock_open_error(path: &Path, source: io::Error) -> SeedManifestError {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || is_windows_reparse(&metadata) => {
+            SeedManifestError::UnsafePath {
+                path: path.to_path_buf(),
+                reason: "lock path is a symlink, junction, or reparse point".to_string(),
+            }
+        }
+        Ok(metadata) if !metadata.is_file() => SeedManifestError::UnsafePath {
+            path: path.to_path_buf(),
+            reason: "lock path is not a real regular file".to_string(),
+        },
+        Ok(_) | Err(_) => SeedManifestError::LockIo {
+            path: path.to_path_buf(),
+            saw_contention: false,
             source,
         },
     }
@@ -1819,7 +1923,6 @@ impl PinnedOwnerChain {
     }
 }
 
-#[derive(Debug)]
 enum CanonicalSnapshot {
     Writable {
         raw: Vec<u8>,
@@ -1830,6 +1933,28 @@ enum CanonicalSnapshot {
         reason: ManifestDegradedReason,
         canonical: Option<OpenedRegularFile>,
     },
+}
+
+impl fmt::Debug for CanonicalSnapshot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Writable {
+                raw,
+                state,
+                canonical,
+            } => formatter
+                .debug_struct("WritableCanonicalSnapshot")
+                .field("raw_len", &raw.len())
+                .field("row_count", &state.rows.len())
+                .field("canonical_present", &canonical.is_some())
+                .finish(),
+            Self::ReadOnly { reason, canonical } => formatter
+                .debug_struct("ReadOnlyCanonicalSnapshot")
+                .field("reason", reason)
+                .field("canonical_present", &canonical.is_some())
+                .finish(),
+        }
+    }
 }
 
 impl CanonicalSnapshot {
@@ -1856,6 +1981,7 @@ struct TempInventory {
     exact_names: Vec<String>,
     exact_count: u64,
     malformed_count: u64,
+    malformed_native_count: u64,
     exact_samples: Vec<String>,
     malformed_samples: Vec<String>,
     entry_errors: u64,
@@ -1865,6 +1991,9 @@ struct TempInventory {
 
 #[cfg(test)]
 type TestPathHook = std::sync::Arc<dyn Fn(&Path) + Send + Sync>;
+
+#[cfg(test)]
+type TestTempInventoryHook = std::sync::Arc<dyn Fn(&TempInventory) + Send + Sync>;
 
 #[cfg(all(test, windows))]
 type TestWindowsNamespaceHook = std::sync::Arc<
@@ -1876,6 +2005,7 @@ type TestWindowsNamespaceHook = std::sync::Arc<
 struct TestFilesystemHooks {
     before_temp_validation: Option<TestPathHook>,
     before_raw_conflict_check: Option<TestPathHook>,
+    on_prior_temp_diagnostic: Option<TestTempInventoryHook>,
     #[cfg(windows)]
     windows_namespace_call: Option<TestWindowsNamespaceHook>,
 }
@@ -2008,7 +2138,7 @@ impl ProjectSeedManifestGuard {
     pub(crate) fn revalidate_owner(&self) -> Result<(), SeedManifestError> {
         self.project.revalidate()?;
         self.ac_root.revalidate()?;
-        let reopened = OpenedRegularFile::open_existing(&self.lock_path, true)?;
+        let reopened = OpenedRegularFile::open_existing_lock(&self.lock_path)?;
         if reopened.identity != self.lock_identity {
             return Err(SeedManifestError::UnsafePath {
                 path: self.lock_path.clone(),
@@ -2149,9 +2279,10 @@ impl ProjectSeedManifestGuard {
             Err(error) => {
                 let reason = error.degraded_reason();
                 log::warn!(
-                    "[seed_manifest] canonical manifest is preserved read-only path={} error={}",
+                    "[seed_manifest] canonical manifest is preserved read-only path={} reason={:?} diagnostic_kind={}",
                     canonical_path.display(),
-                    error
+                    reason,
+                    error.diagnostic_kind()
                 );
                 Ok(CanonicalSnapshot::ReadOnly {
                     reason,
@@ -2185,6 +2316,16 @@ impl ProjectSeedManifestGuard {
             };
             let name = entry.file_name();
             let Some(name) = name.to_str() else {
+                if native_name_has_temp_shape(&name) {
+                    inventory.malformed_count = inventory.malformed_count.saturating_add(1);
+                    inventory.malformed_native_count =
+                        inventory.malformed_native_count.saturating_add(1);
+                    if inventory.malformed_samples.len() < MAX_TEMP_DIAGNOSTIC_SAMPLES {
+                        inventory
+                            .malformed_samples
+                            .push("<native-non-unicode-temp-name>".to_string());
+                    }
+                }
                 continue;
             };
             if is_exact_temp_name(name) {
@@ -2257,12 +2398,18 @@ impl ProjectSeedManifestGuard {
         #[cfg(not(any(unix, windows)))]
         let policy = "UnsupportedPlatformPreservePriorTemp";
 
+        #[cfg(test)]
+        if let Some(hook) = &self.hooks.on_prior_temp_diagnostic {
+            hook(&inventory);
+        }
+
         log::warn!(
-            "[seed_manifest] bounded prior-temp inventory root={} policy={} exact={} malformed={} removed={} preserved={} entry_errors={} scan_truncated={} scan_error={:?} exact_samples={:?} malformed_samples={:?}",
+            "[seed_manifest] bounded prior-temp inventory root={} policy={} exact={} malformed={} malformed_native={} removed={} preserved={} entry_errors={} scan_truncated={} scan_error={:?} exact_samples={:?} malformed_samples={:?}",
             self.ac_root.path.display(),
             policy,
             inventory.exact_count,
             inventory.malformed_count,
+            inventory.malformed_native_count,
             removed,
             preserved,
             inventory.entry_errors,
@@ -2476,33 +2623,23 @@ fn open_or_create_lock_file(path: &Path, deadline: Instant) -> Result<File, Seed
     loop {
         match open_regular_no_follow(path, true, false) {
             Ok(file) => {
-                let opened = OpenedRegularFile::from_file(path, file)?;
+                let opened = OpenedRegularFile::from_lock_file(path, file)?;
                 return Ok(opened.file);
             }
             Err(error) if is_exact_not_found(&error) => {
                 match open_regular_no_follow(path, true, true) {
                     Ok(file) => {
-                        let opened = OpenedRegularFile::from_file(path, file)?;
+                        let opened = OpenedRegularFile::from_lock_file(path, file)?;
                         return Ok(opened.file);
                     }
                     Err(create_error) if create_error.kind() == io::ErrorKind::AlreadyExists => {}
                     Err(create_error) => {
-                        return Err(classify_open_error(
-                            path,
-                            create_error,
-                            "create seed-manifest lock file",
-                            false,
-                        ));
+                        return Err(classify_lock_open_error(path, create_error));
                     }
                 }
             }
             Err(error) => {
-                return Err(classify_open_error(
-                    path,
-                    error,
-                    "open seed-manifest lock file",
-                    false,
-                ));
+                return Err(classify_lock_open_error(path, error));
             }
         }
         if Instant::now() >= deadline {
@@ -2561,6 +2698,32 @@ fn is_exact_temp_name(name: &str) -> bool {
     Uuid::parse_str(uuid_text)
         .map(|uuid| uuid.hyphenated().to_string() == uuid_text)
         .unwrap_or(false)
+}
+
+#[cfg(unix)]
+fn native_name_has_temp_shape(name: &std::ffi::OsStr) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+
+    let bytes = name.as_bytes();
+    bytes.starts_with(SEED_MANIFEST_TEMP_PREFIX.as_bytes())
+        && bytes.ends_with(SEED_MANIFEST_TEMP_SUFFIX.as_bytes())
+}
+
+#[cfg(windows)]
+fn native_name_has_temp_shape(name: &std::ffi::OsStr) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+
+    let units = name.encode_wide().collect::<Vec<_>>();
+    let prefix = SEED_MANIFEST_TEMP_PREFIX.encode_utf16().collect::<Vec<_>>();
+    let suffix = SEED_MANIFEST_TEMP_SUFFIX.encode_utf16().collect::<Vec<_>>();
+    units.starts_with(&prefix) && units.ends_with(&suffix)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn native_name_has_temp_shape(name: &std::ffi::OsStr) -> bool {
+    name.to_str().is_some_and(|name| {
+        name.starts_with(SEED_MANIFEST_TEMP_PREFIX) && name.ends_with(SEED_MANIFEST_TEMP_SUFFIX)
+    })
 }
 
 fn remove_if_same_identity(path: &Path, expected: FileIdentity) -> Result<(), SeedManifestError> {
@@ -3714,6 +3877,127 @@ mod tests {
         assert!(lock_path.is_file(), "unlock must not delete the lock file");
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn lock_share_denial_is_precontention_lock_io_and_preserves_the_lock_file() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION;
+        use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+
+        let (_temp, project) = setup_project();
+        let lock_path = project.join(".ac").join(SEED_MANIFEST_LOCK_FILENAME);
+        let original = b"persistent lock sentinel";
+        std::fs::write(&lock_path, original).unwrap();
+        let canonical_lock_path = std::fs::canonicalize(&lock_path).unwrap();
+        let blocker = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&lock_path)
+            .unwrap();
+
+        let error =
+            ProjectSeedManifestGuard::acquire_with_timeout(&project, Duration::from_millis(100))
+                .unwrap_err();
+        match &error {
+            SeedManifestError::LockIo {
+                path,
+                saw_contention,
+                source,
+            } => {
+                assert_eq!(path, &canonical_lock_path);
+                assert!(!saw_contention);
+                assert_eq!(
+                    source
+                        .raw_os_error()
+                        .and_then(|raw| u32::try_from(raw).ok()),
+                    Some(ERROR_SHARING_VIOLATION)
+                );
+            }
+            other => panic!("expected pre-contention LockIo, got {other:?}"),
+        }
+        assert_eq!(
+            error.degraded_reason(),
+            ManifestDegradedReason::LockUnavailable
+        );
+        drop(blocker);
+        assert_eq!(std::fs::read(&lock_path).unwrap(), original);
+    }
+
+    #[test]
+    fn canonical_diagnostics_and_guard_debug_never_expose_manifest_contents() {
+        let secret = "PRIVATE-SEED-CONTENT-7f9c1a";
+        let syntax_bytes = format!("{secret} = [\n");
+        let syntax_error = parse_manifest_bytes(syntax_bytes.as_bytes()).unwrap_err();
+        assert!(matches!(syntax_error, SeedManifestError::Parse(_)));
+        assert!(!format!("{syntax_error}").contains(secret));
+        assert!(!format!("{syntax_error:?}").contains(secret));
+        assert!(!format!("{syntax_error}").contains("1 |"));
+
+        let invalid_wire = format!(
+            concat!(
+                "schema_version = 1\n",
+                "coverage_version = 1\n",
+                "coverage = [\"project_context_templates\", \"replica_config_folders\"]\n",
+                "\n",
+                "[[files]]\n",
+                "path = \".ac/{secret}\"\n",
+                "path_encoding = \"utf8\"\n",
+                "kind = \"project_context_template\"\n",
+                "scope = \"context:agentscommander\"\n",
+                "source = \"builtin\"\n",
+                "last_seeded_at = \"2026-07-16T19:40:07.123Z\"\n"
+            ),
+            secret = secret
+        );
+        let validation_error = parse_manifest_bytes(invalid_wire.as_bytes()).unwrap_err();
+        assert!(matches!(validation_error, SeedManifestError::Validation(_)));
+        assert!(!format!("{validation_error}").contains(secret));
+        assert!(!format!("{validation_error:?}").contains(secret));
+
+        let (_invalid_temp, invalid_project) = setup_project();
+        std::fs::write(canonical_path(&invalid_project), syntax_bytes.as_bytes()).unwrap();
+        let mut invalid_guard = ProjectSeedManifestGuard::acquire(&invalid_project).unwrap();
+        let invalid_debug = format!("{invalid_guard:?}");
+        assert!(!invalid_debug.contains(secret));
+        assert_eq!(
+            invalid_guard.publication_permit().record_file(
+                &ManifestActivationToken::for_test(),
+                context_row(
+                    "Context.AgentsCommander.md",
+                    "context:agentscommander",
+                    "2026-07-16T19:40:07.123Z",
+                )
+                .unwrap(),
+            ),
+            ManifestRecordOutcome::PublishedUnrecorded(ManifestDegradedReason::InvalidCanonical)
+        );
+        invalid_guard.release();
+        assert_eq!(
+            std::fs::read(canonical_path(&invalid_project)).unwrap(),
+            syntax_bytes.as_bytes()
+        );
+
+        let (_temp, project) = setup_project();
+        std::fs::write(
+            canonical_path(&project),
+            serialize_state(&populated_state()).unwrap(),
+        )
+        .unwrap();
+        let guard = ProjectSeedManifestGuard::acquire(&project).unwrap();
+        let debug = format!("{guard:?}");
+        assert!(debug.contains("raw_len"));
+        assert!(debug.contains("row_count"));
+        for content in [
+            "Context.AgentsCommander.md",
+            "settings.json",
+            "context:agentscommander",
+            "workspace_base",
+        ] {
+            assert!(!debug.contains(content), "debug leaked {content}");
+        }
+        guard.release();
+    }
+
     #[test]
     fn corrupt_and_future_canonical_bytes_are_preserved_read_only() {
         for (name, bytes, expected_reason) in [
@@ -4254,11 +4538,131 @@ mod tests {
         let guard = ProjectSeedManifestGuard::acquire(&project).unwrap();
         let inventory = guard.inventory_prior_temps();
         assert!(inventory.scan_truncated);
+        assert!(inventory.exact_count > 0);
+        assert!(
+            inventory
+                .exact_count
+                .saturating_add(inventory.malformed_count)
+                <= u64::try_from(MAX_TEMP_INVENTORY_ENTRIES).unwrap()
+        );
         assert!(inventory.exact_names.len() <= MAX_TEMP_INVENTORY_ENTRIES);
         assert!(inventory.exact_samples.len() <= MAX_TEMP_DIAGNOSTIC_SAMPLES);
         assert!(inventory.malformed_samples.len() <= MAX_TEMP_DIAGNOSTIC_SAMPLES);
         guard.release();
         assert_eq!(exact_temp_paths(&project).len(), candidate_count);
+    }
+
+    #[test]
+    fn prior_temp_inventory_counts_and_samples_malformed_names_exactly() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let (_temp, project) = setup_project();
+        let ac = project.join(".ac");
+        for index in 0..3_u128 {
+            let name = format!(
+                "{SEED_MANIFEST_TEMP_PREFIX}{}{SEED_MANIFEST_TEMP_SUFFIX}",
+                Uuid::from_u128(index + 1).hyphenated()
+            );
+            std::fs::write(ac.join(name), b"candidate").unwrap();
+        }
+        let malformed_count = MAX_TEMP_DIAGNOSTIC_SAMPLES + 5;
+        for index in 0..malformed_count {
+            std::fs::write(
+                ac.join(format!(".seed-manifest.malformed-{index}.tmp")),
+                b"lookalike",
+            )
+            .unwrap();
+        }
+
+        let diagnostic_count = Arc::new(AtomicUsize::new(0));
+        let hooks = TestFilesystemHooks {
+            on_prior_temp_diagnostic: Some(Arc::new({
+                let diagnostic_count = Arc::clone(&diagnostic_count);
+                move |inventory| {
+                    diagnostic_count.fetch_add(1, Ordering::SeqCst);
+                    assert_eq!(inventory.exact_count, 3);
+                    assert_eq!(
+                        inventory.malformed_count,
+                        u64::try_from(malformed_count).unwrap()
+                    );
+                    assert_eq!(inventory.exact_samples.len(), 3);
+                    assert_eq!(
+                        inventory.malformed_samples.len(),
+                        MAX_TEMP_DIAGNOSTIC_SAMPLES
+                    );
+                }
+            })),
+            ..TestFilesystemHooks::default()
+        };
+        let guard =
+            ProjectSeedManifestGuard::acquire_with_hooks(&project, Duration::from_secs(1), hooks)
+                .unwrap();
+        assert_eq!(diagnostic_count.load(Ordering::SeqCst), 1);
+
+        let inventory = guard.inventory_prior_temps();
+        assert!(!inventory.scan_truncated);
+        assert!(inventory.scan_error.is_none());
+        assert_eq!(inventory.entry_errors, 0);
+        assert_eq!(inventory.exact_count, 3);
+        assert_eq!(
+            inventory.malformed_count,
+            u64::try_from(malformed_count).unwrap()
+        );
+        assert_eq!(inventory.malformed_native_count, 0);
+        assert_eq!(inventory.exact_names.len(), 3);
+        assert_eq!(inventory.exact_samples.len(), 3);
+        assert_eq!(
+            inventory.malformed_samples.len(),
+            MAX_TEMP_DIAGNOSTIC_SAMPLES
+        );
+        assert!(inventory
+            .malformed_samples
+            .iter()
+            .all(|sample| sample.starts_with(SEED_MANIFEST_TEMP_PREFIX)
+                && sample.ends_with(SEED_MANIFEST_TEMP_SUFFIX)));
+        guard.release();
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn native_non_unicode_temp_shape_is_counted_without_lossy_materialization() {
+        let (_temp, project) = setup_project();
+        let guard = ProjectSeedManifestGuard::acquire(&project).unwrap();
+
+        #[cfg(unix)]
+        let native_name = {
+            use std::os::unix::ffi::OsStringExt;
+
+            let mut bytes = SEED_MANIFEST_TEMP_PREFIX.as_bytes().to_vec();
+            bytes.push(0xff);
+            bytes.extend_from_slice(SEED_MANIFEST_TEMP_SUFFIX.as_bytes());
+            std::ffi::OsString::from_vec(bytes)
+        };
+        #[cfg(windows)]
+        let native_name = {
+            use std::os::windows::ffi::OsStringExt;
+
+            let mut units = SEED_MANIFEST_TEMP_PREFIX.encode_utf16().collect::<Vec<_>>();
+            units.push(0xd800);
+            units.extend(SEED_MANIFEST_TEMP_SUFFIX.encode_utf16());
+            std::ffi::OsString::from_wide(&units)
+        };
+
+        assert!(native_name.to_str().is_none());
+        std::fs::write(project.join(".ac").join(&native_name), b"lookalike").unwrap();
+        let inventory = guard.inventory_prior_temps();
+        assert!(!inventory.scan_truncated);
+        assert_eq!(inventory.malformed_count, 1);
+        assert_eq!(inventory.malformed_native_count, 1);
+        assert_eq!(
+            inventory.malformed_samples,
+            vec!["<native-non-unicode-temp-name>".to_string()]
+        );
+        assert!(!inventory
+            .malformed_samples
+            .iter()
+            .any(|sample| sample.contains('\u{fffd}')));
+        guard.release();
     }
 
     #[cfg(windows)]
@@ -4369,6 +4773,88 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn destination_share_denial_returns_typed_error_and_preserves_both_states() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+        let (_temp, project) = setup_project();
+        let activation = ManifestActivationToken::for_test();
+        let mut initial = ProjectSeedManifestGuard::acquire(&project).unwrap();
+        assert_eq!(
+            initial.publication_permit().record_file(
+                &activation,
+                context_row(
+                    "Context.AgentsCommander.md",
+                    "context:agentscommander",
+                    "2026-07-16T19:40:07.123Z",
+                )
+                .unwrap(),
+            ),
+            ManifestRecordOutcome::Recorded
+        );
+        initial.release();
+
+        let canonical = canonical_path(&project);
+        let original = std::fs::read(&canonical).unwrap();
+        let mut desired = read_disk_state(&project);
+        let _ = desired.upsert(
+            context_row(
+                "Context.coordinator.md",
+                "context:coordinator",
+                "2026-07-16T19:42:00.000Z",
+            )
+            .unwrap(),
+        );
+        let desired_bytes = serialize_state(&desired).unwrap();
+        let mut guard = ProjectSeedManifestGuard::acquire(&project).unwrap();
+        let blocker = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(&canonical)
+            .unwrap();
+
+        let error = guard.write_canonical(desired_bytes).unwrap_err();
+        match &error {
+            SeedManifestError::WindowsNamespaceFailure {
+                operation,
+                raw_error,
+                canonical_state,
+                temp_state,
+                ..
+            } => {
+                assert_eq!(*operation, WindowsNamespaceOperation::ReplaceFile);
+                assert_eq!(*raw_error, ERROR_SHARING_VIOLATION);
+                assert!(matches!(
+                    canonical_state.as_ref(),
+                    WindowsPathState::Same {
+                        bytes_match: true,
+                        ..
+                    }
+                ));
+                assert!(matches!(
+                    temp_state.as_ref(),
+                    WindowsPathState::Same {
+                        links: 1,
+                        bytes_match: true,
+                        ..
+                    }
+                ));
+            }
+            other => panic!("expected typed stable-state namespace failure, got {other:?}"),
+        }
+        assert_eq!(
+            error.degraded_reason(),
+            ManifestDegradedReason::PersistenceFailure
+        );
+        guard.release();
+        drop(blocker);
+        assert_eq!(std::fs::read(&canonical).unwrap(), original);
+        assert!(exact_temp_paths(&project).is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn writer_supports_non_ascii_verbatim_paths_beyond_max_path() {
         use std::os::windows::ffi::OsStrExt;
 
@@ -4393,6 +4879,47 @@ mod tests {
         );
         guard.release();
         assert!(canonical_path(&project).is_file());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn verbatim_conversion_covers_long_unc_paths_and_rejects_interior_nul() {
+        use std::os::windows::ffi::OsStringExt;
+
+        let unc = PathBuf::from(format!(
+            "\\\\server\\share\\{}",
+            "長い-unc-component-0123456789abcdef\\".repeat(12)
+        ));
+        let converted = absolute_verbatim_utf16(&unc).unwrap();
+        let expected_prefix = "\\\\?\\UNC\\server\\share\\"
+            .encode_utf16()
+            .collect::<Vec<_>>();
+        assert!(converted.starts_with(&expected_prefix));
+        assert_eq!(converted.last(), Some(&0));
+        assert!(converted.len() > 260);
+
+        let with_nul = PathBuf::from(std::ffi::OsString::from_wide(&[
+            u16::from(b'C'),
+            u16::from(b':'),
+            u16::from(b'\\'),
+            u16::from(b'a'),
+            0,
+            u16::from(b'b'),
+        ]));
+        let error = absolute_verbatim_utf16(&with_nul).unwrap_err();
+        assert!(matches!(
+            error,
+            SeedManifestError::Validation(message)
+                if message == "Windows namespace path contains an interior NUL"
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_namespace_power_loss_durability_is_explicitly_unclaimed() {
+        assert!(!std::hint::black_box(
+            WINDOWS_NAMESPACE_POWER_LOSS_DURABILITY_CLAIMED
+        ));
     }
 
     #[cfg(windows)]
@@ -4570,6 +5097,273 @@ mod tests {
                     assert!(!canonical.exists());
                     assert_eq!(std::fs::read(&renamed_old).unwrap(), original);
                 }
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn injected_replace_error_matrix_retains_raw_code_and_never_retries() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use windows_sys::Win32::Foundation::{
+            ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION, ERROR_UNABLE_TO_MOVE_REPLACEMENT,
+            ERROR_UNABLE_TO_MOVE_REPLACEMENT_2, ERROR_UNABLE_TO_REMOVE_REPLACED,
+        };
+
+        #[derive(Clone, Copy, Debug)]
+        enum Mutation {
+            StableNames,
+            RemoveCanonical,
+            RenameCanonical,
+        }
+
+        #[derive(Clone, Copy, Debug)]
+        enum ExpectedError {
+            StableFailure,
+            RecoveryRequired,
+            Partial(WindowsReplacePartial),
+        }
+
+        #[derive(Clone, Copy, Debug)]
+        struct Case {
+            label: &'static str,
+            raw_error: u32,
+            mutation: Mutation,
+            expected: ExpectedError,
+            canonical_present: bool,
+            temp_present: bool,
+            renamed_old_present: bool,
+        }
+
+        let cases = [
+            Case {
+                label: "1175 documented stable names",
+                raw_error: ERROR_UNABLE_TO_REMOVE_REPLACED,
+                mutation: Mutation::StableNames,
+                expected: ExpectedError::StableFailure,
+                canonical_present: true,
+                temp_present: false,
+                renamed_old_present: false,
+            },
+            Case {
+                label: "1175 contradictory missing canonical",
+                raw_error: ERROR_UNABLE_TO_REMOVE_REPLACED,
+                mutation: Mutation::RemoveCanonical,
+                expected: ExpectedError::RecoveryRequired,
+                canonical_present: false,
+                temp_present: true,
+                renamed_old_present: false,
+            },
+            Case {
+                label: "1176 documented removed canonical",
+                raw_error: ERROR_UNABLE_TO_MOVE_REPLACEMENT,
+                mutation: Mutation::RemoveCanonical,
+                expected: ExpectedError::Partial(
+                    WindowsReplacePartial::CanonicalRemovedReplacementAtTemp,
+                ),
+                canonical_present: false,
+                temp_present: true,
+                renamed_old_present: false,
+            },
+            Case {
+                label: "1176 contradictory stable names",
+                raw_error: ERROR_UNABLE_TO_MOVE_REPLACEMENT,
+                mutation: Mutation::StableNames,
+                expected: ExpectedError::Partial(
+                    WindowsReplacePartial::CanonicalRemovedReplacementAtTemp,
+                ),
+                canonical_present: true,
+                temp_present: true,
+                renamed_old_present: false,
+            },
+            Case {
+                label: "1177 documented renamed old destination",
+                raw_error: ERROR_UNABLE_TO_MOVE_REPLACEMENT_2,
+                mutation: Mutation::RenameCanonical,
+                expected: ExpectedError::Partial(
+                    WindowsReplacePartial::ReplacementEnrichedOldDestinationRenamed,
+                ),
+                canonical_present: false,
+                temp_present: true,
+                renamed_old_present: true,
+            },
+            Case {
+                label: "1177 contradictory stable names",
+                raw_error: ERROR_UNABLE_TO_MOVE_REPLACEMENT_2,
+                mutation: Mutation::StableNames,
+                expected: ExpectedError::Partial(
+                    WindowsReplacePartial::ReplacementEnrichedOldDestinationRenamed,
+                ),
+                canonical_present: true,
+                temp_present: true,
+                renamed_old_present: false,
+            },
+            Case {
+                label: "other access denied stable names",
+                raw_error: ERROR_ACCESS_DENIED,
+                mutation: Mutation::StableNames,
+                expected: ExpectedError::StableFailure,
+                canonical_present: true,
+                temp_present: false,
+                renamed_old_present: false,
+            },
+            Case {
+                label: "other sharing error contradictory state",
+                raw_error: ERROR_SHARING_VIOLATION,
+                mutation: Mutation::RemoveCanonical,
+                expected: ExpectedError::RecoveryRequired,
+                canonical_present: false,
+                temp_present: true,
+                renamed_old_present: false,
+            },
+        ];
+
+        for case in cases {
+            let (_temp, project) = setup_project();
+            let activation = ManifestActivationToken::for_test();
+            let mut initial = ProjectSeedManifestGuard::acquire(&project).unwrap();
+            assert_eq!(
+                initial.publication_permit().record_file(
+                    &activation,
+                    context_row(
+                        "Context.AgentsCommander.md",
+                        "context:agentscommander",
+                        "2026-07-16T19:40:07.123Z",
+                    )
+                    .unwrap(),
+                ),
+                ManifestRecordOutcome::Recorded,
+                "{}",
+                case.label
+            );
+            initial.release();
+
+            let canonical = canonical_path(&project);
+            let original = std::fs::read(&canonical).unwrap();
+            let renamed_old = project.join(".ac").join("renamed-old-destination");
+            let call_count = Arc::new(AtomicUsize::new(0));
+            let hooks = TestFilesystemHooks {
+                windows_namespace_call: Some(Arc::new({
+                    let call_count = Arc::clone(&call_count);
+                    let renamed_old = renamed_old.clone();
+                    move |operation, _temp, canonical| {
+                        assert_eq!(operation, WindowsNamespaceOperation::ReplaceFile);
+                        call_count.fetch_add(1, Ordering::SeqCst);
+                        match case.mutation {
+                            Mutation::StableNames => {}
+                            Mutation::RemoveCanonical => {
+                                std::fs::remove_file(canonical).unwrap();
+                            }
+                            Mutation::RenameCanonical => {
+                                std::fs::rename(canonical, &renamed_old).unwrap();
+                            }
+                        }
+                        Err(case.raw_error)
+                    }
+                })),
+                ..TestFilesystemHooks::default()
+            };
+            let mut guard = ProjectSeedManifestGuard::acquire_with_hooks(
+                &project,
+                Duration::from_secs(1),
+                hooks,
+            )
+            .unwrap();
+            let mut desired = read_disk_state(&project);
+            let _ = desired.upsert(
+                context_row(
+                    "Context.coordinator.md",
+                    "context:coordinator",
+                    "2026-07-16T19:42:00.000Z",
+                )
+                .unwrap(),
+            );
+            let error = guard
+                .write_canonical(serialize_state(&desired).unwrap())
+                .unwrap_err();
+            assert_eq!(call_count.load(Ordering::SeqCst), 1, "{}", case.label);
+
+            let observed_raw = match &error {
+                SeedManifestError::WindowsNamespaceFailure {
+                    raw_error,
+                    canonical_state,
+                    temp_state,
+                    ..
+                } => {
+                    assert!(matches!(case.expected, ExpectedError::StableFailure));
+                    assert!(matches!(
+                        canonical_state.as_ref(),
+                        WindowsPathState::Same {
+                            bytes_match: true,
+                            ..
+                        }
+                    ));
+                    assert!(matches!(
+                        temp_state.as_ref(),
+                        WindowsPathState::Same {
+                            bytes_match: true,
+                            ..
+                        }
+                    ));
+                    *raw_error
+                }
+                SeedManifestError::WindowsReplaceRecoveryRequired { raw_error, .. } => {
+                    assert!(matches!(case.expected, ExpectedError::RecoveryRequired));
+                    *raw_error
+                }
+                SeedManifestError::WindowsReplacePartial {
+                    raw_error, partial, ..
+                } => {
+                    let ExpectedError::Partial(expected_partial) = case.expected else {
+                        panic!("{} returned an unexpected partial error", case.label);
+                    };
+                    assert_eq!(*partial, expected_partial);
+                    *raw_error
+                }
+                other => panic!("{} returned unexpected error {other:?}", case.label),
+            };
+            assert_eq!(observed_raw, case.raw_error, "{}", case.label);
+            let display = format!("{error}");
+            assert!(
+                display.contains(&case.raw_error.to_string()),
+                "{}",
+                case.label
+            );
+            assert!(
+                display.contains(&format!("0x{:08x}", case.raw_error)),
+                "{}",
+                case.label
+            );
+            guard.release();
+
+            assert_eq!(canonical.exists(), case.canonical_present, "{}", case.label);
+            if case.canonical_present {
+                assert_eq!(
+                    std::fs::read(&canonical).unwrap(),
+                    original,
+                    "{}",
+                    case.label
+                );
+            }
+            assert_eq!(
+                exact_temp_paths(&project).len(),
+                usize::from(case.temp_present),
+                "{}",
+                case.label
+            );
+            assert_eq!(
+                renamed_old.exists(),
+                case.renamed_old_present,
+                "{}",
+                case.label
+            );
+            if case.renamed_old_present {
+                assert_eq!(
+                    std::fs::read(&renamed_old).unwrap(),
+                    original,
+                    "{}",
+                    case.label
+                );
             }
         }
     }
