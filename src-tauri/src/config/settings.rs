@@ -74,8 +74,8 @@ pub struct AgentConfig {
     ///
     /// The engine ships no anchoring rules of its own; every rule that makes a
     /// pattern trustworthy lives in the pattern, because only the user knows what
-    /// their agent renders. The reading is a signal for a human and never drives an
-    /// action.
+    /// their agent renders. A reading may enqueue an informational notice to the exact
+    /// workgroup coordinator, but it never drives remedial or destructive session action.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_regex: Option<String>,
     /// Backend used for future non-local session transports. Omitted/default

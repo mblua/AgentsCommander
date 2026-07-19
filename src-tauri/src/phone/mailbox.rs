@@ -18,10 +18,11 @@ use crate::phone::types::OutboxMessage;
 use crate::pty::backend::SessionBackendKind;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
+use crate::session::session::{Session, SessionCommunicationKind, SessionInfo, SessionStatus};
 #[cfg(test)]
 use crate::session::session::{SessionCommunication, SessionRepo};
-use crate::session::session::{SessionCommunicationKind, SessionInfo, SessionStatus};
 use crate::{AppOutbox, MasterToken};
+use tokio_util::sync::CancellationToken;
 
 fn sender_name_for_session_cwd_with_root_flag(
     working_directory: &str,
@@ -64,6 +65,263 @@ pub(crate) fn retain_unarchived_session_dirs(
 pub(crate) enum WakeDeliveryOrigin {
     FilesystemPoller,
     DbQueue,
+}
+
+/// Canonical routing capability for an AgentsCommander-generated notice. The FQN and
+/// replica path are validated and retained together so no internal caller can later route
+/// by spelling alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InternalSystemTarget {
+    fqn: String,
+    replica_dir: PathBuf,
+}
+
+impl InternalSystemTarget {
+    pub(crate) fn for_context_alert(fqn: String, replica_dir: PathBuf) -> Result<Self, String> {
+        let metadata = std::fs::symlink_metadata(&replica_dir).map_err(|e| {
+            format!(
+                "Internal system target replica '{}' is not readable: {}",
+                replica_dir.display(),
+                e
+            )
+        })?;
+        if !metadata.is_dir()
+            || crate::commands::entity_creation::metadata_is_link_or_reparse(&metadata)
+        {
+            return Err(format!(
+                "Internal system target replica '{}' must be a real non-link directory",
+                replica_dir.display()
+            ));
+        }
+        let canonical = std::fs::canonicalize(&replica_dir)
+            .map(|path| crate::path_utils::normalize_windows_verbatim_path_buf(&path))
+            .map_err(|e| {
+                format!(
+                    "Internal system target replica '{}' cannot be canonicalized: {}",
+                    replica_dir.display(),
+                    e
+                )
+            })?;
+        let layout = crate::config::workspace::wg_replica_layout_from_agent_dir(&canonical)?
+            .ok_or_else(|| {
+                format!(
+                    "Internal system target replica '{}' is not a canonical workgroup replica",
+                    canonical.display()
+                )
+            })?;
+        crate::commands::entity_creation::parse_team_from_workgroup_name(&layout.wg_name)?;
+        crate::commands::entity_creation::validate_existing_name(&layout.agent_name, "Agent")?;
+        let project = layout
+            .project_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| {
+                !name.is_empty()
+                    && !name.contains(':')
+                    && !name.chars().any(|ch| ch == '\0' || ch.is_ascii_control())
+            })
+            .ok_or_else(|| {
+                format!(
+                    "Internal system target project '{}' has an invalid FQN component",
+                    layout.project_dir.display()
+                )
+            })?
+            .to_string();
+        let expected = format!("{}:{}/{}", project, layout.wg_name, layout.agent_name);
+        if fqn != expected {
+            return Err(format!(
+                "Internal system target FQN '{}' does not match canonical replica '{}' (expected '{}')",
+                fqn,
+                canonical.display(),
+                expected
+            ));
+        }
+        Ok(Self {
+            fqn,
+            replica_dir: canonical,
+        })
+    }
+
+    pub(crate) fn fqn(&self) -> &str {
+        &self.fqn
+    }
+
+    pub(crate) fn replica_dir(&self) -> &Path {
+        &self.replica_dir
+    }
+}
+
+/// Validated fixed facts rendered by the private system formatter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InternalSystemNotice {
+    member: String,
+    workgroup: String,
+    observed: u8,
+    thresholds: Vec<u8>,
+}
+
+impl InternalSystemNotice {
+    pub(crate) fn for_context_alert(
+        member: String,
+        workgroup: String,
+        observed: u8,
+        thresholds: Vec<u8>,
+    ) -> Result<Self, String> {
+        crate::commands::entity_creation::validate_existing_name(&member, "Agent")?;
+        crate::commands::entity_creation::parse_team_from_workgroup_name(&workgroup)?;
+        if observed > 100 {
+            return Err("Context alert observation must be from 0 through 100".to_string());
+        }
+        if thresholds.is_empty() || thresholds.len() > 3 {
+            return Err("Context alert notice must contain 1 through 3 thresholds".to_string());
+        }
+        if thresholds
+            .iter()
+            .any(|threshold| !(1..=100).contains(threshold) || *threshold > observed)
+            || thresholds.windows(2).any(|pair| pair[0] >= pair[1])
+        {
+            return Err(
+                "Context alert notice thresholds must be strictly ascending, distinct, from 1 through 100, and no greater than the observation"
+                    .to_string(),
+            );
+        }
+        Ok(Self {
+            member,
+            workgroup,
+            observed,
+            thresholds,
+        })
+    }
+
+    pub(crate) fn thresholds(&self) -> &[u8] {
+        &self.thresholds
+    }
+
+    fn line(&self) -> String {
+        let thresholds = self
+            .thresholds
+            .iter()
+            .map(|threshold| format!("{}%", threshold))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "[AgentsCommander context alert] Member '{}' in workgroup '{}' was observed at {}% context use, reaching configured threshold(s): {}. No automatic action was taken; the coordinator decides whether follow-up is needed.",
+            self.member, self.workgroup, self.observed, thresholds
+        )
+    }
+}
+
+pub(crate) type InternalNoticeGuard = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
+
+enum WakeDelivery<'a> {
+    Peer {
+        message: &'a OutboxMessage,
+        origin: WakeDeliveryOrigin,
+    },
+    InternalSystem {
+        target: InternalSystemTarget,
+        notice: InternalSystemNotice,
+        cancellation: CancellationToken,
+        guard: InternalNoticeGuard,
+    },
+}
+
+enum WakeContent<'a> {
+    Peer {
+        from: &'a str,
+        body: &'a str,
+        origin: WakeDeliveryOrigin,
+    },
+    InternalSystem(&'a InternalSystemNotice),
+}
+
+fn format_wake_content(content: WakeContent<'_>) -> String {
+    match content {
+        WakeContent::Peer { from, body, origin } => {
+            let _ = origin;
+            crate::phone::messaging::format_pty_wrap(from, body)
+        }
+        WakeContent::InternalSystem(notice) => format!("\n{}\n\r", notice.line()),
+    }
+}
+
+fn internal_system_envelope(target: &InternalSystemTarget) -> OutboxMessage {
+    OutboxMessage {
+        id: Uuid::new_v4().to_string(),
+        token: None,
+        from: "AgentsCommander".to_string(),
+        to: target.fqn.clone(),
+        body: String::new(),
+        mode: "wake".to_string(),
+        get_output: false,
+        request_id: None,
+        sender_agent: None,
+        preferred_agent: "auto".to_string(),
+        priority: "normal".to_string(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        command: None,
+        action: None,
+        target: None,
+        force: None,
+        timeout_secs: None,
+        switch_coding_agent: None,
+        switch_profile: None,
+        dry_run: None,
+        quiet_period_ms: None,
+    }
+}
+
+fn canonical_cwd_owned_by_replica(cwd: &str, replica_dir: &Path) -> Result<bool, String> {
+    let lexical = Path::new(cwd);
+    let Some(lexical_replica) = lexical.ancestors().find(|ancestor| {
+        ancestor
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("__agent_"))
+    }) else {
+        return Ok(false);
+    };
+    let Some(lexical_workgroup) = lexical_replica.parent() else {
+        return Ok(false);
+    };
+    let Some(lexical_workspace) = lexical_workgroup.parent() else {
+        return Ok(false);
+    };
+    for (path, label) in [
+        (lexical_replica, "replica"),
+        (lexical_workgroup, "workgroup"),
+        (lexical_workspace, "Project AC Root"),
+    ] {
+        let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+            format!(
+                "Failed to inspect recipient {} '{}': {}",
+                label,
+                path.display(),
+                error
+            )
+        })?;
+        if !metadata.is_dir()
+            || crate::commands::entity_creation::metadata_is_link_or_reparse(&metadata)
+        {
+            return Ok(false);
+        }
+    }
+    let canonical_replica = std::fs::canonicalize(lexical_replica)
+        .map(|path| crate::path_utils::normalize_windows_verbatim_path_buf(&path))
+        .map_err(|error| {
+            format!(
+                "Failed to canonicalize recipient replica '{}': {}",
+                lexical_replica.display(),
+                error
+            )
+        })?;
+    if canonical_replica != replica_dir {
+        return Ok(false);
+    }
+    let canonical = std::fs::canonicalize(cwd)
+        .map(|path| crate::path_utils::normalize_windows_verbatim_path_buf(&path))
+        .map_err(|e| format!("Failed to canonicalize recipient CWD '{}': {}", cwd, e))?;
+    Ok(canonical == replica_dir || canonical.starts_with(replica_dir))
 }
 
 fn container_body_override_for_delivery(
@@ -1651,7 +1909,11 @@ struct MailboxTestHooks {
     /// - so the AC3 hooked test exercises the real conversion, not a copy.
     consumption_results: Arc<Mutex<VecDeque<ConsumptionVerdict>>>,
     inject_calls: Arc<Mutex<Vec<Uuid>>>,
+    internal_payloads: Arc<Mutex<Vec<String>>>,
+    internal_bookkeeping: Arc<Mutex<Vec<InternalSystemBookkeeping>>>,
+    internal_live_settle_gate: Arc<Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>,
     destroy_calls: Arc<Mutex<Vec<Uuid>>>,
+    destroy_results: Arc<Mutex<VecDeque<Result<(), String>>>>,
     spawn_calls: Arc<Mutex<Vec<MailboxSpawnCall>>>,
     attach_calls: MailboxAttachCalls,
     events: Arc<Mutex<Vec<MailboxTestEvent>>>,
@@ -1661,6 +1923,19 @@ struct MailboxTestHooks {
     /// wake that respawns a coordinator target yields a coordinator record;
     /// tests exercising the raised-hand carry set this to mirror that.
     spawn_is_coordinator: Arc<Mutex<bool>>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InternalSystemBookkeeping {
+    session_id: Uuid,
+    post_boundary: bool,
+    silence_touch: bool,
+    set_last_prompt: bool,
+    peer_event: bool,
+    response_watcher: bool,
+    consumption_verdict: bool,
+    mailbox_archive: bool,
 }
 
 #[cfg(test)]
@@ -2490,6 +2765,46 @@ impl MailboxPoller {
         msg: &OutboxMessage,
         origin: WakeDeliveryOrigin,
     ) -> Result<(), String> {
+        self.deliver_wake_engine(
+            app,
+            WakeDelivery::Peer {
+                message: msg,
+                origin,
+            },
+        )
+        .await
+    }
+
+    /// Single private entry for every wake delivery kind. The variant is selected only by
+    /// code: serialized peer messages can enter only `Peer`, while the validated target,
+    /// notice, cancellation, and guard capability are required for `InternalSystem`.
+    async fn deliver_wake_engine<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        delivery: WakeDelivery<'_>,
+    ) -> Result<(), String> {
+        match delivery {
+            WakeDelivery::Peer { message, origin } => {
+                self.deliver_peer_wake(app, message, origin).await
+            }
+            WakeDelivery::InternalSystem {
+                target,
+                notice,
+                cancellation,
+                guard,
+            } => {
+                self.deliver_internal_system_wake(app, target, notice, cancellation, guard)
+                    .await
+            }
+        }
+    }
+
+    async fn deliver_peer_wake<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        msg: &OutboxMessage,
+        origin: WakeDeliveryOrigin,
+    ) -> Result<(), String> {
         // (#885 J2) A purge is destroying this agent's record right now. A wake
         // delivered into that window falls through to spawn-persistent below and
         // would cold-spawn the agent we are purging, silently breaking the verb's
@@ -2867,6 +3182,602 @@ impl MailboxPoller {
             .await
     }
 
+    /// Deliver a validated AgentsCommander-generated notice through the existing wake,
+    /// resume, background-spawn, settle, and canonical injection plumbing. No serialized
+    /// message field can select this path.
+    pub(crate) async fn deliver_internal_system_notice<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        target: InternalSystemTarget,
+        notice: InternalSystemNotice,
+        cancellation: CancellationToken,
+        guard: InternalNoticeGuard,
+    ) -> Result<(), String> {
+        self.deliver_wake_engine(
+            app,
+            WakeDelivery::InternalSystem {
+                target,
+                notice,
+                cancellation,
+                guard,
+            },
+        )
+        .await
+    }
+
+    async fn deliver_internal_system_wake<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        target: InternalSystemTarget,
+        notice: InternalSystemNotice,
+        cancellation: CancellationToken,
+        guard: InternalNoticeGuard,
+    ) -> Result<(), String> {
+        if cancellation.is_cancelled() {
+            return Err("Context alert delivery was canceled".to_string());
+        }
+        if let Some(purge) = app.try_state::<Arc<crate::session::purge_guard::PurgeGuard>>() {
+            if purge.blocks_agent(target.fqn()) {
+                return Err(format!(
+                    "purge-wg in progress for '{}'; context alert deferred",
+                    target.fqn()
+                ));
+            }
+        }
+        Self::run_internal_guard(Arc::clone(&guard)).await?;
+
+        let envelope = internal_system_envelope(&target);
+        let mut exited: Option<SessionInfo> = None;
+        for (candidate, has_pty) in self.find_internal_system_candidates(app, &target).await? {
+            match candidate.status {
+                SessionStatus::Exited(_) => {
+                    if exited.is_none() {
+                        exited = Some(candidate);
+                    }
+                }
+                _ if has_pty => {
+                    tokio::select! {
+                        biased;
+                        _ = cancellation.cancelled() => {
+                            return Err("Context alert delivery was canceled during live settle".to_string());
+                        }
+                        _ = self.settle_internal_live_before_inject(app, Uuid::parse_str(&candidate.id)
+                            .map_err(|e| format!("Invalid coordinator session id '{}': {}", candidate.id, e))?) => {}
+                    }
+                    if cancellation.is_cancelled() {
+                        return Err(
+                            "Context alert delivery was canceled before live injection".to_string()
+                        );
+                    }
+                    let session_id = Uuid::parse_str(&candidate.id)
+                        .map_err(|e| format!("Invalid coordinator session id: {}", e))?;
+                    match self
+                        .inject_internal_system_notice(
+                            app,
+                            session_id,
+                            &target,
+                            &notice,
+                            Arc::clone(&guard),
+                        )
+                        .await
+                    {
+                        Ok(()) => return Ok(()),
+                        Err(error) if err_is_pty_session_missing(&error) => {
+                            log::warn!(
+                                "[context-alert] coordinator session {} vanished before injection: {}",
+                                session_id,
+                                error
+                            );
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut spawn_with_resume = false;
+        let mut carried_bot: Option<String> = None;
+        let mut carried_communication = None;
+        if let Some(exited_candidate) = exited {
+            if cancellation.is_cancelled() {
+                return Err(
+                    "Context alert delivery was canceled before exited-session actuation"
+                        .to_string(),
+                );
+            }
+            let exited_id = Uuid::parse_str(&exited_candidate.id)
+                .map_err(|e| format!("Invalid exited coordinator session id: {}", e))?;
+            self.recheck_internal_exited_candidate(app, exited_id, &target)
+                .await?;
+            Self::run_internal_guard(Arc::clone(&guard)).await?;
+            self.recheck_internal_exited_record(
+                app,
+                exited_id,
+                &target,
+                &exited_candidate.working_directory,
+            )
+            .await?;
+            carried_bot = exited_candidate.telegram_bot_id.clone();
+            carried_communication = exited_candidate.communication.clone();
+            self.destroy_exited_wake_session(app, exited_id)
+                .await
+                .map_err(|error| {
+                    format!(
+                        "Failed to destroy stale coordinator session {}: {}",
+                        exited_id, error
+                    )
+                })?;
+            spawn_with_resume = true;
+        }
+
+        // Final pre-spawn authorization followed by a fresh exact-path enumeration. A
+        // supported recipient that appeared wins; this attempt returns stale rather than
+        // creating a duplicate.
+        Self::run_internal_guard(Arc::clone(&guard)).await?;
+        if !self
+            .find_internal_system_candidates(app, &target)
+            .await?
+            .is_empty()
+        {
+            return Err(format!(
+                "Coordinator recipient '{}' changed immediately before background spawn",
+                target.fqn()
+            ));
+        }
+
+        let resolved_command = self
+            .resolve_internal_agent_command(app, &target)
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "No supported coding-agent command is configured for '{}'",
+                    target.fqn()
+                )
+            })?;
+        let agent_id = resolved_command.agent_id.as_deref().ok_or_else(|| {
+            format!(
+                "Resolved command for '{}' has no trusted coding-agent id",
+                target.fqn()
+            )
+        })?;
+        let cwd = target.replica_dir().to_string_lossy().to_string();
+        let settings_snapshot = {
+            let settings = app.state::<SettingsState>();
+            let snapshot = settings.read().await.clone();
+            snapshot
+        };
+        let spawn_agent_id = agent_id.to_string();
+        let spawn_cwd = cwd.clone();
+        let resolved_spawn = tokio::task::spawn_blocking(move || {
+            crate::commands::session::build_configured_agent_spawn_for_cwd(
+                &settings_snapshot,
+                &spawn_agent_id,
+                &spawn_cwd,
+                None,
+            )
+        })
+        .await
+        .map_err(|error| format!("Internal profile resolution task failed: {}", error))??
+        .ok_or_else(|| {
+            format!(
+                "Configured coding-agent '{}' could not produce a trusted spawn for '{}'",
+                agent_id,
+                target.fqn()
+            )
+        })?;
+        if resolved_spawn.trusted_agent_id.trim().is_empty()
+            || resolved_spawn.trusted_agent_id != agent_id
+        {
+            return Err(format!(
+                "Resolved spawn for '{}' lost its trusted coding-agent identity",
+                target.fqn()
+            ));
+        }
+        if !crate::pty::inject::needs_explicit_enter(&resolved_spawn.shell) {
+            return Err(format!(
+                "Resolved spawn shell '{}' for '{}' is not a supported coding-agent CLI",
+                resolved_spawn.shell,
+                target.fqn()
+            ));
+        }
+
+        // Repeat the guard and exact-path absence check immediately before actuation. Command
+        // and profile resolution above can perform filesystem work and must not widen this race.
+        Self::run_internal_guard(Arc::clone(&guard)).await?;
+        if !self
+            .find_internal_system_candidates(app, &target)
+            .await?
+            .is_empty()
+        {
+            return Err(format!(
+                "Coordinator recipient '{}' changed immediately before background spawn",
+                target.fqn()
+            ));
+        }
+
+        if cancellation.is_cancelled() {
+            return Err("Context alert delivery was canceled before background spawn".to_string());
+        }
+        let (_, local) = crate::config::teams::split_project_prefix(target.fqn());
+        let info = self
+            .spawn_wake_session(
+                app,
+                &envelope,
+                &resolved_command,
+                cwd,
+                local.to_string(),
+                spawn_with_resume,
+                resolved_spawn.shell.clone(),
+                resolved_spawn.shell_args.clone(),
+                Some(resolved_spawn.trusted_agent_label.clone()),
+                Some(resolved_spawn),
+            )
+            .await
+            .map_err(|error| {
+                format!(
+                    "Failed to spawn supported coordinator session for '{}': {}",
+                    target.fqn(),
+                    error
+                )
+            })?;
+        let session_id = Uuid::parse_str(&info.id)
+            .map_err(|e| format!("Invalid spawned coordinator session id: {}", e))?;
+
+        if carried_bot.is_some() {
+            self.attach_persisted_telegram_for_wake(app, session_id, carried_bot.as_deref())
+                .await;
+        }
+        if let Some(communication) = carried_communication {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let manager = session_mgr.read().await.clone();
+            let restored = manager
+                .restore_communication(session_id, communication.clone())
+                .await;
+            if restored {
+                crate::session::selection::publish_session_communication(
+                    app,
+                    session_id,
+                    Some(&communication),
+                );
+            }
+        }
+
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                return Err("Context alert delivery was canceled during spawned-session settle".to_string());
+            }
+            result = self.wait_for_spawned_wake_idle(app, session_id) => result?,
+        }
+        if cancellation.is_cancelled() {
+            return Err(
+                "Context alert delivery was canceled before spawned-session injection".to_string(),
+            );
+        }
+        self.inject_internal_system_notice(app, session_id, &target, &notice, guard)
+            .await
+    }
+
+    async fn settle_internal_live_before_inject<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_id: Uuid,
+    ) {
+        #[cfg(test)]
+        if let Some(hooks) = &self.test_hooks {
+            let gate = hooks.internal_live_settle_gate.lock().unwrap().take();
+            if let Some(gate) = gate {
+                let _ = gate.await;
+                return;
+            }
+        }
+        self.settle_live_before_inject(app, session_id).await;
+    }
+
+    async fn run_internal_guard(guard: InternalNoticeGuard) -> Result<(), String> {
+        tokio::task::spawn_blocking(move || guard())
+            .await
+            .map_err(|error| format!("Internal notice guard task failed: {}", error))?
+    }
+
+    async fn resolve_internal_agent_command<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        target: &InternalSystemTarget,
+    ) -> Result<Option<ResolvedWakeAgentCommand>, String> {
+        let agents = {
+            let settings = app.state::<SettingsState>();
+            let agents = settings.read().await.agents.clone();
+            agents
+        };
+        let replica_dir = target.replica_dir().to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let current = crate::config::coding_agent_profiles::read_replica_current_coding_agent(
+                &replica_dir,
+            );
+            let config_path = replica_dir
+                .join(crate::config::agent_local_dir_name())
+                .join("config.json");
+            let last = std::fs::read_to_string(&config_path)
+                .ok()
+                .and_then(|content| serde_json::from_str::<AgentLocalConfig>(&content).ok())
+                .and_then(|config| config.tooling.last_coding_agent);
+            resolve_wake_agent_command_from_sources(
+                &agents,
+                "auto",
+                current.as_deref(),
+                last.as_deref(),
+                Some(&config_path),
+                None,
+            )
+        })
+        .await
+        .map_err(|error| format!("Internal command lookup task failed: {}", error))?
+    }
+
+    async fn find_internal_system_candidates<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        target: &InternalSystemTarget,
+    ) -> Result<Vec<(SessionInfo, bool)>, String> {
+        let sessions = {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let manager = session_mgr.read().await.clone();
+            manager.list_sessions().await
+        };
+        let target_fqn = target.fqn().to_string();
+        let replica_dir = target.replica_dir().to_path_buf();
+        let structural: Vec<SessionInfo> = sessions
+            .into_iter()
+            .filter(|session| {
+                !session.is_root_agent
+                    && session.agent_id.is_some()
+                    && crate::pty::inject::needs_explicit_enter(&session.shell)
+                    && crate::config::teams::agent_fqn_from_path(&session.working_directory)
+                        == target_fqn
+            })
+            .collect();
+        let mut owned = tokio::task::spawn_blocking(move || {
+            structural
+                .into_iter()
+                .filter(|session| {
+                    canonical_cwd_owned_by_replica(&session.working_directory, &replica_dir)
+                        .unwrap_or(false)
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .map_err(|error| format!("Coordinator candidate path task failed: {}", error))?;
+        owned.sort_by_key(|session| {
+            let temporary = session
+                .name
+                .starts_with(crate::session::session::TEMP_SESSION_PREFIX);
+            let status = match session.status {
+                SessionStatus::Active | SessionStatus::Running => 0u8,
+                SessionStatus::Idle => 1,
+                SessionStatus::Exited(_) => 2,
+            };
+            (temporary, status)
+        });
+
+        let mut result = Vec::with_capacity(owned.len());
+        for session in owned {
+            let id = Uuid::parse_str(&session.id)
+                .map_err(|e| format!("Invalid coordinator session id '{}': {}", session.id, e))?;
+            let has_pty = self.has_pty_session_for_wake(app, id).await;
+            if matches!(session.status, SessionStatus::Exited(_)) || has_pty {
+                result.push((session, has_pty));
+            }
+        }
+        Ok(result)
+    }
+
+    async fn recheck_internal_exited_candidate<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_id: Uuid,
+        target: &InternalSystemTarget,
+    ) -> Result<(), String> {
+        let session = {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let manager = session_mgr.read().await.clone();
+            manager.get_session(session_id).await
+        }
+        .ok_or_else(|| format!("Exited coordinator session {} disappeared", session_id))?;
+        if !matches!(session.status, SessionStatus::Exited(_))
+            || session.is_root_agent
+            || session.agent_id.is_none()
+            || !crate::pty::inject::needs_explicit_enter(&session.shell)
+        {
+            return Err(format!(
+                "Coordinator session {} changed before exited-session destruction",
+                session_id
+            ));
+        }
+        let cwd = session.working_directory;
+        let replica = target.replica_dir().to_path_buf();
+        let owned =
+            tokio::task::spawn_blocking(move || canonical_cwd_owned_by_replica(&cwd, &replica))
+                .await
+                .map_err(|error| format!("Exited coordinator path task failed: {}", error))??;
+        if !owned {
+            return Err(format!(
+                "Coordinator session {} no longer belongs to target replica",
+                session_id
+            ));
+        }
+        Ok(())
+    }
+
+    async fn recheck_internal_exited_record<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_id: Uuid,
+        target: &InternalSystemTarget,
+        expected_cwd: &str,
+    ) -> Result<(), String> {
+        let session = {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let manager = session_mgr.read().await.clone();
+            manager.get_session(session_id).await
+        }
+        .ok_or_else(|| format!("Exited coordinator session {} disappeared", session_id))?;
+        if !matches!(session.status, SessionStatus::Exited(_))
+            || session.is_root_agent
+            || session.agent_id.is_none()
+            || !crate::pty::inject::needs_explicit_enter(&session.shell)
+            || session.working_directory != expected_cwd
+            || crate::config::teams::agent_fqn_from_path(&session.working_directory) != target.fqn()
+        {
+            return Err(format!(
+                "Coordinator session {} restarted or changed immediately before destruction",
+                session_id
+            ));
+        }
+        let cwd = session.working_directory;
+        let replica = target.replica_dir().to_path_buf();
+        let owned =
+            tokio::task::spawn_blocking(move || canonical_cwd_owned_by_replica(&cwd, &replica))
+                .await
+                .map_err(|error| {
+                    format!(
+                        "Final exited coordinator path task failed for {}: {}",
+                        session_id, error
+                    )
+                })??;
+        if !owned {
+            return Err(format!(
+                "Coordinator session {} escaped the canonical target before destruction",
+                session_id
+            ));
+        }
+        Ok(())
+    }
+
+    async fn inject_internal_system_notice<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_id: Uuid,
+        target: &InternalSystemTarget,
+        notice: &InternalSystemNotice,
+        guard: InternalNoticeGuard,
+    ) -> Result<(), String> {
+        let payload = format_wake_content(WakeContent::InternalSystem(notice));
+
+        #[cfg(test)]
+        if let Some(hooks) = &self.test_hooks {
+            let session = {
+                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let manager = session_mgr.read().await.clone();
+                manager.get_session(session_id).await
+            }
+            .ok_or_else(|| format!("Session {} missing before test injection", session_id))?;
+            if session.is_root_agent
+                || matches!(session.status, SessionStatus::Exited(_))
+                || session.agent_id.is_none()
+                || !crate::pty::inject::needs_explicit_enter(&session.shell)
+                || !canonical_cwd_owned_by_replica(
+                    &session.working_directory,
+                    target.replica_dir(),
+                )?
+            {
+                return Err(format!(
+                    "Session {} failed supported-agent final validation",
+                    session_id
+                ));
+            }
+            guard()?;
+            hooks.inject_calls.lock().unwrap().push(session_id);
+            hooks
+                .internal_payloads
+                .lock()
+                .unwrap()
+                .push(payload.clone());
+            hooks
+                .events
+                .lock()
+                .unwrap()
+                .push(MailboxTestEvent::Inject(session_id));
+            hooks
+                .inject_results
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(Ok(()))?;
+            hooks
+                .internal_bookkeeping
+                .lock()
+                .unwrap()
+                .push(InternalSystemBookkeeping {
+                    session_id,
+                    post_boundary: true,
+                    silence_touch: true,
+                    set_last_prompt: false,
+                    peer_event: false,
+                    response_watcher: false,
+                    consumption_verdict: false,
+                    mailbox_archive: false,
+                });
+            return Ok(());
+        } else {
+            crate::pty::inject::inject_text_into_supported_agent_session_with_pre_write_check(
+                app,
+                session_id,
+                &payload,
+                |session: &Session| {
+                    if !canonical_cwd_owned_by_replica(
+                        &session.working_directory,
+                        target.replica_dir(),
+                    )? {
+                        return Err(format!(
+                            "Coordinator session {} escaped canonical target replica",
+                            session_id
+                        ));
+                    }
+                    guard()
+                },
+            )
+            .await?;
+        }
+
+        #[cfg(not(test))]
+        crate::pty::inject::inject_text_into_supported_agent_session_with_pre_write_check(
+            app,
+            session_id,
+            &payload,
+            |session: &Session| {
+                if !canonical_cwd_owned_by_replica(
+                    &session.working_directory,
+                    target.replica_dir(),
+                )? {
+                    return Err(format!(
+                        "Coordinator session {} escaped canonical target replica",
+                        session_id
+                    ));
+                }
+                guard()
+            },
+        )
+        .await?;
+
+        crate::commands::pty::note_post_boundary_content_to_session(app, session_id).await;
+        if let Some(idle) = app.try_state::<Arc<crate::pty::idle_detector::IdleDetector>>() {
+            idle.touch_silence(session_id);
+        }
+        let (project, _) = crate::config::teams::split_project_prefix(target.fqn());
+        log::info!(
+            "[context-alert] delivered coordinatorSession={} project={} workgroup={} member={} observed={} thresholds={:?}",
+            session_id,
+            project.unwrap_or(""),
+            notice.workgroup,
+            notice.member,
+            notice.observed,
+            notice.thresholds
+        );
+        Ok(())
+    }
+
     async fn has_pty_session_for_wake<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -2965,6 +3876,9 @@ impl MailboxPoller {
             {
                 let mut events = hooks.events.lock().unwrap();
                 events.push(MailboxTestEvent::Destroy(session_id));
+            }
+            if let Some(result) = hooks.destroy_results.lock().unwrap().pop_front() {
+                result?;
             }
             let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
             let mgr = session_mgr.read().await;
@@ -3507,7 +4421,11 @@ impl MailboxPoller {
             (true, Some(rid)) => {
                 crate::phone::messaging::format_pty_wrap_with_markers(&msg.from, body, rid)
             }
-            _ => crate::phone::messaging::format_pty_wrap(&msg.from, body),
+            _ => format_wake_content(WakeContent::Peer {
+                from: &msg.from,
+                body,
+                origin,
+            }),
         };
 
         // Register response watcher only for non-interactive sessions
@@ -6489,6 +7407,130 @@ mod tests {
     use crate::pty::backend::{BackendSpawnSpec, PtyBackend};
     use crate::pty::manager::PtyManager;
 
+    fn internal_target_fixture() -> (tempfile::TempDir, InternalSystemTarget) {
+        let temp = tempfile::tempdir().unwrap();
+        let replica = temp
+            .path()
+            .join("project-a")
+            .join(".ac")
+            .join("wg-2-dev-team")
+            .join("__agent_coordinator");
+        std::fs::create_dir_all(&replica).unwrap();
+        let target = InternalSystemTarget::for_context_alert(
+            "project-a:wg-2-dev-team/coordinator".to_string(),
+            replica,
+        )
+        .unwrap();
+        (temp, target)
+    }
+
+    #[test]
+    fn internal_target_binds_exact_fqn_to_canonical_replica() {
+        let (temp, target) = internal_target_fixture();
+        assert_eq!(target.fqn(), "project-a:wg-2-dev-team/coordinator");
+        assert!(target.replica_dir().is_absolute());
+
+        let replica = temp
+            .path()
+            .join("project-a")
+            .join(".ac")
+            .join("wg-2-dev-team")
+            .join("__agent_coordinator");
+        let error = InternalSystemTarget::for_context_alert(
+            "project-a:wg-3-dev-team/coordinator".to_string(),
+            replica,
+        )
+        .unwrap_err();
+        assert!(error.contains("does not match canonical replica"));
+        assert!(InternalSystemTarget::for_context_alert(
+            "project-a:wg-2-dev-team/coordinator".to_string(),
+            temp.path().join("missing-replica"),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn internal_notice_validates_and_formats_exact_trusted_line() {
+        let notice = InternalSystemNotice::for_context_alert(
+            "dev-rust".to_string(),
+            "wg-2-dev-team".to_string(),
+            91,
+            vec![50, 75, 90],
+        )
+        .unwrap();
+        assert_eq!(
+            format_wake_content(WakeContent::InternalSystem(&notice)),
+            "\n[AgentsCommander context alert] Member 'dev-rust' in workgroup 'wg-2-dev-team' was observed at 91% context use, reaching configured threshold(s): 50%, 75%, 90%. No automatic action was taken; the coordinator decides whether follow-up is needed.\n\r"
+        );
+        for (member, workgroup, observed, thresholds) in [
+            ("../escape", "wg-2-dev-team", 91, vec![50]),
+            ("dev-rust", "wg-0-dev-team", 91, vec![50]),
+            ("dev-rust", "wg-2-dev-team", 101, vec![50]),
+            ("dev-rust", "wg-2-dev-team", 91, vec![]),
+            ("dev-rust", "wg-2-dev-team", 91, vec![25, 50, 75, 90]),
+            ("dev-rust", "wg-2-dev-team", 91, vec![75, 50]),
+            ("dev-rust", "wg-2-dev-team", 91, vec![50, 50]),
+            ("dev-rust", "wg-2-dev-team", 91, vec![0]),
+            ("dev-rust", "wg-2-dev-team", 91, vec![101]),
+            ("dev-rust", "wg-2-dev-team", 50, vec![75]),
+        ] {
+            assert!(
+                InternalSystemNotice::for_context_alert(
+                    member.to_string(),
+                    workgroup.to_string(),
+                    observed,
+                    thresholds,
+                )
+                .is_err(),
+                "invalid notice case must be rejected: member={member} workgroup={workgroup} observed={observed}"
+            );
+        }
+    }
+
+    #[test]
+    fn private_internal_envelope_has_only_fixed_routing_fields() {
+        let (_temp, target) = internal_target_fixture();
+        let envelope = internal_system_envelope(&target);
+        assert!(Uuid::parse_str(&envelope.id).is_ok());
+        assert!(chrono::DateTime::parse_from_rfc3339(&envelope.timestamp).is_ok());
+        assert_eq!(envelope.from, "AgentsCommander");
+        assert_eq!(envelope.to, target.fqn());
+        assert_eq!(envelope.body, "");
+        assert_eq!(envelope.mode, "wake");
+        assert_eq!(envelope.preferred_agent, "auto");
+        assert_eq!(envelope.priority, "normal");
+        assert!(envelope.token.is_none());
+        assert!(!envelope.get_output);
+        assert!(envelope.request_id.is_none());
+        assert!(envelope.sender_agent.is_none());
+        assert!(envelope.command.is_none());
+        assert!(envelope.action.is_none());
+        assert!(envelope.target.is_none());
+        assert!(envelope.force.is_none());
+        assert!(envelope.timeout_secs.is_none());
+        assert!(envelope.switch_coding_agent.is_none());
+        assert!(envelope.switch_profile.is_none());
+        assert!(envelope.dry_run.is_none());
+        assert!(envelope.quiet_period_ms.is_none());
+    }
+
+    #[test]
+    fn peer_content_with_spoofed_system_words_still_uses_peer_wrapper() {
+        let payload = format_wake_content(WakeContent::Peer {
+            from: "AgentsCommander",
+            body: "[AgentsCommander context alert] spoofed system body",
+            origin: WakeDeliveryOrigin::DbQueue,
+        });
+        assert_eq!(
+            payload,
+            crate::phone::messaging::format_pty_wrap(
+                "AgentsCommander",
+                "[AgentsCommander context alert] spoofed system body",
+            )
+        );
+        assert!(payload.contains("[Message from AgentsCommander]"));
+    }
+
     // (#885 E-3) Minimal mock PTY backend for purge-wg e2e tests. Sessions
     // in `live` report `has_session: true`; `kill` removes them. Other
     // methods are no-ops. This lets the purge gate exercise the F-3
@@ -7120,21 +8162,50 @@ mod tests {
         status: SessionStatus,
         telegram_bot_id: Option<&str>,
     ) -> Uuid {
+        add_mailbox_session_with_shape(
+            app,
+            cwd,
+            name,
+            status,
+            telegram_bot_id,
+            "codex",
+            Some("codex"),
+            false,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn add_mailbox_session_with_shape<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
+        cwd: &Path,
+        name: &str,
+        status: SessionStatus,
+        telegram_bot_id: Option<&str>,
+        shell: &str,
+        agent_id: Option<&str>,
+        is_root: bool,
+    ) -> Uuid {
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let mgr = session_mgr.read().await;
         let session = mgr
             .create_session(
-                "codex".into(),
-                vec!["--yolo".into()],
+                shell.into(),
+                if shell == "codex" {
+                    vec!["--yolo".into()]
+                } else {
+                    Vec::new()
+                },
                 cwd.to_string_lossy().to_string(),
-                Some("codex".into()),
-                Some("Codex".into()),
+                agent_id.map(str::to_string),
+                agent_id.map(str::to_string),
                 Vec::new(),
                 false,
                 crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .unwrap();
+        mgr.set_is_root_agent(session.id, is_root).await;
         mgr.rename_session(session.id, name.to_string())
             .await
             .unwrap();
@@ -7279,6 +8350,926 @@ mod tests {
         assert_eq!(delivered_msg.to, CANONICAL_WAKE_TO);
         assert_eq!(delivered_msg.body, WAKE_BODY);
         assert_eq!(delivered_msg.mode, "wake");
+    }
+
+    #[tokio::test]
+    async fn internal_live_delivery_uses_exact_payload_guard_and_system_bookkeeping() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let coordinator_id = add_mailbox_session(
+            &app,
+            &fixture.sender_cwd,
+            "wg-1-dev-team/tech-lead",
+            SessionStatus::Running,
+            None,
+        )
+        .await;
+        let target = InternalSystemTarget::for_context_alert(
+            CANONICAL_WAKE_FROM.to_string(),
+            fixture.sender_cwd.clone(),
+        )
+        .unwrap();
+        let notice = InternalSystemNotice::for_context_alert(
+            "dev-rust".to_string(),
+            "wg-1-dev-team".to_string(),
+            80,
+            vec![50, 75],
+        )
+        .unwrap();
+        let calls = Arc::new(AtomicU32::new(0));
+        let guard_calls = Arc::clone(&calls);
+        let guard: InternalNoticeGuard = Arc::new(move || {
+            guard_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        });
+        let hooks = MailboxTestHooks::default();
+        hooks
+            .pty_presence
+            .lock()
+            .unwrap()
+            .insert(coordinator_id, true);
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+
+        poller
+            .deliver_internal_system_notice(&app, target, notice, CancellationToken::new(), guard)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            hooks.inject_calls.lock().unwrap().as_slice(),
+            &[coordinator_id]
+        );
+        assert_eq!(
+            hooks.internal_payloads.lock().unwrap().as_slice(),
+            &["\n[AgentsCommander context alert] Member 'dev-rust' in workgroup 'wg-1-dev-team' was observed at 80% context use, reaching configured threshold(s): 50%, 75%. No automatic action was taken; the coordinator decides whether follow-up is needed.\n\r".to_string()]
+        );
+        assert_eq!(
+            hooks.internal_bookkeeping.lock().unwrap().as_slice(),
+            &[InternalSystemBookkeeping {
+                session_id: coordinator_id,
+                post_boundary: true,
+                silence_touch: true,
+                set_last_prompt: false,
+                peer_event: false,
+                response_watcher: false,
+                consumption_verdict: false,
+                mailbox_archive: false,
+            }]
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_no_spawn_or_destroy_events(&hooks);
+    }
+
+    #[tokio::test]
+    async fn internal_same_fqn_at_another_root_is_not_injected_and_exact_target_spawns() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let wrong_replica = fixture
+            ._temp
+            .path()
+            .join("other-root")
+            .join("proj-a")
+            .join(".ac")
+            .join("wg-1-dev-team")
+            .join("__agent_tech-lead");
+        std::fs::create_dir_all(&wrong_replica).unwrap();
+        let wrong_id = add_mailbox_session(
+            &app,
+            &wrong_replica,
+            "wrong-root",
+            SessionStatus::Running,
+            None,
+        )
+        .await;
+        let target = InternalSystemTarget::for_context_alert(
+            CANONICAL_WAKE_FROM.to_string(),
+            fixture.sender_cwd.clone(),
+        )
+        .unwrap();
+        // Spawn must use the target's canonical path, not a caller's possible 8.3 spelling.
+        let expected_spawn_cwd = target.replica_dir().to_string_lossy().into_owned();
+        let notice = InternalSystemNotice::for_context_alert(
+            "dev-rust".to_string(),
+            "wg-1-dev-team".to_string(),
+            50,
+            vec![50],
+        )
+        .unwrap();
+        let hooks = MailboxTestHooks::default();
+        hooks.pty_presence.lock().unwrap().insert(wrong_id, true);
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+
+        poller
+            .deliver_internal_system_notice(
+                &app,
+                target,
+                notice,
+                CancellationToken::new(),
+                Arc::new(|| Ok(())),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(hooks.spawn_calls.lock().unwrap().len(), 1);
+        let spawn = hooks.spawn_calls.lock().unwrap()[0].clone();
+        assert_eq!(spawn.to, CANONICAL_WAKE_FROM);
+        assert_eq!(spawn.cwd, expected_spawn_cwd);
+        assert_ne!(hooks.inject_calls.lock().unwrap()[0], wrong_id);
+        assert_eq!(hooks.destroy_calls.lock().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn internal_exited_recipient_is_destroyed_then_resumed_without_selection_spawn() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let exited_id = add_mailbox_session(
+            &app,
+            &fixture.sender_cwd,
+            "exited-coordinator",
+            SessionStatus::Exited(0),
+            None,
+        )
+        .await;
+        let target = InternalSystemTarget::for_context_alert(
+            CANONICAL_WAKE_FROM.to_string(),
+            fixture.sender_cwd.clone(),
+        )
+        .unwrap();
+        let notice = InternalSystemNotice::for_context_alert(
+            "dev-rust".to_string(),
+            "wg-1-dev-team".to_string(),
+            50,
+            vec![50],
+        )
+        .unwrap();
+        let hooks = MailboxTestHooks::default();
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+
+        poller
+            .deliver_internal_system_notice(
+                &app,
+                target,
+                notice,
+                CancellationToken::new(),
+                Arc::new(|| Ok(())),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(hooks.destroy_calls.lock().unwrap().as_slice(), &[exited_id]);
+        assert_eq!(hooks.spawn_calls.lock().unwrap().len(), 1);
+        assert!(!hooks.spawn_calls.lock().unwrap()[0].skip_auto_resume);
+        let events = hooks.events.lock().unwrap();
+        assert!(matches!(events[0], MailboxTestEvent::Destroy(id) if id == exited_id));
+        assert!(matches!(events[1], MailboxTestEvent::Spawn(_)));
+        assert!(matches!(events[2], MailboxTestEvent::Inject(_)));
+    }
+
+    #[tokio::test]
+    async fn internal_precanceled_attempt_performs_no_wake_actuation() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let target = InternalSystemTarget::for_context_alert(
+            CANONICAL_WAKE_FROM.to_string(),
+            fixture.sender_cwd.clone(),
+        )
+        .unwrap();
+        let notice = InternalSystemNotice::for_context_alert(
+            "dev-rust".to_string(),
+            "wg-1-dev-team".to_string(),
+            50,
+            vec![50],
+        )
+        .unwrap();
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let hooks = MailboxTestHooks::default();
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+
+        assert!(
+            poller
+                .deliver_internal_system_notice(
+                    &app,
+                    target,
+                    notice,
+                    cancellation,
+                    Arc::new(|| Ok(())),
+                )
+                .await
+                .is_err()
+        );
+        assert!(hooks.events.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn internal_unsupported_root_agentless_plain_shell_and_escaped_records_are_untouched() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let root_id = add_mailbox_session_with_shape(
+            &app,
+            &fixture.sender_cwd,
+            "root",
+            SessionStatus::Running,
+            None,
+            "codex",
+            Some("codex"),
+            true,
+        )
+        .await;
+        let agentless_id = add_mailbox_session_with_shape(
+            &app,
+            &fixture.sender_cwd,
+            "agentless",
+            SessionStatus::Running,
+            None,
+            "codex",
+            None,
+            false,
+        )
+        .await;
+        let shell_id = add_mailbox_session_with_shape(
+            &app,
+            &fixture.sender_cwd,
+            "plain-shell",
+            SessionStatus::Running,
+            None,
+            "pwsh",
+            Some("codex"),
+            false,
+        )
+        .await;
+        let escape_subdir = fixture.sender_cwd.join("subdir");
+        std::fs::create_dir_all(&escape_subdir).unwrap();
+        let escaped_cwd = escape_subdir.join("..").join("..").join("__agent_dev-rust");
+        let escaped_id = add_mailbox_session_with_shape(
+            &app,
+            &escaped_cwd,
+            "escaped",
+            SessionStatus::Running,
+            None,
+            "codex",
+            Some("codex"),
+            false,
+        )
+        .await;
+        let hooks = MailboxTestHooks::default();
+        for id in [root_id, agentless_id, shell_id, escaped_id] {
+            hooks.pty_presence.lock().unwrap().insert(id, true);
+        }
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+        let target = InternalSystemTarget::for_context_alert(
+            CANONICAL_WAKE_FROM.to_string(),
+            fixture.sender_cwd.clone(),
+        )
+        .unwrap();
+        let notice = InternalSystemNotice::for_context_alert(
+            "dev-rust".to_string(),
+            "wg-1-dev-team".to_string(),
+            50,
+            vec![50],
+        )
+        .unwrap();
+
+        poller
+            .deliver_internal_system_notice(
+                &app,
+                target,
+                notice,
+                CancellationToken::new(),
+                Arc::new(|| Ok(())),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(hooks.spawn_calls.lock().unwrap().len(), 1);
+        let injected = hooks.inject_calls.lock().unwrap()[0];
+        assert!(![root_id, agentless_id, shell_id, escaped_id].contains(&injected));
+        assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+        let manager = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        for id in [root_id, agentless_id, shell_id, escaped_id] {
+            assert!(manager.get_session(id).await.is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn internal_missing_command_and_unsupported_resolved_shell_never_spawn() {
+        let missing = make_mailbox_fixture();
+        let missing_app = app_handle(&missing.app);
+        missing_app
+            .state::<SettingsState>()
+            .write()
+            .await
+            .agents
+            .clear();
+        let missing_hooks = MailboxTestHooks::default();
+        let missing_poller = MailboxPoller::new_with_test_hooks(missing_hooks.clone());
+        let missing_target = InternalSystemTarget::for_context_alert(
+            CANONICAL_WAKE_FROM.to_string(),
+            missing.sender_cwd.clone(),
+        )
+        .unwrap();
+        let notice = InternalSystemNotice::for_context_alert(
+            "dev-rust".to_string(),
+            "wg-1-dev-team".to_string(),
+            50,
+            vec![50],
+        )
+        .unwrap();
+        let error = missing_poller
+            .deliver_internal_system_notice(
+                &missing_app,
+                missing_target,
+                notice.clone(),
+                CancellationToken::new(),
+                Arc::new(|| Ok(())),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.contains("No supported coding-agent command"));
+        assert!(missing_hooks.spawn_calls.lock().unwrap().is_empty());
+
+        let unsupported = make_mailbox_fixture();
+        let unsupported_app = app_handle(&unsupported.app);
+        unsupported_app
+            .state::<SettingsState>()
+            .write()
+            .await
+            .agents = vec![wake_agent("codex", "Codex", "pwsh")];
+        std::fs::write(
+            unsupported.sender_cwd.join("config.json"),
+            r#"{"identity":"../../_agent_tech-lead","tooling":{"currentCodingAgent":"codex"}}"#,
+        )
+        .unwrap();
+        let unsupported_hooks = MailboxTestHooks::default();
+        let unsupported_poller = MailboxPoller::new_with_test_hooks(unsupported_hooks.clone());
+        let unsupported_target = InternalSystemTarget::for_context_alert(
+            CANONICAL_WAKE_FROM.to_string(),
+            unsupported.sender_cwd.clone(),
+        )
+        .unwrap();
+        let error = unsupported_poller
+            .deliver_internal_system_notice(
+                &unsupported_app,
+                unsupported_target,
+                notice,
+                CancellationToken::new(),
+                Arc::new(|| Ok(())),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.contains("not a supported coding-agent CLI"));
+        assert!(unsupported_hooks.spawn_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn internal_repeatable_guard_blocks_live_destroy_and_spawn_boundaries() {
+        let live = make_mailbox_fixture();
+        let live_app = app_handle(&live.app);
+        let live_id = add_mailbox_session(
+            &live_app,
+            &live.sender_cwd,
+            "live",
+            SessionStatus::Running,
+            None,
+        )
+        .await;
+        let live_hooks = MailboxTestHooks::default();
+        live_hooks
+            .pty_presence
+            .lock()
+            .unwrap()
+            .insert(live_id, true);
+        let live_calls = Arc::new(AtomicU32::new(0));
+        let live_guard_calls = Arc::clone(&live_calls);
+        let live_error = MailboxPoller::new_with_test_hooks(live_hooks.clone())
+            .deliver_internal_system_notice(
+                &live_app,
+                InternalSystemTarget::for_context_alert(
+                    CANONICAL_WAKE_FROM.to_string(),
+                    live.sender_cwd.clone(),
+                )
+                .unwrap(),
+                InternalSystemNotice::for_context_alert(
+                    "dev-rust".to_string(),
+                    "wg-1-dev-team".to_string(),
+                    50,
+                    vec![50],
+                )
+                .unwrap(),
+                CancellationToken::new(),
+                Arc::new(move || {
+                    if live_guard_calls.fetch_add(1, Ordering::SeqCst) >= 1 {
+                        Err("stale before write".to_string())
+                    } else {
+                        Ok(())
+                    }
+                }),
+            )
+            .await
+            .unwrap_err();
+        assert!(live_error.contains("stale before write"));
+        assert!(live_hooks.inject_calls.lock().unwrap().is_empty());
+
+        let exited = make_mailbox_fixture();
+        let exited_app = app_handle(&exited.app);
+        let exited_id = add_mailbox_session(
+            &exited_app,
+            &exited.sender_cwd,
+            "exited",
+            SessionStatus::Exited(0),
+            None,
+        )
+        .await;
+        let exited_hooks = MailboxTestHooks::default();
+        let exited_calls = Arc::new(AtomicU32::new(0));
+        let exited_guard_calls = Arc::clone(&exited_calls);
+        let exited_error = MailboxPoller::new_with_test_hooks(exited_hooks.clone())
+            .deliver_internal_system_notice(
+                &exited_app,
+                InternalSystemTarget::for_context_alert(
+                    CANONICAL_WAKE_FROM.to_string(),
+                    exited.sender_cwd.clone(),
+                )
+                .unwrap(),
+                InternalSystemNotice::for_context_alert(
+                    "dev-rust".to_string(),
+                    "wg-1-dev-team".to_string(),
+                    50,
+                    vec![50],
+                )
+                .unwrap(),
+                CancellationToken::new(),
+                Arc::new(move || {
+                    if exited_guard_calls.fetch_add(1, Ordering::SeqCst) >= 1 {
+                        Err("stale before destroy".to_string())
+                    } else {
+                        Ok(())
+                    }
+                }),
+            )
+            .await
+            .unwrap_err();
+        assert!(exited_error.contains("stale before destroy"));
+        assert!(exited_hooks.destroy_calls.lock().unwrap().is_empty());
+        assert!(exited_hooks.spawn_calls.lock().unwrap().is_empty());
+        assert!(exited_app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .get_session(exited_id)
+            .await
+            .is_some());
+
+        let absent = make_mailbox_fixture();
+        let absent_app = app_handle(&absent.app);
+        let absent_hooks = MailboxTestHooks::default();
+        let absent_calls = Arc::new(AtomicU32::new(0));
+        let absent_guard_calls = Arc::clone(&absent_calls);
+        let absent_error = MailboxPoller::new_with_test_hooks(absent_hooks.clone())
+            .deliver_internal_system_notice(
+                &absent_app,
+                InternalSystemTarget::for_context_alert(
+                    CANONICAL_WAKE_FROM.to_string(),
+                    absent.sender_cwd.clone(),
+                )
+                .unwrap(),
+                InternalSystemNotice::for_context_alert(
+                    "dev-rust".to_string(),
+                    "wg-1-dev-team".to_string(),
+                    50,
+                    vec![50],
+                )
+                .unwrap(),
+                CancellationToken::new(),
+                Arc::new(move || {
+                    if absent_guard_calls.fetch_add(1, Ordering::SeqCst) >= 1 {
+                        Err("stale before spawn".to_string())
+                    } else {
+                        Ok(())
+                    }
+                }),
+            )
+            .await
+            .unwrap_err();
+        assert!(absent_error.contains("stale before spawn"));
+        assert!(absent_hooks.spawn_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn internal_destroy_failure_is_retryable_and_never_falls_through_to_spawn() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let exited_id = add_mailbox_session(
+            &app,
+            &fixture.sender_cwd,
+            "exited",
+            SessionStatus::Exited(0),
+            None,
+        )
+        .await;
+        let hooks = MailboxTestHooks::default();
+        hooks
+            .destroy_results
+            .lock()
+            .unwrap()
+            .push_back(Err("scripted destruction failure".to_string()));
+        let error = MailboxPoller::new_with_test_hooks(hooks.clone())
+            .deliver_internal_system_notice(
+                &app,
+                InternalSystemTarget::for_context_alert(
+                    CANONICAL_WAKE_FROM.to_string(),
+                    fixture.sender_cwd.clone(),
+                )
+                .unwrap(),
+                InternalSystemNotice::for_context_alert(
+                    "dev-rust".to_string(),
+                    "wg-1-dev-team".to_string(),
+                    50,
+                    vec![50],
+                )
+                .unwrap(),
+                CancellationToken::new(),
+                Arc::new(|| Ok(())),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.contains("scripted destruction failure"));
+        assert_eq!(hooks.destroy_calls.lock().unwrap().as_slice(), &[exited_id]);
+        assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+        assert!(hooks.inject_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn internal_candidate_appearing_at_pre_spawn_recheck_prevents_spawn() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let hooks = MailboxTestHooks::default();
+        let (start_sender, start_receiver) = tokio::sync::oneshot::channel();
+        let (done_sender, done_receiver) = std::sync::mpsc::channel();
+        let start_sender = Arc::new(Mutex::new(Some(start_sender)));
+        let done_receiver = Arc::new(Mutex::new(done_receiver));
+        let appeared = Arc::new(Mutex::new(None));
+        let task_app = app.clone();
+        let task_cwd = fixture.sender_cwd.clone();
+        let task_hooks = hooks.clone();
+        let task_appeared = Arc::clone(&appeared);
+        let appearance = tokio::spawn(async move {
+            let _ = start_receiver.await;
+            let id = add_mailbox_session(
+                &task_app,
+                &task_cwd,
+                "appeared",
+                SessionStatus::Running,
+                None,
+            )
+            .await;
+            task_hooks.pty_presence.lock().unwrap().insert(id, true);
+            *task_appeared.lock().unwrap() = Some(id);
+            done_sender.send(()).unwrap();
+        });
+        let guard_calls = Arc::new(AtomicU32::new(0));
+        let guard_counter = Arc::clone(&guard_calls);
+        let guard_start = Arc::clone(&start_sender);
+        let guard_done = Arc::clone(&done_receiver);
+        let guard: InternalNoticeGuard = Arc::new(move || {
+            if guard_counter.fetch_add(1, Ordering::SeqCst) == 1 {
+                guard_start
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .unwrap()
+                    .send(())
+                    .unwrap();
+                guard_done
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(1))
+                    .map_err(|error| format!("appearance task did not finish: {error}"))?;
+            }
+            Ok(())
+        });
+        let error = MailboxPoller::new_with_test_hooks(hooks.clone())
+            .deliver_internal_system_notice(
+                &app,
+                InternalSystemTarget::for_context_alert(
+                    CANONICAL_WAKE_FROM.to_string(),
+                    fixture.sender_cwd.clone(),
+                )
+                .unwrap(),
+                InternalSystemNotice::for_context_alert(
+                    "dev-rust".to_string(),
+                    "wg-1-dev-team".to_string(),
+                    50,
+                    vec![50],
+                )
+                .unwrap(),
+                CancellationToken::new(),
+                guard,
+            )
+            .await
+            .unwrap_err();
+        appearance.await.unwrap();
+        assert!(error.contains("changed immediately before background spawn"));
+        assert!(appeared.lock().unwrap().is_some());
+        assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+        assert!(hooks.inject_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn internal_exited_candidate_disappearing_during_guard_cannot_spawn_duplicate() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let exited_id = add_mailbox_session(
+            &app,
+            &fixture.sender_cwd,
+            "exited",
+            SessionStatus::Exited(0),
+            None,
+        )
+        .await;
+        let hooks = MailboxTestHooks::default();
+        let (start_sender, start_receiver) = tokio::sync::oneshot::channel();
+        let (done_sender, done_receiver) = std::sync::mpsc::channel();
+        let start_sender = Arc::new(Mutex::new(Some(start_sender)));
+        let done_receiver = Arc::new(Mutex::new(done_receiver));
+        let task_app = app.clone();
+        let task_cwd = fixture.sender_cwd.clone();
+        let task_hooks = hooks.clone();
+        let replacement = tokio::spawn(async move {
+            let _ = start_receiver.await;
+            let manager = task_app
+                .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+                .read()
+                .await
+                .clone();
+            manager.destroy_session(exited_id).await.unwrap();
+            let replacement_id = add_mailbox_session(
+                &task_app,
+                &task_cwd,
+                "replacement",
+                SessionStatus::Running,
+                None,
+            )
+            .await;
+            task_hooks
+                .pty_presence
+                .lock()
+                .unwrap()
+                .insert(replacement_id, true);
+            done_sender.send(()).unwrap();
+        });
+        let guard_calls = Arc::new(AtomicU32::new(0));
+        let guard_counter = Arc::clone(&guard_calls);
+        let guard_start = Arc::clone(&start_sender);
+        let guard_done = Arc::clone(&done_receiver);
+        let guard: InternalNoticeGuard = Arc::new(move || {
+            if guard_counter.fetch_add(1, Ordering::SeqCst) == 1 {
+                guard_start
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .unwrap()
+                    .send(())
+                    .unwrap();
+                guard_done
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(1))
+                    .map_err(|error| format!("replacement task did not finish: {error}"))?;
+            }
+            Ok(())
+        });
+        let error = MailboxPoller::new_with_test_hooks(hooks.clone())
+            .deliver_internal_system_notice(
+                &app,
+                InternalSystemTarget::for_context_alert(
+                    CANONICAL_WAKE_FROM.to_string(),
+                    fixture.sender_cwd.clone(),
+                )
+                .unwrap(),
+                InternalSystemNotice::for_context_alert(
+                    "dev-rust".to_string(),
+                    "wg-1-dev-team".to_string(),
+                    50,
+                    vec![50],
+                )
+                .unwrap(),
+                CancellationToken::new(),
+                guard,
+            )
+            .await
+            .unwrap_err();
+        replacement.await.unwrap();
+        assert!(error.contains("disappeared"));
+        assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+        assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+        assert!(hooks.inject_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn internal_cancellation_during_live_settle_returns_without_injection() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let live_id = add_mailbox_session(
+            &app,
+            &fixture.sender_cwd,
+            "live",
+            SessionStatus::Running,
+            None,
+        )
+        .await;
+        let hooks = MailboxTestHooks::default();
+        hooks.pty_presence.lock().unwrap().insert(live_id, true);
+        let (settle_release, settle_gate) = tokio::sync::oneshot::channel();
+        *hooks.internal_live_settle_gate.lock().unwrap() = Some(settle_gate);
+        let cancellation = CancellationToken::new();
+        let cancel_when_settling = cancellation.clone();
+        let settle_hooks = hooks.clone();
+        let canceller = tokio::spawn(async move {
+            for _ in 0..2_000 {
+                if settle_hooks
+                    .internal_live_settle_gate
+                    .lock()
+                    .unwrap()
+                    .is_none()
+                {
+                    cancel_when_settling.cancel();
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+            panic!("internal settle gate was not entered");
+        });
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            MailboxPoller::new_with_test_hooks(hooks.clone()).deliver_internal_system_notice(
+                &app,
+                InternalSystemTarget::for_context_alert(
+                    CANONICAL_WAKE_FROM.to_string(),
+                    fixture.sender_cwd.clone(),
+                )
+                .unwrap(),
+                InternalSystemNotice::for_context_alert(
+                    "dev-rust".to_string(),
+                    "wg-1-dev-team".to_string(),
+                    50,
+                    vec![50],
+                )
+                .unwrap(),
+                cancellation,
+                Arc::new(|| Ok(())),
+            ),
+        )
+        .await
+        .expect("cancellation must not wait for the settle cap");
+        canceller.await.unwrap();
+        drop(settle_release);
+        assert!(result.unwrap_err().contains("canceled during live settle"));
+        assert!(hooks.inject_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn internal_injection_failure_returns_without_system_bookkeeping_or_spawn() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let live_id = add_mailbox_session(
+            &app,
+            &fixture.sender_cwd,
+            "live",
+            SessionStatus::Running,
+            None,
+        )
+        .await;
+        let hooks = MailboxTestHooks::default();
+        hooks.pty_presence.lock().unwrap().insert(live_id, true);
+        hooks
+            .inject_results
+            .lock()
+            .unwrap()
+            .push_back(Err("scripted text write failure".to_string()));
+        let error = MailboxPoller::new_with_test_hooks(hooks.clone())
+            .deliver_internal_system_notice(
+                &app,
+                InternalSystemTarget::for_context_alert(
+                    CANONICAL_WAKE_FROM.to_string(),
+                    fixture.sender_cwd.clone(),
+                )
+                .unwrap(),
+                InternalSystemNotice::for_context_alert(
+                    "dev-rust".to_string(),
+                    "wg-1-dev-team".to_string(),
+                    50,
+                    vec![50],
+                )
+                .unwrap(),
+                CancellationToken::new(),
+                Arc::new(|| Ok(())),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.contains("scripted text write failure"));
+        assert_eq!(hooks.inject_calls.lock().unwrap().as_slice(), &[live_id]);
+        assert!(hooks.internal_bookkeeping.lock().unwrap().is_empty());
+        assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+        assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn internal_exited_resume_carries_telegram_and_raised_hand() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let exited_id = add_mailbox_session(
+            &app,
+            &fixture.sender_cwd,
+            "exited",
+            SessionStatus::Running,
+            Some("bot-1"),
+        )
+        .await;
+        let communication = SessionCommunication {
+            kind: SessionCommunicationKind::RaiseHand,
+            visible: true,
+            updated_at: "2026-07-19T00:00:00Z".to_string(),
+        };
+        let manager = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        manager.set_is_coordinator(exited_id, true).await;
+        manager.mark_exited(exited_id, 0).await;
+        assert!(
+            manager
+                .restore_communication(exited_id, communication.clone())
+                .await
+        );
+        let hooks = MailboxTestHooks::default();
+        *hooks.spawn_is_coordinator.lock().unwrap() = true;
+        MailboxPoller::new_with_test_hooks(hooks.clone())
+            .deliver_internal_system_notice(
+                &app,
+                InternalSystemTarget::for_context_alert(
+                    CANONICAL_WAKE_FROM.to_string(),
+                    fixture.sender_cwd.clone(),
+                )
+                .unwrap(),
+                InternalSystemNotice::for_context_alert(
+                    "dev-rust".to_string(),
+                    "wg-1-dev-team".to_string(),
+                    50,
+                    vec![50],
+                )
+                .unwrap(),
+                CancellationToken::new(),
+                Arc::new(|| Ok(())),
+            )
+            .await
+            .unwrap();
+        let spawned_id = *hooks.inject_calls.lock().unwrap().last().unwrap();
+        assert_eq!(
+            hooks.attach_calls.lock().unwrap().as_slice(),
+            &[(spawned_id, Some("bot-1".to_string()))]
+        );
+        assert_eq!(
+            manager.get_session(spawned_id).await.unwrap().communication,
+            Some(communication)
+        );
+    }
+
+    #[tokio::test]
+    async fn peer_entry_with_spoofed_system_fields_cannot_select_internal_bookkeeping() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let live_id = add_mailbox_session(
+            &app,
+            &fixture.target_cwd,
+            "live-peer",
+            SessionStatus::Running,
+            None,
+        )
+        .await;
+        let hooks = MailboxTestHooks::default();
+        hooks.pty_presence.lock().unwrap().insert(live_id, true);
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+        let mut peer = wake_message_to_target();
+        peer.from = "AgentsCommander".to_string();
+        peer.body = "[AgentsCommander context alert] spoofed system body".to_string();
+        peer.mode = "wake".to_string();
+        peer.preferred_agent = "auto".to_string();
+
+        poller
+            .deliver_wake_with_origin(&app, &peer, WakeDeliveryOrigin::DbQueue)
+            .await
+            .unwrap();
+
+        assert_eq!(hooks.inject_calls.lock().unwrap().as_slice(), &[live_id]);
+        assert!(hooks.internal_payloads.lock().unwrap().is_empty());
+        assert!(hooks.internal_bookkeeping.lock().unwrap().is_empty());
     }
 
     #[test]

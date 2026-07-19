@@ -2,10 +2,10 @@
 //! taken by running a per-agent, user-configured regex over the plain de-ANSI'd rows of the
 //! `vt100` screen mirror AC already keeps for every session.
 //!
-//! **The percentage is a signal for a human. It never drives an action.** That is not a
-//! rule anyone here has to remember: the scraper holds three narrow trait objects and
-//! nothing else - no `AppHandle`, no `PtyManager` - so the capability to write to a PTY or
-//! kill a session is not reachable from this module at all.
+//! **The percentage is a signal for a human.** A sample may be offered to the bounded
+//! context-alert monitor so it can enqueue an informational coordinator notice, but this
+//! scraper cannot route, inject, or remediate the sampled session. That boundary is
+//! structural: it holds four narrow trait objects and no `AppHandle` or `PtyManager`.
 
 pub mod pattern;
 pub mod rows;
@@ -24,6 +24,15 @@ use pattern::ContextPattern;
 /// configured session per tick - against the ~1.9-2.4 us a single keystroke already holds
 /// the same `ptys` lock for.
 pub const SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Lightweight liveness used when no usable regex exists. It deliberately does not expose
+/// or clone the terminal parser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextSessionLiveness {
+    Live,
+    Unavailable,
+    SessionOver,
+}
 
 /// What a backend can say about one session's rows.
 ///
@@ -44,9 +53,13 @@ pub enum ScreenRowsRead {
     SessionOver,
 }
 
-/// The rows of one session's screen. Three states in, three states out.
+/// The rows and lightweight liveness of one session.
 pub trait ScreenRowsSource: Send + Sync {
     fn get_screen_rows(&self, id: Uuid) -> ScreenRowsRead;
+
+    fn get_session_liveness(&self, _id: Uuid) -> ContextSessionLiveness {
+        ContextSessionLiveness::Unavailable
+    }
 }
 
 /// Every agent's configured pattern STRING, resolved fresh each tick.
@@ -58,9 +71,21 @@ pub trait ContextPatternSource: Send + Sync {
     fn patterns(&self) -> BoxFuture<'_, HashMap<String, String>>;
 }
 
-/// Where a reading goes. The ONLY thing this module can do to the outside world.
+/// Where a badge reading goes. Its equality gate remains independent of internal samples.
 pub trait ContextEventSink: Send + Sync {
     fn emit(&self, payload: ContextUsagePayload);
+}
+
+/// Every scrape outcome offered to the bounded internal monitor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContextSample {
+    Reading { session_id: Uuid, percent: u8 },
+    Unavailable { session_id: Uuid },
+    SessionOver { session_id: Uuid },
+}
+
+pub trait ContextSampleSink: Send + Sync {
+    fn observe(&self, sample: ContextSample);
 }
 
 /// The IPC contract, normative for #1033.
@@ -118,20 +143,20 @@ impl Cached {
     }
 }
 
-/// Samples every registered session on a timer and emits a reading when it changes.
+/// Samples every registered session on a timer.
 ///
-/// Holds three trait objects and NOTHING else. No `AppHandle`: an `AppHandle` reaches
-/// `PtyManager` through managed state, and from there `kill`, `write` and session
-/// destruction - so "this never drives an action" would be a promise instead of a fact.
-/// None of the three traits is downcastable back to its implementation (no `Any`
-/// supertrait, no `as_any`), so the total capability of this type is: read rows, read
-/// patterns, emit a payload.
+/// No trait is downcastable to its implementation. The total capability of this type is:
+/// read rows or lightweight liveness, read patterns, emit a badge payload, and synchronously
+/// offer one small sample. It cannot route, inject, wake, or destroy anything.
 pub struct ContextScraper {
     rows: Arc<dyn ScreenRowsSource>,
     patterns: Arc<dyn ContextPatternSource>,
     sink: Arc<dyn ContextEventSink>,
+    samples: Arc<dyn ContextSampleSink>,
     registered: Mutex<HashMap<Uuid, Registered>>,
     compiled: Mutex<HashMap<String, Cached>>,
+    /// Rotates the sorted producer order so partial saturation cannot starve a fixed tail.
+    sample_cursor: AtomicUsize,
     /// Test-visible: the number of `pattern::compile` calls. The compile site is also the
     /// log site, so this is what "logged once per change, not once per tick" is measured by.
     compiles: AtomicUsize,
@@ -142,13 +167,16 @@ impl ContextScraper {
         rows: Arc<dyn ScreenRowsSource>,
         patterns: Arc<dyn ContextPatternSource>,
         sink: Arc<dyn ContextEventSink>,
+        samples: Arc<dyn ContextSampleSink>,
     ) -> Arc<Self> {
         Arc::new(Self {
             rows,
             patterns,
             sink,
+            samples,
             registered: Mutex::new(HashMap::new()),
             compiled: Mutex::new(HashMap::new()),
+            sample_cursor: AtomicUsize::new(0),
             compiles: AtomicUsize::new(0),
         })
     }
@@ -192,6 +220,22 @@ impl ContextScraper {
         );
     }
 
+    /// Stop sampling a session. Producer-side end pruning and monitor maintenance both use
+    /// this idempotent operation.
+    pub(crate) fn unregister_session(&self, id: Uuid) {
+        self.registered
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id);
+    }
+
+    pub(crate) fn is_session_registered(&self, id: Uuid) -> bool {
+        self.registered
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&id)
+    }
+
     /// The last reading emitted for a session, for the snapshot command. `None` covers both
     /// "no reading" and "not registered", which are the same thing to the badge.
     pub fn last_reading(&self, id: Uuid) -> Option<u8> {
@@ -231,12 +275,8 @@ impl ContextScraper {
         pattern
     }
 
-    async fn tick(&self) {
+    pub(crate) async fn tick(&self) {
         // Before `patterns()`, so an app with no agent session running reads nothing at all.
-        // Honest bound: this window is app start until the first agent session, and no
-        // longer - entries for unconfigured agents are never pruned, because reaching them
-        // would cost either a PTY probe or a discarded 30-row clone per session per tick,
-        // purely to reclaim ~100 bytes for a feature that is switched off.
         if self
             .registered
             .lock()
@@ -248,35 +288,63 @@ impl ContextScraper {
 
         let patterns = self.patterns.patterns().await;
 
-        // Snapshot first: the loop must not mutate `registered` while iterating it.
-        let ids: Vec<(Uuid, String)> = {
+        // Snapshot first: the loop must not mutate `registered` while iterating it. Sorting
+        // makes the rotation deterministic and rotating prevents a fixed saturation tail.
+        let mut ids: Vec<(Uuid, String)> = {
             let registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
             registered
                 .iter()
                 .map(|(id, entry)| (*id, entry.agent_id.clone()))
                 .collect()
         };
+        ids.sort_unstable_by_key(|(id, _)| *id);
+        if !ids.is_empty() {
+            let start = self.sample_cursor.fetch_add(1, Ordering::Relaxed) % ids.len();
+            ids.rotate_left(start);
+        }
 
         let mut over: Vec<Uuid> = Vec::new();
 
         for (id, agent_id) in ids {
-            let (reading, session_over): (Option<u8>, bool) = match patterns.get(&agent_id) {
-                // Not configured: no lock, no rows, no compile.
-                None => (None, false),
-                Some(source) => match self.resolve(&agent_id, source) {
-                    // Does not compile: no lock, no rows either.
-                    None => (None, false),
-                    Some(pattern) => match self.rows.get_screen_rows(id) {
-                        ScreenRowsRead::Rows(rows) => (rows::extract(&pattern, &rows), false),
-                        ScreenRowsRead::Unavailable => (None, false),
-                        ScreenRowsRead::SessionOver => (None, true),
+            let usable_pattern = patterns
+                .get(&agent_id)
+                .filter(|source| !source.trim().is_empty())
+                .and_then(|source| self.resolve(&agent_id, source));
+
+            let (reading, sample, session_over) = match usable_pattern {
+                None => match self.rows.get_session_liveness(id) {
+                    ContextSessionLiveness::Live | ContextSessionLiveness::Unavailable => {
+                        (None, ContextSample::Unavailable { session_id: id }, false)
+                    }
+                    ContextSessionLiveness::SessionOver => {
+                        (None, ContextSample::SessionOver { session_id: id }, true)
+                    }
+                },
+                Some(pattern) => match self.rows.get_screen_rows(id) {
+                    ScreenRowsRead::Rows(rows) => match rows::extract(&pattern, &rows) {
+                        Some(percent) => (
+                            Some(percent),
+                            ContextSample::Reading {
+                                session_id: id,
+                                percent,
+                            },
+                            false,
+                        ),
+                        None => (None, ContextSample::Unavailable { session_id: id }, false),
                     },
+                    ScreenRowsRead::Unavailable => {
+                        (None, ContextSample::Unavailable { session_id: id }, false)
+                    }
+                    ScreenRowsRead::SessionOver => {
+                        (None, ContextSample::SessionOver { session_id: id }, true)
+                    }
                 },
             };
 
-            // ONE gate, for every state there is. Clearing a pattern, an invalid pattern, a
-            // suppressed statusline, a dead session and a real decrease all arrive here, and
-            // all of them emit exactly when the value changed.
+            // Every scrape outcome is offered before the badge equality gate. The production
+            // sink is nonblocking and fail-soft, so a drop cannot suppress this gate or pruning.
+            self.samples.observe(sample);
+
             let changed = {
                 let mut registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
                 match registered.get_mut(&id) {
@@ -299,7 +367,7 @@ impl ContextScraper {
             }
         }
 
-        // After the loop, never during it.
+        // After the loop, never during it. This pruning is independent of sample delivery.
         if !over.is_empty() {
             let mut registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
             registered.retain(|id, _| !over.contains(id));
@@ -313,10 +381,7 @@ impl ContextScraper {
 
     #[cfg(test)]
     fn is_registered(&self, id: Uuid) -> bool {
-        self.registered
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains_key(&id)
+        self.is_session_registered(id)
     }
 }
 
@@ -340,6 +405,8 @@ mod tests {
     struct RowsFake {
         script: StdMutex<Vec<ScreenRowsRead>>,
         calls: StdMutex<Vec<Uuid>>,
+        liveness_script: StdMutex<Vec<ContextSessionLiveness>>,
+        liveness_calls: StdMutex<Vec<Uuid>>,
     }
 
     impl RowsFake {
@@ -347,10 +414,23 @@ mod tests {
             Arc::new(Self {
                 script: StdMutex::new(reads),
                 calls: StdMutex::new(Vec::new()),
+                liveness_script: StdMutex::new(Vec::new()),
+                liveness_calls: StdMutex::new(Vec::new()),
+            })
+        }
+        fn with_liveness(reads: Vec<ContextSessionLiveness>) -> Arc<Self> {
+            Arc::new(Self {
+                script: StdMutex::new(Vec::new()),
+                calls: StdMutex::new(Vec::new()),
+                liveness_script: StdMutex::new(reads),
+                liveness_calls: StdMutex::new(Vec::new()),
             })
         }
         fn call_count(&self) -> usize {
             self.calls.lock().unwrap().len()
+        }
+        fn liveness_call_count(&self) -> usize {
+            self.liveness_calls.lock().unwrap().len()
         }
     }
 
@@ -360,6 +440,16 @@ mod tests {
             let mut script = self.script.lock().unwrap();
             if script.is_empty() {
                 ScreenRowsRead::Unavailable
+            } else {
+                script.remove(0)
+            }
+        }
+
+        fn get_session_liveness(&self, id: Uuid) -> ContextSessionLiveness {
+            self.liveness_calls.lock().unwrap().push(id);
+            let mut script = self.liveness_script.lock().unwrap();
+            if script.is_empty() {
+                ContextSessionLiveness::Unavailable
             } else {
                 script.remove(0)
             }
@@ -419,25 +509,46 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct SamplesFake {
+        observed: StdMutex<Vec<ContextSample>>,
+    }
+
+    impl SamplesFake {
+        fn observed(&self) -> Vec<ContextSample> {
+            self.observed.lock().unwrap().clone()
+        }
+    }
+
+    impl ContextSampleSink for SamplesFake {
+        fn observe(&self, sample: ContextSample) {
+            self.observed.lock().unwrap().push(sample);
+        }
+    }
+
     struct Harness {
         scraper: Arc<ContextScraper>,
         rows: Arc<RowsFake>,
         patterns: Arc<PatternFake>,
         sink: Arc<SinkFake>,
+        samples: Arc<SamplesFake>,
     }
 
     fn harness(rows: Arc<RowsFake>, patterns: Arc<PatternFake>) -> Harness {
         let sink = Arc::new(SinkFake::default());
+        let samples = Arc::new(SamplesFake::default());
         let scraper = ContextScraper::new(
             Arc::clone(&rows) as Arc<dyn ScreenRowsSource>,
             Arc::clone(&patterns) as Arc<dyn ContextPatternSource>,
             Arc::clone(&sink) as Arc<dyn ContextEventSink>,
+            Arc::clone(&samples) as Arc<dyn ContextSampleSink>,
         );
         Harness {
             scraper,
             rows,
             patterns,
             sink,
+            samples,
         }
     }
 
@@ -454,6 +565,71 @@ mod tests {
 
         assert_eq!(h.rows.call_count(), 0, "no pattern must mean no rows read");
         assert!(h.sink.emitted().is_empty(), "and no event");
+        assert_eq!(h.samples.observed().len(), 2, "one sample per tick");
+    }
+
+    #[tokio::test]
+    async fn missing_pattern_uses_only_lightweight_liveness_and_prunes_on_end() {
+        let rows = RowsFake::with_liveness(vec![
+            ContextSessionLiveness::Live,
+            ContextSessionLiveness::SessionOver,
+        ]);
+        let h = harness(Arc::clone(&rows), Arc::new(PatternFake::default()));
+        let id = Uuid::new_v4();
+        h.scraper.register_session(id, AGENT.to_string());
+
+        h.scraper.tick().await;
+        assert!(h.scraper.is_registered(id));
+        h.scraper.tick().await;
+
+        assert_eq!(rows.call_count(), 0, "no screen rows may be cloned");
+        assert_eq!(rows.liveness_call_count(), 2);
+        assert_eq!(
+            h.samples.observed(),
+            vec![
+                ContextSample::Unavailable { session_id: id },
+                ContextSample::SessionOver { session_id: id },
+            ]
+        );
+        assert!(!h.scraper.is_registered(id));
+    }
+
+    #[tokio::test]
+    async fn blank_and_invalid_patterns_use_liveness_without_reading_rows() {
+        for (source, liveness) in [
+            ("   ", ContextSessionLiveness::Live),
+            (r"(unclosed", ContextSessionLiveness::Unavailable),
+        ] {
+            let rows = RowsFake::with_liveness(vec![liveness]);
+            let h = harness(Arc::clone(&rows), PatternFake::with(AGENT, source));
+            let id = Uuid::new_v4();
+            h.scraper.register_session(id, AGENT.to_string());
+
+            h.scraper.tick().await;
+
+            assert_eq!(rows.call_count(), 0, "source={source:?}");
+            assert_eq!(rows.liveness_call_count(), 1, "source={source:?}");
+            assert_eq!(
+                h.samples.observed(),
+                vec![ContextSample::Unavailable { session_id: id }]
+            );
+            assert!(h.scraper.is_registered(id));
+        }
+    }
+
+    #[tokio::test]
+    async fn unregister_is_idempotent_and_prevents_future_probes() {
+        let rows = RowsFake::with_liveness(vec![ContextSessionLiveness::Live]);
+        let h = harness(Arc::clone(&rows), Arc::new(PatternFake::default()));
+        let id = Uuid::new_v4();
+        h.scraper.register_session(id, AGENT.to_string());
+
+        h.scraper.unregister_session(id);
+        h.scraper.unregister_session(id);
+        h.scraper.tick().await;
+
+        assert!(!h.scraper.is_session_registered(id));
+        assert_eq!(rows.liveness_call_count(), 0);
     }
 
     /// The empty-map guard, in the only window it covers: app start until the first agent
@@ -658,6 +834,20 @@ mod tests {
             vec![Some(42), None, Some(42)],
             "the reading comes back on the tick after the handle answers again"
         );
+        assert_eq!(
+            h.samples.observed(),
+            vec![
+                ContextSample::Reading {
+                    session_id: id,
+                    percent: 42,
+                },
+                ContextSample::Unavailable { session_id: id },
+                ContextSample::Reading {
+                    session_id: id,
+                    percent: 42,
+                },
+            ]
+        );
     }
 
     #[tokio::test]
@@ -678,6 +868,24 @@ mod tests {
         h.scraper.tick().await;
 
         assert_eq!(h.sink.emitted(), vec![Some(42)]);
+        assert_eq!(
+            h.samples.observed(),
+            vec![
+                ContextSample::Reading {
+                    session_id: h
+                        .scraper
+                        .registered
+                        .lock()
+                        .unwrap()
+                        .keys()
+                        .next()
+                        .copied()
+                        .unwrap(),
+                    percent: 42,
+                };
+                3
+            ]
+        );
     }
 
     /// No monotonicity: `/clear` and `/compact` are the whole point of watching this number.
@@ -724,6 +932,43 @@ mod tests {
             "both sessions are new to the badge, so both emit"
         );
         assert_eq!(h.scraper.compile_count(), 1, "one agent, one compile");
+    }
+
+    #[tokio::test]
+    async fn sorted_sample_order_rotates_one_position_each_tick() {
+        let ids = [Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3)];
+        let h = harness(
+            RowsFake::scripted(vec![
+                ScreenRowsRead::Rows(vec![row(10)]),
+                ScreenRowsRead::Rows(vec![row(20)]),
+                ScreenRowsRead::Rows(vec![row(30)]),
+                ScreenRowsRead::Rows(vec![row(40)]),
+                ScreenRowsRead::Rows(vec![row(50)]),
+                ScreenRowsRead::Rows(vec![row(60)]),
+            ]),
+            PatternFake::with(AGENT, CLAUDE),
+        );
+        for id in ids {
+            h.scraper.register_session(id, AGENT.to_string());
+        }
+
+        h.scraper.tick().await;
+        h.scraper.tick().await;
+
+        let observed_ids: Vec<Uuid> = h
+            .samples
+            .observed()
+            .into_iter()
+            .map(|sample| match sample {
+                ContextSample::Reading { session_id, .. }
+                | ContextSample::Unavailable { session_id }
+                | ContextSample::SessionOver { session_id } => session_id,
+            })
+            .collect();
+        assert_eq!(
+            observed_ids,
+            vec![ids[0], ids[1], ids[2], ids[1], ids[2], ids[0]]
+        );
     }
 
     #[test]

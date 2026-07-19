@@ -458,6 +458,10 @@ fn workgroup_add_creates_task_messaging_replicas_and_lists() {
         created_team["agents"],
         serde_json::json!(["_agent_architect", "_agent_dev-rust"])
     );
+    assert_eq!(
+        created_team["contextAlertPercentages"],
+        serde_json::json!([])
+    );
 
     let team_config_path = project
         .join(".ac")
@@ -503,6 +507,10 @@ fn workgroup_add_creates_task_messaging_replicas_and_lists() {
         serde_json::json!(["_agent_architect", "_agent_dev-rust"])
     );
     assert_eq!(team_config["coordinator"], "_agent_architect");
+    assert_eq!(
+        team_config["contextAlertPercentages"],
+        serde_json::json!([])
+    );
 
     let list = run_json(&bin, &["workgroup", "list", "--project", "ProjectAlpha"]);
     assert_eq!(list.as_array().expect("array").len(), 1);
@@ -1224,7 +1232,8 @@ fn workgroup_add_existing_invalid_team_config_errors_without_rewrite() {
             "dev-rust",
         ],
     );
-    assert!(stderr.contains("Failed to parse config.json"));
+    assert!(stderr.contains("Team config at"));
+    assert!(stderr.contains("is malformed"));
     assert_eq!(std::fs::read(&config_path).expect("after"), original);
 }
 

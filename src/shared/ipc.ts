@@ -820,6 +820,76 @@ export const RoleTemplateAPI = {
     transport.invoke<AgencyTemplatesUpdateResult>("update_agency_templates"),
 };
 
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function normalizeTeamConfigResult(value: unknown): TeamConfigResult {
+  if (!isUnknownRecord(value)) {
+    throw new Error("Invalid get_team_config response: expected an object");
+  }
+
+  const agents = value.agents;
+  if (!isStringArray(agents)) {
+    throw new Error(
+      "Invalid get_team_config response: agents must be an array of strings",
+    );
+  }
+
+  const coordinator = value.coordinator;
+  if (typeof coordinator !== "string") {
+    throw new Error("Invalid get_team_config response: coordinator must be a string");
+  }
+
+  const rawRepos = value.repos;
+  if (!Array.isArray(rawRepos)) {
+    throw new Error(
+      "Invalid get_team_config response: repos must be an array of { url: string; agents: string[] }",
+    );
+  }
+  const repos: { url: string; agents: string[] }[] = [];
+  for (const rawRepo of rawRepos) {
+    if (
+      !isUnknownRecord(rawRepo)
+      || typeof rawRepo.url !== "string"
+      || !isStringArray(rawRepo.agents)
+    ) {
+      throw new Error(
+        "Invalid get_team_config response: repos must be an array of { url: string; agents: string[] }",
+      );
+    }
+    repos.push({ url: rawRepo.url, agents: [...rawRepo.agents] });
+  }
+
+  const rawContextAlertPercentages = value.contextAlertPercentages;
+  let contextAlertPercentages: number[];
+  if (rawContextAlertPercentages === undefined) {
+    contextAlertPercentages = [];
+  } else if (
+    Array.isArray(rawContextAlertPercentages)
+    && rawContextAlertPercentages.every(
+      (percentage) => typeof percentage === "number" && Number.isFinite(percentage),
+    )
+  ) {
+    contextAlertPercentages = [...rawContextAlertPercentages];
+  } else {
+    throw new Error(
+      "Invalid get_team_config response: contextAlertPercentages must be an array of finite numbers",
+    );
+  }
+
+  return {
+    agents: [...agents],
+    coordinator,
+    repos,
+    contextAlertPercentages,
+  };
+}
+
 export const EntityAPI = {
   createAgentMatrix: (
     projectPath: string,
@@ -848,9 +918,17 @@ export const EntityAPI = {
     name: string,
     agents: string[],
     coordinator: string,
-    repos: { url: string; agents: string[] }[]
+    repos: { url: string; agents: string[] }[],
+    contextAlertPercentages: number[],
   ) =>
-    transport.invoke<void>("create_team", { projectPath, name, agents, coordinator, repos }),
+    transport.invoke<void>("create_team", {
+      projectPath,
+      name,
+      agents,
+      coordinator,
+      repos,
+      contextAlertPercentages,
+    }),
 
   deleteTeam: (projectPath: string, teamName: string) =>
     transport.invoke<void>("delete_team", { projectPath, teamName }),
@@ -860,12 +938,21 @@ export const EntityAPI = {
     teamName: string,
     agents: string[],
     coordinator: string,
-    repos: { url: string; agents: string[] }[]
+    repos: { url: string; agents: string[] }[],
+    contextAlertPercentages: number[],
   ) =>
-    transport.invoke<void>("update_team", { projectPath, teamName, agents, coordinator, repos }),
+    transport.invoke<void>("update_team", {
+      projectPath,
+      teamName,
+      agents,
+      coordinator,
+      repos,
+      contextAlertPercentages,
+    }),
 
   getTeamConfig: (projectPath: string, teamName: string) =>
-    transport.invoke<TeamConfigResult>("get_team_config", { projectPath, teamName }),
+    transport.invoke<unknown>("get_team_config", { projectPath, teamName })
+      .then(normalizeTeamConfigResult),
 
   createWorkgroup: (projectPath: string, teamName: string, taskTitle?: string) =>
     transport.invoke<void>("create_workgroup", {

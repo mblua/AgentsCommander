@@ -1,6 +1,10 @@
-import { Component, createSignal, createMemo, For, Show, onMount, onCleanup } from "solid-js";
+import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import type { Component } from "solid-js";
 import { EntityAPI } from "../../shared/ipc";
 import { projectStore } from "../stores/project";
+import { TeamContextAlertsEditor } from "./TeamContextAlertsEditor";
+import type { ContextAlertThresholdDraft } from "./team-context-alerts";
+import { validateContextAlertThresholdDrafts } from "./team-context-alerts";
 
 interface AgentEntry {
   name: string;
@@ -15,6 +19,12 @@ interface RepoEntry {
 
 type Step = 1 | 2 | 3;
 
+function normalizeCaughtError(error: unknown, fallback: string): string {
+  if (typeof error === "string") return error;
+  if (error instanceof Error && error.message) return error.message;
+  return fallback;
+}
+
 const NewTeamModal: Component<{
   projectPath: string;
   onClose: () => void;
@@ -26,84 +36,90 @@ const NewTeamModal: Component<{
   const [coordinator, setCoordinator] = createSignal<string>("");
   const [repos, setRepos] = createSignal<RepoEntry[]>([]);
   const [repoInput, setRepoInput] = createSignal("");
-  const [error, setError] = createSignal("");
+  const [contextAlertDrafts, setContextAlertDrafts] =
+    createSignal<ContextAlertThresholdDraft[]>([]);
+  const [repoError, setRepoError] = createSignal("");
+  const [createError, setCreateError] = createSignal("");
   const [creating, setCreating] = createSignal(false);
   const [loadingAgents, setLoadingAgents] = createSignal(false);
+  const [agentFilter, setAgentFilter] = createSignal("");
   let nameRef!: HTMLInputElement;
 
-  const [agentFilter, setAgentFilter] = createSignal("");
+  const contextAlertValidation = createMemo(() =>
+    validateContextAlertThresholdDrafts(contextAlertDrafts()),
+  );
 
-  // Derive current project's folder name from props.projectPath
   const currentProjectName = createMemo(() => {
-    const p = props.projectPath.replace(/[\\/]+$/, "");
-    const idx = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
-    return idx >= 0 ? p.slice(idx + 1) : p;
+    const path = props.projectPath.replace(/[\\/]+$/, "");
+    const separatorIndex = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+    return separatorIndex >= 0 ? path.slice(separatorIndex + 1) : path;
   });
 
-  // Group agents by project, current project first, with search filter
   const agentsByProject = createMemo(() => {
     const filter = agentFilter().toLowerCase();
     const filtered = filter
-      ? allAgents().filter((a) => a.name.toLowerCase().includes(filter))
+      ? allAgents().filter((agent) => agent.name.toLowerCase().includes(filter))
       : allAgents();
 
-    const map = new Map<string, AgentEntry[]>();
-    for (const a of filtered) {
-      const list = map.get(a.projectName) ?? [];
-      list.push(a);
-      map.set(a.projectName, list);
+    const grouped = new Map<string, AgentEntry[]>();
+    for (const agent of filtered) {
+      const entries = grouped.get(agent.projectName) ?? [];
+      entries.push(agent);
+      grouped.set(agent.projectName, entries);
     }
 
-    // Sort: current project first, rest alphabetical
-    const cur = currentProjectName();
-    const entries = Array.from(map.entries());
-    entries.sort((a, b) => {
-      if (a[0] === cur) return -1;
-      if (b[0] === cur) return 1;
-      return a[0].localeCompare(b[0]);
+    const current = currentProjectName();
+    const entries = Array.from(grouped.entries());
+    entries.sort((left, right) => {
+      if (left[0] === current) return -1;
+      if (right[0] === current) return 1;
+      return left[0].localeCompare(right[0]);
     });
     return new Map(entries);
   });
 
   const selectedAgentList = createMemo(() =>
-    allAgents().filter((a) => selectedAgents().has(a.path))
+    allAgents().filter((agent) => selectedAgents().has(agent.path)),
   );
 
-  const portableAgentRef = (path: string) => {
+  const portableAgentRef = (path: string): string => {
     const last = path.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? path;
     return last.startsWith("_agent_") ? last : `_agent_${last}`;
   };
 
   const canNext1 = createMemo(() => {
-    const n = teamName().trim();
-    return n.length > 0 && !n.includes("/") && !n.includes("\\") && !n.includes(" ");
+    const name = teamName().trim();
+    return name.length > 0 && !name.includes("/") && !name.includes("\\") && !name.includes(" ");
   });
 
-  const canNext2 = createMemo(() =>
-    selectedAgents().size > 0 && coordinator() !== ""
+  const canNext2 = createMemo(() => selectedAgents().size > 0 && coordinator() !== "");
+
+  const canCreate = createMemo(() =>
+    !creating() && canNext1() && canNext2() && contextAlertValidation().valid,
   );
 
   onMount(async () => {
     setLoadingAgents(true);
     try {
-      const paths = projectStore.projects.map((p) => p.path);
+      const paths = projectStore.projects.map((project) => project.path);
       const result = await EntityAPI.listAllAgents(paths);
-      const entries: AgentEntry[] = result.map((a) => ({
-        name: a.name,
-        path: a.path,
-        projectName: a.projectName,
-      }));
-      setAllAgents(entries);
-    } catch (e) {
-      console.error("list_all_agents failed:", e);
+      setAllAgents(
+        result.map((agent) => ({
+          name: agent.name,
+          path: agent.path,
+          projectName: agent.projectName,
+        })),
+      );
+    } catch (error: unknown) {
+      console.error("list_all_agents failed:", error);
     } finally {
       setLoadingAgents(false);
     }
   });
 
   const toggleAgent = (path: string) => {
-    setSelectedAgents((prev) => {
-      const next = new Set(prev);
+    setSelectedAgents((previous) => {
+      const next = new Set(previous);
       if (next.has(path)) {
         next.delete(path);
         if (coordinator() === path) setCoordinator("");
@@ -115,84 +131,111 @@ const NewTeamModal: Component<{
   };
 
   const addRepo = () => {
+    if (creating()) return;
     const url = repoInput().trim();
     if (!url) return;
-    if (repos().some((r) => r.url === url)) {
-      setError("Repo already added");
+    if (repos().some((repo) => repo.url === url)) {
+      setRepoError("Repo already added");
       return;
     }
-    setRepos((prev) => [...prev, { url, agents: new Set(selectedAgentList().map((a) => a.path)) }]);
+    setRepos((previous) => [
+      ...previous,
+      { url, agents: new Set(selectedAgentList().map((agent) => agent.path)) },
+    ]);
     setRepoInput("");
-    setError("");
+    setRepoError("");
   };
 
   const removeRepo = (url: string) => {
-    setRepos((prev) => prev.filter((r) => r.url !== url));
+    if (creating()) return;
+    setRepos((previous) => previous.filter((repo) => repo.url !== url));
   };
 
   const toggleRepoAgent = (repoUrl: string, agentPath: string) => {
-    setRepos((prev) =>
-      prev.map((r) => {
-        if (r.url !== repoUrl) return r;
-        const next = new Set(r.agents);
-        if (next.has(agentPath)) next.delete(agentPath);
-        else next.add(agentPath);
-        return { ...r, agents: next };
-      })
+    if (creating()) return;
+    setRepos((previous) =>
+      previous.map((repo) => {
+        if (repo.url !== repoUrl) return repo;
+        const nextAgents = new Set(repo.agents);
+        if (nextAgents.has(agentPath)) nextAgents.delete(agentPath);
+        else nextAgents.add(agentPath);
+        return { ...repo, agents: nextAgents };
+      }),
     );
   };
 
   const toggleRepoAll = (repoUrl: string) => {
-    setRepos((prev) =>
-      prev.map((r) => {
-        if (r.url !== repoUrl) return r;
-        const allSelected = selectedAgentList().every((a) => r.agents.has(a.path));
-        const next = allSelected ? new Set<string>() : new Set(selectedAgentList().map((a) => a.path));
-        return { ...r, agents: next };
-      })
+    if (creating()) return;
+    setRepos((previous) =>
+      previous.map((repo) => {
+        if (repo.url !== repoUrl) return repo;
+        const allSelected = selectedAgentList().every((agent) => repo.agents.has(agent.path));
+        const nextAgents = allSelected
+          ? new Set<string>()
+          : new Set(selectedAgentList().map((agent) => agent.path));
+        return { ...repo, agents: nextAgents };
+      }),
     );
   };
 
-  const repoDisplayName = (url: string) => {
+  const repoDisplayName = (url: string): string => {
     const match = url.match(/\/([^/]+?)(?:\.git)?$/);
     return match ? match[1] : url;
   };
 
   const handleCreate = async () => {
-    if (creating()) return;
+    const validation = contextAlertValidation();
+    if (
+      creating()
+      || !canNext1()
+      || !canNext2()
+      || !validation.valid
+    ) {
+      return;
+    }
+
+    const request = {
+      projectPath: props.projectPath,
+      name: teamName().trim(),
+      agents: Array.from(selectedAgents()).map(portableAgentRef),
+      coordinator: portableAgentRef(coordinator()),
+      repos: repos().map((repo) => ({
+        url: repo.url,
+        agents: Array.from(repo.agents).map(portableAgentRef),
+      })),
+      contextAlertPercentages: [...validation.canonicalPercentages],
+    };
+
     setCreating(true);
-    setError("");
+    setCreateError("");
     try {
-      const repoData = repos().map((r) => ({
-        url: r.url,
-        agents: Array.from(r.agents).map(portableAgentRef),
-      }));
       await EntityAPI.createTeam(
-        props.projectPath,
-        teamName().trim(),
-        Array.from(selectedAgents()).map(portableAgentRef),
-        portableAgentRef(coordinator()),
-        repoData
+        request.projectPath,
+        request.name,
+        request.agents,
+        request.coordinator,
+        request.repos,
+        request.contextAlertPercentages,
       );
-      await projectStore.reloadProject(props.projectPath);
+      await projectStore.reloadProject(request.projectPath);
       props.onClose();
-    } catch (e: any) {
-      console.error("create_team failed:", e);
-      setError(typeof e === "string" ? e : e.message || "Failed to create team");
+    } catch (error: unknown) {
+      console.error("create_team failed:", error);
+      setCreateError(normalizeCaughtError(error, "Failed to create team"));
     } finally {
       setCreating(false);
     }
   };
 
-  const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey && step() === 1) {
-      e.preventDefault();
+  const handleKeyDown = (event: KeyboardEvent) => {
+    if (event.key === "Enter" && !event.shiftKey && step() === 1) {
+      event.preventDefault();
       if (canNext1()) setStep(2);
     }
   };
 
-  const handleDocumentKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape") props.onClose();
+  const handleDocumentKeyDown = (event: KeyboardEvent) => {
+    if (event.key === "Escape" && !creating()) props.onClose();
   };
 
   document.addEventListener("keydown", handleDocumentKeyDown);
@@ -200,13 +243,15 @@ const NewTeamModal: Component<{
 
   return (
     <div class="modal-overlay" onKeyDown={handleKeyDown}>
-      <div class="agent-modal entity-wizard-modal">
+      <div
+        class="agent-modal entity-wizard-modal"
+        aria-busy={creating() ? "true" : "false"}
+      >
         <div class="agent-modal-header">
           <span class="agent-modal-title">New Team</span>
           <span class="wizard-step-indicator">Step {step()} of 3</span>
         </div>
 
-        {/* Step 1: Name */}
         <Show when={step() === 1}>
           <div class="new-agent-form">
             <div class="new-agent-field">
@@ -215,14 +260,11 @@ const NewTeamModal: Component<{
                 ref={nameRef!}
                 class="agent-search-input"
                 value={teamName()}
-                onInput={(e) => { setTeamName(e.currentTarget.value); setError(""); }}
+                onInput={(event) => setTeamName(event.currentTarget.value)}
                 placeholder="dream-team"
                 autofocus
               />
             </div>
-            <Show when={error()}>
-              <div class="new-agent-error">{error()}</div>
-            </Show>
           </div>
           <div class="new-agent-footer">
             <button class="new-agent-cancel-btn" onClick={() => props.onClose()}>Cancel</button>
@@ -236,7 +278,6 @@ const NewTeamModal: Component<{
           </div>
         </Show>
 
-        {/* Step 2: Agent selection */}
         <Show when={step() === 2}>
           <div class="wizard-body">
             <Show when={loadingAgents()}>
@@ -254,7 +295,7 @@ const NewTeamModal: Component<{
                 <input
                   class="wizard-search-input"
                   value={agentFilter()}
-                  onInput={(e) => setAgentFilter(e.currentTarget.value)}
+                  onInput={(event) => setAgentFilter(event.currentTarget.value)}
                   placeholder="Filter agents..."
                 />
               </div>
@@ -265,7 +306,7 @@ const NewTeamModal: Component<{
                     <For each={agents}>
                       {(agent) => {
                         const isSelected = () => selectedAgents().has(agent.path);
-                        const isCoord = () => coordinator() === agent.path;
+                        const isCoordinator = () => coordinator() === agent.path;
                         return (
                           <div class="wizard-agent-row">
                             <label class="wizard-checkbox-label">
@@ -281,7 +322,7 @@ const NewTeamModal: Component<{
                                 <input
                                   type="radio"
                                   name="coordinator"
-                                  checked={isCoord()}
+                                  checked={isCoordinator()}
                                   onChange={() => setCoordinator(agent.path)}
                                 />
                                 <span class="wizard-coord-text">Coord</span>
@@ -294,9 +335,6 @@ const NewTeamModal: Component<{
                   </div>
                 )}
               </For>
-            </Show>
-            <Show when={error()}>
-              <div class="new-agent-error">{error()}</div>
             </Show>
           </div>
           <div class="new-agent-footer">
@@ -311,75 +349,146 @@ const NewTeamModal: Component<{
           </div>
         </Show>
 
-        {/* Step 3: Repo assignment */}
         <Show when={step() === 3}>
           <div class="wizard-body">
-            <div class="wizard-repo-input-row">
-              <input
-                class="agent-search-input"
-                value={repoInput()}
-                onInput={(e) => { setRepoInput(e.currentTarget.value); setError(""); }}
-                placeholder="https://github.com/org/repo.git"
-                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addRepo(); } }}
-              />
-              <button class="new-agent-browse-btn" onClick={addRepo}>Add Repo</button>
-            </div>
+            <TeamContextAlertsEditor
+              idPrefix="new-team-context-alerts"
+              drafts={contextAlertDrafts()}
+              validation={contextAlertValidation()}
+              disabled={creating()}
+              onChange={(next) => {
+                if (creating()) return;
+                setContextAlertDrafts(next);
+              }}
+            />
 
-            <Show when={repos().length > 0}>
-              <div class="wizard-repo-list">
-                <For each={repos()}>
-                  {(repo) => {
-                    const allChecked = () => selectedAgentList().every((a) => repo.agents.has(a.path));
-                    return (
-                      <div class="wizard-repo-card">
-                        <div class="wizard-repo-header">
-                          <span class="wizard-repo-name">{repoDisplayName(repo.url)}</span>
-                          <button class="wizard-repo-remove" onClick={() => removeRepo(repo.url)} title="Remove repo">
-                            &#x2715;
-                          </button>
-                        </div>
-                        <div class="wizard-repo-agents">
-                          <label class="wizard-checkbox-label wizard-all-label">
-                            <input
-                              type="checkbox"
-                              checked={allChecked()}
-                              onChange={() => toggleRepoAll(repo.url)}
-                            />
-                            <span>All agents</span>
-                          </label>
-                          <For each={selectedAgentList()}>
-                            {(agent) => (
-                              <label class="wizard-checkbox-label">
-                                <input
-                                  type="checkbox"
-                                  checked={repo.agents.has(agent.path)}
-                                  onChange={() => toggleRepoAgent(repo.url, agent.path)}
-                                />
-                                <span>{agent.name}</span>
-                              </label>
-                            )}
-                          </For>
-                        </div>
-                      </div>
-                    );
+            <section class="team-settings-section" aria-labelledby="new-team-repositories-heading">
+              <h3 id="new-team-repositories-heading" class="team-settings-heading">
+                Repositories (optional)
+              </h3>
+              <div class="wizard-repo-input-row">
+                <input
+                  class="agent-search-input"
+                  value={repoInput()}
+                  disabled={creating()}
+                  onInput={(event) => {
+                    if (creating()) {
+                      event.currentTarget.value = repoInput();
+                      return;
+                    }
+                    setRepoInput(event.currentTarget.value);
+                    setRepoError("");
                   }}
-                </For>
+                  placeholder="https://github.com/org/repo.git"
+                  onKeyDown={(event) => {
+                    if (creating()) return;
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      addRepo();
+                    }
+                  }}
+                />
+                <button
+                  class="new-agent-browse-btn"
+                  type="button"
+                  disabled={creating()}
+                  onClick={addRepo}
+                >
+                  Add Repo
+                </button>
               </div>
-            </Show>
 
-            <Show when={repos().length === 0}>
-              <div class="wizard-empty">No repos added yet. Add repo URLs above.</div>
-            </Show>
+              <Show when={repos().length > 0}>
+                <div class="wizard-repo-list">
+                  <For each={repos()}>
+                    {(repo) => {
+                      const allChecked = () =>
+                        selectedAgentList().every((agent) => repo.agents.has(agent.path));
+                      return (
+                        <div class="wizard-repo-card">
+                          <div class="wizard-repo-header">
+                            <span class="wizard-repo-name">{repoDisplayName(repo.url)}</span>
+                            <button
+                              class="wizard-repo-remove"
+                              type="button"
+                              disabled={creating()}
+                              onClick={() => removeRepo(repo.url)}
+                              title="Remove repo"
+                            >
+                              &#x2715;
+                            </button>
+                          </div>
+                          <div class="wizard-repo-agents">
+                            <label class="wizard-checkbox-label wizard-all-label">
+                              <input
+                                type="checkbox"
+                                checked={allChecked()}
+                                disabled={creating()}
+                                onChange={() => toggleRepoAll(repo.url)}
+                              />
+                              <span>All agents</span>
+                            </label>
+                            <For each={selectedAgentList()}>
+                              {(agent) => (
+                                <label class="wizard-checkbox-label">
+                                  <input
+                                    type="checkbox"
+                                    checked={repo.agents.has(agent.path)}
+                                    disabled={creating()}
+                                    onChange={() => toggleRepoAgent(repo.url, agent.path)}
+                                  />
+                                  <span>{agent.name}</span>
+                                </label>
+                              )}
+                            </For>
+                          </div>
+                        </div>
+                      );
+                    }}
+                  </For>
+                </div>
+              </Show>
 
-            <Show when={error()}>
-              <div class="new-agent-error">{error()}</div>
+              <Show when={repos().length === 0}>
+                <div class="wizard-empty">No repos added yet. Add repo URLs above.</div>
+              </Show>
+
+              <Show when={repoError()}>
+                <div
+                  id="new-team-repository-error"
+                  class="new-agent-error"
+                  role="alert"
+                  aria-label="Repository error"
+                >
+                  {repoError()}
+                </div>
+              </Show>
+            </section>
+
+            <Show when={createError()}>
+              <div
+                id="new-team-create-error"
+                class="new-agent-error"
+                role="alert"
+                aria-label="Team creation error"
+              >
+                {createError()}
+              </div>
             </Show>
           </div>
           <div class="new-agent-footer">
-            <button class="new-agent-cancel-btn" onClick={() => setStep(2)}>Back</button>
+            <button
+              class="new-agent-cancel-btn"
+              disabled={creating()}
+              onClick={() => {
+                if (!creating()) setStep(2);
+              }}
+            >
+              Back
+            </button>
             <button
               class="new-agent-create-btn"
-              disabled={creating()}
+              disabled={!canCreate()}
               onClick={handleCreate}
             >
               {creating() ? "Creating..." : "Create"}

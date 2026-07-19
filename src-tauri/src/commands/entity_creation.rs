@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -54,6 +56,8 @@ pub struct TeamConfigResult {
     pub coordinator: String,
     #[serde(default)]
     pub repos: Vec<RepoAssignment>,
+    #[serde(default)]
+    pub context_alert_percentages: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -564,29 +568,381 @@ fn selected_workspace_dir(project: &Path) -> Result<PathBuf, String> {
         .ok_or_else(|| format!(".ac directory not found in {}", project.display()))
 }
 
+const TEAM_CONFIG_MUTATION_LOCK_NAME: &str = ".team-config-write.lock";
+const TEAM_CONFIG_LOCK_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const TEAM_CONFIG_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Clone, Copy)]
+struct TeamConfigLockTiming {
+    poll_interval: Duration,
+    timeout: Duration,
+}
+
+impl TeamConfigLockTiming {
+    const PRODUCTION: Self = Self {
+        poll_interval: TEAM_CONFIG_LOCK_POLL_INTERVAL,
+        timeout: TEAM_CONFIG_LOCK_TIMEOUT,
+    };
+}
+
+#[derive(Debug)]
+pub(crate) struct TeamConfigMutationGuard {
+    _file: File,
+    canonical_workspace: PathBuf,
+    lock_path: PathBuf,
+}
+
+impl TeamConfigMutationGuard {
+    pub(crate) fn acquire(workspace_dir: &Path) -> Result<Self, String> {
+        Self::acquire_with_timing(workspace_dir, TeamConfigLockTiming::PRODUCTION)
+    }
+
+    fn acquire_with_timing(
+        workspace_dir: &Path,
+        timing: TeamConfigLockTiming,
+    ) -> Result<Self, String> {
+        let requested_lock_path = workspace_dir.join(TEAM_CONFIG_MUTATION_LOCK_NAME);
+        let canonical_workspace = std::fs::canonicalize(workspace_dir)
+            .map(|path| crate::path_utils::normalize_windows_verbatim_path_buf(&path))
+            .map_err(|e| {
+                format!(
+                    "Failed to resolve workspace for team config lock '{}': {}",
+                    requested_lock_path.display(),
+                    e
+                )
+            })?;
+        if !canonical_workspace.is_dir() {
+            return Err(format!(
+                "Failed to open team config lock '{}': workspace is not a directory",
+                requested_lock_path.display()
+            ));
+        }
+        let lock_path = canonical_workspace.join(TEAM_CONFIG_MUTATION_LOCK_NAME);
+
+        let open_existing = || -> Result<File, String> {
+            validate_team_config_lock_sentinel(&lock_path, &canonical_workspace)?;
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&lock_path)
+                .map_err(|open_error| {
+                    format!(
+                        "Failed to open existing team config lock '{}': {}",
+                        lock_path.display(),
+                        open_error
+                    )
+                })
+        };
+        let file = match std::fs::symlink_metadata(&lock_path) {
+            Ok(_) => open_existing()?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                match OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create_new(true)
+                    .open(&lock_path)
+                {
+                    Ok(file) => file,
+                    Err(create_error)
+                        if create_error.kind() == std::io::ErrorKind::AlreadyExists =>
+                    {
+                        open_existing()?
+                    }
+                    Err(create_error) => {
+                        return Err(format!(
+                            "Failed to create team config lock '{}': {}",
+                            lock_path.display(),
+                            create_error
+                        ));
+                    }
+                }
+            }
+            Err(e) => {
+                return Err(format!(
+                    "Failed to inspect team config lock '{}': {}",
+                    lock_path.display(),
+                    e
+                ));
+            }
+        };
+        validate_team_config_lock_sentinel(&lock_path, &canonical_workspace)?;
+        if !file
+            .metadata()
+            .map_err(|e| {
+                format!(
+                    "Failed to inspect opened team config lock '{}': {}",
+                    lock_path.display(),
+                    e
+                )
+            })?
+            .is_file()
+        {
+            return Err(format!(
+                "Team config lock '{}' must be a regular file",
+                lock_path.display()
+            ));
+        }
+
+        let started = Instant::now();
+        loop {
+            match file.try_lock() {
+                Ok(()) => break,
+                Err(TryLockError::WouldBlock) if started.elapsed() >= timing.timeout => {
+                    return Err(format!(
+                        "Timed out after {} ms waiting for team config lock '{}'",
+                        timing.timeout.as_millis(),
+                        lock_path.display()
+                    ));
+                }
+                Err(TryLockError::WouldBlock) => {
+                    let remaining = timing.timeout.saturating_sub(started.elapsed());
+                    let delay = timing.poll_interval.min(remaining);
+                    if delay.is_zero() {
+                        std::thread::yield_now();
+                    } else {
+                        std::thread::sleep(delay);
+                    }
+                }
+                Err(TryLockError::Error(e)) => {
+                    return Err(format!(
+                        "Failed to acquire team config lock '{}': {}",
+                        lock_path.display(),
+                        e
+                    ));
+                }
+            }
+        }
+
+        Ok(Self {
+            _file: file,
+            canonical_workspace,
+            lock_path,
+        })
+    }
+
+    fn require_workspace(&self, workspace_dir: &Path) -> Result<(), String> {
+        let canonical = std::fs::canonicalize(workspace_dir)
+            .map(|path| crate::path_utils::normalize_windows_verbatim_path_buf(&path))
+            .map_err(|e| {
+                format!(
+                    "Failed to verify workspace for team config lock '{}': {}",
+                    self.lock_path.display(),
+                    e
+                )
+            })?;
+        if canonical != self.canonical_workspace {
+            return Err(format!(
+                "Team config lock '{}' belongs to workspace '{}', not '{}'",
+                self.lock_path.display(),
+                self.canonical_workspace.display(),
+                canonical.display()
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn validate_team_config_lock_sentinel(
+    lock_path: &Path,
+    canonical_workspace: &Path,
+) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(lock_path).map_err(|e| {
+        format!(
+            "Failed to inspect team config lock '{}': {}",
+            lock_path.display(),
+            e
+        )
+    })?;
+    if metadata_is_link_or_reparse(&metadata) || !metadata.is_file() {
+        return Err(format!(
+            "Team config lock '{}' must be a regular non-link file",
+            lock_path.display()
+        ));
+    }
+    let canonical_lock = std::fs::canonicalize(lock_path)
+        .map(|path| crate::path_utils::normalize_windows_verbatim_path_buf(&path))
+        .map_err(|e| {
+            format!(
+                "Failed to resolve team config lock '{}': {}",
+                lock_path.display(),
+                e
+            )
+        })?;
+    let canonical_parent = canonical_lock.parent().ok_or_else(|| {
+        format!(
+            "Team config lock '{}' has no canonical parent",
+            lock_path.display()
+        )
+    })?;
+    if canonical_parent != canonical_workspace {
+        return Err(format!(
+            "Team config lock '{}' escapes canonical workspace '{}'",
+            lock_path.display(),
+            canonical_workspace.display()
+        ));
+    }
+    Ok(())
+}
+
+async fn acquire_team_config_mutation_guard_async(
+    workspace_dir: &Path,
+) -> Result<TeamConfigMutationGuard, String> {
+    let workspace = workspace_dir.to_path_buf();
+    let workspace_label = workspace.display().to_string();
+    tokio::task::spawn_blocking(move || TeamConfigMutationGuard::acquire(&workspace))
+        .await
+        .map_err(|e| {
+            format!(
+                "Failed to acquire team config lock for workspace '{}': blocking task failed: {}",
+                workspace_label, e
+            )
+        })?
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum TeamConfigReadError {
+    #[error("Team config not found at '{path}': {source}")]
+    NotFound {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("Team config at '{path}' is unreadable: {source}")]
+    Unreadable {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("Team config at '{path}' is malformed: {source}")]
+    Malformed {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("Team config at '{path}' is invalid: {cause}")]
+    Invalid { path: PathBuf, cause: String },
+}
+
+impl TeamConfigReadError {
+    // Consumed by the Phase 2 runtime; Phase 1 pins the stable classification contract.
+    #[allow(dead_code)]
+    pub(crate) fn class(&self) -> &'static str {
+        match self {
+            Self::NotFound { .. } => "not_found",
+            Self::Unreadable { .. } => "unreadable",
+            Self::Malformed { .. } => "malformed",
+            Self::Invalid { .. } => "invalid",
+        }
+    }
+}
+
+pub(crate) fn read_team_config_classified(
+    workspace_dir: &Path,
+    team_name: &str,
+) -> Result<TeamConfigResult, TeamConfigReadError> {
+    let config_path = workspace_dir
+        .join(format!("_team_{}", team_name))
+        .join("config.json");
+    validate_existing_name(team_name, "Team").map_err(|cause| TeamConfigReadError::Invalid {
+        path: config_path.clone(),
+        cause,
+    })?;
+    let content = std::fs::read(&config_path).map_err(|source| {
+        if source.kind() == std::io::ErrorKind::NotFound {
+            TeamConfigReadError::NotFound {
+                path: config_path.clone(),
+                source,
+            }
+        } else {
+            TeamConfigReadError::Unreadable {
+                path: config_path.clone(),
+                source,
+            }
+        }
+    })?;
+    let config: TeamConfigResult =
+        serde_json::from_slice(&content).map_err(|source| TeamConfigReadError::Malformed {
+            path: config_path.clone(),
+            source,
+        })?;
+    normalize_team_config_for_project(workspace_dir, &config).map_err(|cause| {
+        TeamConfigReadError::Invalid {
+            path: config_path,
+            cause,
+        }
+    })
+}
+
 pub(crate) fn read_team_config(
     workspace_dir: &Path,
     team_name: &str,
 ) -> Result<TeamConfigResult, String> {
-    validate_existing_name(team_name, "Team")?;
-    let team_dir = workspace_dir.join(format!("_team_{}", team_name));
-    let config_path = team_dir.join("config.json");
-    if !config_path.exists() {
-        return Err(format!("Team '{}' config not found", team_name));
-    }
-    let content = std::fs::read_to_string(&config_path)
-        .map_err(|e| format!("Failed to read config.json: {}", e))?;
-    let config: TeamConfigResult = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse config.json: {}", e))?;
-    normalize_team_config_for_project(workspace_dir, &config)
+    read_team_config_classified(workspace_dir, team_name).map_err(|e| e.to_string())
 }
 
+fn normalized_team_config_bytes(
+    workspace_dir: &Path,
+    config: &TeamConfigResult,
+) -> Result<Vec<u8>, String> {
+    let normalized = normalize_team_config_for_project(workspace_dir, config)?;
+    serde_json::to_vec_pretty(&normalized)
+        .map_err(|e| format!("Failed to serialize config.json: {}", e))
+}
+
+// Standalone synchronous wrapper for non-compound callers and focused writer tests.
+#[allow(dead_code)]
 pub(crate) fn write_team_config(
     workspace_dir: &Path,
     team_name: &str,
     config: &TeamConfigResult,
 ) -> Result<PathBuf, String> {
+    let guard = TeamConfigMutationGuard::acquire(workspace_dir)?;
+    write_team_config_guarded(workspace_dir, team_name, config, &guard)
+}
+
+pub(crate) fn write_team_config_guarded(
+    workspace_dir: &Path,
+    team_name: &str,
+    config: &TeamConfigResult,
+    guard: &TeamConfigMutationGuard,
+) -> Result<PathBuf, String> {
+    write_team_config_guarded_with_publisher(
+        workspace_dir,
+        team_name,
+        config,
+        guard,
+        crate::config::local_config_io::write_file_atomic,
+    )
+}
+
+fn write_existing_team_config_guarded(
+    workspace_dir: &Path,
+    team_name: &str,
+    config: &TeamConfigResult,
+    guard: &TeamConfigMutationGuard,
+) -> Result<PathBuf, String> {
+    guard.require_workspace(workspace_dir)?;
     validate_existing_name(team_name, "Team")?;
+    let team_dir = workspace_dir.join(format!("_team_{}", team_name));
+    if !team_dir.exists() {
+        return Err(format!("Team '{}' not found", team_name));
+    }
+    write_team_config_guarded(workspace_dir, team_name, config, guard)
+}
+
+fn write_team_config_guarded_with_publisher<P>(
+    workspace_dir: &Path,
+    team_name: &str,
+    config: &TeamConfigResult,
+    guard: &TeamConfigMutationGuard,
+    publish: P,
+) -> Result<PathBuf, String>
+where
+    P: FnOnce(&Path, &[u8]) -> Result<(), String>,
+{
+    guard.require_workspace(workspace_dir)?;
+    validate_existing_name(team_name, "Team")?;
+    let config_bytes = normalized_team_config_bytes(workspace_dir, config)?;
     let team_dir = workspace_dir.join(format!("_team_{}", team_name));
     std::fs::create_dir_all(&team_dir)
         .map_err(|e| format!("Failed to create team directory: {}", e))?;
@@ -597,11 +953,8 @@ pub(crate) fn write_team_config(
         std::fs::write(&conventions, "")
             .map_err(|e| format!("Failed to write conventions.md: {}", e))?;
     }
-    let config = normalize_team_config_for_project(workspace_dir, config)?;
-    let config_str = serde_json::to_string_pretty(&config)
-        .map_err(|e| format!("Failed to serialize config.json: {}", e))?;
-    std::fs::write(team_dir.join("config.json"), config_str)
-        .map_err(|e| format!("Failed to write config.json: {}", e))?;
+    publish(&team_dir.join("config.json"), &config_bytes)
+        .map_err(|e| format!("Failed to publish config.json: {}", e))?;
     Ok(team_dir)
 }
 
@@ -610,7 +963,19 @@ pub(crate) fn create_new_team_config_on_disk(
     team_name: &str,
     config: &TeamConfigResult,
 ) -> Result<PathBuf, String> {
+    let guard = TeamConfigMutationGuard::acquire(workspace_dir)?;
+    create_new_team_config_on_disk_guarded(workspace_dir, team_name, config, &guard)
+}
+
+pub(crate) fn create_new_team_config_on_disk_guarded(
+    workspace_dir: &Path,
+    team_name: &str,
+    config: &TeamConfigResult,
+    guard: &TeamConfigMutationGuard,
+) -> Result<PathBuf, String> {
+    guard.require_workspace(workspace_dir)?;
     validate_existing_name(team_name, "Team")?;
+    let config_bytes = normalized_team_config_bytes(workspace_dir, config)?;
     let team_dir = workspace_dir.join(format!("_team_{}", team_name));
     std::fs::create_dir(&team_dir).map_err(|e| match e.kind() {
         std::io::ErrorKind::AlreadyExists => format!("Team '{}' already exists", team_name),
@@ -620,12 +985,48 @@ pub(crate) fn create_new_team_config_on_disk(
         .map_err(|e| format!("Failed to create memory directory: {}", e))?;
     std::fs::write(team_dir.join("conventions.md"), "")
         .map_err(|e| format!("Failed to write conventions.md: {}", e))?;
-    let config = normalize_team_config_for_project(workspace_dir, config)?;
-    let config_str = serde_json::to_string_pretty(&config)
-        .map_err(|e| format!("Failed to serialize config.json: {}", e))?;
-    std::fs::write(team_dir.join("config.json"), config_str)
-        .map_err(|e| format!("Failed to write config.json: {}", e))?;
+    crate::config::local_config_io::write_file_atomic(&team_dir.join("config.json"), &config_bytes)
+        .map_err(|e| format!("Failed to publish config.json: {}", e))?;
     Ok(team_dir)
+}
+
+pub(crate) fn normalize_context_alert_percentages(values: &[u8]) -> Result<Vec<u8>, String> {
+    if values.len() > 3 {
+        return Err("contextAlertPercentages must contain at most 3 values".to_string());
+    }
+    if values.iter().any(|value| !(1..=100).contains(value)) {
+        return Err(
+            "contextAlertPercentages values must be integer percentages from 1 through 100"
+                .to_string(),
+        );
+    }
+    let mut normalized = values.to_vec();
+    normalized.sort_unstable();
+    if normalized.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err("contextAlertPercentages values must be distinct".to_string());
+    }
+    Ok(normalized)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContextAlertWriteMode {
+    Create,
+    Update,
+}
+
+fn resolve_context_alert_argument(
+    mode: ContextAlertWriteMode,
+    supplied: Option<Vec<u8>>,
+    current: Option<&[u8]>,
+) -> Result<Vec<u8>, String> {
+    match supplied {
+        Some(values) => normalize_context_alert_percentages(&values),
+        None if mode == ContextAlertWriteMode::Create => Ok(Vec::new()),
+        None => current.map(|values| values.to_vec()).ok_or_else(|| {
+            "Current team config is required when contextAlertPercentages is omitted on update"
+                .to_string()
+        }),
+    }
 }
 
 pub(crate) fn normalize_team_config_for_project(
@@ -648,10 +1049,13 @@ pub(crate) fn normalize_team_config_for_project(
             agents: normalize_team_agent_refs(workspace_dir, &repo.agents)?,
         });
     }
+    let context_alert_percentages =
+        normalize_context_alert_percentages(&config.context_alert_percentages)?;
     Ok(TeamConfigResult {
         agents,
         coordinator,
         repos,
+        context_alert_percentages,
     })
 }
 
@@ -775,9 +1179,12 @@ pub(crate) async fn create_workgroup_on_disk(
                 agents: args.agents.clone(),
                 coordinator,
                 repos: args.repos.clone(),
+                context_alert_percentages: Vec::new(),
             };
             let config = normalize_team_config_for_project(&base, &config)?;
-            write_team_config(&base, &safe_team, &config)?;
+            let guard = acquire_team_config_mutation_guard_async(&base).await?;
+            create_new_team_config_on_disk_guarded(&base, &safe_team, &config, &guard)?;
+            drop(guard);
             config
         } else {
             read_team_config(&base, &safe_team)?
@@ -965,7 +1372,8 @@ pub async fn delete_agent_matrix(
     agent_path: String,
 ) -> Result<(), String> {
     let base = selected_workspace_dir(Path::new(&project_path))?;
-    let plan = collect_agent_delete_plan(&base, Path::new(&agent_path))?;
+    let guard = acquire_team_config_mutation_guard_async(&base).await?;
+    let plan = collect_agent_delete_plan_guarded(&base, Path::new(&agent_path), &guard)?;
     preflight_agent_delete(&plan, session_mgr.inner()).await?;
 
     let metadata = prepare_agent_delete_metadata(&plan, settings.inner()).await?;
@@ -978,19 +1386,23 @@ pub async fn delete_agent_matrix(
     )
     .await
     {
+        drop(guard);
         let rollback = rollback_staged_agent_delete_targets(&staged);
         return Err(format_agent_delete_post_stage_live_failure(
             live_err, rollback,
         ));
     }
 
-    let persist = persist_agent_delete_metadata(&metadata, settings.inner()).await;
+    let persist = persist_agent_delete_metadata(&metadata, settings.inner(), &guard).await;
     if let Err(e) = persist {
-        let restore = restore_agent_delete_metadata_snapshots(&metadata, settings.inner()).await;
+        let restore =
+            restore_agent_delete_metadata_snapshots(&metadata, settings.inner(), &guard).await;
+        drop(guard);
         let rollback = rollback_staged_agent_delete_targets(&staged);
         return Err(format_agent_delete_metadata_failure(e, restore, rollback));
     }
 
+    drop(guard);
     remove_staged_agent_delete_targets(&staged)?;
 
     log::info!(
@@ -1032,6 +1444,7 @@ struct AgentTeamMutation {
 
 #[derive(Debug, Clone)]
 struct PreparedAgentDeleteMetadata {
+    workspace_dir: PathBuf,
     team_mutations: Vec<AgentTeamMutation>,
     agent_name: String,
     settings_changed: Arc<AtomicBool>,
@@ -1039,6 +1452,7 @@ struct PreparedAgentDeleteMetadata {
 
 #[derive(Debug, Clone)]
 struct AgentDeletePlan {
+    workspace_dir: PathBuf,
     agent_name: String,
     agent_ref: String,
     origin_dir: PathBuf,
@@ -1076,7 +1490,18 @@ fn resolve_agent_delete_identity(
     Ok((agent_name.to_string(), agent_ref, origin_dir))
 }
 
+#[cfg(test)]
 fn collect_agent_delete_plan(base: &Path, agent_path: &Path) -> Result<AgentDeletePlan, String> {
+    let guard = TeamConfigMutationGuard::acquire(base)?;
+    collect_agent_delete_plan_guarded(base, agent_path, &guard)
+}
+
+fn collect_agent_delete_plan_guarded(
+    base: &Path,
+    agent_path: &Path,
+    guard: &TeamConfigMutationGuard,
+) -> Result<AgentDeletePlan, String> {
+    guard.require_workspace(base)?;
     let (agent_name, agent_ref, origin_dir) = resolve_agent_delete_identity(base, agent_path)?;
     let team_mutations = collect_agent_team_mutations_raw(base, &agent_name, &agent_ref)?;
 
@@ -1112,6 +1537,7 @@ fn collect_agent_delete_plan(base: &Path, agent_path: &Path) -> Result<AgentDele
     }
 
     Ok(AgentDeletePlan {
+        workspace_dir: base.to_path_buf(),
         agent_name,
         agent_ref,
         origin_dir,
@@ -1159,12 +1585,16 @@ fn collect_agent_team_mutations_raw(
             .unwrap_or("_team_unknown");
         let team_name = dir_name.strip_prefix("_team_").unwrap_or(dir_name);
         let config_path = team_dir.join("config.json");
-        if !config_path.exists() {
-            continue;
-        }
-
-        let before_json = std::fs::read(&config_path)
-            .map_err(|e| format!("Cannot read team '{}' config.json: {}", team_name, e))?;
+        let before_json = match std::fs::read(&config_path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                return Err(format!(
+                    "Cannot read team '{}' config.json: {}",
+                    team_name, e
+                ));
+            }
+        };
         let mut value: serde_json::Value = match serde_json::from_slice(&before_json) {
             Ok(value) => value,
             Err(e) => {
@@ -1229,6 +1659,18 @@ fn collect_agent_team_mutations_raw(
         }
 
         if changed {
+            let object = value.as_object_mut().ok_or_else(|| {
+                format!(
+                    "Cannot delete agent '{}': team '{}' config.json must be an object",
+                    agent_name, team_name
+                )
+            })?;
+            normalize_raw_context_alert_percentages(object).map_err(|e| {
+                format!(
+                    "Cannot delete agent '{}': team '{}' has invalid contextAlertPercentages: {}",
+                    agent_name, team_name, e
+                )
+            })?;
             let mut after_json = serde_json::to_vec_pretty(&value)
                 .map_err(|e| format!("Cannot serialize team '{}' config.json: {}", team_name, e))?;
             after_json.push(b'\n');
@@ -1251,6 +1693,27 @@ fn collect_agent_team_mutations_raw(
     }
 
     Ok(mutations)
+}
+
+fn normalize_raw_context_alert_percentages(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    let values = match object.get("contextAlertPercentages") {
+        Some(value) => serde_json::from_value::<Vec<u8>>(value.clone()).map_err(|e| {
+            format!(
+                "expected an array of integer percentages representable as u8: {}",
+                e
+            )
+        })?,
+        None => Vec::new(),
+    };
+    let normalized = normalize_context_alert_percentages(&values)?;
+    object.insert(
+        "contextAlertPercentages".to_string(),
+        serde_json::to_value(normalized)
+            .map_err(|e| format!("failed to serialize canonical percentages: {}", e))?,
+    );
+    Ok(())
 }
 
 fn agent_ref_matches_target(raw_ref: &str, agent_name: &str) -> bool {
@@ -1339,7 +1802,8 @@ async fn ensure_no_live_sessions_under_target_keys(
     agent_name: &str,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
 ) -> Result<(), String> {
-    let sessions = { session_mgr.read().await.list_sessions().await };
+    let manager = { session_mgr.read().await.clone() };
+    let sessions = manager.list_sessions().await;
     let blockers: Vec<_> = sessions
         .into_iter()
         .filter(|session| !matches!(session.status, SessionStatus::Exited(_)))
@@ -1386,6 +1850,7 @@ async fn prepare_agent_delete_metadata(
             .contains_key(&plan.agent_name);
 
     Ok(PreparedAgentDeleteMetadata {
+        workspace_dir: plan.workspace_dir.clone(),
         team_mutations: plan.team_mutations.clone(),
         agent_name: plan.agent_name.clone(),
         settings_changed: Arc::new(AtomicBool::new(settings_changed)),
@@ -1395,10 +1860,12 @@ async fn prepare_agent_delete_metadata(
 async fn persist_agent_delete_metadata(
     metadata: &PreparedAgentDeleteMetadata,
     settings: &SettingsState,
+    team_guard: &TeamConfigMutationGuard,
 ) -> Result<(), String> {
     persist_agent_delete_metadata_with_saver(
         metadata,
         settings,
+        team_guard,
         crate::config::settings::save_settings,
     )
     .await
@@ -1407,6 +1874,7 @@ async fn persist_agent_delete_metadata(
 async fn persist_agent_delete_metadata_with_saver<S>(
     metadata: &PreparedAgentDeleteMetadata,
     settings: &SettingsState,
+    team_guard: &TeamConfigMutationGuard,
     save_settings_fn: S,
 ) -> Result<(), String>
 where
@@ -1415,7 +1883,10 @@ where
     persist_agent_delete_metadata_with_writers(
         metadata,
         settings,
-        write_team_config_json_atomic,
+        team_guard,
+        |config_path, json| {
+            write_team_config_json_atomic(&metadata.workspace_dir, team_guard, config_path, json)
+        },
         save_settings_fn,
     )
     .await
@@ -1424,6 +1895,7 @@ where
 async fn persist_agent_delete_metadata_with_writers<T, S>(
     metadata: &PreparedAgentDeleteMetadata,
     settings: &SettingsState,
+    team_guard: &TeamConfigMutationGuard,
     mut write_team_config_fn: T,
     save_settings_fn: S,
 ) -> Result<(), String>
@@ -1431,11 +1903,12 @@ where
     T: FnMut(&Path, &[u8]) -> Result<(), String>,
     S: Fn(&AppSettings) -> Result<AppSettings, String>,
 {
+    team_guard.require_workspace(&metadata.workspace_dir)?;
     metadata.settings_changed.store(false, Ordering::SeqCst);
 
     for mutation in &metadata.team_mutations {
         if let Err(e) = write_team_config_fn(&mutation.config_path, &mutation.after_json) {
-            let restore = restore_team_config_snapshots(metadata);
+            let restore = restore_team_config_snapshots(metadata, team_guard);
             return Err(format!(
                 "Failed to write team '{}' config during agent delete: {}{}",
                 mutation.team_name,
@@ -1491,7 +1964,7 @@ where
     };
 
     if let Err(e) = settings_result {
-        let restore = restore_team_config_snapshots(metadata);
+        let restore = restore_team_config_snapshots(metadata, team_guard);
         return Err(format!("{}{}", e, format_restore_suffix(restore)));
     }
 
@@ -1520,15 +1993,24 @@ fn restore_removed_settings(
 async fn restore_agent_delete_metadata_snapshots(
     metadata: &PreparedAgentDeleteMetadata,
     _settings: &SettingsState,
+    team_guard: &TeamConfigMutationGuard,
 ) -> Result<(), String> {
-    restore_team_config_snapshots(metadata)
+    restore_team_config_snapshots(metadata, team_guard)
 }
 
-fn restore_team_config_snapshots(metadata: &PreparedAgentDeleteMetadata) -> Result<(), String> {
+fn restore_team_config_snapshots(
+    metadata: &PreparedAgentDeleteMetadata,
+    team_guard: &TeamConfigMutationGuard,
+) -> Result<(), String> {
+    team_guard.require_workspace(&metadata.workspace_dir)?;
     let mut errors = Vec::new();
     for mutation in &metadata.team_mutations {
-        if let Err(e) = write_team_config_json_atomic(&mutation.config_path, &mutation.before_json)
-        {
+        if let Err(e) = write_team_config_json_atomic(
+            &metadata.workspace_dir,
+            team_guard,
+            &mutation.config_path,
+            &mutation.before_json,
+        ) {
             errors.push(format!("{}: {}", mutation.config_path.display(), e));
         }
     }
@@ -1550,7 +2032,13 @@ fn format_restore_suffix(restore: Result<(), String>) -> String {
     }
 }
 
-fn write_team_config_json_atomic(config_path: &Path, json: &[u8]) -> Result<(), String> {
+fn write_team_config_json_atomic(
+    workspace_dir: &Path,
+    team_guard: &TeamConfigMutationGuard,
+    config_path: &Path,
+    json: &[u8],
+) -> Result<(), String> {
+    team_guard.require_workspace(workspace_dir)?;
     crate::config::local_config_io::write_file_atomic(config_path, json)
 }
 
@@ -1657,6 +2145,8 @@ pub async fn list_all_agents(project_paths: Vec<String>) -> Result<Vec<AgentInfo
 }
 
 /// Create a team directory inside {project_path}/.ac/_team_{name}/
+// Tauri command parameters plus injected state exceed Clippy's argument threshold.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn create_team(
     app: AppHandle,
@@ -1666,9 +2156,15 @@ pub async fn create_team(
     agents: Vec<String>,
     coordinator: String,
     repos: Vec<RepoAssignment>,
+    context_alert_percentages: Option<Vec<u8>>,
 ) -> Result<CreatedEntityResult, String> {
     let safe_name = sanitize_name(&name)?;
     let base = selected_workspace_dir(Path::new(&project_path))?;
+    let context_alert_percentages = resolve_context_alert_argument(
+        ContextAlertWriteMode::Create,
+        context_alert_percentages,
+        None,
+    )?;
 
     let config = normalize_team_config_for_project(
         &base,
@@ -1676,9 +2172,12 @@ pub async fn create_team(
             agents,
             coordinator,
             repos,
+            context_alert_percentages,
         },
     )?;
-    let team_dir = create_new_team_config_on_disk(&base, &safe_name, &config)?;
+    let guard = acquire_team_config_mutation_guard_async(&base).await?;
+    let team_dir = create_new_team_config_on_disk_guarded(&base, &safe_name, &config, &guard)?;
+    drop(guard);
 
     let result_path = crate::path_utils::path_to_string_without_windows_verbatim_prefix(&team_dir);
     log::info!("[entity_creation] Created team: {}", result_path);
@@ -1835,13 +2334,15 @@ pub async fn delete_team(
 ) -> Result<(), String> {
     validate_existing_name(&team_name, "Team")?;
     let base = selected_workspace_dir(Path::new(&project_path))?;
+    let guard = acquire_team_config_mutation_guard_async(&base).await?;
 
     let team_dir = base.join(format!("_team_{}", team_name));
     if !team_dir.exists() {
         return Err(format!("Team '{}' not found", team_name));
     }
 
-    // Collect associated workgroup dirs (wg-N-{team_name}/)
+    // Collect associated workgroup dirs (wg-N-{team_name}/) while the team
+    // mutation guard keeps this snapshot linear with compatible config writers.
     let wg_suffix = format!("-{}", team_name);
     let mut wg_dirs: Vec<PathBuf> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&base) {
@@ -1860,7 +2361,7 @@ pub async fn delete_team(
         }
     }
 
-    // Check workgroup repos for dirty git state before deleting
+    // Check workgroup repos for dirty git state before deleting.
     let dirty_repos = check_workgroup_repos_dirty(&wg_dirs);
     if !dirty_repos.is_empty() {
         let list = dirty_repos
@@ -1874,9 +2375,11 @@ pub async fn delete_team(
         ));
     }
 
-    // Delete team dir first — bail before touching workgroups if this fails
+    // Delete the team first, then release the config guard before the
+    // best-effort workgroup and clock cascade.
     std::fs::remove_dir_all(&team_dir)
         .map_err(|e| format!("Failed to delete team directory: {}", e))?;
+    drop(guard);
     log::info!("[entity_creation] Deleted team: {}", team_name);
 
     // (#621) Count clock keys removed across the cascade; persist once after the loop.
@@ -2068,24 +2571,45 @@ pub async fn update_team(
     agents: Vec<String>,
     coordinator: String,
     repos: Vec<RepoAssignment>,
+    context_alert_percentages: Option<Vec<u8>>,
 ) -> Result<(), String> {
     validate_existing_name(&team_name, "Team")?;
     let base = selected_workspace_dir(Path::new(&project_path))?;
+    let supplied_context_alert_percentages = context_alert_percentages
+        .map(|values| normalize_context_alert_percentages(&values))
+        .transpose()?;
+    let guard = acquire_team_config_mutation_guard_async(&base).await?;
 
     let team_dir = base.join(format!("_team_{}", team_name));
     if !team_dir.exists() {
         return Err(format!("Team '{}' not found", team_name));
     }
 
+    let context_alert_percentages = match supplied_context_alert_percentages {
+        Some(values) => {
+            resolve_context_alert_argument(ContextAlertWriteMode::Update, Some(values), None)?
+        }
+        None => {
+            let current =
+                read_team_config_classified(&base, &team_name).map_err(|e| e.to_string())?;
+            resolve_context_alert_argument(
+                ContextAlertWriteMode::Update,
+                None,
+                Some(&current.context_alert_percentages),
+            )?
+        }
+    };
     let config = normalize_team_config_for_project(
         &base,
         &TeamConfigResult {
             agents,
             coordinator,
             repos,
+            context_alert_percentages,
         },
     )?;
-    write_team_config(&base, &team_name, &config)?;
+    write_existing_team_config_guarded(&base, &team_name, &config, &guard)?;
+    drop(guard);
 
     log::info!("[entity_creation] Updated team: {}", team_name);
 
@@ -2815,7 +3339,7 @@ pub(crate) fn validate_delete_root_not_link_or_reparse(path: &Path) -> Result<()
     if delete_root_has_windows_reparse_point(&metadata) {
         return Err("delete_root_is_reparse_point".to_string());
     }
-    if metadata.file_type().is_symlink() {
+    if metadata_is_link_or_reparse(&metadata) {
         return Err("delete_root_is_symlink".to_string());
     }
     if !metadata.is_dir() {
@@ -2829,7 +3353,8 @@ async fn ensure_no_live_sessions_under_manager(
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
 ) -> Result<(), String> {
     let root_key = path_key_for_delete(root);
-    let sessions = { session_mgr.read().await.list_sessions().await };
+    let manager = { session_mgr.read().await.clone() };
+    let sessions = manager.list_sessions().await;
     let blockers: Vec<_> = sessions
         .into_iter()
         .filter(|session| !matches!(session.status, SessionStatus::Exited(_)))
@@ -2883,11 +3408,31 @@ fn target_keys_for_delete(path: &Path) -> Vec<String> {
     }
 }
 
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+
+fn metadata_parts_are_link_or_reparse(is_symlink: bool, file_attributes: u32) -> bool {
+    is_symlink || file_attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+pub(crate) fn metadata_is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata_parts_are_link_or_reparse(
+            metadata.file_type().is_symlink(),
+            metadata.file_attributes(),
+        )
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        metadata_parts_are_link_or_reparse(metadata.file_type().is_symlink(), 0)
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn delete_root_has_windows_reparse_point(metadata: &std::fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
-    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    metadata_parts_are_link_or_reparse(false, metadata.file_attributes())
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -3410,6 +3955,7 @@ mod tests {
                 url: "https://example.test/repo.git".to_string(),
                 agents: vec!["architect".to_string(), "_agent_dev-rust".to_string()],
             }],
+            context_alert_percentages: vec![90, 50, 75],
         };
 
         let normalized =
@@ -3429,6 +3975,7 @@ mod tests {
                 "_agent_dev-rust".to_string()
             ]
         );
+        assert_eq!(normalized.context_alert_percentages, vec![50, 75, 90]);
 
         write_team_config(&workspace_dir, "dev-team", &config).expect("write config");
         let written =
@@ -3454,6 +4001,7 @@ mod tests {
                 .to_string()],
             coordinator: "_agent_architect".to_string(),
             repos: Vec::new(),
+            context_alert_percentages: Vec::new(),
         };
         let err = normalize_team_config_for_project(&workspace_dir, &absolute_config)
             .expect_err("absolute path refs must be rejected");
@@ -3467,6 +4015,7 @@ mod tests {
             agents: vec![r"C:\Users\maria\project\.ac\_agent_architect".to_string()],
             coordinator: "_agent_architect".to_string(),
             repos: Vec::new(),
+            context_alert_percentages: Vec::new(),
         };
         let err = normalize_team_config_for_project(&workspace_dir, &windows_config)
             .expect_err("windows path refs must be rejected");
@@ -3785,6 +4334,13 @@ mod tests {
         );
     }
 
+    #[test]
+    fn synthetic_windows_reparse_attribute_is_always_classified_for_rejection() {
+        assert!(!metadata_parts_are_link_or_reparse(false, 0));
+        assert!(metadata_parts_are_link_or_reparse(false, 0x0000_0400));
+        assert!(metadata_parts_are_link_or_reparse(false, 0x0000_0410));
+    }
+
     #[cfg(windows)]
     #[test]
     fn validate_delete_root_rejects_reparse_root() {
@@ -3902,6 +4458,560 @@ mod tests {
         Arc::new(tokio::sync::RwLock::new(SessionManager::new()))
     }
 
+    fn empty_team_config(context_alert_percentages: Vec<u8>) -> TeamConfigResult {
+        TeamConfigResult {
+            agents: Vec::new(),
+            coordinator: String::new(),
+            repos: Vec::new(),
+            context_alert_percentages,
+        }
+    }
+
+    #[test]
+    fn team_config_serde_defaults_only_a_missing_alert_field() {
+        let legacy: TeamConfigResult = serde_json::from_value(serde_json::json!({
+            "agents": [],
+            "coordinator": "",
+            "repos": []
+        }))
+        .expect("legacy config");
+        assert!(legacy.context_alert_percentages.is_empty());
+
+        for invalid in [
+            serde_json::Value::Null,
+            serde_json::json!("50"),
+            serde_json::json!({}),
+            serde_json::json!([50.5]),
+            serde_json::json!([-1]),
+            serde_json::json!([256]),
+        ] {
+            let mut root = serde_json::json!({
+                "agents": [],
+                "coordinator": "",
+                "repos": []
+            });
+            root["contextAlertPercentages"] = invalid;
+            assert!(
+                serde_json::from_value::<TeamConfigResult>(root).is_err(),
+                "present unrepresentable alert data must fail"
+            );
+        }
+    }
+
+    #[test]
+    fn team_config_serializes_exact_camel_case_alert_key() {
+        let empty = serde_json::to_value(empty_team_config(Vec::new())).expect("serialize empty");
+        assert_eq!(empty["contextAlertPercentages"], serde_json::json!([]));
+        assert!(empty.get("context_alert_percentages").is_none());
+
+        let populated =
+            serde_json::to_value(empty_team_config(vec![50, 75, 90])).expect("serialize populated");
+        assert_eq!(
+            populated["contextAlertPercentages"],
+            serde_json::json!([50, 75, 90])
+        );
+        let round_trip: TeamConfigResult =
+            serde_json::from_value(populated).expect("deserialize populated");
+        assert_eq!(round_trip.context_alert_percentages, vec![50, 75, 90]);
+    }
+
+    #[test]
+    fn context_alert_normalizer_accepts_boundaries_and_sorts() {
+        for (input, expected) in [
+            (vec![], vec![]),
+            (vec![1], vec![1]),
+            (vec![100], vec![100]),
+            (vec![50, 75], vec![50, 75]),
+            (vec![50, 75, 90], vec![50, 75, 90]),
+            (vec![90, 50, 75], vec![50, 75, 90]),
+        ] {
+            assert_eq!(
+                normalize_context_alert_percentages(&input).expect("valid percentages"),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn context_alert_normalizer_rejects_product_invalid_values() {
+        for invalid in [
+            vec![0],
+            vec![101],
+            vec![1, 2, 3, 4],
+            vec![50, 50],
+            vec![75, 50, 75],
+        ] {
+            assert!(
+                normalize_context_alert_percentages(&invalid).is_err(),
+                "invalid percentages were accepted: {:?}",
+                invalid
+            );
+        }
+    }
+
+    #[test]
+    fn context_alert_argument_resolution_pins_create_update_compatibility() {
+        assert_eq!(
+            resolve_context_alert_argument(ContextAlertWriteMode::Create, None, None)
+                .expect("legacy create"),
+            Vec::<u8>::new()
+        );
+        assert_eq!(
+            resolve_context_alert_argument(
+                ContextAlertWriteMode::Create,
+                Some(vec![90, 50, 75]),
+                None,
+            )
+            .expect("explicit create"),
+            vec![50, 75, 90]
+        );
+        assert_eq!(
+            resolve_context_alert_argument(ContextAlertWriteMode::Update, None, Some(&[50, 75]),)
+                .expect("legacy update"),
+            vec![50, 75]
+        );
+        assert_eq!(
+            resolve_context_alert_argument(
+                ContextAlertWriteMode::Update,
+                Some(Vec::new()),
+                Some(&[50, 75]),
+            )
+            .expect("explicit clear"),
+            Vec::<u8>::new()
+        );
+        assert!(resolve_context_alert_argument(
+            ContextAlertWriteMode::Update,
+            Some(vec![0]),
+            Some(&[50]),
+        )
+        .is_err());
+        assert!(resolve_context_alert_argument(ContextAlertWriteMode::Update, None, None).is_err());
+    }
+
+    #[test]
+    fn classified_team_config_reader_reports_stable_error_classes() {
+        let tmp = create_test_workspace();
+        let base = test_base(&tmp);
+
+        let missing = read_team_config_classified(&base, "missing").expect_err("missing");
+        assert_eq!(missing.class(), "not_found");
+        assert!(missing.to_string().contains("_team_missing"));
+
+        let unreadable_dir = base.join("_team_unreadable");
+        std::fs::create_dir_all(unreadable_dir.join("config.json")).expect("config directory");
+        let unreadable = read_team_config_classified(&base, "unreadable").expect_err("unreadable");
+        assert_eq!(unreadable.class(), "unreadable");
+        assert!(unreadable.to_string().contains("config.json"));
+
+        let partial_dir = base.join("_team_partial");
+        std::fs::create_dir_all(&partial_dir).expect("partial team");
+        std::fs::write(partial_dir.join("config.json"), b"{\"agents\": [").expect("partial config");
+        let malformed = read_team_config_classified(&base, "partial").expect_err("malformed");
+        assert_eq!(malformed.class(), "malformed");
+        assert!(malformed.to_string().contains("_team_partial"));
+
+        let typed_dir = base.join("_team_wrong-type");
+        std::fs::create_dir_all(&typed_dir).expect("typed team");
+        std::fs::write(
+            typed_dir.join("config.json"),
+            br#"{"agents":[],"coordinator":"","repos":[],"contextAlertPercentages":"50"}"#,
+        )
+        .expect("typed config");
+        let malformed = read_team_config_classified(&base, "wrong-type").expect_err("wrong type");
+        assert_eq!(malformed.class(), "malformed");
+
+        let invalid_dir = base.join("_team_invalid");
+        std::fs::create_dir_all(&invalid_dir).expect("invalid team");
+        std::fs::write(
+            invalid_dir.join("config.json"),
+            br#"{"agents":[],"coordinator":"","repos":[],"contextAlertPercentages":[0]}"#,
+        )
+        .expect("invalid config");
+        let invalid = read_team_config_classified(&base, "invalid").expect_err("invalid product");
+        assert_eq!(invalid.class(), "invalid");
+        assert!(invalid.to_string().contains("1 through 100"));
+
+        let invalid_name =
+            read_team_config_classified(&base, "../escape").expect_err("invalid team name");
+        assert_eq!(invalid_name.class(), "invalid");
+    }
+
+    #[test]
+    fn team_config_writer_round_trips_legacy_and_canonical_alerts() {
+        let tmp = create_test_workspace();
+        let base = test_base(&tmp);
+        let legacy_dir = base.join("_team_legacy");
+        std::fs::create_dir_all(&legacy_dir).expect("legacy team");
+        std::fs::write(
+            legacy_dir.join("config.json"),
+            br#"{"agents":[],"coordinator":"","repos":[]}"#,
+        )
+        .expect("legacy config");
+        assert!(read_team_config(&base, "legacy")
+            .expect("read legacy")
+            .context_alert_percentages
+            .is_empty());
+
+        write_team_config(&base, "legacy", &empty_team_config(vec![90, 50, 75]))
+            .expect("canonical write");
+        let read_back = read_team_config(&base, "legacy").expect("read canonical");
+        assert_eq!(read_back.context_alert_percentages, vec![50, 75, 90]);
+        let json: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(legacy_dir.join("config.json")).expect("read bytes"),
+        )
+        .expect("parse bytes");
+        assert_eq!(
+            json["contextAlertPercentages"],
+            serde_json::json!([50, 75, 90])
+        );
+    }
+
+    #[test]
+    fn invalid_new_team_alerts_have_no_team_directory_side_effects() {
+        let tmp = create_test_workspace();
+        let base = test_base(&tmp);
+        let team_dir = base.join("_team_invalid-create");
+
+        let err =
+            create_new_team_config_on_disk(&base, "invalid-create", &empty_team_config(vec![0]))
+                .expect_err("invalid create");
+        assert!(err.contains("1 through 100"));
+        assert!(!team_dir.exists());
+        assert!(!team_dir.join("memory").exists());
+        assert!(!team_dir.join("conventions.md").exists());
+        assert!(base.join(TEAM_CONFIG_MUTATION_LOCK_NAME).is_file());
+
+        TeamConfigMutationGuard::acquire_with_timing(
+            &base,
+            TeamConfigLockTiming {
+                poll_interval: Duration::ZERO,
+                timeout: Duration::ZERO,
+            },
+        )
+        .expect("invalid create released lock");
+    }
+
+    #[test]
+    fn existing_team_publish_failure_keeps_prior_bytes_and_artifacts() {
+        let tmp = create_test_workspace();
+        let base = test_base(&tmp);
+        let team_dir =
+            create_new_team_config_on_disk(&base, "publish-failure", &empty_team_config(vec![50]))
+                .expect("create team");
+        let config_path = team_dir.join("config.json");
+        let before = std::fs::read(&config_path).expect("prior bytes");
+        let marker = team_dir.join("memory").join("marker");
+        std::fs::write(&marker, b"keep").expect("marker");
+        let guard = TeamConfigMutationGuard::acquire(&base).expect("guard");
+        let invalid_publisher_called = AtomicBool::new(false);
+        let invalid_err = write_team_config_guarded_with_publisher(
+            &base,
+            "publish-failure",
+            &empty_team_config(vec![0]),
+            &guard,
+            |_, _| {
+                invalid_publisher_called.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .expect_err("invalid config");
+        assert!(invalid_err.contains("1 through 100"));
+        assert!(!invalid_publisher_called.load(Ordering::SeqCst));
+        assert_eq!(std::fs::read(&config_path).expect("invalid bytes"), before);
+
+        let publisher_called = AtomicBool::new(false);
+        let err = write_team_config_guarded_with_publisher(
+            &base,
+            "publish-failure",
+            &empty_team_config(vec![75]),
+            &guard,
+            |_, _| {
+                publisher_called.store(true, Ordering::SeqCst);
+                Err("forced publish failure".to_string())
+            },
+        )
+        .expect_err("publish failure");
+
+        assert!(err.contains("forced publish failure"));
+        assert!(publisher_called.load(Ordering::SeqCst));
+        assert_eq!(std::fs::read(&config_path).expect("current bytes"), before);
+        assert_eq!(std::fs::read(&marker).expect("marker bytes"), b"keep");
+        assert!(team_dir.join("conventions.md").is_file());
+    }
+
+    #[test]
+    fn explicit_alert_value_repairs_product_invalid_existing_config() {
+        let tmp = create_test_workspace();
+        let base = test_base(&tmp);
+        let team_dir = base.join("_team_repair");
+        std::fs::create_dir_all(&team_dir).expect("team");
+        std::fs::write(
+            team_dir.join("config.json"),
+            br#"{"agents":[],"coordinator":"","repos":[],"contextAlertPercentages":[0]}"#,
+        )
+        .expect("invalid old config");
+        assert_eq!(
+            read_team_config_classified(&base, "repair")
+                .expect_err("old config invalid")
+                .class(),
+            "invalid"
+        );
+
+        let guard = TeamConfigMutationGuard::acquire(&base).expect("guard");
+        write_existing_team_config_guarded(&base, "repair", &empty_team_config(vec![75]), &guard)
+            .expect("repair write");
+        drop(guard);
+        assert_eq!(
+            read_team_config(&base, "repair")
+                .expect("repaired config")
+                .context_alert_percentages,
+            vec![75]
+        );
+    }
+
+    #[test]
+    fn team_config_guard_serializes_threads_and_releases_on_drop() {
+        let tmp = create_test_workspace();
+        let base = test_base(&tmp);
+        let first = TeamConfigMutationGuard::acquire(&base).expect("first guard");
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let thread_barrier = Arc::clone(&barrier);
+        let thread_base = base.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            thread_barrier.wait();
+            let acquired = TeamConfigMutationGuard::acquire_with_timing(
+                &thread_base,
+                TeamConfigLockTiming {
+                    poll_interval: Duration::from_millis(10),
+                    timeout: Duration::from_secs(2),
+                },
+            )
+            .is_ok();
+            tx.send(acquired).expect("send result");
+        });
+
+        barrier.wait();
+        assert!(
+            rx.recv_timeout(Duration::from_millis(150)).is_err(),
+            "second writer acquired a held OS lock"
+        );
+        drop(first);
+        assert!(
+            rx.recv_timeout(Duration::from_secs(2))
+                .expect("waiter result"),
+            "second writer did not acquire after release"
+        );
+        waiter.join().expect("waiter join");
+    }
+
+    #[test]
+    fn team_config_guard_rejects_wrong_workspace_and_bad_sentinel() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root_a = tmp.path().join("a");
+        let root_b = tmp.path().join("b");
+        std::fs::create_dir_all(&root_a).expect("root a");
+        std::fs::create_dir_all(&root_b).expect("root b");
+        let guard = TeamConfigMutationGuard::acquire(&root_a).expect("guard a");
+        let err = write_team_config_guarded(
+            &root_b,
+            "wrong-root",
+            &empty_team_config(Vec::new()),
+            &guard,
+        )
+        .expect_err("wrong root");
+        assert!(err.contains("belongs to workspace"));
+        assert!(!root_b.join("_team_wrong-root").exists());
+        drop(guard);
+
+        let bad_root = tmp.path().join("bad");
+        std::fs::create_dir_all(bad_root.join(TEAM_CONFIG_MUTATION_LOCK_NAME))
+            .expect("directory sentinel");
+        let err = TeamConfigMutationGuard::acquire(&bad_root).expect_err("directory sentinel");
+        assert!(err.contains(TEAM_CONFIG_MUTATION_LOCK_NAME));
+        assert!(err.contains("regular non-link file"));
+    }
+
+    #[test]
+    fn held_team_config_lock_times_out_without_writing_and_is_reacquirable() {
+        let tmp = create_test_workspace();
+        let base = test_base(&tmp);
+        let team_dir =
+            create_new_team_config_on_disk(&base, "timeout", &empty_team_config(vec![50]))
+                .expect("create team");
+        let config_path = team_dir.join("config.json");
+        let before = std::fs::read(&config_path).expect("before");
+        let held = TeamConfigMutationGuard::acquire(&base).expect("held guard");
+        let err = TeamConfigMutationGuard::acquire_with_timing(
+            &base,
+            TeamConfigLockTiming {
+                poll_interval: Duration::ZERO,
+                timeout: Duration::ZERO,
+            },
+        )
+        .expect_err("held lock timeout");
+        assert!(err.contains("Timed out"));
+        assert!(err.contains(TEAM_CONFIG_MUTATION_LOCK_NAME));
+        assert_eq!(std::fs::read(&config_path).expect("after"), before);
+        drop(held);
+
+        TeamConfigMutationGuard::acquire_with_timing(
+            &base,
+            TeamConfigLockTiming {
+                poll_interval: Duration::ZERO,
+                timeout: Duration::ZERO,
+            },
+        )
+        .expect("reacquire after timeout holder drops");
+    }
+
+    #[test]
+    fn delete_and_update_linearize_without_recreating_deleted_team() {
+        let tmp = create_test_workspace();
+        let base = test_base(&tmp);
+        create_new_team_config_on_disk(&base, "race", &empty_team_config(vec![50]))
+            .expect("create team");
+
+        let update_guard = TeamConfigMutationGuard::acquire(&base).expect("update guard");
+        write_existing_team_config_guarded(
+            &base,
+            "race",
+            &empty_team_config(vec![75]),
+            &update_guard,
+        )
+        .expect("update first");
+        drop(update_guard);
+        let delete_guard = TeamConfigMutationGuard::acquire(&base).expect("delete guard");
+        std::fs::remove_dir_all(base.join("_team_race")).expect("delete after update");
+        drop(delete_guard);
+        assert!(!base.join("_team_race").exists());
+
+        create_new_team_config_on_disk(&base, "race", &empty_team_config(vec![50]))
+            .expect("recreate for reverse order");
+        let delete_guard = TeamConfigMutationGuard::acquire(&base).expect("delete guard");
+        std::fs::remove_dir_all(base.join("_team_race")).expect("delete first");
+        drop(delete_guard);
+        let update_guard = TeamConfigMutationGuard::acquire(&base).expect("update guard");
+        let err = write_existing_team_config_guarded(
+            &base,
+            "race",
+            &empty_team_config(vec![90]),
+            &update_guard,
+        )
+        .expect_err("update must not recreate");
+        assert!(err.contains("not found"));
+        assert!(!base.join("_team_race").exists());
+    }
+
+    #[test]
+    fn guarded_update_none_and_membership_preserve_alerts_in_both_orders() {
+        fn add_member(base: &Path) {
+            let guard = TeamConfigMutationGuard::acquire(base).expect("membership guard");
+            let mut current = read_team_config(base, "linear").expect("membership read");
+            if !current.agents.contains(&"_agent_beta".to_string()) {
+                current.agents.push("_agent_beta".to_string());
+            }
+            write_existing_team_config_guarded(base, "linear", &current, &guard)
+                .expect("membership write");
+        }
+
+        fn legacy_update(base: &Path) {
+            let guard = TeamConfigMutationGuard::acquire(base).expect("update guard");
+            let mut current =
+                read_team_config_classified(base, "linear").expect("classified current config");
+            current.context_alert_percentages = resolve_context_alert_argument(
+                ContextAlertWriteMode::Update,
+                None,
+                Some(&current.context_alert_percentages),
+            )
+            .expect("preserve omitted alert argument");
+            write_existing_team_config_guarded(base, "linear", &current, &guard)
+                .expect("legacy update write");
+        }
+
+        let tmp = create_test_workspace();
+        let base = test_base(&tmp);
+        create_test_agent(&base, "alpha", "Alpha");
+        create_test_agent(&base, "beta", "Beta");
+        let initial = TeamConfigResult {
+            agents: vec!["_agent_alpha".to_string()],
+            coordinator: "_agent_alpha".to_string(),
+            repos: Vec::new(),
+            context_alert_percentages: vec![90, 50],
+        };
+        create_new_team_config_on_disk(&base, "linear", &initial).expect("create team");
+
+        legacy_update(&base);
+        add_member(&base);
+        let update_then_member = read_team_config(&base, "linear").expect("final config");
+        assert_eq!(update_then_member.context_alert_percentages, vec![50, 90]);
+        assert!(update_then_member
+            .agents
+            .contains(&"_agent_beta".to_string()));
+
+        let guard = TeamConfigMutationGuard::acquire(&base).expect("reset guard");
+        write_existing_team_config_guarded(&base, "linear", &initial, &guard)
+            .expect("reset config");
+        drop(guard);
+        add_member(&base);
+        legacy_update(&base);
+        let member_then_update = read_team_config(&base, "linear").expect("reverse final config");
+        assert_eq!(member_then_update.context_alert_percentages, vec![50, 90]);
+        assert!(member_then_update
+            .agents
+            .contains(&"_agent_beta".to_string()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn team_config_guard_rejects_reparse_sentinel_escape() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+        let outside = tmp.path().join("outside");
+        let sentinel = workspace.join(TEAM_CONFIG_MUTATION_LOCK_NAME);
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        std::fs::create_dir_all(&outside).expect("outside");
+        let output = std::process::Command::new("cmd")
+            .args([
+                "/C",
+                "mklink",
+                "/J",
+                sentinel.to_str().expect("sentinel path"),
+                outside.to_str().expect("outside path"),
+            ])
+            .output()
+            .expect("run mklink");
+        if !output.status.success() {
+            println!(
+                "skipping team guard reparse sentinel check: stdout: {} stderr: {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let err = TeamConfigMutationGuard::acquire(&workspace).expect_err("reparse escape");
+        assert!(err.contains("regular non-link file"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn team_config_guard_rejects_symlink_sentinel_escape() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+        let outside = tmp.path().join("outside.lock");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        std::fs::write(&outside, b"").expect("outside lock");
+        symlink(&outside, workspace.join(TEAM_CONFIG_MUTATION_LOCK_NAME))
+            .expect("symlink sentinel");
+
+        let err = TeamConfigMutationGuard::acquire(&workspace).expect_err("symlink escape");
+        assert!(err.contains("regular non-link file"));
+        assert_eq!(std::fs::read(&outside).expect("outside bytes"), b"");
+    }
+
     async fn add_live_session(
         manager: &Arc<tokio::sync::RwLock<SessionManager>>,
         working_dir: &Path,
@@ -3928,7 +5038,8 @@ mod tests {
         settings: &SettingsState,
         manager: &Arc<tokio::sync::RwLock<SessionManager>>,
     ) -> Result<PreparedAgentDeleteMetadata, String> {
-        let plan = collect_agent_delete_plan(base, agent_path)?;
+        let guard = TeamConfigMutationGuard::acquire(base)?;
+        let plan = collect_agent_delete_plan_guarded(base, agent_path, &guard)?;
         preflight_agent_delete(&plan, manager).await?;
         let metadata = prepare_agent_delete_metadata(&plan, settings).await?;
         let staged = stage_agent_delete_targets(&plan, manager).await?;
@@ -3937,22 +5048,27 @@ mod tests {
             ensure_no_live_sessions_under_target_keys(&plan.target_keys, &plan.agent_name, manager)
                 .await
         {
+            drop(guard);
             let rollback = rollback_staged_agent_delete_targets(&staged);
             return Err(format_agent_delete_post_stage_live_failure(
                 live_err, rollback,
             ));
         }
 
-        if let Err(e) = persist_agent_delete_metadata_with_saver(&metadata, settings, |candidate| {
-            Ok(candidate.clone())
-        })
-        .await
+        if let Err(e) =
+            persist_agent_delete_metadata_with_saver(&metadata, settings, &guard, |candidate| {
+                Ok(candidate.clone())
+            })
+            .await
         {
-            let restore = restore_agent_delete_metadata_snapshots(&metadata, settings).await;
+            let restore =
+                restore_agent_delete_metadata_snapshots(&metadata, settings, &guard).await;
+            drop(guard);
             let rollback = rollback_staged_agent_delete_targets(&staged);
             return Err(format_agent_delete_metadata_failure(e, restore, rollback));
         }
 
+        drop(guard);
         remove_staged_agent_delete_targets(&staged)?;
         Ok(metadata)
     }
@@ -4064,6 +5180,114 @@ mod tests {
             serde_json::json!(["_agent_architect"])
         );
         assert_eq!(config["repos"][1]["agents"], serde_json::json!([]));
+        assert_eq!(
+            config["contextAlertPercentages"],
+            serde_json::json!([]),
+            "a relevant legacy raw write must insert the disabled canonical key"
+        );
+    }
+
+    #[test]
+    fn raw_agent_delete_preserves_unknown_keys_and_sorts_populated_alerts() {
+        let tmp = create_test_workspace();
+        let base = test_base(&tmp);
+        let agent_dir = create_test_agent(&base, "dev-rust", "Dev Rust");
+        let (config_path, _) = write_team_value(
+            &base,
+            "dev-team",
+            serde_json::json!({
+                "agents": ["_agent_dev-rust", "_agent_architect"],
+                "coordinator": "_agent_architect",
+                "repos": [{ "url": "u", "agents": ["_agent_dev-rust"] }],
+                "contextAlertPercentages": [90, 50, 75],
+                "futureUnknown": { "nested": [1, 2, 3] }
+            }),
+        );
+        let guard = TeamConfigMutationGuard::acquire(&base).expect("guard");
+        let plan =
+            collect_agent_delete_plan_guarded(&base, &agent_dir, &guard).expect("raw delete plan");
+        assert_eq!(plan.team_mutations.len(), 1);
+        write_team_config_json_atomic(
+            &base,
+            &guard,
+            &config_path,
+            &plan.team_mutations[0].after_json,
+        )
+        .expect("apply raw mutation");
+        drop(guard);
+
+        let current: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&config_path).expect("current bytes"))
+                .expect("parse current");
+        assert_eq!(current["agents"], serde_json::json!(["_agent_architect"]));
+        assert_eq!(current["repos"][0]["agents"], serde_json::json!([]));
+        assert_eq!(
+            current["contextAlertPercentages"],
+            serde_json::json!([50, 75, 90])
+        );
+        assert_eq!(
+            current["futureUnknown"],
+            serde_json::json!({ "nested": [1, 2, 3] })
+        );
+    }
+
+    #[test]
+    fn raw_agent_delete_rejects_each_malformed_relevant_alert_shape_without_writes() {
+        let invalid_values = [
+            serde_json::json!("50"),
+            serde_json::json!([50.5]),
+            serde_json::json!([0]),
+            serde_json::json!([101]),
+            serde_json::json!([1, 2, 3, 4]),
+            serde_json::json!([50, 50]),
+            serde_json::json!([-1]),
+            serde_json::json!([256]),
+        ];
+
+        for (index, invalid) in invalid_values.into_iter().enumerate() {
+            let tmp = create_test_workspace();
+            let base = test_base(&tmp);
+            let agent_dir = create_test_agent(&base, "dev-rust", "Dev Rust");
+            let (config_path, before) = write_team_value(
+                &base,
+                &format!("invalid-{}", index),
+                serde_json::json!({
+                    "agents": ["_agent_dev-rust"],
+                    "coordinator": "_agent_architect",
+                    "repos": [],
+                    "contextAlertPercentages": invalid,
+                    "keep": true
+                }),
+            );
+
+            let err = collect_agent_delete_plan(&base, &agent_dir)
+                .expect_err("malformed relevant alert data must block");
+            assert!(err.contains("invalid contextAlertPercentages"), "{err}");
+            assert!(agent_dir.is_dir());
+            assert_eq!(std::fs::read(&config_path).expect("config bytes"), before);
+        }
+    }
+
+    #[test]
+    fn raw_agent_delete_leaves_unrelated_invalid_alert_config_untouched() {
+        let tmp = create_test_workspace();
+        let base = test_base(&tmp);
+        let agent_dir = create_test_agent(&base, "dev-rust", "Dev Rust");
+        let (config_path, before) = write_team_value(
+            &base,
+            "unrelated",
+            serde_json::json!({
+                "agents": ["_agent_architect"],
+                "coordinator": "_agent_architect",
+                "repos": [],
+                "contextAlertPercentages": [0],
+                "keep": "verbatim"
+            }),
+        );
+
+        let plan = collect_agent_delete_plan(&base, &agent_dir).expect("unrelated plan");
+        assert!(plan.team_mutations.is_empty());
+        assert_eq!(std::fs::read(&config_path).expect("config bytes"), before);
     }
 
     #[test]
@@ -4126,9 +5350,16 @@ mod tests {
         )
         .0;
 
-        let plan = collect_agent_delete_plan(&base, &agent_dir).expect("collect plan");
-        write_team_config_json_atomic(&config_path, &plan.team_mutations[0].after_json)
-            .expect("write mutation");
+        let guard = TeamConfigMutationGuard::acquire(&base).expect("team guard");
+        let plan =
+            collect_agent_delete_plan_guarded(&base, &agent_dir, &guard).expect("collect plan");
+        write_team_config_json_atomic(
+            &base,
+            &guard,
+            &config_path,
+            &plan.team_mutations[0].after_json,
+        )
+        .expect("write mutation");
 
         let config: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&config_path).expect("read config"))
@@ -4319,6 +5550,7 @@ mod tests {
         std::fs::create_dir_all(&first).expect("first");
         std::fs::create_dir_all(&second).expect("second");
         let plan = AgentDeletePlan {
+            workspace_dir: tmp.path().to_path_buf(),
             agent_name: "dev-rust".to_string(),
             agent_ref: "_agent_dev-rust".to_string(),
             origin_dir: first.clone(),
@@ -4368,6 +5600,7 @@ mod tests {
         std::fs::create_dir_all(&first).expect("first");
         std::fs::create_dir_all(&second).expect("second");
         let plan = AgentDeletePlan {
+            workspace_dir: tmp.path().to_path_buf(),
             agent_name: "dev-rust".to_string(),
             agent_ref: "_agent_dev-rust".to_string(),
             origin_dir: first.clone(),
@@ -4438,7 +5671,9 @@ mod tests {
         );
         let settings = settings_state(AppSettings::default());
         let manager = test_manager();
-        let plan = collect_agent_delete_plan(&base, &agent_dir).expect("collect plan");
+        let guard = TeamConfigMutationGuard::acquire(&base).expect("team guard");
+        let plan =
+            collect_agent_delete_plan_guarded(&base, &agent_dir, &guard).expect("collect plan");
         let metadata = prepare_agent_delete_metadata(&plan, &settings)
             .await
             .expect("metadata");
@@ -4450,19 +5685,21 @@ mod tests {
         let persist_err = persist_agent_delete_metadata_with_writers(
             &metadata,
             &settings,
+            &guard,
             |path, bytes| {
                 let count = writes.fetch_add(1, TestOrdering::SeqCst);
                 if count == 1 {
                     Err("forced team write failure".to_string())
                 } else {
-                    write_team_config_json_atomic(path, bytes)
+                    write_team_config_json_atomic(&base, &guard, path, bytes)
                 }
             },
             |candidate| Ok(candidate.clone()),
         )
         .await
         .expect_err("team write failure");
-        let restore = restore_agent_delete_metadata_snapshots(&metadata, &settings).await;
+        let restore = restore_agent_delete_metadata_snapshots(&metadata, &settings, &guard).await;
+        drop(guard);
         let rollback = rollback_staged_agent_delete_targets(&staged);
         let msg = format_agent_delete_metadata_failure(persist_err, restore, rollback);
 
@@ -4496,7 +5733,9 @@ mod tests {
             .insert("dev-rust".to_string(), "A".to_string());
         let settings = settings_state(settings);
         let manager = test_manager();
-        let plan = collect_agent_delete_plan(&base, &agent_dir).expect("collect plan");
+        let guard = TeamConfigMutationGuard::acquire(&base).expect("team guard");
+        let plan =
+            collect_agent_delete_plan_guarded(&base, &agent_dir, &guard).expect("collect plan");
         let metadata = prepare_agent_delete_metadata(&plan, &settings)
             .await
             .expect("metadata");
@@ -4504,12 +5743,14 @@ mod tests {
             .await
             .expect("stage");
 
-        let persist_err = persist_agent_delete_metadata_with_saver(&metadata, &settings, |_| {
-            Err("forced settings save failure".to_string())
-        })
-        .await
-        .expect_err("settings save failure");
-        let restore = restore_agent_delete_metadata_snapshots(&metadata, &settings).await;
+        let persist_err =
+            persist_agent_delete_metadata_with_saver(&metadata, &settings, &guard, |_| {
+                Err("forced settings save failure".to_string())
+            })
+            .await
+            .expect_err("settings save failure");
+        let restore = restore_agent_delete_metadata_snapshots(&metadata, &settings, &guard).await;
+        drop(guard);
         let rollback = rollback_staged_agent_delete_targets(&staged);
         let msg = format_agent_delete_metadata_failure(persist_err, restore, rollback);
 
