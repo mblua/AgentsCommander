@@ -555,8 +555,8 @@ fn is_permanent_delivery_error(error: &str) -> bool {
         || error.starts_with(ERR_UNMAPPED_LOGICAL_REMOTE_COMMAND)
 }
 
-/// #617 - sustained-idle window the deferred /clear waits for. `pub(crate)` so the
-/// CLI prose and the response JSON single-source the value (no drift across the
+/// #617 - sustained-idle window before a deferred provider-resolved logical
+/// clear. `pub(crate)` so the CLI prose and response JSON single-source the
 /// gate, the response `settle_secs`, and the CLI's conditional wording).
 pub(crate) const SELF_CLEAR_SETTLE_SECS: u64 = 30;
 // The next three are consumed only by the `#[cfg(not(test))]` spawn in
@@ -1711,6 +1711,12 @@ struct MailboxTestHooks {
     consumption_results: Arc<Mutex<VecDeque<ConsumptionVerdict>>>,
     inject_calls: Arc<Mutex<Vec<Uuid>>>,
     settle_calls: Arc<Mutex<Vec<Uuid>>>,
+    /// Sessions whose hooked live-settle step removes the SessionManager
+    /// record, deterministically exercising the post-preflight race path.
+    remove_session_on_settle: Arc<Mutex<std::collections::HashSet<Uuid>>>,
+    /// Sessions that record hook observability but continue through the real
+    /// command branch and canonical injector instead of scripted injection.
+    real_inject_sessions: Arc<Mutex<std::collections::HashSet<Uuid>>>,
     destroy_calls: Arc<Mutex<Vec<Uuid>>>,
     spawn_calls: Arc<Mutex<Vec<MailboxSpawnCall>>>,
     attach_calls: MailboxAttachCalls,
@@ -2963,22 +2969,29 @@ impl MailboxPoller {
                 let mut events = hooks.events.lock().unwrap();
                 events.push(MailboxTestEvent::Inject(session_id));
             }
-            let inject_result = {
-                let mut results = hooks.inject_results.lock().unwrap();
-                results.pop_front()
+            let use_real_inject = hooks
+                .real_inject_sessions
+                .lock()
+                .unwrap()
+                .contains(&session_id);
+            if !use_real_inject {
+                let inject_result = {
+                    let mut results = hooks.inject_results.lock().unwrap();
+                    results.pop_front()
+                }
+                .unwrap_or(Ok(()));
+                // (#1001 PR1 / G6) On a successful inject, if a consumption
+                // verdict is scripted, run the SAME verdict_to_result the
+                // production path uses so AC3 covers the real conversion. No
+                // scripted verdict => Ok (existing hooked tests unchanged).
+                return match inject_result {
+                    Ok(()) => match hooks.consumption_results.lock().unwrap().pop_front() {
+                        Some(verdict) => verdict_to_result(verdict),
+                        None => Ok(()),
+                    },
+                    Err(e) => Err(e),
+                };
             }
-            .unwrap_or(Ok(()));
-            // (#1001 PR1 / G6) On a successful inject, if a consumption
-            // verdict is scripted, run the SAME verdict_to_result the
-            // production path uses so AC3 covers the real conversion. No
-            // scripted verdict => Ok (existing hooked tests unchanged).
-            return match inject_result {
-                Ok(()) => match hooks.consumption_results.lock().unwrap().pop_front() {
-                    Some(verdict) => verdict_to_result(verdict),
-                    None => Ok(()),
-                },
-                Err(e) => Err(e),
-            };
         }
 
         let result = self
@@ -3297,6 +3310,18 @@ impl MailboxPoller {
         #[cfg(test)]
         if let Some(hooks) = &self.test_hooks {
             hooks.settle_calls.lock().unwrap().push(session_id);
+            let remove_session = hooks
+                .remove_session_on_settle
+                .lock()
+                .unwrap()
+                .remove(&session_id);
+            if remove_session {
+                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let mgr = session_mgr.read().await;
+                mgr.destroy_session(session_id)
+                    .await
+                    .expect("remove test session after logical-command preflight");
+            }
             return; // hooked tests exercise the inject wiring, not real timers
         }
 
@@ -3401,7 +3426,7 @@ impl MailboxPoller {
                     Some(session) => (session.shell.clone(), session.waiting_for_input),
                     None => {
                         return Err(format!(
-                            "Session {} not found - cannot execute logical remote command '{}'",
+                            "Session not found: {} - cannot execute logical remote command '{}'",
                             session_id, command
                         ));
                     }
@@ -10560,7 +10585,7 @@ mod tests {
                 .agents
                 .push(wake_agent("pi", "Pi", "pi"));
         }
-        let (_source_id, token) = seed_self_switch_session(
+        let (source_id, token) = seed_self_switch_session(
             &app,
             &fixture.replica,
             "codex",
@@ -10569,6 +10594,11 @@ mod tests {
             Some("A"),
         )
         .await;
+        {
+            let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = state.read().await;
+            mgr.mark_idle(source_id).await;
+        }
         seed_self_handoff(&fixture.replica);
         let (path, message) = build_self_switch_message(
             &fixture.replica,
@@ -10588,29 +10618,161 @@ mod tests {
         let response = read_response_json(&fixture.replica, "rid-ss-pi-target").unwrap();
         assert_eq!(response["status"], "queued");
         assert_eq!(response["target_coding_agent"], "pi");
+        assert_eq!(response["target_profile"], "A");
 
-        // Once the legal switch has selected Pi, its existing phase-2 handoff
-        // still goes through the canonical target-session injector.
-        let target_id = add_mailbox_session_with_shell(
-            &app,
-            &fixture.replica,
-            "pi-target",
-            "pi",
-            SessionStatus::Idle,
+        let target_agent = response["target_coding_agent"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let target_profile = response["target_profile"].as_str().unwrap().to_string();
+        let pending = app.state::<Arc<crate::PendingSelfClear>>().inner().clone();
+        let state_ids = Arc::new(Mutex::new(Vec::<Uuid>::new()));
+        let state_ids_seen = Arc::clone(&state_ids);
+        let app_for_state = app.clone();
+        let session_state = move |session_id: Uuid| {
+            let app = app_for_state.clone();
+            let state_ids = Arc::clone(&state_ids_seen);
+            async move {
+                state_ids.lock().unwrap().push(session_id);
+                let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let mgr = state.read().await;
+                match mgr.get_session(session_id).await {
+                    Some(session) => (true, session.waiting_for_input),
+                    None => (false, false),
+                }
+            }
+        };
+
+        let app_for_persist = app.clone();
+        let persist = move |cwd: PathBuf, agent: String, profile: String| {
+            let app = app_for_persist.clone();
+            async move {
+                let settings = app.state::<SettingsState>();
+                let snapshot = settings.read().await.clone();
+                crate::config::coding_agent_profiles::set_replica_coding_agent_selection(
+                    &snapshot, &cwd, &agent, &profile,
+                )
+            }
+        };
+
+        let restarted_id = Arc::new(Mutex::new(None::<Uuid>));
+        let restarted_id_seen = Arc::clone(&restarted_id);
+        let app_for_restart = app.clone();
+        let replica_for_restart = fixture.replica.clone();
+        let restart = move |session_id: Uuid, agent: String, profile: String| {
+            let app = app_for_restart.clone();
+            let replica = replica_for_restart.clone();
+            let restarted_id = Arc::clone(&restarted_id_seen);
+            async move {
+                assert_eq!(session_id, source_id);
+                assert_eq!(agent, "pi");
+                assert_eq!(profile, "A");
+                {
+                    let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                    let mgr = state.read().await;
+                    mgr.destroy_session(session_id).await.unwrap();
+                }
+                let (new_id, _token) = seed_self_switch_session(
+                    &app,
+                    &replica,
+                    "pi",
+                    Some("pi"),
+                    Some(&profile),
+                    Some(&profile),
+                )
+                .await;
+                {
+                    let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                    let mgr = state.read().await;
+                    mgr.mark_idle(new_id).await;
+                }
+                register_mock_pty_route(&app, new_id);
+                *restarted_id.lock().unwrap() = Some(new_id);
+                Ok(new_id.to_string())
+            }
+        };
+
+        let injected_prompts = Arc::new(Mutex::new(Vec::<(Uuid, String)>::new()));
+        let injected_prompts_seen = Arc::clone(&injected_prompts);
+        let app_for_inject = app.clone();
+        let inject = move |session_id: Uuid, prompt: String| {
+            let app = app_for_inject.clone();
+            let injected_prompts = Arc::clone(&injected_prompts_seen);
+            async move {
+                injected_prompts
+                    .lock()
+                    .unwrap()
+                    .push((session_id, prompt.clone()));
+                crate::pty::inject::inject_text_into_session(&app, session_id, &prompt).await
+            }
+        };
+        let boundaries = Arc::new(Mutex::new(Vec::<(Uuid, SelfClearBoundary)>::new()));
+        let boundaries_seen = Arc::clone(&boundaries);
+        let note_boundary = move |session_id: Uuid, boundary: SelfClearBoundary| {
+            let boundaries = Arc::clone(&boundaries_seen);
+            async move {
+                boundaries.lock().unwrap().push((session_id, boundary));
+            }
+        };
+
+        MailboxPoller::drive_self_switch_after_sustained_idle(
+            source_id,
+            fixture.replica.clone(),
+            target_agent,
+            target_profile,
+            None,
+            Arc::clone(&pending),
+            Duration::ZERO,
+            Duration::ZERO,
+            Duration::from_secs(1),
+            session_state,
+            persist,
+            restart,
+            inject,
+            note_boundary,
         )
         .await;
-        register_mock_pty_route(&app, target_id);
-        crate::pty::inject::inject_text_into_session(&app, target_id, "resume handoff payload")
-            .await
-            .unwrap();
+
+        let target_id = restarted_id
+            .lock()
+            .unwrap()
+            .expect("restart seam must return the configured Pi session id");
+        assert_ne!(target_id, source_id);
+        assert_eq!(*state_ids.lock().unwrap(), vec![source_id, target_id]);
+        let prompts = injected_prompts.lock().unwrap().clone();
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts[0].0, target_id);
+        assert!(prompts[0].1.contains("self-clear/"), "{}", prompts[0].1);
         assert_eq!(
             mock_pty_writes_for(&app, target_id),
             vec![
-                b"resume handoff payload".to_vec(),
+                prompts[0].1.as_bytes().to_vec(),
                 b"\r".to_vec(),
                 b"\r".to_vec()
             ]
         );
+        assert_eq!(
+            *boundaries.lock().unwrap(),
+            vec![(target_id, SelfClearBoundary::ContentInjected)]
+        );
+        let manager = {
+            let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let guard = state.read().await;
+            guard.clone()
+        };
+        assert!(manager.get_session(source_id).await.is_none());
+        let target = manager.get_session(target_id).await.unwrap();
+        assert_eq!(target.shell, "pi");
+        assert_eq!(target.agent_id.as_deref(), Some("pi"));
+        assert_eq!(target.requested_profile.as_deref(), Some("A"));
+        assert_eq!(target.effective_profile.as_deref(), Some("A"));
+        assert!(pending.0.lock().unwrap().is_empty());
+        let saved: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(fixture.replica.join("config.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved["tooling"]["currentCodingAgent"], "pi");
+        assert_eq!(saved["tooling"]["profile"], "A");
     }
 
     #[tokio::test]
@@ -11891,11 +12053,12 @@ mod tests {
     }
 
     #[test]
-    fn err_is_pty_session_missing_matches_bare_form() {
-        // Matches even without the inject_text_into_session wrapping, in case
-        // a future call site propagates the inner error directly.
-        let e = "Session not found: abcdef";
-        assert!(err_is_pty_session_missing(e));
+    fn err_is_pty_session_missing_matches_bare_and_contextual_forms() {
+        // Matches both the canonical bare error and command-branch context.
+        assert!(err_is_pty_session_missing("Session not found: abcdef"));
+        assert!(err_is_pty_session_missing(
+            "Session not found: abcdef - cannot execute logical remote command 'clear'"
+        ));
     }
 
     #[test]
@@ -12615,6 +12778,98 @@ mod tests {
         assert_eq!(payload["id"], message.id);
     }
 
+    async fn assert_wired_clear_and_compact_submission(clear_shell: &str, compact_shell: &str) {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let clear_id = add_mailbox_session_with_shell(
+            &app,
+            &fixture.target_cwd,
+            "wired-clear",
+            clear_shell,
+            SessionStatus::Idle,
+        )
+        .await;
+        let compact_id = add_mailbox_session_with_shell(
+            &app,
+            &fixture.target_cwd,
+            "wired-compact",
+            compact_shell,
+            SessionStatus::Idle,
+        )
+        .await;
+        register_mock_pty_route(&app, clear_id);
+        register_mock_pty_route(&app, compact_id);
+        let clear_message = logical_command_message("clear", "");
+        let compact_message = logical_command_message("compact", "");
+        let poller = MailboxPoller::new();
+        let started = std::time::Instant::now();
+
+        let (clear_result, compact_result) = tokio::join!(
+            poller.inject_into_pty(
+                &app,
+                clear_id,
+                &clear_message,
+                true,
+                WakeDeliveryOrigin::FilesystemPoller,
+            ),
+            poller.inject_into_pty(
+                &app,
+                compact_id,
+                &compact_message,
+                true,
+                WakeDeliveryOrigin::FilesystemPoller,
+            )
+        );
+        clear_result.unwrap();
+        compact_result.unwrap();
+        assert!(
+            started.elapsed() >= Duration::from_millis(2000),
+            "wired submissions must await both canonical delayed Enter writes"
+        );
+
+        assert_eq!(
+            mock_pty_writes_for(&app, clear_id),
+            vec![b"/clear".to_vec(), b"\r".to_vec(), b"\r".to_vec()]
+        );
+        assert_eq!(
+            mock_pty_writes_for(&app, compact_id),
+            vec![b"/compact".to_vec(), b"\r".to_vec(), b"\r".to_vec()]
+        );
+        let manager = {
+            let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let guard = state.read().await;
+            guard.clone()
+        };
+        assert!(
+            manager
+                .get_session(clear_id)
+                .await
+                .unwrap()
+                .start_fresh_on_restore
+        );
+        assert!(
+            !manager
+                .get_session(compact_id)
+                .await
+                .unwrap()
+                .start_fresh_on_restore
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_established_command_branches_preserve_text_and_submission() {
+        tokio::join!(
+            assert_wired_clear_and_compact_submission("claude.exe", "claude-wrapper.cmd"),
+            assert_wired_clear_and_compact_submission("codex.exe", "codex-wrapper.cmd"),
+            assert_wired_clear_and_compact_submission("gemini.exe", "gemini-wrapper.cmd")
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_cursor_command_branches_preserve_text_and_submission() {
+        assert_wired_clear_and_compact_submission("agent.exe", "agent.cmd").await;
+    }
+
     #[tokio::test]
     async fn pi_canonical_injector_writes_arbitrary_text_then_two_enters() {
         let fixture = make_mailbox_fixture();
@@ -12822,6 +13077,87 @@ mod tests {
         );
         assert!(unknown_hooks.settle_calls.lock().unwrap().is_empty());
         assert!(unknown_hooks.events.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn deliver_wake_logical_command_session_race_continues_to_next_candidate() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let vanished_id = add_mailbox_session_with_shell(
+            &app,
+            &fixture.target_cwd,
+            "pi-vanishes-after-preflight",
+            "pi",
+            SessionStatus::Idle,
+        )
+        .await;
+        let surviving_id = add_mailbox_session_with_shell(
+            &app,
+            &fixture.target_cwd,
+            "pi-survives",
+            "pi",
+            SessionStatus::Idle,
+        )
+        .await;
+        register_mock_pty_route(&app, vanished_id);
+        register_mock_pty_route(&app, surviving_id);
+
+        let hooks = MailboxTestHooks::default();
+        {
+            let mut presence = hooks.pty_presence.lock().unwrap();
+            presence.insert(vanished_id, true);
+            presence.insert(surviving_id, true);
+        }
+        hooks
+            .remove_session_on_settle
+            .lock()
+            .unwrap()
+            .insert(vanished_id);
+        {
+            let mut real = hooks.real_inject_sessions.lock().unwrap();
+            real.insert(vanished_id);
+            real.insert(surviving_id);
+        }
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+
+        poller
+            .deliver_wake_with_origin(
+                &app,
+                &logical_command_message("clear", ""),
+                WakeDeliveryOrigin::FilesystemPoller,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            *hooks.settle_calls.lock().unwrap(),
+            vec![vanished_id, surviving_id],
+            "the missing-record error must continue the same delivery attempt"
+        );
+        assert_eq!(
+            *hooks.inject_calls.lock().unwrap(),
+            vec![vanished_id, surviving_id]
+        );
+        assert!(mock_pty_writes_for(&app, vanished_id).is_empty());
+        assert_eq!(
+            mock_pty_writes_for(&app, surviving_id),
+            vec![b"/new".to_vec(), b"\r".to_vec(), b"\r".to_vec()]
+        );
+        assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+        assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+        let manager = {
+            let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let guard = state.read().await;
+            guard.clone()
+        };
+        assert!(manager.get_session(vanished_id).await.is_none());
+        assert!(
+            manager
+                .get_session(surviving_id)
+                .await
+                .unwrap()
+                .start_fresh_on_restore
+        );
     }
 
     #[tokio::test]
