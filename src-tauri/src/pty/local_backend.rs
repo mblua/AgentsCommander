@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use crate::errors::AppError;
 use crate::pty::backend::{BackendSpawnSpec, PtyBackend};
-use crate::pty::context_scrape::ScreenRowsRead;
+use crate::pty::context_scrape::{ContextSessionLiveness, ScreenRowsRead};
 use crate::pty::git_watcher::GitWatcher;
 use crate::pty::idle_detector::IdleDetector;
 use crate::pty::output::{PtyScreenSnapshot, SessionIoFanout};
@@ -1017,6 +1017,44 @@ fn probe_child_in(ptys: &Mutex<HashMap<Uuid, PtyInstance>>, id: Uuid) -> ChildLi
 /// by a test against a real ConPTY child: `LocalProcessBackend` itself cannot be built in a
 /// unit test (its `GitWatcher` needs a Tauri `AppHandle`), and none of that has anything to
 /// do with whether a child is alive.
+pub(crate) fn context_liveness_from_child_liveness(
+    liveness: &ChildLiveness,
+) -> ContextSessionLiveness {
+    match liveness {
+        ChildLiveness::Alive => ContextSessionLiveness::Live,
+        ChildLiveness::Unqueryable(_) => ContextSessionLiveness::Unavailable,
+        ChildLiveness::Exited { .. } | ChildLiveness::Gone => ContextSessionLiveness::SessionOver,
+    }
+}
+
+#[cfg(test)]
+mod context_liveness_tests {
+    use super::{context_liveness_from_child_liveness, ChildLiveness, ContextSessionLiveness};
+
+    #[test]
+    fn maps_every_contained_child_liveness_state() {
+        assert_eq!(
+            context_liveness_from_child_liveness(&ChildLiveness::Alive),
+            ContextSessionLiveness::Live
+        );
+        assert_eq!(
+            context_liveness_from_child_liveness(&ChildLiveness::Unqueryable("denied".into())),
+            ContextSessionLiveness::Unavailable
+        );
+        assert_eq!(
+            context_liveness_from_child_liveness(&ChildLiveness::Exited {
+                code: 0,
+                success: true,
+            }),
+            ContextSessionLiveness::SessionOver
+        );
+        assert_eq!(
+            context_liveness_from_child_liveness(&ChildLiveness::Gone),
+            ContextSessionLiveness::SessionOver
+        );
+    }
+}
+
 fn screen_rows_if_child_alive(
     ptys: &Mutex<HashMap<Uuid, PtyInstance>>,
     fanout: &SessionIoFanout,
@@ -1214,6 +1252,10 @@ impl PtyBackend for LocalProcessBackend {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .contains_key(&id)
+    }
+
+    fn context_session_liveness(&self, id: Uuid) -> ContextSessionLiveness {
+        context_liveness_from_child_liveness(&probe_child_in(&self.ptys, id))
     }
 
     fn resize(&self, id: Uuid, cols: u16, rows: u16) -> Result<(), AppError> {

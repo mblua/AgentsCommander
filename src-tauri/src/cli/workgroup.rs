@@ -8,8 +8,8 @@ use crate::cli::create_agent_matrix::{write_project_refresh_request, ProjectRefr
 use crate::commands::entity_creation::{
     check_workgroup_repos_dirty, clone_missing_repos_for_workgroup, create_workgroup_on_disk,
     list_workgroup_dirs, read_team_config, resolve_agent_ref, sanitize_name,
-    validate_delete_root_not_link_or_reparse, validate_existing_name,
-    RepoAssignment, TeamConfigResult, WgDeleteOutcome, WorkgroupDiskCreateArgs,
+    validate_delete_root_not_link_or_reparse, validate_existing_name, RepoAssignment,
+    TeamConfigResult, WgDeleteOutcome, WorkgroupDiskCreateArgs,
 };
 use crate::config::projects::resolve_project_reference;
 use crate::config::workspace::existing_workspace_dir;
@@ -276,7 +276,11 @@ fn remove(args: WorkgroupRemoveArgs) -> Result<(), String> {
             &args.workgroup,
         ) {
             Ok(n) if n > 0 => {
-                log::info!("[workgroup-remove] dropped {} clock key(s) for {}", n, args.workgroup)
+                log::info!(
+                    "[workgroup-remove] dropped {} clock key(s) for {}",
+                    n,
+                    args.workgroup
+                )
             }
             Ok(_) => {}
             Err(e) => log::warn!("[workgroup-remove] clock cleanup failed: {}", e),
@@ -346,6 +350,7 @@ pub(crate) fn build_new_team_config(
         agents: roster,
         coordinator,
         repos: repo_config,
+        context_alert_percentages: Vec::new(),
     })
 }
 
@@ -520,5 +525,62 @@ mod tests {
                 .expect("deleted outcome should refresh"),
             RemoveRefreshDecision::EmitWorkgroupRemoved
         );
+    }
+
+    #[test]
+    fn cli_team_builder_defaults_context_alerts_to_disabled() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path().join(".ac");
+        std::fs::create_dir_all(workspace.join("_agent_coordinator")).expect("coordinator matrix");
+        std::fs::create_dir_all(workspace.join("_agent_member")).expect("member matrix");
+
+        let config = build_new_team_config(
+            &workspace,
+            "coordinator",
+            &["member".to_string()],
+            &[],
+            &[],
+            &[],
+        )
+        .expect("build config");
+        assert!(config.context_alert_percentages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn legacy_workgroup_provisioning_never_upserts_concurrent_team_winner() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("Project");
+        let workspace = project.join(".ac");
+        std::fs::create_dir_all(workspace.join("_agent_coordinator")).expect("coordinator matrix");
+        let winner = TeamConfigResult {
+            agents: vec!["_agent_coordinator".to_string()],
+            coordinator: "_agent_coordinator".to_string(),
+            repos: Vec::new(),
+            context_alert_percentages: vec![75],
+        };
+        crate::commands::entity_creation::create_new_team_config_on_disk(
+            &workspace, "dev-team", &winner,
+        )
+        .expect("concurrent winner");
+
+        let err = create_workgroup_on_disk(WorkgroupDiskCreateArgs {
+            project_path: project,
+            team_name: "dev-team".to_string(),
+            task_title: "Race test".to_string(),
+            coordinator: Some("_agent_coordinator".to_string()),
+            agents: vec!["_agent_coordinator".to_string()],
+            repos: Vec::new(),
+        })
+        .await
+        .expect_err("legacy loser must not upsert");
+
+        assert!(err.contains("Team 'dev-team' already exists"), "{err}");
+        assert_eq!(
+            read_team_config(&workspace, "dev-team")
+                .expect("winner config")
+                .context_alert_percentages,
+            vec![75]
+        );
+        assert!(list_workgroup_dirs(&workspace).is_empty());
     }
 }
