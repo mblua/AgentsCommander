@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::errors::AppError;
-use crate::pty::context_scrape::ScreenRowsRead;
+use crate::pty::context_scrape::{ContextSessionLiveness, ScreenRowsRead};
 use crate::pty::output::{PtyOutputTarget, PtyScreenSnapshot};
 use crate::resource_monitor::{ResourceLaunchRegistration, ResourceLogicalAgentSlot};
 use crate::session::profile::{CodingAgentKind, IdleTuning};
@@ -130,6 +130,17 @@ pub trait PtyBackend: Any + Send + Sync {
     fn kill(&self, id: Uuid) -> Result<(), AppError>;
 
     fn has_session(&self, id: Uuid) -> bool;
+
+    /// Lightweight context-session liveness. Backends with a richer contained child oracle
+    /// override this; the default preserves source compatibility and is truthful for routes
+    /// whose `has_session` means an active transport.
+    fn context_session_liveness(&self, id: Uuid) -> ContextSessionLiveness {
+        if self.has_session(id) {
+            ContextSessionLiveness::Live
+        } else {
+            ContextSessionLiveness::SessionOver
+        }
+    }
 
     fn get_screen_snapshot(&self, id: Uuid) -> Option<PtyScreenSnapshot>;
 

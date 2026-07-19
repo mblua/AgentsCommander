@@ -1030,6 +1030,7 @@ export interface TeamConfigResult {
   agents: string[];
   coordinator: string;
   repos: { url: string; agents: string[] }[];
+  contextAlertPercentages: number[];
 }
 
 

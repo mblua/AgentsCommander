@@ -4,6 +4,7 @@ use uuid::Uuid;
 
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
+use crate::session::session::{Session, SessionStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PtyInjectionProfile {
@@ -126,17 +127,82 @@ where
     R: tauri::Runtime,
     F: FnOnce() -> Result<(), String>,
 {
-    // Resolve shell without holding any lock across an await point.
-    let shell = {
-        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-        let mgr = session_mgr.read().await;
-        let result = mgr.get_shell(session_id).await;
-        drop(mgr);
-        result
-    };
-    let shell = shell.ok_or_else(|| format!("Session not found: {}", session_id))?;
+    inject_text_into_session_impl(app, session_id, text, move |session| {
+        session.ok_or_else(|| format!("Session not found: {}", session_id))?;
+        pre_write_check()
+    })
+    .await
+}
 
-    let send_enter = needs_explicit_enter(&shell);
+/// Canonical injector for trusted internal notices. This adds root, exited,
+/// agentless, and plain-shell rejection and gives the caller the resolved
+/// session snapshot for its final canonical-path and authorization check.
+fn validate_supported_agent_session(session: &Session, session_id: Uuid) -> Result<(), String> {
+    if session.is_root_agent {
+        return Err(format!(
+            "Session {} is a root session, not a supported coordinator agent",
+            session_id
+        ));
+    }
+    if matches!(session.status, SessionStatus::Exited(_)) {
+        return Err(format!("Session {} exited before injection", session_id));
+    }
+    if session.agent_id.is_none() {
+        return Err(format!(
+            "Session {} has no configured coding-agent identity",
+            session_id
+        ));
+    }
+    if !needs_explicit_enter(&session.shell) {
+        return Err(format!(
+            "Session {} shell '{}' is not a supported coding-agent CLI",
+            session_id, session.shell
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) async fn inject_text_into_supported_agent_session_with_pre_write_check<R, F>(
+    app: &tauri::AppHandle<R>,
+    session_id: Uuid,
+    text: &str,
+    pre_write_check: F,
+) -> Result<(), String>
+where
+    R: tauri::Runtime,
+    F: FnOnce(&Session) -> Result<(), String>,
+{
+    inject_text_into_session_impl(app, session_id, text, move |session| {
+        let session = session.ok_or_else(|| {
+            format!(
+                "Session {} is missing before supported-agent injection",
+                session_id
+            )
+        })?;
+        validate_supported_agent_session(session, session_id)?;
+        pre_write_check(session)
+    })
+    .await
+}
+
+async fn inject_text_into_session_impl<R, F>(
+    app: &tauri::AppHandle<R>,
+    session_id: Uuid,
+    text: &str,
+    pre_write_check: F,
+) -> Result<(), String>
+where
+    R: tauri::Runtime,
+    F: FnOnce(Option<&Session>) -> Result<(), String>,
+{
+    // Resolve one public snapshot without retaining a manager guard across an await.
+    let session = {
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let manager = session_mgr.read().await.clone();
+        manager.get_session(session_id).await
+    };
+    let shell = session.as_ref().map(|session| session.shell.clone());
+    let send_enter = shell.as_deref().map(needs_explicit_enter).unwrap_or(false);
     log::info!(
         "[inject] session={} shell={:?} send_enter={}",
         session_id,
@@ -144,7 +210,9 @@ where
         send_enter
     );
 
-    pre_write_check()?;
+    // Deliberately synchronous and immediately adjacent to the PTY-owner lock. Callers of
+    // the supported variant perform their final filesystem/config guard here.
+    pre_write_check(session.as_ref())?;
 
     // Write the text block.
     {
@@ -204,13 +272,75 @@ where
 mod tests {
     use super::{
         inject_text_into_session, needs_explicit_enter, resolve_logical_command_text,
-        supports_auto_self_maintenance, supports_self_handoff_switch, LogicalPtyCommand,
+        supports_auto_self_maintenance, supports_self_handoff_switch,
+        validate_supported_agent_session, LogicalPtyCommand,
     };
     use crate::pty::backend::{BackendSpawnSpec, PtyBackend, SessionBackendKind};
     use crate::pty::manager::PtyManager;
     use crate::session::manager::SessionManager;
+    use crate::session::session::{Session, SessionStatus};
+    use chrono::Utc;
     use std::sync::{Arc, Mutex};
     use uuid::Uuid;
+
+    fn supported_session() -> Session {
+        Session {
+            id: Uuid::new_v4(),
+            name: "coordinator".to_string(),
+            shell: "codex".to_string(),
+            shell_args: Vec::new(),
+            backend_kind: SessionBackendKind::LocalProcess,
+            effective_shell_args: None,
+            created_at: Utc::now(),
+            working_directory: "C:/replica".to_string(),
+            status: SessionStatus::Running,
+            waiting_for_input: false,
+            communication: None,
+            pending_review: false,
+            last_prompt: None,
+            agent_id: Some("codex-profile".to_string()),
+            agent_label: Some("Codex".to_string()),
+            git_repos: Vec::new(),
+            is_coordinator: true,
+            is_root_agent: false,
+            git_repos_gen: 0,
+            token: Uuid::new_v4(),
+            agent_kind: None,
+            requested_profile: None,
+            effective_profile: None,
+            profile_fallback_chain: Vec::new(),
+            profile_fallback_applied: false,
+            effective_codex_home: None,
+            resolved_claude_projects_dir: None,
+            profile_content_hash: None,
+            telegram_bot_id: None,
+            was_detached: false,
+            detached_geometry: None,
+            start_fresh_on_restore: false,
+        }
+    }
+
+    #[test]
+    fn supported_agent_final_snapshot_rejects_unsafe_recipient_records() {
+        let valid = supported_session();
+        assert!(validate_supported_agent_session(&valid, valid.id).is_ok());
+
+        let mut root = supported_session();
+        root.is_root_agent = true;
+        assert!(validate_supported_agent_session(&root, root.id).is_err());
+
+        let mut exited = supported_session();
+        exited.status = SessionStatus::Exited(0);
+        assert!(validate_supported_agent_session(&exited, exited.id).is_err());
+
+        let mut agentless = supported_session();
+        agentless.agent_id = None;
+        assert!(validate_supported_agent_session(&agentless, agentless.id).is_err());
+
+        let mut shell = supported_session();
+        shell.shell = "pwsh".to_string();
+        assert!(validate_supported_agent_session(&shell, shell.id).is_err());
+    }
 
     #[test]
     fn direct_shell_capability_matrix() {
