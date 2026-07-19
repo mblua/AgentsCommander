@@ -426,8 +426,18 @@ export const CODEX_CONTEXT_REGEX = String.raw`^ {2}.*· Context (\d{1,3})% used`
 export const PI_CONTEXT_REGEX = String.raw`^(?:.*? )?(\d{1,3})\.\d%/`;
 
 export function suggestedContextRegex(command: string): string | null {
+  const parsed = parseArgvText(command);
+  const tokens = parsed.error
+    ? command.trim().split(/\s+/).filter(Boolean)
+    : parsed.argv;
+  const directStem = executableTokenBasename(tokens[0] ?? "");
+  const piExecutableStem =
+    directStem === "cmd" && tokens[1]?.toLowerCase() === "/c"
+      ? executableTokenBasename(tokens[2] ?? "")
+      : directStem;
+  if (piExecutableStem === "pi") return PI_CONTEXT_REGEX;
+
   const stems = command.trim().split(/\s+/).filter(Boolean).map(executableTokenBasename);
-  if (stems.some((stem) => stem === "pi")) return PI_CONTEXT_REGEX;
   if (stems.some((s) => s.startsWith("claude"))) return CLAUDE_CONTEXT_REGEX;
   if (stems.some((s) => s.startsWith("codex"))) return CODEX_CONTEXT_REGEX;
   return null;

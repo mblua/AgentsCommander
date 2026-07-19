@@ -462,6 +462,13 @@ describe("profileBadgeKind (#526/#527 shared Config/Selection taxonomy)", () => 
     expect(suggestedContextRegex("pi --model codex-model")).toBe(PI_CONTEXT_REGEX);
   });
 
+  it("does not let standalone Pi argument values override the actual command", () => {
+    expect(suggestedContextRegex("claude --model pi")).toBe(CLAUDE_CONTEXT_REGEX);
+    expect(suggestedContextRegex("codex --profile pi")).toBe(CODEX_CONTEXT_REGEX);
+    expect(suggestedContextRegex("echo pi")).toBeNull();
+    expect(suggestedContextRegex("cmd.exe /c echo pi")).toBeNull();
+  });
+
   it("does not treat Pi executable look-alikes as Pi", () => {
     for (const command of ["pip", "pipx", "ping", "pixel"]) {
       expect(suggestedContextRegex(command)).toBeNull();
