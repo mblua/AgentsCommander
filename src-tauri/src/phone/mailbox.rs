@@ -8446,6 +8446,8 @@ mod tests {
             fixture.sender_cwd.clone(),
         )
         .unwrap();
+        // Spawn must use the target's canonical path, not a caller's possible 8.3 spelling.
+        let expected_spawn_cwd = target.replica_dir().to_string_lossy().into_owned();
         let notice = InternalSystemNotice::for_context_alert(
             "dev-rust".to_string(),
             "wg-1-dev-team".to_string(),
@@ -8471,7 +8473,7 @@ mod tests {
         assert_eq!(hooks.spawn_calls.lock().unwrap().len(), 1);
         let spawn = hooks.spawn_calls.lock().unwrap()[0].clone();
         assert_eq!(spawn.to, CANONICAL_WAKE_FROM);
-        assert_eq!(spawn.cwd, fixture.sender_cwd.to_string_lossy());
+        assert_eq!(spawn.cwd, expected_spawn_cwd);
         assert_ne!(hooks.inject_calls.lock().unwrap()[0], wrong_id);
         assert_eq!(hooks.destroy_calls.lock().unwrap().len(), 0);
     }
