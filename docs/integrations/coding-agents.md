@@ -18,6 +18,12 @@ Detection rule: AC inspects the shell command + args, takes each token's executa
 
 The full enum is in `session/profile.rs::CodingAgentKind`.
 
+### Logical clear capability is separate from tuned integration
+
+Remote logical clear and canonical text submission use a narrower direct-shell capability table, independent of `CodingAgentKind`. Direct Claude/Codex/Gemini-family shells and Cursor exact stem `agent` map logical clear to `/clear`. An exact-stem direct Pi shell maps it to `/new` and uses the same delayed double-Enter submission timing. Pi compact and Pi-origin `self-handoff-and-switch` remain unsupported.
+
+Pi stays outside `CodingAgentKind`. It receives no provider-specific resume token, credentials, transcript reader, Telegram classification, idle tuning, or other tuned profile behavior. The exact-stem rule is lexical trusted configuration: direct `pi`, `pi.exe`, and `pi.cmd` forms match, while an outer `cmd`/`pwsh` wrapper does not. It is not binary attestation. AgentsCommander does not version-probe or semantically acknowledge production clears; stock Pi 0.80.10 is the validated control, and a successful action records PTY write receipt.
+
 ## Installing the CLIs
 
 AC does not install the coding-agent binaries. Use the upstream installers:
