@@ -177,8 +177,9 @@ pub fn default_instructions_filename_for_command(command: &str) -> &'static str 
         Ok(n) => match CodingAgentKind::detect(&n.shell, &n.shell_args) {
             Some(CodingAgentKind::Claude) => "CLAUDE.md",
             Some(CodingAgentKind::Gemini) => "GEMINI.md",
-            // Codex, OpenCode, custom, and unknown all use AGENTS.md.
-            _ => "AGENTS.md",
+            Some(CodingAgentKind::Codex) | Some(CodingAgentKind::Pi) => "AGENTS.md",
+            // OpenCode, custom, and unknown commands also use AGENTS.md.
+            None => "AGENTS.md",
         },
         Err(_) => "AGENTS.md",
     }
@@ -568,8 +569,8 @@ enum OpencodeConfigDirOutcome {
 const OPENCODE_ARG_FORMS: [&str; 4] = ["opencode", "opencode.exe", "opencode.cmd", "opencode.bat"];
 
 /// True when the launch command runs opencode, matched by executable name.
-/// There is no `CodingAgentKind::OpenCode` (the enum is Claude/Codex/Gemini and
-/// `detect` does not know opencode), so this mirrors the
+/// There is no `CodingAgentKind::OpenCode` (the closed enum covers Claude,
+/// Codex, Gemini, and Pi, but `detect` does not know opencode), so this mirrors the
 /// `executable_basename(shell) == "codex"` fallback in [`compute_codex_home`].
 ///
 /// The `shell` (the program being launched) is matched on `file_stem`, like the
@@ -1168,6 +1169,30 @@ mod tests {
     }
 
     #[test]
+    fn pi_model_overlap_never_generates_codex_home() {
+        for (id, command) in [
+            ("pi", "pi --model codex-model"),
+            ("pi-cmd", "cmd /C pi --model codex-model"),
+        ] {
+            let mut pi = agent(id, command);
+            pi.isolated_home = true;
+            let settings = AppSettings {
+                agents: vec![pi],
+                ..AppSettings::default()
+            };
+
+            let spawn = build_agent_spawn_command(&settings, id, None, Some("A")).unwrap();
+
+            assert!(!spawn.generated_env.contains_key("CODEX_HOME"));
+            assert!(spawn.effective_codex_home.is_none());
+            assert!(!spawn
+                .env_remove_keys
+                .iter()
+                .any(|key| key.eq_ignore_ascii_case("CODEX_HOME")));
+        }
+    }
+
+    #[test]
     fn env_merge_precedence_is_agent_profile_generated() {
         let mut codex = agent("codex", "codex");
         codex.envs = vec![
@@ -1563,6 +1588,22 @@ mod tests {
         );
         assert_eq!(
             default_instructions_filename_for_command("codex"),
+            "AGENTS.md"
+        );
+        assert_eq!(
+            default_instructions_filename_for_command("pi --model claude-sonnet"),
+            "AGENTS.md"
+        );
+        assert_eq!(
+            default_instructions_filename_for_command("pi --model codex-model"),
+            "AGENTS.md"
+        );
+        assert_eq!(
+            default_instructions_filename_for_command("pi --provider gemini"),
+            "AGENTS.md"
+        );
+        assert_eq!(
+            default_instructions_filename_for_command("cmd /C pi --model claude-sonnet"),
             "AGENTS.md"
         );
         assert_eq!(

@@ -24,7 +24,7 @@ use crate::resource_monitor::{
 use crate::session::manager::{
     CommitDecision, LifecycleMutations, PendingCreateBinding, SessionManager,
 };
-use crate::session::profile::CodingAgentKind;
+use crate::session::profile::{locate_pi_command, CodingAgentKind, PiInsertionPoint};
 use crate::session::selection::{
     CriticalAdmissionOutcome, SelectionCause, SelectionCoordinator, SelectionRequest,
     SelectionSource, SelectionTransaction, TrustedCreateIntent, TrustedRestartIntent,
@@ -367,6 +367,108 @@ fn inject_codex_resume(shell: &str, shell_args: &mut Vec<String>) -> bool {
         }
         _ => false,
     }
+}
+
+fn pi_has_explicit_session_control(option_tokens: &[String]) -> bool {
+    const SHORT_CONTROLS: &[&str] = &["-c", "-r"];
+    const LONG_CONTROLS: &[&str] = &[
+        "--continue",
+        "--resume",
+        "--session",
+        "--session-id",
+        "--fork",
+        "--no-session",
+    ];
+
+    option_tokens.iter().any(|token| {
+        SHORT_CONTROLS.contains(&token.as_str())
+            || LONG_CONTROLS.iter().any(|name| {
+                token == *name
+                    || token
+                        .strip_prefix(*name)
+                        .is_some_and(|suffix| suffix.starts_with('='))
+            })
+    })
+}
+
+fn pi_is_non_conversation_invocation(option_tokens: &[String]) -> bool {
+    const MANAGEMENT_COMMANDS: &[&str] =
+        &["install", "remove", "uninstall", "update", "list", "config"];
+    const ONE_SHOT_FLAGS: &[&str] = &["--help", "-h", "--version", "-v"];
+    const JOINABLE_ONE_SHOT_FLAGS: &[&str] = &["--export", "--list-models"];
+
+    option_tokens
+        .first()
+        .is_some_and(|token| MANAGEMENT_COMMANDS.contains(&token.as_str()))
+        || option_tokens.iter().any(|token| {
+            ONE_SHOT_FLAGS.contains(&token.as_str())
+                || JOINABLE_ONE_SHOT_FLAGS.iter().any(|name| {
+                    token == *name
+                        || token
+                            .strip_prefix(*name)
+                            .is_some_and(|suffix| suffix.starts_with('='))
+                })
+        })
+}
+
+fn inject_pi_resume(shell: &str, shell_args: &mut Vec<String>) -> bool {
+    let &[resume_token] = CodingAgentKind::Pi.profile().resume_tokens else {
+        debug_assert!(false, "Pi resume_tokens must have exactly 1 element");
+        return false;
+    };
+    let Ok(Some(location)) = locate_pi_command(shell, shell_args) else {
+        return false;
+    };
+    if pi_has_explicit_session_control(&location.option_tokens)
+        || pi_is_non_conversation_invocation(&location.option_tokens)
+    {
+        return false;
+    }
+
+    match location.insertion {
+        PiInsertionPoint::Arg { index } => {
+            if index > shell_args.len() {
+                return false;
+            }
+            shell_args.insert(index, resume_token.to_string());
+        }
+        PiInsertionPoint::CmdText {
+            arg_index,
+            executable_range,
+            segment_range,
+        } => {
+            let Some(text) = shell_args.get_mut(arg_index) else {
+                return false;
+            };
+            if segment_range.start != executable_range.start
+                || executable_range.start > executable_range.end
+                || executable_range.end > segment_range.end
+                || segment_range.end > text.len()
+                || !text.is_char_boundary(executable_range.start)
+                || !text.is_char_boundary(executable_range.end)
+                || !text.is_char_boundary(segment_range.start)
+                || !text.is_char_boundary(segment_range.end)
+            {
+                return false;
+            }
+            let insertion = format!(" {resume_token}");
+            text.insert_str(executable_range.end, &insertion);
+        }
+    }
+    true
+}
+
+fn maybe_inject_pi_resume(
+    agent_kind: Option<CodingAgentKind>,
+    resolved_spawn: Option<&AgentSpawnCommand>,
+    skip_auto_resume: bool,
+    shell: &str,
+    shell_args: &mut Vec<String>,
+) -> bool {
+    if agent_kind != Some(CodingAgentKind::Pi) || resolved_spawn.is_none() || skip_auto_resume {
+        return false;
+    }
+    inject_pi_resume(shell, shell_args)
 }
 
 /// Single-pass expansion of `%NAME%` (cmd) and `$env:NAME` (PowerShell)
@@ -747,6 +849,31 @@ fn resume_probe_target(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
+fn claude_resume_probe_target_for_kind(
+    agent_kind: Option<CodingAgentKind>,
+    backend_kind: SessionBackendKind,
+    container_map: Option<&ContainerPathMap>,
+    resolved_spawn: Option<&AgentSpawnCommand>,
+    injected_claude_config_dir: Option<&str>,
+    shell: &str,
+    shell_args: &[String],
+    cwd: &str,
+) -> Option<ResumeProbeTarget> {
+    if agent_kind != Some(CodingAgentKind::Claude) {
+        return None;
+    }
+    Some(resume_probe_target(
+        backend_kind,
+        container_map,
+        resolved_spawn,
+        injected_claude_config_dir,
+        shell,
+        shell_args,
+        cwd,
+    ))
+}
+
 /// #930 - the CLAUDE_CONFIG_DIR value to inject for a container coding agent whose
 /// host credentials we will copy. Returns the copy directory (a host path under
 /// the replica mount, which the container env translation later maps to
@@ -931,7 +1058,7 @@ fn build_title_prompt_appendage(_cwd: &str) -> Result<Option<String>, String> {
 /// Core session creation logic shared by the Tauri command and the restore path.
 /// Creates a session record, spawns a PTY, and emits the session_created event.
 /// Auto-detects agent from shell command if not provided, and auto-injects provider-specific
-/// resume flags (`claude --continue`, `codex resume --last`, `gemini --resume latest`)
+/// resume flags (Claude/Pi `--continue`, Codex `resume --last`, Gemini `--resume latest`)
 /// when appropriate.
 /// If `skip_tooling_save` is true, skips writing to the repo's config.json (for temp sessions).
 ///
@@ -1161,8 +1288,8 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
         // caller requested resume (#599 reopen passes skipAutoResume=false), but
         // this cwd's coordinator carries a pending fresh boundary (restart or
         // AC-driven /clear whose record died with an auto/manual close). Force a
-        // fresh spawn BEFORE any provider resume injection below (claude
-        // --continue, codex resume --last, gemini --resume latest);
+        // fresh spawn BEFORE any provider resume injection below (Claude/Pi
+        // --continue, Codex resume --last, Gemini --resume latest);
         // provider-agnostic by construction. The mirror is deliberately NOT cleared
         // here: only post-boundary content (typed input or AC-injected content)
         // drops it, so repeated close/reopen cycles with no content stay fresh.
@@ -1387,6 +1514,9 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             Some(CodingAgentKind::Gemini) => {
                 Some(crate::config::session_context::ManagedContextTarget::Gemini)
             }
+            Some(CodingAgentKind::Pi) => {
+                Some(crate::config::session_context::ManagedContextTarget::Pi)
+            }
             None => None,
         };
 
@@ -1449,15 +1579,12 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             user_has_claude_config_dir,
         );
 
-        // Auto-inject --continue for Claude agents when AC has reason to believe a prior
-        // conversation exists for this session (issue #82: `is_dir()` alone is unsound;
-        // call sites pass `skip_auto_resume = true` for fresh creates).
-        // Issue #186: honor `CLAUDE_CONFIG_DIR` overrides set by `.cmd`/`.bat`/`.ps1`/`.sh`
-        // wrappers (e.g. `claude-mb`) so the probe locates the real transcript store.
-        // #894: local sessions keep the host probe, while container sessions probe
-        // only paths reachable through the bind mount. Missing or unmappable
-        // CLAUDE_CONFIG_DIR skips resume and is surfaced as a session env warning.
-        let resume_probe = resume_probe_target(
+        // Resolve and inspect Claude transcript storage only for a canonically
+        // detected Claude launch. Provider-looking Pi option values must not cause
+        // any Claude path resolution, filesystem check, warning, or stored memo.
+        let is_claude = agent_kind == Some(CodingAgentKind::Claude);
+        let resume_probe = claude_resume_probe_target_for_kind(
+            agent_kind,
             session.backend_kind,
             container_path_context.as_ref().map(|context| &context.map),
             resolved_spawn.as_ref(),
@@ -1466,7 +1593,9 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             &shell_args,
             &cwd,
         );
-        let resolved_claude_projects_dir = resume_probe.host_probe_path.clone();
+        let resolved_claude_projects_dir = resume_probe
+            .as_ref()
+            .and_then(|probe| probe.host_probe_path.clone());
         mgr.set_pending_resolved_claude_projects_dir(
             pending_binding,
             resolved_claude_projects_dir.clone(),
@@ -1475,16 +1604,15 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
         .map_err(|error| error.to_string())?;
         session.resolved_claude_projects_dir = resolved_claude_projects_dir.clone();
         let claude_project_exists = resume_probe
-            .host_probe_path
             .as_ref()
-            .map(|p| p.is_dir())
-            .unwrap_or(false);
-        let is_claude = agent_kind == Some(CodingAgentKind::Claude);
+            .and_then(|probe| probe.host_probe_path.as_ref())
+            .is_some_and(|path| path.is_dir());
         let mut session_env_warnings: Vec<ContainerEnvWarning> = Vec::new();
-        if is_claude {
-            if let Some(warning) = resume_probe.warning {
-                session_env_warnings.push(warning);
-            }
+        if let Some(warning) = resume_probe
+            .as_ref()
+            .and_then(|probe| probe.warning.clone())
+        {
+            session_env_warnings.push(warning);
         }
         let will_inject_continue = should_inject_continue(
             is_claude,
@@ -1492,21 +1620,25 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             claude_project_exists,
             &full_cmd,
         );
-        // (#630/#631) Resume-decision trace. Widened beyond Claude: codex/gemini ride
-        // the same `skip_auto_resume` axis (below) and were equally invisible. INFO
-        // during the stabilization window; demote later.
-        if agent_kind.is_some() {
+        if let Some(probe) = resume_probe.as_ref() {
             log::info!(
-            "[session] resume-decision {} agent={:?} cwd={:?} projects_dir={:?} filesystem={} exists={} skip_auto_resume={} -> inject_continue={}",
-            &id.to_string()[..8],
-            agent_kind,
-            cwd,
-            resolved_claude_projects_dir,
-            resume_probe.filesystem,
-            claude_project_exists,
-            skip_auto_resume,
-            will_inject_continue
-        );
+                "[session] claude-resume-decision {} cwd={:?} projects_dir={:?} filesystem={} exists={} skip_auto_resume={} -> inject_continue={}",
+                &id.to_string()[..8],
+                cwd,
+                resolved_claude_projects_dir,
+                probe.filesystem,
+                claude_project_exists,
+                skip_auto_resume,
+                will_inject_continue
+            );
+        } else if let Some(kind) = agent_kind {
+            log::info!(
+                "[session] resume-decision {} agent={} cwd={:?} skip_auto_resume={}",
+                &id.to_string()[..8],
+                kind.as_str(),
+                cwd,
+                skip_auto_resume
+            );
         }
         if will_inject_continue {
             // #260: Claude's resume flag from the CodingAgentProfile. resume_tokens
@@ -1567,6 +1699,21 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             }
         }
 
+        if maybe_inject_pi_resume(
+            agent_kind,
+            resolved_spawn.as_ref(),
+            skip_auto_resume,
+            &shell,
+            &mut shell_args,
+        ) {
+            if let Some(spawn) = resolved_spawn.as_ref() {
+                log::info!(
+                    "Auto-injected Pi `--continue` for trusted agent '{}'",
+                    spawn.trusted_agent_id
+                );
+            }
+        }
+
         if agent_kind == Some(CodingAgentKind::Codex) && !skip_auto_resume {
             if let Some(ref aid) = agent_id {
                 if inject_codex_resume(&shell, &mut shell_args) {
@@ -1606,7 +1753,8 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             // unless a per-agent override is set. Gated to coding-agent sessions.
             let class_default_on =
                 is_coordinator || crate::config::root_agent::is_root_agent_dir_name(&cwd);
-            let auto_self_clear = agent_kind.is_some()
+            let auto_self_clear = agent_kind
+                .is_some_and(|kind| kind.profile().auto_self_clear_supported)
                 && crate::config::settings::resolve_auto_self_clear(
                     &cfg,
                     &crate::config::coding_agent_profiles::agent_name_from_dir(
@@ -4231,13 +4379,16 @@ pub async fn create_root_agent_session(
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_existing_root, claude_projects_dir_for_config_dir, compute_profile_outdated,
+        classify_existing_root, claude_projects_dir_for_config_dir,
+        claude_resume_probe_target_for_kind, compute_profile_outdated,
         container_path_context_for_cwd, count_working_members, effective_restart_requested_profile,
-        execute_manual_coordinator_destroy, inject_codex_resume,
-        injected_claude_config_dir_for_copy, resolve_actual_agent, resolve_agent_command,
-        resolve_agent_from_shell, resolve_claude_projects_dir, resolve_restart_selected_agent_id,
-        resolve_root_agent_command, resume_probe_target_for_config_dir, should_inject_continue,
-        CreateSelectionIntent, ExistingRootAction,
+        execute_manual_coordinator_destroy, inject_codex_resume, inject_pi_resume,
+        injected_claude_config_dir_for_copy, maybe_inject_pi_resume,
+        pi_has_explicit_session_control, pi_is_non_conversation_invocation, resolve_actual_agent,
+        resolve_agent_command, resolve_agent_from_shell, resolve_claude_projects_dir,
+        resolve_restart_selected_agent_id, resolve_root_agent_command,
+        resume_probe_target_for_config_dir, should_inject_continue, CreateSelectionIntent,
+        ExistingRootAction,
     };
     use crate::config::settings::{AgentConfig, AppSettings, ProfileCellConfig};
     use crate::pty::backend::{PtyBackend, SessionBackendKind};
@@ -4247,6 +4398,7 @@ mod tests {
         ContainerPathMap, CLAUDE_CONFIG_DIR_KEY, WARNING_KIND_NO_VALUE,
     };
     use crate::session::manager::SessionManager;
+    use crate::session::profile::CodingAgentKind;
     use crate::session::session::{
         SessionCommunication, SessionCommunicationKind, SessionInfo, SessionStatus,
     };
@@ -4324,12 +4476,66 @@ mod tests {
         }
     }
 
+    fn inert_pi_spawn() -> crate::config::agent_command::AgentSpawnCommand {
+        crate::config::agent_command::AgentSpawnCommand {
+            shell: "pi".to_string(),
+            shell_args: Vec::new(),
+            agent_env: BTreeMap::new(),
+            profile_env: BTreeMap::new(),
+            generated_env: BTreeMap::new(),
+            child_env: Vec::new(),
+            env_remove_keys: Vec::new(),
+            effective_codex_home: None,
+            profile_resolution: crate::config::coding_agent_profiles::ProfileResolution {
+                requested_profile: "A".to_string(),
+                effective_profile: "A".to_string(),
+                fallback_chain: vec!["A".to_string()],
+                fallback_applied: false,
+                cell: crate::config::settings::empty_profile_cell(),
+                warnings: Vec::new(),
+            },
+            profile_content_hash: "0000000000000000".to_string(),
+            trusted_agent_id: "pi".to_string(),
+            trusted_agent_label: "Pi".to_string(),
+            backend: Default::default(),
+            seed: None,
+        }
+    }
+
     fn probe_map() -> ContainerPathMap {
         ContainerPathMap::new(r"C:\Users\maria\repo\.ac\wg-1\__agent_x", "/workspace").unwrap()
     }
 
     fn norm(path: &std::path::Path) -> String {
         path.to_string_lossy().replace('\\', "/")
+    }
+
+    #[test]
+    fn pi_provider_values_never_resolve_a_claude_probe() {
+        for args in [
+            vec![
+                "--provider".to_string(),
+                "claude".to_string(),
+                "--continue".to_string(),
+            ],
+            vec!["--model".to_string(), "claude-sonnet".to_string()],
+        ] {
+            assert_eq!(
+                CodingAgentKind::detect("pi", &args),
+                Some(CodingAgentKind::Pi)
+            );
+            let probe = claude_resume_probe_target_for_kind(
+                Some(CodingAgentKind::Pi),
+                SessionBackendKind::LocalProcess,
+                None,
+                None,
+                None,
+                "pi",
+                &args,
+                r"Z:\path-that-must-not-be-probed",
+            );
+            assert!(probe.is_none());
+        }
     }
 
     #[test]
@@ -6599,6 +6805,295 @@ mod tests {
             Some(SessionStatus::Exited(0))
         ));
         assert!(preserved.is_some_and(|s| s.is_root_agent));
+    }
+
+    #[test]
+    fn pi_explicit_session_control_matches_only_decided_spellings() {
+        for token in [
+            "-c",
+            "-r",
+            "--continue",
+            "--continue=true",
+            "--resume",
+            "--resume=id",
+            "--session",
+            "--session=id",
+            "--session-id",
+            "--session-id=id",
+            "--fork",
+            "--fork=id",
+            "--no-session",
+            "--no-session=true",
+        ] {
+            assert!(
+                pi_has_explicit_session_control(&[token.to_string()]),
+                "token={token:?}"
+            );
+        }
+        for token in [
+            "-cr",
+            "--Continue",
+            "--session-dir",
+            "--session-dir=custom",
+            "--session-directory",
+            "--forked",
+            "--no-sessions",
+        ] {
+            assert!(
+                !pi_has_explicit_session_control(&[token.to_string()]),
+                "token={token:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn pi_non_conversation_policy_is_case_sensitive_and_position_aware() {
+        for command in ["install", "remove", "uninstall", "update", "list", "config"] {
+            assert!(pi_is_non_conversation_invocation(&[command.to_string()]));
+            assert!(!pi_is_non_conversation_invocation(&[
+                "--print".to_string(),
+                command.to_string(),
+            ]));
+        }
+        for flag in [
+            "--help",
+            "-h",
+            "--version",
+            "-v",
+            "--export",
+            "--export=file.jsonl",
+            "--list-models",
+            "--list-models=json",
+        ] {
+            assert!(pi_is_non_conversation_invocation(&[
+                "--model".to_string(),
+                "x".to_string(),
+                flag.to_string(),
+            ]));
+        }
+        for eligible in ["Install", "--Help", "--print", "-p", "--json", "--rpc"] {
+            assert!(!pi_is_non_conversation_invocation(&[eligible.to_string()]));
+        }
+    }
+
+    #[test]
+    fn inject_pi_resume_handles_direct_tokenized_and_embedded_commands() {
+        let mut direct = vec!["--model".to_string(), "claude-sonnet".to_string()];
+        assert!(inject_pi_resume("pi", &mut direct));
+        assert_eq!(direct, vec!["--continue", "--model", "claude-sonnet"]);
+
+        let mut tokenized = vec![
+            "/C".to_string(),
+            "pi.cmd".to_string(),
+            "--session-dir".to_string(),
+            r"C:\Pi State".to_string(),
+        ];
+        assert!(inject_pi_resume("cmd.exe", &mut tokenized));
+        assert_eq!(
+            tokenized,
+            vec![
+                "/C",
+                "pi.cmd",
+                "--continue",
+                "--session-dir",
+                r"C:\Pi State"
+            ]
+        );
+
+        let original =
+            r#"  "C:\Program Files\Pi\pi.cmd"  --model "x&&y" x^&y > out %VAR%&&echo  done"#;
+        let expected = r#"  "C:\Program Files\Pi\pi.cmd" --continue  --model "x&&y" x^&y > out %VAR%&&echo  done"#;
+        let mut embedded = vec!["/K".to_string(), original.to_string()];
+        assert!(inject_pi_resume("cmd", &mut embedded));
+        assert_eq!(embedded, vec!["/K", expected]);
+        assert!(!inject_pi_resume("cmd", &mut embedded));
+        assert_eq!(embedded, vec!["/K", expected]);
+    }
+
+    #[test]
+    fn inject_pi_resume_honors_every_selector_and_decoded_cmd_spelling() {
+        for selector in [
+            "-c",
+            "-r",
+            "--continue",
+            "--continue=true",
+            "--resume",
+            "--resume=id",
+            "--session",
+            "--session=id",
+            "--session-id",
+            "--session-id=id",
+            "--fork",
+            "--fork=id",
+            "--no-session",
+            "--no-session=true",
+        ] {
+            let mut args = vec![selector.to_string(), "--model".to_string(), "x".to_string()];
+            let original = args.clone();
+            assert!(!inject_pi_resume("pi", &mut args), "selector={selector:?}");
+            assert_eq!(args, original);
+        }
+
+        for text in [r#"pi "--resume" --model x"#, "pi --res^ume --model x"] {
+            let mut args = vec!["/C".to_string(), text.to_string()];
+            let original = args.clone();
+            assert!(!inject_pi_resume("cmd.exe", &mut args), "text={text:?}");
+            assert_eq!(args, original);
+        }
+    }
+
+    #[test]
+    fn inject_pi_resume_distinguishes_session_dir_and_prefix_names() {
+        for initial in [
+            vec!["--session-dir".to_string(), "custom".to_string()],
+            vec!["--session-dir=custom".to_string()],
+            vec!["--session-directory".to_string()],
+        ] {
+            let mut args = initial.clone();
+            assert!(inject_pi_resume("pi", &mut args));
+            assert_eq!(args.first().map(String::as_str), Some("--continue"));
+            assert_eq!(&args[1..], initial.as_slice());
+        }
+
+        let mut explicit = vec!["--session".to_string(), "id".to_string()];
+        let original = explicit.clone();
+        assert!(!inject_pi_resume("pi", &mut explicit));
+        assert_eq!(explicit, original);
+    }
+
+    #[test]
+    fn inject_pi_resume_preserves_non_conversation_invocations() {
+        for command in ["install", "remove", "uninstall", "update", "list", "config"] {
+            let mut args = vec![command.to_string(), "package".to_string()];
+            let original = args.clone();
+            assert!(!inject_pi_resume("pi", &mut args), "command={command:?}");
+            assert_eq!(args, original);
+        }
+        for flag in [
+            "--help",
+            "-h",
+            "--version",
+            "-v",
+            "--export",
+            "--export=file",
+            "--list-models",
+            "--list-models=json",
+        ] {
+            let mut args = vec!["--model".to_string(), "x".to_string(), flag.to_string()];
+            let original = args.clone();
+            assert!(!inject_pi_resume("pi", &mut args), "flag={flag:?}");
+            assert_eq!(args, original);
+        }
+
+        for conversational in ["--print", "-p", "--json", "--rpc", "Install", "--Help"] {
+            let mut args = vec![conversational.to_string()];
+            assert!(inject_pi_resume("pi", &mut args));
+            assert_eq!(args.first().map(String::as_str), Some("--continue"));
+        }
+    }
+
+    #[test]
+    fn inject_pi_resume_inspects_only_the_first_cmd_segment() {
+        let original = "pi --model x&&echo --resume";
+        let expected = "pi --continue --model x&&echo --resume";
+        let mut args = vec!["/C".to_string(), original.to_string()];
+        assert!(inject_pi_resume("cmd.exe", &mut args));
+        assert_eq!(args, vec!["/C", expected]);
+    }
+
+    #[test]
+    fn inject_pi_resume_leaves_malformed_unsupported_and_non_pi_inputs_unchanged() {
+        let cases = [
+            ("cmd.exe", vec!["/C".to_string(), "pi>out".to_string()]),
+            (
+                "cmd.exe",
+                vec!["/C".to_string(), "pi \"unterminated".to_string()],
+            ),
+            (
+                "cmd.exe",
+                vec!["/C".to_string(), "npx".to_string(), "pi".to_string()],
+            ),
+            ("powershell.exe", vec!["pi".to_string()]),
+        ];
+        for (shell, mut args) in cases {
+            let original = args.clone();
+            assert!(!inject_pi_resume(shell, &mut args), "shell={shell:?}");
+            assert_eq!(args, original);
+        }
+    }
+
+    #[test]
+    fn maybe_inject_pi_resume_requires_kind_trusted_spawn_and_known_state() {
+        let spawn = inert_pi_spawn();
+        let base = vec!["--model".to_string(), "claude-sonnet".to_string()];
+
+        let mut eligible = base.clone();
+        assert!(maybe_inject_pi_resume(
+            Some(CodingAgentKind::Pi),
+            Some(&spawn),
+            false,
+            "pi",
+            &mut eligible,
+        ));
+        assert_eq!(eligible, vec!["--continue", "--model", "claude-sonnet"]);
+
+        for (kind, trusted, fresh) in [
+            (Some(CodingAgentKind::Pi), None, false),
+            (Some(CodingAgentKind::Pi), Some(&spawn), true),
+            (Some(CodingAgentKind::Claude), Some(&spawn), false),
+            (None, Some(&spawn), false),
+        ] {
+            let mut args = base.clone();
+            assert!(!maybe_inject_pi_resume(
+                kind, trusted, fresh, "pi", &mut args,
+            ));
+            assert_eq!(args, base);
+        }
+    }
+
+    #[test]
+    fn pi_profile_gate_blocks_auto_self_clear_even_when_setting_requests_it() {
+        let mut settings = AppSettings::default();
+        settings
+            .auto_self_clear_by_agent
+            .insert("dev-rust".to_string(), true);
+        let requested =
+            crate::config::settings::resolve_auto_self_clear(&settings, "dev-rust", false);
+        assert!(requested);
+        assert!(!CodingAgentKind::Pi.profile().auto_self_clear_supported && requested);
+    }
+
+    #[test]
+    fn heuristic_agent_metadata_cannot_authorize_pi_mutation() {
+        let settings = AppSettings {
+            agents: vec![AgentConfig {
+                id: "unrelated-cmd".to_string(),
+                label: "Unrelated cmd recipe".to_string(),
+                command: "cmd".to_string(),
+                color: "#000000".to_string(),
+                envs: Vec::new(),
+                isolated_home: false,
+                instructions_filename: None,
+                config_seed: None,
+                context_regex: None,
+                backend: Default::default(),
+            }],
+            ..AppSettings::default()
+        };
+        let configured_args = vec!["/C".to_string(), "pi".to_string()];
+        let (heuristic_id, _) =
+            resolve_actual_agent("cmd", &configured_args, None, None, &settings);
+        assert_eq!(heuristic_id.as_deref(), Some("unrelated-cmd"));
+
+        let mut args = configured_args;
+        assert!(!maybe_inject_pi_resume(
+            Some(CodingAgentKind::Pi),
+            None,
+            false,
+            "cmd",
+            &mut args,
+        ));
+        assert_eq!(args, vec!["/C", "pi"]);
     }
 
     #[test]

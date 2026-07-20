@@ -109,6 +109,7 @@ pub enum ManagedContextTarget {
     Claude,
     Gemini,
     Codex,
+    Pi,
 }
 
 impl ManagedContextTarget {
@@ -120,6 +121,7 @@ impl ManagedContextTarget {
             Self::Claude => "CLAUDE.md",
             Self::Gemini => "GEMINI.md",
             Self::Codex => "AGENTS.md",
+            Self::Pi => "AGENTS.md",
         }
     }
 }
@@ -5134,6 +5136,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             ManagedContextTarget::Claude,
             ManagedContextTarget::Gemini,
             ManagedContextTarget::Codex,
+            ManagedContextTarget::Pi,
         ] {
             let materialized =
                 materialize_agent_context_file(&path_string(&replica_root), target, false)
@@ -6851,6 +6854,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
 
         for (target, expected_filename) in [
             (ManagedContextTarget::Codex, "AGENTS.md"),
+            (ManagedContextTarget::Pi, "AGENTS.md"),
             (ManagedContextTarget::Claude, "CLAUDE.md"),
             (ManagedContextTarget::Gemini, "GEMINI.md"),
         ] {

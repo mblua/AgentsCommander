@@ -16,7 +16,7 @@ The plain-language description of a workgroup's goal. Lives at `<workgroup>/TASK
 
 ## Coding agent
 
-The CLI process that runs the LLM work: Claude Code, Codex, or Gemini. AC is **not** a coding agent.
+The CLI process that runs the LLM work: Claude Code, Codex, Gemini, or Pi. AC is **not** a coding agent.
 
 ## Config seed
 

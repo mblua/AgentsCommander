@@ -8,11 +8,11 @@ A directory with a role-prompt file at its root: `CLAUDE.md`, `AGENTS.md`, or `G
 
 > **One agent = one directory.** Multiple role prompts inside the same directory tree are forbidden — coding agents read freely from their working directory, so a second role file would leak into the first agent's context.
 
-An agent does not run by itself. It comes alive when you launch a session with a coding agent (Claude Code, Codex, or Gemini) pointed at that directory.
+An agent does not run by itself. It comes alive when you launch a session with a coding agent (Claude Code, Codex, Gemini, or Pi) pointed at that directory.
 
 ## Coding agent
 
-The CLI process that does the actual LLM work: Claude Code, Codex, or Gemini. AgentsCommander is **not** a coding agent. It spawns coding agent processes and lets you watch and coordinate them.
+The CLI process that does the actual LLM work: Claude Code, Codex, Gemini, or Pi. AgentsCommander is **not** a coding agent. It spawns coding-agent processes and lets you watch and coordinate them.
 
 You pick the coding agent **per session**. The same agent directory can be launched with Claude one day and Codex the next.
 
