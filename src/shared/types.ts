@@ -117,7 +117,7 @@ type SessionSelectionData =
  */
 export type SessionSelection = SessionSelectionBase & SessionSelectionData;
 
-export type CodingAgentKind = "claude" | "codex" | "gemini";
+export type CodingAgentKind = "claude" | "codex" | "gemini" | "pi";
 
 export interface SessionContextPayload {
   sessionId: string;
