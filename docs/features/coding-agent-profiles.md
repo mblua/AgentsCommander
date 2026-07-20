@@ -26,12 +26,16 @@ When this page says "profile" with no qualifier, it always means the third one.
 
 ## The profile matrix
 
-The matrix is a grid. Each **row** is a coding agent (`claude`, `codex`, `gemini`, or a custom one). Each **column** is a profile letter. Each **cell** is one launch variant for that coding agent and letter:
+The matrix is a grid. Each **row** is a coding agent (`claude`, `codex`, `gemini`, `pi`, or a custom one). Each **column** is a profile letter. Each **cell** is one launch variant for that coding agent and letter:
 
 | | A | B | C |
 |---|---|---|---|
 | **claude** | (params, env) | (params, env) | (params, env) |
 | **codex** | (params, env) | (params, env) | (params, env) |
+| **gemini** | (params, env) | (params, env) | (params, env) |
+| **pi** | (params, env) | (params, env) | (params, env) |
+
+A `pi` row can add parameters and environment variables to an exact Pi launch. Naming a custom wrapper row `my-pi` does not grant Pi's tuned detection or resume behavior; see [How AC identifies a tuned integration](../integrations/coding-agents.md#how-ac-identifies-a-tuned-integration).
 
 A cell holds four fields:
 

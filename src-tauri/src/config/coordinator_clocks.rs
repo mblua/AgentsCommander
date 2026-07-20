@@ -55,7 +55,7 @@ pub struct ClockEntry {
     /// newest provider transcript for this cwd predates the user's last
     /// fresh-boundary action (restart or AC-driven /clear) and no post-boundary
     /// content exists yet, so the create path must suppress provider resume
-    /// injection (claude --continue / codex resume --last / gemini --resume
+    /// injection (Claude/Pi --continue / Codex resume --last / Gemini --resume
     /// latest). Survives record destruction (idle auto-close, manual close).
     /// Cleared by typed user input and by AC-injected message content; NOT
     /// cleared when honored at create (repeat reopens must stay fresh).
