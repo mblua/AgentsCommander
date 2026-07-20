@@ -1287,9 +1287,10 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
         // (#756) Durable fresh-intent mirror, consumed at the create path: the
         // caller requested resume (#599 reopen passes skipAutoResume=false), but
         // this cwd's coordinator carries a pending fresh boundary (restart or
-        // AC-driven /clear whose record died with an auto/manual close). Force a
-        // fresh spawn BEFORE any provider resume injection below (Claude/Pi
-        // --continue, Codex resume --last, Gemini --resume latest);
+        // successful logical clear (/clear or Pi /new) whose record died with
+        // an auto/manual close). Force a fresh spawn BEFORE any provider resume
+        // injection below (Claude/Pi --continue, Codex resume --last, Gemini
+        // --resume latest);
         // provider-agnostic by construction. The mirror is deliberately NOT cleared
         // here: only post-boundary content (typed input or AC-injected content)
         // drops it, so repeated close/reopen cycles with no content stay fresh.
@@ -1748,21 +1749,11 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                 &cfg,
                 context_target,
             );
-            // #640 resolve under the same guard; no second lock, dropped before I/O.
-            // Class-aware default: ON for coordinator/Root, OFF for specialists,
-            // unless a per-agent override is set. Gated to coding-agent sessions.
-            let class_default_on =
-                is_coordinator || crate::config::root_agent::is_root_agent_dir_name(&cwd);
-            let auto_self_clear = agent_kind
-                .is_some_and(|kind| kind.profile().auto_self_clear_supported)
-                && crate::config::settings::resolve_auto_self_clear(
-                    &cfg,
-                    &crate::config::coding_agent_profiles::agent_name_from_dir(
-                        std::path::Path::new(&cwd),
-                    )
-                    .unwrap_or_default(),
-                    class_default_on,
-                );
+            // Resolve under the same guard; no second lock is held across I/O.
+            // Eligibility is an explicit direct-shell capability, independent of
+            // CodingAgentKind provider tuning.
+            let auto_self_clear =
+                resolve_launch_auto_self_clear(&cfg, &shell, &cwd, is_coordinator);
             (target, managed, auto_self_clear)
         };
 
@@ -2227,6 +2218,41 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
         }
     }
     result
+}
+
+fn resolve_launch_auto_self_clear(
+    settings: &AppSettings,
+    shell: &str,
+    cwd: &str,
+    is_coordinator: bool,
+) -> bool {
+    if !crate::pty::inject::supports_auto_self_maintenance(shell) {
+        return false;
+    }
+    let class_default_on = is_coordinator || crate::config::root_agent::is_root_agent_dir_name(cwd);
+    let agent_name =
+        crate::config::coding_agent_profiles::agent_name_from_dir(std::path::Path::new(cwd))
+            .unwrap_or_default();
+    crate::config::settings::resolve_auto_self_clear(settings, &agent_name, class_default_on)
+}
+
+pub(crate) fn resolve_configured_agent_spawn_for_cwd(
+    settings: &AppSettings,
+    agent_id: &str,
+    cwd: &str,
+    requested_profile: Option<&str>,
+) -> Result<Option<AgentSpawnCommand>, String> {
+    if !settings.agents.iter().any(|agent| agent.id == agent_id) {
+        return Ok(None);
+    }
+    let cwd = crate::path_utils::normalize_windows_verbatim_path(cwd);
+    crate::config::agent_command::resolve_agent_spawn_command(
+        settings,
+        agent_id,
+        Some(std::path::Path::new(&cwd)),
+        requested_profile,
+    )
+    .map(Some)
 }
 
 pub(crate) fn build_configured_agent_spawn_for_cwd(
@@ -4386,9 +4412,9 @@ mod tests {
         injected_claude_config_dir_for_copy, maybe_inject_pi_resume,
         pi_has_explicit_session_control, pi_is_non_conversation_invocation, resolve_actual_agent,
         resolve_agent_command, resolve_agent_from_shell, resolve_claude_projects_dir,
-        resolve_restart_selected_agent_id, resolve_root_agent_command,
-        resume_probe_target_for_config_dir, should_inject_continue, CreateSelectionIntent,
-        ExistingRootAction,
+        resolve_launch_auto_self_clear, resolve_restart_selected_agent_id,
+        resolve_root_agent_command, resume_probe_target_for_config_dir, should_inject_continue,
+        CreateSelectionIntent, ExistingRootAction,
     };
     use crate::config::settings::{AgentConfig, AppSettings, ProfileCellConfig};
     use crate::pty::backend::{PtyBackend, SessionBackendKind};
@@ -4476,30 +4502,124 @@ mod tests {
         }
     }
 
-    fn inert_pi_spawn() -> crate::config::agent_command::AgentSpawnCommand {
-        crate::config::agent_command::AgentSpawnCommand {
-            shell: "pi".to_string(),
-            shell_args: Vec::new(),
-            agent_env: BTreeMap::new(),
-            profile_env: BTreeMap::new(),
-            generated_env: BTreeMap::new(),
-            child_env: Vec::new(),
-            env_remove_keys: Vec::new(),
-            effective_codex_home: None,
-            profile_resolution: crate::config::coding_agent_profiles::ProfileResolution {
-                requested_profile: "A".to_string(),
-                effective_profile: "A".to_string(),
-                fallback_chain: vec!["A".to_string()],
-                fallback_applied: false,
-                cell: crate::config::settings::empty_profile_cell(),
-                warnings: Vec::new(),
-            },
-            profile_content_hash: "0000000000000000".to_string(),
-            trusted_agent_id: "pi".to_string(),
-            trusted_agent_label: "Pi".to_string(),
-            backend: Default::default(),
-            seed: None,
+    #[test]
+    fn resolve_launch_auto_self_clear_uses_capability_and_setting_precedence() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().join("__agent_dev-rust");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let cwd = cwd.to_string_lossy().to_string();
+        let mut settings = AppSettings::default();
+
+        assert!(resolve_launch_auto_self_clear(&settings, "pi", &cwd, true));
+        assert!(!resolve_launch_auto_self_clear(
+            &settings, "pi", &cwd, false
+        ));
+
+        settings
+            .auto_self_clear_by_agent
+            .insert("dev-rust".to_string(), true);
+        assert!(resolve_launch_auto_self_clear(&settings, "pi", &cwd, false));
+        settings
+            .auto_self_clear_by_agent
+            .insert("dev-rust".to_string(), false);
+        assert!(!resolve_launch_auto_self_clear(&settings, "pi", &cwd, true));
+
+        settings.auto_self_clear_by_agent.clear();
+        for shell in ["claude", "codex-wrapper", "gemini.exe"] {
+            assert!(resolve_launch_auto_self_clear(&settings, shell, &cwd, true));
         }
+        for shell in ["agent", "cmd.exe", "pwsh", "pip", "pi-agent"] {
+            assert!(!resolve_launch_auto_self_clear(
+                &settings, shell, &cwd, true
+            ));
+        }
+
+        settings.auto_self_clear_enabled = false;
+        assert!(!resolve_launch_auto_self_clear(&settings, "pi", &cwd, true));
+        assert!(!resolve_launch_auto_self_clear(
+            &settings, "claude", &cwd, true
+        ));
+    }
+
+    #[test]
+    fn configured_pi_materialization_wires_auto_self_clear_to_agents_md() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join(".ac");
+        let matrix = workspace.join("_agent_dev-rust");
+        std::fs::create_dir_all(&matrix).unwrap();
+        let cwd = matrix.to_string_lossy().to_string();
+        let settings = AppSettings {
+            agents: vec![AgentConfig {
+                id: "pi".to_string(),
+                label: "Pi".to_string(),
+                command: "pi".to_string(),
+                color: "#10b981".to_string(),
+                envs: Vec::new(),
+                isolated_home: false,
+                instructions_filename: Some("AGENTS.md".to_string()),
+                config_seed: None,
+                context_regex: None,
+                backend: Default::default(),
+            }],
+            ..AppSettings::default()
+        };
+        let target =
+            crate::config::agent_command::resolve_target_filename(Some("pi"), &settings, None);
+        assert_eq!(target.as_deref(), Some("AGENTS.md"));
+        assert_eq!(
+            crate::config::agent_command::resolve_target_filename(None, &settings, None),
+            None,
+            "an ad hoc Pi launch has no managed target filename"
+        );
+        let managed = crate::config::agent_command::managed_instructions_filenames(&settings);
+        let enabled = resolve_launch_auto_self_clear(&settings, "pi", &cwd, true);
+        assert!(enabled);
+
+        crate::config::session_context::materialize_agent_context_file_with_filename(
+            &cwd,
+            target.as_deref().unwrap(),
+            &managed,
+            true,
+            enabled,
+            None,
+        )
+        .unwrap()
+        .expect("configured Pi context should materialize");
+        let on = std::fs::read_to_string(matrix.join("AGENTS.md")).unwrap();
+        assert_eq!(on.matches("## Self-Maintenance").count(), 1);
+
+        crate::config::session_context::materialize_agent_context_file_with_filename(
+            &cwd,
+            "AGENTS.md",
+            &managed,
+            true,
+            false,
+            None,
+        )
+        .unwrap()
+        .expect("configured Pi context should rematerialize");
+        let off = std::fs::read_to_string(matrix.join("AGENTS.md")).unwrap();
+        assert!(!off.contains("## Self-Maintenance"));
+    }
+
+    fn inert_pi_spawn() -> crate::config::agent_command::AgentSpawnCommand {
+        let settings = AppSettings {
+            agents: vec![AgentConfig {
+                id: "pi".to_string(),
+                label: "Pi".to_string(),
+                command: "pi".to_string(),
+                color: "#10b981".to_string(),
+                envs: Vec::new(),
+                isolated_home: false,
+                instructions_filename: None,
+                config_seed: None,
+                context_regex: None,
+                backend: Default::default(),
+            }],
+            ..AppSettings::default()
+        };
+        crate::config::agent_command::resolve_agent_spawn_command(&settings, "pi", None, None)
+            .expect("Pi test spawn should resolve without filesystem preparation")
     }
 
     fn probe_map() -> ContainerPathMap {
@@ -7052,7 +7172,7 @@ mod tests {
     }
 
     #[test]
-    fn pi_profile_gate_blocks_auto_self_clear_even_when_setting_requests_it() {
+    fn pi_tuned_profile_flag_stays_false_while_direct_shell_capability_is_separate() {
         let mut settings = AppSettings::default();
         settings
             .auto_self_clear_by_agent
@@ -7060,6 +7180,8 @@ mod tests {
         let requested =
             crate::config::settings::resolve_auto_self_clear(&settings, "dev-rust", false);
         assert!(requested);
+        // The tuned profile retains #1069's value. Launch gating uses #1059's
+        // independent exact-stem direct-shell capability instead.
         assert!(!CodingAgentKind::Pi.profile().auto_self_clear_supported && requested);
     }
 

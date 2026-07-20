@@ -24,7 +24,8 @@ pub struct OutboxMessage {
     #[serde(default)]
     pub priority: String,
     pub timestamp: String,
-    /// Remote command to execute on agent's PTY (e.g., "clear", "compact")
+    /// Logical PTY action (`clear` or `compact`); provider text is resolved by
+    /// the mailbox and is not part of the wire value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
     /// Action type for non-message operations (e.g., "close-session")
