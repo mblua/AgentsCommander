@@ -1542,6 +1542,11 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             .await
             .map_err(|error| error.to_string())?;
         session.agent_kind = agent_kind;
+        let trusted_configured_spawn = resolved_spawn.is_some();
+        mgr.set_pending_trusted_configured_spawn(pending_binding, trusted_configured_spawn)
+            .await
+            .map_err(|error| error.to_string())?;
+        session.trusted_configured_spawn = trusted_configured_spawn;
 
         // #930 - resolve the host-credential copy-in plan for container coding agents
         // BEFORE the resume probe and the container env translation, so both consumers
@@ -6900,6 +6905,7 @@ mod tests {
             profile_fallback_applied: false,
             effective_codex_home: None,
             profile_content_hash: loaded_hash,
+            trusted_configured_spawn: false,
             profile_outdated: false,
             telegram_bot_id: None,
             was_detached: false,

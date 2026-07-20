@@ -2151,6 +2151,7 @@ async fn execute_restore_dormant<R: Runtime>(
         effective_codex_home: None,
         resolved_claude_projects_dir: None,
         profile_content_hash: None,
+        trusted_configured_spawn: false,
         telegram_bot_id: persisted.telegram_bot_id,
         was_detached: persisted.was_detached,
         detached_geometry: persisted.detached_geometry,

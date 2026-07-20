@@ -1727,6 +1727,65 @@ struct CorrelatedHostPtyMetadata {
     payload_sha256: String,
 }
 
+fn is_persistent_exited_pty_candidate(session: &SessionInfo) -> bool {
+    matches!(session.status, SessionStatus::Exited(_))
+        && !session
+            .name
+            .starts_with(crate::session::session::TEMP_SESSION_PREFIX)
+}
+
+fn select_persistent_exited_pty_candidate(
+    matching: &[SessionInfo],
+    identity_matches: impl Fn(&SessionInfo) -> bool,
+) -> Option<&SessionInfo> {
+    matching
+        .iter()
+        .filter(|session| is_persistent_exited_pty_candidate(session) && identity_matches(session))
+        .max_by(|left, right| {
+            let left_time = chrono::DateTime::parse_from_rfc3339(&left.created_at).ok();
+            let right_time = chrono::DateTime::parse_from_rfc3339(&right.created_at).ok();
+            left_time
+                .cmp(&right_time)
+                .then_with(|| left.id.cmp(&right.id))
+        })
+}
+
+fn session_has_current_pty_submission_provenance(
+    session: &SessionInfo,
+    settings: &AppSettings,
+) -> bool {
+    let args = session
+        .effective_shell_args
+        .as_deref()
+        .unwrap_or(&session.shell_args);
+    if crate::session::profile::detect_pty_submission_agent(
+        &session.shell,
+        args,
+        session.agent_kind,
+    )
+    .is_some()
+    {
+        return true;
+    }
+    if !session.trusted_configured_spawn {
+        return false;
+    }
+    let Some(agent_id) = session.agent_id.as_deref() else {
+        return false;
+    };
+    let Ok(Some(spawn)) = crate::commands::session::build_configured_agent_spawn_for_cwd(
+        settings,
+        agent_id,
+        &session.working_directory,
+        session.requested_profile.as_deref(),
+    ) else {
+        return false;
+    };
+    session
+        .pty_submission_agent_matches_current_spawn(&spawn)
+        .is_some()
+}
+
 async fn reject_pty_input_before_boundary(
     store: &crate::api::message_store::MessageStore,
     heartbeat: &mut crate::api::message_store::PreparationHeartbeatGuard,
@@ -3633,10 +3692,14 @@ impl MailboxPoller {
             let guard = manager.read().await;
             guard.get_session(session_id).await
         }?;
+        let settings = app.state::<SettingsState>().read().await.clone();
         if matches!(session.status, SessionStatus::Exited(_))
             || !session.waiting_for_input
             || session.backend_kind != expected_backend
-            || session.pty_submission_agent().is_none()
+            || !session_has_current_pty_submission_provenance(
+                &SessionInfo::from(&session),
+                &settings,
+            )
         {
             return None;
         }
@@ -3882,6 +3945,7 @@ impl MailboxPoller {
                 .then_with(|| left.id.cmp(&right.id))
         });
 
+        let pty_profile_settings = app.state::<SettingsState>().read().await.clone();
         let mut eligible = Vec::new();
         let mut saw_supported_busy = false;
         let mut saw_live_unsupported = false;
@@ -3929,7 +3993,7 @@ impl MailboxPoller {
                 saw_live_inconsistent = true;
                 continue;
             }
-            if session.pty_submission_agent().is_none() {
+            if !session_has_current_pty_submission_provenance(session, &pty_profile_settings) {
                 saw_live_unsupported = true;
                 continue;
             }
@@ -4741,26 +4805,15 @@ impl MailboxPoller {
             .map_err(|_| C::UnsupportedProfile)?;
         let local_config: AgentLocalConfig =
             serde_json::from_value(config_value).map_err(|_| C::UnsupportedProfile)?;
-        let exited = matching
-            .iter()
-            .filter(|session| {
-                matches!(session.status, SessionStatus::Exited(_))
-                    && crate::config::teams::verify_pty_input_replica_cwd(Path::new(
-                        &session.working_directory,
-                    ))
-                    .is_ok_and(|identity| {
-                        identity.canonical_fqn == verified_target.canonical_fqn
-                            && identity.authority_fingerprint
-                                == verified_target.authority_fingerprint
-                    })
+        let exited = select_persistent_exited_pty_candidate(matching, |session| {
+            crate::config::teams::verify_pty_input_replica_cwd(Path::new(
+                &session.working_directory,
+            ))
+            .is_ok_and(|identity| {
+                identity.canonical_fqn == verified_target.canonical_fqn
+                    && identity.authority_fingerprint == verified_target.authority_fingerprint
             })
-            .max_by(|left, right| {
-                let left_time = chrono::DateTime::parse_from_rfc3339(&left.created_at).ok();
-                let right_time = chrono::DateTime::parse_from_rfc3339(&right.created_at).ok();
-                left_time
-                    .cmp(&right_time)
-                    .then_with(|| left.id.cmp(&right.id))
-            });
+        });
         let mut candidates = Vec::new();
         if let Some(id) = claimed.requested_agent_id.as_ref() {
             candidates.push(id.clone());
@@ -4792,7 +4845,7 @@ impl MailboxPoller {
             };
             let hint =
                 crate::session::profile::CodingAgentKind::detect(&spawn.shell, &spawn.shell_args);
-            if crate::session::profile::detect_pty_submission_agent(
+            if crate::session::profile::detect_configured_pty_submission_agent(
                 &spawn.shell,
                 &spawn.shell_args,
                 hint,
@@ -4969,7 +5022,7 @@ impl MailboxPoller {
         if created_target.canonical_fqn != verified_target.canonical_fqn
             || created_target.authority_fingerprint != verified_target.authority_fingerprint
             || info.backend_kind != expected_backend
-            || info.pty_submission_agent().is_none()
+            || !session_has_current_pty_submission_provenance(&info, &settings)
             || !route_valid
         {
             return Err(C::InconsistentSession);
@@ -5064,13 +5117,17 @@ impl MailboxPoller {
                 &session.working_directory,
             ))
             .map_err(|_| C::AuthorityChanged)?;
+            let settings = app.state::<SettingsState>().read().await.clone();
             if current_target.canonical_fqn != claimed.target_fqn
                 || current_target.authority_fingerprint != verified_target.authority_fingerprint
                 || !crate::path_identity::same_object(
                     &current_target.replica_identity,
                     &verified_target.replica_identity,
                 )
-                || session.pty_submission_agent().is_none()
+                || !session_has_current_pty_submission_provenance(
+                    &SessionInfo::from(&session),
+                    &settings,
+                )
                 || matches!(session.status, SessionStatus::Exited(_))
             {
                 return Err(C::SessionRace);
@@ -10043,12 +10100,91 @@ mod tests {
             profile_fallback_applied: false,
             effective_codex_home: None,
             profile_content_hash: None,
+            trusted_configured_spawn: false,
             profile_outdated: false,
             telegram_bot_id: None,
             was_detached: false,
             detached_geometry: None,
             start_fresh_on_restore: false,
         }
+    }
+
+    #[test]
+    fn exited_temporary_sessions_are_not_persistent_restart_candidates() {
+        let mut temp = make_session_info(
+            "temp",
+            "[temp] legacy wake",
+            "C:/target",
+            SessionStatus::Exited(0),
+            false,
+        );
+        temp.created_at = "2026-07-20T01:00:00Z".to_string();
+        let mut persistent = make_session_info(
+            "persistent",
+            "member",
+            "C:/target",
+            SessionStatus::Exited(0),
+            false,
+        );
+        persistent.created_at = "2026-07-19T01:00:00Z".to_string();
+        assert!(!is_persistent_exited_pty_candidate(&temp));
+        assert!(is_persistent_exited_pty_candidate(&persistent));
+        assert!(select_persistent_exited_pty_candidate(&[temp.clone()], |_| true).is_none());
+        let rows = vec![persistent, temp];
+        assert_eq!(
+            select_persistent_exited_pty_candidate(&rows, |_| true)
+                .map(|session| session.id.as_str()),
+            Some("persistent"),
+            "a newer exited temp must not hide the older persistent restart candidate"
+        );
+    }
+
+    #[test]
+    fn configured_prefix_wrapper_requires_retained_and_current_spawn_provenance() {
+        let cwd = tempfile::tempdir().unwrap();
+        let mut settings = AppSettings {
+            agents: vec![wake_agent(
+                "codex",
+                "Codex wrapper",
+                "codex-shell.exe --yolo",
+            )],
+            ..Default::default()
+        };
+        let spawn = crate::commands::session::build_configured_agent_spawn_for_cwd(
+            &settings,
+            "codex",
+            &cwd.path().to_string_lossy(),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        let mut session = make_session_info(
+            "wrapper",
+            "member",
+            &cwd.path().to_string_lossy(),
+            SessionStatus::Idle,
+            true,
+        );
+        session.shell = spawn.shell.clone();
+        session.shell_args = spawn.shell_args.clone();
+        session.agent_id = Some(spawn.trusted_agent_id.clone());
+        session.agent_kind = Some(crate::session::profile::CodingAgentKind::Codex);
+        session.profile_content_hash = Some(spawn.profile_content_hash.clone());
+        session.trusted_configured_spawn = true;
+        assert!(session_has_current_pty_submission_provenance(
+            &session, &settings
+        ));
+
+        let mut untrusted = session.clone();
+        untrusted.trusted_configured_spawn = false;
+        assert!(!session_has_current_pty_submission_provenance(
+            &untrusted, &settings
+        ));
+
+        settings.agents[0].command = "codex-other.exe --yolo".to_string();
+        assert!(!session_has_current_pty_submission_provenance(
+            &session, &settings
+        ));
     }
 
     fn path_string(path: &Path) -> String {

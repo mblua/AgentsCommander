@@ -259,6 +259,7 @@ impl SessionManager {
             effective_codex_home: None,
             resolved_claude_projects_dir: None,
             profile_content_hash: None,
+            trusted_configured_spawn: false,
             telegram_bot_id: None,
             was_detached: false,
             detached_geometry: None,
@@ -863,6 +864,17 @@ impl SessionManager {
     ) -> Result<(), AppError> {
         self.update_pending(binding, |session| session.agent_kind = kind)
             .await
+    }
+
+    pub(crate) async fn set_pending_trusted_configured_spawn(
+        &self,
+        binding: PendingCreateBinding,
+        trusted: bool,
+    ) -> Result<(), AppError> {
+        self.update_pending(binding, |session| {
+            session.trusted_configured_spawn = trusted;
+        })
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1692,6 +1704,7 @@ impl SessionManager {
             effective_codex_home: None,
             resolved_claude_projects_dir: None,
             profile_content_hash: None,
+            trusted_configured_spawn: false,
             telegram_bot_id: None,
             was_detached: false,
             detached_geometry: None,

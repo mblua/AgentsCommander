@@ -42,7 +42,7 @@ pub enum PtySubmissionAgent {
 }
 
 impl PtySubmissionAgent {
-    fn from_executable(token: &str) -> Option<Self> {
+    fn from_executable(token: &str, configured_wrapper: bool) -> Option<Self> {
         let trimmed = token.trim().trim_matches('"');
         let basename = trimmed
             .rsplit(['/', '\\'])
@@ -54,11 +54,11 @@ impl PtySubmissionAgent {
             .or_else(|| basename.strip_suffix(".cmd"))
             .or_else(|| basename.strip_suffix(".bat"))
             .unwrap_or(&basename);
-        if stem.starts_with("claude") {
+        if stem == "claude" || (configured_wrapper && stem.starts_with("claude")) {
             Some(Self::Claude)
-        } else if stem.starts_with("codex") {
+        } else if stem == "codex" || (configured_wrapper && stem.starts_with("codex")) {
             Some(Self::Codex)
-        } else if stem.starts_with("gemini") {
+        } else if stem == "gemini" || (configured_wrapper && stem.starts_with("gemini")) {
             Some(Self::Gemini)
         } else if stem == "agent" {
             Some(Self::CursorAgent)
@@ -84,10 +84,11 @@ impl PtySubmissionAgent {
 /// Direct executables and conservative `cmd.exe /C` wrappers are accepted.
 /// Shell evaluators, `cmd /K`, expansion, control operators, and mere agent
 /// mentions in arbitrary arguments are rejected.
-pub fn detect_pty_submission_agent(
+fn detect_pty_submission_agent_with_provenance(
     shell: &str,
     args: &[String],
     hint: Option<CodingAgentKind>,
+    configured_wrapper: bool,
 ) -> Option<PtySubmissionAgent> {
     let shell_name = shell
         .trim()
@@ -135,14 +136,34 @@ pub fn detect_pty_submission_agent(
         if executable.eq_ignore_ascii_case("call") || executable.eq_ignore_ascii_case("start") {
             return None;
         }
-        PtySubmissionAgent::from_executable(executable)?
+        PtySubmissionAgent::from_executable(executable, configured_wrapper)?
     } else {
         // PowerShell, bash, sh, and other evaluators are not accepted merely
         // because an argument names an agent.
-        PtySubmissionAgent::from_executable(shell)?
+        PtySubmissionAgent::from_executable(shell, configured_wrapper)?
     };
 
     detected.agrees_with_hint(hint).then_some(detected)
+}
+
+/// Prove an exact built-in coding-agent executable at executable position.
+/// Prefix wrappers are never accepted without retained configured-spawn proof.
+pub fn detect_pty_submission_agent(
+    shell: &str,
+    args: &[String],
+    hint: Option<CodingAgentKind>,
+) -> Option<PtySubmissionAgent> {
+    detect_pty_submission_agent_with_provenance(shell, args, hint, false)
+}
+
+/// Prove a wrapper that was resolved from the verified configured-spawn path.
+/// Callers must retain that provenance and compare the current spawn recipe.
+pub(crate) fn detect_configured_pty_submission_agent(
+    shell: &str,
+    args: &[String],
+    hint: Option<CodingAgentKind>,
+) -> Option<PtySubmissionAgent> {
+    detect_pty_submission_agent_with_provenance(shell, args, hint, true)
 }
 
 impl CodingAgentKind {
@@ -452,6 +473,27 @@ mod tests {
                 Some(CodingAgentKind::Claude)
             ),
             None
+        );
+    }
+
+    #[test]
+    fn privileged_detector_rejects_unconfigured_prefix_named_plain_shells() {
+        assert_eq!(
+            detect_pty_submission_agent("claudette.exe", &[], Some(CodingAgentKind::Claude),),
+            None
+        );
+        let wrapper_args = ["/C".into(), "codex-shell.exe".into()];
+        assert_eq!(
+            detect_pty_submission_agent("cmd.exe", &wrapper_args, Some(CodingAgentKind::Codex),),
+            None
+        );
+        assert_eq!(
+            detect_configured_pty_submission_agent(
+                "cmd.exe",
+                &wrapper_args,
+                Some(CodingAgentKind::Codex),
+            ),
+            Some(PtySubmissionAgent::Codex)
         );
     }
 
