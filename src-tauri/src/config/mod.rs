@@ -16,6 +16,7 @@ pub mod project_settings;
 pub mod projects;
 pub mod replica_identity;
 pub mod root_agent;
+pub mod seed_manifest;
 pub mod seeded_context_templates;
 pub mod session_context;
 pub mod sessions_persistence;
