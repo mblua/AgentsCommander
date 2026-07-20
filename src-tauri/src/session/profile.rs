@@ -1,5 +1,5 @@
 //! Per-coding-agent profile — the single source of truth for behavior that
-//! varies by coding agent (Claude Code, Codex CLI, Gemini CLI).
+//! varies by coding agent (Claude Code, Codex CLI, Gemini CLI, Pi Coding Agent).
 //!
 //! Before #260 this knowledge was scattered: three `is_claude`/`is_codex`/
 //! `is_gemini` bools on `Session`/`SessionInfo` (#258), a duplicated
@@ -12,6 +12,7 @@
 //! data varies, so a struct beats a `dyn` object (no vtables, no allocation,
 //! usable in `const` context, exhaustive `match` on `CodingAgentKind`).
 
+use std::ops::Range;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -28,21 +29,534 @@ pub enum CodingAgentKind {
     Claude,
     Codex,
     Gemini,
+    Pi,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PiCommandLocation {
+    pub(crate) option_tokens: Vec<String>,
+    pub(crate) insertion: PiInsertionPoint,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PiInsertionPoint {
+    Arg {
+        index: usize,
+    },
+    CmdText {
+        arg_index: usize,
+        executable_range: Range<usize>,
+        segment_range: Range<usize>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PiCommandParseError {
+    MalformedCmdSyntax,
+    UnsupportedPiCommandShape,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DecodedCmdAtom {
+    text: String,
+    has_unescaped_amp_or_pipe: bool,
+    control_chunks: Vec<String>,
+    has_unescaped_control: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PiHeadClass {
+    Exact,
+    Unsupported,
+    Other,
+}
+
+fn executable_leaf(value: &str) -> &str {
+    value.rsplit(['/', '\\']).next().unwrap_or(value)
+}
+
+fn is_exact_pi_executable(value: &str) -> bool {
+    matches!(
+        executable_leaf(value).to_ascii_lowercase().as_str(),
+        "pi" | "pi.exe" | "pi.cmd"
+    )
+}
+
+fn is_reserved_pi_executable(value: &str) -> bool {
+    let leaf = executable_leaf(value).to_ascii_lowercase();
+    leaf.starts_with("pi.") && !matches!(leaf.as_str(), "pi.exe" | "pi.cmd")
+}
+
+fn is_cmd_executable(value: &str) -> bool {
+    matches!(
+        executable_leaf(value).to_ascii_lowercase().as_str(),
+        "cmd" | "cmd.exe"
+    )
+}
+
+fn is_unsupported_wrapper(value: &str) -> bool {
+    matches!(
+        executable_leaf(value).to_ascii_lowercase().as_str(),
+        "call"
+            | "call.exe"
+            | "call.cmd"
+            | "start"
+            | "start.exe"
+            | "start.cmd"
+            | "npx"
+            | "npx.exe"
+            | "npx.cmd"
+    )
+}
+
+fn decode_cmd_atom(raw: &str) -> Result<DecodedCmdAtom, PiCommandParseError> {
+    if raw.chars().any(|ch| matches!(ch, '\0' | '\r' | '\n')) {
+        return Err(PiCommandParseError::MalformedCmdSyntax);
+    }
+
+    let mut text = String::with_capacity(raw.len());
+    let mut current_chunk = String::new();
+    let mut control_chunks = Vec::new();
+    let mut in_quotes = false;
+    let mut has_unescaped_amp_or_pipe = false;
+    let mut has_unescaped_control = false;
+    let mut chars = raw.chars();
+
+    while let Some(ch) = chars.next() {
+        if in_quotes {
+            if ch == '"' {
+                in_quotes = false;
+            } else {
+                text.push(ch);
+                current_chunk.push(ch);
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_quotes = true,
+            '^' => {
+                let Some(escaped) = chars.next() else {
+                    return Err(PiCommandParseError::MalformedCmdSyntax);
+                };
+                text.push(escaped);
+                current_chunk.push(escaped);
+            }
+            '<' | '>' | '(' | ')' | '&' | '|' => {
+                text.push(ch);
+                control_chunks.push(std::mem::take(&mut current_chunk));
+                has_unescaped_control = true;
+                has_unescaped_amp_or_pipe |= matches!(ch, '&' | '|');
+            }
+            _ => {
+                text.push(ch);
+                current_chunk.push(ch);
+            }
+        }
+    }
+
+    if in_quotes {
+        return Err(PiCommandParseError::MalformedCmdSyntax);
+    }
+    control_chunks.push(current_chunk);
+
+    Ok(DecodedCmdAtom {
+        text,
+        has_unescaped_amp_or_pipe,
+        control_chunks,
+        has_unescaped_control,
+    })
+}
+
+fn classify_pi_head(atom: &DecodedCmdAtom) -> PiHeadClass {
+    if is_exact_pi_executable(&atom.text) {
+        return PiHeadClass::Exact;
+    }
+    if is_reserved_pi_executable(&atom.text) {
+        return PiHeadClass::Unsupported;
+    }
+    if atom.has_unescaped_control {
+        if let Some(chunk) = atom.control_chunks.iter().find(|chunk| !chunk.is_empty()) {
+            if is_exact_pi_executable(chunk) || is_reserved_pi_executable(chunk) {
+                return PiHeadClass::Unsupported;
+            }
+        }
+    }
+    PiHeadClass::Other
+}
+
+fn is_group_prefix(atom: &DecodedCmdAtom) -> bool {
+    atom.has_unescaped_control && !atom.text.is_empty() && atom.text.chars().all(|ch| ch == '(')
+}
+
+fn segment_has_unsupported_pi_position(atoms: &[DecodedCmdAtom]) -> bool {
+    let mut index = 0;
+    let mut grouped = false;
+    while atoms.get(index).is_some_and(is_group_prefix) {
+        grouped = true;
+        index += 1;
+    }
+
+    let Some(head) = atoms.get(index) else {
+        return false;
+    };
+    if !matches!(classify_pi_head(head), PiHeadClass::Other) {
+        return grouped || index == 0;
+    }
+    if !is_unsupported_wrapper(&head.text) {
+        return false;
+    }
+
+    index += 1;
+    while atoms.get(index).is_some_and(is_group_prefix) {
+        index += 1;
+    }
+    atoms
+        .get(index)
+        .is_some_and(|atom| !matches!(classify_pi_head(atom), PiHeadClass::Other))
+}
+
+fn is_standalone_cmd_separator(raw: &str) -> bool {
+    matches!(raw, "&&" | "&" | "||" | "|")
+}
+
+fn locate_tokenized_pi_command(
+    command_args: &[String],
+    first_arg_index: usize,
+) -> Result<Option<PiCommandLocation>, PiCommandParseError> {
+    let decoded = command_args
+        .iter()
+        .map(|raw| decode_cmd_atom(raw))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut segments = Vec::new();
+    let mut start = 0;
+    for (index, raw) in command_args.iter().enumerate() {
+        if is_standalone_cmd_separator(raw) {
+            segments.push(start..index);
+            start = index + 1;
+        }
+    }
+    segments.push(start..command_args.len());
+
+    let first = segments.first().cloned().unwrap_or(0..0);
+    let Some(head) = decoded.get(first.start).filter(|_| first.start < first.end) else {
+        if segments
+            .iter()
+            .skip(1)
+            .any(|segment| segment_has_unsupported_pi_position(&decoded[segment.clone()]))
+        {
+            return Err(PiCommandParseError::UnsupportedPiCommandShape);
+        }
+        return Ok(None);
+    };
+
+    match classify_pi_head(head) {
+        PiHeadClass::Exact => {
+            if decoded[first.start + 1..first.end]
+                .iter()
+                .any(|atom| atom.has_unescaped_amp_or_pipe)
+            {
+                return Err(PiCommandParseError::UnsupportedPiCommandShape);
+            }
+            Ok(Some(PiCommandLocation {
+                option_tokens: decoded[first.start + 1..first.end]
+                    .iter()
+                    .map(|atom| atom.text.clone())
+                    .collect(),
+                insertion: PiInsertionPoint::Arg {
+                    index: first_arg_index + 1,
+                },
+            }))
+        }
+        PiHeadClass::Unsupported => Err(PiCommandParseError::UnsupportedPiCommandShape),
+        PiHeadClass::Other => {
+            if segment_has_unsupported_pi_position(&decoded[first.clone()])
+                || segments
+                    .iter()
+                    .skip(1)
+                    .any(|segment| segment_has_unsupported_pi_position(&decoded[segment.clone()]))
+            {
+                Err(PiCommandParseError::UnsupportedPiCommandShape)
+            } else {
+                Ok(None)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CmdTextToken {
+    raw_range: Range<usize>,
+    atom: DecodedCmdAtom,
+}
+
+#[derive(Debug, Clone)]
+struct CmdTextSegment {
+    tokens: Vec<CmdTextToken>,
+    end: usize,
+}
+
+#[derive(Default)]
+struct CmdTextAtomBuilder {
+    raw_start: Option<usize>,
+    text: String,
+    current_chunk: String,
+    control_chunks: Vec<String>,
+    has_unescaped_control: bool,
+}
+
+impl CmdTextAtomBuilder {
+    fn start(&mut self, index: usize) {
+        self.raw_start.get_or_insert(index);
+    }
+
+    fn push_literal(&mut self, ch: char) {
+        self.text.push(ch);
+        self.current_chunk.push(ch);
+    }
+
+    fn push_control(&mut self, ch: char) {
+        self.text.push(ch);
+        self.control_chunks
+            .push(std::mem::take(&mut self.current_chunk));
+        self.has_unescaped_control = true;
+    }
+
+    fn finish(&mut self, end: usize) -> Option<CmdTextToken> {
+        let start = self.raw_start.take()?;
+        self.control_chunks
+            .push(std::mem::take(&mut self.current_chunk));
+        let token = CmdTextToken {
+            raw_range: start..end,
+            atom: DecodedCmdAtom {
+                text: std::mem::take(&mut self.text),
+                has_unescaped_amp_or_pipe: false,
+                control_chunks: std::mem::take(&mut self.control_chunks),
+                has_unescaped_control: std::mem::take(&mut self.has_unescaped_control),
+            },
+        };
+        Some(token)
+    }
+}
+
+fn lex_cmd_text(text: &str) -> Result<Vec<CmdTextSegment>, PiCommandParseError> {
+    if text.chars().any(|ch| matches!(ch, '\0' | '\r' | '\n')) {
+        return Err(PiCommandParseError::MalformedCmdSyntax);
+    }
+
+    let mut segments = Vec::new();
+    let mut tokens = Vec::new();
+    let mut builder = CmdTextAtomBuilder::default();
+    let mut in_quotes = false;
+    let mut chars = text.char_indices().peekable();
+
+    while let Some((index, ch)) = chars.next() {
+        if in_quotes {
+            if ch == '"' {
+                in_quotes = false;
+            } else {
+                builder.push_literal(ch);
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => {
+                builder.start(index);
+                in_quotes = true;
+            }
+            '^' => {
+                builder.start(index);
+                let Some((_, escaped)) = chars.next() else {
+                    return Err(PiCommandParseError::MalformedCmdSyntax);
+                };
+                builder.push_literal(escaped);
+            }
+            ' ' | '\t' => {
+                if let Some(token) = builder.finish(index) {
+                    tokens.push(token);
+                }
+            }
+            '&' | '|' => {
+                if let Some(token) = builder.finish(index) {
+                    tokens.push(token);
+                }
+                segments.push(CmdTextSegment {
+                    tokens: std::mem::take(&mut tokens),
+                    end: index,
+                });
+                if chars.peek().is_some_and(|(_, next)| *next == ch) {
+                    chars.next();
+                }
+            }
+            '<' | '>' | '(' | ')' => {
+                builder.start(index);
+                builder.push_control(ch);
+            }
+            _ => {
+                builder.start(index);
+                builder.push_literal(ch);
+            }
+        }
+    }
+
+    if in_quotes {
+        return Err(PiCommandParseError::MalformedCmdSyntax);
+    }
+    if let Some(token) = builder.finish(text.len()) {
+        tokens.push(token);
+    }
+    segments.push(CmdTextSegment {
+        tokens,
+        end: text.len(),
+    });
+    Ok(segments)
+}
+
+fn text_segment_has_unsupported_pi_position(tokens: &[CmdTextToken]) -> bool {
+    let atoms = tokens
+        .iter()
+        .map(|token| token.atom.clone())
+        .collect::<Vec<_>>();
+    segment_has_unsupported_pi_position(&atoms)
+}
+
+fn locate_embedded_pi_command(
+    text: &str,
+    arg_index: usize,
+) -> Result<Option<PiCommandLocation>, PiCommandParseError> {
+    let segments = lex_cmd_text(text)?;
+    let Some(first_segment) = segments.first() else {
+        return Ok(None);
+    };
+    let Some(head) = first_segment.tokens.first() else {
+        if segments
+            .iter()
+            .skip(1)
+            .any(|segment| text_segment_has_unsupported_pi_position(&segment.tokens))
+        {
+            return Err(PiCommandParseError::UnsupportedPiCommandShape);
+        }
+        return Ok(None);
+    };
+
+    match classify_pi_head(&head.atom) {
+        PiHeadClass::Exact => Ok(Some(PiCommandLocation {
+            option_tokens: first_segment.tokens[1..]
+                .iter()
+                .map(|token| token.atom.text.clone())
+                .collect(),
+            insertion: PiInsertionPoint::CmdText {
+                arg_index,
+                executable_range: head.raw_range.clone(),
+                segment_range: head.raw_range.start..first_segment.end,
+            },
+        })),
+        PiHeadClass::Unsupported => Err(PiCommandParseError::UnsupportedPiCommandShape),
+        PiHeadClass::Other => {
+            if text_segment_has_unsupported_pi_position(&first_segment.tokens)
+                || segments
+                    .iter()
+                    .skip(1)
+                    .any(|segment| text_segment_has_unsupported_pi_position(&segment.tokens))
+            {
+                Err(PiCommandParseError::UnsupportedPiCommandShape)
+            } else {
+                Ok(None)
+            }
+        }
+    }
+}
+
+fn locate_cmd_command_args(
+    command_args: &[String],
+    first_arg_index: usize,
+) -> Result<Option<PiCommandLocation>, PiCommandParseError> {
+    if command_args.is_empty() {
+        return Ok(None);
+    }
+
+    let tokenized = if command_args.len() > 1 {
+        true
+    } else {
+        let atom = decode_cmd_atom(&command_args[0])?;
+        classify_pi_head(&atom) == PiHeadClass::Exact && !atom.has_unescaped_amp_or_pipe
+    };
+
+    if tokenized {
+        locate_tokenized_pi_command(command_args, first_arg_index)
+    } else {
+        locate_embedded_pi_command(&command_args[0], first_arg_index)
+    }
+}
+
+pub(crate) fn locate_pi_command(
+    shell: &str,
+    args: &[String],
+) -> Result<Option<PiCommandLocation>, PiCommandParseError> {
+    if is_exact_pi_executable(shell) {
+        return Ok(Some(PiCommandLocation {
+            option_tokens: args.to_vec(),
+            insertion: PiInsertionPoint::Arg { index: 0 },
+        }));
+    }
+    if is_reserved_pi_executable(shell) {
+        return Err(PiCommandParseError::UnsupportedPiCommandShape);
+    }
+
+    if is_unsupported_wrapper(shell)
+        && args
+            .first()
+            .is_some_and(|arg| is_exact_pi_executable(arg) || is_reserved_pi_executable(arg))
+    {
+        return Err(PiCommandParseError::UnsupportedPiCommandShape);
+    }
+
+    if !is_cmd_executable(shell) {
+        return Ok(None);
+    }
+
+    if args
+        .first()
+        .is_some_and(|arg| arg.eq_ignore_ascii_case("/C") || arg.eq_ignore_ascii_case("/K"))
+    {
+        return locate_cmd_command_args(&args[1..], 1);
+    }
+
+    if let Some(switch_index) = args
+        .iter()
+        .position(|arg| arg.eq_ignore_ascii_case("/C") || arg.eq_ignore_ascii_case("/K"))
+    {
+        let located = locate_cmd_command_args(&args[switch_index + 1..], switch_index + 1)?;
+        if located.is_some() {
+            return Err(PiCommandParseError::UnsupportedPiCommandShape);
+        }
+    }
+
+    Ok(None)
 }
 
 impl CodingAgentKind {
     /// Detect the coding agent from a spawn command (`shell` + `args`).
     ///
-    /// Scans the shell and every whitespace-split arg token, reduces each to
-    /// its executable basename (file stem, lowercased), and matches by
-    /// **prefix** with precedence **Claude > Codex > Gemini**. Prefix match
-    /// (not exact) is deliberate: it catches wrapper executables such as
-    /// `claude-mb`, `codex-foo`, `gemini-bar`.
+    /// First applies Pi's exact command-position parser. A supported Pi head
+    /// wins over provider-looking option values, while malformed or reserved
+    /// unsupported Pi shapes fail closed. Only a genuine non-Pi result reaches
+    /// the legacy whitespace/basename prefix scan with precedence
+    /// **Claude > Codex > Gemini**. That legacy prefix match remains deliberate
+    /// for wrappers such as `claude-mb`, `codex-foo`, and `gemini-bar`.
     ///
     /// THIS IS THE detector. `create_session_inner` (which stamps
     /// `Session::agent_kind`) and `strip_auto_injected_args` both call it, so
     /// the persisted recipe and the runtime identity can never disagree.
     pub fn detect(shell: &str, args: &[String]) -> Option<CodingAgentKind> {
+        match locate_pi_command(shell, args) {
+            Ok(Some(_)) => return Some(CodingAgentKind::Pi),
+            Ok(None) => {}
+            Err(_) => return None,
+        }
+
         // Mirror of `crate::commands::session::executable_basename`
         // (`session.rs:1506`, identical body). Deliberately NOT shared:
         // importing it would invert the dependency direction — the `session`
@@ -82,6 +596,7 @@ impl CodingAgentKind {
             CodingAgentKind::Claude => "claude",
             CodingAgentKind::Codex => "codex",
             CodingAgentKind::Gemini => "gemini",
+            CodingAgentKind::Pi => "pi",
         }
     }
 
@@ -91,6 +606,7 @@ impl CodingAgentKind {
             CodingAgentKind::Claude => CLAUDE_PROFILE,
             CodingAgentKind::Codex => CODEX_PROFILE,
             CodingAgentKind::Gemini => GEMINI_PROFILE,
+            CodingAgentKind::Pi => PI_PROFILE,
         }
     }
 }
@@ -179,21 +695,25 @@ pub struct CodingAgentProfile {
     pub kind: CodingAgentKind,
     /// Idle-detector tuning for sessions running this agent.
     pub idle: IdleTuning,
-    /// Argv tokens AC auto-injects to resume the agent's prior conversation,
-    /// in argv order. The single source of truth for both injection
-    /// (`create_session_inner`) and stripping (`strip_auto_injected_args`):
-    /// - Claude → `["--continue"]` (appended to argv)
-    /// - Codex → `["resume", "--last"]` (prepended as a subcommand)
-    /// - Gemini → `["--resume", "latest"]` (prepended; the joined
-    ///   `--resume=latest` form is handled by the Gemini stripper as a
-    ///   recognised variant)
+    /// Canonical argv tokens AC auto-injects to resume the agent's prior
+    /// conversation, in argv order. Persistence stripping is provider-specific:
+    /// Pi recipes are intentionally preserved because configured and injected
+    /// `--continue` tokens have no persisted provenance.
+    /// - Claude: `["--continue"]` (appended to argv)
+    /// - Codex: `["resume", "--last"]` (prepended as a subcommand)
+    /// - Gemini: `["--resume", "latest"]` (prepended; the joined
+    ///   `--resume=latest` form is handled by the Gemini stripper)
+    /// - Pi: `["--continue"]` (inserted immediately after the executable)
     pub resume_tokens: &'static [&'static str],
     /// #930 - host credential file this agent reuses in a container (None = no
     /// copy-in for this agent).
     pub container_credential: Option<ContainerCredentialSource>,
+    /// Whether generated auto-self-clear instructions are supported for this
+    /// provider. This capability is an absolute outer gate on user settings.
+    pub auto_self_clear_supported: bool,
 }
 
-// All three agents currently use `IdleTuning::DEFAULT` — identical to the
+// All four agents currently use `IdleTuning::DEFAULT`, identical to the
 // pre-#260 hard-coded constants, which GUARANTEES zero behavior change. The
 // per-profile `idle` field exists so a future agent can diverge (e.g. a
 // longer `resize_grace` for a heavier TUI) without re-plumbing the detector.
@@ -219,6 +739,7 @@ const CLAUDE_PROFILE: CodingAgentProfile = CodingAgentProfile {
             project_flags: &["hasTrustDialogAccepted", "hasCompletedProjectOnboarding"],
         }),
     }),
+    auto_self_clear_supported: true,
 };
 const CODEX_PROFILE: CodingAgentProfile = CodingAgentProfile {
     kind: CodingAgentKind::Codex,
@@ -228,6 +749,7 @@ const CODEX_PROFILE: CodingAgentProfile = CodingAgentProfile {
     // Some(ContainerCredentialSource { host_dir: ".codex", host_dir_env: Some("CODEX_HOME"),
     //     file: "auth.json", container_dir: ".codex" })
     container_credential: None,
+    auto_self_clear_supported: true,
 };
 const GEMINI_PROFILE: CodingAgentProfile = CodingAgentProfile {
     kind: CodingAgentKind::Gemini,
@@ -235,6 +757,14 @@ const GEMINI_PROFILE: CodingAgentProfile = CodingAgentProfile {
     resume_tokens: &["--resume", "latest"],
     // #930 - no established container credential-file flow for Gemini.
     container_credential: None,
+    auto_self_clear_supported: true,
+};
+const PI_PROFILE: CodingAgentProfile = CodingAgentProfile {
+    kind: CodingAgentKind::Pi,
+    idle: IdleTuning::DEFAULT,
+    resume_tokens: &["--continue"],
+    container_credential: None,
+    auto_self_clear_supported: false,
 };
 
 /// Idle-detector tuning for a session, given its (optional) agent kind.
@@ -250,13 +780,16 @@ pub fn idle_tuning_for(kind: Option<CodingAgentKind>) -> IdleTuning {
 mod tests {
     use super::*;
 
+    fn strings(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
     #[test]
     fn detect_direct_claude_and_wrapper_basename() {
         assert_eq!(
             CodingAgentKind::detect("claude", &[]),
             Some(CodingAgentKind::Claude)
         );
-        // claude-mb wrapper — prefix match.
         assert_eq!(
             CodingAgentKind::detect("claude-mb", &["--effort".into(), "max".into()]),
             Some(CodingAgentKind::Claude)
@@ -276,58 +809,409 @@ mod tests {
     }
 
     #[test]
-    fn detect_inside_cmd_wrapper_tokenized_and_embedded() {
-        // cmd /C codex ...
+    fn locate_direct_pi_exact_allowlist_and_paths() {
+        for shell in [
+            "pi",
+            "PI",
+            "pi.exe",
+            "Pi.CmD",
+            "/usr/local/bin/pi",
+            r"C:\tools\PI.EXE",
+            r"\\server\share\pi.cmd",
+            r"\\?\C:\Program Files\Pi\pi.exe",
+        ] {
+            let location = locate_pi_command(shell, &strings(&["--model", "claude-sonnet"]))
+                .unwrap()
+                .unwrap_or_else(|| panic!("expected Pi location for {shell:?}"));
+            assert_eq!(
+                location,
+                PiCommandLocation {
+                    option_tokens: strings(&["--model", "claude-sonnet"]),
+                    insertion: PiInsertionPoint::Arg { index: 0 },
+                },
+                "shell={shell:?}"
+            );
+            assert_eq!(
+                CodingAgentKind::detect(shell, &strings(&["--model", "claude-sonnet"])),
+                Some(CodingAgentKind::Pi)
+            );
+        }
+    }
+
+    #[test]
+    fn direct_pi_args_remain_literal_process_arguments() {
+        let args = strings(&["&&", "\"", "dangling^", "line\r\nvalue", "工具"]);
         assert_eq!(
-            CodingAgentKind::detect("cmd.exe", &["/C".into(), "codex".into()]),
-            Some(CodingAgentKind::Codex)
-        );
-        // cmd /K "git pull && gemini --resume latest"  (embedded in one arg)
-        assert_eq!(
-            CodingAgentKind::detect(
-                "cmd.exe",
-                &["/K".into(), "git pull && gemini --resume latest".into()]
-            ),
-            Some(CodingAgentKind::Gemini)
+            locate_pi_command("pi", &args),
+            Ok(Some(PiCommandLocation {
+                option_tokens: args,
+                insertion: PiInsertionPoint::Arg { index: 0 },
+            }))
         );
     }
 
     #[test]
-    fn detect_precedence_claude_wins() {
-        // A compound command mentioning both — Claude takes precedence,
-        // matching create_session_inner's pre-#260 ordering.
+    fn runtime_shell_value_is_not_trimmed_or_unquoted() {
+        for shell in [" pi ", "\"pi\"", r#""C:\tools\pi.cmd""#] {
+            assert!(
+                !matches!(locate_pi_command(shell, &[]), Ok(Some(_))),
+                "shell={shell:?}"
+            );
+            assert_ne!(
+                CodingAgentKind::detect(shell, &[]),
+                Some(CodingAgentKind::Pi)
+            );
+        }
+
+        let normalized = crate::config::agent_command::normalize_legacy_agent_command(
+            r#""C:\Program Files\Pi\pi.cmd" --model claude-sonnet"#,
+        )
+        .unwrap();
+        assert_eq!(normalized.shell, r"C:\Program Files\Pi\pi.cmd");
         assert_eq!(
-            CodingAgentKind::detect("cmd.exe", &["/K".into(), "codex && claude".into()]),
+            CodingAgentKind::detect(&normalized.shell, &normalized.shell_args),
+            Some(CodingAgentKind::Pi)
+        );
+    }
+
+    #[test]
+    fn reserved_pi_extensions_fail_closed() {
+        for shell in ["pi.md", "PI.BAT", r"C:\tools\pi.ps1"] {
+            let args = strings(&["--model", "claude-sonnet"]);
+            assert_eq!(
+                locate_pi_command(shell, &args),
+                Err(PiCommandParseError::UnsupportedPiCommandShape)
+            );
+            assert_eq!(CodingAgentKind::detect(shell, &args), None);
+        }
+    }
+
+    #[test]
+    fn locate_tokenized_cmd_pi_decodes_atoms_and_limits_first_segment() {
+        let args = strings(&[
+            "/C",
+            r#""C:\Program Files\Pi\pi.cmd""#,
+            "--model",
+            "claude-sonnet",
+            "&&",
+            "echo",
+            "done",
+        ]);
+        assert_eq!(
+            locate_pi_command("CMD.EXE", &args),
+            Ok(Some(PiCommandLocation {
+                option_tokens: strings(&["--model", "claude-sonnet"]),
+                insertion: PiInsertionPoint::Arg { index: 2 },
+            }))
+        );
+
+        for head in ["pi", "p^i", "\"pi.cmd\""] {
+            let args = strings(&["/K", head]);
+            assert_eq!(
+                locate_pi_command("cmd", &args),
+                Ok(Some(PiCommandLocation {
+                    option_tokens: Vec::new(),
+                    insertion: PiInsertionPoint::Arg { index: 2 },
+                }))
+            );
+        }
+
+        let escaped = strings(&["/C", "pi", "\"--value&&literal\"", "x^&y", "&&", "echo"]);
+        assert_eq!(
+            locate_pi_command("cmd", &escaped)
+                .unwrap()
+                .unwrap()
+                .option_tokens,
+            strings(&["--value&&literal", "x&y"])
+        );
+    }
+
+    #[test]
+    fn locate_embedded_cmd_pi_reports_exact_utf8_ranges() {
+        let text = " \t\"C:\\工具\\pi.cmd\"  --model claude-sonnet  &&echo done";
+        let args = vec!["/K".to_string(), text.to_string()];
+        let location = locate_pi_command("cmd.exe", &args).unwrap().unwrap();
+        assert_eq!(
+            location.option_tokens,
+            strings(&["--model", "claude-sonnet"])
+        );
+        let PiInsertionPoint::CmdText {
+            arg_index,
+            executable_range,
+            segment_range,
+        } = location.insertion
+        else {
+            panic!("expected embedded insertion");
+        };
+        assert_eq!(arg_index, 1);
+        assert_eq!(&text[executable_range.clone()], "\"C:\\工具\\pi.cmd\"");
+        assert_eq!(segment_range.start, executable_range.start);
+        assert_eq!(segment_range.end, text.find("&&").unwrap());
+        for endpoint in [
+            executable_range.start,
+            executable_range.end,
+            segment_range.start,
+            segment_range.end,
+        ] {
+            assert!(text.is_char_boundary(endpoint));
+        }
+        assert_eq!(&text[segment_range.end..], "&&echo done");
+    }
+
+    #[test]
+    fn embedded_quotes_carets_and_separators_decode_without_rewriting() {
+        let text = r#"pi "--resume&&later" x^&y&&echo --continue"#;
+        let location = locate_pi_command("cmd", &strings(&["/C", text]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(location.option_tokens, strings(&["--resume&&later", "x&y"]));
+        let PiInsertionPoint::CmdText { segment_range, .. } = location.insertion else {
+            panic!("expected embedded insertion");
+        };
+        assert_eq!(&text[segment_range.end..], "&&echo --continue");
+    }
+
+    #[test]
+    fn pi_identity_precedes_legacy_provider_values() {
+        for args in [
+            strings(&["--model", "claude-sonnet"]),
+            strings(&["--model", "codex-model"]),
+            strings(&["--provider", "gemini-pro"]),
+        ] {
+            assert_eq!(
+                CodingAgentKind::detect("pi", &args),
+                Some(CodingAgentKind::Pi)
+            );
+        }
+        assert_eq!(
+            CodingAgentKind::detect(
+                "cmd.exe",
+                &strings(&["/C", "pi", "--model", "claude-sonnet"])
+            ),
+            Some(CodingAgentKind::Pi)
+        );
+        assert_eq!(
+            CodingAgentKind::detect(
+                "cmd.exe",
+                &strings(&["/C", "pi --provider codex --model gemini-pro"])
+            ),
+            Some(CodingAgentKind::Pi)
+        );
+    }
+
+    #[test]
+    fn unsupported_pi_positions_and_syntax_fail_closed() {
+        let cases = [
+            strings(&["/C", "npx", "pi", "--model", "claude-sonnet"]),
+            strings(&["/C", "call", "pi", "--provider", "codex"]),
+            strings(&["/C", "start", "pi", "gemini-pro"]),
+            strings(&["/S", "/C", "pi", "--model", "claude-sonnet"]),
+            strings(&["/C", "echo before&&pi --model claude-sonnet"]),
+            strings(&["/C", "(", "pi", ")", "--provider", "codex"]),
+            strings(&["/C", "(pi) --provider codex"]),
+            strings(&["/C", "pi>out --model claude-sonnet"]),
+            strings(&["/C", "pi.bat --model claude-sonnet"]),
+            strings(&["/C", "echo", "before", "&&", "pi", "gemini-pro"]),
+            strings(&["/C", "pi", "--resume&&echo", "claude-sonnet"]),
+            strings(&["/C", "pi&&echo", "--model", "claude-sonnet"]),
+        ];
+        for args in cases {
+            assert_eq!(
+                locate_pi_command("cmd.exe", &args),
+                Err(PiCommandParseError::UnsupportedPiCommandShape),
+                "args={args:?}"
+            );
+            assert_eq!(CodingAgentKind::detect("cmd.exe", &args), None);
+        }
+
+        let npx_args = strings(&["pi", "--model", "claude-sonnet"]);
+        assert_eq!(
+            locate_pi_command("npx.cmd", &npx_args),
+            Err(PiCommandParseError::UnsupportedPiCommandShape)
+        );
+        assert_eq!(CodingAgentKind::detect("npx.cmd", &npx_args), None);
+    }
+
+    #[test]
+    fn malformed_cmd_syntax_fails_closed_after_full_validation() {
+        let cases = [
+            strings(&["/C", "pi", "\"unterminated", "--model", "claude-sonnet"]),
+            strings(&["/C", "pi", "dangling^", "codex-model"]),
+            strings(&["/C", "echo", "\"unterminated", "claude-sonnet"]),
+            strings(&["/C", "pi \"unterminated --model claude-sonnet"]),
+            strings(&["/C", "pi dangling^"]),
+            vec![
+                "/C".to_string(),
+                "pi".to_string(),
+                "bad\0".to_string(),
+                "claude-sonnet".to_string(),
+            ],
+            vec!["/C".to_string(), "pi\0 --model claude-sonnet".to_string()],
+            vec!["/C".to_string(), "pi\r --provider codex".to_string()],
+            vec!["/C".to_string(), "pi\n gemini-pro".to_string()],
+        ];
+        for args in cases {
+            assert_eq!(
+                locate_pi_command("cmd.exe", &args),
+                Err(PiCommandParseError::MalformedCmdSyntax),
+                "args={args:?}"
+            );
+            assert_eq!(CodingAgentKind::detect("cmd.exe", &args), None);
+        }
+    }
+
+    #[test]
+    fn genuine_non_pi_commands_retain_legacy_detection() {
+        assert_eq!(
+            CodingAgentKind::detect("claude", &strings(&["--model", "pi"])),
+            Some(CodingAgentKind::Claude)
+        );
+        assert_eq!(
+            CodingAgentKind::detect("cmd.exe", &strings(&["/C", "claude", "--model", "pi"])),
+            Some(CodingAgentKind::Claude)
+        );
+        assert_eq!(
+            CodingAgentKind::detect("cmd.exe", &strings(&["/C", "echo", "pi"])),
+            None
+        );
+        for shell in ["my-pi", "pip", "pipx", "ping", "pixel"] {
+            assert_eq!(CodingAgentKind::detect(shell, &[]), None, "shell={shell:?}");
+        }
+        assert_eq!(
+            CodingAgentKind::detect("pip", &strings(&["--model", "claude-sonnet"])),
             Some(CodingAgentKind::Claude)
         );
     }
 
     #[test]
-    fn detect_plain_shell_is_none() {
+    fn embedded_redirection_and_environment_indirection_follow_contract() {
+        let text = "pi  > out &&echo done";
+        let location = locate_pi_command("cmd", &strings(&["/C", text]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(location.option_tokens, strings(&[">", "out"]));
+        assert_eq!(
+            locate_pi_command("cmd", &strings(&["/C", "%PI_EXE% --model claude-sonnet"])),
+            Ok(None)
+        );
+        assert_eq!(
+            locate_pi_command("cmd", &strings(&["/C", "pi>out"])),
+            Err(PiCommandParseError::UnsupportedPiCommandShape)
+        );
+    }
+
+    #[test]
+    fn pi_first_compound_is_supported_and_later_selector_is_not_an_option() {
+        for args in [
+            strings(&["/C", "pi", "--model", "x", "&&", "echo", "--resume"]),
+            strings(&["/C", "pi --model x&&echo --resume"]),
+        ] {
+            let location = locate_pi_command("cmd.exe", &args).unwrap().unwrap();
+            assert_eq!(location.option_tokens, strings(&["--model", "x"]));
+        }
+    }
+
+    #[test]
+    fn legacy_cmd_detection_and_precedence_remain_unchanged_after_ok_none() {
+        assert_eq!(
+            CodingAgentKind::detect("cmd.exe", &strings(&["/C", "codex"])),
+            Some(CodingAgentKind::Codex)
+        );
+        assert_eq!(
+            CodingAgentKind::detect(
+                "cmd.exe",
+                &strings(&["/K", "git pull && gemini --resume latest"])
+            ),
+            Some(CodingAgentKind::Gemini)
+        );
+        assert_eq!(
+            CodingAgentKind::detect("cmd.exe", &strings(&["/K", "codex && claude"])),
+            Some(CodingAgentKind::Claude)
+        );
+    }
+
+    #[test]
+    fn adversarial_cmd_corpus_never_panics_and_ranges_are_valid() {
+        let fragments = [
+            "",
+            " ",
+            "\t",
+            "\"",
+            "^",
+            "^^",
+            "&",
+            "&&",
+            "|",
+            "||",
+            "<",
+            ">",
+            "(",
+            ")",
+            "λ",
+            "工具",
+            "\0",
+            "\r",
+            "\n",
+            "\"quoted\"",
+        ];
+        for left in fragments {
+            for right in fragments {
+                let text = format!("{left}pi{right} --model claude-sonnet&&echo λ");
+                let args = vec!["/C".to_string(), text.clone()];
+                if let Ok(Some(location)) = locate_pi_command("cmd.exe", &args) {
+                    if let PiInsertionPoint::CmdText {
+                        executable_range,
+                        segment_range,
+                        ..
+                    } = location.insertion
+                    {
+                        assert!(executable_range.start <= executable_range.end);
+                        assert!(executable_range.end <= segment_range.end);
+                        assert_eq!(segment_range.start, executable_range.start);
+                        assert!(segment_range.end <= text.len());
+                        for endpoint in [
+                            executable_range.start,
+                            executable_range.end,
+                            segment_range.start,
+                            segment_range.end,
+                        ] {
+                            assert!(text.is_char_boundary(endpoint));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pi_serde_and_profile_contract_are_stable() {
+        assert_eq!(
+            serde_json::to_string(&CodingAgentKind::Pi).unwrap(),
+            "\"pi\""
+        );
+        assert_eq!(CodingAgentKind::Pi.as_str(), "pi");
+        let profile = CodingAgentKind::Pi.profile();
+        assert_eq!(profile.kind, CodingAgentKind::Pi);
+        assert_eq!(profile.idle, IdleTuning::DEFAULT);
+        assert_eq!(profile.resume_tokens, ["--continue"]);
+        assert!(profile.container_credential.is_none());
+        assert!(!profile.auto_self_clear_supported);
+        for kind in [
+            CodingAgentKind::Claude,
+            CodingAgentKind::Codex,
+            CodingAgentKind::Gemini,
+        ] {
+            assert!(kind.profile().auto_self_clear_supported);
+        }
+    }
+
+    #[test]
+    fn detect_plain_shell_and_literal_space_path_are_none() {
         assert_eq!(
             CodingAgentKind::detect("powershell.exe", &["-NoLogo".into()]),
             None
         );
         assert_eq!(CodingAgentKind::detect("cmd.exe", &[]), None);
-    }
-
-    #[test]
-    fn detect_strips_known_exe_extension() {
-        // `file_stem` drops the `.exe` suffix the basename match relies on
-        // (dev-rust R1.5).
-        assert_eq!(
-            CodingAgentKind::detect("claude.exe", &[]),
-            Some(CodingAgentKind::Claude)
-        );
-    }
-
-    #[test]
-    fn detect_space_in_shell_path_treats_shell_as_one_token() {
-        // #260 G3 — `detect` treats `shell` as a SINGLE token; it does NOT
-        // whitespace-split it the way pre-#260 `create_session_inner` split
-        // the joined command string. A space-containing shell path whose real
-        // executable is not an agent therefore resolves to `None` (the more
-        // correct result — the executable here is `runner.exe`).
         assert_eq!(
             CodingAgentKind::detect("C:\\codex tools\\runner.exe", &[]),
             None
@@ -335,37 +1219,25 @@ mod tests {
     }
 
     #[test]
-    fn idle_tuning_for_none_is_default() {
-        assert_eq!(idle_tuning_for(None), IdleTuning::DEFAULT);
+    fn detect_strips_known_legacy_exe_extension() {
+        assert_eq!(
+            CodingAgentKind::detect("claude.exe", &[]),
+            Some(CodingAgentKind::Claude)
+        );
     }
 
     #[test]
-    fn every_profile_seeds_initial_activity() {
-        // The #260 fix must be on for all agents (and the default).
+    fn idle_profiles_keep_existing_defaults() {
+        assert_eq!(idle_tuning_for(None), IdleTuning::DEFAULT);
         for kind in [
             CodingAgentKind::Claude,
             CodingAgentKind::Codex,
             CodingAgentKind::Gemini,
+            CodingAgentKind::Pi,
         ] {
             assert!(kind.profile().idle.seed_initial_activity);
-        }
-        // Routed through the non-const `idle_tuning_for` so this stays a
-        // runtime assertion (a bare `IdleTuning::DEFAULT.…` is const-folded,
-        // which clippy::assertions_on_constants rejects).
-        assert!(idle_tuning_for(None).seed_initial_activity);
-    }
-
-    /// dev-rust R1.5 — locks the §11 "all three profiles == DEFAULT → zero
-    /// idle-tuning regression" guarantee. A future stray per-agent retune
-    /// fails here loudly instead of silently shifting behavior.
-    #[test]
-    fn every_profile_uses_default_idle_tuning() {
-        for kind in [
-            CodingAgentKind::Claude,
-            CodingAgentKind::Codex,
-            CodingAgentKind::Gemini,
-        ] {
             assert_eq!(kind.profile().idle, IdleTuning::DEFAULT);
         }
+        assert!(idle_tuning_for(None).seed_initial_activity);
     }
 }

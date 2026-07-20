@@ -84,7 +84,7 @@ pub struct Session {
     #[serde(default)]
     pub backend_kind: SessionBackendKind,
     /// Effective arg vector actually handed to portable-pty at spawn time,
-    /// including dynamic provider resume injections (`--continue`,
+    /// including dynamic provider resume injections (Claude/Pi `--continue`,
     /// `codex resume --last`, `gemini --resume latest`). `None` until the PTY
     /// is spawned for this session; set once by `create_session_inner` right
     /// before `pty_mgr.spawn`. Runtime-only. NOT persisted to `sessions.toml`
@@ -129,8 +129,9 @@ pub struct Session {
     /// Resolved coding-agent identity, or `None` for a plain shell. Set once
     /// by `create_session_inner` via `CodingAgentKind::detect`. The single
     /// source of truth that replaced the #258 `is_claude`/`is_codex`/
-    /// `is_gemini` triple (#260). Drives idle tuning, resume-arg injection,
-    /// and Telegram reader selection.
+    /// `is_gemini` triple (#260). Drives generic idle/resource diagnostics and
+    /// provider capabilities such as resume injection, context targeting,
+    /// auto-self-clear support, and Telegram reader selection.
     #[serde(default)]
     pub agent_kind: Option<CodingAgentKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

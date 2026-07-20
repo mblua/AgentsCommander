@@ -20,8 +20,8 @@ use crate::telegram::types::{BridgeInfo, TelegramBotConfig};
 ///
 /// - `Ok(Some(kind))` — agent detected and resolver succeeded → caller spawns
 ///   the reader.
-/// - `Ok(None)` — `agent_kind` is `None` (plain shell) → caller falls back to
-///   PTY mode.
+/// - `Ok(None)` - `agent_kind` is `None` (plain shell), or the recognized
+///   provider has no JSONL reader (Pi), so the caller falls back to PTY mode.
 /// - `Err(message)` — agent detected but resolver returned None → caller logs +
 ///   emits `telegram_bridge_error` + early-returns with its contractual success
 ///   value (or `Err` for `telegram_attach`).
@@ -98,7 +98,8 @@ pub(crate) fn derive_reader(
                 ),
             }
         }
-        None => Ok(None), // No agent detected — caller falls back to PTY mode.
+        Some(CodingAgentKind::Pi) => Ok(None),
+        None => Ok(None), // No agent detected - caller falls back to PTY mode.
     }
 }
 
@@ -648,6 +649,25 @@ mod tests {
                 assert_eq!(search_root, Path::new(home).join("sessions"));
             }
             other => panic!("unexpected reader: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn derive_reader_pi_uses_pty_fallback_for_all_backends() {
+        for backend in [
+            SessionBackendKind::LocalProcess,
+            SessionBackendKind::ContainerTransport,
+        ] {
+            let result = derive_reader(
+                "pi",
+                &["--provider".to_string(), "claude".to_string()],
+                r"C:\Users\Test\repo",
+                backend,
+                Some(CodingAgentKind::Pi),
+                None,
+                None,
+            );
+            assert!(result.unwrap().is_none(), "backend={backend:?}");
         }
     }
 

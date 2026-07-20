@@ -952,7 +952,8 @@ fn sessions_save_lock() -> &'static tokio::sync::Mutex<()> {
 }
 
 /// Snapshot current live sessions into the persisted format.
-/// Strips auto-injected resume flags so they are re-evaluated on next restore.
+/// Applies provider-specific persistence cleanup to the configured recipe.
+/// Pi runtime injection never enters this field, so configured Pi args are preserved.
 pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
     let aggregate = mgr.aggregate_snapshot().await;
     let sessions = aggregate
@@ -1012,9 +1013,10 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
 
 /// Strip AC-managed provider args from saved shell arguments.
 /// Current launch-time injections are Claude's `--continue`, Codex's
-/// `resume --last`, and Gemini's `--resume latest`.
-/// These must not be baked into the saved "recipe" because they self-perpetuate
-/// across app restarts (or session restarts) even when the conditions change.
+/// `resume --last`, Gemini's `--resume latest`, and Pi's `--continue`.
+/// The first three are stripped so they cannot self-perpetuate across restarts.
+/// Pi is preserved because this boundary receives the configured recipe, where
+/// a `--continue` token is user-authored and has no injection provenance.
 ///
 /// Handles two injection modes:
 /// - **Direct-exec**: args are separate tokens like `["--continue", ...]` or `["resume", "--last", ...]`
@@ -1106,6 +1108,7 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
     // re-deriving agent identity here. Guarantees this stripper agrees with
     // the `agent_kind` that `create_session_inner` stamped on the session.
     let (is_claude, is_codex, is_gemini) = match CodingAgentKind::detect(shell, args) {
+        Some(CodingAgentKind::Pi) => return args.to_vec(),
         Some(CodingAgentKind::Claude) => (true, false, false),
         Some(CodingAgentKind::Codex) => (false, true, false),
         Some(CodingAgentKind::Gemini) => (false, false, true),
@@ -1888,6 +1891,39 @@ mod tests {
 
         assert_eq!(snapshot.len(), 1);
         assert_eq!(snapshot[0].telegram_bot_id.as_deref(), Some("bot-1"));
+    }
+
+    #[tokio::test]
+    async fn snapshot_pi_persists_configured_args_not_effective_resume() {
+        let mgr = SessionManager::new();
+        let configured = vec!["--model".to_string(), "claude-sonnet".to_string()];
+        let session = mgr
+            .create_session(
+                "pi".to_string(),
+                configured.clone(),
+                "C:\\tmp".to_string(),
+                Some("pi".to_string()),
+                Some("Pi".to_string()),
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create_session should succeed");
+        mgr.set_effective_shell_args(
+            session.id,
+            vec![
+                "--continue".to_string(),
+                "--model".to_string(),
+                "claude-sonnet".to_string(),
+            ],
+        )
+        .await;
+
+        let snapshot = snapshot_sessions(&mgr).await;
+
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].shell_args, configured);
     }
 
     #[tokio::test]
@@ -3361,6 +3397,56 @@ mod tests {
             stripped,
             vec!["/K".to_string(), "git pull && codex -m gpt-5".to_string(),]
         );
+    }
+
+    #[test]
+    fn strip_auto_injected_args_preserves_all_configured_pi_recipes() {
+        let cases = [
+            (
+                "pi",
+                vec![
+                    "--continue".to_string(),
+                    "--model".to_string(),
+                    "claude-sonnet".to_string(),
+                ],
+            ),
+            (
+                "cmd.exe",
+                vec![
+                    "/C".to_string(),
+                    "pi".to_string(),
+                    "--continue".to_string(),
+                    "--model".to_string(),
+                    "codex-model".to_string(),
+                ],
+            ),
+            (
+                "cmd.exe",
+                vec![
+                    "/K".to_string(),
+                    "\"C:\\Program Files\\Pi\\pi.cmd\" --continue --provider gemini".to_string(),
+                ],
+            ),
+        ];
+
+        for (shell, args) in cases {
+            assert_eq!(
+                strip_auto_injected_args(shell, &args),
+                args,
+                "shell={shell:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn strip_auto_injected_args_pi_model_overlap_never_uses_other_stripper() {
+        for args in [
+            vec!["--model".to_string(), "claude-sonnet".to_string()],
+            vec!["--model".to_string(), "codex-model".to_string()],
+            vec!["--provider".to_string(), "gemini-pro".to_string()],
+        ] {
+            assert_eq!(strip_auto_injected_args("pi", &args), args);
+        }
     }
 
     #[test]
