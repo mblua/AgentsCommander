@@ -1320,6 +1320,13 @@ impl MessageStore {
             )?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
+        if candidates.is_empty() && cursor.is_some() {
+            self.maintenance_cursors
+                .lock()
+                .map_err(|_| MessageStoreError::StoreCorrupt)?
+                .runtime_recovery = None;
+            return self.recover_pty_input_runtime(active, now);
+        }
         self.maintenance_cursors
             .lock()
             .map_err(|_| MessageStoreError::StoreCorrupt)?
@@ -1555,6 +1562,13 @@ impl MessageStore {
             })?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
+        if candidates.is_empty() && cursor.is_some() {
+            self.maintenance_cursors
+                .lock()
+                .map_err(|_| MessageStoreError::StoreCorrupt)?
+                .admission_expiry = None;
+            return self.expire_pty_input_for_admission_page(now);
+        }
         self.maintenance_cursors
             .lock()
             .map_err(|_| MessageStoreError::StoreCorrupt)?
@@ -1908,6 +1922,7 @@ impl MessageStore {
         now: DateTime<Utc>,
         limit: usize,
     ) -> Result<Vec<DuePtyInputCandidate>, MessageStoreError> {
+        let query_time = now;
         let now = crate::phone::types::canonical_pty_timestamp(now);
         let cursor = self
             .maintenance_cursors
@@ -1959,6 +1974,13 @@ impl MessageStore {
             )?;
             mapped.collect::<Result<Vec<_>, _>>()?
         };
+        if rows.is_empty() && cursor.is_some() {
+            self.maintenance_cursors
+                .lock()
+                .map_err(|_| MessageStoreError::StoreCorrupt)?
+                .due_container = None;
+            return self.due_container_pty_input_candidates_fair(query_time, limit);
+        }
         self.maintenance_cursors
             .lock()
             .map_err(|_| MessageStoreError::StoreCorrupt)?
@@ -2380,6 +2402,7 @@ impl MessageStore {
         cutoff: DateTime<Utc>,
         limit: usize,
     ) -> Result<usize, MessageStoreError> {
+        let cutoff_time = cutoff;
         let cutoff = crate::phone::types::canonical_pty_timestamp(cutoff);
         let limit = i64::try_from(limit.min(64)).map_err(|_| MessageStoreError::StoreCorrupt)?;
         let cursor = self
@@ -2411,6 +2434,13 @@ impl MessageStore {
                 })?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
+        if candidates.is_empty() && cursor.is_some() {
+            self.maintenance_cursors
+                .lock()
+                .map_err(|_| MessageStoreError::StoreCorrupt)?
+                .compact_before = None;
+            return self.compact_pty_terminal_before(cutoff_time, limit as usize);
+        }
         self.maintenance_cursors
             .lock()
             .map_err(|_| MessageStoreError::StoreCorrupt)?
@@ -2461,6 +2491,7 @@ impl MessageStore {
         now: DateTime<Utc>,
         limit: usize,
     ) -> Result<usize, MessageStoreError> {
+        let maintenance_time = now;
         let normal_cutoff =
             crate::phone::types::canonical_pty_timestamp(now - chrono::Duration::days(7));
         let unclaimed_cutoff =
@@ -2497,6 +2528,13 @@ impl MessageStore {
             )?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
+        if candidates.is_empty() && cursor.is_some() {
+            self.maintenance_cursors
+                .lock()
+                .map_err(|_| MessageStoreError::StoreCorrupt)?
+                .compact_maintenance = None;
+            return self.compact_pty_terminal_maintenance(maintenance_time, limit as usize);
+        }
         self.maintenance_cursors
             .lock()
             .map_err(|_| MessageStoreError::StoreCorrupt)?
@@ -4057,13 +4095,8 @@ mod tests {
         drop(locks);
         assert_eq!(
             store.expire_pty_input_for_admission(now).unwrap(),
-            0,
-            "the exhausted keyset page resets the cursor"
-        );
-        assert_eq!(
-            store.expire_pty_input_for_admission(now).unwrap(),
             64,
-            "released prefix rows are revisited after cursor wrap"
+            "released prefix rows are revisited immediately after cursor wrap"
         );
     }
 
@@ -4116,7 +4149,7 @@ mod tests {
                 .recover_pty_input_runtime(&active, recovery_at)
                 .unwrap(),
             0,
-            "the exhausted keyset page resets the cursor"
+            "active prefix rows remain skipped after the cursor wraps"
         );
         assert_eq!(
             store
@@ -4428,13 +4461,8 @@ mod tests {
         drop(locks);
         assert_eq!(
             store.compact_pty_terminal_before(cutoff, 64).unwrap(),
-            0,
-            "the exhausted keyset page resets the cursor"
-        );
-        assert_eq!(
-            store.compact_pty_terminal_before(cutoff, 64).unwrap(),
             64,
-            "released prefix rows are revisited after cursor wrap"
+            "released prefix rows are revisited immediately after cursor wrap"
         );
     }
 
@@ -4531,14 +4559,8 @@ mod tests {
             store
                 .compact_pty_terminal_maintenance(maintenance_at, 64)
                 .unwrap(),
-            0
-        );
-        assert_eq!(
-            store
-                .compact_pty_terminal_maintenance(maintenance_at, 64)
-                .unwrap(),
             64,
-            "released maintenance prefix rows are revisited after cursor wrap"
+            "released maintenance prefix rows are revisited immediately after cursor wrap"
         );
     }
 
