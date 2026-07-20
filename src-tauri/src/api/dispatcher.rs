@@ -1,13 +1,15 @@
 //! Background dispatcher for DB-backed API sends.
 
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::Future;
 use tauri::Manager;
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use crate::api::message_store::{LeasedMessage, MessageStore};
+use crate::api::message_store::{DuePtyInputCandidate, LeasedMessage, MessageStore};
 use crate::phone::types::OutboxMessage;
 
 #[derive(Debug, Clone)]
@@ -31,6 +33,117 @@ impl Default for DispatcherConfig {
     }
 }
 
+const PTY_WORKER_LIMIT: usize = 8;
+const PTY_WORKER_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+const PTY_CANDIDATE_SCAN_LIMIT: usize = 64;
+
+#[derive(Default)]
+struct PtyWorkerTargets {
+    active: Mutex<HashSet<String>>,
+}
+
+struct PtyWorkerTargetReservation {
+    owner: Arc<PtyWorkerTargets>,
+    target: String,
+}
+
+impl PtyWorkerTargets {
+    fn try_reserve(
+        self: &Arc<Self>,
+        target: &str,
+        limit: usize,
+    ) -> Option<PtyWorkerTargetReservation> {
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if active.len() >= limit || !active.insert(target.to_string()) {
+            return None;
+        }
+        Some(PtyWorkerTargetReservation {
+            owner: Arc::clone(self),
+            target: target.to_string(),
+        })
+    }
+
+    fn contains(&self, target: &str) -> bool {
+        self.active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains(target)
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .len()
+    }
+}
+
+impl Drop for PtyWorkerTargetReservation {
+    fn drop(&mut self) {
+        self.owner
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&self.target);
+    }
+}
+
+fn reap_pty_workers(workers: &mut JoinSet<()>) {
+    while let Some(result) = workers.try_join_next() {
+        if let Err(error) = result {
+            log::warn!("[api-dispatcher] PTY worker failed: {error}");
+        }
+    }
+}
+
+fn spawn_pty_worker<F>(
+    workers: &mut JoinSet<()>,
+    targets: &Arc<PtyWorkerTargets>,
+    shutdown: &CancellationToken,
+    candidate: DuePtyInputCandidate,
+    worker: F,
+) -> bool
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    if workers.len() >= PTY_WORKER_LIMIT {
+        return false;
+    }
+    let Some(reservation) = targets.try_reserve(&candidate.target_fqn, PTY_WORKER_LIMIT) else {
+        return false;
+    };
+    let worker_shutdown = shutdown.clone();
+    workers.spawn(async move {
+        let _reservation = reservation;
+        tokio::select! {
+            biased;
+            _ = worker_shutdown.cancelled() => {}
+            _ = worker => {}
+        }
+    });
+    true
+}
+
+async fn stop_pty_workers(workers: &mut JoinSet<()>, grace: Duration) {
+    let drained = tokio::time::timeout(grace, async {
+        while let Some(result) = workers.join_next().await {
+            if let Err(error) = result {
+                log::warn!("[api-dispatcher] PTY worker failed during shutdown: {error}");
+            }
+        }
+    })
+    .await;
+    if drained.is_err() {
+        let remaining = workers.len();
+        workers.abort_all();
+        log::warn!("[api-dispatcher] {remaining} PTY worker(s) exceeded shutdown grace; aborting");
+    }
+}
+
 pub fn start_dispatcher(
     store: Arc<MessageStore>,
     client_store: Arc<crate::api::auth::ApiClientStore>,
@@ -40,13 +153,17 @@ pub fn start_dispatcher(
 ) -> tauri::async_runtime::JoinHandle<()> {
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(config.poll_interval);
+        let mut pty_workers = JoinSet::new();
+        let pty_targets = Arc::new(PtyWorkerTargets::default());
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => {
                     log::info!("[api-dispatcher] shutdown signal received, stopping");
+                    stop_pty_workers(&mut pty_workers, PTY_WORKER_SHUTDOWN_GRACE).await;
                     break;
                 }
                 _ = interval.tick() => {
+                    reap_pty_workers(&mut pty_workers);
                     // (#885 F-5) Skip DISPATCH (not the reaper) while a purge
                     // holds a lease. Leasing a row we cannot deliver burns an
                     // attempt against max_attempts (5) and can poison the
@@ -79,7 +196,10 @@ pub fn start_dispatcher(
                             log::warn!("[api-dispatcher] dispatch tick failed: {}", e);
                         }
                     }
-                    if let Some(state) = app.try_state::<crate::api::message_store::MessageStoreState>() {
+                    if let Some(managed_state) =
+                        app.try_state::<crate::api::message_store::MessageStoreState>()
+                    {
+                        let state = managed_state.inner().clone();
                         let active = state.active_operations.snapshot();
                         if store
                             .recover_pty_input_runtime_offloaded(active, chrono::Utc::now())
@@ -90,30 +210,51 @@ pub fn start_dispatcher(
                                 "[api-dispatcher] PTY recovery failed code=store_transient"
                             );
                         }
-                        match store
-                            .due_pty_input_ids_offloaded(
-                                crate::phone::types::PtyInputSourcePlane::ContainerApi,
-                                chrono::Utc::now(),
-                                1,
-                            )
-                            .await
-                        {
-                            Ok(ids) => {
-                                for injection_id in ids {
-                                    crate::phone::mailbox::MailboxPoller::new()
-                                        .dispatch_pty_input_operation(
-                                            &app,
-                                            &state,
-                                            &injection_id,
-                                            crate::phone::types::PtyInputSourcePlane::ContainerApi,
-                                            Some(&client_store),
-                                        )
-                                        .await;
+                        let restoring = app
+                            .try_state::<Arc<crate::RestoreInProgress>>()
+                            .is_some_and(|flag| {
+                                flag.0.load(std::sync::atomic::Ordering::SeqCst)
+                            });
+                        if !purging && !restoring && pty_workers.len() < PTY_WORKER_LIMIT {
+                            match store
+                                .due_container_pty_input_candidates_fair_offloaded(
+                                    chrono::Utc::now(),
+                                    PTY_CANDIDATE_SCAN_LIMIT,
+                                )
+                                .await
+                            {
+                                Ok(candidates) => {
+                                    if let Some(candidate) = candidates
+                                        .into_iter()
+                                        .find(|candidate| !pty_targets.contains(&candidate.target_fqn))
+                                    {
+                                        let worker_app = app.clone();
+                                        let worker_state = state.clone();
+                                        let worker_client_store = Arc::clone(&client_store);
+                                        let injection_id = candidate.injection_id.clone();
+                                        spawn_pty_worker(
+                                            &mut pty_workers,
+                                            &pty_targets,
+                                            &shutdown,
+                                            candidate,
+                                            async move {
+                                                crate::phone::mailbox::MailboxPoller::new()
+                                                    .dispatch_pty_input_operation(
+                                                        &worker_app,
+                                                        &worker_state,
+                                                        &injection_id,
+                                                        crate::phone::types::PtyInputSourcePlane::ContainerApi,
+                                                        Some(&worker_client_store),
+                                                    )
+                                                    .await;
+                                            },
+                                        );
+                                    }
                                 }
+                                Err(_) => log::warn!(
+                                    "[api-dispatcher] PTY input tick failed code=store_transient"
+                                ),
                             }
-                            Err(_) => log::warn!(
-                                "[api-dispatcher] PTY input tick failed code=store_transient"
-                            ),
                         }
                     }
                     let cutoff = chrono::Utc::now() - config.retention;
@@ -324,5 +465,88 @@ mod tests {
             )
             .unwrap();
         assert!(leased.is_empty(), "poisoned rows must not lease again");
+    }
+
+    #[tokio::test]
+    async fn blocked_pty_worker_does_not_block_ordinary_or_different_target_progress() {
+        let store = store();
+        enqueue(&store, "ordinary-op", "ordinary body");
+        let shutdown = CancellationToken::new();
+        let targets = Arc::new(PtyWorkerTargets::default());
+        let mut workers = JoinSet::new();
+        let (blocked_started_tx, blocked_started_rx) = tokio::sync::oneshot::channel();
+
+        assert!(spawn_pty_worker(
+            &mut workers,
+            &targets,
+            &shutdown,
+            DuePtyInputCandidate {
+                injection_id: "blocked-operation".to_string(),
+                target_fqn: "proj:wg-1-team/blocked".to_string(),
+            },
+            async move {
+                blocked_started_tx.send(()).unwrap();
+                std::future::pending::<()>().await;
+            },
+        ));
+        blocked_started_rx.await.unwrap();
+        assert_eq!(targets.len(), 1);
+        assert!(
+            !spawn_pty_worker(
+                &mut workers,
+                &targets,
+                &shutdown,
+                DuePtyInputCandidate {
+                    injection_id: "same-target-operation".to_string(),
+                    target_fqn: "proj:wg-1-team/blocked".to_string(),
+                },
+                async {},
+            ),
+            "only one lifecycle worker may wait on a logical target"
+        );
+
+        let processed = tokio::time::timeout(
+            Duration::from_secs(1),
+            dispatch_due_with(
+                &store,
+                chrono::Utc::now(),
+                &DispatcherConfig::default(),
+                |message| async move {
+                    assert_eq!(message.body, "ordinary body");
+                    Ok(())
+                },
+            ),
+        )
+        .await
+        .expect("ordinary dispatch must not wait for PTY lifecycle")
+        .unwrap();
+        assert_eq!(processed, 1);
+
+        let (different_done_tx, different_done_rx) = tokio::sync::oneshot::channel();
+        assert!(spawn_pty_worker(
+            &mut workers,
+            &targets,
+            &shutdown,
+            DuePtyInputCandidate {
+                injection_id: "different-target-operation".to_string(),
+                target_fqn: "proj:wg-1-team/different".to_string(),
+            },
+            async move {
+                different_done_tx.send(()).unwrap();
+            },
+        ));
+        tokio::time::timeout(Duration::from_secs(1), different_done_rx)
+            .await
+            .expect("a different target must progress while the first is blocked")
+            .unwrap();
+
+        shutdown.cancel();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            stop_pty_workers(&mut workers, Duration::from_millis(100)),
+        )
+        .await
+        .expect("dispatcher shutdown must be bounded");
+        assert_eq!(targets.len(), 0);
     }
 }

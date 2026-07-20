@@ -3799,7 +3799,30 @@ impl MailboxPoller {
             Ok(Some(lock)) => lock,
             _ => return,
         };
-        let target_guard = state.target_locks.acquire(&target).await;
+        let target_wait = initial
+            .expires_at
+            .as_deref()
+            .and_then(|value| crate::phone::types::parse_canonical_pty_timestamp(value).ok())
+            .and_then(|expires| {
+                expires
+                    .signed_duration_since(chrono::Utc::now())
+                    .to_std()
+                    .ok()
+            });
+        let Some(target_wait) = target_wait else {
+            return;
+        };
+        let target_guard =
+            match tokio::time::timeout(target_wait, state.target_locks.acquire(&target)).await {
+                Ok(guard) => guard,
+                Err(_) => {
+                    log::debug!(
+                        "[pty-input] target ownership wait expired id={} code=expired",
+                        injection_id
+                    );
+                    return;
+                }
+            };
         let target_ownership = match store.target_ownership(&target, &target_stripe, &target_guard)
         {
             Ok(ownership) => ownership,
@@ -9657,11 +9680,22 @@ mod tests {
     #[derive(Default)]
     struct MailboxMockPtyBackend {
         live: std::sync::Mutex<HashSet<Uuid>>,
+        writes: std::sync::Mutex<Vec<(Uuid, Vec<u8>)>>,
     }
 
     impl MailboxMockPtyBackend {
         fn set_live(&self, id: Uuid) {
             self.live.lock().unwrap().insert(id);
+        }
+
+        fn writes_for(&self, id: Uuid) -> Vec<Vec<u8>> {
+            self.writes
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(session_id, _)| *session_id == id)
+                .map(|(_, bytes)| bytes.clone())
+                .collect()
         }
     }
 
@@ -9680,7 +9714,8 @@ mod tests {
             })
         }
 
-        fn write(&self, _id: Uuid, _data: &[u8]) -> Result<(), crate::errors::AppError> {
+        fn write(&self, id: Uuid, data: &[u8]) -> Result<(), crate::errors::AppError> {
+            self.writes.lock().unwrap().push((id, data.to_vec()));
             Ok(())
         }
 
@@ -10440,6 +10475,217 @@ mod tests {
                 .await;
         }
         session.id
+    }
+
+    async fn seed_shared_pty_engine_sessions(
+        fixture: &MailboxFixture,
+        target_status: SessionStatus,
+    ) -> (crate::config::teams::VerifiedPtyInputRoute, Uuid, Uuid) {
+        use crate::pty::backend::SessionBackendKind;
+
+        let app = fixture.app.handle().clone();
+        let sender_id = add_mailbox_session(
+            &app,
+            &fixture.sender_cwd,
+            "coordinator",
+            SessionStatus::Running,
+            None,
+        )
+        .await;
+        let target_id = add_mailbox_session(
+            &app,
+            &fixture.target_cwd,
+            "member",
+            target_status.clone(),
+            None,
+        )
+        .await;
+        let route = crate::config::teams::verify_pty_input_route(
+            &fixture.sender_cwd,
+            false,
+            CANONICAL_WAKE_TO,
+            &[fixture._temp.path().to_string_lossy().to_string()],
+        )
+        .unwrap();
+        let sender_cwd = crate::path_identity::verify_directory(&fixture.sender_cwd).unwrap();
+        let target_cwd = crate::path_identity::verify_directory(&fixture.target_cwd).unwrap();
+        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        {
+            let manager = pty.lock().unwrap();
+            manager
+                .record_route_with_identities(
+                    sender_id,
+                    SessionBackendKind::LocalProcess,
+                    Some(sender_cwd),
+                    Some(route.sender.replica_identity.clone()),
+                )
+                .unwrap();
+            manager
+                .record_route_with_identities(
+                    target_id,
+                    SessionBackendKind::LocalProcess,
+                    Some(target_cwd),
+                    Some(route.target.replica_identity.clone()),
+                )
+                .unwrap();
+            let backend = manager.backend_for_kind(SessionBackendKind::LocalProcess);
+            let mock = backend
+                .as_any()
+                .downcast_ref::<MailboxMockPtyBackend>()
+                .unwrap();
+            mock.set_live(sender_id);
+            mock.set_live(target_id);
+        }
+        if matches!(target_status, SessionStatus::Idle) {
+            let idle = app
+                .state::<Arc<crate::pty::idle_detector::IdleDetector>>()
+                .inner()
+                .clone();
+            idle.register_session(target_id, crate::session::profile::IdleTuning::DEFAULT);
+            idle.set_pty_input_ready_for_test(target_id);
+        }
+        (route, sender_id, target_id)
+    }
+
+    fn enqueue_shared_pty_engine_operation(
+        store: &crate::api::message_store::MessageStore,
+        route: &crate::config::teams::VerifiedPtyInputRoute,
+        sender_id: Uuid,
+        text: &[u8],
+    ) -> String {
+        let injection_id = Uuid::new_v4().to_string();
+        let now = chrono::Utc::now();
+        store
+            .enqueue_pty_input(crate::api::message_store::PtyInputEnqueueRequest {
+                injection_id: injection_id.clone(),
+                sender_fqn: route.sender.canonical_fqn.clone(),
+                target_fqn: route.target.canonical_fqn.clone(),
+                op_id: injection_id.clone(),
+                nonce_sha256: crate::phone::types::sha256_hex(
+                    Uuid::new_v4().to_string().as_bytes(),
+                ),
+                request_fingerprint: crate::phone::types::sha256_hex(
+                    format!("shared-engine:{injection_id}").as_bytes(),
+                ),
+                confirmation_tag: Some("d".repeat(64)),
+                requested_agent_id: None,
+                payload: text.to_vec(),
+                source_plane: crate::phone::types::PtyInputSourcePlane::HostCli,
+                sender_incarnation_fingerprint: route.sender.incarnation_fingerprint.clone(),
+                sender_identity_fingerprint: route.sender.authority_fingerprint.clone(),
+                target_identity_fingerprint: route.target.authority_fingerprint.clone(),
+                authority_session_id: sender_id.to_string(),
+                authority_client_id: None,
+                authority_client_generation: None,
+                issued_at: crate::phone::types::canonical_pty_timestamp(now),
+                expires_at: crate::phone::types::canonical_pty_timestamp(
+                    now + chrono::Duration::minutes(10),
+                ),
+            })
+            .unwrap();
+        injection_id
+    }
+
+    fn shared_engine_writes(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        session_id: Uuid,
+    ) -> Vec<Vec<u8>> {
+        let manager = app.state::<Arc<Mutex<PtyManager>>>();
+        let manager = manager.lock().unwrap();
+        manager
+            .backend_for_kind(crate::pty::backend::SessionBackendKind::LocalProcess)
+            .as_any()
+            .downcast_ref::<MailboxMockPtyBackend>()
+            .unwrap()
+            .writes_for(session_id)
+    }
+
+    #[tokio::test]
+    async fn shared_pty_engine_injects_exact_text_and_enters_for_verified_idle_target() {
+        let fixture = make_mailbox_fixture();
+        let app = fixture.app.handle().clone();
+        let (route, sender_id, target_id) =
+            seed_shared_pty_engine_sessions(&fixture, SessionStatus::Idle).await;
+        let store = Arc::new(
+            crate::api::message_store::MessageStore::open(
+                fixture._temp.path().join("shared-engine-positive.sqlite3"),
+            )
+            .unwrap(),
+        );
+        let state = crate::api::message_store::MessageStoreState::ready(Arc::clone(&store));
+        let injection_id =
+            enqueue_shared_pty_engine_operation(&store, &route, sender_id, b"exact shared input");
+
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            MailboxPoller::new().dispatch_pty_input_operation(
+                &app,
+                &state,
+                &injection_id,
+                crate::phone::types::PtyInputSourcePlane::HostCli,
+                None,
+            ),
+        )
+        .await
+        .expect("shared engine must finish");
+
+        let result = store
+            .query_pty_input_by_injection(&injection_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            result.status,
+            crate::phone::types::PtyInputPublicStatus::Injected
+        );
+        assert_eq!(
+            shared_engine_writes(&app, target_id),
+            vec![
+                b"exact shared input".to_vec(),
+                b"\r".to_vec(),
+                b"\r".to_vec()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn shared_pty_engine_rejects_busy_target_without_any_write() {
+        let fixture = make_mailbox_fixture();
+        let app = fixture.app.handle().clone();
+        let (route, sender_id, target_id) =
+            seed_shared_pty_engine_sessions(&fixture, SessionStatus::Running).await;
+        let store = Arc::new(
+            crate::api::message_store::MessageStore::open(
+                fixture._temp.path().join("shared-engine-busy.sqlite3"),
+            )
+            .unwrap(),
+        );
+        let state = crate::api::message_store::MessageStoreState::ready(Arc::clone(&store));
+        let injection_id =
+            enqueue_shared_pty_engine_operation(&store, &route, sender_id, b"must not write");
+
+        MailboxPoller::new()
+            .dispatch_pty_input_operation(
+                &app,
+                &state,
+                &injection_id,
+                crate::phone::types::PtyInputSourcePlane::HostCli,
+                None,
+            )
+            .await;
+
+        let result = store
+            .query_pty_input_by_injection(&injection_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            result.status,
+            crate::phone::types::PtyInputPublicStatus::Rejected
+        );
+        assert_eq!(
+            result.reason.map(|reason| reason.code),
+            Some(crate::phone::types::PtyInputReasonCode::Busy)
+        );
+        assert!(shared_engine_writes(&app, target_id).is_empty());
     }
 
     #[tokio::test]

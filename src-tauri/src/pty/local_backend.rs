@@ -626,6 +626,36 @@ pub struct LocalProcessBackend {
     git_watcher: Arc<GitWatcher>,
 }
 
+fn write_to_local_pty(
+    ptys: &Mutex<HashMap<Uuid, PtyInstance>>,
+    id: Uuid,
+    data: &[u8],
+) -> Result<(), AppError> {
+    let writer = {
+        let ptys = ptys.lock().unwrap_or_else(|error| error.into_inner());
+        let instance = ptys
+            .get(&id)
+            .ok_or_else(|| AppError::SessionNotFound(id.to_string()))?;
+        Arc::clone(&instance.writer)
+    };
+
+    // The global PTY map is released before a potentially blocking pipe
+    // write. Teardown can remove and terminate the child to unblock it.
+    let mut writer = writer.lock().unwrap_or_else(|error| error.into_inner());
+    writer
+        .write_all(data)
+        .map_err(|error| AppError::PtyError(error.to_string()))?;
+    writer
+        .flush()
+        .map_err(|error| AppError::PtyError(error.to_string()))
+}
+
+fn remove_local_pty(ptys: &Mutex<HashMap<Uuid, PtyInstance>>, id: Uuid) -> Option<PtyInstance> {
+    ptys.lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .remove(&id)
+}
+
 impl Clone for LocalProcessBackend {
     fn clone(&self) -> Self {
         Self {
@@ -1194,25 +1224,7 @@ impl PtyBackend for LocalProcessBackend {
     fn write(&self, id: Uuid, data: &[u8]) -> Result<(), AppError> {
         // #942 - poison-tolerant: a panic anywhere under this guard (portable-pty unwraps
         // inside its own child polling) must not brick every terminal write that follows.
-        let writer = {
-            let ptys = self.ptys.lock().unwrap_or_else(|e| e.into_inner());
-            let instance = ptys
-                .get(&id)
-                .ok_or_else(|| AppError::SessionNotFound(id.to_string()))?;
-            Arc::clone(&instance.writer)
-        };
-
-        // The global PTY map is released before a potentially blocking pipe
-        // write. Teardown can remove and terminate the child to unblock it.
-        let mut writer = writer.lock().unwrap_or_else(|e| e.into_inner());
-        writer
-            .write_all(data)
-            .map_err(|e| AppError::PtyError(e.to_string()))?;
-        writer
-            .flush()
-            .map_err(|e| AppError::PtyError(e.to_string()))?;
-
-        Ok(())
+        write_to_local_pty(&self.ptys, id, data)
     }
 
     fn has_session(&self, id: Uuid) -> bool {
@@ -1267,10 +1279,7 @@ impl PtyBackend for LocalProcessBackend {
         let record =
             spawn_diagnostics::mark_ac_stop(id, "session-kill", Some(child_at_stop.clone()));
 
-        let instance = {
-            let mut ptys = self.ptys.lock().unwrap_or_else(|e| e.into_inner());
-            ptys.remove(&id)
-        };
+        let instance = remove_local_pty(&self.ptys, id);
 
         if let Some(mut instance) = instance {
             if let Some(job) = instance.job.take() {
@@ -2107,5 +2116,112 @@ mod context_gate_tests {
             ),
             "the child is alive, so nothing here may claim the session is over"
         );
+    }
+}
+
+#[cfg(all(test, windows))]
+mod blocked_writer_teardown_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    fn ptys_with_nonreading_child() -> (Arc<Mutex<HashMap<Uuid, PtyInstance>>>, Uuid) {
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 30,
+                cols: 120,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("open real ConPTY");
+        let mut command = CommandBuilder::new("powershell.exe");
+        command.arg("-NoProfile");
+        command.arg("-NonInteractive");
+        command.arg("-Command");
+        command.arg("Start-Sleep -Seconds 30");
+        let child = pair
+            .slave
+            .spawn_command(command)
+            .expect("spawn non-reading child");
+        drop(pair.slave);
+        let writer = pair.master.take_writer().expect("take ConPTY writer");
+        let id = Uuid::new_v4();
+        let ptys = Arc::new(Mutex::new(HashMap::from([(
+            id,
+            PtyInstance {
+                master: Arc::new(Mutex::new(pair.master)),
+                writer: Arc::new(Mutex::new(writer)),
+                child: Some(child),
+                job: None,
+                size: Mutex::new((120, 30)),
+                startup_gate: Mutex::new(StartupGate::Holding(None)),
+                rendered: Arc::new(AtomicBool::new(false)),
+            },
+        )])));
+        (ptys, id)
+    }
+
+    #[test]
+    fn real_blocked_conpty_writer_is_unblocked_by_session_teardown() {
+        let (ptys, id) = ptys_with_nonreading_child();
+        let started = Arc::new(AtomicUsize::new(0));
+        let completed = Arc::new(AtomicUsize::new(0));
+        let (done_tx, done_rx) = mpsc::channel();
+        let writer_ptys = Arc::clone(&ptys);
+        let writer_started = Arc::clone(&started);
+        let writer_completed = Arc::clone(&completed);
+        let writer = std::thread::spawn(move || {
+            let chunk = vec![b'x'; crate::pty::backend::PTY_INPUT_MAX_BYTES];
+            let outcome = (0..4096).try_for_each(|_| {
+                writer_started.fetch_add(1, Ordering::SeqCst);
+                write_to_local_pty(&writer_ptys, id, &chunk).map_err(|error| error.to_string())?;
+                writer_completed.fetch_add(1, Ordering::SeqCst);
+                Ok::<(), String>(())
+            });
+            done_tx.send(outcome).expect("publish writer completion");
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut observed_block = false;
+        while Instant::now() < deadline {
+            let before = (
+                started.load(Ordering::SeqCst),
+                completed.load(Ordering::SeqCst),
+            );
+            if before.0 > before.1 {
+                std::thread::sleep(Duration::from_millis(250));
+                let after = (
+                    started.load(Ordering::SeqCst),
+                    completed.load(Ordering::SeqCst),
+                );
+                if after == before {
+                    observed_block = true;
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            observed_block,
+            "the real ConPTY child must leave a writer blocked before teardown"
+        );
+
+        let kill_started = Instant::now();
+        let mut instance = remove_local_pty(&ptys, id).expect("remove blocked PTY instance");
+        if let Some(mut child) = instance.child.take() {
+            child.kill().expect("terminate non-reading child");
+        }
+        drop(instance);
+        assert!(
+            kill_started.elapsed() < Duration::from_secs(2),
+            "teardown must not wait on the blocked writer mutex"
+        );
+        let outcome = done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("child teardown must unblock the real ConPTY write");
+        assert!(outcome.is_err(), "the broken PTY write must report failure");
+        writer.join().expect("join blocked writer thread");
+        assert!(!ptys.lock().unwrap().contains_key(&id));
     }
 }

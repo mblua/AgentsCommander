@@ -1201,6 +1201,36 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn dispatch_and_final_binding_reads_preserve_registry_contention() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(REGISTRY_FILENAME);
+        let lock = open_registry_lock(dir.path()).unwrap();
+        lock.lock().unwrap();
+        let store = std::sync::Arc::new(ApiClientStore::new(path));
+        let waiting = {
+            let store = std::sync::Arc::clone(&store);
+            tokio::spawn(async move {
+                store
+                    .load_active_binding_fresh_offloaded(
+                        "container-client".to_string(),
+                        uuid::Uuid::new_v4().to_string(),
+                    )
+                    .await
+            })
+        };
+
+        tokio::time::timeout(Duration::from_millis(100), async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        })
+        .await
+        .expect("binding lookup must not block the async executor");
+        assert!(matches!(
+            waiting.await.unwrap(),
+            Err(FreshRegistryError::Contended)
+        ));
+    }
+
     #[test]
     fn privileged_registry_contention_is_retry_class_not_stale() {
         let dir = tempfile::TempDir::new().unwrap();

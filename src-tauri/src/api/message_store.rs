@@ -66,8 +66,18 @@ pub enum MessageStoreError {
 pub struct MessageStore {
     path: PathBuf,
     conn: Arc<Mutex<rusqlite::Connection>>,
+    maintenance_cursors: Arc<Mutex<PtyInputMaintenanceCursors>>,
     #[cfg(test)]
     test_faults: Arc<Mutex<PtyInputStoreTestFaults>>,
+}
+
+#[derive(Default)]
+struct PtyInputMaintenanceCursors {
+    runtime_recovery: Option<(String, String)>,
+    admission_expiry: Option<(String, String)>,
+    compact_before: Option<(String, String)>,
+    compact_maintenance: Option<(String, String)>,
+    due_container: Option<(String, String, String)>,
 }
 
 #[cfg(test)]
@@ -106,6 +116,12 @@ pub struct LeasedMessage {
     pub content_type: String,
     pub body: String,
     pub attempt: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DuePtyInputCandidate {
+    pub injection_id: String,
+    pub target_fqn: String,
 }
 
 pub struct PtyInputEnqueueRequest {
@@ -241,6 +257,54 @@ pub struct PtyInputTargetGuard {
     _guard: tokio::sync::OwnedMutexGuard<()>,
 }
 
+struct PtyInputTargetReservation {
+    owner: Arc<PtyInputTargetLocks>,
+    target: String,
+    entry: Arc<TargetLockEntry>,
+    transferred: bool,
+}
+
+fn release_target_reservation(
+    owner: &Arc<PtyInputTargetLocks>,
+    target: &str,
+    entry: &Arc<TargetLockEntry>,
+) {
+    if entry.reservations.fetch_sub(1, Ordering::AcqRel) != 1 {
+        return;
+    }
+    let mut entries = owner
+        .entries
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if entries
+        .get(target)
+        .is_some_and(|current| Arc::ptr_eq(current, entry))
+        && entry.reservations.load(Ordering::Acquire) == 0
+    {
+        entries.remove(target);
+    }
+}
+
+impl PtyInputTargetReservation {
+    fn finish(mut self, guard: tokio::sync::OwnedMutexGuard<()>) -> PtyInputTargetGuard {
+        self.transferred = true;
+        PtyInputTargetGuard {
+            owner: Arc::clone(&self.owner),
+            target: self.target.clone(),
+            entry: Arc::clone(&self.entry),
+            _guard: guard,
+        }
+    }
+}
+
+impl Drop for PtyInputTargetReservation {
+    fn drop(&mut self) {
+        if !self.transferred {
+            release_target_reservation(&self.owner, &self.target, &self.entry);
+        }
+    }
+}
+
 impl PtyInputTargetLocks {
     pub async fn acquire(self: &Arc<Self>, target: &str) -> PtyInputTargetGuard {
         let entry = {
@@ -260,13 +324,14 @@ impl PtyInputTargetLocks {
             entry.reservations.fetch_add(1, Ordering::AcqRel);
             entry
         };
-        let guard = Arc::clone(&entry.gate).lock_owned().await;
-        PtyInputTargetGuard {
+        let reservation = PtyInputTargetReservation {
             owner: Arc::clone(self),
             target: target.to_string(),
-            entry,
-            _guard: guard,
-        }
+            entry: Arc::clone(&entry),
+            transferred: false,
+        };
+        let guard = Arc::clone(&entry.gate).lock_owned().await;
+        reservation.finish(guard)
     }
 
     #[cfg(test)]
@@ -280,21 +345,7 @@ impl PtyInputTargetLocks {
 
 impl Drop for PtyInputTargetGuard {
     fn drop(&mut self) {
-        if self.entry.reservations.fetch_sub(1, Ordering::AcqRel) != 1 {
-            return;
-        }
-        let mut entries = self
-            .owner
-            .entries
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if entries
-            .get(&self.target)
-            .is_some_and(|current| Arc::ptr_eq(current, &self.entry))
-            && self.entry.reservations.load(Ordering::Acquire) == 0
-        {
-            entries.remove(&self.target);
-        }
+        release_target_reservation(&self.owner, &self.target, &self.entry);
     }
 }
 
@@ -469,6 +520,7 @@ impl MessageStore {
         let store = Self {
             path,
             conn: Arc::new(Mutex::new(conn)),
+            maintenance_cursors: Arc::new(Mutex::new(PtyInputMaintenanceCursors::default())),
             #[cfg(test)]
             test_faults: Arc::new(Mutex::new(PtyInputStoreTestFaults::default())),
         };
@@ -1228,32 +1280,54 @@ impl MessageStore {
         let now_s = crate::phone::types::canonical_pty_timestamp(now);
         let orphan_cutoff =
             crate::phone::types::canonical_pty_timestamp(now - chrono::Duration::seconds(15));
+        let cursor = self
+            .maintenance_cursors
+            .lock()
+            .map_err(|_| MessageStoreError::StoreCorrupt)?
+            .runtime_recovery
+            .clone();
         let candidates = {
             let conn = self
                 .conn
                 .lock()
                 .map_err(|_| MessageStoreError::StoreCorrupt)?;
             let mut statement = conn.prepare(
-                r#"SELECT injection_id,status,expires_at,attempt,lease_until
+                r#"SELECT injection_id,status,expires_at,attempt,lease_until,updated_at
                    FROM pty_input_operations
-                   WHERE (status='actuating' AND actuating_at < ?1)
+                   WHERE ((status='actuating' AND actuating_at < ?1)
                       OR (status IN ('queued','preparing','retry') AND expires_at <= ?2)
-                      OR (status='preparing' AND lease_until <= ?2)
-                   ORDER BY updated_at LIMIT 64"#,
+                      OR (status='preparing' AND lease_until <= ?2))
+                     AND (?3 IS NULL OR updated_at > ?3
+                       OR (updated_at = ?3 AND injection_id > ?4))
+                   ORDER BY updated_at,injection_id LIMIT 64"#,
             )?;
-            let rows = statement.query_map(params![orphan_cutoff, now_s], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                ))
-            })?;
+            let (cursor_at, cursor_id) = cursor
+                .as_ref()
+                .map(|(at, id)| (Some(at.as_str()), Some(id.as_str())))
+                .unwrap_or((None, None));
+            let rows = statement.query_map(
+                params![orphan_cutoff, now_s, cursor_at, cursor_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
+        self.maintenance_cursors
+            .lock()
+            .map_err(|_| MessageStoreError::StoreCorrupt)?
+            .runtime_recovery = candidates
+            .last()
+            .map(|(id, _, _, _, _, updated_at)| (updated_at.clone(), id.clone()));
         let mut recovered = 0;
-        for (injection_id, status, expires_at, attempt, lease_until) in candidates {
+        for (injection_id, status, expires_at, attempt, lease_until, _) in candidates {
             if active.contains(&injection_id) {
                 continue;
             }
@@ -1449,26 +1523,47 @@ impl MessageStore {
         }
     }
 
-    fn expire_pty_input_for_admission(
+    fn expire_pty_input_for_admission_page(
         &self,
         now: DateTime<Utc>,
-    ) -> Result<usize, MessageStoreError> {
+    ) -> Result<(usize, usize), MessageStoreError> {
         let now_s = crate::phone::types::canonical_pty_timestamp(now);
+        let cursor = self
+            .maintenance_cursors
+            .lock()
+            .map_err(|_| MessageStoreError::StoreCorrupt)?
+            .admission_expiry
+            .clone();
         let candidates = {
             let conn = self
                 .conn
                 .lock()
                 .map_err(|_| MessageStoreError::StoreCorrupt)?;
             let mut statement = conn.prepare(
-                r#"SELECT injection_id FROM pty_input_operations
+                r#"SELECT injection_id,expires_at FROM pty_input_operations
                    WHERE status IN ('queued','preparing','retry') AND expires_at <= ?1
+                     AND (?2 IS NULL OR expires_at > ?2
+                       OR (expires_at = ?2 AND injection_id > ?3))
                    ORDER BY expires_at,injection_id LIMIT 64"#,
             )?;
-            let rows = statement.query_map([now_s], |row| row.get::<_, String>(0))?;
+            let (cursor_at, cursor_id) = cursor
+                .as_ref()
+                .map(|(at, id)| (Some(at.as_str()), Some(id.as_str())))
+                .unwrap_or((None, None));
+            let rows = statement.query_map(params![now_s, cursor_at, cursor_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
+        self.maintenance_cursors
+            .lock()
+            .map_err(|_| MessageStoreError::StoreCorrupt)?
+            .admission_expiry = candidates
+            .last()
+            .map(|(id, expires_at)| (expires_at.clone(), id.clone()));
+        let scanned = candidates.len();
         let mut expired = 0;
-        for injection_id in candidates {
+        for (injection_id, _) in candidates {
             let Some(_operation_lock) = self.try_operation_lock(&injection_id)? else {
                 continue;
             };
@@ -1480,7 +1575,16 @@ impl MessageStore {
             )?;
             expired += 1;
         }
-        Ok(expired)
+        Ok((expired, scanned))
+    }
+
+    #[cfg(test)]
+    fn expire_pty_input_for_admission(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Result<usize, MessageStoreError> {
+        self.expire_pty_input_for_admission_page(now)
+            .map(|(expired, _)| expired)
     }
 
     pub fn enqueue_pty_input(
@@ -1541,7 +1645,8 @@ impl MessageStore {
             i64::try_from(req.payload.len()).map_err(|_| MessageStoreError::StoreCorrupt)?;
         let wall_now = Utc::now();
         for _ in 0..8 {
-            if self.expire_pty_input_for_admission(wall_now)? < 64 {
+            let (_, scanned) = self.expire_pty_input_for_admission_page(wall_now)?;
+            if scanned < 64 {
                 break;
             }
         }
@@ -1796,6 +1901,74 @@ impl MessageStore {
                 row.get::<_, String>(0)
             })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub(crate) fn due_container_pty_input_candidates_fair(
+        &self,
+        now: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<DuePtyInputCandidate>, MessageStoreError> {
+        let now = crate::phone::types::canonical_pty_timestamp(now);
+        let cursor = self
+            .maintenance_cursors
+            .lock()
+            .map_err(|_| MessageStoreError::StoreCorrupt)?
+            .due_container
+            .clone();
+        let rows = {
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|_| MessageStoreError::StoreCorrupt)?;
+            let mut statement = conn.prepare(
+                r#"SELECT injection_id,target_fqn,next_attempt_at,queued_at
+                   FROM pty_input_operations
+                   WHERE source_plane='container_api'
+                     AND ((status IN ('queued','retry') AND next_attempt_at <= ?1)
+                       OR (status='preparing' AND lease_until <= ?1))
+                     AND attempt < 5
+                     AND (?2 IS NULL OR next_attempt_at > ?2
+                       OR (next_attempt_at = ?2 AND queued_at > ?3)
+                       OR (next_attempt_at = ?2 AND queued_at = ?3 AND injection_id > ?4))
+                   ORDER BY next_attempt_at,queued_at,injection_id LIMIT ?5"#,
+            )?;
+            let (cursor_next, cursor_queued, cursor_id) = cursor
+                .as_ref()
+                .map(|(next, queued, id)| {
+                    (
+                        Some(next.as_str()),
+                        Some(queued.as_str()),
+                        Some(id.as_str()),
+                    )
+                })
+                .unwrap_or((None, None, None));
+            let limit =
+                i64::try_from(limit.min(64)).map_err(|_| MessageStoreError::StoreCorrupt)?;
+            let mapped = statement.query_map(
+                params![now, cursor_next, cursor_queued, cursor_id, limit],
+                |row| {
+                    Ok((
+                        DuePtyInputCandidate {
+                            injection_id: row.get(0)?,
+                            target_fqn: row.get(1)?,
+                        },
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )?;
+            mapped.collect::<Result<Vec<_>, _>>()?
+        };
+        self.maintenance_cursors
+            .lock()
+            .map_err(|_| MessageStoreError::StoreCorrupt)?
+            .due_container = rows.last().map(|(candidate, next, queued)| {
+            (next.clone(), queued.clone(), candidate.injection_id.clone())
+        });
+        Ok(rows
+            .into_iter()
+            .map(|(candidate, _, _)| candidate)
+            .collect())
     }
 
     pub fn claim_pty_input(
@@ -2209,23 +2382,43 @@ impl MessageStore {
     ) -> Result<usize, MessageStoreError> {
         let cutoff = crate::phone::types::canonical_pty_timestamp(cutoff);
         let limit = i64::try_from(limit.min(64)).map_err(|_| MessageStoreError::StoreCorrupt)?;
+        let cursor = self
+            .maintenance_cursors
+            .lock()
+            .map_err(|_| MessageStoreError::StoreCorrupt)?
+            .compact_before
+            .clone();
         let candidates = {
             let conn = self
                 .conn
                 .lock()
                 .map_err(|_| MessageStoreError::StoreCorrupt)?;
             let mut statement = conn.prepare(
-                r#"SELECT injection_id FROM pty_input_operations
+                r#"SELECT injection_id,terminal_at FROM pty_input_operations
                    WHERE status IN ('injected','rejected','indeterminate')
                      AND terminal_at < ?1
-                   ORDER BY terminal_at,injection_id LIMIT ?2"#,
+                     AND (?2 IS NULL OR terminal_at > ?2
+                       OR (terminal_at = ?2 AND injection_id > ?3))
+                   ORDER BY terminal_at,injection_id LIMIT ?4"#,
             )?;
-            let rows =
-                statement.query_map(params![cutoff, limit], |row| row.get::<_, String>(0))?;
+            let (cursor_at, cursor_id) = cursor
+                .as_ref()
+                .map(|(at, id)| (Some(at.as_str()), Some(id.as_str())))
+                .unwrap_or((None, None));
+            let rows = statement
+                .query_map(params![cutoff, cursor_at, cursor_id, limit], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
+        self.maintenance_cursors
+            .lock()
+            .map_err(|_| MessageStoreError::StoreCorrupt)?
+            .compact_before = candidates
+            .last()
+            .map(|(id, terminal_at)| (terminal_at.clone(), id.clone()));
         let mut deleted = 0;
-        for injection_id in candidates {
+        for (injection_id, _) in candidates {
             let Some(_operation_lock) = self.try_operation_lock(&injection_id)? else {
                 continue;
             };
@@ -2273,27 +2466,45 @@ impl MessageStore {
         let unclaimed_cutoff =
             crate::phone::types::canonical_pty_timestamp(now - chrono::Duration::days(30));
         let limit = i64::try_from(limit.min(64)).map_err(|_| MessageStoreError::StoreCorrupt)?;
+        let cursor = self
+            .maintenance_cursors
+            .lock()
+            .map_err(|_| MessageStoreError::StoreCorrupt)?
+            .compact_maintenance
+            .clone();
         let candidates = {
             let conn = self
                 .conn
                 .lock()
                 .map_err(|_| MessageStoreError::StoreCorrupt)?;
             let mut statement = conn.prepare(
-                r#"SELECT injection_id FROM pty_input_operations
+                r#"SELECT injection_id,terminal_at FROM pty_input_operations
                    WHERE status IN ('injected','rejected','indeterminate')
                      AND ((source_plane!='host_cli' AND terminal_at < ?1)
                        OR (source_plane='host_cli' AND host_artifact_at IS NOT NULL AND terminal_at < ?1)
                        OR (source_plane='host_cli' AND host_artifact_at IS NULL AND terminal_at < ?2))
-                   ORDER BY terminal_at,injection_id LIMIT ?3"#,
+                     AND (?3 IS NULL OR terminal_at > ?3
+                       OR (terminal_at = ?3 AND injection_id > ?4))
+                   ORDER BY terminal_at,injection_id LIMIT ?5"#,
             )?;
-            let rows = statement
-                .query_map(params![normal_cutoff, unclaimed_cutoff, limit], |row| {
-                    row.get::<_, String>(0)
-                })?;
+            let (cursor_at, cursor_id) = cursor
+                .as_ref()
+                .map(|(at, id)| (Some(at.as_str()), Some(id.as_str())))
+                .unwrap_or((None, None));
+            let rows = statement.query_map(
+                params![normal_cutoff, unclaimed_cutoff, cursor_at, cursor_id, limit],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
+        self.maintenance_cursors
+            .lock()
+            .map_err(|_| MessageStoreError::StoreCorrupt)?
+            .compact_maintenance = candidates
+            .last()
+            .map(|(id, terminal_at)| (terminal_at.clone(), id.clone()));
         let mut compacted = 0;
-        for injection_id in candidates {
+        for (injection_id, _) in candidates {
             let Some(_operation_lock) = self.try_operation_lock(&injection_id)? else {
                 continue;
             };
@@ -2378,6 +2589,19 @@ impl MessageStore {
         tokio::task::spawn_blocking(move || store.due_pty_input_ids(source_plane, now, limit))
             .await
             .map_err(|error| MessageStoreError::BlockingTask(error.to_string()))?
+    }
+
+    pub(crate) async fn due_container_pty_input_candidates_fair_offloaded(
+        &self,
+        now: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<DuePtyInputCandidate>, MessageStoreError> {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || {
+            store.due_container_pty_input_candidates_fair(now, limit)
+        })
+        .await
+        .map_err(|error| MessageStoreError::BlockingTask(error.to_string()))?
     }
 
     pub async fn claim_pty_input_offloaded(
@@ -3478,6 +3702,28 @@ mod tests {
         assert_eq!(locks.entry_count(), 0);
     }
 
+    #[tokio::test]
+    async fn cancelled_target_waiter_releases_its_reservation() {
+        let locks = Arc::new(PtyInputTargetLocks::default());
+        let held = locks.acquire("proj:wg-1-team/dev").await;
+        let locks_for_waiter = Arc::clone(&locks);
+        let waiter =
+            tokio::spawn(async move { locks_for_waiter.acquire("proj:wg-1-team/dev").await });
+        tokio::task::yield_now().await;
+
+        waiter.abort();
+        let cancelled = waiter.await;
+        assert!(matches!(cancelled, Err(error) if error.is_cancelled()));
+        assert_eq!(
+            locks.entry_count(),
+            1,
+            "the holder reservation remains, but the cancelled waiter must be gone"
+        );
+
+        drop(held);
+        assert_eq!(locks.entry_count(), 0);
+    }
+
     #[test]
     fn operation_stripes_are_stable_and_exclusive() {
         let store = store();
@@ -3721,6 +3967,239 @@ mod tests {
     }
 
     #[test]
+    fn admission_expiry_advances_past_sixty_four_locked_rows() {
+        let store = store();
+        let now = Utc::now();
+        let mut ids = Vec::new();
+        for index in 0..65 {
+            let id = Uuid::new_v4().to_string();
+            let mut request = pty_request(&id, "exact text");
+            request.sender_fqn = format!("proj:wg-1-team/lead-{index}");
+            request.request_fingerprint = sha256_hex(format!("request:{index}").as_bytes());
+            store.enqueue_pty_input(request).unwrap();
+            ids.push(id);
+        }
+        let stripe = |id: &str| {
+            let digest = Sha256::digest(id.as_bytes());
+            ((usize::from(digest[0]) << 4) | (usize::from(digest[1]) >> 4))
+                % PTY_INPUT_OPERATION_LOCK_STRIPES
+        };
+        let tail = ids
+            .iter()
+            .find(|candidate| {
+                ids.iter()
+                    .filter(|other| stripe(other) == stripe(candidate))
+                    .count()
+                    == 1
+            })
+            .expect("fixture includes a unique operation stripe")
+            .clone();
+        let issued =
+            crate::phone::types::canonical_pty_timestamp(now - chrono::Duration::minutes(20));
+        let queued =
+            crate::phone::types::canonical_pty_timestamp(now - chrono::Duration::minutes(19));
+        let expired =
+            crate::phone::types::canonical_pty_timestamp(now - chrono::Duration::minutes(10));
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE pty_input_operations SET issued_at=?1,queued_at=?2,expires_at=?3,next_attempt_at=?2,updated_at=?2",
+                params![issued, queued, expired],
+            )
+            .unwrap();
+        let tail_issued =
+            crate::phone::types::canonical_pty_timestamp(now - chrono::Duration::minutes(19));
+        let tail_queued =
+            crate::phone::types::canonical_pty_timestamp(now - chrono::Duration::minutes(18));
+        let tail_expired =
+            crate::phone::types::canonical_pty_timestamp(now - chrono::Duration::minutes(9));
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE pty_input_operations SET issued_at=?1,queued_at=?2,expires_at=?3,next_attempt_at=?2,updated_at=?2 WHERE injection_id=?4",
+                params![tail_issued, tail_queued, tail_expired, tail],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE pty_input_tombstones SET issued_at=?1,queued_at=?2,expires_at=?3 WHERE injection_id=?4",
+                params![tail_issued, tail_queued, tail_expired, tail],
+            )
+            .unwrap();
+        }
+        let ordered = {
+            let conn = store.conn.lock().unwrap();
+            let mut statement = conn
+                .prepare(
+                    "SELECT injection_id FROM pty_input_operations ORDER BY expires_at,injection_id",
+                )
+                .unwrap();
+            statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert_eq!(ordered[64], tail);
+        let locks = ordered[..64]
+            .iter()
+            .filter_map(|id| store.try_operation_lock(id).unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(store.expire_pty_input_for_admission(now).unwrap(), 0);
+        assert!(store.query_pty_input_by_injection(&tail).unwrap().is_some());
+        assert_eq!(
+            store.expire_pty_input_for_admission(now).unwrap(),
+            1,
+            "a fair admission cursor must reach the independent 65th row"
+        );
+        drop(locks);
+        assert_eq!(
+            store.expire_pty_input_for_admission(now).unwrap(),
+            0,
+            "the exhausted keyset page resets the cursor"
+        );
+        assert_eq!(
+            store.expire_pty_input_for_admission(now).unwrap(),
+            64,
+            "released prefix rows are revisited after cursor wrap"
+        );
+    }
+
+    #[test]
+    fn runtime_recovery_advances_past_sixty_four_active_rows() {
+        let store = store();
+        let mut ids = Vec::new();
+        let mut latest_transition = Utc::now();
+        for index in 0..65 {
+            let (id, transition) = enqueue_claim_actuating(&store, index / 16);
+            latest_transition = latest_transition.max(transition);
+            ids.push(id);
+        }
+        let tail = ids.pop().unwrap();
+        let latest = crate::phone::types::canonical_pty_timestamp(
+            latest_transition + chrono::Duration::seconds(1),
+        );
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE pty_input_operations SET updated_at=?1,actuating_at=?1 WHERE injection_id=?2",
+                params![latest, tail],
+            )
+            .unwrap();
+        let active = ids.into_iter().collect::<HashSet<_>>();
+        let recovery_at = latest_transition + chrono::Duration::seconds(20);
+
+        assert_eq!(
+            store
+                .recover_pty_input_runtime(&active, recovery_at)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            store
+                .recover_pty_input_runtime(&active, recovery_at)
+                .unwrap(),
+            1,
+            "a fair runtime cursor must reach the independent 65th orphan"
+        );
+        let result = store.query_pty_input_by_injection(&tail).unwrap().unwrap();
+        assert_eq!(
+            result.reason.map(|reason| reason.code),
+            Some(crate::phone::types::PtyInputReasonCode::RuntimeActuationOrphan)
+        );
+        assert_eq!(
+            store
+                .recover_pty_input_runtime(&active, recovery_at)
+                .unwrap(),
+            0,
+            "the exhausted keyset page resets the cursor"
+        );
+        assert_eq!(
+            store
+                .recover_pty_input_runtime(&HashSet::new(), recovery_at)
+                .unwrap(),
+            64,
+            "formerly active prefix rows are revisited after cursor wrap"
+        );
+    }
+
+    #[test]
+    fn due_container_cursor_advances_past_sixty_four_lock_contended_rows() {
+        let store = store();
+        let mut ids = Vec::new();
+        for index in 0..65 {
+            let id = Uuid::new_v4().to_string();
+            let mut request = pty_request(&id, "exact text");
+            request.sender_fqn = format!("proj:wg-1-team/lead-{index}");
+            request.target_fqn = format!("proj:wg-1-team/dev-{index}");
+            request.request_fingerprint = sha256_hex(format!("request:{index}").as_bytes());
+            store.enqueue_pty_input(request).unwrap();
+            ids.push(id);
+        }
+        let stripe = |id: &str| {
+            let digest = Sha256::digest(id.as_bytes());
+            ((usize::from(digest[0]) << 4) | (usize::from(digest[1]) >> 4))
+                % PTY_INPUT_OPERATION_LOCK_STRIPES
+        };
+        let tail = ids
+            .iter()
+            .find(|candidate| {
+                ids.iter()
+                    .filter(|other| stripe(other) == stripe(candidate))
+                    .count()
+                    == 1
+            })
+            .unwrap()
+            .clone();
+        let base_at = Utc::now() + chrono::Duration::seconds(1);
+        let base = crate::phone::types::canonical_pty_timestamp(base_at);
+        let tail_next = crate::phone::types::canonical_pty_timestamp(
+            base_at + chrono::Duration::milliseconds(1),
+        );
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE pty_input_operations SET queued_at=?1,next_attempt_at=?1,updated_at=?1",
+                [&base],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE pty_input_operations SET next_attempt_at=?1,updated_at=?1 WHERE injection_id=?2",
+                params![tail_next, tail],
+            )
+            .unwrap();
+        }
+        let dispatch_at = base_at + chrono::Duration::seconds(1);
+        let first_page = store
+            .due_container_pty_input_candidates_fair(dispatch_at, 64)
+            .unwrap();
+        assert_eq!(first_page.len(), 64);
+        assert!(first_page
+            .iter()
+            .all(|candidate| candidate.injection_id != tail));
+        let locks = first_page
+            .iter()
+            .filter_map(|candidate| store.try_operation_lock(&candidate.injection_id).unwrap())
+            .collect::<Vec<_>>();
+        assert!(first_page.iter().all(|candidate| store
+            .try_operation_lock(&candidate.injection_id)
+            .unwrap()
+            .is_none()));
+
+        let second_page = store
+            .due_container_pty_input_candidates_fair(dispatch_at, 64)
+            .unwrap();
+        assert_eq!(second_page.len(), 1);
+        assert_eq!(second_page[0].injection_id, tail);
+        assert!(store.try_operation_lock(&tail).unwrap().is_some());
+        drop(locks);
+    }
+
+    #[test]
     fn startup_recovery_pages_past_sixty_four_locked_rows() {
         let store = store();
         let mut ids = Vec::new();
@@ -3869,6 +4348,198 @@ mod tests {
             )
             .unwrap();
         assert_eq!(live_count, 1);
+    }
+
+    #[test]
+    fn compaction_advances_past_sixty_four_locked_terminal_rows() {
+        let store = store();
+        let mut ids = Vec::new();
+        let mut cutoff = Utc::now();
+        for index in 0..65 {
+            let (id, actuating_at) = enqueue_claim_actuating(&store, index / 16);
+            let terminal_at = actuating_at + chrono::Duration::seconds(1);
+            store
+                .terminalize_pty_input(
+                    &id,
+                    crate::phone::types::PtyInputPublicStatus::Injected,
+                    None,
+                    terminal_at,
+                )
+                .unwrap();
+            cutoff = cutoff.max(terminal_at + chrono::Duration::days(8));
+            ids.push(id);
+        }
+        let stripe = |id: &str| {
+            let digest = Sha256::digest(id.as_bytes());
+            ((usize::from(digest[0]) << 4) | (usize::from(digest[1]) >> 4))
+                % PTY_INPUT_OPERATION_LOCK_STRIPES
+        };
+        let tail = ids
+            .iter()
+            .find(|candidate| {
+                ids.iter()
+                    .filter(|other| stripe(other) == stripe(candidate))
+                    .count()
+                    == 1
+            })
+            .expect("fixture includes a unique operation stripe")
+            .clone();
+        let latest_at = cutoff - chrono::Duration::days(8) + chrono::Duration::hours(1);
+        cutoff = latest_at + chrono::Duration::days(8);
+        let latest = crate::phone::types::canonical_pty_timestamp(latest_at);
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE pty_input_operations SET terminal_at=?1,updated_at=?1 WHERE injection_id=?2",
+                params![latest, tail],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE pty_input_tombstones SET terminal_at=?1 WHERE injection_id=?2",
+                params![latest, tail],
+            )
+            .unwrap();
+        }
+        let ordered = {
+            let conn = store.conn.lock().unwrap();
+            let mut statement = conn
+                .prepare(
+                    "SELECT injection_id FROM pty_input_operations ORDER BY terminal_at,injection_id",
+                )
+                .unwrap();
+            statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert_eq!(ordered[64], tail);
+        let locks = ordered[..64]
+            .iter()
+            .filter_map(|id| store.try_operation_lock(id).unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(store.compact_pty_terminal_before(cutoff, 64).unwrap(), 0);
+        assert_eq!(
+            store.compact_pty_terminal_before(cutoff, 64).unwrap(),
+            1,
+            "a fair compaction cursor must reach the independent 65th row"
+        );
+        drop(locks);
+        assert_eq!(
+            store.compact_pty_terminal_before(cutoff, 64).unwrap(),
+            0,
+            "the exhausted keyset page resets the cursor"
+        );
+        assert_eq!(
+            store.compact_pty_terminal_before(cutoff, 64).unwrap(),
+            64,
+            "released prefix rows are revisited after cursor wrap"
+        );
+    }
+
+    #[test]
+    fn maintenance_compaction_advances_past_sixty_four_locked_terminal_rows() {
+        let store = store();
+        let mut ids = Vec::new();
+        for index in 0..65 {
+            let (id, actuating_at) = enqueue_claim_actuating(&store, index / 16);
+            store
+                .terminalize_pty_input(
+                    &id,
+                    crate::phone::types::PtyInputPublicStatus::Injected,
+                    None,
+                    actuating_at + chrono::Duration::seconds(1),
+                )
+                .unwrap();
+            ids.push(id);
+        }
+        let stripe = |id: &str| {
+            let digest = Sha256::digest(id.as_bytes());
+            ((usize::from(digest[0]) << 4) | (usize::from(digest[1]) >> 4))
+                % PTY_INPUT_OPERATION_LOCK_STRIPES
+        };
+        let tail = ids
+            .iter()
+            .find(|candidate| {
+                ids.iter()
+                    .filter(|other| stripe(other) == stripe(candidate))
+                    .count()
+                    == 1
+            })
+            .unwrap()
+            .clone();
+        let base_at = Utc::now() + chrono::Duration::seconds(1);
+        let old = crate::phone::types::canonical_pty_timestamp(base_at);
+        let tail_terminal_at = base_at + chrono::Duration::milliseconds(1);
+        let tail_at = crate::phone::types::canonical_pty_timestamp(tail_terminal_at);
+        let maintenance_at = tail_terminal_at + chrono::Duration::days(8);
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE pty_input_operations SET terminal_at=?1,updated_at=?1",
+                [&old],
+            )
+            .unwrap();
+            conn.execute("UPDATE pty_input_tombstones SET terminal_at=?1", [&old])
+                .unwrap();
+            conn.execute(
+                "UPDATE pty_input_operations SET terminal_at=?1,updated_at=?1 WHERE injection_id=?2",
+                params![tail_at, tail],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE pty_input_tombstones SET terminal_at=?1 WHERE injection_id=?2",
+                params![tail_at, tail],
+            )
+            .unwrap();
+        }
+        let ordered = {
+            let conn = store.conn.lock().unwrap();
+            let mut statement = conn
+                .prepare(
+                    "SELECT injection_id FROM pty_input_operations ORDER BY terminal_at,injection_id",
+                )
+                .unwrap();
+            statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert_eq!(ordered[64], tail);
+        let locks = ordered[..64]
+            .iter()
+            .filter_map(|id| store.try_operation_lock(id).unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            store
+                .compact_pty_terminal_maintenance(maintenance_at, 64)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            store
+                .compact_pty_terminal_maintenance(maintenance_at, 64)
+                .unwrap(),
+            1,
+            "runtime maintenance must reach the independent 65th row"
+        );
+        drop(locks);
+        assert_eq!(
+            store
+                .compact_pty_terminal_maintenance(maintenance_at, 64)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            store
+                .compact_pty_terminal_maintenance(maintenance_at, 64)
+                .unwrap(),
+            64,
+            "released maintenance prefix rows are revisited after cursor wrap"
+        );
     }
 
     #[test]
