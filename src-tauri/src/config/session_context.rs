@@ -4935,6 +4935,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             ManagedContextTarget::Claude,
             ManagedContextTarget::Gemini,
             ManagedContextTarget::Codex,
+            ManagedContextTarget::Pi,
         ] {
             let materialized =
                 materialize_agent_context_file(&path_string(&replica_root), target, false)
