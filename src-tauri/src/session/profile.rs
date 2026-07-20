@@ -233,67 +233,65 @@ enum TokenizedCommandPosition {
 
 fn tokenized_has_unsupported_pi_position(atoms: &[DecodedCmdAtom]) -> bool {
     let mut position = TokenizedCommandPosition::Head;
+    let mut position_can_carry = true;
 
     for atom in atoms {
+        let mut saw_syntax = false;
         for (index, chunk) in atom.control_chunks.iter().enumerate() {
             if !chunk.is_empty() {
+                saw_syntax = true;
                 match position {
                     TokenizedCommandPosition::Head => {
                         if is_exact_pi_executable(chunk) || is_reserved_pi_executable(chunk) {
                             return true;
                         }
-                        position = if is_unsupported_wrapper(chunk) {
-                            TokenizedCommandPosition::WrapperArgument
+                        if position_can_carry && is_unsupported_wrapper(chunk) {
+                            position = TokenizedCommandPosition::WrapperArgument;
                         } else {
-                            TokenizedCommandPosition::Arguments
-                        };
+                            position = TokenizedCommandPosition::Arguments;
+                            position_can_carry = false;
+                        }
                     }
                     TokenizedCommandPosition::WrapperArgument => {
-                        if is_exact_pi_executable(chunk) || is_reserved_pi_executable(chunk) {
+                        if position_can_carry
+                            && (is_exact_pi_executable(chunk) || is_reserved_pi_executable(chunk))
+                        {
                             return true;
                         }
                         position = TokenizedCommandPosition::Arguments;
+                        position_can_carry = false;
                     }
-                    TokenizedCommandPosition::Arguments => {}
+                    TokenizedCommandPosition::Arguments => {
+                        position_can_carry = false;
+                    }
                 }
             }
 
-            if atom
-                .unescaped_controls
-                .get(index)
-                .is_some_and(|control| matches!(control, '&' | '|'))
-            {
-                position = TokenizedCommandPosition::Head;
+            if let Some(control) = atom.unescaped_controls.get(index) {
+                saw_syntax = true;
+                match control {
+                    '&' | '|' => {
+                        position = TokenizedCommandPosition::Head;
+                        position_can_carry = true;
+                    }
+                    '<' | '>' | ')' => position_can_carry = false,
+                    '(' => {}
+                    _ => position_can_carry = false,
+                }
             }
         }
 
-        let final_chunk_is_nonempty = atom
-            .control_chunks
-            .last()
-            .is_some_and(|chunk| !chunk.is_empty());
-        let ends_with_boundary = !final_chunk_is_nonempty
-            && atom
-                .unescaped_controls
-                .last()
-                .is_some_and(|control| matches!(control, '&' | '|'));
-        let wrapper_is_command_head = atom.unescaped_controls.is_empty()
-            || atom
-                .unescaped_controls
-                .last()
-                .is_some_and(|control| matches!(control, '&' | '|'));
-        let ends_with_wrapper = final_chunk_is_nonempty
-            && wrapper_is_command_head
-            && matches!(position, TokenizedCommandPosition::WrapperArgument);
-        // Only the frozen group prefix, a trailing compound boundary, or a
-        // wrapper head may carry a candidate position into the next argv atom.
-        // Other control-only or mixed atoms consume that position, so a
-        // whitespace-separated redirection target cannot become a Pi head.
+        if !saw_syntax {
+            position_can_carry = false;
+        }
+        // Candidate state crosses an argv boundary only when the suffix since
+        // the last amp/pipe boundary is made of opening groups and, for the
+        // wrapper state, one listed wrapper. Redirection, closing groups,
+        // other literal chunks, and empty atoms consume that state.
         if matches!(
             position,
             TokenizedCommandPosition::Head | TokenizedCommandPosition::WrapperArgument
-        ) && !is_group_prefix(atom)
-            && !ends_with_boundary
-            && !ends_with_wrapper
+        ) && !position_can_carry
         {
             position = TokenizedCommandPosition::Arguments;
         }
@@ -1168,6 +1166,96 @@ mod tests {
     }
 
     #[test]
+    fn tokenized_grouped_attached_pi_boundaries_fail_closed() {
+        let providers = [
+            ("--model", "claude-sonnet"),
+            ("--provider", "codex-model"),
+            ("--model", "gemini-pro"),
+        ];
+        let wrappers = [
+            "npx",
+            "npx.exe",
+            "npx.cmd",
+            "call",
+            "call.exe",
+            "call.cmd",
+            "start",
+            "start.exe",
+            "start.cmd",
+        ];
+        let mut cases = Vec::new();
+
+        for separator in ["&", "&&", "|", "||"] {
+            for groups in ["(", "((("] {
+                for executable in ["pi", "pi.md", "pi.bat"] {
+                    for &(provider_flag, provider_value) in &providers {
+                        cases.push(vec![
+                            "/C".to_string(),
+                            format!("echo{separator}{groups}"),
+                            executable.to_string(),
+                            provider_flag.to_string(),
+                            provider_value.to_string(),
+                        ]);
+                        cases.push(vec![
+                            "/C".to_string(),
+                            format!("echo{separator}{groups}{executable}"),
+                            provider_flag.to_string(),
+                            provider_value.to_string(),
+                        ]);
+                        cases.push(vec![
+                            "/C".to_string(),
+                            format!("echo{separator}"),
+                            groups.to_string(),
+                            executable.to_string(),
+                            provider_flag.to_string(),
+                            provider_value.to_string(),
+                        ]);
+
+                        for wrapper in wrappers {
+                            cases.push(vec![
+                                "/C".to_string(),
+                                format!("echo{separator}{groups}{wrapper}"),
+                                executable.to_string(),
+                                provider_flag.to_string(),
+                                provider_value.to_string(),
+                            ]);
+                            cases.push(vec![
+                                "/C".to_string(),
+                                format!("echo{separator}{groups}"),
+                                wrapper.to_string(),
+                                executable.to_string(),
+                                provider_flag.to_string(),
+                                provider_value.to_string(),
+                            ]);
+                            cases.push(vec![
+                                "/C".to_string(),
+                                format!("echo{separator}"),
+                                format!("{groups}{wrapper}"),
+                                executable.to_string(),
+                                provider_flag.to_string(),
+                                provider_value.to_string(),
+                            ]);
+                        }
+                    }
+                }
+            }
+        }
+
+        for args in cases {
+            assert_eq!(
+                locate_pi_command("cmd.exe", &args),
+                Err(PiCommandParseError::UnsupportedPiCommandShape),
+                "args={args:?}"
+            );
+            assert_eq!(
+                CodingAgentKind::detect("cmd.exe", &args),
+                None,
+                "args={args:?}"
+            );
+        }
+    }
+
+    #[test]
     fn tokenized_attached_later_head_negative_controls_stay_non_pi() {
         let cases = [
             (
@@ -1288,6 +1376,50 @@ mod tests {
             ),
             (
                 strings(&["/C", "npx", ">", "start", "pi", "--model", "gemini-pro"]),
+                CodingAgentKind::Gemini,
+            ),
+            (
+                strings(&["/C", "echo(", "pi", "--model", "claude-sonnet"]),
+                CodingAgentKind::Claude,
+            ),
+            (
+                strings(&["/C", "echo(npx", "pi", "--provider", "codex-model"]),
+                CodingAgentKind::Codex,
+            ),
+            (
+                strings(&["/C", "echo^&^&(", "pi", "--model", "gemini-pro"]),
+                CodingAgentKind::Gemini,
+            ),
+            (
+                strings(&["/C", "echo&&^(", "pi", "--model", "claude-sonnet"]),
+                CodingAgentKind::Claude,
+            ),
+            (
+                strings(&["/C", "echo&&\"(\"", "pi", "--provider", "codex-model"]),
+                CodingAgentKind::Codex,
+            ),
+            (
+                strings(&["/C", "echo&&(()", "pi", "--model", "gemini-pro"]),
+                CodingAgentKind::Gemini,
+            ),
+            (
+                strings(&["/C", "echo&&(<", "pi", "--model", "claude-sonnet"]),
+                CodingAgentKind::Claude,
+            ),
+            (
+                strings(&["/C", "echo", "(((", "pi", "--provider", "codex-model"]),
+                CodingAgentKind::Codex,
+            ),
+            (
+                strings(&["/C", "npx>pi", "--model", "claude-sonnet"]),
+                CodingAgentKind::Claude,
+            ),
+            (
+                strings(&["/C", "echo&&>npx(pi", "--provider", "codex-model"]),
+                CodingAgentKind::Codex,
+            ),
+            (
+                strings(&["/C", "echo&&)start(pi", "--model", "gemini-pro"]),
                 CodingAgentKind::Gemini,
             ),
         ];
