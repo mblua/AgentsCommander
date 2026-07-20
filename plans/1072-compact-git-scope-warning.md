@@ -131,7 +131,7 @@ This is 322 characters and 48 whitespace-delimited words. It directs state-chang
 
 ### Polish
 
-8. Run targeted module tests, formatting, check, clippy, and diff hygiene. Confirm the tokenized default and seeded template metadata are unchanged.
+8. Run targeted module tests, the isolated baseline-aware rustfmt gate below, check, clippy, and diff hygiene. Confirm the tokenized default and seeded template metadata are unchanged.
 
 ### Extras
 
@@ -162,18 +162,142 @@ Add these tests, using these names or equally specific names in the existing tes
 
 Retain and run the existing stale-generated, edited-legacy, generated-skills, self-heal convergence, Root Git-scope, and provider materialization tests because they cover adjacent compatibility behavior.
 
-Run from the repository root:
+Run the functional, compile, lint, and diff gates from the repository root:
 
 ```bash
 cargo test -p agentscommander-new config::session_context::tests::git_scope
 cargo test -p agentscommander-new config::session_context::tests::pre_1072
 cargo test -p agentscommander-new config::session_context::tests::one_byte_edited_pre_1072_git_scope_remains_custom
 cargo test -p agentscommander-new config::session_context::tests
-cargo fmt --all -- --check
 cargo check --all-targets
 cargo clippy --all-targets -- -D warnings
 git diff --check
 ```
+
+### Baseline-aware rustfmt gate
+
+A direct `cargo fmt --all -- --check` is not an acceptance gate for this issue. With rustfmt 1.8.0 it already fails at the base SHA, beginning at `src-tauri/src/api/auth.rs:119`, and a formatting trial rewrites 26 files: the one in-scope module plus 25 unrelated files, including `src-tauri/src/pty/local_backend.rs`. Accepting those rewrites would violate section 3.
+
+Instead, run the following exact Git Bash block from a clean repository root. It formats disposable detached worktrees for the frozen base and the implementation under review. It then compares the complete formatter-induced patches after removing only `index` blob IDs and `@@` line-coordinate/function-context metadata. Paths, file ordering, hunk ordering, hunk boundaries, and every removed or added source byte remain in the comparison. Removing coordinates is necessary because the implementation adds lines before existing debt. Exact normalized-patch equality is stronger than a no-increase count: any rustfmt rewrite added or changed by #1072 makes the comparison fail.
+
+```bash
+set -euo pipefail
+
+FORMAT_BASE=ad908daf189ab61e542aeece6cf226258f5a11d6
+IMPLEMENTATION=7a444b0d7ae97a16d3a0e06c6157a906f5a9eee1
+TARGET=src-tauri/src/config/session_context.rs
+REPO="$(git rev-parse --show-toplevel)"
+: "${AGENTSCOMMANDER_ROOT:?AGENTSCOMMANDER_ROOT must name this agent replica root}"
+
+if [ -n "$(git -C "$REPO" status --porcelain=v1)" ]; then
+    echo "FAIL: primary worktree must be clean" >&2
+    exit 1
+fi
+git -C "$REPO" merge-base --is-ancestor "$IMPLEMENTATION" HEAD
+if [ "$(git -C "$REPO" rev-parse "HEAD:$TARGET")" != "$(git -C "$REPO" rev-parse "$IMPLEMENTATION:$TARGET")" ]; then
+    echo "FAIL: $TARGET no longer matches certified implementation $IMPLEMENTATION" >&2
+    exit 1
+fi
+changed_rs="$(git -C "$REPO" diff --name-only "$FORMAT_BASE" "$IMPLEMENTATION" -- '*.rs')"
+if [ "$changed_rs" != "$TARGET" ]; then
+    printf 'FAIL: Rust scope is not exactly %s; got:\n%s\n' "$TARGET" "$changed_rs" >&2
+    exit 1
+fi
+
+if command -v cygpath >/dev/null 2>&1; then
+    scratch_parent="$(cygpath -u "$AGENTSCOMMANDER_ROOT")"
+else
+    scratch_parent="$AGENTSCOMMANDER_ROOT"
+fi
+FMT_ROOT="$(mktemp -d "$scratch_parent/.fmt-1072-gate.XXXXXX")"
+BASE_WT="$FMT_ROOT/base"
+CANDIDATE_WT="$FMT_ROOT/candidate"
+
+cleanup() {
+    rc=$?
+    trap - EXIT
+    set +e
+    cleanup_failed=0
+    for wt in "$CANDIDATE_WT" "$BASE_WT"; do
+        if [ -e "$wt/.git" ]; then
+            git -C "$REPO" worktree remove --force "$wt" >/dev/null 2>&1 || cleanup_failed=1
+        fi
+    done
+    git -C "$REPO" worktree prune >/dev/null 2>&1 || cleanup_failed=1
+    rm -rf "$FMT_ROOT" || cleanup_failed=1
+    if [ "$cleanup_failed" -ne 0 ]; then
+        printf 'FAIL: rustfmt gate cleanup failed under %s\n' "$FMT_ROOT" >&2
+        rc=1
+    fi
+    exit "$rc"
+}
+trap cleanup EXIT
+
+echo "FORMAT_BASE=$(git -C "$REPO" rev-parse "$FORMAT_BASE")"
+echo "IMPLEMENTATION=$(git -C "$REPO" rev-parse "$IMPLEMENTATION")"
+rustfmt --version
+rustc --version
+cargo --version
+
+git -C "$REPO" worktree add --detach "$BASE_WT" "$FORMAT_BASE" >/dev/null
+git -C "$REPO" worktree add --detach "$CANDIDATE_WT" "$IMPLEMENTATION" >/dev/null
+(
+    cd "$BASE_WT"
+    cargo fmt --all
+)
+(
+    cd "$CANDIDATE_WT"
+    cargo fmt --all
+)
+
+git -C "$BASE_WT" diff --name-only > "$FMT_ROOT/base.files"
+git -C "$CANDIDATE_WT" diff --name-only > "$FMT_ROOT/candidate.files"
+if ! cmp -s "$FMT_ROOT/base.files" "$FMT_ROOT/candidate.files"; then
+    echo "FAIL: rustfmt changed-file lists differ" >&2
+    diff -u "$FMT_ROOT/base.files" "$FMT_ROOT/candidate.files" || true
+    exit 1
+fi
+
+git -C "$BASE_WT" diff --no-ext-diff --no-color --unified=0 > "$FMT_ROOT/base.raw.patch"
+git -C "$CANDIDATE_WT" diff --no-ext-diff --no-color --unified=0 > "$FMT_ROOT/candidate.raw.patch"
+for label in base candidate; do
+    LC_ALL=C sed -e '/^index /d' -e 's/^@@ .*$/@@/' \
+        "$FMT_ROOT/$label.raw.patch" > "$FMT_ROOT/$label.normalized.patch"
+done
+
+base_hash="$(sha256sum "$FMT_ROOT/base.normalized.patch" | awk '{print toupper($1)}')"
+candidate_hash="$(sha256sum "$FMT_ROOT/candidate.normalized.patch" | awk '{print toupper($1)}')"
+fmt_file_count="$(wc -l < "$FMT_ROOT/base.files" | tr -d '[:space:]')"
+printf 'rustfmt_changed_file_count=%s\n' "$fmt_file_count"
+printf 'baseline_normalized_sha256=%s\n' "$base_hash"
+printf 'candidate_normalized_sha256=%s\n' "$candidate_hash"
+
+if ! cmp -s "$FMT_ROOT/base.normalized.patch" "$FMT_ROOT/candidate.normalized.patch"; then
+    echo "FAIL: candidate rustfmt delta differs from the pre-implementation baseline" >&2
+    diff -u "$FMT_ROOT/base.normalized.patch" "$FMT_ROOT/candidate.normalized.patch" || true
+    exit 1
+fi
+
+grep -Fxq "$TARGET" "$FMT_ROOT/base.files"
+if [ -n "$(git -C "$REPO" status --porcelain=v1)" ]; then
+    echo "FAIL: primary worktree changed during isolated rustfmt gate" >&2
+    exit 1
+fi
+echo "PASS: normalized rustfmt deltas are byte-identical; no new formatting debt"
+```
+
+Expected result for the frozen implementation is exit 0, one changed Rust path in the implementation range, identical rustfmt changed-file lists, and byte-identical normalized patches. Recertification measured 26 formatter-touched files on both sides and SHA-256 `A480C347549D7FBF26726E508D59D45D892149DEF8C34FAE9AD7EB286CA00859` for each normalized patch under rustfmt 1.8.0 / Rust 1.93.1. The hash is recorded evidence, while exact same-run `cmp` equality is the acceptance decision.
+
+Any dirty primary worktree, scope drift, target-blob drift, formatter failure, changed-file-list mismatch, normalized-patch mismatch, or cleanup failure fails the gate. The `EXIT` trap removes both detached worktrees, prunes their Git metadata, and deletes scratch output on success or failure. Formatting is never run in the primary worktree, and no formatter edit may be copied back, staged, or committed.
+
+The Step-8 developer must report:
+
+1. the full base and implementation SHAs printed by the gate;
+2. `rustfmt --version`, `rustc --version`, and `cargo --version`;
+3. the implementation-range Rust path list and confirmation it is exactly `src-tauri/src/config/session_context.rs`;
+4. the rustfmt changed-file count, confirmation that the two file lists are identical, both normalized SHA-256 values, and the final PASS line;
+5. cleanup verification from `git worktree list --porcelain` showing only the primary worktree, plus a clean primary `git status --short`;
+6. results for every functional, compile, lint, and diff command above. A direct repository-wide `cargo fmt --all -- --check` failure is baseline evidence, not an implementation failure, and must not be reported as a passing gate.
 
 ## 11. Objective acceptance
 
@@ -186,4 +310,4 @@ Implementation is accepted only when all of the following are true:
 - Exact pre-fix matrix and no-matrix rendered bytes classify stale, heal to the tokenized default on the first resolve, and converge on the second.
 - A one-byte edited pre-fix fixture remains custom and is never healed.
 - `get_default_agent_template()`, seeded global version/hash handling, Git ceiling code, and Git guard code have no diff.
-- Targeted Rust tests, the full `session_context` test filter, `cargo fmt --check`, `cargo check --all-targets`, clippy with warnings denied, and `git diff --check` all pass.
+- Targeted Rust tests, the full `session_context` test filter, the isolated baseline-aware rustfmt gate, `cargo check --all-targets`, clippy with warnings denied, and `git diff --check` all pass.
