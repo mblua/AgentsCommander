@@ -2798,6 +2798,10 @@ fn strip_legacy_self_maintenance(content: &str) -> String {
     out
 }
 
+const ROOT_GIT_SCOPE: &str = "Git discovery above the Root Agent session root is blocked. State-changing Git belongs at a registered project root (the `settings.projectPaths` entry, one level above `.ac`), never in the Root Agent directory or another `.ac` subtree; the `repo-*` naming restriction does not apply. Read-only Git is allowed within scope.";
+const WORKGROUP_GIT_SCOPE: &str = "`wg-*/` workgroups are gitignored; origin Agent Matrices are not and can be tracked. Git discovery above replica and Matrix roots is blocked. State-changing Git belongs in `repo-*`; read-only Git is allowed within scope.";
+const DIRECT_MATRIX_GIT_SCOPE: &str = "Origin Agent Matrices are not gitignored and can be tracked. Git discovery above this Matrix root is blocked. State-changing Git belongs in `repo-*`; read-only Git is allowed within scope.";
+
 struct DefaultContextDynamicValues {
     // #923 D1: entry #2's peer-replica caution binds non-root agents only. The Root
     // Agent's ROOT_PROJECT_SCOPE_ENTRY grants reads AND writes across every `.ac`
@@ -3026,12 +3030,13 @@ fn default_context_dynamic_values(
         )
     };
     let git_scope = if is_root_agent {
-        "AgentsCommander blocks Git repository discovery above your session root, which sits inside the app config directory beneath a registered project's `.gitignore`d `.ac/` folder. To act on a registered project's repository, deliberately change into that project's root folder (the `settings.projectPaths` entry, one level above its `.ac`) and run Git there, including commits, branches, and other state-changing operations; the `repo-*` naming restriction does NOT apply to you and the project folder need not be named `repo-*`. Do NOT run state-changing Git from inside your own `ac-root-agent` directory or any `.ac` subtree. `git status`, `git log`, and `git diff` are read-only and fine anywhere your read scope above reaches.".to_string()
+        ROOT_GIT_SCOPE
     } else if matrix_root.is_some() {
-        "Your replica directory and origin Agent Matrix sit inside a parent repository's `.gitignore`d `.ac/` folder. Do NOT run state-changing `git` (commit, branch, reset, etc.) from either location; AgentsCommander blocks Git repository discovery above these AC workspace roots, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots.".to_string()
+        WORKGROUP_GIT_SCOPE
     } else {
-        "Your agent directory sits inside a parent repository's `.gitignore`d `.ac/` folder. Do NOT run state-changing `git` (commit, branch, reset, etc.) from inside it; AgentsCommander blocks Git repository discovery above these AC workspace roots, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots.".to_string()
-    };
+        DIRECT_MATRIX_GIT_SCOPE
+    }
+    .to_string();
     let peer_name_format = match &messaging_mode {
         MessagingContextMode::Root(_) => "- **Root Agent sessions**: verified WG coordinator replicas only, shaped `<project>:<workgroup>/<agent>`, e.g. `agentscommander:wg-15-dev-team/tech-lead`. Origin coordinators and non-coordinator WG replicas are not valid Root Agent targets in #277.".to_string(),
         _ => "- **WG replicas** (the common case): `<project>:<workgroup>/<agent>`, e.g. `agentscommander:wg-15-dev-team/dev-rust`.\n- **Origin agents**: `<project>/<agent>`, e.g. `agentscommander/architect`.".to_string(),
@@ -3148,10 +3153,47 @@ fn default_context_as_root(
     )
 }
 
+// Frozen warning bytes shipped before #1072. These constants are only for
+// compatibility recognition and must never be used for current runtime output.
+const LEGACY_GIT_SCOPE_WITH_MATRIX_BEFORE_1072: &str = "Your replica directory and origin Agent Matrix are typically inside a parent repository's `.ac/` folder, which is `.gitignore`d. Do NOT run `git` commands that alter state (commit, branch, reset, etc.) from inside either location, because that would affect the parent repo unintentionally. AgentsCommander blocks Git repository discovery above these Project AC Root directories for agent sessions, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots.";
+const LEGACY_GIT_SCOPE_WITHOUT_MATRIX_BEFORE_1072: &str = "Your agent directory is typically inside a parent repository's `.ac/` folder, which is `.gitignore`d. Do NOT run `git` commands that alter state (commit, branch, reset, etc.) from inside that directory, because that would affect the parent repo unintentionally. AgentsCommander blocks Git repository discovery above these Project AC Root directories for agent sessions, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots.";
+
+enum LegacyGitScopeGeneration {
+    Current,
+    Before1072,
+}
+
 fn legacy_rendered_default_context_for_compat(
     agent_root: &str,
     matrix_root: Option<&str>,
     skills_section: &str,
+) -> String {
+    legacy_rendered_default_context_for_generation(
+        agent_root,
+        matrix_root,
+        skills_section,
+        LegacyGitScopeGeneration::Current,
+    )
+}
+
+fn pre_1072_legacy_rendered_default_context_for_compat(
+    agent_root: &str,
+    matrix_root: Option<&str>,
+    skills_section: &str,
+) -> String {
+    legacy_rendered_default_context_for_generation(
+        agent_root,
+        matrix_root,
+        skills_section,
+        LegacyGitScopeGeneration::Before1072,
+    )
+}
+
+fn legacy_rendered_default_context_for_generation(
+    agent_root: &str,
+    matrix_root: Option<&str>,
+    skills_section: &str,
+    git_scope_generation: LegacyGitScopeGeneration,
 ) -> String {
     enum MessagingContextMode {
         None,
@@ -3237,10 +3279,13 @@ fn legacy_rendered_default_context_for_compat(
             ws = workspace_root_phrase,
         )
     };
-    let git_scope = if matrix_root.is_some() {
-        "Your replica directory and origin Agent Matrix are typically inside a parent repository's `.ac/` folder, which is `.gitignore`d. Do NOT run `git` commands that alter state (commit, branch, reset, etc.) from inside either location, because that would affect the parent repo unintentionally. AgentsCommander blocks Git repository discovery above these Project AC Root directories for agent sessions, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots."
-    } else {
-        "Your agent directory is typically inside a parent repository's `.ac/` folder, which is `.gitignore`d. Do NOT run `git` commands that alter state (commit, branch, reset, etc.) from inside that directory, because that would affect the parent repo unintentionally. AgentsCommander blocks Git repository discovery above these Project AC Root directories for agent sessions, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots."
+    let git_scope = match (git_scope_generation, matrix_root.is_some()) {
+        (LegacyGitScopeGeneration::Current, true) => WORKGROUP_GIT_SCOPE,
+        (LegacyGitScopeGeneration::Current, false) => DIRECT_MATRIX_GIT_SCOPE,
+        (LegacyGitScopeGeneration::Before1072, true) => LEGACY_GIT_SCOPE_WITH_MATRIX_BEFORE_1072,
+        (LegacyGitScopeGeneration::Before1072, false) => {
+            LEGACY_GIT_SCOPE_WITHOUT_MATRIX_BEFORE_1072
+        }
     };
     let agency_cache_guidance = root_agency_cache_guidance(agent_root);
     let peer_name_format = match &messaging_mode {
@@ -3448,14 +3493,16 @@ fn looks_like_generated_legacy_default_context(normalized: &str) -> bool {
         return false;
     }
 
-    let Some(expected) = reconstruct_legacy_rendered_default_context(normalized) else {
+    let Some(expected_candidates) = reconstruct_legacy_rendered_default_context(normalized) else {
         return false;
     };
 
-    normalize_context_for_compat(&expected) == normalized
+    expected_candidates
+        .iter()
+        .any(|expected| normalize_context_for_compat(expected) == normalized)
 }
 
-fn reconstruct_legacy_rendered_default_context(normalized: &str) -> Option<String> {
+fn reconstruct_legacy_rendered_default_context(normalized: &str) -> Option<[String; 2]> {
     let required_once = [
         "# AgentsCommander Context",
         "## GOLDEN RULE",
@@ -3518,11 +3565,18 @@ fn reconstruct_legacy_rendered_default_context(normalized: &str) -> Option<Strin
         return None;
     }
 
-    Some(legacy_rendered_default_context_for_compat(
-        &agent_root,
-        matrix_root.as_deref(),
-        &skills_section,
-    ))
+    Some([
+        legacy_rendered_default_context_for_compat(
+            &agent_root,
+            matrix_root.as_deref(),
+            &skills_section,
+        ),
+        pre_1072_legacy_rendered_default_context_for_compat(
+            &agent_root,
+            matrix_root.as_deref(),
+            &skills_section,
+        ),
+    ])
 }
 
 fn extract_legacy_code_block_after(value: &str, marker: &str) -> Option<String> {
@@ -4800,17 +4854,318 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
 
     #[test]
     fn root_git_scope_permits_project_repo_git_ops() {
-        // C4 (round 2): the root must be told it MAY run state-changing Git in a
-        // registered project's repo (after cd-ing into the project folder), and must
-        // NOT be steered to `repo-*` dirs.
+        // The Root must be directed to a registered project root and must not be
+        // steered to a `repo-*` directory.
         let out = default_context_as_root("C:/fake/ac-root-agent", None, &no_skill_section());
-        assert!(out.contains("change into that project's root folder"));
-        assert!(out.contains("the `repo-*` naming restriction does NOT apply to you"));
-        // The non-root "switch into the appropriate `repo-*` directory" steer must NOT
-        // be what the root sees (its git_scope arm replaces it).
-        assert!(!out.contains(
-            "switch into the appropriate `repo-*` directory before running Git operations"
+        assert!(out.contains(ROOT_GIT_SCOPE));
+        assert!(out.contains("registered project root"));
+        assert!(out.contains("the `repo-*` naming restriction does not apply"));
+        assert!(!out.contains("State-changing Git belongs in `repo-*`"));
+    }
+
+    #[test]
+    fn git_scope_copy_is_location_correct_and_compact() {
+        let skills = no_skill_section();
+        let workgroup = default_context_dynamic_values(
+            "C:/fake/.ac/wg-7-dev-team/__agent_architect",
+            Some("C:/fake/.ac/_agent_architect"),
+            &skills,
+            false,
+        );
+        let direct_matrix =
+            default_context_dynamic_values("C:/fake/.ac/_agent_architect", None, &skills, false);
+        let root = default_context_dynamic_values("C:/fake/ac-root-agent", None, &skills, true);
+
+        assert_eq!(workgroup.git_scope, WORKGROUP_GIT_SCOPE);
+        assert_eq!(direct_matrix.git_scope, DIRECT_MATRIX_GIT_SCOPE);
+        assert_eq!(root.git_scope, ROOT_GIT_SCOPE);
+
+        let rendered_outputs = [
+            default_context(
+                "C:/fake/.ac/wg-7-dev-team/__agent_architect",
+                Some("C:/fake/.ac/_agent_architect"),
+                &skills,
+            ),
+            default_context("C:/fake/.ac/_agent_architect", None, &skills),
+            default_context_as_root("C:/fake/ac-root-agent", None, &skills),
+        ];
+        for output in rendered_outputs {
+            assert!(!output.contains("`.gitignore`d `.ac/`"), "{output}");
+            assert!(
+                !output.contains("`.ac/` folder, which is `.gitignore`d"),
+                "{output}"
+            );
+        }
+
+        assert!(root.git_scope.contains("settings.projectPaths"));
+        assert!(!root.git_scope.contains("belongs in `repo-*`"));
+        assert!(workgroup.git_scope.contains("belongs in `repo-*`"));
+        assert!(direct_matrix.git_scope.contains("belongs in `repo-*`"));
+        for non_root in [&workgroup.git_scope, &direct_matrix.git_scope] {
+            assert!(!non_root.contains("settings.projectPaths"));
+            assert!(!non_root.contains("registered project root"));
+        }
+
+        let workgroup_chars = WORKGROUP_GIT_SCOPE.chars().count();
+        let workgroup_words = WORKGROUP_GIT_SCOPE.split_whitespace().count();
+        assert_eq!(workgroup_chars, 220);
+        assert_eq!(workgroup_words, 33);
+        assert!(workgroup_chars * 2 <= 473);
+        assert!(workgroup_words * 2 <= 68);
+    }
+
+    #[test]
+    fn git_scope_materializes_identically_for_all_managed_targets() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let replica_root = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::create_dir_all(&replica_root).expect("create replica root");
+        std::fs::write(
+            replica_root.join("config.json"),
+            r#"{"identity":"../../_agent_dev-rust","context":["$AGENTSCOMMANDER_CONTEXT"]}"#,
+        )
+        .expect("write replica config");
+
+        let mut expected_content: Option<String> = None;
+        for target in [
+            ManagedContextTarget::Claude,
+            ManagedContextTarget::Gemini,
+            ManagedContextTarget::Codex,
+        ] {
+            let materialized =
+                materialize_agent_context_file(&path_string(&replica_root), target, false)
+                    .expect("materialize context")
+                    .expect("context path");
+            assert_eq!(
+                Path::new(&materialized)
+                    .file_name()
+                    .and_then(|name| name.to_str()),
+                Some(target.filename())
+            );
+
+            let content = std::fs::read_to_string(materialized).expect("read materialized context");
+            assert_eq!(content.matches(WORKGROUP_GIT_SCOPE).count(), 1);
+            assert!(!content.contains("`.gitignore`d `.ac/`"));
+            assert!(!content.contains("`.ac/` folder, which is `.gitignore`d"));
+            assert!(!content.contains("{{GIT_SCOPE}}"));
+            assert_no_raw_template_placeholders(&content);
+
+            if let Some(expected) = &expected_content {
+                assert_eq!(&content, expected);
+            } else {
+                expected_content = Some(content);
+            }
+        }
+    }
+
+    #[test]
+    fn pre_1072_legacy_git_scope_snapshots_are_byte_exact() {
+        use sha2::{Digest, Sha256};
+
+        assert_eq!(LEGACY_GIT_SCOPE_WITH_MATRIX_BEFORE_1072.len(), 598);
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(LEGACY_GIT_SCOPE_WITH_MATRIX_BEFORE_1072.as_bytes())
+            ),
+            "db90740fff6b6e44bf2f73fe929e8ec792f3ab5f459350f5e2d612f7151fd050"
+        );
+        assert_eq!(LEGACY_GIT_SCOPE_WITHOUT_MATRIX_BEFORE_1072.len(), 570);
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(LEGACY_GIT_SCOPE_WITHOUT_MATRIX_BEFORE_1072.as_bytes())
+            ),
+            "fe831abf46aa70fdefaecdaa2f0932966b2895a6f709f50b3c5981a07327b2f2"
+        );
+    }
+
+    #[test]
+    fn pre_1072_legacy_with_matrix_classifies_stale_and_heals_once() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let replica_root = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::create_dir_all(&replica_root).expect("create replica root");
+
+        let agent_root = path_string(&replica_root);
+        let matrix_root = path_string(&matrix_root);
+        let skills_section = render_skills_section(&discover_skill_index(Some(&matrix_root)));
+        let legacy = pre_1072_legacy_rendered_default_context_for_compat(
+            &agent_root,
+            Some(&matrix_root),
+            &skills_section,
+        );
+        assert_eq!(
+            legacy
+                .matches(LEGACY_GIT_SCOPE_WITH_MATRIX_BEFORE_1072)
+                .count(),
+            1
+        );
+        assert!(matches!(
+            classify_legacy_rendered_default_context(
+                &legacy,
+                &agent_root,
+                Some(&matrix_root),
+                &skills_section,
+            ),
+            LegacyRenderedDefaultContext::StaleGenerated
         ));
+
+        let template_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&template_path, &legacy).expect("write pre-1072 template");
+        let first = resolve_agent_context(
+            &agent_root,
+            Some(&matrix_root),
+            &skills_section,
+            &replica_root,
+            None,
+            None,
+        )
+        .expect("resolve pre-1072 context");
+        assert_eq!(first.matches(WORKGROUP_GIT_SCOPE).count(), 1);
+        assert!(!first.contains(LEGACY_GIT_SCOPE_WITH_MATRIX_BEFORE_1072));
+        assert_eq!(
+            std::fs::read_to_string(&template_path).expect("read healed template"),
+            get_default_agent_template()
+        );
+        assert_no_context_template_temp_leftover(&workspace_dir);
+
+        let second = resolve_agent_context(
+            &agent_root,
+            Some(&matrix_root),
+            &skills_section,
+            &replica_root,
+            None,
+            None,
+        )
+        .expect("resolve healed context");
+        assert_eq!(second, first);
+        assert_eq!(
+            std::fs::read_to_string(&template_path).expect("read converged template"),
+            get_default_agent_template()
+        );
+    }
+
+    #[test]
+    fn pre_1072_legacy_without_matrix_classifies_stale_and_heals_once() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+
+        let agent_root = path_string(&matrix_root);
+        let skills_section = render_skills_section(&discover_skill_index(Some(&agent_root)));
+        let legacy =
+            pre_1072_legacy_rendered_default_context_for_compat(&agent_root, None, &skills_section);
+        assert_eq!(
+            legacy
+                .matches(LEGACY_GIT_SCOPE_WITHOUT_MATRIX_BEFORE_1072)
+                .count(),
+            1
+        );
+        assert!(matches!(
+            classify_legacy_rendered_default_context(&legacy, &agent_root, None, &skills_section,),
+            LegacyRenderedDefaultContext::StaleGenerated
+        ));
+
+        let template_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&template_path, &legacy).expect("write pre-1072 template");
+        let first =
+            resolve_agent_context(&agent_root, None, &skills_section, &matrix_root, None, None)
+                .expect("resolve pre-1072 context");
+        assert_eq!(first.matches(DIRECT_MATRIX_GIT_SCOPE).count(), 1);
+        assert!(!first.contains(LEGACY_GIT_SCOPE_WITHOUT_MATRIX_BEFORE_1072));
+        assert_eq!(
+            std::fs::read_to_string(&template_path).expect("read healed template"),
+            get_default_agent_template()
+        );
+        assert_no_context_template_temp_leftover(&workspace_dir);
+
+        let second =
+            resolve_agent_context(&agent_root, None, &skills_section, &matrix_root, None, None)
+                .expect("resolve healed context");
+        assert_eq!(second, first);
+        assert_eq!(
+            std::fs::read_to_string(&template_path).expect("read converged template"),
+            get_default_agent_template()
+        );
+    }
+
+    #[test]
+    fn one_byte_edited_pre_1072_git_scope_remains_custom() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let replica_root = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::create_dir_all(&replica_root).expect("create replica root");
+
+        let agent_root = path_string(&replica_root);
+        let matrix_root = path_string(&matrix_root);
+        let skills_section = render_skills_section(&discover_skill_index(Some(&matrix_root)));
+        let legacy = pre_1072_legacy_rendered_default_context_for_compat(
+            &agent_root,
+            Some(&matrix_root),
+            &skills_section,
+        );
+        let warning_start = legacy
+            .find(LEGACY_GIT_SCOPE_WITH_MATRIX_BEFORE_1072)
+            .expect("old Matrix warning");
+        let byte_offset = warning_start
+            + LEGACY_GIT_SCOPE_WITH_MATRIX_BEFORE_1072
+                .find("typically")
+                .expect("typically in old warning")
+            + 1;
+        assert_eq!(legacy.as_bytes()[byte_offset], b'y');
+        let mut edited_bytes = legacy.as_bytes().to_vec();
+        edited_bytes[byte_offset] = b'z';
+        let edited = String::from_utf8(edited_bytes).expect("ASCII edit remains UTF-8");
+        assert_eq!(edited.len(), legacy.len());
+        assert_eq!(
+            edited
+                .bytes()
+                .zip(legacy.bytes())
+                .filter(|(edited, original)| edited != original)
+                .count(),
+            1
+        );
+        assert!(matches!(
+            classify_legacy_rendered_default_context(
+                &edited,
+                &agent_root,
+                Some(&matrix_root),
+                &skills_section,
+            ),
+            LegacyRenderedDefaultContext::NotLegacy
+        ));
+
+        let template_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&template_path, edited.as_bytes()).expect("write edited template");
+        let rendered = resolve_agent_context(
+            &agent_root,
+            Some(&matrix_root),
+            &skills_section,
+            &replica_root,
+            None,
+            None,
+        )
+        .expect("resolve edited context");
+        assert!(!rendered.is_empty());
+        assert_eq!(
+            std::fs::read(&template_path).expect("read preserved template"),
+            edited.as_bytes()
+        );
+        assert_no_context_template_temp_leftover(&workspace_dir);
     }
 
     #[test]
