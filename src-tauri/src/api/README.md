@@ -33,12 +33,20 @@ agentscommander api-client revoke --token <MASTER/ROOT> --client-id <id>
 agentscommander api-client list   --token <MASTER/ROOT>
 ```
 
-Mint prints the secret ONCE. The registry is read THROUGH to disk on every
-request (mtime-gated), so a revoke takes effect on the next request. Identity is
-the token's bound replica: `from` is derived at request time from `boundRoot`,
-never from the request body. The Root Agent is rejected (mint-time + request-time).
-Auth is unconditional in all build profiles (no debug bypass). A per-source-IP
-failed-auth lockout throttles unauthenticated probing.
+Mint prints the secret ONCE. Ordinary endpoints use the existing mtime-gated
+read-through cache. Privileged PTY input bypasses that cache: every request takes
+the stable `api-clients.lock`, performs a bounded duplicate-rejecting read, and
+checks current revocation, expiry, scope, session id, credential generation,
+root object identity, and constant-time token-hash equality against the live
+container transport binding. Manual clients remain unbound even if they request
+the `pty-input` scope. Workers do not receive that scope automatically, and a
+handcrafted registry row cannot substitute for live runtime provenance.
+
+Identity is the token's bound replica: `from` is derived at request time from
+`boundRoot`, never from the request body. The Root Agent is rejected from HTTP
+at mint time and request time. Auth is unconditional in all build profiles (no
+debug bypass). A per-source-IP failed-auth lockout throttles unauthenticated
+probing.
 
 ## Endpoints (`/api/v1`)
 
@@ -57,6 +65,55 @@ failed-auth lockout throttles unauthenticated probing.
   a replay returns the same queued `messageId` and never creates a second row.
   Response: `202` queued with `{ "status": "queued", "messageId": "..." }`;
   `400/401/403/413/429` on client/auth/routing/size/lockout failures.
+- `POST /api/v1/pty-input` - privileged exact PTY actuation for a live,
+  automatically bound container coordinator. It requires the distinct
+  `pty-input` scope; `send` does not imply it. The strict request is:
+  ```json
+  {
+    "apiVersion": "1",
+    "opId": "<canonical UUID v4>",
+    "to": "<exact canonical same-workgroup member FQN>",
+    "ptyInput": {
+      "version": 1,
+      "text": "exact UTF-8 text",
+      "enter": "agent-submit"
+    },
+    "agentId": "<optional configured id>"
+  }
+  ```
+  Every object rejects unknown and duplicate fields. The route rejects query
+  parameters, duplicate headers, non-JSON content types, and content encodings
+  other than absent or `identity`. `text` is 1 through 65,536 decoded UTF-8
+  bytes and uses the same control, bidi, CR, and line-separator validator as the
+  host daemon. The larger raw-envelope ceiling permits a legal 65,536-byte
+  value represented entirely with JSON `\uXXXX` escapes; it does not raise the
+  decoded limit. The server derives sender, source plane, injection id, nonce,
+  issued time, expiry, authority session, and backend.
+
+  `opId` is permanently idempotent for that physical sender incarnation.
+  Exact retries return the original operation, including after full-row
+  compaction. Changed target, text, profile, source semantics, or sender object
+  identity returns `409` and can never create another injection under that id.
+  A new or duplicate nonterminal operation returns `202`; an exact duplicate
+  already terminal returns `200`. Other fixed mappings are `400` malformed,
+  `401` absent/revoked/expired credential, `403` scope/binding/authority,
+  `413` decoded payload too large, `429` auth/rate/admission capacity, and `500`
+  store failure.
+- `GET /api/v1/pty-input/{opId}` - metadata-only status for the currently
+  authenticated physical sender. It performs the same fresh scope and live
+  runtime-binding check, rejects a query string and noncanonical id, and cannot
+  inspect another sender's operation. It returns `200` or `404`.
+
+  Public statuses are `queued`, `actuating`, `injected`, `rejected`, and
+  `indeterminate`. Internal preparing and retry states appear as `queued`.
+  `injected` means the backend accepted the exact text write and required first
+  Enter, not that the model consumed or completed it. `rejected` proves zero
+  writes before the no-replay boundary. `indeterminate` means actuation began
+  but complete submission cannot be proven; it is never automatically replayed.
+  Results contain ids, canonical sender/target, byte length, SHA-256, source,
+  selected session/backend when known, canonical timestamps, and fixed reason
+  metadata only. They never contain text, bearer credentials, raw nonce, host
+  path, argv, environment, or arbitrary parser/OS error text.
 - `GET /api/v1/peers[?peer=<fqn>...]` - `list-peers-lean` for the caller's bound
   replica; `reachable` is computed from the bound identity.
 - `GET /api/v1/healthz` - unauthenticated liveness, body exactly `{"ok":true}`.
@@ -92,6 +149,15 @@ fails closed). Secrets and hashes are never logged.
 
 The message bus database is stored plaintext at
 `config_dir()/api-message-bus.sqlite3`. It is host-only and sensitive because it
-contains queued inline message bodies. The DB uses WAL, foreign keys, a 5s busy
-timeout, schema migrations, transactional enqueue/idempotency, retry leases, and
-delivered/poisoned retention.
+contains queued ordinary message bodies and replayable nonterminal PTY-input
+text. PTY-input payload bytes are cleared transactionally when `actuating`
+commits or when the operation rejects. Terminal operation rows, tombstones,
+audit rows, events, and status responses retain metadata only. SQLite WAL and
+storage media can still contain historical page bytes, so this is redaction of
+live application state, not forensic secure erasure.
+
+The DB uses WAL, foreign keys, a 5s busy timeout, schema migration version 2,
+transactional admission/idempotency, bounded leases and recovery, fixed
+cross-process operation/target lock stripes, permanent compact no-replay
+tombstones, and seven-day full terminal retention. Unconfirmed host results may
+retain full metadata for 30 days so artifacts can be repaired.

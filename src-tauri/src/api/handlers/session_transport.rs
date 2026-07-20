@@ -25,7 +25,7 @@ use crate::session::warnings::{
     WARNING_KIND_PROTOCOL_MISMATCH,
 };
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionTransportQuery {
     session_id: Uuid,
@@ -70,14 +70,55 @@ fn authorize_transport(
     headers: &HeaderMap,
     query: SessionTransportQuery,
 ) -> Result<AuthorizedTransport, ApiError> {
-    let client = match handlers::authenticate(state, headers, ip, SCOPE_SESSION_TRANSPORT) {
-        Ok(client) => client,
-        Err(err) if err.status() == StatusCode::TOO_MANY_REQUESTS => return Err(err),
-        Err(_) => return Err(uniform_transport_auth_failure()),
+    state.lockout.check(ip).map_err(|error| {
+        if error.status() == StatusCode::TOO_MANY_REQUESTS {
+            error
+        } else {
+            uniform_transport_auth_failure()
+        }
+    })?;
+    let presented = match handlers::bearer_token_strict(headers) {
+        Ok(presented) => presented,
+        Err(_) => return Err(reject_transport_auth(state, ip, None, "missing_token")),
     };
-
-    if crate::api::identity::resolve_from(&client).is_err() {
-        return Err(uniform_transport_auth_failure());
+    let fresh = match state
+        .store
+        .authenticate_pty_input_fresh(&presented)
+        .map_err(|_| uniform_transport_auth_failure())?
+    {
+        Some(fresh) => fresh,
+        None => return Err(reject_transport_auth(state, ip, None, "invalid_token")),
+    };
+    let client = &fresh.client;
+    let session_id_text = query.session_id.to_string();
+    let generation = match client.credential_generation.as_deref() {
+        Some(generation) => generation,
+        None => {
+            return Err(reject_transport_auth(
+                state,
+                ip,
+                Some(client),
+                "unbound_client",
+            ));
+        }
+    };
+    if !client.has_scope(SCOPE_SESSION_TRANSPORT) {
+        return Err(reject_transport_auth(
+            state,
+            ip,
+            Some(client),
+            "forbidden_scope",
+        ));
+    }
+    if client.bound_session_id.as_deref() != Some(session_id_text.as_str())
+        || crate::api::identity::resolve_from(client).is_err()
+    {
+        return Err(reject_transport_auth(
+            state,
+            ip,
+            Some(client),
+            "binding_mismatch",
+        ));
     }
 
     let backend = {
@@ -85,18 +126,88 @@ fn authorize_transport(
         pty_mgr.container_backend()
     };
 
+    let binding = match backend.credential_binding(query.session_id) {
+        Some(binding) => binding,
+        None => {
+            return Err(reject_transport_auth(
+                state,
+                ip,
+                Some(client),
+                "binding_mismatch",
+            ));
+        }
+    };
+    let root =
+        match crate::path_identity::verify_directory(std::path::Path::new(&client.bound_root)) {
+            Ok(root) => root,
+            Err(_) => {
+                return Err(reject_transport_auth(
+                    state,
+                    ip,
+                    Some(client),
+                    "binding_mismatch",
+                ));
+            }
+        };
+    if binding.client_id != client.client_id
+        || binding.credential_generation != generation
+        || binding.bound_session_id != query.session_id.to_string()
+        || binding.bound_root_object_id != root.object_id
+        || !crate::api::auth::constant_time_eq(
+            &binding.credential_token_hash,
+            &fresh.presented_token_hash,
+        )
+    {
+        return Err(reject_transport_auth(
+            state,
+            ip,
+            Some(client),
+            "binding_mismatch",
+        ));
+    }
     if backend
         .consume_ticket(query.session_id, &client.bound_root, &query.ticket)
         .is_err()
     {
+        return Err(reject_transport_auth(
+            state,
+            ip,
+            Some(client),
+            "invalid_ticket",
+        ));
+    }
+    if state.lockout.record_success(ip).is_err() {
+        log::warn!("[container-transport] lockout success update failed code=auth_state_failed");
         return Err(uniform_transport_auth_failure());
     }
+    crate::api::audit::record(
+        &client.client_id,
+        &client.bound_fqn,
+        SCOPE_SESSION_TRANSPORT,
+        "authenticated",
+    );
 
     Ok(AuthorizedTransport {
         backend,
         session_id: query.session_id,
-        bound_root: client.bound_root,
+        bound_root: client.bound_root.clone(),
     })
+}
+
+fn reject_transport_auth(
+    state: &ApiState,
+    ip: std::net::IpAddr,
+    client: Option<&crate::api::auth::ApiClient>,
+    outcome: &'static str,
+) -> ApiError {
+    if state.lockout.record_failure(ip).is_err() {
+        log::warn!("[container-transport] lockout failure update failed code=auth_state_failed");
+    }
+    let (client_id, bound_fqn) = client
+        .map(|client| (client.client_id.as_str(), client.bound_fqn.as_str()))
+        .unwrap_or(("-", "-"));
+    crate::api::audit::record(client_id, bound_fqn, SCOPE_SESSION_TRANSPORT, outcome);
+    uniform_transport_auth_failure()
 }
 
 fn uniform_transport_auth_failure() -> ApiError {
@@ -187,8 +298,7 @@ async fn validate_hello(
         return Err(HelloRejection::FirstFrameTooLarge);
     }
 
-    let frame = parse_bridge_text_frame(text.as_str())
-        .map_err(|e| HelloRejection::InvalidHello(e.to_string()))?;
+    let frame = parse_bridge_text_frame(text.as_str()).map_err(|_| HelloRejection::InvalidHello)?;
     let BridgeToHostFrame::Hello {
         version,
         session_id: hello_session_id,
@@ -225,7 +335,7 @@ async fn validate_hello(
 enum HelloRejection {
     FirstFrameNotText,
     FirstFrameTooLarge,
-    InvalidHello(String),
+    InvalidHello,
     FirstFrameNotHello,
     ProtocolMismatch { expected: u32, reported: u32 },
     SessionIdMismatch { expected: Uuid, reported: Uuid },
@@ -242,8 +352,8 @@ impl HelloRejection {
             Self::FirstFrameTooLarge => {
                 "container transport handshake failed: first frame was too large".to_string()
             }
-            Self::InvalidHello(err) => {
-                format!("container transport handshake failed: invalid hello: {err}")
+            Self::InvalidHello => {
+                "container transport handshake failed: invalid hello".to_string()
             }
             Self::FirstFrameNotHello => {
                 "container transport handshake failed: first frame was not hello".to_string()

@@ -39,7 +39,9 @@ pub struct MintArgs {
     /// Replica working directory to bind the token to (the identity source).
     #[arg(long)]
     pub root: String,
-    /// Comma-separated scopes. Increment 1 allows: send, list-peers-lean.
+    /// Comma-separated scopes: send, list-peers-lean, session-transport, pty-input.
+    /// A manually minted pty-input scope is not actuation authority; privileged
+    /// input also requires the matching automatically bound live container session.
     #[arg(long)]
     pub scopes: String,
     /// Optional human label.
@@ -143,6 +145,8 @@ fn mint(a: MintArgs) -> i32 {
             scopes: scopes.clone(),
             issued_at,
             expires_at: a.expires,
+            bound_session_id: None,
+            credential_generation: None,
         },
     ) {
         Ok(out) => {
@@ -153,7 +157,7 @@ fn mint(a: MintArgs) -> i32 {
                 "boundFqn": bound_fqn,
                 "boundRoot": a.root,
                 "scopes": scopes,
-                "note": "Store this token now; it is shown only once. The registry keeps only a hash."
+                "note": "Store this token now; it is shown only once. The registry keeps only a hash. A manually requested pty-input scope does not grant actuation without an automatically bound live container session."
             });
             crate::cli_println!(
                 "{}",

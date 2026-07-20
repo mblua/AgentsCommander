@@ -79,6 +79,7 @@ pub fn execute(args: RaiseHandArgs) -> i32 {
         switch_profile: None,
         dry_run: None,
         quiet_period_ms: None,
+        pty_input: None,
     };
 
     let outbox_dir = if is_root {

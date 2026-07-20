@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use uuid::Uuid;
 
 use crate::config::agent_config::AgentLocalConfig;
@@ -1635,6 +1635,315 @@ where
     }
 }
 
+enum OutboxClassification {
+    Standard(String),
+    PrivilegedCandidate {
+        bytes: Vec<u8>,
+        identity: crate::path_identity::VerifiedPathIdentity,
+    },
+    InvalidDocument,
+}
+
+fn contains_privileged_token(bytes: &[u8]) -> bool {
+    [
+        b"ptyInput".as_slice(),
+        b"pty-input".as_slice(),
+        b"pty-input-marker".as_slice(),
+    ]
+    .iter()
+    .any(|needle| bytes.windows(needle.len()).any(|window| window == *needle))
+}
+
+fn decode_loose_json_ascii_escapes(bytes: &[u8]) -> Vec<u8> {
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes.get(index) == Some(&b'\\')
+            && matches!(bytes.get(index + 1), Some(b'u' | b'U'))
+            && index + 6 <= bytes.len()
+        {
+            let mut value = 0_u32;
+            let mut valid = true;
+            for byte in &bytes[index + 2..index + 6] {
+                let Some(digit) = (*byte as char).to_digit(16) else {
+                    valid = false;
+                    break;
+                };
+                value = (value << 4) | digit;
+            }
+            if valid && value <= 0x7f {
+                decoded.push(value as u8);
+                index += 6;
+                continue;
+            }
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    decoded
+}
+
+fn raw_privileged_probe(bytes: &[u8]) -> bool {
+    if contains_privileged_token(bytes)
+        || contains_privileged_token(&decode_loose_json_ascii_escapes(bytes))
+    {
+        return true;
+    }
+
+    for little_endian in [true, false] {
+        let mut ascii = Vec::with_capacity(bytes.len() / 2);
+        for chunk in bytes.chunks_exact(2) {
+            let unit = if little_endian {
+                u16::from_le_bytes([chunk[0], chunk[1]])
+            } else {
+                u16::from_be_bytes([chunk[0], chunk[1]])
+            };
+            ascii.push(u8::try_from(unit).unwrap_or(b' '));
+        }
+        if contains_privileged_token(&ascii)
+            || contains_privileged_token(&decode_loose_json_ascii_escapes(&ascii))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn reason_code_name(code: crate::phone::types::PtyInputReasonCode) -> &'static str {
+    crate::phone::types::pty_input_reason_code_name(code)
+}
+
+fn reason_code_from_name(name: &str) -> crate::phone::types::PtyInputReasonCode {
+    match serde_json::from_value(serde_json::Value::String(name.to_string())) {
+        Ok(code) => code,
+        Err(_) => crate::phone::types::PtyInputReasonCode::SenderIdentityInvalid,
+    }
+}
+
+async fn reject_pty_input_before_boundary(
+    store: &crate::api::message_store::MessageStore,
+    heartbeat: &mut crate::api::message_store::PreparationHeartbeatGuard,
+    injection_id: &str,
+    code: crate::phone::types::PtyInputReasonCode,
+) {
+    heartbeat.finish().await;
+    match store
+        .terminalize_pty_input_offloaded(
+            injection_id.to_string(),
+            crate::phone::types::PtyInputPublicStatus::Rejected,
+            Some(code),
+            chrono::Utc::now(),
+        )
+        .await
+    {
+        Ok(result) => crate::api::audit::record_pty_input_result("terminal", &result),
+        Err(_) => log::warn!(
+            "[pty-input] rejection persistence failed id={} code=terminal_store_failed",
+            injection_id
+        ),
+    }
+}
+
+async fn finish_pty_input_before_boundary(
+    store: &crate::api::message_store::MessageStore,
+    heartbeat: &mut crate::api::message_store::PreparationHeartbeatGuard,
+    injection_id: &str,
+    lease_owner: &str,
+    code: crate::phone::types::PtyInputReasonCode,
+) {
+    use crate::phone::types::PtyInputReasonCode as C;
+    heartbeat.finish().await;
+    if matches!(
+        code,
+        C::RestoreInProgress
+            | C::PurgeInProgress
+            | C::SessionRace
+            | C::LeaseLost
+            | C::SpawnFailedSafe
+            | C::StoreTransient
+    ) {
+        if store
+            .retry_pty_input_offloaded(
+                injection_id.to_string(),
+                lease_owner.to_string(),
+                code,
+                chrono::Utc::now(),
+            )
+            .await
+            .is_ok()
+        {
+            return;
+        }
+        reject_pty_input_before_boundary(store, heartbeat, injection_id, C::StoreTransient).await;
+    } else {
+        reject_pty_input_before_boundary(store, heartbeat, injection_id, code).await;
+    }
+}
+
+fn decode_outbox_snapshot(bytes: &[u8]) -> Result<String, ()> {
+    if bytes.starts_with(&[0xff, 0xfe]) {
+        let body = &bytes[2..];
+        if !body.len().is_multiple_of(2) {
+            return Err(());
+        }
+        let units: Vec<u16> = body
+            .chunks_exact(2)
+            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+            .collect();
+        String::from_utf16(&units).map_err(|_| ())
+    } else if bytes.starts_with(&[0xfe, 0xff]) {
+        let body = &bytes[2..];
+        if !body.len().is_multiple_of(2) {
+            return Err(());
+        }
+        let units: Vec<u16> = body
+            .chunks_exact(2)
+            .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
+            .collect();
+        String::from_utf16(&units).map_err(|_| ())
+    } else if bytes.starts_with(&[0xef, 0xbb, 0xbf]) {
+        std::str::from_utf8(&bytes[3..])
+            .map(str::to_owned)
+            .map_err(|_| ())
+    } else {
+        std::str::from_utf8(bytes)
+            .map(str::to_owned)
+            .map_err(|_| ())
+    }
+}
+
+fn classify_outbox_document(path: &Path) -> OutboxClassification {
+    let (bytes, identity) = match crate::path_identity::read_bounded_regular(
+        path,
+        crate::phone::types::PTY_INPUT_HOST_ENVELOPE_MAX_BYTES,
+    ) {
+        Ok(snapshot) => snapshot,
+        Err(_) => return OutboxClassification::InvalidDocument,
+    };
+    let raw_privileged = raw_privileged_probe(&bytes);
+    let content = match decode_outbox_snapshot(&bytes) {
+        Ok(content) => content,
+        Err(()) => {
+            return if raw_privileged {
+                OutboxClassification::PrivilegedCandidate { bytes, identity }
+            } else {
+                OutboxClassification::InvalidDocument
+            };
+        }
+    };
+    let scanned = match crate::path_identity::scan_json_document(content.as_bytes()) {
+        Ok(scanned) => scanned,
+        Err(_) => {
+            return if raw_privileged || raw_privileged_probe(content.as_bytes()) {
+                OutboxClassification::PrivilegedCandidate { bytes, identity }
+            } else {
+                OutboxClassification::InvalidDocument
+            };
+        }
+    };
+    if scanned.privileged_candidate {
+        OutboxClassification::PrivilegedCandidate { bytes, identity }
+    } else {
+        // Standard duplicate-key behavior remains unchanged. The retained
+        // snapshot is passed to the legacy decoder without another file read.
+        OutboxClassification::Standard(content)
+    }
+}
+
+fn write_atomic_pty_metadata(destination: &Path, bytes: &[u8]) -> Result<(), &'static str> {
+    let parent = destination.parent().ok_or("unsafe_path")?;
+    let parent_identity =
+        crate::path_identity::verify_directory(parent).map_err(|_| "unsafe_path")?;
+    let destination_identity = match std::fs::symlink_metadata(destination) {
+        Ok(_) => Some(
+            crate::path_identity::verify_regular_file(destination).map_err(|_| "unsafe_path")?,
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => return Err("unsafe_path"),
+    };
+    let file_name = destination
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or("unsafe_path")?;
+    let temp = parent.join(format!(".{file_name}.{}.pty-input-tmp", Uuid::new_v4()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(0x0002_0000);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+        options
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let result = (|| {
+        let mut file = options.open(&temp).map_err(|_| "artifact_unclaimed")?;
+        use std::io::Write;
+        file.write_all(bytes).map_err(|_| "artifact_unclaimed")?;
+        file.flush().map_err(|_| "artifact_unclaimed")?;
+        file.sync_all().map_err(|_| "artifact_unclaimed")?;
+        crate::path_identity::verify_opened_regular_file(&temp, &file, false)
+            .map_err(|_| "unsafe_path")?;
+        drop(file);
+
+        let current_parent =
+            crate::path_identity::verify_directory(parent).map_err(|_| "unsafe_path")?;
+        if !crate::path_identity::same_object(&parent_identity, &current_parent) {
+            return Err("unsafe_path");
+        }
+        match &destination_identity {
+            Some(expected) => {
+                let current = crate::path_identity::verify_regular_file(destination)
+                    .map_err(|_| "unsafe_path")?;
+                if !crate::path_identity::same_object(expected, &current) {
+                    return Err("unsafe_path");
+                }
+            }
+            None => match std::fs::symlink_metadata(destination) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                _ => return Err("unsafe_path"),
+            },
+        }
+        crate::config::root_agent::atomic_replace_existing(&temp, destination)
+            .map_err(|_| "artifact_unclaimed")?;
+        let (published, _) = crate::path_identity::read_bounded_regular(
+            destination,
+            crate::phone::types::PTY_INPUT_METADATA_MAX_BYTES,
+        )
+        .map_err(|_| "unsafe_path")?;
+        if published != bytes {
+            return Err("artifact_unclaimed");
+        }
+        if let Ok(parent_handle) = std::fs::File::open(parent) {
+            if let Err(error) = parent_handle.sync_all() {
+                log::debug!(
+                    "[pty-input] metadata parent sync failed code=artifact_unclaimed error_kind={:?}",
+                    error.kind()
+                );
+            }
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        if let Err(error) = std::fs::remove_file(&temp) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                log::debug!(
+                    "[pty-input] metadata temp cleanup failed code=artifact_unclaimed error_kind={:?}",
+                    error.kind()
+                );
+            }
+        }
+    }
+    result
+}
+
 /// The MailboxPoller runs as a background tokio task. It polls outbox directories
 /// for all known agent repos, validates messages, and delivers them according to mode.
 #[cfg(test)]
@@ -1896,8 +2205,75 @@ impl MailboxPoller {
         });
     }
 
+    fn scrub_stale_pty_input_temps(
+        &self,
+        outbox: &Path,
+        store: &crate::api::message_store::MessageStore,
+    ) {
+        let Ok(entries) = std::fs::read_dir(outbox) else {
+            return;
+        };
+        for entry in entries.filter_map(Result::ok).take(1_024) {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if !name.ends_with(".pty-input-request-tmp") || !name.starts_with('.') {
+                continue;
+            }
+            let Some(injection_id) = name.split('.').nth(1) else {
+                continue;
+            };
+            if crate::phone::types::parse_canonical_uuid_v4(injection_id).is_err()
+                || self.verified_pty_outbox_owner(&path).is_err()
+            {
+                continue;
+            }
+            let old_enough = std::fs::symlink_metadata(&path)
+                .ok()
+                .filter(|metadata| metadata.is_file())
+                .and_then(|metadata| metadata.modified().ok())
+                .and_then(|modified| modified.elapsed().ok())
+                .is_some_and(|age| age >= std::time::Duration::from_secs(10 * 60));
+            if !old_enough || crate::path_identity::verify_regular_file(&path).is_err() {
+                continue;
+            }
+            let Ok(Some(_operation_lock)) = store.try_operation_lock(injection_id) else {
+                continue;
+            };
+            if let Err(error) = std::fs::remove_file(&path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    log::debug!(
+                        "[pty-input] stale request temp cleanup failed id={} code=artifact_unclaimed error_kind={:?}",
+                        injection_id,
+                        error.kind()
+                    );
+                }
+            }
+        }
+    }
+
     /// One poll cycle: scan all repo outbox dirs, process each message.
     async fn poll(&mut self, app: &tauri::AppHandle) -> Result<(), String> {
+        if let Some(state) = app.try_state::<crate::api::message_store::MessageStoreState>() {
+            if let Ok(store) = &state.store {
+                let active = state.active_operations.snapshot();
+                if store
+                    .recover_pty_input_runtime_offloaded(active, chrono::Utc::now())
+                    .await
+                    .is_err()
+                {
+                    log::warn!("[pty-input] runtime recovery failed code=store_transient");
+                }
+                if store
+                    .compact_pty_terminal_maintenance_offloaded(chrono::Utc::now(), 64)
+                    .await
+                    .is_err()
+                {
+                    log::warn!("[pty-input] compaction failed code=store_transient");
+                }
+            }
+        }
         let settings = app.state::<SettingsState>();
         let (repo_paths, archived) = {
             let cfg = settings.read().await;
@@ -1950,6 +2326,11 @@ impl MailboxPoller {
             if !outbox_dir.is_dir() {
                 continue;
             }
+            if let Some(state) = app.try_state::<crate::api::message_store::MessageStoreState>() {
+                if let Ok(store) = &state.store {
+                    self.scrub_stale_pty_input_temps(outbox_dir, store);
+                }
+            }
 
             let entries: Vec<PathBuf> = match std::fs::read_dir(outbox_dir) {
                 Ok(rd) => rd
@@ -1966,7 +2347,24 @@ impl MailboxPoller {
 
             let is_app_outbox = outbox_dir.as_path() == Path::new(&app_outbox_path);
             for path in entries {
-                match self.process_message(app, &path, is_app_outbox).await {
+                let standard_content = match classify_outbox_document(&path) {
+                    OutboxClassification::PrivilegedCandidate { bytes, identity } => {
+                        self.process_pty_input_file(app, &path, is_app_outbox, &bytes, &identity)
+                            .await;
+                        self.retry_tracker.remove(&path);
+                        continue;
+                    }
+                    OutboxClassification::InvalidDocument => {
+                        self.reject_malformed_pty_candidate(&path);
+                        self.retry_tracker.remove(&path);
+                        continue;
+                    }
+                    OutboxClassification::Standard(content) => content,
+                };
+                match self
+                    .process_message_content(app, &path, is_app_outbox, &standard_content)
+                    .await
+                {
                     Ok(()) => {
                         self.retry_tracker.remove(&path);
                     }
@@ -2036,7 +2434,7 @@ impl MailboxPoller {
                                 self.retry_tracker.remove(&path);
                             } else {
                                 log::error!(
-                                    "Failed to reject outbox message {:?} — will retry",
+                                    "Failed to reject outbox message {:?}; will retry",
                                     path
                                 );
                             }
@@ -2061,22 +2459,2478 @@ impl MailboxPoller {
         Ok(())
     }
 
+    fn reject_malformed_pty_candidate(&self, path: &Path) {
+        use crate::phone::types::{
+            PtyInputHostArtifact, PtyInputPublicStatus, PtyInputReason, PtyInputReasonCode,
+            PtyInputResult,
+        };
+        let source_identity = match crate::path_identity::verify_regular_file(path) {
+            Ok(identity) => identity,
+            Err(_) => return,
+        };
+        // A malformed document does not independently prove that its filename
+        // belongs to the claimed request. Always use a server ID so it cannot
+        // replace a correlated terminal artifact for another operation.
+        let injection_id = Uuid::new_v4().to_string();
+        let mut result = PtyInputResult::new(injection_id.clone(), PtyInputPublicStatus::Rejected);
+        result.terminal_at = Some(crate::phone::types::canonical_pty_timestamp(
+            chrono::Utc::now(),
+        ));
+        result.reason = Some(PtyInputReason::from_code(
+            PtyInputReasonCode::InvalidEnvelope,
+        ));
+        let artifact = PtyInputHostArtifact {
+            result,
+            confirmation_tag: String::new(),
+        };
+        if let Err(code) = self.write_pty_input_artifact(path, &artifact) {
+            log::warn!(
+                "[pty-input] malformed candidate artifact failed id={} code={}",
+                injection_id,
+                code
+            );
+            return;
+        }
+        let current_source = match crate::path_identity::verify_regular_file(path) {
+            Ok(identity) => identity,
+            Err(_) => return,
+        };
+        if !crate::path_identity::same_object(&source_identity, &current_source) {
+            return;
+        }
+        if let Err(error) = std::fs::remove_file(path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                log::warn!(
+                    "[pty-input] malformed candidate cleanup failed id={} code=artifact_unclaimed",
+                    injection_id
+                );
+            }
+        }
+    }
+
+    async fn reject_correlated_host_pty_candidate<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        source_identity: &crate::path_identity::VerifiedPathIdentity,
+        store: &crate::api::message_store::MessageStore,
+        envelope: &crate::phone::types::PtyInputHostEnvelope,
+        code: crate::phone::types::PtyInputReasonCode,
+    ) -> bool {
+        use crate::phone::types::{
+            parse_canonical_pty_timestamp, parse_canonical_uuid_v4, pty_input_confirmation_tag,
+            pty_input_host_request_fingerprint, sha256_hex, PtyInputEnterMode,
+            PtyInputHostArtifact, PtyInputHostFingerprint, PTY_INPUT_TTL_SECS, PTY_INPUT_VERSION,
+        };
+
+        let payload = &envelope.pty_input;
+        let immutable_shape_valid = envelope.action == "pty-input"
+            && envelope.body.is_empty()
+            && envelope.mode == "wake"
+            && !envelope.get_output
+            && envelope.preferred_agent.is_empty()
+            && envelope.priority == "normal"
+            && payload.version == PTY_INPUT_VERSION
+            && payload.enter == PtyInputEnterMode::AgentSubmit
+            && envelope.id == payload.injection_id
+            && payload.op_id == payload.injection_id
+            && path.file_stem().and_then(|value| value.to_str())
+                == Some(payload.injection_id.as_str());
+        if !immutable_shape_valid {
+            return false;
+        }
+        let Ok(injection_id) = parse_canonical_uuid_v4(&payload.injection_id) else {
+            return false;
+        };
+        let Ok(nonce) = parse_canonical_uuid_v4(&payload.nonce) else {
+            return false;
+        };
+        if injection_id == nonce
+            || parse_canonical_uuid_v4(&envelope.token).is_err()
+            || crate::pty::inject::validate_pty_input_text(&payload.text).is_err()
+        {
+            return false;
+        }
+        let Ok(issued) = parse_canonical_pty_timestamp(&payload.issued_at) else {
+            return false;
+        };
+        let Ok(expires) = parse_canonical_pty_timestamp(&payload.expires_at) else {
+            return false;
+        };
+        if envelope.timestamp != payload.issued_at
+            || expires - issued != chrono::Duration::seconds(PTY_INPUT_TTL_SECS)
+        {
+            return false;
+        }
+
+        let Some(outbox) = path.parent() else {
+            return false;
+        };
+        let Some(root) = outbox.parent().and_then(Path::parent) else {
+            return false;
+        };
+        let owner = match self.verified_pty_outbox_owner(path) {
+            Ok(owner) => owner,
+            Err(_) => return false,
+        };
+        let sender_is_root = crate::config::root_agent::verify_live_root_agent_path(root).is_ok();
+        let sender_project = if sender_is_root {
+            None
+        } else {
+            let sender = match crate::config::teams::verify_pty_input_coordinator_root(root) {
+                Ok(sender) => sender,
+                Err(_) => return false,
+            };
+            sender
+                .workspace_identity
+                .canonical_path
+                .parent()
+                .and_then(|path| {
+                    path.to_str()
+                        .map(crate::path_utils::normalize_windows_verbatim_path)
+                })
+        };
+        let in_memory_paths = {
+            let settings = app.state::<SettingsState>();
+            let paths = settings.read().await.project_paths.clone();
+            paths
+        };
+        let mut project_paths =
+            match crate::config::settings::read_pty_input_project_paths_strict_offloaded().await {
+                Ok(paths) => paths.unwrap_or(in_memory_paths),
+                Err(_) => return false,
+            };
+        if let Some(project) = sender_project {
+            if !project_paths.contains(&project) {
+                project_paths.push(project);
+            }
+        }
+        let route = match crate::config::teams::verify_pty_input_route(
+            root,
+            sender_is_root,
+            &envelope.to,
+            &project_paths,
+        ) {
+            Ok(route) => route,
+            Err(_) => return false,
+        };
+        if owner != route.sender.canonical_fqn || envelope.from != route.sender.canonical_fqn {
+            return false;
+        }
+
+        let confirmation_tag =
+            pty_input_confirmation_tag(&payload.injection_id, &payload.op_id, &payload.nonce);
+        let request_fingerprint = pty_input_host_request_fingerprint(&PtyInputHostFingerprint {
+            injection_id: &payload.injection_id,
+            op_id: &payload.op_id,
+            token: &envelope.token,
+            sender_fqn: &route.sender.canonical_fqn,
+            target_fqn: &route.target.canonical_fqn,
+            nonce: &payload.nonce,
+            issued_at: &payload.issued_at,
+            expires_at: &payload.expires_at,
+            text: &payload.text,
+            agent_id: payload.agent_id.as_deref(),
+            confirmation_tag: &confirmation_tag,
+        });
+        let result = match store
+            .record_host_pty_input_rejection_offloaded(
+                crate::api::message_store::HostPtyInputRejectionRequest {
+                    injection_id: payload.injection_id.clone(),
+                    sender_fqn: route.sender.canonical_fqn,
+                    target_fqn: route.target.canonical_fqn,
+                    op_id: payload.op_id.clone(),
+                    nonce_sha256: sha256_hex(payload.nonce.as_bytes()),
+                    request_fingerprint,
+                    confirmation_tag: confirmation_tag.clone(),
+                    sender_incarnation_fingerprint: route.sender.authority_fingerprint,
+                    payload_sha256: sha256_hex(payload.text.as_bytes()),
+                    payload_bytes: payload.text.len() as u64,
+                    issued_at: payload.issued_at.clone(),
+                    expires_at: payload.expires_at.clone(),
+                    reason: code,
+                },
+                chrono::Utc::now(),
+            )
+            .await
+        {
+            Ok(result) => result,
+            Err(crate::api::message_store::MessageStoreError::IdempotencyConflict) => {
+                return false;
+            }
+            Err(_) => {
+                log::debug!(
+                    "[pty-input] correlated ingress persistence deferred id={} code=store_transient",
+                    payload.injection_id
+                );
+                return true;
+            }
+        };
+        let artifact = PtyInputHostArtifact {
+            result,
+            confirmation_tag,
+        };
+        if let Err(artifact_code) = self.write_pty_input_artifact(path, &artifact) {
+            log::warn!(
+                "[pty-input] correlated ingress artifact failed id={} code={}",
+                payload.injection_id,
+                artifact_code
+            );
+            return true;
+        }
+        let current_source = crate::path_identity::read_bounded_regular(
+            path,
+            crate::phone::types::PTY_INPUT_HOST_ENVELOPE_MAX_BYTES,
+        )
+        .ok()
+        .map(|(_, identity)| identity);
+        if !current_source.as_ref().is_some_and(|current| {
+            crate::path_identity::same_object(source_identity, current)
+                && source_identity.content_sha256 == current.content_sha256
+        }) {
+            return true;
+        }
+        if let Err(error) = std::fs::remove_file(path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                log::warn!(
+                    "[pty-input] correlated ingress cleanup failed id={} code=artifact_unclaimed",
+                    payload.injection_id
+                );
+            }
+        }
+        true
+    }
+
+    fn write_pty_input_artifact(
+        &self,
+        source: &Path,
+        artifact: &crate::phone::types::PtyInputHostArtifact,
+    ) -> Result<(), &'static str> {
+        let directory = match artifact.result.status {
+            crate::phone::types::PtyInputPublicStatus::Injected => "delivered",
+            crate::phone::types::PtyInputPublicStatus::Rejected => "rejected",
+            crate::phone::types::PtyInputPublicStatus::Indeterminate => "indeterminate",
+            _ => return Err("invalid_artifact"),
+        };
+        let outbox = source.parent().ok_or("unsafe_path")?;
+        crate::path_identity::verify_directory(outbox).map_err(|_| "unsafe_path")?;
+        let artifact_dir = outbox.join(directory);
+        if !artifact_dir.exists() {
+            std::fs::create_dir(&artifact_dir).map_err(|_| "unsafe_path")?;
+        }
+        crate::path_identity::verify_directory(&artifact_dir).map_err(|_| "unsafe_path")?;
+        let bytes = serde_json::to_vec(artifact).map_err(|_| "invalid_artifact")?;
+        if bytes.len() > crate::phone::types::PTY_INPUT_METADATA_MAX_BYTES {
+            return Err("invalid_artifact");
+        }
+        let destination = artifact_dir.join(format!("{}.json", artifact.result.injection_id));
+        write_atomic_pty_metadata(&destination, &bytes)?;
+        if artifact.result.status == crate::phone::types::PtyInputPublicStatus::Rejected {
+            if let Some(reason) = &artifact.result.reason {
+                let reason_path =
+                    artifact_dir.join(format!("{}.reason.txt", artifact.result.injection_id));
+                let fixed = format!("{}: {}", reason_code_name(reason.code), reason.detail);
+                write_atomic_pty_metadata(&reason_path, fixed.as_bytes())?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn materialize_host_terminal_artifact(
+        &self,
+        path: &Path,
+        store: &crate::api::message_store::MessageStore,
+        injection_id: &str,
+    ) -> Result<(), &'static str> {
+        let (marker, source_identity, owner) =
+            self.read_verified_host_marker(path, injection_id)?;
+        let result = store
+            .query_pty_input_by_injection_offloaded(injection_id.to_string())
+            .await
+            .map_err(|_| "store_transient")?
+            .ok_or("store_corrupt")?;
+        if result.source_plane != Some(crate::phone::types::PtyInputSourcePlane::HostCli)
+            || result.op_id.as_deref() != Some(marker.op_id.as_str())
+            || result.sender.as_deref() != Some(owner.as_str())
+        {
+            return Err("store_corrupt");
+        }
+        if !result.terminal {
+            return Ok(());
+        }
+        let confirmation_tag = store
+            .host_confirmation_tag_offloaded(injection_id.to_string())
+            .await
+            .map_err(|_| "store_transient")?
+            .ok_or("store_corrupt")?;
+        let artifact = crate::phone::types::PtyInputHostArtifact {
+            result,
+            confirmation_tag,
+        };
+        self.write_pty_input_artifact(path, &artifact)?;
+        let (_, current_source) = crate::path_identity::read_bounded_regular(
+            path,
+            crate::phone::types::PTY_INPUT_METADATA_MAX_BYTES,
+        )
+        .map_err(|_| "unsafe_path")?;
+        if !crate::path_identity::same_object(&source_identity, &current_source)
+            || source_identity.content_sha256 != current_source.content_sha256
+        {
+            return Err("unsafe_path");
+        }
+        // Record the published artifact before deleting the marker. If this
+        // update or the later deletion fails, the retained marker drives an
+        // idempotent repair on the next poll.
+        store
+            .mark_host_artifact_offloaded(injection_id.to_string(), chrono::Utc::now())
+            .await
+            .map_err(|_| "store_transient")?;
+        if let Err(error) = std::fs::remove_file(path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                return Err("artifact_unclaimed");
+            }
+        }
+        Ok(())
+    }
+
+    fn replace_host_request_with_marker(
+        &self,
+        path: &Path,
+        source_identity: &crate::path_identity::VerifiedPathIdentity,
+        injection_id: &str,
+        op_id: &str,
+    ) -> Result<(), &'static str> {
+        let marker = crate::phone::types::PtyInputQueueMarker {
+            kind: "pty-input-marker".to_string(),
+            version: crate::phone::types::PTY_INPUT_VERSION,
+            injection_id: injection_id.to_string(),
+            op_id: op_id.to_string(),
+        };
+        let bytes = serde_json::to_vec(&marker).map_err(|_| "invalid_envelope")?;
+        if path.file_stem().and_then(|value| value.to_str()) != Some(injection_id) {
+            return Err("unsafe_path");
+        }
+        crate::path_identity::replace_regular_file_atomic(
+            path,
+            source_identity,
+            &bytes,
+            crate::phone::types::PTY_INPUT_HOST_ENVELOPE_MAX_BYTES,
+        )
+        .map(|_| ())
+        .map_err(|code| {
+            if code == "unsafe_path" {
+                "unsafe_path"
+            } else {
+                "store_transient"
+            }
+        })
+    }
+
+    fn read_verified_host_marker(
+        &self,
+        path: &Path,
+        expected_injection_id: &str,
+    ) -> Result<
+        (
+            crate::phone::types::PtyInputQueueMarker,
+            crate::path_identity::VerifiedPathIdentity,
+            String,
+        ),
+        &'static str,
+    > {
+        let (bytes, identity) = crate::path_identity::read_bounded_regular(
+            path,
+            crate::phone::types::PTY_INPUT_METADATA_MAX_BYTES,
+        )
+        .map_err(|_| "unsafe_path")?;
+        let value = crate::path_identity::parse_json_no_duplicates(&bytes)
+            .map_err(|_| "invalid_artifact")?;
+        let marker: crate::phone::types::PtyInputQueueMarker =
+            serde_json::from_value(value).map_err(|_| "invalid_artifact")?;
+        if marker.kind != "pty-input-marker"
+            || marker.version != crate::phone::types::PTY_INPUT_VERSION
+            || marker.injection_id != expected_injection_id
+            || marker.op_id != marker.injection_id
+            || path.file_stem().and_then(|value| value.to_str())
+                != Some(marker.injection_id.as_str())
+        {
+            return Err("invalid_artifact");
+        }
+        let owner = self
+            .verified_pty_outbox_owner(path)
+            .map_err(|_| "unsafe_path")?;
+        Ok((marker, identity, owner))
+    }
+
+    fn verified_pty_outbox_owner(
+        &self,
+        path: &Path,
+    ) -> Result<String, crate::phone::types::PtyInputReasonCode> {
+        use crate::phone::types::PtyInputReasonCode as C;
+        let outbox = path.parent().ok_or(C::UnsafePath)?;
+        if outbox.file_name().and_then(|value| value.to_str()) != Some("outbox") {
+            return Err(C::UnsafePath);
+        }
+        let local = outbox.parent().ok_or(C::UnsafePath)?;
+        let local_dir_name = crate::config::agent_local_dir_name();
+        if local.file_name().and_then(|value| value.to_str()) != Some(local_dir_name.as_str()) {
+            return Err(C::UnsafePath);
+        }
+        let root = local.parent().ok_or(C::UnsafePath)?;
+        let actual_outbox =
+            crate::path_identity::verify_directory(outbox).map_err(|_| C::UnsafePath)?;
+        let expected_outbox = crate::path_identity::verify_directory(
+            &root
+                .join(crate::config::agent_local_dir_name())
+                .join("outbox"),
+        )
+        .map_err(|_| C::UnsafePath)?;
+        if !crate::path_identity::same_object(&actual_outbox, &expected_outbox) {
+            return Err(C::UnsafePath);
+        }
+        if let Ok(root_identity) = crate::config::root_agent::verify_live_root_agent_path(root) {
+            let actual_root =
+                crate::path_identity::verify_directory(root).map_err(|_| C::UnsafePath)?;
+            if !crate::path_identity::same_object(&root_identity, &actual_root) {
+                return Err(C::UnsafePath);
+            }
+            return Ok(crate::config::root_agent::ROOT_AGENT_SENDER.to_string());
+        }
+        crate::config::teams::verify_pty_input_replica_cwd(root)
+            .map(|identity| identity.canonical_fqn)
+            .map_err(|_| C::UnsafePath)
+    }
+
+    async fn process_pty_input_file<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        is_app_outbox: bool,
+        bytes: &[u8],
+        source_identity: &crate::path_identity::VerifiedPathIdentity,
+    ) {
+        let state = match app.try_state::<crate::api::message_store::MessageStoreState>() {
+            Some(state) => state,
+            None => {
+                self.reject_malformed_pty_candidate(path);
+                return;
+            }
+        };
+        let store = match &state.store {
+            Ok(store) => Arc::clone(store),
+            Err(_) => {
+                self.reject_malformed_pty_candidate(path);
+                return;
+            }
+        };
+        if bytes.starts_with(&[0xef, 0xbb, 0xbf]) || std::str::from_utf8(bytes).is_err() {
+            self.reject_malformed_pty_candidate(path);
+            return;
+        }
+        let value = match crate::path_identity::parse_json_no_duplicates(bytes) {
+            Ok(value) => value,
+            Err(_) => {
+                self.reject_malformed_pty_candidate(path);
+                return;
+            }
+        };
+
+        if value.get("kind").and_then(serde_json::Value::as_str) == Some("pty-input-marker") {
+            let marker: crate::phone::types::PtyInputQueueMarker =
+                match serde_json::from_value(value) {
+                    Ok(marker) => marker,
+                    Err(_) => {
+                        self.reject_malformed_pty_candidate(path);
+                        return;
+                    }
+                };
+            if marker.version != crate::phone::types::PTY_INPUT_VERSION
+                || crate::phone::types::parse_canonical_uuid_v4(&marker.injection_id).is_err()
+                || marker.injection_id != marker.op_id
+                || path.file_stem().and_then(|value| value.to_str())
+                    != Some(marker.injection_id.as_str())
+                || is_app_outbox
+            {
+                self.reject_malformed_pty_candidate(path);
+                return;
+            }
+            let (current_marker, _marker_identity, owner) =
+                match self.read_verified_host_marker(path, &marker.injection_id) {
+                    Ok(marker) => marker,
+                    Err(_) => {
+                        self.reject_malformed_pty_candidate(path);
+                        return;
+                    }
+                };
+            if current_marker != marker {
+                self.reject_malformed_pty_candidate(path);
+                return;
+            }
+            let row = match store
+                .query_pty_input_by_injection_offloaded(marker.injection_id.clone())
+                .await
+            {
+                Ok(Some(row)) => row,
+                Ok(None) => {
+                    self.reject_malformed_pty_candidate(path);
+                    return;
+                }
+                Err(_) => {
+                    log::debug!(
+                        "[pty-input] marker status deferred id={} code=store_transient",
+                        marker.injection_id
+                    );
+                    return;
+                }
+            };
+            if row.source_plane != Some(crate::phone::types::PtyInputSourcePlane::HostCli)
+                || row.op_id.as_deref() != Some(marker.op_id.as_str())
+                || row.sender.as_deref() != Some(owner.as_str())
+            {
+                self.reject_malformed_pty_candidate(path);
+                return;
+            }
+            if row.terminal {
+                if let Err(code) = self
+                    .materialize_host_terminal_artifact(path, &store, &marker.injection_id)
+                    .await
+                {
+                    log::warn!(
+                        "[pty-input] artifact repair failed id={} code={}",
+                        marker.injection_id,
+                        code
+                    );
+                }
+                return;
+            }
+            self.dispatch_pty_input_operation(
+                app,
+                &state,
+                &marker.injection_id,
+                crate::phone::types::PtyInputSourcePlane::HostCli,
+                None,
+            )
+            .await;
+            if let Err(code) = self
+                .materialize_host_terminal_artifact(path, &store, &marker.injection_id)
+                .await
+            {
+                if code != "store_corrupt" {
+                    log::debug!(
+                        "[pty-input] marker remains id={} code={}",
+                        marker.injection_id,
+                        code
+                    );
+                }
+            }
+            return;
+        }
+
+        let envelope: crate::phone::types::PtyInputHostEnvelope =
+            match serde_json::from_value(value) {
+                Ok(envelope) => envelope,
+                Err(_) => {
+                    self.reject_malformed_pty_candidate(path);
+                    return;
+                }
+            };
+        let validation = self
+            .validate_and_enqueue_host_pty_input(
+                app,
+                path,
+                is_app_outbox,
+                source_identity,
+                &store,
+                &envelope,
+            )
+            .await;
+        let injection_id = match validation {
+            Ok(injection_id) => injection_id,
+            Err(code) => {
+                if code == crate::phone::types::PtyInputReasonCode::StoreTransient {
+                    log::debug!(
+                        "[pty-input] host ingress deferred code={}",
+                        reason_code_name(code)
+                    );
+                    return;
+                }
+                log::warn!(
+                    "[pty-input] host ingress rejected code={}",
+                    reason_code_name(code)
+                );
+                crate::api::audit::record_pty_input(&crate::api::audit::PtyInputAuditMetadata {
+                    event: "ingress_rejection".to_string(),
+                    injection_id: None,
+                    op_id: None,
+                    sender_fqn: None,
+                    target_fqn: None,
+                    payload_bytes: None,
+                    payload_sha256: None,
+                    source_plane: Some("host_cli".to_string()),
+                    selected_session_id: None,
+                    selected_backend: None,
+                    status: "rejected".to_string(),
+                    reason_code: Some(reason_code_name(code).to_string()),
+                    timestamp: crate::phone::types::canonical_pty_timestamp(chrono::Utc::now()),
+                });
+                if !self
+                    .reject_correlated_host_pty_candidate(
+                        app,
+                        path,
+                        source_identity,
+                        &store,
+                        &envelope,
+                        code,
+                    )
+                    .await
+                {
+                    self.reject_malformed_pty_candidate(path);
+                }
+                return;
+            }
+        };
+        self.dispatch_pty_input_operation(
+            app,
+            &state,
+            &injection_id,
+            crate::phone::types::PtyInputSourcePlane::HostCli,
+            None,
+        )
+        .await;
+        if let Err(code) = self
+            .materialize_host_terminal_artifact(path, &store, &injection_id)
+            .await
+        {
+            log::debug!(
+                "[pty-input] terminal artifact pending id={} code={}",
+                injection_id,
+                code
+            );
+        }
+    }
+
+    async fn validate_and_enqueue_host_pty_input<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        is_app_outbox: bool,
+        source_identity: &crate::path_identity::VerifiedPathIdentity,
+        store: &crate::api::message_store::MessageStore,
+        envelope: &crate::phone::types::PtyInputHostEnvelope,
+    ) -> Result<String, crate::phone::types::PtyInputReasonCode> {
+        use crate::phone::types::{
+            parse_canonical_pty_timestamp, parse_canonical_uuid_v4, pty_input_confirmation_tag,
+            pty_input_host_request_fingerprint, sha256_hex, PtyInputHostFingerprint,
+            PtyInputReasonCode as C, PtyInputSourcePlane, PTY_INPUT_FUTURE_SKEW_SECS,
+            PTY_INPUT_TTL_SECS, PTY_INPUT_VERSION,
+        };
+        if is_app_outbox {
+            return Err(C::UnsafePath);
+        }
+        let payload = &envelope.pty_input;
+        if envelope.action != "pty-input"
+            || !envelope.body.is_empty()
+            || envelope.mode != "wake"
+            || envelope.get_output
+            || !envelope.preferred_agent.is_empty()
+            || envelope.priority != "normal"
+        {
+            return Err(C::MixedPayload);
+        }
+        if payload.version != PTY_INPUT_VERSION {
+            return Err(C::UnsupportedVersion);
+        }
+        if payload.enter != crate::phone::types::PtyInputEnterMode::AgentSubmit {
+            return Err(C::InvalidEnterMode);
+        }
+        let injection = parse_canonical_uuid_v4(&payload.injection_id).map_err(|_| C::InvalidId)?;
+        parse_canonical_uuid_v4(&payload.op_id).map_err(|_| C::InvalidId)?;
+        let nonce = parse_canonical_uuid_v4(&payload.nonce).map_err(|_| C::InvalidNonce)?;
+        if envelope.id != payload.injection_id
+            || payload.op_id != payload.injection_id
+            || injection == nonce
+            || path.file_stem().and_then(|value| value.to_str())
+                != Some(payload.injection_id.as_str())
+        {
+            return Err(C::InvalidId);
+        }
+        let issued = parse_canonical_pty_timestamp(&payload.issued_at)?;
+        let expires = parse_canonical_pty_timestamp(&payload.expires_at)?;
+        if envelope.timestamp != payload.issued_at
+            || expires - issued != chrono::Duration::seconds(PTY_INPUT_TTL_SECS)
+        {
+            return Err(C::InvalidTimestamp);
+        }
+        let now = chrono::Utc::now();
+        if issued > now + chrono::Duration::seconds(PTY_INPUT_FUTURE_SKEW_SECS) {
+            return Err(C::InvalidTimestamp);
+        }
+        if expires <= now {
+            return Err(C::Expired);
+        }
+        crate::pty::inject::validate_pty_input_text(&payload.text).map_err(|error| {
+            if error.kind == crate::pty::inject::PtyInputTextErrorKind::TooLarge {
+                C::PayloadTooLarge
+            } else {
+                C::InvalidText
+            }
+        })?;
+        if let Some(agent_id) = payload.agent_id.as_deref() {
+            if agent_id == "auto"
+                || crate::config::coding_agent_mutations::validate_custom_agent_id(agent_id)
+                    .is_err()
+            {
+                return Err(C::UnsupportedProfile);
+            }
+        }
+        let token = parse_canonical_uuid_v4(&envelope.token).map_err(|_| C::InvalidSessionToken)?;
+        let session_manager = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let session = {
+            let manager = session_manager.read().await;
+            manager
+                .find_unique_live_by_token(token)
+                .await
+                .map_err(|error| match error {
+                    crate::session::manager::UniqueLiveTokenError::NotFound => {
+                        C::InvalidSessionToken
+                    }
+                    crate::session::manager::UniqueLiveTokenError::Ambiguous => {
+                        C::AmbiguousSessionToken
+                    }
+                })?
+        };
+        if session.backend_kind != SessionBackendKind::LocalProcess {
+            return Err(C::SenderBackendNotLocal);
+        }
+        let session_id = Uuid::parse_str(&session.id).map_err(|_| C::SenderSessionNotLive)?;
+        let pty = app.state::<Arc<Mutex<PtyManager>>>();
+        if pty
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .backend_kind(session_id)
+            != Some(SessionBackendKind::LocalProcess)
+        {
+            return Err(C::SenderSessionNotLive);
+        }
+        let in_memory_project_paths = {
+            let settings = app.state::<SettingsState>();
+            let paths = settings.read().await.project_paths.clone();
+            paths
+        };
+        let mut project_paths =
+            crate::config::settings::read_pty_input_project_paths_strict_offloaded()
+                .await
+                .map_err(|_| C::UnsafePath)?
+                .unwrap_or(in_memory_project_paths);
+        if let Some(replica) = Path::new(&session.working_directory)
+            .ancestors()
+            .find(|candidate| {
+                candidate
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|name| name.starts_with("__agent_"))
+            })
+        {
+            if let Some(project) = replica
+                .parent()
+                .and_then(Path::parent)
+                .and_then(Path::parent)
+            {
+                let project_s = project
+                    .to_str()
+                    .map(crate::path_utils::normalize_windows_verbatim_path)
+                    .ok_or(C::UnsafePath)?;
+                if !project_paths.contains(&project_s) {
+                    project_paths.push(project_s);
+                }
+            }
+        }
+        let route = crate::config::teams::verify_pty_input_route(
+            Path::new(&session.working_directory),
+            session.is_root_agent,
+            &envelope.to,
+            &project_paths,
+        )
+        .map_err(|code| reason_code_from_name(&code))?;
+        if envelope.from != route.sender.canonical_fqn {
+            return Err(C::SenderIdentityInvalid);
+        }
+        let expected_outbox = Path::new(&session.working_directory)
+            .join(crate::config::agent_local_dir_name())
+            .join("outbox");
+        let actual_parent = path.parent().ok_or(C::UnsafePath)?;
+        let expected_identity =
+            crate::path_identity::verify_directory(&expected_outbox).map_err(|_| C::UnsafePath)?;
+        let actual_identity =
+            crate::path_identity::verify_directory(actual_parent).map_err(|_| C::UnsafePath)?;
+        if expected_identity.object_id != actual_identity.object_id {
+            return Err(C::UnsafePath);
+        }
+        let confirmation_tag =
+            pty_input_confirmation_tag(&payload.injection_id, &payload.op_id, &payload.nonce);
+        let nonce_sha256 = sha256_hex(payload.nonce.as_bytes());
+        let fingerprint = pty_input_host_request_fingerprint(&PtyInputHostFingerprint {
+            injection_id: &payload.injection_id,
+            op_id: &payload.op_id,
+            token: &envelope.token,
+            sender_fqn: &route.sender.canonical_fqn,
+            target_fqn: &route.target.canonical_fqn,
+            nonce: &payload.nonce,
+            issued_at: &payload.issued_at,
+            expires_at: &payload.expires_at,
+            text: &payload.text,
+            agent_id: payload.agent_id.as_deref(),
+            confirmation_tag: &confirmation_tag,
+        });
+        let enqueue = store
+            .enqueue_pty_input_offloaded(crate::api::message_store::PtyInputEnqueueRequest {
+                injection_id: payload.injection_id.clone(),
+                sender_fqn: route.sender.canonical_fqn,
+                target_fqn: route.target.canonical_fqn,
+                op_id: payload.op_id.clone(),
+                nonce_sha256,
+                request_fingerprint: fingerprint.clone(),
+                confirmation_tag: Some(confirmation_tag),
+                requested_agent_id: payload.agent_id.clone(),
+                payload: payload.text.as_bytes().to_vec(),
+                source_plane: PtyInputSourcePlane::HostCli,
+                sender_incarnation_fingerprint: route.sender.authority_fingerprint.clone(),
+                sender_identity_fingerprint: route.sender.authority_fingerprint,
+                target_identity_fingerprint: route.target.authority_fingerprint,
+                authority_session_id: session.id,
+                authority_client_id: None,
+                authority_client_generation: None,
+                issued_at: payload.issued_at.clone(),
+                expires_at: payload.expires_at.clone(),
+            })
+            .await
+            .map_err(|error| match error {
+                crate::api::message_store::MessageStoreError::IdempotencyConflict => {
+                    C::IdempotencyConflict
+                }
+                crate::api::message_store::MessageStoreError::CapacityExceeded => {
+                    C::CapacityExceeded
+                }
+                _ => C::StoreTransient,
+            })?;
+        self.replace_host_request_with_marker(
+            path,
+            source_identity,
+            &payload.injection_id,
+            &payload.op_id,
+        )
+        .map_err(|_| C::StoreTransient)?;
+        Ok(enqueue.result.injection_id)
+    }
+
+    async fn validate_claimed_host_authority<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        claimed: &crate::api::message_store::ClaimedPtyInputOperation,
+    ) -> Option<crate::config::teams::VerifiedPtyInputRoute> {
+        let authority_id =
+            crate::phone::types::parse_canonical_uuid_v4(&claimed.authority_session_id).ok()?;
+        let authority = {
+            let manager = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let guard = manager.read().await;
+            guard.get_session(authority_id).await
+        }?;
+        if matches!(authority.status, SessionStatus::Exited(_))
+            || authority.backend_kind != SessionBackendKind::LocalProcess
+        {
+            return None;
+        }
+        let in_memory_paths = {
+            let settings = app.state::<SettingsState>();
+            let paths = settings.read().await.project_paths.clone();
+            paths
+        };
+        let mut paths =
+            match crate::config::settings::read_pty_input_project_paths_strict_offloaded().await {
+                Ok(paths) => paths.unwrap_or(in_memory_paths),
+                Err(_) => return None,
+            };
+        if let Ok(sender) = crate::config::teams::verify_pty_input_replica_cwd(Path::new(
+            &authority.working_directory,
+        )) {
+            if let Some(project_path) = sender.workspace_identity.canonical_path.parent() {
+                let project = project_path
+                    .to_str()
+                    .map(crate::path_utils::normalize_windows_verbatim_path)?;
+                if !paths.contains(&project) {
+                    paths.push(project);
+                }
+            }
+        }
+        let route = crate::config::teams::verify_pty_input_route(
+            Path::new(&authority.working_directory),
+            authority.is_root_agent,
+            &claimed.target_fqn,
+            &paths,
+        )
+        .ok()?;
+        if route.sender.canonical_fqn != claimed.sender_fqn
+            || route.sender.authority_fingerprint != claimed.sender_identity_fingerprint
+            || route.target.authority_fingerprint != claimed.target_identity_fingerprint
+        {
+            return None;
+        }
+        let current_cwd =
+            crate::path_identity::verify_directory(Path::new(&authority.working_directory)).ok()?;
+        let pty = app.state::<Arc<Mutex<PtyManager>>>();
+        let manager = pty.lock().unwrap_or_else(|error| error.into_inner());
+        if !manager.has_session(authority_id)
+            || manager.backend_kind(authority_id) != Some(SessionBackendKind::LocalProcess)
+        {
+            return None;
+        }
+        let (saved_cwd, saved_replica, _) = manager.route_identities(authority_id)?;
+        if !saved_cwd
+            .as_ref()
+            .is_some_and(|saved| crate::path_identity::same_object(saved, &current_cwd))
+        {
+            return None;
+        }
+        match route.kind {
+            crate::config::teams::PtyInputAuthorityKind::Coordinator => {
+                if !saved_replica.as_ref().is_some_and(|saved| {
+                    crate::path_identity::same_object(saved, &route.sender.replica_identity)
+                }) {
+                    return None;
+                }
+            }
+            crate::config::teams::PtyInputAuthorityKind::Root => {
+                if saved_replica.is_some() {
+                    return None;
+                }
+            }
+        }
+        drop(manager);
+        Some(route)
+    }
+
+    async fn validate_selected_pty_target<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        claimed: &crate::api::message_store::ClaimedPtyInputOperation,
+        verified_target: &crate::config::teams::VerifiedPtyInputIdentity,
+        session_id: Uuid,
+        expected_backend: SessionBackendKind,
+    ) -> Option<SessionInfo> {
+        let expires =
+            crate::phone::types::parse_canonical_pty_timestamp(&claimed.expires_at).ok()?;
+        if expires <= chrono::Utc::now()
+            || app
+                .try_state::<Arc<crate::RestoreInProgress>>()
+                .is_some_and(|flag| flag.0.load(std::sync::atomic::Ordering::SeqCst))
+            || app
+                .try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
+                .is_some_and(|guard| guard.blocks_agent(&claimed.target_fqn))
+        {
+            return None;
+        }
+        let session = {
+            let manager = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let guard = manager.read().await;
+            guard.get_session(session_id).await
+        }?;
+        if matches!(session.status, SessionStatus::Exited(_))
+            || !session.waiting_for_input
+            || session.backend_kind != expected_backend
+            || session.pty_submission_agent().is_none()
+        {
+            return None;
+        }
+        let current_target = crate::config::teams::verify_pty_input_replica_cwd(Path::new(
+            &session.working_directory,
+        ))
+        .ok()?;
+        if current_target.canonical_fqn != verified_target.canonical_fqn
+            || current_target.authority_fingerprint != verified_target.authority_fingerprint
+            || !crate::path_identity::same_object(
+                &current_target.replica_identity,
+                &verified_target.replica_identity,
+            )
+        {
+            return None;
+        }
+        let current_cwd =
+            crate::path_identity::verify_directory(Path::new(&session.working_directory)).ok()?;
+        let route_valid = {
+            let manager = app.state::<Arc<Mutex<PtyManager>>>();
+            let manager = manager.lock().unwrap_or_else(|error| error.into_inner());
+            manager.has_session(session_id)
+                && manager.backend_kind(session_id) == Some(expected_backend)
+                && manager
+                    .route_identities(session_id)
+                    .is_some_and(|(cwd, replica, _)| {
+                        cwd.as_ref().is_some_and(|saved| {
+                            crate::path_identity::same_object(saved, &current_cwd)
+                        }) && replica.as_ref().is_some_and(|saved| {
+                            crate::path_identity::same_object(
+                                saved,
+                                &verified_target.replica_identity,
+                            )
+                        })
+                    })
+        };
+        if !route_valid {
+            return None;
+        }
+        let readiness = app
+            .state::<Arc<crate::pty::idle_detector::IdleDetector>>()
+            .purge_readiness(&[session_id])
+            .into_iter()
+            .next()?;
+        let activity_required = readiness
+            .idle_threshold
+            .checked_add(std::time::Duration::from_secs(2))?;
+        let activity_ready = readiness
+            .activity_age
+            .is_some_and(|age| age >= activity_required);
+        let resize_ready = match readiness.last_resize_age {
+            None => true,
+            Some(age) => readiness
+                .resize_grace
+                .checked_add(std::time::Duration::from_secs(2))
+                .is_some_and(|required| age >= required),
+        };
+        if !activity_ready || !resize_ready || !readiness.watcher_idle {
+            return None;
+        }
+        Some(SessionInfo::from(&session))
+    }
+
+    pub(crate) async fn dispatch_pty_input_operation<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        state: &crate::api::message_store::MessageStoreState,
+        injection_id: &str,
+        source_plane: crate::phone::types::PtyInputSourcePlane,
+        api_client_store: Option<&Arc<crate::api::auth::ApiClientStore>>,
+    ) {
+        use crate::phone::types::{PtyInputPublicStatus as S, PtyInputReasonCode as C};
+        let store = match &state.store {
+            Ok(store) => Arc::clone(store),
+            Err(_) => return,
+        };
+        let _operation_lock = match store.try_operation_lock(injection_id) {
+            Ok(Some(lock)) => lock,
+            _ => return,
+        };
+        let _active = match state.active_operations.try_register(injection_id) {
+            Some(active) => active,
+            None => return,
+        };
+        let initial = match store
+            .query_pty_input_by_injection_offloaded(injection_id.to_string())
+            .await
+        {
+            Ok(Some(result)) if !result.terminal => result,
+            _ => return,
+        };
+        let target = match initial.target.clone() {
+            Some(target) => target,
+            None => return,
+        };
+        let target_stripe = match store.try_target_lock(&target) {
+            Ok(Some(lock)) => lock,
+            _ => return,
+        };
+        let target_guard = state.target_locks.acquire(&target).await;
+        let target_ownership = match store.target_ownership(&target, &target_stripe, &target_guard)
+        {
+            Ok(ownership) => ownership,
+            Err(_) => return,
+        };
+        let lease_owner = Uuid::new_v4().to_string();
+        let claimed = match store
+            .claim_pty_input_offloaded(
+                source_plane,
+                Some(injection_id.to_string()),
+                lease_owner.clone(),
+                chrono::Utc::now(),
+            )
+            .await
+        {
+            Ok(Some(claimed)) => claimed,
+            _ => return,
+        };
+        let mut heartbeat = crate::api::message_store::PreparationHeartbeatGuard::start(
+            Arc::clone(&store),
+            injection_id.to_string(),
+            lease_owner.clone(),
+        );
+        let expires = match crate::phone::types::parse_canonical_pty_timestamp(&claimed.expires_at)
+        {
+            Ok(expires) => expires,
+            Err(_) => {
+                reject_pty_input_before_boundary(
+                    &store,
+                    &mut heartbeat,
+                    injection_id,
+                    C::StoreCorrupt,
+                )
+                .await;
+                return;
+            }
+        };
+        if expires <= chrono::Utc::now() {
+            reject_pty_input_before_boundary(&store, &mut heartbeat, injection_id, C::Expired)
+                .await;
+            return;
+        }
+        if app
+            .try_state::<Arc<crate::RestoreInProgress>>()
+            .is_some_and(|flag| flag.0.load(std::sync::atomic::Ordering::SeqCst))
+        {
+            finish_pty_input_before_boundary(
+                &store,
+                &mut heartbeat,
+                injection_id,
+                &lease_owner,
+                C::RestoreInProgress,
+            )
+            .await;
+            return;
+        }
+        if app
+            .try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
+            .is_some_and(|guard| guard.blocks_agent(&claimed.target_fqn))
+        {
+            finish_pty_input_before_boundary(
+                &store,
+                &mut heartbeat,
+                injection_id,
+                &lease_owner,
+                C::PurgeInProgress,
+            )
+            .await;
+            return;
+        }
+
+        let verified_route = if source_plane == crate::phone::types::PtyInputSourcePlane::HostCli {
+            self.validate_claimed_host_authority(app, &claimed).await
+        } else {
+            self.validate_claimed_api_authority(app, &claimed, api_client_store)
+                .await
+        };
+        let Some(verified_route) = verified_route else {
+            let code = if source_plane == crate::phone::types::PtyInputSourcePlane::HostCli {
+                C::AuthorityChanged
+            } else {
+                C::ApiBindingMismatch
+            };
+            reject_pty_input_before_boundary(&store, &mut heartbeat, injection_id, code).await;
+            return;
+        };
+        if verified_route.target.canonical_fqn != target {
+            reject_pty_input_before_boundary(
+                &store,
+                &mut heartbeat,
+                injection_id,
+                C::AuthorityChanged,
+            )
+            .await;
+            return;
+        }
+        let verified_sender = verified_route.sender;
+        let verified_target = verified_route.target;
+
+        let session_manager = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .inner()
+            .clone();
+        let pty_manager = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        let sessions = {
+            let guard = session_manager.read().await;
+            guard.list_sessions().await
+        };
+        let mut matching: Vec<SessionInfo> = sessions
+            .into_iter()
+            .filter(|session| {
+                crate::config::teams::agent_fqn_from_path(&session.working_directory)
+                    == claimed.target_fqn
+            })
+            .collect();
+        matching.sort_by(|left, right| {
+            fn rank(status: &SessionStatus) -> u8 {
+                match status {
+                    SessionStatus::Active => 0,
+                    SessionStatus::Running => 1,
+                    SessionStatus::Idle => 2,
+                    SessionStatus::Exited(_) => 3,
+                }
+            }
+            rank(&left.status)
+                .cmp(&rank(&right.status))
+                .then_with(|| right.created_at.cmp(&left.created_at))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+
+        let mut eligible = Vec::new();
+        let mut saw_supported_busy = false;
+        let mut saw_live_unsupported = false;
+        let mut saw_live_inconsistent = false;
+        let mut saw_live_temporary = false;
+        for session in &matching {
+            if matches!(session.status, SessionStatus::Exited(_)) {
+                continue;
+            }
+            if session
+                .name
+                .starts_with(crate::session::session::TEMP_SESSION_PREFIX)
+            {
+                saw_live_temporary = true;
+                continue;
+            }
+            let Ok(id) = Uuid::parse_str(&session.id) else {
+                saw_live_unsupported = true;
+                continue;
+            };
+            let (live, route_backend, route_identities) = {
+                let manager = pty_manager
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                (
+                    manager.has_session(id),
+                    manager.backend_kind(id),
+                    manager.route_identities(id),
+                )
+            };
+            let path_matches = route_identities.is_some_and(|(cwd_identity, replica_anchor, _)| {
+                let current_cwd = crate::path_identity::verify_directory(
+                    Path::new(&session.working_directory),
+                );
+                let current_target = crate::config::teams::verify_pty_input_replica_cwd(
+                    Path::new(&session.working_directory),
+                );
+                matches!((cwd_identity, current_cwd), (Some(saved), Ok(current)) if crate::path_identity::same_object(&saved, &current))
+                    && matches!((replica_anchor, current_target), (Some(saved), Ok(current))
+                        if current.canonical_fqn == verified_target.canonical_fqn
+                            && current.authority_fingerprint == verified_target.authority_fingerprint
+                            && crate::path_identity::same_object(&saved, &verified_target.replica_identity))
+            });
+            if !live || route_backend != Some(session.backend_kind) || !path_matches {
+                saw_live_inconsistent = true;
+                continue;
+            }
+            if session.pty_submission_agent().is_none() {
+                saw_live_unsupported = true;
+                continue;
+            }
+            if session.waiting_for_input {
+                eligible.push(session.clone());
+            } else {
+                saw_supported_busy = true;
+            }
+        }
+        let (selected, spawned) = if let Some(selected) = eligible.into_iter().next() {
+            (selected, false)
+        } else if saw_supported_busy {
+            reject_pty_input_before_boundary(&store, &mut heartbeat, injection_id, C::Busy).await;
+            return;
+        } else if saw_live_temporary {
+            reject_pty_input_before_boundary(
+                &store,
+                &mut heartbeat,
+                injection_id,
+                C::NonpersistentLiveSession,
+            )
+            .await;
+            return;
+        } else if saw_live_inconsistent {
+            if claimed.attempt < 5 {
+                finish_pty_input_before_boundary(
+                    &store,
+                    &mut heartbeat,
+                    injection_id,
+                    &lease_owner,
+                    C::SessionRace,
+                )
+                .await;
+            } else {
+                reject_pty_input_before_boundary(
+                    &store,
+                    &mut heartbeat,
+                    injection_id,
+                    C::InconsistentSession,
+                )
+                .await;
+            }
+            return;
+        } else if saw_live_unsupported {
+            reject_pty_input_before_boundary(
+                &store,
+                &mut heartbeat,
+                injection_id,
+                C::UnsupportedSession,
+            )
+            .await;
+            return;
+        } else {
+            match self
+                .spawn_pty_input_target(
+                    app,
+                    &claimed,
+                    &matching,
+                    &verified_sender,
+                    &verified_target,
+                    source_plane,
+                    api_client_store,
+                    &target_ownership,
+                )
+                .await
+            {
+                Ok(session) => (session, true),
+                Err(code) => {
+                    finish_pty_input_before_boundary(
+                        &store,
+                        &mut heartbeat,
+                        injection_id,
+                        &lease_owner,
+                        code,
+                    )
+                    .await;
+                    return;
+                }
+            }
+        };
+        let selected_id = match Uuid::parse_str(&selected.id) {
+            Ok(id) => id,
+            Err(_) => {
+                reject_pty_input_before_boundary(
+                    &store,
+                    &mut heartbeat,
+                    injection_id,
+                    C::InconsistentSession,
+                )
+                .await;
+                return;
+            }
+        };
+        if let Err(code) = self
+            .wait_for_pty_input_ready(
+                app,
+                &claimed,
+                &verified_target,
+                selected_id,
+                spawned,
+                source_plane,
+                api_client_store,
+                &heartbeat,
+            )
+            .await
+        {
+            finish_pty_input_before_boundary(
+                &store,
+                &mut heartbeat,
+                injection_id,
+                &lease_owner,
+                code,
+            )
+            .await;
+            return;
+        }
+        if !matches!(
+            store
+                .renew_pty_input_lease_offloaded(
+                    injection_id.to_string(),
+                    lease_owner.clone(),
+                    chrono::Utc::now(),
+                )
+                .await,
+            Ok(true)
+        ) {
+            finish_pty_input_before_boundary(
+                &store,
+                &mut heartbeat,
+                injection_id,
+                &lease_owner,
+                C::LeaseLost,
+            )
+            .await;
+            return;
+        }
+        let permit = match PtyManager::acquire_input_writer(&pty_manager, selected_id).await {
+            Ok(permit) => permit,
+            Err(_) => {
+                finish_pty_input_before_boundary(
+                    &store,
+                    &mut heartbeat,
+                    injection_id,
+                    &lease_owner,
+                    C::SessionRace,
+                )
+                .await;
+                return;
+            }
+        };
+        let final_api_guard = if source_plane
+            == crate::phone::types::PtyInputSourcePlane::ContainerApi
+        {
+            let Some(client_store) = api_client_store else {
+                reject_pty_input_before_boundary(
+                    &store,
+                    &mut heartbeat,
+                    injection_id,
+                    C::AuthorityChanged,
+                )
+                .await;
+                return;
+            };
+            let (Some(client_id), Some(generation)) = (
+                claimed.authority_client_id.as_deref(),
+                claimed.authority_client_generation.as_deref(),
+            ) else {
+                reject_pty_input_before_boundary(
+                    &store,
+                    &mut heartbeat,
+                    injection_id,
+                    C::AuthorityChanged,
+                )
+                .await;
+                return;
+            };
+            match client_store
+                .load_active_binding_fresh_offloaded(client_id.to_string(), generation.to_string())
+                .await
+            {
+                Ok(Some(guard)) => Some(guard),
+                _ => {
+                    reject_pty_input_before_boundary(
+                        &store,
+                        &mut heartbeat,
+                        injection_id,
+                        C::AuthorityChanged,
+                    )
+                    .await;
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        let final_authority = if let Some(fresh) = final_api_guard.as_ref() {
+            self.validate_claimed_api_authority_with_fresh(app, &claimed, fresh)
+                .await
+        } else {
+            self.validate_claimed_host_authority(app, &claimed).await
+        };
+        let Some(final_authority) = final_authority else {
+            reject_pty_input_before_boundary(
+                &store,
+                &mut heartbeat,
+                injection_id,
+                C::AuthorityChanged,
+            )
+            .await;
+            return;
+        };
+        if final_authority.target.authority_fingerprint != verified_target.authority_fingerprint
+            || !crate::path_identity::same_object(
+                &final_authority.target.replica_identity,
+                &verified_target.replica_identity,
+            )
+        {
+            reject_pty_input_before_boundary(
+                &store,
+                &mut heartbeat,
+                injection_id,
+                C::AuthorityChanged,
+            )
+            .await;
+            return;
+        }
+        if self
+            .validate_selected_pty_target(
+                app,
+                &claimed,
+                &verified_target,
+                selected_id,
+                selected.backend_kind,
+            )
+            .await
+            .is_none()
+        {
+            finish_pty_input_before_boundary(
+                &store,
+                &mut heartbeat,
+                injection_id,
+                &lease_owner,
+                C::SessionRace,
+            )
+            .await;
+            return;
+        }
+        if heartbeat.failed() {
+            finish_pty_input_before_boundary(
+                &store,
+                &mut heartbeat,
+                injection_id,
+                &lease_owner,
+                C::LeaseLost,
+            )
+            .await;
+            return;
+        }
+        if !matches!(
+            store
+                .renew_pty_input_lease_offloaded(
+                    injection_id.to_string(),
+                    lease_owner.clone(),
+                    chrono::Utc::now(),
+                )
+                .await,
+            Ok(true)
+        ) {
+            finish_pty_input_before_boundary(
+                &store,
+                &mut heartbeat,
+                injection_id,
+                &lease_owner,
+                C::LeaseLost,
+            )
+            .await;
+            return;
+        }
+        if !heartbeat.finish().await {
+            finish_pty_input_before_boundary(
+                &store,
+                &mut heartbeat,
+                injection_id,
+                &lease_owner,
+                C::LeaseLost,
+            )
+            .await;
+            return;
+        }
+        let backend_name = match selected.backend_kind {
+            SessionBackendKind::LocalProcess => "localProcess",
+            SessionBackendKind::ContainerTransport => "containerTransport",
+        };
+        let payload = match store
+            .begin_pty_actuating_offloaded(
+                injection_id.to_string(),
+                lease_owner.clone(),
+                selected.id.clone(),
+                backend_name.to_string(),
+                chrono::Utc::now(),
+            )
+            .await
+        {
+            Ok(payload) => payload,
+            Err(crate::api::message_store::MessageStoreError::ActuationCommitAmbiguous) => {
+                if store
+                    .terminalize_pty_input_offloaded(
+                        injection_id.to_string(),
+                        S::Indeterminate,
+                        Some(C::TerminalStoreFailed),
+                        chrono::Utc::now(),
+                    )
+                    .await
+                    .is_err()
+                {
+                    log::error!(
+                        "[pty-input] ambiguous boundary reconciliation failed id={} code=terminal_store_failed",
+                        injection_id
+                    );
+                }
+                return;
+            }
+            Err(_) => {
+                reject_pty_input_before_boundary(
+                    &store,
+                    &mut heartbeat,
+                    injection_id,
+                    C::StoreTransient,
+                )
+                .await;
+                return;
+            }
+        };
+        let post_authority = if let Some(fresh) = final_api_guard.as_ref() {
+            self.validate_claimed_api_authority_with_fresh(app, &claimed, fresh)
+                .await
+        } else {
+            self.validate_claimed_host_authority(app, &claimed).await
+        };
+        let post_valid = post_authority.is_some_and(|route| {
+            route.sender.authority_fingerprint == final_authority.sender.authority_fingerprint
+                && route.target.authority_fingerprint == verified_target.authority_fingerprint
+                && crate::path_identity::same_object(
+                    &route.target.replica_identity,
+                    &verified_target.replica_identity,
+                )
+        }) && self
+            .validate_selected_pty_target(
+                app,
+                &claimed,
+                &verified_target,
+                selected_id,
+                selected.backend_kind,
+            )
+            .await
+            .is_some();
+        if !post_valid {
+            if store
+                .terminalize_pty_input_offloaded(
+                    injection_id.to_string(),
+                    S::Indeterminate,
+                    Some(C::FinalRevalidationFailed),
+                    chrono::Utc::now(),
+                )
+                .await
+                .is_err()
+            {
+                log::error!(
+                    "[pty-input] post-boundary terminalization failed id={} code=terminal_store_failed",
+                    injection_id
+                );
+            }
+            return;
+        }
+        let manager = {
+            let guard = session_manager.read().await;
+            guard.clone()
+        };
+        let idle_detector = app
+            .state::<Arc<crate::pty::idle_detector::IdleDetector>>()
+            .inner()
+            .clone();
+        let authority_id = match crate::phone::types::parse_canonical_uuid_v4(
+            &claimed.authority_session_id,
+        ) {
+            Ok(id) => id,
+            Err(_) => {
+                if store
+                    .terminalize_pty_input_offloaded(
+                        injection_id.to_string(),
+                        S::Indeterminate,
+                        Some(C::FinalRevalidationFailed),
+                        chrono::Utc::now(),
+                    )
+                    .await
+                    .is_err()
+                {
+                    log::error!(
+                        "[pty-input] boundary terminalization failed id={} code=terminal_store_failed",
+                        injection_id
+                    );
+                }
+                return;
+            }
+        };
+        let authority_backend = match source_plane {
+            crate::phone::types::PtyInputSourcePlane::HostCli => SessionBackendKind::LocalProcess,
+            crate::phone::types::PtyInputSourcePlane::ContainerApi => {
+                SessionBackendKind::ContainerTransport
+            }
+        };
+        let authority_container_backend = pty_manager
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .container_backend();
+        let authority_route = match PtyManager::authority_route_proof(&pty_manager, authority_id) {
+            Ok(proof) => proof,
+            Err(_) => {
+                if store
+                    .terminalize_pty_input(
+                        injection_id,
+                        S::Indeterminate,
+                        Some(C::FinalRevalidationFailed),
+                        chrono::Utc::now(),
+                    )
+                    .is_err()
+                {
+                    log::error!(
+                        "[pty-input] boundary terminalization failed id={} code=terminal_store_failed",
+                        injection_id
+                    );
+                }
+                return;
+            }
+        };
+        let expected_api_binding = final_api_guard.as_ref().and_then(|fresh| {
+            let root =
+                crate::path_identity::verify_directory(Path::new(&fresh.client.bound_root)).ok()?;
+            Some((
+                fresh.client.client_id.clone(),
+                fresh.client.credential_generation.clone()?,
+                fresh.client.bound_session_id.clone()?,
+                root.object_id,
+                fresh.presented_token_hash.clone(),
+            ))
+        });
+        if source_plane == crate::phone::types::PtyInputSourcePlane::ContainerApi
+            && expected_api_binding.is_none()
+        {
+            if store
+                .terminalize_pty_input(
+                    injection_id,
+                    S::Indeterminate,
+                    Some(C::FinalRevalidationFailed),
+                    chrono::Utc::now(),
+                )
+                .is_err()
+            {
+                log::error!(
+                    "[pty-input] boundary terminalization failed id={} code=terminal_store_failed",
+                    injection_id
+                );
+            }
+            return;
+        }
+        let route_guard = match manager
+            .prepare_pty_input_boundary(
+                selected_id,
+                &verified_target,
+                selected.backend_kind,
+                authority_id,
+                &final_authority.sender,
+                authority_backend,
+                &authority_route,
+                &permit,
+                &idle_detector,
+                || {
+                    if expires <= chrono::Utc::now()
+                        || app
+                            .try_state::<Arc<crate::RestoreInProgress>>()
+                            .is_some_and(|flag| flag.0.load(std::sync::atomic::Ordering::SeqCst))
+                        || app
+                            .try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
+                            .is_some_and(|guard| guard.blocks_agent(&claimed.target_fqn))
+                    {
+                        return false;
+                    }
+                    match (&source_plane, expected_api_binding.as_ref()) {
+                        (crate::phone::types::PtyInputSourcePlane::HostCli, None) => true,
+                        (
+                            crate::phone::types::PtyInputSourcePlane::ContainerApi,
+                            Some((
+                                client_id,
+                                generation,
+                                bound_session_id,
+                                root_object,
+                                token_hash,
+                            )),
+                        ) => {
+                            let binding =
+                                authority_container_backend.credential_binding(authority_id);
+                            binding.is_some_and(|binding| {
+                                binding.client_id == *client_id
+                                    && binding.credential_generation == *generation
+                                    && binding.bound_session_id == *bound_session_id
+                                    && binding.bound_root_object_id == *root_object
+                                    && crate::api::auth::constant_time_eq(
+                                        &binding.credential_token_hash,
+                                        token_hash,
+                                    )
+                            })
+                        }
+                        _ => false,
+                    }
+                },
+            )
+            .await
+        {
+            Ok(guard) => guard,
+            Err(_) => {
+                // This result type can contain a non-Send route guard. Awaiting
+                // a blocking wrapper on the error arm would make the enclosing
+                // dispatcher future non-Send, so keep this conditional SQLite
+                // transition synchronous. No route guard exists on this arm.
+                if store
+                    .terminalize_pty_input(
+                        injection_id,
+                        S::Indeterminate,
+                        Some(C::FinalRevalidationFailed),
+                        chrono::Utc::now(),
+                    )
+                    .is_err()
+                {
+                    log::error!(
+                        "[pty-input] boundary terminalization failed id={} code=terminal_store_failed",
+                        injection_id
+                    );
+                }
+                return;
+            }
+        };
+        let text_write_succeeded =
+            crate::pty::inject::write_exact_agent_input_first(route_guard, &payload);
+        // Keep the fresh registry lock through the synchronous first-write
+        // boundary so a concurrent revocation linearizes before or after it,
+        // never between the final authority check and the text write.
+        drop(final_api_guard);
+        let outcome =
+            crate::pty::inject::submit_exact_agent_input_with_permit(&permit, text_write_succeeded)
+                .await;
+        let (status, reason) = match outcome {
+            crate::pty::inject::AgentSubmitOutcome::TextWriteFailed => {
+                (S::Indeterminate, Some(C::TextWriteFailed))
+            }
+            crate::pty::inject::AgentSubmitOutcome::RequiredEnterFailed => {
+                (S::Indeterminate, Some(C::RequiredEnterFailed))
+            }
+            crate::pty::inject::AgentSubmitOutcome::Submitted {
+                redundant_enter_failed,
+            } => {
+                let metadata = if payload == b"/clear" {
+                    crate::commands::pty::stamp_fresh_boundary_to_session(app, selected_id).await
+                } else if payload == b"/compact" {
+                    crate::commands::pty::BoundaryMetadataOutcome::Unchanged
+                } else {
+                    crate::commands::pty::note_post_boundary_content_to_session(app, selected_id)
+                        .await
+                };
+                let reason = if metadata == crate::commands::pty::BoundaryMetadataOutcome::Failed {
+                    Some(C::BoundaryMetadataFailed)
+                } else {
+                    redundant_enter_failed.then_some(C::RedundantEnterFailed)
+                };
+                (S::Injected, reason)
+            }
+        };
+        let result = match store
+            .terminalize_pty_input_offloaded(
+                injection_id.to_string(),
+                status,
+                reason,
+                chrono::Utc::now(),
+            )
+            .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                log::error!(
+                    "[pty-input] terminal persistence failed id={} code=terminal_store_failed",
+                    injection_id
+                );
+                return;
+            }
+        };
+        crate::api::audit::record_pty_input_result("terminal", &result);
+        if app.emit("pty_input_status", &result).is_err() {
+            log::warn!(
+                "[pty-input] status event failed id={} code=boundary_metadata_failed",
+                injection_id
+            );
+        }
+    }
+
+    async fn validate_claimed_api_authority<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        claimed: &crate::api::message_store::ClaimedPtyInputOperation,
+        client_store: Option<&Arc<crate::api::auth::ApiClientStore>>,
+    ) -> Option<crate::config::teams::VerifiedPtyInputRoute> {
+        let client_store = client_store?;
+        let (client_id, generation) = (
+            claimed.authority_client_id.as_deref()?,
+            claimed.authority_client_generation.as_deref()?,
+        );
+        let fresh = client_store
+            .load_active_binding_fresh_offloaded(client_id.to_string(), generation.to_string())
+            .await
+            .ok()??;
+        self.validate_claimed_api_authority_with_fresh(app, claimed, &fresh)
+            .await
+    }
+
+    async fn validate_claimed_api_authority_with_fresh<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        claimed: &crate::api::message_store::ClaimedPtyInputOperation,
+        fresh: &crate::api::auth::ApiClientFreshGuard,
+    ) -> Option<crate::config::teams::VerifiedPtyInputRoute> {
+        let client_id = claimed.authority_client_id.as_deref()?;
+        let generation = claimed.authority_client_generation.as_deref()?;
+        let session_id =
+            crate::phone::types::parse_canonical_uuid_v4(&claimed.authority_session_id).ok()?;
+        if fresh.client.client_id != client_id
+            || !fresh.client.has_scope(crate::api::auth::SCOPE_PTY_INPUT)
+            || fresh.client.bound_session_id.as_deref()
+                != Some(claimed.authority_session_id.as_str())
+            || fresh.client.credential_generation.as_deref() != Some(generation)
+        {
+            return None;
+        }
+        let session = {
+            let manager = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let guard = manager.read().await;
+            guard.get_session(session_id).await
+        }?;
+        if matches!(session.status, SessionStatus::Exited(_))
+            || session.backend_kind != SessionBackendKind::ContainerTransport
+        {
+            return None;
+        }
+        let root =
+            crate::path_identity::verify_directory(Path::new(&session.working_directory)).ok()?;
+        let bound_root =
+            crate::path_identity::verify_directory(Path::new(&fresh.client.bound_root)).ok()?;
+        if !crate::path_identity::same_object(&root, &bound_root) {
+            return None;
+        }
+        let (binding, route_backend, route_identities, live) = {
+            let manager = app.state::<Arc<Mutex<PtyManager>>>();
+            let manager = manager.lock().unwrap_or_else(|error| error.into_inner());
+            (
+                manager.container_backend().credential_binding(session_id),
+                manager.backend_kind(session_id),
+                manager.route_identities(session_id),
+                manager.has_session(session_id),
+            )
+        };
+        let binding = binding?;
+        if !live
+            || route_backend != Some(SessionBackendKind::ContainerTransport)
+            || binding.client_id != client_id
+            || binding.credential_generation != generation
+            || binding.bound_session_id != claimed.authority_session_id
+            || binding.bound_root_object_id != root.object_id
+            || !crate::api::auth::constant_time_eq(
+                &binding.credential_token_hash,
+                &fresh.presented_token_hash,
+            )
+        {
+            return None;
+        }
+        let in_memory_paths = {
+            let settings = app.state::<SettingsState>();
+            let paths = settings.read().await.project_paths.clone();
+            paths
+        };
+        let mut paths =
+            match crate::config::settings::read_pty_input_project_paths_strict_offloaded().await {
+                Ok(paths) => paths.unwrap_or(in_memory_paths),
+                Err(_) => return None,
+            };
+        let sender = crate::config::teams::verify_pty_input_coordinator_root(Path::new(
+            &session.working_directory,
+        ))
+        .ok()?;
+        if let Some(project_path) = sender.workspace_identity.canonical_path.parent() {
+            let project = project_path
+                .to_str()
+                .map(crate::path_utils::normalize_windows_verbatim_path)?;
+            if !paths.contains(&project) {
+                paths.push(project);
+            }
+        }
+        let route = crate::config::teams::verify_pty_input_route(
+            Path::new(&session.working_directory),
+            false,
+            &claimed.target_fqn,
+            &paths,
+        )
+        .ok()?;
+        let route_matches = route_identities.is_some_and(|(cwd, replica, _)| {
+            cwd.as_ref()
+                .is_some_and(|saved| crate::path_identity::same_object(saved, &root))
+                && replica.as_ref().is_some_and(|saved| {
+                    crate::path_identity::same_object(saved, &route.sender.replica_identity)
+                })
+        });
+        if !route_matches
+            || route.sender.canonical_fqn != claimed.sender_fqn
+            || route.sender.authority_fingerprint != claimed.sender_identity_fingerprint
+            || route.target.authority_fingerprint != claimed.target_identity_fingerprint
+        {
+            return None;
+        }
+        Some(route)
+    }
+
+    async fn pty_spawn_authority_is_current<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        claimed: &crate::api::message_store::ClaimedPtyInputOperation,
+        expected_sender: &crate::config::teams::VerifiedPtyInputIdentity,
+        expected_target: &crate::config::teams::VerifiedPtyInputIdentity,
+        source_plane: crate::phone::types::PtyInputSourcePlane,
+        api_client_store: Option<&Arc<crate::api::auth::ApiClientStore>>,
+    ) -> bool {
+        let current = if source_plane == crate::phone::types::PtyInputSourcePlane::HostCli {
+            self.validate_claimed_host_authority(app, claimed).await
+        } else {
+            self.validate_claimed_api_authority(app, claimed, api_client_store)
+                .await
+        };
+        current.is_some_and(|route| {
+            route.sender.canonical_fqn == expected_sender.canonical_fqn
+                && route.sender.authority_fingerprint == expected_sender.authority_fingerprint
+                && crate::path_identity::same_object(
+                    &route.sender.replica_identity,
+                    &expected_sender.replica_identity,
+                )
+                && route.target.canonical_fqn == expected_target.canonical_fqn
+                && route.target.authority_fingerprint == expected_target.authority_fingerprint
+                && crate::path_identity::same_object(
+                    &route.target.replica_identity,
+                    &expected_target.replica_identity,
+                )
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn spawn_pty_input_target<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        claimed: &crate::api::message_store::ClaimedPtyInputOperation,
+        matching: &[SessionInfo],
+        verified_sender: &crate::config::teams::VerifiedPtyInputIdentity,
+        verified_target: &crate::config::teams::VerifiedPtyInputIdentity,
+        source_plane: crate::phone::types::PtyInputSourcePlane,
+        api_client_store: Option<&Arc<crate::api::auth::ApiClientStore>>,
+        target_ownership: &crate::api::message_store::PtyInputTargetOwnership<'_>,
+    ) -> Result<SessionInfo, crate::phone::types::PtyInputReasonCode> {
+        use crate::phone::types::PtyInputReasonCode as C;
+
+        if verified_target.canonical_fqn != claimed.target_fqn
+            || !target_ownership.proves(&verified_target.canonical_fqn)
+        {
+            return Err(C::AuthorityChanged);
+        }
+        let target_root = verified_target.replica_root.clone();
+        let target_root_text = target_root.to_str().ok_or(C::UnsafePath)?.to_string();
+        let settings_state = app.state::<SettingsState>();
+        let settings = settings_state.read().await.clone();
+        let (config_bytes, _) = crate::path_identity::read_bounded_regular(
+            &target_root.join("config.json"),
+            1024 * 1024,
+        )
+        .map_err(|_| C::UnsafePath)?;
+        let config_value = crate::path_identity::parse_json_no_duplicates(&config_bytes)
+            .map_err(|_| C::UnsupportedProfile)?;
+        let local_config: AgentLocalConfig =
+            serde_json::from_value(config_value).map_err(|_| C::UnsupportedProfile)?;
+        let exited = matching
+            .iter()
+            .filter(|session| {
+                matches!(session.status, SessionStatus::Exited(_))
+                    && crate::config::teams::verify_pty_input_replica_cwd(Path::new(
+                        &session.working_directory,
+                    ))
+                    .is_ok_and(|identity| {
+                        identity.canonical_fqn == verified_target.canonical_fqn
+                            && identity.authority_fingerprint
+                                == verified_target.authority_fingerprint
+                    })
+            })
+            .max_by(|left, right| {
+                let left_time = chrono::DateTime::parse_from_rfc3339(&left.created_at).ok();
+                let right_time = chrono::DateTime::parse_from_rfc3339(&right.created_at).ok();
+                left_time
+                    .cmp(&right_time)
+                    .then_with(|| left.id.cmp(&right.id))
+            });
+        let mut candidates = Vec::new();
+        if let Some(id) = claimed.requested_agent_id.as_ref() {
+            candidates.push(id.clone());
+        } else {
+            if let Some(id) = exited.and_then(|session| session.agent_id.clone()) {
+                candidates.push(id);
+            }
+            if let Some(id) = local_config.tooling.current_coding_agent.clone() {
+                candidates.push(id);
+            }
+            if let Some(id) = local_config.tooling.last_coding_agent.clone() {
+                candidates.push(id);
+            }
+            candidates.extend(settings.agents.iter().map(|agent| agent.id.clone()));
+        }
+        candidates.dedup();
+        let mut resolved = None;
+        for id in candidates {
+            let Ok(Some(spawn)) = crate::commands::session::build_configured_agent_spawn_for_cwd(
+                &settings,
+                &id,
+                &target_root_text,
+                None,
+            ) else {
+                if claimed.requested_agent_id.is_some() {
+                    return Err(C::UnsupportedProfile);
+                }
+                continue;
+            };
+            let hint =
+                crate::session::profile::CodingAgentKind::detect(&spawn.shell, &spawn.shell_args);
+            if crate::session::profile::detect_pty_submission_agent(
+                &spawn.shell,
+                &spawn.shell_args,
+                hint,
+            )
+            .is_some()
+            {
+                resolved = Some((id, spawn));
+                break;
+            }
+            if claimed.requested_agent_id.is_some() {
+                return Err(C::UnsupportedProfile);
+            }
+        }
+        let (agent_id, spawn) = resolved.ok_or(C::UnsupportedProfile)?;
+        let expected_backend = SessionBackendKind::from(&spawn.backend);
+        let carried = exited.map(|session| {
+            (
+                session.telegram_bot_id.clone(),
+                session.communication.clone(),
+            )
+        });
+        if !self
+            .pty_spawn_authority_is_current(
+                app,
+                claimed,
+                verified_sender,
+                verified_target,
+                source_plane,
+                api_client_store,
+            )
+            .await
+        {
+            return Err(C::AuthorityChanged);
+        }
+        if let Some(exited) = exited {
+            let exited_id = crate::phone::types::parse_canonical_uuid_v4(&exited.id)
+                .map_err(|_| C::InconsistentSession)?;
+            let destroy_result =
+                crate::commands::session::background_destroy_session_inner(app, exited_id).await;
+            let session_manager = app
+                .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+                .inner()
+                .clone();
+            let remaining = {
+                let guard = session_manager.read().await;
+                guard.list_sessions().await
+            };
+            let selected_survived = remaining.iter().any(|session| session.id == exited.id);
+            let live_appeared = remaining.iter().any(|session| {
+                !matches!(session.status, SessionStatus::Exited(_))
+                    && crate::config::teams::verify_pty_input_replica_cwd(Path::new(
+                        &session.working_directory,
+                    ))
+                    .is_ok_and(|identity| {
+                        identity.canonical_fqn == verified_target.canonical_fqn
+                            && identity.authority_fingerprint
+                                == verified_target.authority_fingerprint
+                    })
+            });
+            let route_or_spawn_survived = {
+                let manager = app.state::<Arc<Mutex<PtyManager>>>();
+                let manager = manager.lock().unwrap_or_else(|error| error.into_inner());
+                manager.backend_kind(exited_id).is_some()
+                    || manager.has_pending_spawn_for_replica(&verified_target.replica_identity)
+            };
+            if selected_survived || live_appeared || route_or_spawn_survived {
+                return Err(C::SessionRace);
+            }
+            if destroy_result.is_err() {
+                log::debug!(
+                    "[pty-input] exited destroy reported failure but relist proved removal id={}",
+                    claimed.injection_id
+                );
+            }
+        }
+        if !self
+            .pty_spawn_authority_is_current(
+                app,
+                claimed,
+                verified_sender,
+                verified_target,
+                source_plane,
+                api_client_store,
+            )
+            .await
+        {
+            return Err(C::AuthorityChanged);
+        }
+        let session_manager = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .inner()
+            .clone();
+        let pty_manager = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        let (_, local_name) = crate::config::teams::split_project_prefix(&claimed.target_fqn);
+        let created = crate::commands::session::create_session_inner_with_pty_target_ownership(
+            app,
+            &session_manager,
+            &pty_manager,
+            spawn.shell.clone(),
+            spawn.shell_args.clone(),
+            target_root_text,
+            Some(local_name.to_string()),
+            Some(agent_id),
+            Some(spawn.trusted_agent_label.clone()),
+            false,
+            Vec::new(),
+            exited.is_none(),
+            Some(spawn),
+            None,
+            crate::commands::session::CreateSelectionIntent::Background,
+            target_ownership,
+        )
+        .await;
+        let info = match created {
+            Ok(info) => info,
+            Err(error) => {
+                let sessions = {
+                    let guard = session_manager.read().await;
+                    guard.list_sessions().await
+                };
+                let ambiguous = sessions.iter().any(|session| {
+                    !matches!(session.status, SessionStatus::Exited(_))
+                        && crate::config::teams::verify_pty_input_replica_cwd(Path::new(
+                            &session.working_directory,
+                        ))
+                        .is_ok_and(|identity| {
+                            identity.canonical_fqn == verified_target.canonical_fqn
+                                && identity.authority_fingerprint
+                                    == verified_target.authority_fingerprint
+                        })
+                }) || pty_manager
+                    .lock()
+                    .unwrap_or_else(|lock_error| lock_error.into_inner())
+                    .has_pending_spawn_for_replica(&verified_target.replica_identity);
+                return Err(if error == "sessionRace" {
+                    C::SessionRace
+                } else if ambiguous {
+                    C::InconsistentSession
+                } else {
+                    C::SpawnFailedSafe
+                });
+            }
+        };
+        let created_id = crate::phone::types::parse_canonical_uuid_v4(&info.id)
+            .map_err(|_| C::InconsistentSession)?;
+        let created_target =
+            crate::config::teams::verify_pty_input_replica_cwd(Path::new(&info.working_directory))
+                .map_err(|_| C::InconsistentSession)?;
+        let route_valid = {
+            let manager = pty_manager
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let identities = manager.route_identities(created_id);
+            manager.has_session(created_id)
+                && manager.backend_kind(created_id) == Some(expected_backend)
+                && identities.is_some_and(|(cwd, replica, _)| {
+                    cwd.as_ref().is_some_and(|cwd| {
+                        crate::path_identity::is_verified_descendant(
+                            cwd,
+                            &verified_target.replica_identity,
+                        )
+                    }) && replica.as_ref().is_some_and(|replica| {
+                        crate::path_identity::same_object(
+                            replica,
+                            &verified_target.replica_identity,
+                        )
+                    })
+                })
+        };
+        if created_target.canonical_fqn != verified_target.canonical_fqn
+            || created_target.authority_fingerprint != verified_target.authority_fingerprint
+            || info.backend_kind != expected_backend
+            || info.pty_submission_agent().is_none()
+            || !route_valid
+        {
+            return Err(C::InconsistentSession);
+        }
+        if let Some((telegram_bot_id, communication)) = carried {
+            if telegram_bot_id.is_some() {
+                self.attach_persisted_telegram_for_wake(
+                    app,
+                    created_id,
+                    telegram_bot_id.as_deref(),
+                )
+                .await;
+            }
+            if let Some(communication) = communication {
+                let restored = {
+                    let guard = session_manager.read().await;
+                    guard
+                        .restore_communication(created_id, communication.clone())
+                        .await
+                };
+                if restored {
+                    crate::session::selection::publish_session_communication(
+                        app,
+                        created_id,
+                        Some(&communication),
+                    );
+                }
+            }
+        }
+        Ok(info)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn wait_for_pty_input_ready<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        claimed: &crate::api::message_store::ClaimedPtyInputOperation,
+        verified_target: &crate::config::teams::VerifiedPtyInputIdentity,
+        session_id: Uuid,
+        spawned: bool,
+        source_plane: crate::phone::types::PtyInputSourcePlane,
+        api_client_store: Option<&Arc<crate::api::auth::ApiClientStore>>,
+        heartbeat: &crate::api::message_store::PreparationHeartbeatGuard,
+    ) -> Result<(), crate::phone::types::PtyInputReasonCode> {
+        use crate::phone::types::PtyInputReasonCode as C;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+        loop {
+            if heartbeat.failed() {
+                return Err(C::LeaseLost);
+            }
+            let expires = crate::phone::types::parse_canonical_pty_timestamp(&claimed.expires_at)
+                .map_err(|_| C::StoreCorrupt)?;
+            if expires <= chrono::Utc::now() {
+                return Err(C::Expired);
+            }
+            if app
+                .try_state::<Arc<crate::RestoreInProgress>>()
+                .is_some_and(|flag| flag.0.load(std::sync::atomic::Ordering::SeqCst))
+            {
+                return Err(C::RestoreInProgress);
+            }
+            if app
+                .try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
+                .is_some_and(|guard| guard.blocks_agent(&claimed.target_fqn))
+            {
+                return Err(C::PurgeInProgress);
+            }
+            let authority = if source_plane == crate::phone::types::PtyInputSourcePlane::HostCli {
+                self.validate_claimed_host_authority(app, claimed).await
+            } else {
+                self.validate_claimed_api_authority(app, claimed, api_client_store)
+                    .await
+            };
+            if !authority.is_some_and(|route| {
+                route.sender.authority_fingerprint == claimed.sender_identity_fingerprint
+                    && route.target.authority_fingerprint == verified_target.authority_fingerprint
+                    && crate::path_identity::same_object(
+                        &route.target.replica_identity,
+                        &verified_target.replica_identity,
+                    )
+            }) {
+                return Err(C::AuthorityChanged);
+            }
+            let session = {
+                let manager = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let guard = manager.read().await;
+                guard.get_session(session_id).await
+            }
+            .ok_or(C::SessionRace)?;
+            let current_target = crate::config::teams::verify_pty_input_replica_cwd(Path::new(
+                &session.working_directory,
+            ))
+            .map_err(|_| C::AuthorityChanged)?;
+            if current_target.canonical_fqn != claimed.target_fqn
+                || current_target.authority_fingerprint != verified_target.authority_fingerprint
+                || !crate::path_identity::same_object(
+                    &current_target.replica_identity,
+                    &verified_target.replica_identity,
+                )
+                || session.pty_submission_agent().is_none()
+                || matches!(session.status, SessionStatus::Exited(_))
+            {
+                return Err(C::SessionRace);
+            }
+            let route_valid = {
+                let manager = app.state::<Arc<Mutex<PtyManager>>>();
+                let manager = manager.lock().unwrap_or_else(|error| error.into_inner());
+                manager.has_session(session_id)
+                    && manager.backend_kind(session_id) == Some(session.backend_kind)
+                    && manager
+                        .route_identities(session_id)
+                        .is_some_and(|(cwd, replica, _)| {
+                            cwd.as_ref().is_some_and(|cwd| {
+                                crate::path_identity::is_verified_descendant(
+                                    cwd,
+                                    &verified_target.replica_identity,
+                                )
+                            }) && replica.as_ref().is_some_and(|replica| {
+                                crate::path_identity::same_object(
+                                    replica,
+                                    &verified_target.replica_identity,
+                                )
+                            })
+                        })
+            };
+            if !route_valid {
+                return Err(C::SessionRace);
+            }
+            let readiness = app
+                .state::<Arc<crate::pty::idle_detector::IdleDetector>>()
+                .purge_readiness(&[session_id])
+                .into_iter()
+                .next()
+                .ok_or(C::UntrackedReadiness)?;
+            let activity_required = readiness
+                .idle_threshold
+                .checked_add(std::time::Duration::from_secs(2))
+                .ok_or(C::UntrackedReadiness)?;
+            let activity_age = readiness.activity_age.ok_or(C::UntrackedReadiness)?;
+            let resize_ready = match readiness.last_resize_age {
+                None => true,
+                Some(age) => readiness
+                    .resize_grace
+                    .checked_add(std::time::Duration::from_secs(2))
+                    .is_some_and(|required| age >= required),
+            };
+            if session.waiting_for_input
+                && readiness.watcher_idle
+                && activity_age >= activity_required
+                && resize_ready
+            {
+                return Ok(());
+            }
+            if !spawned && !session.waiting_for_input {
+                return Err(C::Busy);
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(C::ReadinessTimeout);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+    }
+
     /// Process a single outbox message file.
     /// `is_app_outbox`: true if the message came from the instance-private outbox (master token path).
+    #[cfg(test)]
     async fn process_message<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         path: &Path,
         is_app_outbox: bool,
     ) -> Result<(), String> {
-        let content = read_text_bom_tolerant(path)
-            .map_err(|e| format!("Failed to read outbox file: {}", e))?;
+        let content = match classify_outbox_document(path) {
+            OutboxClassification::Standard(content) => content,
+            OutboxClassification::PrivilegedCandidate { bytes, identity } => {
+                self.process_pty_input_file(app, path, is_app_outbox, &bytes, &identity)
+                    .await;
+                return Ok(());
+            }
+            OutboxClassification::InvalidDocument => {
+                self.reject_malformed_pty_candidate(path);
+                return Ok(());
+            }
+        };
+        self.process_message_content(app, path, is_app_outbox, &content)
+            .await
+    }
 
+    async fn process_message_content<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        is_app_outbox: bool,
+        content: &str,
+    ) -> Result<(), String> {
         // `let mut msg`: §AR2-norm below mutates `msg.from` / `msg.to` in place
         // as the SINGLE POINT OF TRUTH for canonicalization. Downstream code
         // (routing, action dispatch, injection, archival) reads the canonical
         // form without re-mutation.
-        let mut msg: OutboxMessage = serde_json::from_str(&content)
+        let mut msg: OutboxMessage = serde_json::from_str(content)
             .map_err(|e| format!("Failed to parse outbox message: {}", e))?;
 
         log::info!(
@@ -5174,7 +8028,7 @@ impl MailboxPoller {
                         )
                         .await
                     }
-                }
+                };
             }
         };
 
@@ -5408,7 +8262,7 @@ impl MailboxPoller {
                         )
                         .await
                     }
-                }
+                };
             }
         };
 
@@ -5797,22 +8651,32 @@ impl MailboxPoller {
             sid
         );
 
-        // Inject exit command into PTY.
-        // Clone the Arc so the State borrow is released, then lock+write+drop guard before any .await.
+        // Graceful exit shares the same per-route input serialization as user,
+        // automated, and privileged writers.
         let pty_arc = app
             .state::<Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>>()
             .inner()
             .clone();
-        let inject_result = match pty_arc.lock() {
-            Ok(mgr) => {
-                let res = mgr
-                    .write(sid, exit_cmd.as_bytes())
-                    .map_err(|e| e.to_string());
-                drop(mgr);
-                res
-            }
-            Err(e) => Err(format!("PTY lock failed: {}", e)),
-        };
+        let inject_result =
+            match crate::pty::manager::PtyManager::acquire_input_writer(&pty_arc, sid).await {
+                Ok(permit) => {
+                    let result = crate::pty::manager::PtyManager::write_with_permit(
+                        &permit,
+                        exit_cmd.as_bytes(),
+                    )
+                    .map_err(|error| error.to_string());
+                    if result.is_ok() {
+                        crate::commands::pty::mark_successful_pty_write_busy(
+                            app,
+                            sid,
+                            exit_cmd.len(),
+                        )
+                        .await;
+                    }
+                    result
+                }
+                Err(error) => Err(error.to_string()),
+            };
         if let Err(e) = inject_result {
             log::warn!(
                 "[mailbox] close-session: PTY inject failed for {}: {}, falling back to force",
@@ -6579,6 +9443,50 @@ mod tests {
         (mgr, backend)
     }
 
+    fn classify_fixture(bytes: &[u8]) -> OutboxClassification {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("candidate.json");
+        std::fs::write(&path, bytes).expect("write candidate");
+        classify_outbox_document(&path)
+    }
+
+    #[test]
+    fn malformed_escaped_privileged_discriminators_never_enter_raw_retention() {
+        for bytes in [
+            br#"{"ptyInput":{"text":"DO_NOT_RETAIN"}"#.as_slice(),
+            br#"{"pty\u0049nput":{"text":"DO_NOT_RETAIN"}"#.as_slice(),
+            br#"{"action":"pty\u002dinput","body":"DO_NOT_RETAIN""#.as_slice(),
+        ] {
+            assert!(matches!(
+                classify_fixture(bytes),
+                OutboxClassification::PrivilegedCandidate { .. }
+            ));
+        }
+
+        let malformed_utf16 = "{\"pty\\u0049nput\":{\"text\":\"DO_NOT_RETAIN\"}"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        let mut with_bom = vec![0xff, 0xfe];
+        with_bom.extend(malformed_utf16);
+        assert!(matches!(
+            classify_fixture(&with_bom),
+            OutboxClassification::PrivilegedCandidate { .. }
+        ));
+    }
+
+    #[test]
+    fn malformed_ordinary_and_valid_body_mentions_keep_standard_classification() {
+        assert!(matches!(
+            classify_fixture(br#"{"body":"ordinary""#),
+            OutboxClassification::InvalidDocument
+        ));
+        assert!(matches!(
+            classify_fixture(br#"{"body":"pty\u0049nput"}"#),
+            OutboxClassification::Standard(_)
+        ));
+    }
+
     #[test]
     fn retain_unarchived_session_dirs_drops_dirs_under_archived_projects() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -6978,6 +9886,7 @@ mod tests {
             switch_profile: None,
             dry_run: None,
             quiet_period_ms: None,
+            pty_input: None,
         }
     }
 
@@ -7157,6 +10066,413 @@ mod tests {
         session.id
     }
 
+    #[tokio::test]
+    async fn final_pty_boundary_rejects_identity_mutation_and_stamps_busy() {
+        use crate::pty::backend::SessionBackendKind;
+        use crate::pty::idle_detector::PtyInputBoundaryFailure;
+        use crate::session::profile::IdleTuning;
+
+        let fixture = make_mailbox_fixture();
+        let app = fixture.app.handle().clone();
+        let sender_id = add_mailbox_session(
+            &app,
+            &fixture.sender_cwd,
+            "coordinator",
+            SessionStatus::Running,
+            None,
+        )
+        .await;
+        let target_id = add_mailbox_session(
+            &app,
+            &fixture.target_cwd,
+            "member",
+            SessionStatus::Idle,
+            None,
+        )
+        .await;
+        let paths = vec![fixture._temp.path().to_string_lossy().to_string()];
+        let route = crate::config::teams::verify_pty_input_route(
+            &fixture.sender_cwd,
+            false,
+            CANONICAL_WAKE_TO,
+            &paths,
+        )
+        .expect("verified route");
+        let target_cwd_identity = crate::path_identity::verify_directory(&fixture.target_cwd)
+            .expect("target cwd identity");
+        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        pty.lock()
+            .unwrap()
+            .record_route_with_identities(
+                target_id,
+                SessionBackendKind::LocalProcess,
+                Some(target_cwd_identity.clone()),
+                Some(route.target.replica_identity.clone()),
+            )
+            .expect("record target route");
+        let sender_cwd_identity = crate::path_identity::verify_directory(&fixture.sender_cwd)
+            .expect("sender cwd identity");
+        pty.lock()
+            .unwrap()
+            .record_route_with_identities(
+                sender_id,
+                SessionBackendKind::LocalProcess,
+                Some(sender_cwd_identity.clone()),
+                Some(route.sender.replica_identity.clone()),
+            )
+            .expect("record sender route");
+        let mut authority_route = PtyManager::authority_route_proof(&pty, sender_id)
+            .expect("sender authority route proof");
+        let permit = PtyManager::acquire_input_writer(&pty, target_id)
+            .await
+            .expect("target input permit");
+        let route_guard = PtyManager::lock_route_for_verified_write(
+            &permit,
+            SessionBackendKind::LocalProcess,
+            &target_cwd_identity,
+            &route.target.replica_identity,
+        )
+        .expect("route is valid before mutation");
+        drop(route_guard);
+
+        let idle = app
+            .state::<Arc<crate::pty::idle_detector::IdleDetector>>()
+            .inner()
+            .clone();
+        idle.register_session(target_id, IdleTuning::DEFAULT);
+        idle.set_pty_input_ready_for_test(target_id);
+        let sessions = {
+            let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let manager = state.read().await.clone();
+            manager
+        };
+        let team_config = fixture
+            .sender_cwd
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("_team_dev-team")
+            .join("config.json");
+        let original_team = std::fs::read(&team_config).expect("read original team configuration");
+        let target_config = fixture.target_cwd.join("config.json");
+        let original_target =
+            std::fs::read(&target_config).expect("read original target configuration");
+
+        std::fs::write(
+            &team_config,
+            r#"{"agents":["../_agent_tech-lead"],"coordinator":"../_agent_dev-rust"}"#,
+        )
+        .expect("mutate sender authority");
+        let sender_failure = sessions
+            .prepare_pty_input_boundary(
+                target_id,
+                &route.target,
+                SessionBackendKind::LocalProcess,
+                sender_id,
+                &route.sender,
+                SessionBackendKind::LocalProcess,
+                &authority_route,
+                &permit,
+                &idle,
+                || true,
+            )
+            .await;
+        assert!(matches!(
+            &sender_failure,
+            Err(PtyInputBoundaryFailure::RouteUnavailable)
+        ));
+        drop(sender_failure);
+
+        std::fs::write(&team_config, original_team).expect("restore team configuration");
+        std::fs::write(&target_config, r#"{"identity":"../../_agent_tech-lead"}"#)
+            .expect("mutate target authority");
+        let target_failure = sessions
+            .prepare_pty_input_boundary(
+                target_id,
+                &route.target,
+                SessionBackendKind::LocalProcess,
+                sender_id,
+                &route.sender,
+                SessionBackendKind::LocalProcess,
+                &authority_route,
+                &permit,
+                &idle,
+                || true,
+            )
+            .await;
+        assert!(matches!(
+            &target_failure,
+            Err(PtyInputBoundaryFailure::RouteUnavailable)
+        ));
+        drop(target_failure);
+
+        std::fs::write(&target_config, original_target).expect("restore target configuration");
+
+        pty.lock()
+            .unwrap()
+            .remove_route_if_kind(sender_id, SessionBackendKind::LocalProcess);
+        pty.lock()
+            .unwrap()
+            .record_route_with_identities(
+                sender_id,
+                SessionBackendKind::LocalProcess,
+                Some(sender_cwd_identity),
+                Some(route.sender.replica_identity.clone()),
+            )
+            .expect("replace sender route");
+        let stale_authority_failure = sessions
+            .prepare_pty_input_boundary(
+                target_id,
+                &route.target,
+                SessionBackendKind::LocalProcess,
+                sender_id,
+                &route.sender,
+                SessionBackendKind::LocalProcess,
+                &authority_route,
+                &permit,
+                &idle,
+                || true,
+            )
+            .await;
+        assert!(matches!(
+            &stale_authority_failure,
+            Err(PtyInputBoundaryFailure::RouteUnavailable)
+        ));
+        drop(stale_authority_failure);
+        authority_route = PtyManager::authority_route_proof(&pty, sender_id)
+            .expect("replacement sender authority route proof");
+
+        let final_external_failure = sessions
+            .prepare_pty_input_boundary(
+                target_id,
+                &route.target,
+                SessionBackendKind::LocalProcess,
+                sender_id,
+                &route.sender,
+                SessionBackendKind::LocalProcess,
+                &authority_route,
+                &permit,
+                &idle,
+                || false,
+            )
+            .await;
+        assert!(matches!(
+            final_external_failure,
+            Err(PtyInputBoundaryFailure::RouteUnavailable)
+        ));
+
+        let first = sessions
+            .prepare_pty_input_boundary(
+                target_id,
+                &route.target,
+                SessionBackendKind::LocalProcess,
+                sender_id,
+                &route.sender,
+                SessionBackendKind::LocalProcess,
+                &authority_route,
+                &permit,
+                &idle,
+                || true,
+            )
+            .await;
+        let boundary_guard = match first {
+            Ok(guard) => guard,
+            Err(error) => panic!("restored boundary must succeed: {error:?}"),
+        };
+        drop(boundary_guard);
+        let second = sessions
+            .prepare_pty_input_boundary(
+                target_id,
+                &route.target,
+                SessionBackendKind::LocalProcess,
+                sender_id,
+                &route.sender,
+                SessionBackendKind::LocalProcess,
+                &authority_route,
+                &permit,
+                &idle,
+                || true,
+            )
+            .await;
+        assert!(matches!(second, Err(PtyInputBoundaryFailure::Busy)));
+    }
+
+    #[test]
+    fn maximum_host_request_can_be_atomically_replaced_with_a_marker() {
+        let temp = tempfile::tempdir().unwrap();
+        let injection_id = Uuid::new_v4().to_string();
+        let path = temp.path().join(format!("{injection_id}.json"));
+        std::fs::write(&path, vec![b'x'; crate::pty::backend::PTY_INPUT_MAX_BYTES]).unwrap();
+        let source_identity = crate::path_identity::read_bounded_regular(
+            &path,
+            crate::phone::types::PTY_INPUT_HOST_ENVELOPE_MAX_BYTES,
+        )
+        .unwrap()
+        .1;
+        MailboxPoller::new()
+            .replace_host_request_with_marker(&path, &source_identity, &injection_id, &injection_id)
+            .unwrap();
+        let (bytes, _) = crate::path_identity::read_bounded_regular(
+            &path,
+            crate::phone::types::PTY_INPUT_METADATA_MAX_BYTES,
+        )
+        .unwrap();
+        let marker: crate::phone::types::PtyInputQueueMarker =
+            serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(marker.injection_id, injection_id);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+            serde_json::json!({
+                "kind": "pty-input-marker",
+                "version": 1,
+                "injectionId": injection_id,
+                "opId": marker.op_id,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn host_terminal_artifact_is_source_correlated_and_idempotently_repairable() {
+        use crate::phone::types::{
+            canonical_pty_timestamp, PtyInputPublicStatus, PtyInputReasonCode, PtyInputSourcePlane,
+        };
+
+        let fixture = make_mailbox_fixture();
+        let outbox = fixture
+            .sender_cwd
+            .join(crate::config::agent_local_dir_name())
+            .join("outbox");
+        std::fs::create_dir_all(&outbox).unwrap();
+        let paths = vec![fixture._temp.path().to_string_lossy().to_string()];
+        let route = crate::config::teams::verify_pty_input_route(
+            &fixture.sender_cwd,
+            false,
+            CANONICAL_WAKE_TO,
+            &paths,
+        )
+        .unwrap();
+        let store = crate::api::message_store::MessageStore::open(
+            fixture._temp.path().join("host-artifact.sqlite3"),
+        )
+        .unwrap();
+        let injection_id = Uuid::new_v4().to_string();
+        let now = chrono::Utc::now();
+        let request_fingerprint = "a".repeat(64);
+        let confirmation_tag = "b".repeat(64);
+        store
+            .enqueue_pty_input(crate::api::message_store::PtyInputEnqueueRequest {
+                injection_id: injection_id.clone(),
+                sender_fqn: route.sender.canonical_fqn,
+                target_fqn: route.target.canonical_fqn,
+                op_id: injection_id.clone(),
+                nonce_sha256: "c".repeat(64),
+                request_fingerprint: request_fingerprint.clone(),
+                confirmation_tag: Some(confirmation_tag.clone()),
+                requested_agent_id: None,
+                payload: b"artifact exact text".to_vec(),
+                source_plane: PtyInputSourcePlane::HostCli,
+                sender_incarnation_fingerprint: route.sender.authority_fingerprint.clone(),
+                sender_identity_fingerprint: route.sender.authority_fingerprint,
+                target_identity_fingerprint: route.target.authority_fingerprint,
+                authority_session_id: Uuid::new_v4().to_string(),
+                authority_client_id: None,
+                authority_client_generation: None,
+                issued_at: canonical_pty_timestamp(now),
+                expires_at: canonical_pty_timestamp(now + chrono::Duration::minutes(10)),
+            })
+            .unwrap();
+        store
+            .terminalize_pty_input(
+                &injection_id,
+                PtyInputPublicStatus::Rejected,
+                Some(PtyInputReasonCode::Busy),
+                now + chrono::Duration::seconds(1),
+            )
+            .unwrap();
+
+        let poller = MailboxPoller::new();
+        let marker_path = outbox.join(format!("{injection_id}.json"));
+        std::fs::write(&marker_path, b"source envelope").unwrap();
+        let source_identity = crate::path_identity::read_bounded_regular(
+            &marker_path,
+            crate::phone::types::PTY_INPUT_HOST_ENVELOPE_MAX_BYTES,
+        )
+        .unwrap()
+        .1;
+        poller
+            .replace_host_request_with_marker(
+                &marker_path,
+                &source_identity,
+                &injection_id,
+                &injection_id,
+            )
+            .unwrap();
+        poller
+            .materialize_host_terminal_artifact(&marker_path, &store, &injection_id)
+            .await
+            .unwrap();
+        assert!(!marker_path.exists());
+        let artifact_path = outbox.join("rejected").join(format!("{injection_id}.json"));
+        let artifact: crate::phone::types::PtyInputHostArtifact = serde_json::from_slice(
+            &crate::path_identity::read_bounded_regular(
+                &artifact_path,
+                crate::phone::types::PTY_INPUT_METADATA_MAX_BYTES,
+            )
+            .unwrap()
+            .0,
+        )
+        .unwrap();
+        assert_eq!(artifact.confirmation_tag, confirmation_tag);
+
+        // Simulate a crash after artifact publication but before marker cleanup.
+        std::fs::write(&marker_path, b"retained source envelope").unwrap();
+        let source_identity = crate::path_identity::read_bounded_regular(
+            &marker_path,
+            crate::phone::types::PTY_INPUT_HOST_ENVELOPE_MAX_BYTES,
+        )
+        .unwrap()
+        .1;
+        poller
+            .replace_host_request_with_marker(
+                &marker_path,
+                &source_identity,
+                &injection_id,
+                &injection_id,
+            )
+            .unwrap();
+        poller
+            .materialize_host_terminal_artifact(&marker_path, &store, &injection_id)
+            .await
+            .unwrap();
+        assert!(!marker_path.exists());
+
+        std::fs::write(&marker_path, b"tampered source envelope").unwrap();
+        let source_identity = crate::path_identity::read_bounded_regular(
+            &marker_path,
+            crate::phone::types::PTY_INPUT_HOST_ENVELOPE_MAX_BYTES,
+        )
+        .unwrap()
+        .1;
+        poller
+            .replace_host_request_with_marker(
+                &marker_path,
+                &source_identity,
+                &injection_id,
+                &injection_id,
+            )
+            .unwrap();
+        let mut marker: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&marker_path).unwrap()).unwrap();
+        marker["unexpectedField"] = serde_json::Value::String("tampered".to_string());
+        std::fs::write(&marker_path, serde_json::to_vec(&marker).unwrap()).unwrap();
+        assert!(poller
+            .materialize_host_terminal_artifact(&marker_path, &store, &injection_id)
+            .await
+            .is_err());
+        assert!(marker_path.exists());
+    }
+
     fn write_wake_outbox_message(sender_cwd: &Path, msg_id: &str) -> PathBuf {
         write_wake_outbox_message_with_route(
             sender_cwd,
@@ -7199,6 +10515,7 @@ mod tests {
             switch_profile: None,
             dry_run: None,
             quiet_period_ms: None,
+            pty_input: None,
         };
         std::fs::write(&message_path, serde_json::to_string_pretty(&msg).unwrap()).unwrap();
         message_path
@@ -9423,6 +12740,7 @@ mod tests {
             switch_profile: None,
             dry_run: None,
             quiet_period_ms: None,
+            pty_input: None,
         };
         std::fs::write(&path, serde_json::to_string_pretty(&msg).unwrap()).unwrap();
         (path, msg)
@@ -10062,6 +13380,7 @@ mod tests {
             switch_profile: None,
             dry_run: None,
             quiet_period_ms: None,
+            pty_input: None,
         };
         std::fs::write(&path, serde_json::to_string_pretty(&msg).unwrap()).unwrap();
         (path, msg)
@@ -10172,6 +13491,7 @@ mod tests {
             switch_profile: profile.map(str::to_string),
             dry_run: None,
             quiet_period_ms: None,
+            pty_input: None,
         };
         std::fs::write(&path, serde_json::to_string_pretty(&msg).unwrap()).unwrap();
         (path, msg)
@@ -11886,6 +15206,7 @@ mod tests {
             switch_profile: None,
             dry_run: None,
             quiet_period_ms: None,
+            pty_input: None,
         }
     }
 
@@ -12610,6 +15931,7 @@ mod tests {
             switch_profile: None,
             dry_run: Some(dry_run),
             quiet_period_ms: Some(quiet_period_ms),
+            pty_input: None,
         };
         std::fs::write(&message_path, serde_json::to_string_pretty(&msg).unwrap()).unwrap();
         message_path

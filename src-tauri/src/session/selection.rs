@@ -2743,14 +2743,17 @@ mod tests {
         }
     }
 
-    fn real_container_spawn_spec(session_id: Uuid) -> crate::pty::backend::BackendSpawnSpec {
+    fn real_container_spawn_spec(
+        session_id: Uuid,
+        cwd: String,
+    ) -> crate::pty::backend::BackendSpawnSpec {
         crate::pty::backend::BackendSpawnSpec {
             id: session_id,
             agent_id: None,
             coding_agent: None,
             cmd: "container".to_string(),
             args: Vec::new(),
-            cwd: "C:/repo/.ac/wg-1/__agent_dev".to_string(),
+            cwd,
             selected_cwd: None,
             cols: 120,
             rows: 30,
@@ -3124,6 +3127,8 @@ mod tests {
         use crate::pty::container_tokens::ContainerApiTokenManager;
 
         let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let root_dir = tempfile::TempDir::new().expect("create container root directory");
+        let root = root_dir.path().to_string_lossy().into_owned();
         let (start_started, start_started_rx) = oneshot::channel();
         let (stop_started, stop_started_rx) = oneshot::channel();
         let close_budget = Duration::from_millis(200);
@@ -3200,7 +3205,7 @@ mod tests {
                 &mut ticket,
                 "container".to_string(),
                 Vec::new(),
-                "C:/repo/.ac/wg-1/__agent_dev".to_string(),
+                root.clone(),
                 None,
                 None,
                 Vec::new(),
@@ -3212,6 +3217,7 @@ mod tests {
         let pending_id = pending.id;
         let create_shutdown = coordinator.inner.shutdown.clone();
         let create_pty = Arc::clone(&pty);
+        let create_root = root.clone();
         let mut create = tokio::task::spawn_blocking(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -3222,7 +3228,7 @@ mod tests {
                 let _spawn_mark = create_pty
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())
-                    .mark_spawning("C:/repo/.ac/wg-1/__agent_dev", "container");
+                    .mark_spawning(&create_root, "container");
                 tokio::select! {
                     biased;
                     _ = create_shutdown.cancelled() => {
@@ -3231,7 +3237,7 @@ mod tests {
                     result = PtyManager::spawn(
                         &create_pty,
                         SessionBackendKind::ContainerTransport,
-                        real_container_spawn_spec(pending_id),
+                        real_container_spawn_spec(pending_id, create_root),
                     ) => result.map_err(|error| error.to_string()),
                 }
             })

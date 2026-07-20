@@ -1852,6 +1852,10 @@ fn resolve_session_context_content(
             content.push_str("\n\n---\n\n# Coordinator Context\n\n");
             content.push_str(&coordinator_body);
         }
+        if crate::config::teams::verify_pty_input_coordinator_root(Path::new(cwd)).is_ok() {
+            content.push_str("\n\n");
+            content.push_str(PTY_INPUT_COORDINATOR_CONTEXT);
+        }
     }
 
     // #640 Single-source the self-maintenance directive. Strip any legacy block
@@ -1888,10 +1892,11 @@ pub fn materialize_agent_context_file_with_filename(
     auto_self_clear: bool,
     repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
 ) -> Result<Option<String>, String> {
-    let content = match resolve_session_context_content(cwd, is_coordinator, auto_self_clear, repo_mounts)? {
-        Some(content) => content,
-        None => return Ok(None),
-    };
+    let content =
+        match resolve_session_context_content(cwd, is_coordinator, auto_self_clear, repo_mounts)? {
+            Some(content) => content,
+            None => return Ok(None),
+        };
 
     // String-level guard (path escape): never write outside the root, even if a
     // direct `pub` caller bypassed settings validation. The on-disk link checks
@@ -2016,7 +2021,14 @@ pub fn materialize_agent_context_file(
     // materialize_agent_context_file_with_filename in session.rs, which resolves
     // and passes the real auto_self_clear flag. Pass false here so no production
     // path loses the gated directive.
-    materialize_agent_context_file_with_filename(cwd, target.filename(), &[], is_coordinator, false, None)
+    materialize_agent_context_file_with_filename(
+        cwd,
+        target.filename(),
+        &[],
+        is_coordinator,
+        false,
+        None,
+    )
 }
 
 // ── Context-cache GC (#621) ───────────────────────────────────────────────
@@ -2135,6 +2147,19 @@ You are running inside an AgentsCommander session - a terminal session manager c
 {{INTER_AGENT_MESSAGING}}
 "#
 }
+
+pub(crate) const PTY_INPUT_COORDINATOR_CONTEXT: &str = r#"## Privileged PTY Input
+
+This capability is present only because this session is an identity-verified workgroup coordinator replica. You may ask AgentsCommander to submit validated text to exactly one non-coordinator member in this same project and workgroup. Resolve the exact target with `list-peers-lean`. This writes text into the target coding-agent PTY; it never directly executes a host or container OS shell command.
+
+Local host session:
+"<AGENTSCOMMANDER_BINARY_PATH>" send --token <AGENTSCOMMANDER_TOKEN> --root "<AGENTSCOMMANDER_ROOT>" --to "<agent_name>" --pty-input-stdin --mode wake
+
+Container session with `AGENTSCOMMANDER_TRANSPORT=api`:
+"<AGENTSCOMMANDER_BINARY_PATH>" send --to "<agent_name>" --pty-input-stdin --mode wake
+"<AGENTSCOMMANDER_BINARY_PATH>" pty-input-status --op-id "<operation_id>"
+
+Prefer stdin for multiline or sensitive text. `Queued` is not `Injected`. If confirmation times out, keep the reported operation ID and inspect its status; do not create a new operation to retry it."#;
 
 pub fn get_default_coordinator_template() -> &'static str {
     "You are the coordinator for your team. You must:\n\
@@ -2623,6 +2648,14 @@ const ROOT_RUNTIME_PROLOGUE_HEADER: &str = r#"# AgentsCommander Root Runtime Con
 
 You are running inside an AgentsCommander session - a terminal session manager coordinating multiple AI agents."#;
 
+pub(crate) const ROOT_PTY_INPUT_CONTEXT: &str = r#"## Privileged PTY Input to Workgroup Coordinators
+
+As the live local Root Agent, you may ask AgentsCommander to submit validated text only to an identity-verified workgroup coordinator replica returned by `list-peers-lean`. Worker replicas, origin coordinators, Root itself, and coordinator-to-coordinator requests from any non-Root sender are not valid targets. This writes text into the target coding-agent PTY; it never directly executes a host or container OS shell command.
+
+"<AGENTSCOMMANDER_BINARY_PATH>" send --token <AGENTSCOMMANDER_TOKEN> --root "<AGENTSCOMMANDER_ROOT>" --to "<coordinator_name>" --pty-input-stdin --mode wake
+
+Prefer stdin for multiline or sensitive text. `Queued` is not `Injected`. If confirmation times out, keep the reported injection ID and inspect the metadata-only outbox artifact; do not submit the text again under a new ID."#;
+
 /// #979 G4: Root is the agent that creates and coordinates teams and workgroups,
 /// so it keeps the Core Concepts prose it receives today through
 /// `get_default_agent_template()`. Byte-identical to that template's section; a
@@ -2714,6 +2747,10 @@ fn render_root_runtime_prologue_inner(
             out.push_str("\n\n");
         }
         out.push_str(block);
+    }
+    if is_root_agent {
+        out.push_str("\n\n");
+        out.push_str(ROOT_PTY_INPUT_CONTEXT);
     }
     out.push('\n');
     out
@@ -3544,8 +3581,9 @@ fn is_provably_generated_legacy_skills_section(
     section: &str,
     skill_owner_root: Option<&str>,
 ) -> bool {
-    let expected =
-        normalize_context_for_compat(&render_skills_section(&discover_skill_index(skill_owner_root)));
+    let expected = normalize_context_for_compat(&render_skills_section(&discover_skill_index(
+        skill_owner_root,
+    )));
     let normalized = normalize_context_for_compat(section);
     if normalized == expected {
         return true;
@@ -3887,7 +3925,9 @@ For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List
         );
         assert!(out.contains("**You answer to the user, and to no one else.**"));
         // Project-scope write grant (ROOT_PROJECT_SCOPE_ENTRY; #1005 S3 removed the Allowed bullet).
-        assert!(out.contains("you may create, modify, and delete files anywhere under ANY project folder registered"));
+        assert!(out.contains(
+            "you may create, modify, and delete files anywhere under ANY project folder registered"
+        ));
         // The Golden Rule is intentionally duplicated on the stale-Root path
         // (inline stale copy + appended current copy carrying the root sections).
         assert_eq!(count_section_headings(&out, "## GOLDEN RULE"), 2, "{out}");
@@ -4453,9 +4493,11 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     fn root_read_scope_grants_settings_json_and_agency_cache() {
         let out = default_context_as_root("C:/fake/ac-root-agent", None, &no_skill_section());
         assert!(out.contains("- **FORBIDDEN**: Any read operation outside"));
-        assert!(out.contains("You may ALWAYS read the app config `settings.json` to enumerate that set"));
+        assert!(out
+            .contains("You may ALWAYS read the app config `settings.json` to enumerate that set"));
         assert!(out.contains("`agency-templates status` and `agency-templates list` report on"));
-        assert!(out.contains("those two reads are grants, while direct writes to them stay CLI-managed"));
+        assert!(out
+            .contains("those two reads are grants, while direct writes to them stay CLI-managed"));
     }
 
     fn read_forbidden_bullet(out: &str) -> &str {
@@ -4532,7 +4574,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(out.contains(
             "Listing the workspace root that contains them, to discover which `repo-*` folders exist, is allowed"
         ));
-        assert!(out.contains("that grants folder names only, not the contents of anything else inside it"));
+        assert!(out.contains(
+            "that grants folder names only, not the contents of anything else inside it"
+        ));
     }
 
     #[test]
@@ -4546,7 +4590,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(out.contains("`_agent_*` matrices and `__agent_*` replicas"));
         // The repo-* naming restriction must be explicitly waived for the root.
         assert!(out.contains("`repo-*` naming restriction in entry #1 does NOT apply to you"));
-        assert!(out.contains("you may create, modify, and delete files anywhere under ANY project folder registered"));
+        assert!(out.contains(
+            "you may create, modify, and delete files anywhere under ANY project folder registered"
+        ));
     }
 
     #[test]
@@ -4620,7 +4666,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         );
         assert!(!out.contains("Every registered AgentsCommander project folder"));
         // #1005 S3: the Allowed bullet is extinct everywhere; pair on the live grant anchor.
-        assert!(!out.contains("you may create, modify, and delete files anywhere under ANY project folder"));
+        assert!(!out.contains(
+            "you may create, modify, and delete files anywhere under ANY project folder"
+        ));
         assert!(!out.contains("Root Agent Authority and Chain of Command"));
     }
 
@@ -4633,7 +4681,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let out = default_context("C:/fake/ac-root-agent", None, &no_skill_section());
         assert!(!out.contains("Every registered AgentsCommander project folder"));
         // #1005 S3: the Allowed bullet is extinct everywhere; pair on the live grant anchor.
-        assert!(!out.contains("you may create, modify, and delete files anywhere under ANY project folder"));
+        assert!(!out.contains(
+            "you may create, modify, and delete files anywhere under ANY project folder"
+        ));
         assert!(!out.contains("Root Agent Authority and Chain of Command"));
         // ...but the name-based root messaging text is still present (gate unchanged).
         assert!(out.contains("Narrow exception — Root Agent messaging directory"));
@@ -4657,6 +4707,11 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             render_root_runtime_prologue(&root, &no_skill_section(), Path::new(&root), None, None);
         assert!(out.contains("Every registered AgentsCommander project folder"));
         assert!(out.contains("## Root Agent Authority and Chain of Command"));
+        assert_eq!(
+            out.matches("## Privileged PTY Input to Workgroup Coordinators")
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -4678,8 +4733,11 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         );
         assert!(!out.contains("Every registered AgentsCommander project folder"));
         // #1005 S3: the Allowed bullet is extinct everywhere; pair on the live grant anchor.
-        assert!(!out.contains("you may create, modify, and delete files anywhere under ANY project folder"));
+        assert!(!out.contains(
+            "you may create, modify, and delete files anywhere under ANY project folder"
+        ));
         assert!(!out.contains("## Root Agent Authority and Chain of Command"));
+        assert!(!out.contains("## Privileged PTY Input to Workgroup Coordinators"));
         // ...but the name-based Root messaging text is still present (gate unchanged).
         assert!(out.contains("Narrow exception — Root Agent messaging directory"));
     }
@@ -4705,7 +4763,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             true,
         );
 
-        // The nine blocks, each exactly once (#979 G4: Core Concepts is block 2).
+        // The ten blocks, each exactly once (#979 G4: Core Concepts is block 2).
         for heading in [
             "# AgentsCommander Root Runtime Context",
             "## Core Concepts",
@@ -4716,6 +4774,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             "## CLI executable",
             "## Session credentials",
             "## Inter-Agent Messaging",
+            "## Privileged PTY Input to Workgroup Coordinators",
         ] {
             assert_eq!(
                 out.matches(heading).count(),
@@ -4727,7 +4786,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
 
         // Root project scope and authority, and the Team/Workgroup definitions.
         assert!(out.contains("Every registered AgentsCommander project folder"));
-        assert!(out.contains("you may create, modify, and delete files anywhere under ANY project folder registered"));
+        assert!(out.contains(
+            "you may create, modify, and delete files anywhere under ANY project folder registered"
+        ));
         assert!(out.contains("## Root Agent Authority and Chain of Command"));
         assert!(out.contains("**Team**: the logical capability and organization."));
         assert!(out.contains("**Workgroup**: a runtime replica of a team"));
@@ -6253,6 +6314,71 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     }
 
     #[test]
+    fn privileged_pty_context_is_added_only_to_verified_workgroup_coordinator() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("project-a");
+        let workspace = project.join(".ac");
+        let team = workspace.join("_team_dev-team");
+        let workgroup = workspace.join("wg-1-dev-team");
+        let coordinator_matrix = workspace.join("_agent_tech-lead");
+        let member_matrix = workspace.join("_agent_dev-rust");
+        let coordinator = workgroup.join("__agent_tech-lead");
+        let member = workgroup.join("__agent_dev-rust");
+        for directory in [
+            &team,
+            &coordinator_matrix,
+            &member_matrix,
+            &coordinator,
+            &member,
+        ] {
+            std::fs::create_dir_all(directory).expect("create fixture directory");
+        }
+        std::fs::write(
+            team.join("config.json"),
+            r#"{"coordinator":"../_agent_tech-lead","agents":["../_agent_dev-rust"]}"#,
+        )
+        .expect("write team config");
+        std::fs::write(
+            coordinator.join("config.json"),
+            r#"{"identity":"../../_agent_tech-lead","context":["$AGENTSCOMMANDER_CONTEXT"]}"#,
+        )
+        .expect("write coordinator config");
+        std::fs::write(
+            member.join("config.json"),
+            r#"{"identity":"../../_agent_dev-rust","context":["$AGENTSCOMMANDER_CONTEXT"]}"#,
+        )
+        .expect("write member config");
+        std::fs::write(
+            workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            "CUSTOM_COORDINATOR_BYTES",
+        )
+        .expect("write custom coordinator template");
+
+        let coordinator_content =
+            resolve_session_context_content(&path_string(&coordinator), true, false, None)
+                .expect("resolve coordinator context")
+                .expect("coordinator context");
+        assert_eq!(
+            coordinator_content
+                .matches("## Privileged PTY Input")
+                .count(),
+            1
+        );
+        assert!(coordinator_content.contains("CUSTOM_COORDINATOR_BYTES"));
+
+        let member_content =
+            resolve_session_context_content(&path_string(&member), true, false, None)
+                .expect("resolve member context")
+                .expect("member context");
+        assert!(!member_content.contains("## Privileged PTY Input"));
+        assert_eq!(
+            std::fs::read_to_string(workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read custom template"),
+            "CUSTOM_COORDINATOR_BYTES"
+        );
+    }
+
+    #[test]
     fn coordinator_template_no_longer_carries_inline_self_maintenance() {
         // #640: the coordinator's self-maintenance directive moved OUT of the raw
         // template into the gated SELF_MAINTENANCE_AUTO_SECTION (single source).
@@ -6328,19 +6454,26 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         let cwd = path_string(&matrix_root);
 
-        let on = materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], false, true, None)
-            .expect("materialize ON")
-            .expect("context path");
+        let on =
+            materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], false, true, None)
+                .expect("materialize ON")
+                .expect("context path");
         let on_content = std::fs::read_to_string(&on).expect("read ON context");
         assert!(on_content.contains("## Self-Maintenance (auto self-handoff-and-clear)"));
         assert!(on_content.contains("reaches 3 such lines"));
         assert!(on_content.contains("max 240 char forgotten summary"));
         assert!(on_content.contains("closed background"));
 
-        let off =
-            materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], false, false, None)
-                .expect("materialize OFF")
-                .expect("context path");
+        let off = materialize_agent_context_file_with_filename(
+            &cwd,
+            "CLAUDE.md",
+            &[],
+            false,
+            false,
+            None,
+        )
+        .expect("materialize OFF")
+        .expect("context path");
         let off_content = std::fs::read_to_string(&off).expect("read OFF context");
         assert!(!off_content.contains("## Self-Maintenance"));
         assert!(!off_content.contains("max 240 char forgotten summary"));
@@ -6364,9 +6497,10 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         .expect("write legacy coordinator template");
         let cwd = path_string(&matrix_root);
 
-        let on = materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], true, true, None)
-            .expect("materialize ON")
-            .expect("context path");
+        let on =
+            materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], true, true, None)
+                .expect("materialize ON")
+                .expect("context path");
         let on_content = std::fs::read_to_string(&on).expect("read ON context");
         assert_eq!(
             on_content.matches("## Self-Maintenance").count(),
@@ -6386,9 +6520,10 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             "coordinator body preserved"
         );
 
-        let off = materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], true, false, None)
-            .expect("materialize OFF")
-            .expect("context path");
+        let off =
+            materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], true, false, None)
+                .expect("materialize OFF")
+                .expect("context path");
         let off_content = std::fs::read_to_string(&off).expect("read OFF context");
         assert_eq!(
             off_content.matches("## Self-Maintenance").count(),
@@ -8024,7 +8159,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let skill_dir = root.join(SKILLS_DIR_NAME).join("agency-agents-roles");
         std::fs::create_dir_all(&skill_dir).expect("create skill dir");
 
-        let broken = crate::config::root_agent::agency_pre_yaml_fix_snapshot().replace('\n', "\r\n");
+        let broken =
+            crate::config::root_agent::agency_pre_yaml_fix_snapshot().replace('\n', "\r\n");
         std::fs::write(skill_dir.join("SKILL.md"), &broken).expect("seed the broken skill");
 
         crate::config::root_agent::ensure_default_root_agent_skills_at(&root)
@@ -8103,8 +8239,11 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         .expect("write valid skill");
         let broken_skill = old_matrix.join(SKILLS_DIR_NAME).join("delta-skill");
         std::fs::create_dir_all(&broken_skill).expect("create broken skill");
-        std::fs::write(broken_skill.join(SKILL_MD_FILENAME), "---\nname: [unclosed\n---\n\nbody\n")
-            .expect("write broken skill");
+        std::fs::write(
+            broken_skill.join(SKILL_MD_FILENAME),
+            "---\nname: [unclosed\n---\n\nbody\n",
+        )
+        .expect("write broken skill");
 
         // The old-generation embedded section: frozen OLD intro + current tail.
         let current_render =
@@ -8206,9 +8345,11 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         .expect("resolve context");
         assert!(!rendered.is_empty());
         let on_disk = std::fs::read_to_string(&template_path).expect("read template");
-        assert_eq!(on_disk, legacy, "edited legacy file must be preserved, never healed");
+        assert_eq!(
+            on_disk, legacy,
+            "edited legacy file must be preserved, never healed"
+        );
     }
-
 }
 
 /// #1005 token-accounting harness (plan section 7). Renders the three boot
@@ -8271,7 +8412,9 @@ mod token_accounting {
     /// replaced by a fixed fake path before counting.
     fn root_skills_section_fixed() -> String {
         let temp = tempfile::tempdir().expect("tempdir");
-        let root = temp.path().join(crate::config::root_agent::ROOT_AGENT_DIR_NAME);
+        let root = temp
+            .path()
+            .join(crate::config::root_agent::ROOT_AGENT_DIR_NAME);
         for (dir, content) in [
             (
                 "role-skill-boundary-audit",
@@ -8297,8 +8440,12 @@ mod token_accounting {
         let skills = synthetic_replica_skills_section();
 
         // Per-block rows (replica-shaped inputs).
-        let values =
-            super::default_context_dynamic_values(FAKE_REPLICA_ROOT, Some(FAKE_MATRIX_ROOT), &skills, false);
+        let values = super::default_context_dynamic_values(
+            FAKE_REPLICA_ROOT,
+            Some(FAKE_MATRIX_ROOT),
+            &skills,
+            false,
+        );
         let write_restrictions = super::render_write_restrictions_block(FAKE_REPLICA_ROOT, &values);
         let messaging = super::render_inter_agent_messaging_block(&values);
         let workspace_repos =
@@ -8309,10 +8456,19 @@ mod token_accounting {
         println!();
         println!("| item | chars | ~tokens |");
         println!("|---|---|---|");
-        print_row("block: write restrictions (A2, replica)", write_restrictions.len());
-        print_row("block: inter-agent messaging (A3, replica)", messaging.len());
+        print_row(
+            "block: write restrictions (A2, replica)",
+            write_restrictions.len(),
+        );
+        print_row(
+            "block: inter-agent messaging (A3, replica)",
+            messaging.len(),
+        );
         print_row("block: CLI context (A4a)", super::DEFAULT_CLI_CONTEXT.len());
-        print_row("block: session credentials (A4b)", super::DEFAULT_SESSION_CREDENTIALS.len());
+        print_row(
+            "block: session credentials (A4b)",
+            super::DEFAULT_SESSION_CREDENTIALS.len(),
+        );
         print_row(
             "block: delegated task reporting (A4c)",
             super::DEFAULT_DELEGATED_TASK_REPORTING.len(),
@@ -8325,7 +8481,10 @@ mod token_accounting {
             "block: workspace repos header (A6, root variant)",
             super::workspace_repos_header(true).len(),
         );
-        print_row("block: skills section (A5, synthetic 2 skills)", skills.len());
+        print_row(
+            "block: skills section (A5, synthetic 2 skills)",
+            skills.len(),
+        );
         print_row("block: workspace repos (A6, empty)", workspace_repos.len());
         print_row(
             "block: self-maintenance (A8)",
@@ -8358,9 +8517,15 @@ mod token_accounting {
 
         print_row("profile: WG replica", replica.len());
         print_row("profile: coordinator", coordinator.len());
-        print_row("profile: coordinator + auto_self_clear", coordinator_auto_clear.len());
+        print_row(
+            "profile: coordinator + auto_self_clear",
+            coordinator_auto_clear.len(),
+        );
         print_row("profile: Root Agent", root.len());
-        print_row("profile: Root Agent + auto_self_clear", root_auto_clear.len());
+        print_row(
+            "profile: Root Agent + auto_self_clear",
+            root_auto_clear.len(),
+        );
 
         // Supplement rows (G4): boot-invisible durables.
         let b1 = crate::config::root_agent::default_root_context_template();

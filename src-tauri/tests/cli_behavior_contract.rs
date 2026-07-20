@@ -355,7 +355,15 @@ fn token_gated_commands_missing_token_contracts() {
     std::fs::create_dir_all(&root).expect("root");
     let root_s = root.to_string_lossy().to_string();
     let cases: &[&[&str]] = &[
-        &["send", "--to", "Project:wg-1/dev", "--root", &root_s],
+        &[
+            "send",
+            "--to",
+            "Project:wg-1/dev",
+            "--root",
+            &root_s,
+            "--command",
+            "clear",
+        ],
         &["list-peers", "--root", &root_s],
         &["list-peers-lean", "--root", &root_s],
         &["raise-hand", "--root", &root_s],
@@ -401,6 +409,8 @@ fn token_gated_commands_invalid_token_redaction_contracts() {
             "Project:wg-1/dev",
             "--root",
             &root_s,
+            "--command",
+            "clear",
         ],
         &["list-peers", "--token", LEAK_PROBE_TOKEN, "--root", &root_s],
         &[

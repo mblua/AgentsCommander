@@ -371,15 +371,12 @@ pub fn read_wg_replica_config_read_only(
     replica_dir: &Path,
 ) -> Result<(Value, WgReplicaIdentity), String> {
     let config_path = replica_dir.join("config.json");
-    let original = std::fs::read_to_string(&config_path)
-        .map_err(|e| format!("Failed to read {}: {}", config_path.display(), e))?;
-    let config: Value = serde_json::from_str(&original)
-        .map_err(|e| format!("Failed to parse {}: {}", config_path.display(), e))?;
+    let (bytes, _) = crate::path_identity::read_bounded_regular(&config_path, 1024 * 1024)
+        .map_err(|_| "WG replica config failed a bounded path-safe read".to_string())?;
+    let config = crate::path_identity::parse_json_no_duplicates(&bytes)
+        .map_err(|_| "WG replica config is not duplicate-free JSON".to_string())?;
     if !config.is_object() {
-        return Err(format!(
-            "WG replica config {} must be a JSON object",
-            config_path.display()
-        ));
+        return Err("WG replica config must be a JSON object".to_string());
     }
     let identity = validate_or_repair_wg_replica_identity(
         replica_dir,

@@ -175,10 +175,7 @@ fn send_size_to_conpty(
     }
 
     {
-        let master = instance
-            .master
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let master = instance.master.lock().unwrap_or_else(|e| e.into_inner());
         master
             .resize(PtySize {
                 rows,
@@ -806,7 +803,11 @@ impl LocalProcessBackend {
             .spawn_command(command)
             .map_err(|e| AppError::PtyError(e.to_string()))?;
         let child_pid = child.process_id();
-        log::info!("[pty] Spawned session {} with child pid {:?}", id, child_pid);
+        log::info!(
+            "[pty] Spawned session {} with child pid {:?}",
+            id,
+            child_pid
+        );
 
         let job = child
             .process_id()
@@ -1193,12 +1194,17 @@ impl PtyBackend for LocalProcessBackend {
     fn write(&self, id: Uuid, data: &[u8]) -> Result<(), AppError> {
         // #942 - poison-tolerant: a panic anywhere under this guard (portable-pty unwraps
         // inside its own child polling) must not brick every terminal write that follows.
-        let ptys = self.ptys.lock().unwrap_or_else(|e| e.into_inner());
-        let instance = ptys
-            .get(&id)
-            .ok_or_else(|| AppError::SessionNotFound(id.to_string()))?;
+        let writer = {
+            let ptys = self.ptys.lock().unwrap_or_else(|e| e.into_inner());
+            let instance = ptys
+                .get(&id)
+                .ok_or_else(|| AppError::SessionNotFound(id.to_string()))?;
+            Arc::clone(&instance.writer)
+        };
 
-        let mut writer = instance.writer.lock().unwrap();
+        // The global PTY map is released before a potentially blocking pipe
+        // write. Teardown can remove and terminate the child to unblock it.
+        let mut writer = writer.lock().unwrap_or_else(|e| e.into_inner());
         writer
             .write_all(data)
             .map_err(|e| AppError::PtyError(e.to_string()))?;
@@ -1290,12 +1296,12 @@ impl PtyBackend for LocalProcessBackend {
                                 record.log_child_exit(cause, &liveness, "observed-at-stop");
                             }
                             None => {
-                                let cause =
-                                    if matches!(child_at_stop, ChildLiveness::Exited { .. }) {
-                                        ExitCause::ChildInitiated
-                                    } else {
-                                        ExitCause::AcRequested
-                                    };
+                                let cause = if matches!(child_at_stop, ChildLiveness::Exited { .. })
+                                {
+                                    ExitCause::ChildInitiated
+                                } else {
+                                    ExitCause::AcRequested
+                                };
                                 log::info!(
                                     "[pty] child-exit session={} pid={:?} cause={} detail=observed-at-stop child={}",
                                     id,
@@ -1511,9 +1517,10 @@ mod probe_containment_tests {
         let ptys: Mutex<HashMap<Uuid, Box<dyn portable_pty::Child + Send + Sync>>> =
             Mutex::new(HashMap::new());
         let id = Uuid::new_v4();
-        ptys.lock()
-            .unwrap()
-            .insert(id, Box::new(PoisonedChild) as Box<dyn portable_pty::Child + Send + Sync>);
+        ptys.lock().unwrap().insert(
+            id,
+            Box::new(PoisonedChild) as Box<dyn portable_pty::Child + Send + Sync>,
+        );
 
         {
             // Exactly the shape of `probe_child`: guard held, probe called under it.
@@ -1632,8 +1639,14 @@ mod resize_dedup_tests {
     #[test]
     fn a_resize_that_moves_the_size_is_sent() {
         let size = cache(74, 23);
-        assert!(PtyInstance::size_changed_in(&size, 74, 24), "one row is a real resize");
-        assert!(PtyInstance::size_changed_in(&size, 120, 30), "a real resize");
+        assert!(
+            PtyInstance::size_changed_in(&size, 74, 24),
+            "one row is a real resize"
+        );
+        assert!(
+            PtyInstance::size_changed_in(&size, 120, 30),
+            "a real resize"
+        );
     }
 
     /// The trap in the dedup: if the cache were updated BEFORE the ConPTY accepted the new
@@ -1895,7 +1908,11 @@ mod startup_gate_tests {
         let mut gate = StartupGate::Holding(None);
         assert_eq!(gate.on_resize(74, 23), None, "held");
         assert_eq!(gate.on_resize(74, 24), None, "held, replacing the first");
-        assert_eq!(gate.open(), Some((74, 24)), "the last held size, handed over once");
+        assert_eq!(
+            gate.open(),
+            Some((74, 24)),
+            "the last held size, handed over once"
+        );
         assert_eq!(gate.open(), None, "a second open hands over nothing");
         assert_eq!(
             gate.on_resize(80, 25),

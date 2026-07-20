@@ -452,11 +452,10 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
         );
 
         {
-            fixture
-                .pty_mgr
-                .lock()
-                .unwrap()
-                .write(id_a, b"AC_ECHO hello-from-pty-lifecycle\r\n")
+            let permit = PtyManager::acquire_input_writer(&fixture.pty_mgr, id_a)
+                .await
+                .expect("acquire pty writer");
+            PtyManager::write_with_permit(&permit, b"AC_ECHO hello-from-pty-lifecycle\r\n")
                 .expect("write to pty");
         }
         wait_for_output(

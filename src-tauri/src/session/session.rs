@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::config::settings::WindowGeometry;
 use crate::pty::backend::SessionBackendKind;
-use crate::session::profile::CodingAgentKind;
+use crate::session::profile::{detect_pty_submission_agent, CodingAgentKind, PtySubmissionAgent};
 
 /// Mangle a CWD path the same way Claude Code does for its project directories.
 /// Non-alphanumeric, non-hyphen characters are replaced with '-'.
@@ -184,6 +184,17 @@ pub struct Session {
     pub start_fresh_on_restore: bool,
 }
 
+impl Session {
+    /// Strict coding-agent proof used only by privileged exact PTY input.
+    pub fn pty_submission_agent(&self) -> Option<PtySubmissionAgent> {
+        let args = self
+            .effective_shell_args
+            .as_deref()
+            .unwrap_or(&self.shell_args);
+        detect_pty_submission_agent(&self.shell, args, self.agent_kind)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum SessionStatus {
@@ -298,6 +309,17 @@ pub struct SessionInfo {
     /// keeps it off the IPC wire, so the frontend contract is unchanged.
     #[serde(skip)]
     pub start_fresh_on_restore: bool,
+}
+
+impl SessionInfo {
+    /// Strict coding-agent proof over the effective launch command.
+    pub fn pty_submission_agent(&self) -> Option<PtySubmissionAgent> {
+        let args = self
+            .effective_shell_args
+            .as_deref()
+            .unwrap_or(&self.shell_args);
+        detect_pty_submission_agent(&self.shell, args, self.agent_kind)
+    }
 }
 
 impl From<&Session> for SessionInfo {

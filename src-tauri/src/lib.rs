@@ -6,6 +6,7 @@ pub mod errors;
 pub mod logging;
 pub mod loops;
 pub mod network;
+pub(crate) mod path_identity;
 pub mod path_utils;
 pub mod phone;
 pub mod pty;
@@ -812,6 +813,10 @@ pub fn run(
     let ui_automation_state_for_setup = ui_automation_state.clone();
     let ui_automation_state_for_exit = ui_automation_state.clone();
 
+    // One recovered operation store is shared by the filesystem poller and
+    // both API start paths. A failure disables only privileged PTY input.
+    let message_store_state = crate::api::message_store::MessageStoreState::initialize();
+
     // #714 clipboard + global-shortcut plugins are referenced ONLY on Windows so
     // non-Windows release builds never link them (screenshot capture is
     // Windows-only for this issue). The rest of the builder chain is shared.
@@ -851,6 +856,7 @@ pub fn run(
         .manage(broadcaster.clone())
         .manage(WebServerHandle::default())
         .manage(ApiServerHandle::default())
+        .manage(message_store_state)
         .manage(config_seed_lock)
         .manage(update_check_state)
         .manage(ui_automation_state)

@@ -33,6 +33,7 @@ impl Default for DispatcherConfig {
 
 pub fn start_dispatcher(
     store: Arc<MessageStore>,
+    client_store: Arc<crate::api::auth::ApiClientStore>,
     app: tauri::AppHandle,
     shutdown: CancellationToken,
     config: DispatcherConfig,
@@ -78,9 +79,55 @@ pub fn start_dispatcher(
                             log::warn!("[api-dispatcher] dispatch tick failed: {}", e);
                         }
                     }
+                    if let Some(state) = app.try_state::<crate::api::message_store::MessageStoreState>() {
+                        let active = state.active_operations.snapshot();
+                        if store
+                            .recover_pty_input_runtime_offloaded(active, chrono::Utc::now())
+                            .await
+                            .is_err()
+                        {
+                            log::warn!(
+                                "[api-dispatcher] PTY recovery failed code=store_transient"
+                            );
+                        }
+                        match store
+                            .due_pty_input_ids_offloaded(
+                                crate::phone::types::PtyInputSourcePlane::ContainerApi,
+                                chrono::Utc::now(),
+                                1,
+                            )
+                            .await
+                        {
+                            Ok(ids) => {
+                                for injection_id in ids {
+                                    crate::phone::mailbox::MailboxPoller::new()
+                                        .dispatch_pty_input_operation(
+                                            &app,
+                                            &state,
+                                            &injection_id,
+                                            crate::phone::types::PtyInputSourcePlane::ContainerApi,
+                                            Some(&client_store),
+                                        )
+                                        .await;
+                                }
+                            }
+                            Err(_) => log::warn!(
+                                "[api-dispatcher] PTY input tick failed code=store_transient"
+                            ),
+                        }
+                    }
                     let cutoff = chrono::Utc::now() - config.retention;
                     if let Err(e) = store.reap_terminal_before_offloaded(cutoff).await {
                         log::warn!("[api-dispatcher] reaper failed: {}", e);
+                    }
+                    if store
+                        .compact_pty_terminal_maintenance_offloaded(chrono::Utc::now(), 64)
+                        .await
+                        .is_err()
+                    {
+                        log::warn!(
+                            "[api-dispatcher] PTY compaction failed code=store_transient"
+                        );
                     }
                 }
             }
@@ -163,6 +210,7 @@ pub fn build_outbox_message(row: &LeasedMessage) -> OutboxMessage {
         switch_profile: None,
         dry_run: None,
         quiet_period_ms: None,
+        pty_input: None,
     }
 }
 

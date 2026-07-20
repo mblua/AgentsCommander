@@ -1359,10 +1359,7 @@ pub fn validate_and_repair_settings(settings: &mut AppSettings) -> Result<(), St
     validate_resource_settings(settings)
 }
 
-pub(crate) fn parse_api_server_socket_addr(
-    bind: &str,
-    port: u16,
-) -> Result<SocketAddr, String> {
+pub(crate) fn parse_api_server_socket_addr(bind: &str, port: u16) -> Result<SocketAddr, String> {
     let bind = bind.trim();
     if bind.is_empty() {
         return Err("apiServerBind must not be empty".to_string());
@@ -1371,9 +1368,7 @@ pub(crate) fn parse_api_server_socket_addr(
         return Err("apiServerPort must be between 1 and 65535".to_string());
     }
     let ip: IpAddr = bind.parse().map_err(|e| {
-        format!(
-            "apiServerBind must be an IP address such as 127.0.0.1, 0.0.0.0, ::1, or :: ({e})"
-        )
+        format!("apiServerBind must be an IP address such as 127.0.0.1, 0.0.0.0, ::1, or :: ({e})")
     })?;
     Ok(SocketAddr::new(ip, port))
 }
@@ -1956,6 +1951,54 @@ pub(crate) struct DiskProjectLists {
 /// so the later `MoveFileEx` rename cannot hit a sharing violation (os 32).
 /// MUST NOT call `load_settings` (it migrates, generates root_token, and
 /// re-saves: infinite recursion + side effects).
+pub(crate) fn read_pty_input_project_paths_strict() -> Result<Option<Vec<String>>, String> {
+    let Some(path) = settings_path() else {
+        return Err("settings_unavailable".to_string());
+    };
+    read_pty_input_project_paths_strict_from_path(&path)
+}
+
+fn read_pty_input_project_paths_strict_from_path(
+    path: &Path,
+) -> Result<Option<Vec<String>>, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err("unsafe_path".to_string()),
+    }
+    let (bytes, _) = crate::path_identity::read_bounded_regular(path, 1024 * 1024)?;
+    let value = crate::path_identity::parse_json_no_duplicates(&bytes)?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "settings_invalid".to_string())?;
+    let Some(project_paths) = object.get("projectPaths") else {
+        return Ok(Some(Vec::new()));
+    };
+    if project_paths.is_null() {
+        return Ok(Some(Vec::new()));
+    }
+    let project_paths = project_paths
+        .as_array()
+        .filter(|paths| paths.len() <= 1_024)
+        .ok_or_else(|| "settings_invalid".to_string())?;
+    let mut strict = Vec::with_capacity(project_paths.len());
+    for path in project_paths {
+        let path = path
+            .as_str()
+            .filter(|path| !path.is_empty() && path.len() <= 32 * 1024 && !path.contains('\0'))
+            .ok_or_else(|| "settings_invalid".to_string())?;
+        strict.push(path.to_string());
+    }
+    Ok(Some(strict))
+}
+
+pub(crate) async fn read_pty_input_project_paths_strict_offloaded(
+) -> Result<Option<Vec<String>>, String> {
+    tokio::task::spawn_blocking(read_pty_input_project_paths_strict)
+        .await
+        .map_err(|_| "settings_unavailable".to_string())?
+}
+
 fn read_project_paths_from_disk(path: &Path) -> Result<Option<DiskProjectLists>, String> {
     // 1 initial attempt + up to 2 retries on a transient (non-NotFound) read error.
     const READ_RETRY_BACKOFFS_MS: [u64; 2] = [10, 40];
@@ -2198,6 +2241,47 @@ pub type SettingsState = Arc<RwLock<AppSettings>>;
 mod tests {
 
     #[test]
+    fn privileged_project_paths_reader_rejects_duplicates_and_non_strings() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, r#"{"projectPaths":["one"],"projectPaths":["two"]}"#).unwrap();
+        assert!(super::read_pty_input_project_paths_strict_from_path(&path).is_err());
+
+        std::fs::write(&path, r#"{"projectPaths":["one",7]}"#).unwrap();
+        assert!(super::read_pty_input_project_paths_strict_from_path(&path).is_err());
+    }
+
+    #[test]
+    fn privileged_project_paths_reader_rejects_a_dangling_link_when_supported() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("settings.json");
+        let missing = temp.path().join("missing.json");
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&missing, &path).is_ok();
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(&missing, &path).is_ok();
+        #[cfg(not(any(unix, windows)))]
+        let linked = false;
+        if linked {
+            assert!(super::read_pty_input_project_paths_strict_from_path(&path).is_err());
+        }
+    }
+
+    #[test]
+    fn privileged_project_paths_reader_is_bounded_and_exact() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, r#"{"projectPaths":["one","two"]}"#).unwrap();
+        assert_eq!(
+            super::read_pty_input_project_paths_strict_from_path(&path).unwrap(),
+            Some(vec!["one".to_string(), "two".to_string()])
+        );
+
+        std::fs::write(&path, vec![b' '; 1024 * 1024 + 1]).unwrap();
+        assert!(super::read_pty_input_project_paths_strict_from_path(&path).is_err());
+    }
+
+    #[test]
     fn validate_agent_commands_allows_plain_gemini() {
         let settings = settings_with_agents(&[("Gemini", "gemini")]);
         assert!(super::validate_agent_commands(&settings).is_ok());
@@ -2212,7 +2296,11 @@ mod tests {
 
     #[test]
     fn codex_home_template_accepts_each_token_alone_and_as_leading_segment() {
-        for token in ["%AC_REPLICA_ROOT%", "%AC_WORKSPACE_ROOT%", "%AC_MATRIX_ROOT%"] {
+        for token in [
+            "%AC_REPLICA_ROOT%",
+            "%AC_WORKSPACE_ROOT%",
+            "%AC_MATRIX_ROOT%",
+        ] {
             super::validate_codex_home_template_value(token, "ctx")
                 .unwrap_or_else(|e| panic!("{token} alone should be accepted: {e}"));
             super::validate_codex_home_template_value(&format!("{token}\\.codex"), "ctx")
@@ -2295,21 +2383,21 @@ mod tests {
     #[test]
     fn validate_config_seed_dest_rejects_unsafe_names() {
         let bad = [
-            "",                // empty
-            "   ",             // whitespace only
-            ".config/opencode", // forward separator (nested)
-            ".config\\x",      // backslash separator
-            "..",              // parent
-            "a..b",            // contains ..
-            "C:foo",           // drive-relative colon
-            "x:y",             // ADS colon
+            "",                  // empty
+            "   ",               // whitespace only
+            ".config/opencode",  // forward separator (nested)
+            ".config\\x",        // backslash separator
+            "..",                // parent
+            "a..b",              // contains ..
+            "C:foo",             // drive-relative colon
+            "x:y",               // ADS colon
             "%AC_REPLICA_ROOT%", // placeholder marker
-            "$HOME",           // shell marker
-            ".claude.",        // trailing dot (trim does NOT strip dots)
-            "CON",             // reserved device
-            "nul",             // reserved device (case-insensitive)
-            "COM1",            // reserved device
-            "lpt9.claude",     // reserved device before first dot
+            "$HOME",             // shell marker
+            ".claude.",          // trailing dot (trim does NOT strip dots)
+            "CON",               // reserved device
+            "nul",               // reserved device (case-insensitive)
+            "COM1",              // reserved device
+            "lpt9.claude",       // reserved device before first dot
         ];
         for name in bad {
             assert!(
@@ -2362,7 +2450,10 @@ mod tests {
         assert!(json.contains("\"configSeed\""), "{json}");
         assert!(json.contains("\"dest\":\".claude\""), "{json}");
         let back: AgentConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.config_seed.as_ref().map(|c| c.dest.as_str()), Some(".claude"));
+        assert_eq!(
+            back.config_seed.as_ref().map(|c| c.dest.as_str()),
+            Some(".claude")
+        );
 
         // Absent -> key omitted (skip_serializing_if), and old files deserialize to None.
         agent.config_seed = None;
@@ -3260,7 +3351,9 @@ mod tests {
         // Serialize a default, strip ONLY these coordinator keys, deserialize back.
         let mut value =
             serde_json::to_value(AppSettings::default()).expect("serialize default to value");
-        let obj = value.as_object_mut().expect("settings serializes to an object");
+        let obj = value
+            .as_object_mut()
+            .expect("settings serializes to an object");
         obj.remove("coordinatorIdleBadgeYellowMinutes");
         obj.remove("coordinatorIdleBadgeRedMinutes");
         obj.remove("coordinatorAutoCloseEnabled");
@@ -3335,7 +3428,9 @@ mod tests {
         // to the documented defaults: master ON + empty per-agent map.
         let mut value =
             serde_json::to_value(AppSettings::default()).expect("serialize default to value");
-        let obj = value.as_object_mut().expect("settings serializes to an object");
+        let obj = value
+            .as_object_mut()
+            .expect("settings serializes to an object");
         obj.remove("autoSelfClearEnabled");
         obj.remove("autoSelfClearByAgent");
 
@@ -3357,10 +3452,7 @@ mod tests {
         assert!(json.contains("\"autoSelfClearByAgent\":{\"dev-rust\":true}"));
         let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
         assert!(!back.auto_self_clear_enabled);
-        assert_eq!(
-            back.auto_self_clear_by_agent.get("dev-rust"),
-            Some(&true)
-        );
+        assert_eq!(back.auto_self_clear_by_agent.get("dev-rust"), Some(&true));
     }
 
     #[test]
@@ -4259,8 +4351,8 @@ mod tests {
     #[test]
     fn repair_prunes_invalid_letter_label_overrides_and_keeps_valid() {
         let mut settings = settings_with_agents(&[("Codex", "codex")]); // id = agent-0
-        // Pre-seed the A cell so the config is otherwise repair-clean; the only
-        // change repair makes is dropping the invalid-letter overrides.
+                                                                        // Pre-seed the A cell so the config is otherwise repair-clean; the only
+                                                                        // change repair makes is dropping the invalid-letter overrides.
         settings.coding_agent_profiles.profiles_by_agent.insert(
             "agent-0".to_string(),
             BTreeMap::from([("A".to_string(), super::empty_profile_cell())]),
@@ -4305,10 +4397,7 @@ mod tests {
                 BTreeMap::from([("B".to_string(), "turbo".to_string())]),
             );
 
-        repair_coding_agent_profiles_config(
-            &mut settings.coding_agent_profiles,
-            &settings.agents,
-        );
+        repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
 
         assert_eq!(
             settings.coding_agent_profiles.profile_labels_by_agent["ghost-agent"]["B"],
@@ -4319,7 +4408,7 @@ mod tests {
     #[test]
     fn repair_with_valid_label_map_does_not_flip_changed() {
         let mut settings = settings_with_agents(&[("Codex", "codex")]); // id = agent-0
-        // Make the config otherwise repair-clean: agent-0 already holds its A cell.
+                                                                        // Make the config otherwise repair-clean: agent-0 already holds its A cell.
         settings.coding_agent_profiles.profiles_by_agent.insert(
             "agent-0".to_string(),
             BTreeMap::from([("A".to_string(), super::empty_profile_cell())]),

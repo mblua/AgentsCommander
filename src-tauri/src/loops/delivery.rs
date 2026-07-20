@@ -559,13 +559,26 @@ mod tests {
         }
     }
 
-    fn make_inject_test_app(
-        session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
-    ) -> tauri::App<tauri::test::MockRuntime> {
-        tauri::test::mock_builder()
-            .manage(session_mgr)
+    fn make_inject_test_app(session_mgr: Arc<tokio::sync::RwLock<SessionManager>>) -> tauri::App {
+        let app = tauri::Builder::default()
+            .any_thread()
+            .manage(Arc::clone(&session_mgr))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("build inject test app")
+            .expect("build inject test app");
+        let idle_detector = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
+        let git_watcher = crate::pty::git_watcher::GitWatcher::new(
+            Arc::clone(&session_mgr),
+            app.handle().clone(),
+        );
+        let pty_manager = Arc::new(Mutex::new(PtyManager::new(
+            Arc::new(Mutex::new(std::collections::HashMap::new())),
+            idle_detector,
+            git_watcher,
+            None,
+            None,
+        )));
+        app.manage(pty_manager);
+        app
     }
 
     #[test]
@@ -647,6 +660,13 @@ mod tests {
             .expect("create session")
         };
         let session_id = session.id;
+        app.state::<Arc<Mutex<PtyManager>>>()
+            .lock()
+            .unwrap()
+            .record_route(
+                session_id,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            );
 
         let mut changed = config.clone();
         changed.prompt.body = "New prompt".to_string();
