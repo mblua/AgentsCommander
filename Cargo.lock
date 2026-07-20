@@ -22,6 +22,7 @@ dependencies = [
  "futures",
  "futures-util",
  "image",
+ "libc",
  "log",
  "mime_guess",
  "open",

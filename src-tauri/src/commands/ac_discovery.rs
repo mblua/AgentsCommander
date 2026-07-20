@@ -1421,6 +1421,12 @@ pub async fn check_project_path(path: String) -> Result<bool, String> {
 /// Called during project creation, workgroup creation, and opportunistically during discovery.
 pub(crate) fn ensure_workspace_gitignore(workspace_dir: &Path) -> Result<(), String> {
     let gitignore_path = workspace_dir.join(".gitignore");
+    const SEED_MANIFEST_GITIGNORE_BLOCK: &str = "# AgentsCommander: exclude seed-manifest coordination files.\n/.seed-manifest.lock\n/.seed-manifest.*.tmp\n\n# AgentsCommander: keep the seed publication manifest reviewable.\n!/seed-manifest.toml\n";
+    const SEED_MANIFEST_PATTERNS: [&str; 3] = [
+        "/.seed-manifest.lock",
+        "/.seed-manifest.*.tmp",
+        "!/seed-manifest.toml",
+    ];
 
     // Each entry: (pattern, comment explaining why)
     let required_entries: &[(&str, &str)] = &[
@@ -1472,6 +1478,13 @@ pub(crate) fn ensure_workspace_gitignore(workspace_dir: &Path) -> Result<(), Str
                 additions.push_str(&format!("\n{}\n{}\n", comment, pattern));
             }
         }
+        if !SEED_MANIFEST_PATTERNS
+            .iter()
+            .all(|pattern| content.lines().any(|line| line.trim() == *pattern))
+        {
+            additions.push('\n');
+            additions.push_str(SEED_MANIFEST_GITIGNORE_BLOCK);
+        }
 
         if !additions.is_empty() {
             let separator = if content.ends_with('\n') { "" } else { "\n" };
@@ -1486,6 +1499,7 @@ pub(crate) fn ensure_workspace_gitignore(workspace_dir: &Path) -> Result<(), Str
         for (pattern, comment) in required_entries {
             content.push_str(&format!("{}\n{}\n\n", comment, pattern));
         }
+        content.push_str(SEED_MANIFEST_GITIGNORE_BLOCK);
         std::fs::write(&gitignore_path, content)
             .map_err(|e| format!("Failed to create Project AC Root .gitignore: {}", e))?;
     }
@@ -3553,6 +3567,14 @@ mod tests {
                 .any(|line| line.trim() == "_loop_*/config.toml"),
             "workspace .gitignore must not ignore Loop config files"
         );
+        assert!(content.contains(concat!(
+            "# AgentsCommander: exclude seed-manifest coordination files.\n",
+            "/.seed-manifest.lock\n",
+            "/.seed-manifest.*.tmp\n",
+            "\n",
+            "# AgentsCommander: keep the seed publication manifest reviewable.\n",
+            "!/seed-manifest.toml\n"
+        )));
     }
 
     #[test]
@@ -3601,6 +3623,56 @@ mod tests {
             count, 1,
             "workspace .gitignore should append the delete sentinel pattern exactly once"
         );
+    }
+
+    #[test]
+    fn seed_manifest_gitignore_rules_are_anchored_to_ac_root() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("project");
+        let workspace = project.join(".ac");
+        std::fs::create_dir_all(workspace.join("nested")).expect("create .ac tree");
+        ensure_workspace_gitignore(&workspace).expect("ensure workspace .gitignore");
+
+        for relative in [
+            ".ac/.seed-manifest.lock",
+            ".ac/.seed-manifest.00000000-0000-0000-0000-000000000000.tmp",
+            ".ac/seed-manifest.toml",
+            ".ac/nested/.seed-manifest.lock",
+            ".ac/nested/.seed-manifest.00000000-0000-0000-0000-000000000000.tmp",
+            ".ac/nested/seed-manifest.toml",
+        ] {
+            std::fs::write(project.join(relative), b"fixture").expect("write Git fixture");
+        }
+
+        let init = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&project)
+            .output()
+            .expect("git init");
+        assert!(
+            init.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&init.stderr)
+        );
+
+        let ignored = |relative: &str| {
+            std::process::Command::new("git")
+                .args(["check-ignore", "--quiet", "--no-index", "--", relative])
+                .current_dir(&project)
+                .status()
+                .expect("git check-ignore")
+                .success()
+        };
+        assert!(ignored(".ac/.seed-manifest.lock"));
+        assert!(ignored(
+            ".ac/.seed-manifest.00000000-0000-0000-0000-000000000000.tmp"
+        ));
+        assert!(!ignored(".ac/seed-manifest.toml"));
+        assert!(!ignored(".ac/nested/.seed-manifest.lock"));
+        assert!(!ignored(
+            ".ac/nested/.seed-manifest.00000000-0000-0000-0000-000000000000.tmp"
+        ));
+        assert!(!ignored(".ac/nested/seed-manifest.toml"));
     }
 
     #[test]
