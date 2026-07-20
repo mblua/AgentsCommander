@@ -104,7 +104,7 @@ trait ContextAlertRuntime: Send + Sync {
     fn resolve_member_policy(&self, session_id: Uuid)
         -> BoxFuture<'static, MemberPolicyResolution>;
     fn check_session_live(&self, session_id: Uuid) -> BoxFuture<'static, bool>;
-    fn retire_sample_registration(&self, session_id: Uuid) -> BoxFuture<'static, ()>;
+    fn retire_sample_registration(&self, session_id: Uuid);
     fn prepare_attempt(
         &self,
         snapshot: AttemptSnapshot,
@@ -169,8 +169,12 @@ impl ContextAlertMonitor {
         self.sender.clone()
     }
 
-    pub(crate) async fn close_and_join(&self) -> Result<(), String> {
+    pub(crate) fn request_close(&self) {
         self.cancellation.cancel();
+    }
+
+    pub(crate) async fn close_and_join(&self) -> Result<(), String> {
+        self.request_close();
         let handle = self
             .join
             .lock()
@@ -488,12 +492,7 @@ async fn process_sample(
             };
             if !live {
                 state.remove_session(session_id, in_flight);
-                let retire = runtime.retire_sample_registration(session_id);
-                tokio::select! {
-                    biased;
-                    _ = shutdown.cancelled() => {},
-                    _ = retire => {},
-                }
+                runtime.retire_sample_registration(session_id);
             }
         }
         ContextSample::Reading {
@@ -1117,12 +1116,7 @@ async fn run_maintenance(
         };
         if !live {
             state.remove_session(session_id, in_flight);
-            let retire = runtime.retire_sample_registration(session_id);
-            tokio::select! {
-                biased;
-                _ = shutdown.cancelled() => return,
-                _ = retire => {},
-            }
+            runtime.retire_sample_registration(session_id);
         }
     }
 }
@@ -1146,13 +1140,10 @@ impl ContextAlertRuntime for ProductionContextAlertRuntime {
         Box::pin(async move { runtime.session_and_registration_live(session_id).await })
     }
 
-    fn retire_sample_registration(&self, session_id: Uuid) -> BoxFuture<'static, ()> {
-        let app = self.app.clone();
-        Box::pin(async move {
-            if let Some(scraper) = app.try_state::<Arc<ContextScraper>>() {
-                scraper.unregister_session(session_id);
-            }
-        })
+    fn retire_sample_registration(&self, session_id: Uuid) {
+        if let Some(scraper) = self.app.try_state::<Arc<ContextScraper>>() {
+            scraper.retire_session(session_id);
+        }
     }
 
     fn prepare_attempt(
@@ -1831,6 +1822,7 @@ mod tests {
         delivery_results: Mutex<VecDeque<Result<(), String>>>,
         blocked_delivery: Mutex<Option<tokio::sync::oneshot::Receiver<Result<(), String>>>>,
         blocked_resolution: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+        cancel_during_live_check: Mutex<Option<CancellationToken>>,
         panic_next_delivery: AtomicBool,
         retired: Mutex<Vec<Uuid>>,
     }
@@ -1862,6 +1854,7 @@ mod tests {
                 delivery_results: Mutex::new(VecDeque::new()),
                 blocked_delivery: Mutex::new(None),
                 blocked_resolution: Mutex::new(None),
+                cancel_during_live_check: Mutex::new(None),
                 panic_next_delivery: AtomicBool::new(false),
                 retired: Mutex::new(Vec::new()),
             })
@@ -1922,12 +1915,17 @@ mod tests {
         fn check_session_live(&self, _session_id: Uuid) -> BoxFuture<'static, bool> {
             self.live_checks.fetch_add(1, Ordering::SeqCst);
             let live = self.live.load(Ordering::SeqCst);
-            Box::pin(async move { live })
+            let cancel = self.cancel_during_live_check.lock().unwrap().take();
+            Box::pin(async move {
+                if let Some(cancel) = cancel {
+                    cancel.cancel();
+                }
+                live
+            })
         }
 
-        fn retire_sample_registration(&self, session_id: Uuid) -> BoxFuture<'static, ()> {
+        fn retire_sample_registration(&self, session_id: Uuid) {
             self.retired.lock().unwrap().push(session_id);
-            Box::pin(async {})
         }
 
         fn prepare_attempt(
@@ -2844,7 +2842,7 @@ mod tests {
         .unwrap_err()
         .contains("roster"));
 
-        scraper.unregister_session(fixture.session.id);
+        scraper.retire_session(fixture.session.id);
         assert!(validate_attempt_guard(
             &app_handle,
             &policy.fingerprint,
@@ -3307,6 +3305,34 @@ mod tests {
         .await;
         assert!(!state.sessions.contains_key(&id));
         assert!(runtime.retired.lock().unwrap().contains(&id));
+    }
+
+    #[tokio::test]
+    async fn committed_false_liveness_retirement_is_not_skipped_by_shutdown() {
+        let id = Uuid::new_v4();
+        let now = Instant::now();
+        let runtime = ScriptedRuntime::new();
+        runtime.live.store(false, Ordering::SeqCst);
+        let shutdown = CancellationToken::new();
+        *runtime.cancel_during_live_check.lock().unwrap() = Some(shutdown.clone());
+        let runtime_dyn = Arc::clone(&runtime) as Arc<dyn ContextAlertRuntime>;
+        let clock = ManualClock::new(now) as Arc<dyn AlertClock>;
+        let mut state = ActorState::new();
+        apply_numeric_resolution(&mut state, None, id, 60, eligible(id, &[50]), now);
+
+        process_sample(
+            &runtime_dyn,
+            &clock,
+            &mut state,
+            None,
+            ContextSample::Unavailable { session_id: id },
+            &shutdown,
+        )
+        .await;
+
+        assert!(shutdown.is_cancelled());
+        assert!(!state.sessions.contains_key(&id));
+        assert_eq!(runtime.retired.lock().unwrap().as_slice(), &[id]);
     }
 
     #[tokio::test]

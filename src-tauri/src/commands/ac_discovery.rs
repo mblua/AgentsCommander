@@ -988,7 +988,7 @@ pub async fn discover_ac_agents(
     branch_watcher: State<'_, Arc<DiscoveryBranchWatcher>>,
     coordinator_clocks: State<'_, crate::config::coordinator_clocks::CoordinatorClocksState>,
 ) -> Result<AcDiscoveryResult, String> {
-    let cfg = settings.read().await;
+    let cfg = settings.read().await.clone();
     // #552 snapshot the persisted badge/auto-closed store once so the per-replica
     // scan below never locks inside the loop.
     let clocks_snapshot: std::collections::HashMap<
@@ -1001,8 +1001,8 @@ pub async fn discover_ac_agents(
     // Discovery-wide team snapshot — used per-replica for is_coordinator
     // and at the end for refresh_coordinator_flags. Computed once so a
     // single discovery pass presents a coherent coordinator view.
-    // Lock-safe: discover_teams() reads settings from disk via load_settings()
-    // and does NOT acquire SettingsState; the read guard above stays valid.
+    // Lock-safe: the settings snapshot is owned and the read guard was dropped
+    // before any filesystem scan.
     let teams_snapshot = crate::config::teams::discover_teams();
     let call_id = DISCOVERY_CALL_ID.fetch_add(1, Ordering::Relaxed);
     let mut agents: Vec<AcAgentMatrix> = Vec::new();
@@ -1048,13 +1048,26 @@ pub async fn discover_ac_agents(
 
             // Opportunistic: ensure gitignore exists for existing projects
             let _ = ensure_workspace_gitignore(&workspace_dir);
-            match crate::config::seeded_context_templates::scan_project_context_template_updates(
-                &repo_dir,
-                &workspace_dir,
-            ) {
-                Ok(mut updates) => context_template_updates.append(&mut updates),
-                Err(e) => log::warn!(
+            let context_scan = crate::config::seed_manifest::run_blocking_owned({
+                let repo_dir = repo_dir.clone();
+                let workspace_dir = workspace_dir.clone();
+                move || {
+                    crate::config::seeded_context_templates::scan_project_context_template_updates(
+                        &repo_dir,
+                        &workspace_dir,
+                    )
+                }
+            })
+            .await;
+            match context_scan {
+                Ok(Ok(mut updates)) => context_template_updates.append(&mut updates),
+                Ok(Err(e)) => log::warn!(
                     "[context-templates] scan failed for {}: {}",
+                    workspace_dir.display(),
+                    e
+                ),
+                Err(e) => log::warn!(
+                    "[context-templates] blocking scan failed for {}: {}",
                     workspace_dir.display(),
                     e
                 ),
@@ -1510,9 +1523,13 @@ pub(crate) fn ensure_workspace_gitignore(workspace_dir: &Path) -> Result<(), Str
 /// Create a canonical .ac/ directory inside the given path.
 #[tauri::command]
 pub async fn create_ac_project(path: String) -> Result<(), String> {
-    create_ac_project_impl(&path, |workspace_dir| {
-        crate::config::session_context::create_default_context_templates(workspace_dir)
+    crate::config::seed_manifest::run_blocking_owned(move || {
+        create_ac_project_impl(&path, |workspace_dir| {
+            crate::config::session_context::create_default_context_templates(workspace_dir)
+        })
     })
+    .await
+    .map_err(|error| format!("AC project blocking preparation failed: {error}"))?
 }
 
 fn create_ac_project_impl<F>(path: &str, create_context_templates: F) -> Result<(), String>
@@ -1529,18 +1546,8 @@ where
         )
     })?;
     if created {
-        if let Err(err) = ensure_workspace_gitignore(&workspace_dir)
-            .and_then(|_| create_context_templates(&workspace_dir))
-        {
-            if let Err(cleanup_err) = std::fs::remove_dir_all(&workspace_dir) {
-                log::warn!(
-                    "Failed to clean up newly created {} directory after setup failure: {}",
-                    workspace_dir.display(),
-                    cleanup_err
-                );
-            }
-            return Err(err);
-        }
+        ensure_workspace_gitignore(&workspace_dir)
+            .and_then(|_| create_context_templates(&workspace_dir))?;
     } else {
         ensure_workspace_gitignore(&workspace_dir)?;
     }
@@ -1583,7 +1590,7 @@ pub(crate) async fn discover_project_inner(
         return Err(format!("Path is not a directory: {}", path));
     }
 
-    let cfg = settings.read().await;
+    let cfg = settings.read().await.clone();
     // #552 snapshot the persisted badge/auto-closed store once (see discover_ac_agents).
     let clocks_snapshot: std::collections::HashMap<
         String,
@@ -1605,25 +1612,40 @@ pub(crate) async fn discover_project_inner(
 
     // Opportunistic: ensure gitignore protects workgroup clones
     let _ = ensure_workspace_gitignore(&workspace_dir);
-    let mut context_template_updates =
-        match crate::config::seeded_context_templates::scan_project_context_template_updates(
-            base,
-            &workspace_dir,
-        ) {
-            Ok(updates) => updates,
-            Err(e) => {
-                log::warn!(
-                    "[context-templates] scan failed for {}: {}",
-                    workspace_dir.display(),
-                    e
-                );
-                Vec::new()
-            }
-        };
+    let context_scan = crate::config::seed_manifest::run_blocking_owned({
+        let base = base.to_path_buf();
+        let workspace_dir = workspace_dir.clone();
+        move || {
+            crate::config::seeded_context_templates::scan_project_context_template_updates(
+                &base,
+                &workspace_dir,
+            )
+        }
+    })
+    .await;
+    let mut context_template_updates = match context_scan {
+        Ok(Ok(updates)) => updates,
+        Ok(Err(e)) => {
+            log::warn!(
+                "[context-templates] scan failed for {}: {}",
+                workspace_dir.display(),
+                e
+            );
+            Vec::new()
+        }
+        Err(e) => {
+            log::warn!(
+                "[context-templates] blocking scan failed for {}: {}",
+                workspace_dir.display(),
+                e
+            );
+            Vec::new()
+        }
+    };
 
     // Discovery-wide team snapshot — see discover_ac_agents for rationale.
-    // Lock-safe: discover_teams() reads settings from disk via load_settings()
-    // and does NOT acquire SettingsState; the read guard above stays valid.
+    // Lock-safe: the settings snapshot is owned and the read guard was dropped
+    // before any filesystem scan.
     // Placed AFTER the workspace-missing early return so non-AC folders don't
     // pay a wasted filesystem scan (§15 Finding F1).
     let teams_snapshot = crate::config::teams::discover_teams();
@@ -1991,12 +2013,16 @@ pub async fn overwrite_context_template_with_default(
 ) -> Result<crate::config::seeded_context_templates::ContextTemplateOverwriteResult, String> {
     let workspace_dir = existing_workspace_dir(Path::new(&path))
         .ok_or_else(|| format!("Project AC Root not found for {}", path))?;
-    crate::config::seeded_context_templates::overwrite_context_template_with_default(
-        &workspace_dir,
-        &filename,
-        &current_file_sha256,
-        &current_default_sha256,
-    )
+    crate::config::seed_manifest::run_blocking_owned(move || {
+        crate::config::seeded_context_templates::overwrite_context_template_with_default(
+            &workspace_dir,
+            &filename,
+            &current_file_sha256,
+            &current_default_sha256,
+        )
+    })
+    .await
+    .map_err(|error| format!("context template overwrite blocking task failed: {error}"))?
 }
 
 /// Read the `context` array from a replica's config.json.
@@ -2217,10 +2243,16 @@ async fn new_project_inner_with_settings_path(
     path: &str,
     settings_path: Option<&Path>,
 ) -> Result<(crate::config::projects::ProjectRegistration, bool), String> {
+    let path = path.to_string();
+    let prepared = crate::config::seed_manifest::run_blocking_owned(move || {
+        crate::config::projects::prepare_new_project(&path)
+    })
+    .await
+    .map_err(|error| format!("new project blocking preparation failed: {error}"))?
+    .map_err(|error| error.to_string())?;
     mutate_project_paths_with_settings_path(settings, settings_path, |s| {
         let before = s.archived_project_paths.clone();
-        let result =
-            crate::config::projects::register_new_project(s, path).map_err(|e| e.to_string())?;
+        let result = crate::config::projects::commit_prepared_new_project(s, prepared);
         Ok((result, before != s.archived_project_paths))
     })
     .await
@@ -3389,7 +3421,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_ac_project_retries_after_failed_fresh_seed() {
+    async fn create_ac_project_preserves_partial_root_for_registration_repair() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().to_string_lossy().to_string();
 
@@ -3405,17 +3437,28 @@ mod tests {
 
         assert!(first_result.is_err());
         assert!(
-            !tmp.path().join(".ac").exists(),
-            "fresh .ac directory should be cleaned up after seed failure"
+            tmp.path().join(".ac").exists(),
+            "fresh partial .ac directory must remain after seed failure"
         );
 
-        create_ac_project(path).await.expect("retry create project");
+        create_ac_project(path.clone())
+            .await
+            .expect("bare retry keeps the existing project");
 
         assert!(tmp
             .path()
             .join(".ac")
             .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME)
             .is_file());
+        assert!(!tmp
+            .path()
+            .join(".ac")
+            .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+            .exists());
+
+        let mut settings = crate::config::settings::AppSettings::default();
+        crate::config::projects::register_new_project(&mut settings, &path)
+            .expect("registration repairs the partial project");
         assert!(tmp
             .path()
             .join(".ac")

@@ -126,16 +126,28 @@ pub fn register_new_project(
     settings: &mut AppSettings,
     raw_path: &str,
 ) -> Result<ProjectRegistration, ProjectError> {
-    register_new_project_impl(settings, raw_path, |workspace_dir| {
+    let prepared = prepare_new_project_impl(raw_path, |workspace_dir| {
+        crate::config::session_context::create_default_context_templates(workspace_dir)
+    })?;
+    Ok(commit_prepared_new_project(settings, prepared))
+}
+
+#[derive(Debug)]
+pub(crate) struct PreparedNewProject {
+    abs: PathBuf,
+    created: bool,
+}
+
+pub(crate) fn prepare_new_project(raw_path: &str) -> Result<PreparedNewProject, ProjectError> {
+    prepare_new_project_impl(raw_path, |workspace_dir| {
         crate::config::session_context::create_default_context_templates(workspace_dir)
     })
 }
 
-fn register_new_project_impl<F>(
-    settings: &mut AppSettings,
+fn prepare_new_project_impl<F>(
     raw_path: &str,
     create_context_templates: F,
-) -> Result<ProjectRegistration, ProjectError>
+) -> Result<PreparedNewProject, ProjectError>
 where
     F: FnOnce(&Path) -> Result<(), String>,
 {
@@ -175,16 +187,7 @@ where
     };
     if created {
         if let Err(e) = crate::commands::ac_discovery::ensure_workspace_gitignore(&workspace_dir) {
-            cleanup_new_workspace_after_setup_failure(&workspace_dir);
             return Err(ProjectError::WorkspaceGitignoreFailed(
-                workspace_dir.clone(),
-                e,
-            ));
-        }
-
-        if let Err(e) = create_context_templates(&workspace_dir) {
-            cleanup_new_workspace_after_setup_failure(&workspace_dir);
-            return Err(ProjectError::ContextTemplatesCreateFailed(
                 workspace_dir.clone(),
                 e,
             ));
@@ -201,22 +204,27 @@ where
         }
     }
 
+    if let Err(e) = create_context_templates(&workspace_dir) {
+        return Err(ProjectError::ContextTemplatesCreateFailed(
+            workspace_dir.clone(),
+            e,
+        ));
+    }
+
+    Ok(PreparedNewProject { abs, created })
+}
+
+pub(crate) fn commit_prepared_new_project(
+    settings: &mut AppSettings,
+    prepared: PreparedNewProject,
+) -> ProjectRegistration {
+    let PreparedNewProject { abs, created } = prepared;
     let abs_str = abs.to_string_lossy().into_owned();
     let registered = upsert_project_path(settings, &abs_str);
-    Ok(ProjectRegistration {
+    ProjectRegistration {
         path: abs_str,
         registered,
         created,
-    })
-}
-
-fn cleanup_new_workspace_after_setup_failure(workspace_dir: &Path) {
-    if let Err(cleanup_err) = std::fs::remove_dir_all(workspace_dir) {
-        log::warn!(
-            "Failed to clean up newly created AC workspace at {:?} after setup failure: {}",
-            workspace_dir,
-            cleanup_err
-        );
     }
 }
 
@@ -709,12 +717,12 @@ mod tests {
     }
 
     #[test]
-    fn new_retries_after_failed_fresh_context_seed() {
+    fn new_registration_repairs_a_failed_fresh_context_seed() {
         let fix = FixtureRoot::new("proj-new-template-retry");
         let mut s = AppSettings::default();
 
         let first_result =
-            register_new_project_impl(&mut s, fix.path().to_str().unwrap(), |workspace_dir| {
+            prepare_new_project_impl(fix.path().to_str().unwrap(), |workspace_dir| {
                 std::fs::write(
                     workspace_dir
                         .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME),
@@ -729,15 +737,15 @@ mod tests {
             Err(ProjectError::ContextTemplatesCreateFailed(_, _))
         ));
         assert!(
-            !fix.path().join(".ac").exists(),
-            "fresh .ac directory should be cleaned up after seed failure"
+            fix.path().join(".ac").exists(),
+            "fresh partial .ac directory must remain truthful after seed failure"
         );
         assert!(s.project_paths.is_empty());
 
         let retry = register_new_project(&mut s, fix.path().to_str().unwrap())
             .expect("retry register new project");
 
-        assert!(retry.created);
+        assert!(!retry.created);
         assert!(retry.registered);
         assert!(fix
             .path()
@@ -752,7 +760,7 @@ mod tests {
     }
 
     #[test]
-    fn new_does_not_backfill_templates_when_ac_already_exists() {
+    fn new_backfills_templates_when_ac_already_exists() {
         let fix = FixtureRoot::new("proj-new-template-no-backfill");
         std::fs::create_dir_all(fix.path().join(".ac")).unwrap();
         let mut s = AppSettings::default();
@@ -760,12 +768,12 @@ mod tests {
         let r = register_new_project(&mut s, fix.path().to_str().unwrap()).unwrap();
 
         assert!(!r.created);
-        assert!(!fix
+        assert!(fix
             .path()
             .join(".ac")
             .join("Context.AgentsCommander.md")
             .exists());
-        assert!(!fix
+        assert!(fix
             .path()
             .join(".ac")
             .join("Context.coordinator.md")
