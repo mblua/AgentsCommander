@@ -1493,6 +1493,14 @@ impl<R: Runtime> SelectionTransaction<R> {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn for_test(app: AppHandle<R>) -> Self {
+        Self {
+            app,
+            capability: CommitCapability::for_test(),
+        }
+    }
+
     pub(crate) fn app(&self) -> &AppHandle<R> {
         &self.app
     }

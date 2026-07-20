@@ -546,6 +546,12 @@ pub struct VerifiedPtyInputIdentity {
     pub workgroup_identity: crate::path_identity::VerifiedPathIdentity,
     pub replica_identity: crate::path_identity::VerifiedPathIdentity,
     pub matrix_identity: crate::path_identity::VerifiedPathIdentity,
+    /// Permanent physical sender incarnation. This is derived only from the
+    /// verified replica/root directory object and deliberately excludes mutable
+    /// config bytes. It keys GET and permanent idempotency history.
+    pub incarnation_fingerprint: String,
+    /// Mutable authority/config snapshot used only while an operation can still
+    /// actuate. Benign or authority-relevant config edits change this value.
     pub authority_fingerprint: String,
 }
 
@@ -643,6 +649,15 @@ fn identity_fingerprint(identities: &[&crate::path_identity::VerifiedPathIdentit
             digest.update(content);
         }
     }
+    format!("{:x}", digest.finalize())
+}
+
+fn incarnation_fingerprint(anchor: &crate::path_identity::VerifiedPathIdentity) -> String {
+    use sha2::{Digest, Sha256};
+    let mut digest = Sha256::new();
+    digest.update(b"ac-pty-input-sender-incarnation-v1");
+    digest.update(anchor.object_id.volume.to_be_bytes());
+    digest.update(anchor.object_id.file.to_be_bytes());
     format!("{:x}", digest.finalize())
 }
 
@@ -793,6 +808,7 @@ fn verify_replica(
         &matrix_identity,
         &team_config_identity,
     ]);
+    let incarnation_fingerprint = incarnation_fingerprint(&replica_identity);
     Ok(VerifiedPtyInputIdentity {
         canonical_fqn,
         project: actual_project.to_string(),
@@ -805,6 +821,7 @@ fn verify_replica(
         workspace_identity,
         workgroup_identity,
         replica_identity,
+        incarnation_fingerprint,
         matrix_identity,
         authority_fingerprint,
     })
@@ -947,6 +964,7 @@ pub fn verify_pty_input_route(
             workgroup_identity: root_identity.clone(),
             replica_identity: root_identity.clone(),
             matrix_identity: root_identity.clone(),
+            incarnation_fingerprint: incarnation_fingerprint(&root_identity),
             authority_fingerprint: identity_fingerprint(&[&root_identity]),
         };
         let target = resolve_pty_input_target(target_fqn, project_paths)?;
@@ -1920,6 +1938,39 @@ mod tests {
             &paths,
         )
         .is_err());
+    }
+
+    #[test]
+    fn sender_incarnation_survives_benign_config_content_changes() {
+        let (fixture, paths) = make_coordinator_fixture(false);
+        let workspace = fixture.path().join("proj-a").join(".ac");
+        let coordinator = workspace.join("wg-1-dev-team").join("__agent_tech-lead");
+        let first =
+            verify_pty_input_route(&coordinator, false, "proj-a:wg-1-dev-team/dev-rust", &paths)
+                .unwrap();
+
+        std::fs::write(
+            coordinator.join("config.json"),
+            r#"{"identity":"../../_agent_tech-lead","benign":"changed"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join("_team_dev-team").join("config.json"),
+            r#"{"agents":["../_agent_dev-rust"],"coordinator":"../_agent_tech-lead","benign":"changed"}"#,
+        )
+        .unwrap();
+        let second =
+            verify_pty_input_route(&coordinator, false, "proj-a:wg-1-dev-team/dev-rust", &paths)
+                .unwrap();
+
+        assert_eq!(
+            first.sender.incarnation_fingerprint, second.sender.incarnation_fingerprint,
+            "the permanent sender incarnation must not include mutable config bytes"
+        );
+        assert_ne!(
+            first.sender.authority_fingerprint, second.sender.authority_fingerprint,
+            "queued authority revalidation must still observe config content changes"
+        );
     }
 
     #[test]

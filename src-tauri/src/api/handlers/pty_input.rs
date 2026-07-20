@@ -109,7 +109,7 @@ async fn post_inner(
             crate::phone::types::PtyInputReasonCode::PayloadTooLarge,
         ));
     }
-    let fresh = handlers::authenticate_pty_input_fresh(state, headers, ip)?;
+    let fresh = handlers::authenticate_pty_input_fresh(state, headers, ip).await?;
     if uri.query().is_some() {
         return Err(ApiError::BadRequest("query_not_allowed".to_string()));
     }
@@ -216,7 +216,7 @@ async fn post_inner(
             requested_agent_id: agent_id,
             payload: request.pty_input.text.into_bytes(),
             source_plane: PtyInputSourcePlane::ContainerApi,
-            sender_incarnation_fingerprint: route.sender.authority_fingerprint.clone(),
+            sender_incarnation_fingerprint: route.sender.incarnation_fingerprint,
             sender_identity_fingerprint: route.sender.authority_fingerprint,
             target_identity_fingerprint: route.target.authority_fingerprint,
             authority_session_id: authority.session_id.to_string(),
@@ -250,7 +250,7 @@ async fn get_inner(
     headers: &HeaderMap,
     op_id: &str,
 ) -> Result<crate::phone::types::PtyInputResult, ApiError> {
-    let fresh = handlers::authenticate_pty_input_fresh(state, headers, ip)?;
+    let fresh = handlers::authenticate_pty_input_fresh(state, headers, ip).await?;
     if uri.query().is_some() {
         return Err(ApiError::BadRequest("query_not_allowed".to_string()));
     }
@@ -262,7 +262,7 @@ async fn get_inner(
         .query_pty_input_offloaded(
             authority.sender.canonical_fqn,
             op_id.to_string(),
-            authority.sender.authority_fingerprint,
+            authority.sender.incarnation_fingerprint,
         )
         .await
         .map_err(map_store_error)?

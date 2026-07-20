@@ -259,6 +259,14 @@ pub struct ApiClientFreshGuard {
     _registry_lock: std::fs::File,
 }
 
+/// Fresh privileged-registry acquisition failures. These are dependency
+/// failures, not evidence that a credential was revoked or a binding changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FreshRegistryError {
+    Contended,
+    Internal,
+}
+
 impl ApiClientStore {
     /// Build a store over an explicit path (used by tests).
     pub fn new(path: PathBuf) -> Self {
@@ -317,18 +325,13 @@ impl ApiClientStore {
         }))
     }
 
-    /// Fresh, cross-process-locked authentication for privileged PTY input.
-    /// The ordinary mtime cache is deliberately bypassed.
-    pub fn authenticate_pty_input_fresh(
-        &self,
-        presented: &str,
-    ) -> Result<Option<ApiClientFreshGuard>, ApiError> {
+    fn acquire_fresh_registry_lock(&self) -> Result<(PathBuf, std::fs::File), FreshRegistryError> {
         let parent = self
             .path
             .parent()
-            .ok_or_else(|| ApiError::Internal("api_client_stale".to_string()))?;
-        let lock = open_registry_lock(parent)
-            .map_err(|_| ApiError::Internal("api_client_stale".to_string()))?;
+            .ok_or(FreshRegistryError::Internal)?
+            .to_path_buf();
+        let lock = open_registry_lock(&parent).map_err(|_| FreshRegistryError::Internal)?;
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         loop {
             match lock.try_lock() {
@@ -336,19 +339,25 @@ impl ApiClientStore {
                 Err(error) => {
                     let error: std::io::Error = error.into();
                     if error.kind() != std::io::ErrorKind::WouldBlock {
-                        return Err(ApiError::Internal("api_client_stale".to_string()));
+                        return Err(FreshRegistryError::Internal);
                     }
                     if std::time::Instant::now() >= deadline {
-                        return Err(ApiError::Internal("api_client_stale".to_string()));
+                        return Err(FreshRegistryError::Contended);
                     }
                     std::thread::sleep(Duration::from_millis(20));
                 }
             }
         }
-        revalidate_registry_lock(parent, &lock)
-            .map_err(|_| ApiError::Internal("api_client_stale".to_string()))?;
+        revalidate_registry_lock(&parent, &lock).map_err(|_| FreshRegistryError::Internal)?;
+        Ok((parent, lock))
+    }
+
+    fn read_fresh_registry(
+        &self,
+    ) -> Result<Option<(ApiClientRegistry, std::fs::File)>, FreshRegistryError> {
+        let (_parent, lock) = self.acquire_fresh_registry_lock()?;
         let (bytes, _) =
-            match crate::path_identity::read_bounded_regular(&self.path, 4 * 1024 * 1024) {
+            match crate::path_identity::read_bounded_regular(&self.path, REGISTRY_MAX_BYTES) {
                 Ok(value) => value,
                 Err(code)
                     if code == "unsafe_path"
@@ -359,14 +368,25 @@ impl ApiClientStore {
                 {
                     return Ok(None);
                 }
-                Err(_) => return Err(ApiError::Unauthorized("api_client_stale".to_string())),
+                Err(_) => return Err(FreshRegistryError::Internal),
             };
         let value = crate::path_identity::parse_json_no_duplicates(&bytes)
-            .map_err(|_| ApiError::Unauthorized("api_client_stale".to_string()))?;
-        let registry: ApiClientRegistry = serde_json::from_value(value)
-            .map_err(|_| ApiError::Unauthorized("api_client_stale".to_string()))?;
-        validate_registry_strict(&registry)
-            .map_err(|_| ApiError::Unauthorized("api_client_stale".to_string()))?;
+            .map_err(|_| FreshRegistryError::Internal)?;
+        let registry: ApiClientRegistry =
+            serde_json::from_value(value).map_err(|_| FreshRegistryError::Internal)?;
+        validate_registry_strict(&registry).map_err(|_| FreshRegistryError::Internal)?;
+        Ok(Some((registry, lock)))
+    }
+
+    /// Fresh, cross-process-locked authentication for privileged PTY input.
+    /// The ordinary mtime cache is deliberately bypassed.
+    pub fn authenticate_pty_input_fresh(
+        &self,
+        presented: &str,
+    ) -> Result<Option<ApiClientFreshGuard>, FreshRegistryError> {
+        let Some((registry, lock)) = self.read_fresh_registry()? else {
+            return Ok(None);
+        };
         let presented_token_hash = hash_token(presented);
         let now = chrono::Utc::now();
         let client = registry.clients.into_iter().find(|client| {
@@ -381,42 +401,24 @@ impl ApiClientStore {
         }))
     }
 
+    pub async fn authenticate_pty_input_fresh_offloaded(
+        self: &std::sync::Arc<Self>,
+        presented: String,
+    ) -> Result<Option<ApiClientFreshGuard>, FreshRegistryError> {
+        let store = std::sync::Arc::clone(self);
+        tokio::task::spawn_blocking(move || store.authenticate_pty_input_fresh(&presented))
+            .await
+            .map_err(|_| FreshRegistryError::Internal)?
+    }
+
     pub fn load_active_binding_fresh(
         &self,
         client_id: &str,
         generation: &str,
-    ) -> Result<Option<ApiClientFreshGuard>, ApiError> {
-        let parent = self
-            .path
-            .parent()
-            .ok_or_else(|| ApiError::Internal("api_client_stale".to_string()))?;
-        let lock = open_registry_lock(parent)
-            .map_err(|_| ApiError::Internal("api_client_stale".to_string()))?;
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        loop {
-            match lock.try_lock() {
-                Ok(()) => break,
-                Err(error) => {
-                    let error: std::io::Error = error.into();
-                    if error.kind() != std::io::ErrorKind::WouldBlock
-                        || std::time::Instant::now() >= deadline
-                    {
-                        return Err(ApiError::Internal("api_client_stale".to_string()));
-                    }
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-            }
-        }
-        revalidate_registry_lock(parent, &lock)
-            .map_err(|_| ApiError::Internal("api_client_stale".to_string()))?;
-        let (bytes, _) = crate::path_identity::read_bounded_regular(&self.path, 4 * 1024 * 1024)
-            .map_err(|_| ApiError::Unauthorized("api_client_stale".to_string()))?;
-        let value = crate::path_identity::parse_json_no_duplicates(&bytes)
-            .map_err(|_| ApiError::Unauthorized("api_client_stale".to_string()))?;
-        let registry: ApiClientRegistry = serde_json::from_value(value)
-            .map_err(|_| ApiError::Unauthorized("api_client_stale".to_string()))?;
-        validate_registry_strict(&registry)
-            .map_err(|_| ApiError::Unauthorized("api_client_stale".to_string()))?;
+    ) -> Result<Option<ApiClientFreshGuard>, FreshRegistryError> {
+        let Some((registry, lock)) = self.read_fresh_registry()? else {
+            return Ok(None);
+        };
         let now = chrono::Utc::now();
         let client = registry.clients.into_iter().find(|client| {
             client.client_id == client_id
@@ -436,13 +438,13 @@ impl ApiClientStore {
         self: &std::sync::Arc<Self>,
         client_id: String,
         generation: String,
-    ) -> Result<Option<ApiClientFreshGuard>, ApiError> {
+    ) -> Result<Option<ApiClientFreshGuard>, FreshRegistryError> {
         let store = std::sync::Arc::clone(self);
         tokio::task::spawn_blocking(move || {
             store.load_active_binding_fresh(&client_id, &generation)
         })
         .await
-        .map_err(|_| ApiError::Internal("api_client_stale".to_string()))?
+        .map_err(|_| FreshRegistryError::Internal)?
     }
 }
 
@@ -1170,6 +1172,53 @@ mod tests {
             .collect();
         assert_eq!(automatic.len(), 2, "one live generation plus one witness");
         assert_eq!(automatic.iter().filter(|client| !client.revoked).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn privileged_registry_lock_wait_is_offloaded_from_async_ingress() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(REGISTRY_FILENAME);
+        let lock = open_registry_lock(dir.path()).unwrap();
+        lock.lock().unwrap();
+        let store = std::sync::Arc::new(ApiClientStore::new(path));
+        let waiting = {
+            let store = std::sync::Arc::clone(&store);
+            tokio::spawn(async move {
+                store
+                    .authenticate_pty_input_fresh_offloaded("not-a-secret".to_string())
+                    .await
+            })
+        };
+
+        tokio::time::timeout(Duration::from_millis(100), async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        })
+        .await
+        .expect("the async executor must progress while the file lock is held");
+        assert!(matches!(
+            waiting.await.unwrap(),
+            Err(FreshRegistryError::Contended)
+        ));
+    }
+
+    #[test]
+    fn privileged_registry_contention_is_retry_class_not_stale() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(REGISTRY_FILENAME);
+        let lock = open_registry_lock(dir.path()).unwrap();
+        lock.lock().unwrap();
+        let store = ApiClientStore::new(path);
+
+        let error = match store.authenticate_pty_input_fresh("not-a-secret") {
+            Err(error) => error,
+            Ok(_) => panic!("a held registry lock must report contention"),
+        };
+
+        assert_eq!(
+            error,
+            FreshRegistryError::Contended,
+            "lock contention is retryable and must never be classified as stale authority"
+        );
     }
 
     #[test]

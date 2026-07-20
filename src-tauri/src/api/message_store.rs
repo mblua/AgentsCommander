@@ -3354,6 +3354,45 @@ mod tests {
     }
 
     #[test]
+    fn permanent_incarnation_keeps_get_and_duplicate_stable_while_mutable_authority_is_pinned() {
+        let store = store();
+        let op_id = Uuid::new_v4().to_string();
+        let first = pty_request(&op_id, "exact text");
+        let incarnation = first.sender_incarnation_fingerprint.clone();
+        let original_authority = first.sender_identity_fingerprint.clone();
+        store.enqueue_pty_input(first).unwrap();
+
+        let mut duplicate = pty_request(&op_id, "exact text");
+        duplicate.sender_incarnation_fingerprint = incarnation.clone();
+        duplicate.sender_identity_fingerprint = "d".repeat(64);
+        duplicate.target_identity_fingerprint = "e".repeat(64);
+        let duplicate = store.enqueue_pty_input(duplicate).unwrap();
+        assert!(duplicate.duplicate);
+        assert!(store
+            .query_pty_input("proj:wg-1-team/lead", &op_id, &incarnation,)
+            .unwrap()
+            .is_some());
+        assert!(store
+            .query_pty_input("proj:wg-1-team/lead", &op_id, &"f".repeat(64),)
+            .unwrap()
+            .is_none());
+
+        let claimed = store
+            .claim_pty_input(
+                crate::phone::types::PtyInputSourcePlane::ContainerApi,
+                Some(&op_id),
+                "lease",
+                Utc::now() + chrono::Duration::seconds(1),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            claimed.sender_identity_fingerprint, original_authority,
+            "an exact duplicate must not overwrite the queued authority snapshot"
+        );
+    }
+
+    #[test]
     fn terminal_repetition_requires_identical_status_and_fixed_reason() {
         let store = store();
         let op_id = Uuid::new_v4().to_string();

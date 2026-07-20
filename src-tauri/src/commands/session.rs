@@ -1144,23 +1144,34 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
     }
     let _owned_target_gate = if preheld_target.is_none() {
         if let Some(target) = create_target_identity.as_ref() {
-            let (store, exact_locks) = {
-                let state = app
-                    .try_state::<crate::api::message_store::MessageStoreState>()
-                    .ok_or_else(|| "targetCreateGateUnavailable".to_string())?;
-                let store = state
-                    .store
-                    .as_ref()
-                    .map(Arc::clone)
-                    .map_err(|_| "targetCreateGateUnavailable".to_string())?;
-                (store, Arc::clone(&state.target_locks))
-            };
-            let stripe = store
-                .acquire_target_lock(&target.canonical_fqn)
-                .await
-                .map_err(|_| "targetCreateGateUnavailable".to_string())?;
-            let exact = exact_locks.acquire(&target.canonical_fqn).await;
-            Some((stripe, exact))
+            let gate = app
+                .try_state::<crate::api::message_store::MessageStoreState>()
+                .and_then(|state| {
+                    state
+                        .store
+                        .as_ref()
+                        .ok()
+                        .map(|store| (Arc::clone(store), Arc::clone(&state.target_locks)))
+                });
+            if let Some((store, exact_locks)) = gate {
+                match store.acquire_target_lock(&target.canonical_fqn).await {
+                    Ok(stripe) => {
+                        let exact = exact_locks.acquire(&target.canonical_fqn).await;
+                        Some((stripe, exact))
+                    }
+                    Err(_) => {
+                        log::warn!(
+                            "[session] ordinary create continuing without specialized PTY target gate code=target_create_gate_unavailable"
+                        );
+                        None
+                    }
+                }
+            } else {
+                log::warn!(
+                    "[session] ordinary create continuing while specialized PTY store is unavailable"
+                );
+                None
+            }
         } else {
             None
         }
@@ -5190,10 +5201,18 @@ mod tests {
         }
     }
 
-    fn session_test_app(
+    #[derive(Clone, Copy)]
+    enum SessionTestStoreState {
+        Ready,
+        Error,
+        Missing,
+    }
+
+    fn session_test_app_with_store(
         settings: AppSettings,
         session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
         pty_mgr: Arc<Mutex<crate::pty::manager::PtyManager>>,
+        store_state: SessionTestStoreState,
     ) -> tauri::App<tauri::test::MockRuntime> {
         let shutdown = crate::shutdown::ShutdownSignal::new();
         let coordinator = crate::session::selection::SelectionCoordinator::new(
@@ -5214,12 +5233,8 @@ mod tests {
             )
             .expect("open target-gate store"),
         );
-        let app = tauri::test::mock_builder()
+        let mut builder = tauri::test::mock_builder()
             .manage(Arc::new(tokio::sync::RwLock::new(settings)))
-            .manage(crate::api::message_store::MessageStoreState::ready(
-                message_store,
-            ))
-            .manage(store_dir)
             .manage(Arc::new(
                 crate::resource_monitor::ResourceMonitorState::new(),
             ))
@@ -5229,7 +5244,26 @@ mod tests {
             .manage(telegram)
             .manage(crate::session::warnings::new_session_warning_state())
             .manage(coordinator.clone())
-            .manage(shutdown)
+            .manage(shutdown);
+        builder = match store_state {
+            SessionTestStoreState::Ready => builder.manage(
+                crate::api::message_store::MessageStoreState::ready(message_store),
+            ),
+            SessionTestStoreState::Error => {
+                builder.manage(crate::api::message_store::MessageStoreState {
+                    store: Err("store_unavailable".to_string()),
+                    active_operations: Arc::new(
+                        crate::api::message_store::PtyInputActiveOperations::default(),
+                    ),
+                    target_locks: Arc::new(
+                        crate::api::message_store::PtyInputTargetLocks::default(),
+                    ),
+                })
+            }
+            SessionTestStoreState::Missing => builder,
+        };
+        let app = builder
+            .manage(store_dir)
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build session test app");
         coordinator
@@ -5248,6 +5282,14 @@ mod tests {
         .join()
         .expect("join coordinator bootstrap");
         app
+    }
+
+    fn session_test_app(
+        settings: AppSettings,
+        session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+        pty_mgr: Arc<Mutex<crate::pty::manager::PtyManager>>,
+    ) -> tauri::App<tauri::test::MockRuntime> {
+        session_test_app_with_store(settings, session_mgr, pty_mgr, SessionTestStoreState::Ready)
     }
 
     fn strict_target_fixture() -> (tempfile::TempDir, String, String) {
@@ -6095,6 +6137,67 @@ mod tests {
         .unwrap_err();
         assert_eq!(live_error, "sessionRace");
         assert_eq!(backend.spawn_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn ordinary_strict_create_is_fail_soft_when_pty_store_is_error_or_missing() {
+        for store_state in [SessionTestStoreState::Error, SessionTestStoreState::Missing] {
+            let (_fixture, first_cwd, second_cwd) = strict_target_fixture();
+            let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+            let backend = Arc::new(ScriptedSpawnBackend::default());
+            let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+                backend.clone(),
+            )));
+            let app = session_test_app_with_store(
+                AppSettings::default(),
+                Arc::clone(&session_mgr),
+                Arc::clone(&pty_mgr),
+                store_state,
+            );
+
+            let created = create_target_for_test(
+                &app,
+                &session_mgr,
+                &pty_mgr,
+                &first_cwd,
+                CreateSelectionIntent::User,
+            )
+            .await;
+
+            assert!(
+                created.is_ok(),
+                "ordinary create must not depend on the specialized PTY store: {created:?}"
+            );
+            assert_eq!(backend.spawn_count.load(Ordering::SeqCst), 1);
+
+            let restore =
+                crate::session::selection::SelectionTransaction::for_test(app.handle().clone());
+            let restored = super::create_session_inner_for_restore(
+                &restore,
+                &session_mgr,
+                &pty_mgr,
+                "codex".to_string(),
+                Vec::new(),
+                second_cwd,
+                Some("restore target".to_string()),
+                None,
+                None,
+                true,
+                Vec::new(),
+                true,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await;
+            assert!(
+                restored.is_ok(),
+                "startup restore must not depend on the specialized PTY store: {restored:?}"
+            );
+            assert_eq!(backend.spawn_count.load(Ordering::SeqCst), 2);
+            close_test_coordinator(&app).await;
+        }
     }
 
     #[tokio::test]

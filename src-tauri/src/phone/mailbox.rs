@@ -1720,6 +1720,13 @@ fn reason_code_from_name(name: &str) -> crate::phone::types::PtyInputReasonCode 
     }
 }
 
+struct CorrelatedHostPtyMetadata {
+    route: crate::config::teams::VerifiedPtyInputRoute,
+    confirmation_tag: String,
+    request_fingerprint: String,
+    payload_sha256: String,
+}
+
 async fn reject_pty_input_before_boundary(
     store: &crate::api::message_store::MessageStore,
     heartbeat: &mut crate::api::message_store::PreparationHeartbeatGuard,
@@ -2508,6 +2515,179 @@ impl MailboxPoller {
         }
     }
 
+    async fn correlated_host_pty_metadata<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        envelope: &crate::phone::types::PtyInputHostEnvelope,
+    ) -> Option<CorrelatedHostPtyMetadata> {
+        use crate::phone::types::{
+            parse_canonical_pty_timestamp, parse_canonical_uuid_v4, pty_input_confirmation_tag,
+            pty_input_host_request_fingerprint, sha256_hex, PtyInputEnterMode,
+            PtyInputHostFingerprint, PTY_INPUT_TTL_SECS, PTY_INPUT_VERSION,
+        };
+
+        let payload = &envelope.pty_input;
+        let immutable_shape_valid = envelope.action == "pty-input"
+            && envelope.body.is_empty()
+            && envelope.mode == "wake"
+            && !envelope.get_output
+            && envelope.preferred_agent.is_empty()
+            && envelope.priority == "normal"
+            && payload.version == PTY_INPUT_VERSION
+            && payload.enter == PtyInputEnterMode::AgentSubmit
+            && envelope.id == payload.injection_id
+            && payload.op_id == payload.injection_id
+            && path.file_stem().and_then(|value| value.to_str())
+                == Some(payload.injection_id.as_str());
+        if !immutable_shape_valid {
+            return None;
+        }
+        let injection_id = parse_canonical_uuid_v4(&payload.injection_id).ok()?;
+        let nonce = parse_canonical_uuid_v4(&payload.nonce).ok()?;
+        if injection_id == nonce
+            || parse_canonical_uuid_v4(&envelope.token).is_err()
+            || crate::pty::inject::validate_pty_input_text(&payload.text).is_err()
+        {
+            return None;
+        }
+        let issued = parse_canonical_pty_timestamp(&payload.issued_at).ok()?;
+        let expires = parse_canonical_pty_timestamp(&payload.expires_at).ok()?;
+        if envelope.timestamp != payload.issued_at
+            || expires - issued != chrono::Duration::seconds(PTY_INPUT_TTL_SECS)
+        {
+            return None;
+        }
+
+        let outbox = path.parent()?;
+        let root = outbox.parent().and_then(Path::parent)?;
+        let owner = self.verified_pty_outbox_owner(path).ok()?;
+        let sender_is_root = crate::config::root_agent::verify_live_root_agent_path(root).is_ok();
+        let sender_project = if sender_is_root {
+            None
+        } else {
+            let sender = crate::config::teams::verify_pty_input_coordinator_root(root).ok()?;
+            sender
+                .workspace_identity
+                .canonical_path
+                .parent()
+                .and_then(|path| {
+                    path.to_str()
+                        .map(crate::path_utils::normalize_windows_verbatim_path)
+                })
+        };
+        let in_memory_paths = {
+            let settings = app.state::<SettingsState>();
+            let paths = settings.read().await.project_paths.clone();
+            paths
+        };
+        let mut project_paths =
+            crate::config::settings::read_pty_input_project_paths_strict_offloaded()
+                .await
+                .ok()?
+                .unwrap_or(in_memory_paths);
+        if let Some(project) = sender_project {
+            if !project_paths.contains(&project) {
+                project_paths.push(project);
+            }
+        }
+        let route = crate::config::teams::verify_pty_input_route(
+            root,
+            sender_is_root,
+            &envelope.to,
+            &project_paths,
+        )
+        .ok()?;
+        if owner != route.sender.canonical_fqn || envelope.from != route.sender.canonical_fqn {
+            return None;
+        }
+
+        let confirmation_tag =
+            pty_input_confirmation_tag(&payload.injection_id, &payload.op_id, &payload.nonce);
+        let request_fingerprint = pty_input_host_request_fingerprint(&PtyInputHostFingerprint {
+            injection_id: &payload.injection_id,
+            op_id: &payload.op_id,
+            token: &envelope.token,
+            sender_fqn: &route.sender.canonical_fqn,
+            target_fqn: &route.target.canonical_fqn,
+            nonce: &payload.nonce,
+            issued_at: &payload.issued_at,
+            expires_at: &payload.expires_at,
+            text: &payload.text,
+            agent_id: payload.agent_id.as_deref(),
+            confirmation_tag: &confirmation_tag,
+        });
+        Some(CorrelatedHostPtyMetadata {
+            route,
+            confirmation_tag,
+            request_fingerprint,
+            payload_sha256: sha256_hex(payload.text.as_bytes()),
+        })
+    }
+
+    async fn reject_unavailable_store_pty_candidate<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        source_identity: &crate::path_identity::VerifiedPathIdentity,
+        envelope: &crate::phone::types::PtyInputHostEnvelope,
+    ) -> bool {
+        use crate::phone::types::{
+            PtyInputHostArtifact, PtyInputPublicStatus, PtyInputReason, PtyInputReasonCode,
+            PtyInputResult, PtyInputSourcePlane,
+        };
+        let Some(metadata) = self.correlated_host_pty_metadata(app, path, envelope).await else {
+            return false;
+        };
+        let payload = &envelope.pty_input;
+        debug_assert_eq!(metadata.request_fingerprint.len(), 64);
+        let mut result =
+            PtyInputResult::new(payload.injection_id.clone(), PtyInputPublicStatus::Rejected);
+        result.op_id = Some(payload.op_id.clone());
+        result.sender = Some(metadata.route.sender.canonical_fqn);
+        result.target = Some(metadata.route.target.canonical_fqn);
+        result.payload_bytes = Some(payload.text.len() as u64);
+        result.payload_sha256 = Some(metadata.payload_sha256);
+        result.source_plane = Some(PtyInputSourcePlane::HostCli);
+        result.issued_at = Some(payload.issued_at.clone());
+        result.expires_at = Some(payload.expires_at.clone());
+        result.queued_at = Some(payload.issued_at.clone());
+        let issued = crate::phone::types::parse_canonical_pty_timestamp(&payload.issued_at)
+            .unwrap_or_else(|_| chrono::Utc::now());
+        result.terminal_at = Some(crate::phone::types::canonical_pty_timestamp(
+            chrono::Utc::now().max(issued),
+        ));
+        result.reason = Some(PtyInputReason::from_code(PtyInputReasonCode::StoreCorrupt));
+        let artifact = PtyInputHostArtifact {
+            result,
+            confirmation_tag: metadata.confirmation_tag,
+        };
+        if self.write_pty_input_artifact(path, &artifact).is_err() {
+            return true;
+        }
+        let current_source = crate::path_identity::read_bounded_regular(
+            path,
+            crate::phone::types::PTY_INPUT_HOST_ENVELOPE_MAX_BYTES,
+        )
+        .ok()
+        .map(|(_, identity)| identity);
+        if !current_source.as_ref().is_some_and(|current| {
+            crate::path_identity::same_object(source_identity, current)
+                && source_identity.content_sha256 == current.content_sha256
+        }) {
+            return true;
+        }
+        if let Err(error) = std::fs::remove_file(path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                log::warn!(
+                    "[pty-input] unavailable-store source cleanup failed id={} code=artifact_unclaimed",
+                    payload.injection_id
+                );
+            }
+        }
+        true
+    }
+
     async fn reject_correlated_host_pty_candidate<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -2643,7 +2823,7 @@ impl MailboxPoller {
                     nonce_sha256: sha256_hex(payload.nonce.as_bytes()),
                     request_fingerprint,
                     confirmation_tag: confirmation_tag.clone(),
-                    sender_incarnation_fingerprint: route.sender.authority_fingerprint,
+                    sender_incarnation_fingerprint: route.sender.incarnation_fingerprint,
                     payload_sha256: sha256_hex(payload.text.as_bytes()),
                     payload_bytes: payload.text.len() as u64,
                     issued_at: payload.issued_at.clone(),
@@ -2909,20 +3089,6 @@ impl MailboxPoller {
         bytes: &[u8],
         source_identity: &crate::path_identity::VerifiedPathIdentity,
     ) {
-        let state = match app.try_state::<crate::api::message_store::MessageStoreState>() {
-            Some(state) => state,
-            None => {
-                self.reject_malformed_pty_candidate(path);
-                return;
-            }
-        };
-        let store = match &state.store {
-            Ok(store) => Arc::clone(store),
-            Err(_) => {
-                self.reject_malformed_pty_candidate(path);
-                return;
-            }
-        };
         if bytes.starts_with(&[0xef, 0xbb, 0xbf]) || std::str::from_utf8(bytes).is_err() {
             self.reject_malformed_pty_candidate(path);
             return;
@@ -2934,8 +3100,20 @@ impl MailboxPoller {
                 return;
             }
         };
+        let state = app.try_state::<crate::api::message_store::MessageStoreState>();
 
         if value.get("kind").and_then(serde_json::Value::as_str) == Some("pty-input-marker") {
+            let Some(state) = state else {
+                log::debug!("[pty-input] marker deferred code=store_transient");
+                return;
+            };
+            let store = match &state.store {
+                Ok(store) => Arc::clone(store),
+                Err(_) => {
+                    log::debug!("[pty-input] marker deferred code=store_transient");
+                    return;
+                }
+            };
             let marker: crate::phone::types::PtyInputQueueMarker =
                 match serde_json::from_value(value) {
                     Ok(marker) => marker,
@@ -3034,6 +3212,27 @@ impl MailboxPoller {
                     return;
                 }
             };
+        let Some(state) = state else {
+            if !self
+                .reject_unavailable_store_pty_candidate(app, path, source_identity, &envelope)
+                .await
+            {
+                self.reject_malformed_pty_candidate(path);
+            }
+            return;
+        };
+        let store = match &state.store {
+            Ok(store) => Arc::clone(store),
+            Err(_) => {
+                if !self
+                    .reject_unavailable_store_pty_candidate(app, path, source_identity, &envelope)
+                    .await
+                {
+                    self.reject_malformed_pty_candidate(path);
+                }
+                return;
+            }
+        };
         let validation = self
             .validate_and_enqueue_host_pty_input(
                 app,
@@ -3294,7 +3493,7 @@ impl MailboxPoller {
                 requested_agent_id: payload.agent_id.clone(),
                 payload: payload.text.as_bytes().to_vec(),
                 source_plane: PtyInputSourcePlane::HostCli,
-                sender_incarnation_fingerprint: route.sender.authority_fingerprint.clone(),
+                sender_incarnation_fingerprint: route.sender.incarnation_fingerprint,
                 sender_identity_fingerprint: route.sender.authority_fingerprint,
                 target_identity_fingerprint: route.target.authority_fingerprint,
                 authority_session_id: session.id,
@@ -3612,8 +3811,23 @@ impl MailboxPoller {
         let verified_route = if source_plane == crate::phone::types::PtyInputSourcePlane::HostCli {
             self.validate_claimed_host_authority(app, &claimed).await
         } else {
-            self.validate_claimed_api_authority(app, &claimed, api_client_store)
+            match self
+                .validate_claimed_api_authority(app, &claimed, api_client_store)
                 .await
+            {
+                Ok(route) => route,
+                Err(_) => {
+                    finish_pty_input_before_boundary(
+                        &store,
+                        &mut heartbeat,
+                        injection_id,
+                        &lease_owner,
+                        C::StoreTransient,
+                    )
+                    .await;
+                    return;
+                }
+            }
         };
         let Some(verified_route) = verified_route else {
             let code = if source_plane == crate::phone::types::PtyInputSourcePlane::HostCli {
@@ -3897,12 +4111,23 @@ impl MailboxPoller {
                 .await
             {
                 Ok(Some(guard)) => Some(guard),
-                _ => {
+                Ok(None) => {
                     reject_pty_input_before_boundary(
                         &store,
                         &mut heartbeat,
                         injection_id,
                         C::AuthorityChanged,
+                    )
+                    .await;
+                    return;
+                }
+                Err(_) => {
+                    finish_pty_input_before_boundary(
+                        &store,
+                        &mut heartbeat,
+                        injection_id,
+                        &lease_owner,
+                        C::StoreTransient,
                     )
                     .await;
                     return;
@@ -4324,18 +4549,28 @@ impl MailboxPoller {
         app: &tauri::AppHandle<R>,
         claimed: &crate::api::message_store::ClaimedPtyInputOperation,
         client_store: Option<&Arc<crate::api::auth::ApiClientStore>>,
-    ) -> Option<crate::config::teams::VerifiedPtyInputRoute> {
-        let client_store = client_store?;
-        let (client_id, generation) = (
-            claimed.authority_client_id.as_deref()?,
-            claimed.authority_client_generation.as_deref()?,
-        );
-        let fresh = client_store
+    ) -> Result<
+        Option<crate::config::teams::VerifiedPtyInputRoute>,
+        crate::api::auth::FreshRegistryError,
+    > {
+        let Some(client_store) = client_store else {
+            return Ok(None);
+        };
+        let (Some(client_id), Some(generation)) = (
+            claimed.authority_client_id.as_deref(),
+            claimed.authority_client_generation.as_deref(),
+        ) else {
+            return Ok(None);
+        };
+        let Some(fresh) = client_store
             .load_active_binding_fresh_offloaded(client_id.to_string(), generation.to_string())
-            .await
-            .ok()??;
-        self.validate_claimed_api_authority_with_fresh(app, claimed, &fresh)
-            .await
+            .await?
+        else {
+            return Ok(None);
+        };
+        Ok(self
+            .validate_claimed_api_authority_with_fresh(app, claimed, &fresh)
+            .await)
     }
 
     async fn validate_claimed_api_authority_with_fresh<R: tauri::Runtime>(
@@ -4451,14 +4686,14 @@ impl MailboxPoller {
         expected_target: &crate::config::teams::VerifiedPtyInputIdentity,
         source_plane: crate::phone::types::PtyInputSourcePlane,
         api_client_store: Option<&Arc<crate::api::auth::ApiClientStore>>,
-    ) -> bool {
+    ) -> Result<bool, crate::api::auth::FreshRegistryError> {
         let current = if source_plane == crate::phone::types::PtyInputSourcePlane::HostCli {
             self.validate_claimed_host_authority(app, claimed).await
         } else {
             self.validate_claimed_api_authority(app, claimed, api_client_store)
-                .await
+                .await?
         };
-        current.is_some_and(|route| {
+        Ok(current.is_some_and(|route| {
             route.sender.canonical_fqn == expected_sender.canonical_fqn
                 && route.sender.authority_fingerprint == expected_sender.authority_fingerprint
                 && crate::path_identity::same_object(
@@ -4471,7 +4706,7 @@ impl MailboxPoller {
                     &route.target.replica_identity,
                     &expected_target.replica_identity,
                 )
-        })
+        }))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -4579,7 +4814,7 @@ impl MailboxPoller {
                 session.communication.clone(),
             )
         });
-        if !self
+        match self
             .pty_spawn_authority_is_current(
                 app,
                 claimed,
@@ -4590,7 +4825,9 @@ impl MailboxPoller {
             )
             .await
         {
-            return Err(C::AuthorityChanged);
+            Ok(true) => {}
+            Ok(false) => return Err(C::AuthorityChanged),
+            Err(_) => return Err(C::StoreTransient),
         }
         if let Some(exited) = exited {
             let exited_id = crate::phone::types::parse_canonical_uuid_v4(&exited.id)
@@ -4633,7 +4870,7 @@ impl MailboxPoller {
                 );
             }
         }
-        if !self
+        match self
             .pty_spawn_authority_is_current(
                 app,
                 claimed,
@@ -4644,7 +4881,9 @@ impl MailboxPoller {
             )
             .await
         {
-            return Err(C::AuthorityChanged);
+            Ok(true) => {}
+            Ok(false) => return Err(C::AuthorityChanged),
+            Err(_) => return Err(C::StoreTransient),
         }
         let session_manager = app
             .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
@@ -4803,6 +5042,7 @@ impl MailboxPoller {
             } else {
                 self.validate_claimed_api_authority(app, claimed, api_client_store)
                     .await
+                    .map_err(|_| C::StoreTransient)?
             };
             if !authority.is_some_and(|route| {
                 route.sender.authority_fingerprint == claimed.sender_identity_fingerprint
@@ -10333,6 +10573,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unavailable_store_rejects_a_valid_host_request_with_its_correlated_id() {
+        use crate::phone::types::{
+            canonical_pty_timestamp, PtyInputEnterMode, PtyInputHostEnvelope, PtyInputPublicStatus,
+            PtyInputReasonCode, PtyInputWirePayload,
+        };
+
+        let fixture = make_mailbox_fixture();
+        let outbox = fixture
+            .sender_cwd
+            .join(crate::config::agent_local_dir_name())
+            .join("outbox");
+        std::fs::create_dir_all(&outbox).unwrap();
+        let injection_id = Uuid::new_v4().to_string();
+        let issued = chrono::Utc::now();
+        let issued_at = canonical_pty_timestamp(issued);
+        let envelope = PtyInputHostEnvelope {
+            id: injection_id.clone(),
+            token: Uuid::new_v4().to_string(),
+            from: CANONICAL_WAKE_FROM.to_string(),
+            to: CANONICAL_WAKE_TO.to_string(),
+            body: String::new(),
+            mode: "wake".to_string(),
+            get_output: false,
+            preferred_agent: String::new(),
+            priority: "normal".to_string(),
+            timestamp: issued_at.clone(),
+            action: "pty-input".to_string(),
+            pty_input: PtyInputWirePayload {
+                version: crate::phone::types::PTY_INPUT_VERSION,
+                text: "correlated store rejection".to_string(),
+                enter: PtyInputEnterMode::AgentSubmit,
+                injection_id: injection_id.clone(),
+                op_id: injection_id.clone(),
+                issued_at,
+                expires_at: canonical_pty_timestamp(issued + chrono::Duration::minutes(10)),
+                nonce: Uuid::new_v4().to_string(),
+                agent_id: None,
+            },
+        };
+        let path = outbox.join(format!("{injection_id}.json"));
+        let bytes = serde_json::to_vec(&envelope).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let source_identity = crate::path_identity::read_bounded_regular(
+            &path,
+            crate::phone::types::PTY_INPUT_HOST_ENVELOPE_MAX_BYTES,
+        )
+        .unwrap()
+        .1;
+
+        MailboxPoller::new()
+            .process_pty_input_file(fixture.app.handle(), &path, false, &bytes, &source_identity)
+            .await;
+
+        assert!(!path.exists());
+        let artifact_path = outbox.join("rejected").join(format!("{injection_id}.json"));
+        let artifact: crate::phone::types::PtyInputHostArtifact =
+            serde_json::from_slice(&std::fs::read(artifact_path).unwrap()).unwrap();
+        assert_eq!(artifact.result.injection_id, injection_id);
+        assert_eq!(artifact.result.status, PtyInputPublicStatus::Rejected);
+        assert_eq!(
+            artifact.result.reason.map(|reason| reason.code),
+            Some(PtyInputReasonCode::StoreCorrupt)
+        );
+        assert_eq!(artifact.confirmation_tag.len(), 64);
+    }
+
+    #[tokio::test]
     async fn host_terminal_artifact_is_source_correlated_and_idempotently_repairable() {
         use crate::phone::types::{
             canonical_pty_timestamp, PtyInputPublicStatus, PtyInputReasonCode, PtyInputSourcePlane,
@@ -10372,7 +10679,7 @@ mod tests {
                 requested_agent_id: None,
                 payload: b"artifact exact text".to_vec(),
                 source_plane: PtyInputSourcePlane::HostCli,
-                sender_incarnation_fingerprint: route.sender.authority_fingerprint.clone(),
+                sender_incarnation_fingerprint: route.sender.incarnation_fingerprint,
                 sender_identity_fingerprint: route.sender.authority_fingerprint,
                 target_identity_fingerprint: route.target.authority_fingerprint,
                 authority_session_id: Uuid::new_v4().to_string(),

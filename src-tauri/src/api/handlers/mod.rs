@@ -56,7 +56,7 @@ pub fn bearer_token_strict(headers: &HeaderMap) -> Result<String, ApiError> {
     Ok(token.to_string())
 }
 
-pub fn authenticate_pty_input_fresh(
+pub async fn authenticate_pty_input_fresh(
     state: &ApiState,
     headers: &HeaderMap,
     ip: IpAddr,
@@ -69,7 +69,11 @@ pub fn authenticate_pty_input_fresh(
             return Err(error);
         }
     };
-    let guard = match state.store.authenticate_pty_input_fresh(&token) {
+    let guard = match state
+        .store
+        .authenticate_pty_input_fresh_offloaded(token)
+        .await
+    {
         Ok(Some(guard)) => guard,
         Ok(None) => {
             state.lockout.record_failure(ip)?;
@@ -79,10 +83,13 @@ pub fn authenticate_pty_input_fresh(
                 ),
             ));
         }
-        Err(_) => {
+        Err(
+            crate::api::auth::FreshRegistryError::Contended
+            | crate::api::auth::FreshRegistryError::Internal,
+        ) => {
             return Err(ApiError::PtyInput(
-                crate::phone::types::PtyInputFailure::reject(
-                    crate::phone::types::PtyInputReasonCode::ApiClientStale,
+                crate::phone::types::PtyInputFailure::retry(
+                    crate::phone::types::PtyInputReasonCode::StoreTransient,
                 ),
             ));
         }
