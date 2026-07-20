@@ -61,6 +61,7 @@ struct DecodedCmdAtom {
     text: String,
     has_unescaped_amp_or_pipe: bool,
     control_chunks: Vec<String>,
+    unescaped_controls: Vec<char>,
     has_unescaped_control: bool,
 }
 
@@ -117,6 +118,7 @@ fn decode_cmd_atom(raw: &str) -> Result<DecodedCmdAtom, PiCommandParseError> {
     let mut text = String::with_capacity(raw.len());
     let mut current_chunk = String::new();
     let mut control_chunks = Vec::new();
+    let mut unescaped_controls = Vec::new();
     let mut in_quotes = false;
     let mut has_unescaped_amp_or_pipe = false;
     let mut has_unescaped_control = false;
@@ -145,6 +147,7 @@ fn decode_cmd_atom(raw: &str) -> Result<DecodedCmdAtom, PiCommandParseError> {
             '<' | '>' | '(' | ')' | '&' | '|' => {
                 text.push(ch);
                 control_chunks.push(std::mem::take(&mut current_chunk));
+                unescaped_controls.push(ch);
                 has_unescaped_control = true;
                 has_unescaped_amp_or_pipe |= matches!(ch, '&' | '|');
             }
@@ -164,6 +167,7 @@ fn decode_cmd_atom(raw: &str) -> Result<DecodedCmdAtom, PiCommandParseError> {
         text,
         has_unescaped_amp_or_pipe,
         control_chunks,
+        unescaped_controls,
         has_unescaped_control,
     })
 }
@@ -220,6 +224,65 @@ fn is_standalone_cmd_separator(raw: &str) -> bool {
     matches!(raw, "&&" | "&" | "||" | "|")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenizedCommandPosition {
+    Head,
+    WrapperArgument,
+    Arguments,
+}
+
+fn tokenized_has_unsupported_pi_position(atoms: &[DecodedCmdAtom]) -> bool {
+    let mut position = TokenizedCommandPosition::Head;
+
+    for atom in atoms {
+        let mut saw_nonempty_chunk = false;
+        for (index, chunk) in atom.control_chunks.iter().enumerate() {
+            if !chunk.is_empty() {
+                saw_nonempty_chunk = true;
+                match position {
+                    TokenizedCommandPosition::Head => {
+                        if is_exact_pi_executable(chunk) || is_reserved_pi_executable(chunk) {
+                            return true;
+                        }
+                        position = if is_unsupported_wrapper(chunk) {
+                            TokenizedCommandPosition::WrapperArgument
+                        } else {
+                            TokenizedCommandPosition::Arguments
+                        };
+                    }
+                    TokenizedCommandPosition::WrapperArgument => {
+                        if is_exact_pi_executable(chunk) || is_reserved_pi_executable(chunk) {
+                            return true;
+                        }
+                        position = TokenizedCommandPosition::Arguments;
+                    }
+                    TokenizedCommandPosition::Arguments => {}
+                }
+            }
+
+            if atom
+                .unescaped_controls
+                .get(index)
+                .is_some_and(|control| matches!(control, '&' | '|'))
+            {
+                position = TokenizedCommandPosition::Head;
+            }
+        }
+
+        if !saw_nonempty_chunk
+            && atom.unescaped_controls.is_empty()
+            && matches!(
+                position,
+                TokenizedCommandPosition::Head | TokenizedCommandPosition::WrapperArgument
+            )
+        {
+            position = TokenizedCommandPosition::Arguments;
+        }
+    }
+
+    false
+}
+
 fn locate_tokenized_pi_command(
     command_args: &[String],
     first_arg_index: usize,
@@ -241,14 +304,11 @@ fn locate_tokenized_pi_command(
 
     let first = segments.first().cloned().unwrap_or(0..0);
     let Some(head) = decoded.get(first.start).filter(|_| first.start < first.end) else {
-        if segments
-            .iter()
-            .skip(1)
-            .any(|segment| segment_has_unsupported_pi_position(&decoded[segment.clone()]))
-        {
-            return Err(PiCommandParseError::UnsupportedPiCommandShape);
-        }
-        return Ok(None);
+        return if tokenized_has_unsupported_pi_position(&decoded) {
+            Err(PiCommandParseError::UnsupportedPiCommandShape)
+        } else {
+            Ok(None)
+        };
     };
 
     match classify_pi_head(head) {
@@ -271,12 +331,7 @@ fn locate_tokenized_pi_command(
         }
         PiHeadClass::Unsupported => Err(PiCommandParseError::UnsupportedPiCommandShape),
         PiHeadClass::Other => {
-            if segment_has_unsupported_pi_position(&decoded[first.clone()])
-                || segments
-                    .iter()
-                    .skip(1)
-                    .any(|segment| segment_has_unsupported_pi_position(&decoded[segment.clone()]))
-            {
+            if tokenized_has_unsupported_pi_position(&decoded) {
                 Err(PiCommandParseError::UnsupportedPiCommandShape)
             } else {
                 Ok(None)
@@ -303,6 +358,7 @@ struct CmdTextAtomBuilder {
     text: String,
     current_chunk: String,
     control_chunks: Vec<String>,
+    unescaped_controls: Vec<char>,
     has_unescaped_control: bool,
 }
 
@@ -320,6 +376,7 @@ impl CmdTextAtomBuilder {
         self.text.push(ch);
         self.control_chunks
             .push(std::mem::take(&mut self.current_chunk));
+        self.unescaped_controls.push(ch);
         self.has_unescaped_control = true;
     }
 
@@ -333,6 +390,7 @@ impl CmdTextAtomBuilder {
                 text: std::mem::take(&mut self.text),
                 has_unescaped_amp_or_pipe: false,
                 control_chunks: std::mem::take(&mut self.control_chunks),
+                unescaped_controls: std::mem::take(&mut self.unescaped_controls),
                 has_unescaped_control: std::mem::take(&mut self.has_unescaped_control),
             },
         };
@@ -1030,6 +1088,98 @@ mod tests {
             Err(PiCommandParseError::UnsupportedPiCommandShape)
         );
         assert_eq!(CodingAgentKind::detect("npx.cmd", &npx_args), None);
+    }
+
+    #[test]
+    fn tokenized_attached_later_pi_heads_fail_closed() {
+        let providers = [
+            ("--model", "claude-sonnet"),
+            ("--provider", "codex-model"),
+            ("--model", "gemini-pro"),
+        ];
+
+        for separator in ["&", "&&", "|", "||"] {
+            for executable in ["pi", "pi.md", "pi.bat"] {
+                for (provider_flag, provider_value) in providers {
+                    let cases = [
+                        vec![
+                            "/C".to_string(),
+                            format!("echo{separator}{executable}"),
+                            provider_flag.to_string(),
+                            provider_value.to_string(),
+                        ],
+                        vec![
+                            "/C".to_string(),
+                            format!("echo{separator}"),
+                            executable.to_string(),
+                            provider_flag.to_string(),
+                            provider_value.to_string(),
+                        ],
+                        vec![
+                            "/C".to_string(),
+                            "echo".to_string(),
+                            format!("{separator}{executable}"),
+                            provider_flag.to_string(),
+                            provider_value.to_string(),
+                        ],
+                        vec![
+                            "/C".to_string(),
+                            "echo".to_string(),
+                            format!("value{separator}{executable}"),
+                            provider_flag.to_string(),
+                            provider_value.to_string(),
+                        ],
+                    ];
+
+                    for args in cases {
+                        assert_eq!(
+                            locate_pi_command("cmd.exe", &args),
+                            Err(PiCommandParseError::UnsupportedPiCommandShape),
+                            "separator={separator:?} executable={executable:?} args={args:?}"
+                        );
+                        assert_eq!(
+                            CodingAgentKind::detect("cmd.exe", &args),
+                            None,
+                            "separator={separator:?} executable={executable:?} args={args:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tokenized_attached_later_head_negative_controls_stay_non_pi() {
+        let cases = [
+            (
+                strings(&["/C", "echo", "pi", "--model", "claude-sonnet"]),
+                CodingAgentKind::Claude,
+            ),
+            (
+                strings(&["/C", "echo", "pi&&later", "--provider", "codex-model"]),
+                CodingAgentKind::Codex,
+            ),
+            (
+                strings(&["/C", "echo", "value^&^&pi", "--model", "gemini-pro"]),
+                CodingAgentKind::Gemini,
+            ),
+            (
+                strings(&["/C", "echo&&other", "pi", "--model", "claude-sonnet"]),
+                CodingAgentKind::Claude,
+            ),
+            (
+                strings(&["/C", "echo", "\"value&&pi\"", "--model", "claude-sonnet"]),
+                CodingAgentKind::Claude,
+            ),
+        ];
+
+        for (args, expected_kind) in cases {
+            assert_eq!(locate_pi_command("cmd.exe", &args), Ok(None));
+            assert_eq!(
+                CodingAgentKind::detect("cmd.exe", &args),
+                Some(expected_kind)
+            );
+        }
     }
 
     #[test]
