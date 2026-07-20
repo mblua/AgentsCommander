@@ -6,7 +6,7 @@ By the end of this guide you will have AgentsCommander installed, an AC project 
 
 ## Prerequisites
 
-- One of [Claude Code](https://docs.claude.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), or [Gemini CLI](https://github.com/google-gemini/gemini-cli) installed and authenticated on your machine. You can install more than one — AC will let you pick per agent.
+- At least one supported coding-agent CLI (Claude Code, Codex, Gemini, or Pi) installed and authenticated as its CLI requires. See [Installing the coding-agent CLIs](integrations/coding-agents.md#installing-the-clis) for the exact upstream links and Pi install commands. You can install more than one; AC lets you pick per agent.
 - Node.js 18+ and npm if you install AgentsCommander from npm.
 - Git installed.
 - A repo you want the agents to work on (it can be empty).
@@ -68,7 +68,7 @@ Behind the scenes AC creates agent matrices under `.ac/_agent_tech-lead/` and `.
 
 Activate the team for a task and give the workgroup a title. AC creates `.ac/wg-1-<team-name>/`, including `TASK.md`, `messaging/`, and each `__agent_<name>/` replica. Open the new `TASK.md` and write what you want the team to do. One paragraph is enough; the coordinator will expand it.
 
-Click the coordinator's session in the sidebar. AC opens a real terminal and prompts you to pick a coding agent (Claude Code, Codex, or Gemini). Pick one. AC launches the agent in the coordinator's directory with the role and brief already loaded.
+Click the coordinator's session in the sidebar. AC opens a real terminal and prompts you to pick a coding agent (Claude Code, Codex, Gemini, or Pi). Pick one. AC launches the agent in the coordinator's directory with the role and brief already loaded.
 
 ## 5. Watch the agents exchange a message
 

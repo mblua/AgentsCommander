@@ -11,6 +11,14 @@ pub const COORDINATOR_CONTEXT_TEMPLATE_FILENAME: &str = "Context.coordinator.md"
 pub const ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME: &str = "Context.root-agent.md";
 static CONTEXT_TEMPLATE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CreateOnlyPublication {
+    Published {
+        published_at: chrono::DateTime<chrono::Utc>,
+    },
+    AlreadyPresent,
+}
+
 /// Writes a per-agent copy of AgentsCommanderContext.md with the agent's own
 /// root path interpolated into the GOLDEN RULE. For WG replicas, also exposes
 /// the canonical Agent Matrix scope derived from config.json "identity". Uses a
@@ -101,6 +109,7 @@ pub enum ManagedContextTarget {
     Claude,
     Gemini,
     Codex,
+    Pi,
 }
 
 impl ManagedContextTarget {
@@ -112,6 +121,7 @@ impl ManagedContextTarget {
             Self::Claude => "CLAUDE.md",
             Self::Gemini => "GEMINI.md",
             Self::Codex => "AGENTS.md",
+            Self::Pi => "AGENTS.md",
         }
     }
 }
@@ -865,29 +875,62 @@ fn find_workspace_root(path: &std::path::Path) -> Option<std::path::PathBuf> {
 }
 
 pub fn create_default_context_templates(workspace_dir: &Path) -> Result<(), String> {
-    crate::config::seeded_context_templates::ensure_project_context_templates(workspace_dir)
+    let mut on_publication =
+        |_: &'static str, _: crate::config::seeded_context_templates::ContextPublication| {};
+    create_default_context_templates_with_publications(workspace_dir, &mut on_publication)
 }
 
-pub(crate) fn write_template_if_missing(path: &Path, content: &str) -> Result<(), String> {
-    write_template_if_missing_with(path, content, |path| {
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-    })
+pub(crate) fn create_default_context_templates_with_publications(
+    workspace_dir: &Path,
+    on_publication: &mut dyn FnMut(
+        &'static str,
+        crate::config::seeded_context_templates::ContextPublication,
+    ),
+) -> Result<(), String> {
+    crate::config::seeded_context_templates::ensure_project_context_templates_with_publications(
+        workspace_dir,
+        on_publication,
+    )
+}
+
+pub(crate) fn write_template_if_missing(
+    path: &Path,
+    content: &str,
+) -> Result<CreateOnlyPublication, String> {
+    let mut clock = chrono::Utc::now;
+    write_template_if_missing_with_clock(path, content, &mut clock)
+}
+
+pub(crate) fn write_template_if_missing_with_clock(
+    path: &Path,
+    content: &str,
+    clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
+) -> Result<CreateOnlyPublication, String> {
+    write_template_if_missing_with(
+        path,
+        content,
+        |path| {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+        },
+        clock,
+    )
 }
 
 fn write_template_if_missing_with<W, F>(
     path: &Path,
     content: &str,
     open_new: F,
-) -> Result<(), String>
+    clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
+) -> Result<CreateOnlyPublication, String>
 where
     W: ContextTemplateWriter,
     F: FnOnce(&Path) -> std::io::Result<W>,
 {
     match std::fs::symlink_metadata(path) {
-        Ok(_) => return Ok(()),
+        Ok(_) => return Ok(CreateOnlyPublication::AlreadyPresent),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => {
             return Err(format!(
@@ -938,12 +981,13 @@ where
 
     match std::fs::hard_link(&temp_path, path) {
         Ok(()) => {
+            let published_at = clock();
             cleanup_failed_context_template(&temp_path);
-            Ok(())
+            Ok(CreateOnlyPublication::Published { published_at })
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             cleanup_failed_context_template(&temp_path);
-            Ok(())
+            Ok(CreateOnlyPublication::AlreadyPresent)
         }
         Err(e) => {
             cleanup_failed_context_template(&temp_path);
@@ -1039,24 +1083,82 @@ fn read_or_create_context_template(
     filename: &str,
     default_content: &str,
 ) -> Result<Option<String>, String> {
+    let mut on_publication =
+        |_: &'static str, _: crate::config::seeded_context_templates::ContextPublication| {};
+    read_or_create_context_template_with_publications(
+        agent_root,
+        filename,
+        default_content,
+        &mut on_publication,
+    )
+}
+
+fn read_or_create_context_template_with_publications(
+    agent_root: &str,
+    filename: &str,
+    default_content: &str,
+    on_publication: &mut dyn FnMut(
+        &'static str,
+        crate::config::seeded_context_templates::ContextPublication,
+    ),
+) -> Result<Option<String>, String> {
+    read_or_create_context_template_with_sync(
+        agent_root,
+        filename,
+        default_content,
+        on_publication,
+        |context_dir, filename, on_publication| {
+            crate::config::seeded_context_templates::
+                sync_project_context_template_for_read_with_publications(
+                    context_dir,
+                    filename,
+                    on_publication,
+                )
+        },
+    )
+}
+
+fn read_or_create_context_template_with_sync<F>(
+    agent_root: &str,
+    filename: &str,
+    default_content: &str,
+    on_publication: &mut dyn FnMut(
+        &'static str,
+        crate::config::seeded_context_templates::ContextPublication,
+    ),
+    synchronize: F,
+) -> Result<Option<String>, String>
+where
+    F: FnOnce(
+        &Path,
+        &str,
+        &mut dyn FnMut(&'static str, crate::config::seeded_context_templates::ContextPublication),
+    ) -> Result<(), String>,
+{
     let Some(context_dir) = resolve_workspace_context_dir(Path::new(agent_root)) else {
         return Ok(None);
     };
     if filename == GLOBAL_CONTEXT_TEMPLATE_FILENAME {
         migrate_legacy_agent_context_template(&context_dir)?;
     }
-    if filename == GLOBAL_CONTEXT_TEMPLATE_FILENAME
-        || filename == COORDINATOR_CONTEXT_TEMPLATE_FILENAME
-    {
-        crate::config::seeded_context_templates::sync_project_context_template_for_read(
-            &context_dir,
-            filename,
-        )?;
+    let is_managed_project_template = filename == GLOBAL_CONTEXT_TEMPLATE_FILENAME
+        || filename == COORDINATOR_CONTEXT_TEMPLATE_FILENAME;
+    if is_managed_project_template {
+        if let Err(e) = synchronize(&context_dir, filename, on_publication) {
+            log::warn!(
+                "[context-templates] failed to synchronize {} before reading: {}",
+                context_dir.join(filename).display(),
+                e
+            );
+        }
     }
     if let Some(content) = read_context_template(agent_root, filename)? {
         return Ok(Some(content));
     }
-    write_template_if_missing(&context_dir.join(filename), default_content)?;
+    if is_managed_project_template {
+        return Ok(None);
+    }
+    let _ = write_template_if_missing(&context_dir.join(filename), default_content)?;
     read_context_template(agent_root, filename)
 }
 
@@ -1888,10 +1990,11 @@ pub fn materialize_agent_context_file_with_filename(
     auto_self_clear: bool,
     repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
 ) -> Result<Option<String>, String> {
-    let content = match resolve_session_context_content(cwd, is_coordinator, auto_self_clear, repo_mounts)? {
-        Some(content) => content,
-        None => return Ok(None),
-    };
+    let content =
+        match resolve_session_context_content(cwd, is_coordinator, auto_self_clear, repo_mounts)? {
+            Some(content) => content,
+            None => return Ok(None),
+        };
 
     // String-level guard (path escape): never write outside the root, even if a
     // direct `pub` caller bypassed settings validation. The on-disk link checks
@@ -2016,7 +2119,14 @@ pub fn materialize_agent_context_file(
     // materialize_agent_context_file_with_filename in session.rs, which resolves
     // and passes the real auto_self_clear flag. Pass false here so no production
     // path loses the gated directive.
-    materialize_agent_context_file_with_filename(cwd, target.filename(), &[], is_coordinator, false, None)
+    materialize_agent_context_file_with_filename(
+        cwd,
+        target.filename(),
+        &[],
+        is_coordinator,
+        false,
+        None,
+    )
 }
 
 // ── Context-cache GC (#621) ───────────────────────────────────────────────
@@ -2329,7 +2439,18 @@ fn resolve_agent_context(
     ) {
         LegacyRenderedDefaultContext::Current => Ok(template),
         LegacyRenderedDefaultContext::StaleGenerated => {
-            heal_stale_global_context_template(agent_root, matrix_root, skills_section);
+            let execution =
+                heal_stale_global_context_template(agent_root, matrix_root, skills_section);
+            if let Some(publication) = execution.published {
+                log::debug!(
+                    "#664 self-heal: {} published at {}",
+                    GLOBAL_CONTEXT_TEMPLATE_FILENAME,
+                    publication.published_at
+                );
+            }
+            if let Err(error) = &execution.completion {
+                log::warn!("#664 self-heal: {}", error);
+            }
             Ok(render_default_agent_context(
                 agent_root,
                 matrix_root,
@@ -2380,9 +2501,35 @@ fn heal_stale_global_context_template(
     agent_root: &str,
     matrix_root: Option<&str>,
     skills_section: &str,
-) {
+) -> crate::config::seeded_context_templates::ContextTemplateExecution<
+    crate::config::seeded_context_templates::TemplatePublication,
+> {
+    let mut clock = chrono::Utc::now;
+    heal_stale_global_context_template_with_clock(
+        agent_root,
+        matrix_root,
+        skills_section,
+        &mut clock,
+    )
+}
+
+fn heal_stale_global_context_template_with_clock(
+    agent_root: &str,
+    matrix_root: Option<&str>,
+    skills_section: &str,
+    clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
+) -> crate::config::seeded_context_templates::ContextTemplateExecution<
+    crate::config::seeded_context_templates::TemplatePublication,
+> {
+    use crate::config::seeded_context_templates::{
+        ContextPublication, ContextTemplateExecution, ContextTemplateSkipReason,
+        TemplatePublication,
+    };
+
     let Some(context_dir) = resolve_workspace_context_dir(Path::new(agent_root)) else {
-        return;
+        return ContextTemplateExecution::completed(TemplatePublication::Skipped(
+            ContextTemplateSkipReason::WorkspaceUnavailable,
+        ));
     };
     let path = context_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
 
@@ -2390,10 +2537,17 @@ fn heal_stale_global_context_template(
     // create-if-missing side effects) and re-classify under the exact contract.
     let current = match read_context_template(agent_root, GLOBAL_CONTEXT_TEMPLATE_FILENAME) {
         Ok(Some(content)) => content,
-        Ok(None) => return, // vanished under us; nothing to heal
+        Ok(None) => {
+            return ContextTemplateExecution::completed(TemplatePublication::Skipped(
+                ContextTemplateSkipReason::TargetMissing,
+            ))
+        }
         Err(e) => {
-            log::warn!("#664 self-heal: cannot re-read {}: {}", path.display(), e);
-            return;
+            return ContextTemplateExecution::failed(format!(
+                "cannot re-read {}: {}",
+                path.display(),
+                e
+            ));
         }
     };
     if !matches!(
@@ -2402,21 +2556,29 @@ fn heal_stale_global_context_template(
     ) {
         // Changed under us, or no longer recognized as a generated legacy
         // default: preserve whatever is there, do nothing.
-        return;
+        return ContextTemplateExecution::completed(TemplatePublication::ChangedUnderUs);
     }
 
-    if let Err(e) = atomically_replace_context_template(&path, get_default_agent_template()) {
-        log::warn!(
-            "#664 self-heal: failed to regenerate stale global context template {}: {}",
-            path.display(),
-            e
-        );
-        return;
-    }
+    let published_at =
+        match atomically_replace_context_template(&path, get_default_agent_template(), clock) {
+            Ok(published_at) => published_at,
+            Err(error) => {
+                return ContextTemplateExecution::failed(format!(
+                    "failed to regenerate stale global context template {}: {}",
+                    path.display(),
+                    error
+                ))
+            }
+        };
     log::info!(
         "#664 self-heal: regenerated stale global context template {} to the current default",
         path.display()
     );
+    let publication = ContextPublication { published_at };
+    ContextTemplateExecution::with_publication(
+        Ok(TemplatePublication::Published(publication)),
+        publication,
+    )
 }
 
 /// Atomically replace `path` with `content`: write a unique temp file in the
@@ -2427,7 +2589,20 @@ fn heal_stale_global_context_template(
 pub(crate) fn atomically_replace_context_template(
     path: &Path,
     content: &str,
-) -> Result<(), String> {
+    clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
+) -> Result<chrono::DateTime<chrono::Utc>, String> {
+    atomically_replace_context_template_with(path, content, clock, sync_context_template_parent)
+}
+
+fn atomically_replace_context_template_with<S>(
+    path: &Path,
+    content: &str,
+    clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
+    sync_parent: S,
+) -> Result<chrono::DateTime<chrono::Utc>, String>
+where
+    S: FnOnce(&Path),
+{
     let temp = unique_context_template_temp_path(path);
     let mut file = std::fs::OpenOptions::new()
         .write(true)
@@ -2480,20 +2655,25 @@ pub(crate) fn atomically_replace_context_template(
         cleanup_failed_context_template(&temp);
         return Err(e);
     }
+    let published_at = clock();
 
     if let Some(parent) = path.parent() {
-        if let Ok(dir) = std::fs::File::open(parent) {
-            if let Err(e) = dir.sync_all() {
-                log::warn!(
-                    "#664 self-heal: failed to sync context template directory {}: {}",
-                    parent.display(),
-                    e
-                );
-            }
-        }
+        sync_parent(parent);
     }
 
-    Ok(())
+    Ok(published_at)
+}
+
+fn sync_context_template_parent(parent: &Path) {
+    if let Ok(dir) = std::fs::File::open(parent) {
+        if let Err(e) = dir.sync_all() {
+            log::warn!(
+                "#664 self-heal: failed to sync context template directory {}: {}",
+                parent.display(),
+                e
+            );
+        }
+    }
 }
 
 const MANDATORY_GLOBAL_CONTEXT_PLACEHOLDERS: &[&str] = &[
@@ -2796,6 +2976,10 @@ fn strip_legacy_self_maintenance(content: &str) -> String {
     out
 }
 
+const ROOT_GIT_SCOPE: &str = "Git discovery above the Root Agent session root is blocked. State-changing Git belongs at a registered project root (the `settings.projectPaths` entry, one level above `.ac`), never in the Root Agent directory or another `.ac` subtree; the `repo-*` naming restriction does not apply. Read-only Git is allowed within scope.";
+const WORKGROUP_GIT_SCOPE: &str = "`wg-*/` workgroups are gitignored; origin Agent Matrices are not and can be tracked. Git discovery above replica and Matrix roots is blocked. State-changing Git belongs in `repo-*`; read-only Git is allowed within scope.";
+const DIRECT_MATRIX_GIT_SCOPE: &str = "Origin Agent Matrices are not gitignored and can be tracked. Git discovery above this Matrix root is blocked. State-changing Git belongs in `repo-*`; read-only Git is allowed within scope.";
+
 struct DefaultContextDynamicValues {
     // #923 D1: entry #2's peer-replica caution binds non-root agents only. The Root
     // Agent's ROOT_PROJECT_SCOPE_ENTRY grants reads AND writes across every `.ac`
@@ -3024,12 +3208,13 @@ fn default_context_dynamic_values(
         )
     };
     let git_scope = if is_root_agent {
-        "AgentsCommander blocks Git repository discovery above your session root, which sits inside the app config directory beneath a registered project's `.gitignore`d `.ac/` folder. To act on a registered project's repository, deliberately change into that project's root folder (the `settings.projectPaths` entry, one level above its `.ac`) and run Git there, including commits, branches, and other state-changing operations; the `repo-*` naming restriction does NOT apply to you and the project folder need not be named `repo-*`. Do NOT run state-changing Git from inside your own `ac-root-agent` directory or any `.ac` subtree. `git status`, `git log`, and `git diff` are read-only and fine anywhere your read scope above reaches.".to_string()
+        ROOT_GIT_SCOPE
     } else if matrix_root.is_some() {
-        "Your replica directory and origin Agent Matrix sit inside a parent repository's `.gitignore`d `.ac/` folder. Do NOT run state-changing `git` (commit, branch, reset, etc.) from either location; AgentsCommander blocks Git repository discovery above these AC workspace roots, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots.".to_string()
+        WORKGROUP_GIT_SCOPE
     } else {
-        "Your agent directory sits inside a parent repository's `.gitignore`d `.ac/` folder. Do NOT run state-changing `git` (commit, branch, reset, etc.) from inside it; AgentsCommander blocks Git repository discovery above these AC workspace roots, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots.".to_string()
-    };
+        DIRECT_MATRIX_GIT_SCOPE
+    }
+    .to_string();
     let peer_name_format = match &messaging_mode {
         MessagingContextMode::Root(_) => "- **Root Agent sessions**: verified WG coordinator replicas only, shaped `<project>:<workgroup>/<agent>`, e.g. `agentscommander:wg-15-dev-team/tech-lead`. Origin coordinators and non-coordinator WG replicas are not valid Root Agent targets in #277.".to_string(),
         _ => "- **WG replicas** (the common case): `<project>:<workgroup>/<agent>`, e.g. `agentscommander:wg-15-dev-team/dev-rust`.\n- **Origin agents**: `<project>/<agent>`, e.g. `agentscommander/architect`.".to_string(),
@@ -3146,10 +3331,47 @@ fn default_context_as_root(
     )
 }
 
+// Frozen warning bytes shipped before #1072. These constants are only for
+// compatibility recognition and must never be used for current runtime output.
+const LEGACY_GIT_SCOPE_WITH_MATRIX_BEFORE_1072: &str = "Your replica directory and origin Agent Matrix are typically inside a parent repository's `.ac/` folder, which is `.gitignore`d. Do NOT run `git` commands that alter state (commit, branch, reset, etc.) from inside either location, because that would affect the parent repo unintentionally. AgentsCommander blocks Git repository discovery above these Project AC Root directories for agent sessions, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots.";
+const LEGACY_GIT_SCOPE_WITHOUT_MATRIX_BEFORE_1072: &str = "Your agent directory is typically inside a parent repository's `.ac/` folder, which is `.gitignore`d. Do NOT run `git` commands that alter state (commit, branch, reset, etc.) from inside that directory, because that would affect the parent repo unintentionally. AgentsCommander blocks Git repository discovery above these Project AC Root directories for agent sessions, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots.";
+
+enum LegacyGitScopeGeneration {
+    Current,
+    Before1072,
+}
+
 fn legacy_rendered_default_context_for_compat(
     agent_root: &str,
     matrix_root: Option<&str>,
     skills_section: &str,
+) -> String {
+    legacy_rendered_default_context_for_generation(
+        agent_root,
+        matrix_root,
+        skills_section,
+        LegacyGitScopeGeneration::Current,
+    )
+}
+
+fn pre_1072_legacy_rendered_default_context_for_compat(
+    agent_root: &str,
+    matrix_root: Option<&str>,
+    skills_section: &str,
+) -> String {
+    legacy_rendered_default_context_for_generation(
+        agent_root,
+        matrix_root,
+        skills_section,
+        LegacyGitScopeGeneration::Before1072,
+    )
+}
+
+fn legacy_rendered_default_context_for_generation(
+    agent_root: &str,
+    matrix_root: Option<&str>,
+    skills_section: &str,
+    git_scope_generation: LegacyGitScopeGeneration,
 ) -> String {
     enum MessagingContextMode {
         None,
@@ -3235,10 +3457,13 @@ fn legacy_rendered_default_context_for_compat(
             ws = workspace_root_phrase,
         )
     };
-    let git_scope = if matrix_root.is_some() {
-        "Your replica directory and origin Agent Matrix are typically inside a parent repository's `.ac/` folder, which is `.gitignore`d. Do NOT run `git` commands that alter state (commit, branch, reset, etc.) from inside either location, because that would affect the parent repo unintentionally. AgentsCommander blocks Git repository discovery above these Project AC Root directories for agent sessions, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots."
-    } else {
-        "Your agent directory is typically inside a parent repository's `.ac/` folder, which is `.gitignore`d. Do NOT run `git` commands that alter state (commit, branch, reset, etc.) from inside that directory, because that would affect the parent repo unintentionally. AgentsCommander blocks Git repository discovery above these Project AC Root directories for agent sessions, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots."
+    let git_scope = match (git_scope_generation, matrix_root.is_some()) {
+        (LegacyGitScopeGeneration::Current, true) => WORKGROUP_GIT_SCOPE,
+        (LegacyGitScopeGeneration::Current, false) => DIRECT_MATRIX_GIT_SCOPE,
+        (LegacyGitScopeGeneration::Before1072, true) => LEGACY_GIT_SCOPE_WITH_MATRIX_BEFORE_1072,
+        (LegacyGitScopeGeneration::Before1072, false) => {
+            LEGACY_GIT_SCOPE_WITHOUT_MATRIX_BEFORE_1072
+        }
     };
     let agency_cache_guidance = root_agency_cache_guidance(agent_root);
     let peer_name_format = match &messaging_mode {
@@ -3446,14 +3671,16 @@ fn looks_like_generated_legacy_default_context(normalized: &str) -> bool {
         return false;
     }
 
-    let Some(expected) = reconstruct_legacy_rendered_default_context(normalized) else {
+    let Some(expected_candidates) = reconstruct_legacy_rendered_default_context(normalized) else {
         return false;
     };
 
-    normalize_context_for_compat(&expected) == normalized
+    expected_candidates
+        .iter()
+        .any(|expected| normalize_context_for_compat(expected) == normalized)
 }
 
-fn reconstruct_legacy_rendered_default_context(normalized: &str) -> Option<String> {
+fn reconstruct_legacy_rendered_default_context(normalized: &str) -> Option<[String; 2]> {
     let required_once = [
         "# AgentsCommander Context",
         "## GOLDEN RULE",
@@ -3516,11 +3743,18 @@ fn reconstruct_legacy_rendered_default_context(normalized: &str) -> Option<Strin
         return None;
     }
 
-    Some(legacy_rendered_default_context_for_compat(
-        &agent_root,
-        matrix_root.as_deref(),
-        &skills_section,
-    ))
+    Some([
+        legacy_rendered_default_context_for_compat(
+            &agent_root,
+            matrix_root.as_deref(),
+            &skills_section,
+        ),
+        pre_1072_legacy_rendered_default_context_for_compat(
+            &agent_root,
+            matrix_root.as_deref(),
+            &skills_section,
+        ),
+    ])
 }
 
 fn extract_legacy_code_block_after(value: &str, marker: &str) -> Option<String> {
@@ -3544,8 +3778,9 @@ fn is_provably_generated_legacy_skills_section(
     section: &str,
     skill_owner_root: Option<&str>,
 ) -> bool {
-    let expected =
-        normalize_context_for_compat(&render_skills_section(&discover_skill_index(skill_owner_root)));
+    let expected = normalize_context_for_compat(&render_skills_section(&discover_skill_index(
+        skill_owner_root,
+    )));
     let normalized = normalize_context_for_compat(section);
     if normalized == expected {
         return true;
@@ -3638,6 +3873,12 @@ mod tests {
 
     fn path_string(path: &Path) -> String {
         path.to_string_lossy().to_string()
+    }
+
+    fn fixed_publication_time() -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339("2026-07-20T10:30:45.123Z")
+            .expect("parse fixed publication time")
+            .with_timezone(&chrono::Utc)
     }
 
     fn canonical_display_path(path: &Path) -> String {
@@ -3887,7 +4128,9 @@ For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List
         );
         assert!(out.contains("**You answer to the user, and to no one else.**"));
         // Project-scope write grant (ROOT_PROJECT_SCOPE_ENTRY; #1005 S3 removed the Allowed bullet).
-        assert!(out.contains("you may create, modify, and delete files anywhere under ANY project folder registered"));
+        assert!(out.contains(
+            "you may create, modify, and delete files anywhere under ANY project folder registered"
+        ));
         // The Golden Rule is intentionally duplicated on the stale-Root path
         // (inline stale copy + appended current copy carrying the root sections).
         assert_eq!(count_section_headings(&out, "## GOLDEN RULE"), 2, "{out}");
@@ -4453,9 +4696,11 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     fn root_read_scope_grants_settings_json_and_agency_cache() {
         let out = default_context_as_root("C:/fake/ac-root-agent", None, &no_skill_section());
         assert!(out.contains("- **FORBIDDEN**: Any read operation outside"));
-        assert!(out.contains("You may ALWAYS read the app config `settings.json` to enumerate that set"));
+        assert!(out
+            .contains("You may ALWAYS read the app config `settings.json` to enumerate that set"));
         assert!(out.contains("`agency-templates status` and `agency-templates list` report on"));
-        assert!(out.contains("those two reads are grants, while direct writes to them stay CLI-managed"));
+        assert!(out
+            .contains("those two reads are grants, while direct writes to them stay CLI-managed"));
     }
 
     fn read_forbidden_bullet(out: &str) -> &str {
@@ -4532,7 +4777,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(out.contains(
             "Listing the workspace root that contains them, to discover which `repo-*` folders exist, is allowed"
         ));
-        assert!(out.contains("that grants folder names only, not the contents of anything else inside it"));
+        assert!(out.contains(
+            "that grants folder names only, not the contents of anything else inside it"
+        ));
     }
 
     #[test]
@@ -4546,7 +4793,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(out.contains("`_agent_*` matrices and `__agent_*` replicas"));
         // The repo-* naming restriction must be explicitly waived for the root.
         assert!(out.contains("`repo-*` naming restriction in entry #1 does NOT apply to you"));
-        assert!(out.contains("you may create, modify, and delete files anywhere under ANY project folder registered"));
+        assert!(out.contains(
+            "you may create, modify, and delete files anywhere under ANY project folder registered"
+        ));
     }
 
     #[test]
@@ -4620,7 +4869,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         );
         assert!(!out.contains("Every registered AgentsCommander project folder"));
         // #1005 S3: the Allowed bullet is extinct everywhere; pair on the live grant anchor.
-        assert!(!out.contains("you may create, modify, and delete files anywhere under ANY project folder"));
+        assert!(!out.contains(
+            "you may create, modify, and delete files anywhere under ANY project folder"
+        ));
         assert!(!out.contains("Root Agent Authority and Chain of Command"));
     }
 
@@ -4633,7 +4884,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let out = default_context("C:/fake/ac-root-agent", None, &no_skill_section());
         assert!(!out.contains("Every registered AgentsCommander project folder"));
         // #1005 S3: the Allowed bullet is extinct everywhere; pair on the live grant anchor.
-        assert!(!out.contains("you may create, modify, and delete files anywhere under ANY project folder"));
+        assert!(!out.contains(
+            "you may create, modify, and delete files anywhere under ANY project folder"
+        ));
         assert!(!out.contains("Root Agent Authority and Chain of Command"));
         // ...but the name-based root messaging text is still present (gate unchanged).
         assert!(out.contains("Narrow exception — Root Agent messaging directory"));
@@ -4678,7 +4931,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         );
         assert!(!out.contains("Every registered AgentsCommander project folder"));
         // #1005 S3: the Allowed bullet is extinct everywhere; pair on the live grant anchor.
-        assert!(!out.contains("you may create, modify, and delete files anywhere under ANY project folder"));
+        assert!(!out.contains(
+            "you may create, modify, and delete files anywhere under ANY project folder"
+        ));
         assert!(!out.contains("## Root Agent Authority and Chain of Command"));
         // ...but the name-based Root messaging text is still present (gate unchanged).
         assert!(out.contains("Narrow exception — Root Agent messaging directory"));
@@ -4727,7 +4982,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
 
         // Root project scope and authority, and the Team/Workgroup definitions.
         assert!(out.contains("Every registered AgentsCommander project folder"));
-        assert!(out.contains("you may create, modify, and delete files anywhere under ANY project folder registered"));
+        assert!(out.contains(
+            "you may create, modify, and delete files anywhere under ANY project folder registered"
+        ));
         assert!(out.contains("## Root Agent Authority and Chain of Command"));
         assert!(out.contains("**Team**: the logical capability and organization."));
         assert!(out.contains("**Workgroup**: a runtime replica of a team"));
@@ -4798,17 +5055,319 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
 
     #[test]
     fn root_git_scope_permits_project_repo_git_ops() {
-        // C4 (round 2): the root must be told it MAY run state-changing Git in a
-        // registered project's repo (after cd-ing into the project folder), and must
-        // NOT be steered to `repo-*` dirs.
+        // The Root must be directed to a registered project root and must not be
+        // steered to a `repo-*` directory.
         let out = default_context_as_root("C:/fake/ac-root-agent", None, &no_skill_section());
-        assert!(out.contains("change into that project's root folder"));
-        assert!(out.contains("the `repo-*` naming restriction does NOT apply to you"));
-        // The non-root "switch into the appropriate `repo-*` directory" steer must NOT
-        // be what the root sees (its git_scope arm replaces it).
-        assert!(!out.contains(
-            "switch into the appropriate `repo-*` directory before running Git operations"
+        assert!(out.contains(ROOT_GIT_SCOPE));
+        assert!(out.contains("registered project root"));
+        assert!(out.contains("the `repo-*` naming restriction does not apply"));
+        assert!(!out.contains("State-changing Git belongs in `repo-*`"));
+    }
+
+    #[test]
+    fn git_scope_copy_is_location_correct_and_compact() {
+        let skills = no_skill_section();
+        let workgroup = default_context_dynamic_values(
+            "C:/fake/.ac/wg-7-dev-team/__agent_architect",
+            Some("C:/fake/.ac/_agent_architect"),
+            &skills,
+            false,
+        );
+        let direct_matrix =
+            default_context_dynamic_values("C:/fake/.ac/_agent_architect", None, &skills, false);
+        let root = default_context_dynamic_values("C:/fake/ac-root-agent", None, &skills, true);
+
+        assert_eq!(workgroup.git_scope, WORKGROUP_GIT_SCOPE);
+        assert_eq!(direct_matrix.git_scope, DIRECT_MATRIX_GIT_SCOPE);
+        assert_eq!(root.git_scope, ROOT_GIT_SCOPE);
+
+        let rendered_outputs = [
+            default_context(
+                "C:/fake/.ac/wg-7-dev-team/__agent_architect",
+                Some("C:/fake/.ac/_agent_architect"),
+                &skills,
+            ),
+            default_context("C:/fake/.ac/_agent_architect", None, &skills),
+            default_context_as_root("C:/fake/ac-root-agent", None, &skills),
+        ];
+        for output in rendered_outputs {
+            assert!(!output.contains("`.gitignore`d `.ac/`"), "{output}");
+            assert!(
+                !output.contains("`.ac/` folder, which is `.gitignore`d"),
+                "{output}"
+            );
+        }
+
+        assert!(root.git_scope.contains("settings.projectPaths"));
+        assert!(!root.git_scope.contains("belongs in `repo-*`"));
+        assert!(workgroup.git_scope.contains("belongs in `repo-*`"));
+        assert!(direct_matrix.git_scope.contains("belongs in `repo-*`"));
+        for non_root in [&workgroup.git_scope, &direct_matrix.git_scope] {
+            assert!(!non_root.contains("settings.projectPaths"));
+            assert!(!non_root.contains("registered project root"));
+        }
+
+        let workgroup_chars = WORKGROUP_GIT_SCOPE.chars().count();
+        let workgroup_words = WORKGROUP_GIT_SCOPE.split_whitespace().count();
+        assert_eq!(workgroup_chars, 220);
+        assert_eq!(workgroup_words, 33);
+        assert!(workgroup_chars * 2 <= 473);
+        assert!(workgroup_words * 2 <= 68);
+    }
+
+    #[test]
+    fn git_scope_materializes_identically_for_all_managed_targets() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let replica_root = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::create_dir_all(&replica_root).expect("create replica root");
+        std::fs::write(
+            replica_root.join("config.json"),
+            r#"{"identity":"../../_agent_dev-rust","context":["$AGENTSCOMMANDER_CONTEXT"]}"#,
+        )
+        .expect("write replica config");
+
+        let mut expected_content: Option<String> = None;
+        for target in [
+            ManagedContextTarget::Claude,
+            ManagedContextTarget::Gemini,
+            ManagedContextTarget::Codex,
+            ManagedContextTarget::Pi,
+        ] {
+            let materialized =
+                materialize_agent_context_file(&path_string(&replica_root), target, false)
+                    .expect("materialize context")
+                    .expect("context path");
+            assert_eq!(
+                Path::new(&materialized)
+                    .file_name()
+                    .and_then(|name| name.to_str()),
+                Some(target.filename())
+            );
+
+            let content = std::fs::read_to_string(materialized).expect("read materialized context");
+            assert_eq!(content.matches(WORKGROUP_GIT_SCOPE).count(), 1);
+            assert!(!content.contains("`.gitignore`d `.ac/`"));
+            assert!(!content.contains("`.ac/` folder, which is `.gitignore`d"));
+            assert!(!content.contains("{{GIT_SCOPE}}"));
+            assert_no_raw_template_placeholders(&content);
+
+            if let Some(expected) = &expected_content {
+                assert_eq!(&content, expected);
+            } else {
+                expected_content = Some(content);
+            }
+        }
+    }
+
+    #[test]
+    fn pre_1072_legacy_git_scope_snapshots_are_byte_exact() {
+        use sha2::{Digest, Sha256};
+
+        assert_eq!(LEGACY_GIT_SCOPE_WITH_MATRIX_BEFORE_1072.len(), 598);
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(LEGACY_GIT_SCOPE_WITH_MATRIX_BEFORE_1072.as_bytes())
+            ),
+            "db90740fff6b6e44bf2f73fe929e8ec792f3ab5f459350f5e2d612f7151fd050"
+        );
+        assert_eq!(LEGACY_GIT_SCOPE_WITHOUT_MATRIX_BEFORE_1072.len(), 570);
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(LEGACY_GIT_SCOPE_WITHOUT_MATRIX_BEFORE_1072.as_bytes())
+            ),
+            "fe831abf46aa70fdefaecdaa2f0932966b2895a6f709f50b3c5981a07327b2f2"
+        );
+    }
+
+    #[test]
+    fn pre_1072_legacy_with_matrix_classifies_stale_and_heals_once() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let replica_root = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::create_dir_all(&replica_root).expect("create replica root");
+
+        let agent_root = path_string(&replica_root);
+        let matrix_root = path_string(&matrix_root);
+        let skills_section = render_skills_section(&discover_skill_index(Some(&matrix_root)));
+        let legacy = pre_1072_legacy_rendered_default_context_for_compat(
+            &agent_root,
+            Some(&matrix_root),
+            &skills_section,
+        );
+        assert_eq!(
+            legacy
+                .matches(LEGACY_GIT_SCOPE_WITH_MATRIX_BEFORE_1072)
+                .count(),
+            1
+        );
+        assert!(matches!(
+            classify_legacy_rendered_default_context(
+                &legacy,
+                &agent_root,
+                Some(&matrix_root),
+                &skills_section,
+            ),
+            LegacyRenderedDefaultContext::StaleGenerated
         ));
+
+        let template_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&template_path, &legacy).expect("write pre-1072 template");
+        let first = resolve_agent_context(
+            &agent_root,
+            Some(&matrix_root),
+            &skills_section,
+            &replica_root,
+            None,
+            None,
+        )
+        .expect("resolve pre-1072 context");
+        assert_eq!(first.matches(WORKGROUP_GIT_SCOPE).count(), 1);
+        assert!(!first.contains(LEGACY_GIT_SCOPE_WITH_MATRIX_BEFORE_1072));
+        assert_eq!(
+            std::fs::read_to_string(&template_path).expect("read healed template"),
+            get_default_agent_template()
+        );
+        assert_no_context_template_temp_leftover(&workspace_dir);
+
+        let second = resolve_agent_context(
+            &agent_root,
+            Some(&matrix_root),
+            &skills_section,
+            &replica_root,
+            None,
+            None,
+        )
+        .expect("resolve healed context");
+        assert_eq!(second, first);
+        assert_eq!(
+            std::fs::read_to_string(&template_path).expect("read converged template"),
+            get_default_agent_template()
+        );
+    }
+
+    #[test]
+    fn pre_1072_legacy_without_matrix_classifies_stale_and_heals_once() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+
+        let agent_root = path_string(&matrix_root);
+        let skills_section = render_skills_section(&discover_skill_index(Some(&agent_root)));
+        let legacy =
+            pre_1072_legacy_rendered_default_context_for_compat(&agent_root, None, &skills_section);
+        assert_eq!(
+            legacy
+                .matches(LEGACY_GIT_SCOPE_WITHOUT_MATRIX_BEFORE_1072)
+                .count(),
+            1
+        );
+        assert!(matches!(
+            classify_legacy_rendered_default_context(&legacy, &agent_root, None, &skills_section,),
+            LegacyRenderedDefaultContext::StaleGenerated
+        ));
+
+        let template_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&template_path, &legacy).expect("write pre-1072 template");
+        let first =
+            resolve_agent_context(&agent_root, None, &skills_section, &matrix_root, None, None)
+                .expect("resolve pre-1072 context");
+        assert_eq!(first.matches(DIRECT_MATRIX_GIT_SCOPE).count(), 1);
+        assert!(!first.contains(LEGACY_GIT_SCOPE_WITHOUT_MATRIX_BEFORE_1072));
+        assert_eq!(
+            std::fs::read_to_string(&template_path).expect("read healed template"),
+            get_default_agent_template()
+        );
+        assert_no_context_template_temp_leftover(&workspace_dir);
+
+        let second =
+            resolve_agent_context(&agent_root, None, &skills_section, &matrix_root, None, None)
+                .expect("resolve healed context");
+        assert_eq!(second, first);
+        assert_eq!(
+            std::fs::read_to_string(&template_path).expect("read converged template"),
+            get_default_agent_template()
+        );
+    }
+
+    #[test]
+    fn one_byte_edited_pre_1072_git_scope_remains_custom() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let replica_root = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::create_dir_all(&replica_root).expect("create replica root");
+
+        let agent_root = path_string(&replica_root);
+        let matrix_root = path_string(&matrix_root);
+        let skills_section = render_skills_section(&discover_skill_index(Some(&matrix_root)));
+        let legacy = pre_1072_legacy_rendered_default_context_for_compat(
+            &agent_root,
+            Some(&matrix_root),
+            &skills_section,
+        );
+        let warning_start = legacy
+            .find(LEGACY_GIT_SCOPE_WITH_MATRIX_BEFORE_1072)
+            .expect("old Matrix warning");
+        let byte_offset = warning_start
+            + LEGACY_GIT_SCOPE_WITH_MATRIX_BEFORE_1072
+                .find("typically")
+                .expect("typically in old warning")
+            + 1;
+        assert_eq!(legacy.as_bytes()[byte_offset], b'y');
+        let mut edited_bytes = legacy.as_bytes().to_vec();
+        edited_bytes[byte_offset] = b'z';
+        let edited = String::from_utf8(edited_bytes).expect("ASCII edit remains UTF-8");
+        assert_eq!(edited.len(), legacy.len());
+        assert_eq!(
+            edited
+                .bytes()
+                .zip(legacy.bytes())
+                .filter(|(edited, original)| edited != original)
+                .count(),
+            1
+        );
+        assert!(matches!(
+            classify_legacy_rendered_default_context(
+                &edited,
+                &agent_root,
+                Some(&matrix_root),
+                &skills_section,
+            ),
+            LegacyRenderedDefaultContext::NotLegacy
+        ));
+
+        let template_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&template_path, edited.as_bytes()).expect("write edited template");
+        let rendered = resolve_agent_context(
+            &agent_root,
+            Some(&matrix_root),
+            &skills_section,
+            &replica_root,
+            None,
+            None,
+        )
+        .expect("resolve edited context");
+        assert!(!rendered.is_empty());
+        assert_eq!(
+            std::fs::read(&template_path).expect("read preserved template"),
+            edited.as_bytes()
+        );
+        assert_no_context_template_temp_leftover(&workspace_dir);
     }
 
     #[test]
@@ -4998,6 +5557,22 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let legacy_path = workspace_dir.join(LEGACY_AGENT_CONTEXT_TEMPLATE_FILENAME);
         let new_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
         std::fs::write(&legacy_path, "LEGACY_BODY {{AGENT_ROOT}}").expect("write legacy template");
+        let mut publications = Vec::new();
+
+        let migrated = read_or_create_context_template_with_publications(
+            &path_string(&matrix_root),
+            GLOBAL_CONTEXT_TEMPLATE_FILENAME,
+            get_default_agent_template(),
+            &mut |filename, publication| publications.push((filename, publication)),
+        )
+        .expect("migrate legacy template")
+        .expect("migrated content");
+
+        assert_eq!(migrated, "LEGACY_BODY {{AGENT_ROOT}}");
+        assert!(
+            publications.is_empty(),
+            "the legacy hard-link migration must remain unrecorded"
+        );
 
         let materialized = materialize_agent_context_file(
             &path_string(&matrix_root),
@@ -5570,6 +6145,57 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     }
 
     #[test]
+    fn stale_global_self_heal_returns_commit_point_publication() {
+        use crate::config::seeded_context_templates::{ContextPublication, TemplatePublication};
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let old_matrix_root = workspace_dir.join("_agent_dev-rust");
+        let new_matrix_root = workspace_dir.join("_agent_tech-lead");
+        let old_replica_root = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_dev-rust");
+        let new_replica_root = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_tech-lead");
+        std::fs::create_dir_all(&old_matrix_root).expect("create old matrix root");
+        std::fs::create_dir_all(&new_matrix_root).expect("create new matrix root");
+        std::fs::create_dir_all(&old_replica_root).expect("create old replica root");
+        std::fs::create_dir_all(&new_replica_root).expect("create new replica root");
+        let old_skills_section =
+            render_skills_section(&discover_skill_index(Some(&path_string(&old_matrix_root))));
+        let legacy = legacy_rendered_default_context_for_compat(
+            &path_string(&old_replica_root),
+            Some(&path_string(&old_matrix_root)),
+            &old_skills_section,
+        );
+        let template_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&template_path, legacy).expect("write stale generated default");
+        let expected = fixed_publication_time();
+        let mut clock = || expected;
+
+        let execution = heal_stale_global_context_template_with_clock(
+            &path_string(&new_replica_root),
+            Some(&path_string(&new_matrix_root)),
+            &no_skill_section(),
+            &mut clock,
+        );
+
+        let publication = ContextPublication {
+            published_at: expected,
+        };
+        assert_eq!(execution.published, Some(publication));
+        assert_eq!(
+            execution.completion.expect("self-heal completion"),
+            TemplatePublication::Published(publication)
+        );
+        assert_eq!(
+            std::fs::read_to_string(template_path).expect("read healed target"),
+            get_default_agent_template()
+        );
+    }
+
+    #[test]
     fn current_tokenized_default_on_disk_is_not_rewritten() {
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace_dir = temp.path().join(".ac");
@@ -5910,12 +6536,48 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     }
 
     #[test]
+    fn atomic_context_publication_captures_clock_after_replace() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&path, "old contents").expect("write old target");
+        let expected = fixed_publication_time();
+        let later = expected + chrono::Duration::seconds(30);
+        let observed_time = std::cell::Cell::new(expected);
+        let clock_sampled = std::cell::Cell::new(false);
+        let mut clock = || {
+            assert_eq!(
+                std::fs::read_to_string(&path).expect("read target at commit clock"),
+                "new contents",
+                "the target replacement must commit before the clock sample"
+            );
+            clock_sampled.set(true);
+            observed_time.get()
+        };
+
+        let published_at =
+            atomically_replace_context_template_with(&path, "new contents", &mut clock, |parent| {
+                assert_eq!(parent, temp.path());
+                assert!(
+                    clock_sampled.get(),
+                    "the commit-point clock must be sampled before parent sync"
+                );
+                observed_time.set(later);
+            })
+            .expect("replace target");
+
+        assert_eq!(published_at, expected);
+        assert_eq!(observed_time.get(), later);
+        assert_no_context_template_temp_leftover(temp.path());
+    }
+
+    #[test]
     fn atomically_replace_context_template_writes_absent_and_existing_dest() {
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let mut clock = chrono::Utc::now;
 
         // Absent destination: plain create + rename publish.
-        atomically_replace_context_template(&path, "first contents")
+        atomically_replace_context_template(&path, "first contents", &mut clock)
             .expect("replace over absent dest");
         assert_eq!(
             std::fs::read_to_string(&path).expect("read first"),
@@ -5923,7 +6585,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         );
 
         // Existing destination: exercises the Windows ReplaceFileW branch.
-        atomically_replace_context_template(&path, "second contents")
+        atomically_replace_context_template(&path, "second contents", &mut clock)
             .expect("replace over existing dest");
         assert_eq!(
             std::fs::read_to_string(&path).expect("read second"),
@@ -5940,7 +6602,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         // helper returns Err and never creates the directory or a temp file.
         let missing_dir = temp.path().join("does-not-exist");
         let path = missing_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
-        let result = atomically_replace_context_template(&path, get_default_agent_template());
+        let mut clock = chrono::Utc::now;
+        let result =
+            atomically_replace_context_template(&path, get_default_agent_template(), &mut clock);
         assert!(
             result.is_err(),
             "expected Err when the parent dir is missing"
@@ -6190,6 +6854,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
 
         for (target, expected_filename) in [
             (ManagedContextTarget::Codex, "AGENTS.md"),
+            (ManagedContextTarget::Pi, "AGENTS.md"),
             (ManagedContextTarget::Claude, "CLAUDE.md"),
             (ManagedContextTarget::Gemini, "GEMINI.md"),
         ] {
@@ -6328,19 +6993,26 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         let cwd = path_string(&matrix_root);
 
-        let on = materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], false, true, None)
-            .expect("materialize ON")
-            .expect("context path");
+        let on =
+            materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], false, true, None)
+                .expect("materialize ON")
+                .expect("context path");
         let on_content = std::fs::read_to_string(&on).expect("read ON context");
         assert!(on_content.contains("## Self-Maintenance (auto self-handoff-and-clear)"));
         assert!(on_content.contains("reaches 3 such lines"));
         assert!(on_content.contains("max 240 char forgotten summary"));
         assert!(on_content.contains("closed background"));
 
-        let off =
-            materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], false, false, None)
-                .expect("materialize OFF")
-                .expect("context path");
+        let off = materialize_agent_context_file_with_filename(
+            &cwd,
+            "CLAUDE.md",
+            &[],
+            false,
+            false,
+            None,
+        )
+        .expect("materialize OFF")
+        .expect("context path");
         let off_content = std::fs::read_to_string(&off).expect("read OFF context");
         assert!(!off_content.contains("## Self-Maintenance"));
         assert!(!off_content.contains("max 240 char forgotten summary"));
@@ -6364,9 +7036,10 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         .expect("write legacy coordinator template");
         let cwd = path_string(&matrix_root);
 
-        let on = materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], true, true, None)
-            .expect("materialize ON")
-            .expect("context path");
+        let on =
+            materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], true, true, None)
+                .expect("materialize ON")
+                .expect("context path");
         let on_content = std::fs::read_to_string(&on).expect("read ON context");
         assert_eq!(
             on_content.matches("## Self-Maintenance").count(),
@@ -6386,9 +7059,10 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             "coordinator body preserved"
         );
 
-        let off = materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], true, false, None)
-            .expect("materialize OFF")
-            .expect("context path");
+        let off =
+            materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], true, false, None)
+                .expect("materialize OFF")
+                .expect("context path");
         let off_content = std::fs::read_to_string(&off).expect("read OFF context");
         assert_eq!(
             off_content.matches("## Self-Maintenance").count(),
@@ -6484,6 +7158,116 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     }
 
     #[test]
+    fn create_only_publication_captures_clock_before_temp_cleanup() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let expected = fixed_publication_time();
+        let mut clock_called = false;
+        let mut clock = || {
+            clock_called = true;
+            assert!(
+                path.is_file(),
+                "the final target must exist before publication time is captured"
+            );
+            let temp_still_present = std::fs::read_dir(temp.path())
+                .expect("read template directory")
+                .filter_map(Result::ok)
+                .any(|entry| {
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    name.starts_with(".Context.AgentsCommander.md") && name.ends_with(".tmp")
+                });
+            assert!(
+                temp_still_present,
+                "the winning temp must remain linked until after the clock sample"
+            );
+            expected
+        };
+
+        let outcome = write_template_if_missing_with_clock(&path, "complete", &mut clock)
+            .expect("publish missing template");
+
+        assert_eq!(
+            outcome,
+            CreateOnlyPublication::Published {
+                published_at: expected
+            }
+        );
+        assert!(clock_called);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read target"),
+            "complete"
+        );
+        assert_no_context_template_temp_leftover(temp.path());
+    }
+
+    #[test]
+    fn create_only_lost_race_is_already_present_without_a_clock_sample() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let mut clock_calls = 0_u32;
+        let mut clock = || {
+            clock_calls += 1;
+            fixed_publication_time()
+        };
+
+        let outcome = write_template_if_missing_with::<std::fs::File, _>(
+            &path,
+            "losing contents",
+            |temp_path| {
+                let file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(temp_path)?;
+                std::fs::write(&path, "winning contents")?;
+                Ok(file)
+            },
+            &mut clock,
+        )
+        .expect("lost create race is not an error");
+
+        assert_eq!(outcome, CreateOnlyPublication::AlreadyPresent);
+        assert_eq!(
+            clock_calls, 0,
+            "a lost race must not sample publication time"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read winning target"),
+            "winning contents"
+        );
+        assert_no_context_template_temp_leftover(temp.path());
+    }
+
+    #[test]
+    fn managed_read_never_falls_back_to_an_ungated_direct_create() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        let target = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+
+        for synchronization in [Err("injected synchronization failure".to_string()), Ok(())] {
+            let mut on_publication =
+                |_: &'static str,
+                 _: crate::config::seeded_context_templates::ContextPublication| {};
+            let result = read_or_create_context_template_with_sync(
+                &path_string(&matrix_root),
+                GLOBAL_CONTEXT_TEMPLATE_FILENAME,
+                get_default_agent_template(),
+                &mut on_publication,
+                |_, _, _| synchronization,
+            )
+            .expect("managed fallback remains fail-soft");
+
+            assert_eq!(result, None);
+            assert!(
+                !target.exists(),
+                "managed sync failure or skip must use the in-memory default"
+            );
+        }
+    }
+
+    #[test]
     fn missing_templates_are_created_and_used_during_regeneration() {
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace_dir = temp.path().join(".ac");
@@ -6536,6 +7320,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             ),
         ] {
             let path = workspace_dir.join(filename);
+            let mut clock = chrono::Utc::now;
             let err = write_template_if_missing_with::<PartialFailWriter, _>(
                 &path,
                 default_content,
@@ -6550,6 +7335,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
                         fail_after_bytes: 8,
                     })
                 },
+                &mut clock,
             )
             .expect_err("injected partial write must fail");
 
@@ -6609,6 +7395,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let writer_release_barrier = Arc::clone(&release_barrier);
         let writer_path = path.clone();
         let writer = std::thread::spawn(move || {
+            let mut clock = chrono::Utc::now;
             write_template_if_missing_with::<BlockingPartialWriter, _>(
                 &writer_path,
                 get_default_agent_template(),
@@ -6625,6 +7412,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
                         release_barrier: writer_release_barrier,
                     })
                 },
+                &mut clock,
             )
         });
 
@@ -8024,7 +8812,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let skill_dir = root.join(SKILLS_DIR_NAME).join("agency-agents-roles");
         std::fs::create_dir_all(&skill_dir).expect("create skill dir");
 
-        let broken = crate::config::root_agent::agency_pre_yaml_fix_snapshot().replace('\n', "\r\n");
+        let broken =
+            crate::config::root_agent::agency_pre_yaml_fix_snapshot().replace('\n', "\r\n");
         std::fs::write(skill_dir.join("SKILL.md"), &broken).expect("seed the broken skill");
 
         crate::config::root_agent::ensure_default_root_agent_skills_at(&root)
@@ -8103,8 +8892,11 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         .expect("write valid skill");
         let broken_skill = old_matrix.join(SKILLS_DIR_NAME).join("delta-skill");
         std::fs::create_dir_all(&broken_skill).expect("create broken skill");
-        std::fs::write(broken_skill.join(SKILL_MD_FILENAME), "---\nname: [unclosed\n---\n\nbody\n")
-            .expect("write broken skill");
+        std::fs::write(
+            broken_skill.join(SKILL_MD_FILENAME),
+            "---\nname: [unclosed\n---\n\nbody\n",
+        )
+        .expect("write broken skill");
 
         // The old-generation embedded section: frozen OLD intro + current tail.
         let current_render =
@@ -8206,9 +8998,11 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         .expect("resolve context");
         assert!(!rendered.is_empty());
         let on_disk = std::fs::read_to_string(&template_path).expect("read template");
-        assert_eq!(on_disk, legacy, "edited legacy file must be preserved, never healed");
+        assert_eq!(
+            on_disk, legacy,
+            "edited legacy file must be preserved, never healed"
+        );
     }
-
 }
 
 /// #1005 token-accounting harness (plan section 7). Renders the three boot
@@ -8271,7 +9065,9 @@ mod token_accounting {
     /// replaced by a fixed fake path before counting.
     fn root_skills_section_fixed() -> String {
         let temp = tempfile::tempdir().expect("tempdir");
-        let root = temp.path().join(crate::config::root_agent::ROOT_AGENT_DIR_NAME);
+        let root = temp
+            .path()
+            .join(crate::config::root_agent::ROOT_AGENT_DIR_NAME);
         for (dir, content) in [
             (
                 "role-skill-boundary-audit",
@@ -8297,8 +9093,12 @@ mod token_accounting {
         let skills = synthetic_replica_skills_section();
 
         // Per-block rows (replica-shaped inputs).
-        let values =
-            super::default_context_dynamic_values(FAKE_REPLICA_ROOT, Some(FAKE_MATRIX_ROOT), &skills, false);
+        let values = super::default_context_dynamic_values(
+            FAKE_REPLICA_ROOT,
+            Some(FAKE_MATRIX_ROOT),
+            &skills,
+            false,
+        );
         let write_restrictions = super::render_write_restrictions_block(FAKE_REPLICA_ROOT, &values);
         let messaging = super::render_inter_agent_messaging_block(&values);
         let workspace_repos =
@@ -8309,10 +9109,19 @@ mod token_accounting {
         println!();
         println!("| item | chars | ~tokens |");
         println!("|---|---|---|");
-        print_row("block: write restrictions (A2, replica)", write_restrictions.len());
-        print_row("block: inter-agent messaging (A3, replica)", messaging.len());
+        print_row(
+            "block: write restrictions (A2, replica)",
+            write_restrictions.len(),
+        );
+        print_row(
+            "block: inter-agent messaging (A3, replica)",
+            messaging.len(),
+        );
         print_row("block: CLI context (A4a)", super::DEFAULT_CLI_CONTEXT.len());
-        print_row("block: session credentials (A4b)", super::DEFAULT_SESSION_CREDENTIALS.len());
+        print_row(
+            "block: session credentials (A4b)",
+            super::DEFAULT_SESSION_CREDENTIALS.len(),
+        );
         print_row(
             "block: delegated task reporting (A4c)",
             super::DEFAULT_DELEGATED_TASK_REPORTING.len(),
@@ -8325,7 +9134,10 @@ mod token_accounting {
             "block: workspace repos header (A6, root variant)",
             super::workspace_repos_header(true).len(),
         );
-        print_row("block: skills section (A5, synthetic 2 skills)", skills.len());
+        print_row(
+            "block: skills section (A5, synthetic 2 skills)",
+            skills.len(),
+        );
         print_row("block: workspace repos (A6, empty)", workspace_repos.len());
         print_row(
             "block: self-maintenance (A8)",
@@ -8358,9 +9170,15 @@ mod token_accounting {
 
         print_row("profile: WG replica", replica.len());
         print_row("profile: coordinator", coordinator.len());
-        print_row("profile: coordinator + auto_self_clear", coordinator_auto_clear.len());
+        print_row(
+            "profile: coordinator + auto_self_clear",
+            coordinator_auto_clear.len(),
+        );
         print_row("profile: Root Agent", root.len());
-        print_row("profile: Root Agent + auto_self_clear", root_auto_clear.len());
+        print_row(
+            "profile: Root Agent + auto_self_clear",
+            root_auto_clear.len(),
+        );
 
         // Supplement rows (G4): boot-invisible durables.
         let b1 = crate::config::root_agent::default_root_context_template();

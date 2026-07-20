@@ -12,7 +12,7 @@ Now you log in once on the host and containers reuse it.
 
 ## What AC does at launch
 
-When a coding agent runs under the Container runtime and `containerCredentialsFromHost` is on (the default), AC:
+When Claude Code runs under the Container runtime and `containerCredentialsFromHost` is on (the default), AC:
 
 1. **Copies the host credential file** for that coding agent into the container's config dir inside the bind mount. Claude Code: host `~/.claude/.credentials.json` → `<replica_root>/.claude/.credentials.json`, which the container reads as `/workspace/.claude/.credentials.json`.
 2. **Sets `CLAUDE_CONFIG_DIR`** to that dir, so the CLI reads the copied token. AC injects this only when you have not set `CLAUDE_CONFIG_DIR` yourself. Your own value always wins.
@@ -45,9 +45,11 @@ The injected "Workspace Repos" context makes it worse: it hands the agent Window
 
 With `--dangerously-skip-permissions`, a brand-new replica still shows Claude Code's one-time bypass-mode acceptance screen. A human must accept it **once per replica, ever**. This is Anthropic's consent gate, not an AC bug, and AC deliberately does **not** auto-accept it. Host login reuse removes the login wizard, not this.
 
-### 3. Claude Code only
+### 3. Credential reuse is Claude Code only
 
-Codex and Gemini have no credential descriptor yet. Nothing is copied and no first-run state is stamped for them. A container Codex or Gemini session authenticates exactly as it did before: with credentials you supply yourself.
+Codex, Gemini, and Pi have no credential descriptor. AC copies no credentials and stamps no provider-specific first-run state for them. Their container sessions authenticate with credentials you supply yourself.
+
+For Pi, AC also does not copy or map host `~/.pi/agent/` state, translate `PI_CODING_AGENT_SESSION_DIR`, or provision a `--session-dir` path. Pi 0.80.10 accepts only the separated spelling `--session-dir <dir>`; it rejects `--session-dir=<dir>`. AC preserves the user-authored spelling and path during any eligible `--continue` insertion but does not make the path container-aware. Any custom session directory and its durable state must already be meaningful inside the container.
 
 ### 4. Deferred hardening ([#933](https://github.com/mblua/AgentsCommander/issues/933))
 

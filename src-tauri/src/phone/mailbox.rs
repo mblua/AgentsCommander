@@ -12715,7 +12715,9 @@ mod tests {
             Arc::clone(&pending),
             Duration::ZERO,
             Duration::ZERO,
-            Duration::from_secs(1),
+            // The real app-backed restart can exceed one second under the full
+            // parallel suite. Only settle and poll need to be zero in this test.
+            Duration::from_secs(30),
             session_state,
             persist,
             restart,

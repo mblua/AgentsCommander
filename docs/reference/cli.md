@@ -345,6 +345,7 @@ Create a full Agent Matrix (`_agent_<id>/` with a `Role.md`) in a registered AC 
 ```bash
 agentscommander create-agent --project MyProject --name "QA Bot" --description "Runs the integration suite and reports failures."
 agentscommander create-agent --project MyProject --name "QA Bot" --description "Runs the integration suite." --role-template agency:dev-rust --launch claude
+agentscommander create-agent --project MyProject --name "Pi Reviewer" --description "Reviews the current change." --launch pi
 ```
 
 | Flag | Required | Description |
@@ -376,7 +377,7 @@ Create a full Agent Matrix in a registered AC project from a role template; opti
 
 ```bash
 agentscommander create-agent-matrix --project MyProject --name "dev-rust" --description "Implements the Rust backend."
-agentscommander create-agent-matrix --project MyProject --name "dev-rust" --description "Implements the Rust backend." --role-template agency:dev-rust --launch claude
+agentscommander create-agent-matrix --project MyProject --name "dev-rust" --description "Implements the Rust backend." --role-template agency:dev-rust --launch pi
 ```
 
 | Flag | Required | Description |
@@ -404,8 +405,9 @@ Scriptable create/inspect/update/remove of Coding Agent configurations (`setting
 ```bash
 agentscommander coding-agent list
 agentscommander coding-agent show --id claude
+agentscommander coding-agent show --id pi
 agentscommander coding-agent catalog
-agentscommander coding-agent add --from-catalog claude
+agentscommander coding-agent add --from-catalog pi
 agentscommander coding-agent add --label "My Claude" --command "claude" --color "#6366f1" --env FOO=bar
 agentscommander coding-agent update --id agent_123_abc --command "claude --model opus" --clear-envs
 agentscommander coding-agent remove --id agent_123_abc
@@ -429,7 +431,7 @@ Subcommands:
 | `--from-catalog <key>` | (add) Seed label/command/color/envs/isolatedHome (and optional instructions/seed) from a catalog entry; explicit flags below override. Without it, `--label` and `--command` are required. The final label must still be non-empty: a catalog entry with an empty label requires `--label`. |
 | `--id <id>` | (add) Custom id, `^[a-z0-9][a-z0-9_-]{0,63}$`. Default: a minted `agent_<ms>_<hex>` id. Ids are unique case-insensitively. |
 | `--label <s>` | Display label (non-empty, trimmed). |
-| `--command <s>` | Launch command. Banned: Claude `--continue`/`-c`, Codex `resume`/`--last`, Gemini `--resume` (AC injects resume automatically). |
+| `--command <s>` | Launch command. Banned for AC-managed providers: Claude `--continue`/`-c`, Codex `resume`/`--last`, and Gemini `--resume`. Pi is the intentional exception: canonical Pi commands may contain `-c`, `-r`, `--continue`, `--resume`, `--session`, `--session-id`, `--fork`, or `--no-session`, including long `--name=value` forms. These user-authored controls remain configured and veto AC injection. See [Pi resume behavior](../integrations/coding-agents.md#pi-resume-behavior). |
 | `--color <#rrggbb>` | Strict 6-digit hex (only enforced for the explicit flag; catalog-seeded colors are accepted as-is). Default `#6366f1` for custom agents. |
 | `--env KEY=VALUE` | Repeatable. Split on the first `=` (`FOO=a=b` -> value `a=b`). All CLI envs are `source=user`, `enabled=true`. On `update`, any `--env` REPLACES the whole env list (including `source=system` rows). |
 | `--clear-envs` | (update) Empty the env list. Conflicts with `--env`. |

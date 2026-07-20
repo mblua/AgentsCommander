@@ -9,7 +9,7 @@ For privacy and data-flow questions (what leaves the machine and when), see [`PR
 AgentsCommander is a **local desktop application** that spawns coding-agent CLIs and routes messages between them. The trust boundaries are:
 
 1. **The user.** Operates the GUI, picks coding agents, accepts the actions agents propose. Fully trusted.
-2. **The coding agents.** Claude Code, Codex, Gemini. Run in real PTYs as full user-level processes. Trusted with the user's local file system to the same degree the user trusts them when launched directly.
+2. **The coding agents.** Claude Code, Codex, Gemini, and Pi. They run in real PTYs as full user-level processes and are trusted with the user's local file system to the same degree the user trusts them when launched directly.
 3. **The optional network endpoints.** Telegram Bot API and the Google Gemini API for voice-to-text. Only contacted when the user explicitly enables those features.
 4. **The disk.** Configuration, sessions, teams, conversations, and messages all live as plain files under `~/.agentscommander/` (or the portable instance's `.agentscommander_<suffix>/`).
 
@@ -27,7 +27,9 @@ When you launch a session, the coding agent inherits:
 - The environment variables of the AC process (including `PATH`, `HOME`, and any keys you may have exported).
 - The user-level filesystem and network permissions you yourself have.
 
-This is the same surface area the coding agent has when you launch it from your own terminal. AC adds visibility and coordination — it does **not** add a sandbox. If the underlying agent can `rm -rf ~/`, AC will let it.
+This is the same surface area the coding agent has when you launch it from your own terminal. AC adds visibility and coordination; it does **not** add a sandbox. If the underlying agent can `rm -rf ~/`, AC will let it.
+
+Pi auto-resume does not add a state-reading boundary. AC does not inspect or copy `~/.pi/agent/`, `PI_CODING_AGENT_SESSION_DIR`, or `--session-dir` paths, and a Pi option that names Claude does not trigger AC's Claude projects-directory probe. AC does not provision Pi credentials or map Pi state into containers. It only adds `--continue` to an eligible configured known-state launch; [Pi remains responsible for session lookup and errors](integrations/coding-agents.md#no-ac-side-pi-state-probe-or-fallback).
 
 If you need stricter isolation, run AC inside a virtualized environment (WSL2, Linux VM, devcontainer) and limit the VM's network and filesystem access there.
 
@@ -51,7 +53,7 @@ The current trust model accepts the caller's self-reported `--root` and per-sess
 
 **Status: in progress. On by default** (`containerCredentialsFromHost`). The full feature and its limitations are in [Container coding agents](features/container-coding-agents.md).
 
-When a coding agent runs under the Container runtime, AC copies the executing host user's credential file for that agent (Claude: `~/.claude/.credentials.json`) into the replica config dir, which the container reads at `/workspace/.claude`, and deletes it when the session stops.
+When Claude Code runs under the Container runtime, AC copies the executing host user's `~/.claude/.credentials.json` into the replica config dir, which the container reads at `/workspace/.claude`, and deletes it when the session stops. Claude Code is the only provider with a credential descriptor today. AC copies no Codex, Gemini, or Pi credential or state.
 
 What you accept when you leave this on:
 

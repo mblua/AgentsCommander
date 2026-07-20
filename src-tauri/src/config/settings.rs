@@ -9,6 +9,7 @@ use tokio::sync::RwLock;
 
 use crate::config::placeholders::AC_PLACEHOLDER_TOKENS;
 use crate::pty::backend::SessionBackendKind;
+use crate::session::profile::CodingAgentKind;
 use crate::telegram::types::TelegramBotConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -58,7 +59,7 @@ pub struct AgentConfig {
     pub isolated_home: bool,
     /// #529 - filename AC writes into the agent root at launch (content = AC
     /// context + Role.md). `None`/empty falls back to the command-derived default
-    /// (Claude -> CLAUDE.md, Gemini -> GEMINI.md, else AGENTS.md). Serialized as
+    /// (Claude -> CLAUDE.md, Gemini -> GEMINI.md, Codex/Pi/else -> AGENTS.md). Serialized as
     /// `instructionsFilename`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions_filename: Option<String>,
@@ -1509,8 +1510,9 @@ pub fn validate_agent_commands(settings: &AppSettings) -> Result<(), String> {
             if cell.enabled && !cell.command.trim().is_empty() {
                 // #597 - the cell holds params appended to the agent base command,
                 // so validate the COMPOSED effective command. Otherwise a banned
-                // provider flag (claude --continue/-c, codex/gemini manual resume)
-                // placed in the cell params escapes the check: the provider token
+                // provider flag (Claude --continue/-c or Codex/Gemini manual resume)
+                // placed in the cell params escapes the check. Pi session selectors
+                // are intentionally allowed and remain user-authoritative. The provider token
                 // lives in the base, not the cell. Falls back to the cell text when
                 // the cell references an agent id that has no configured agent.
                 let base = settings
@@ -1544,6 +1546,16 @@ pub fn validate_agent_commands(settings: &AppSettings) -> Result<(), String> {
 pub(crate) fn validate_agent_command_text(context: &str, command: &str) -> Result<(), String> {
     let normalized = crate::config::agent_command::normalize_legacy_agent_command(command)
         .map_err(|e| format!("{context}: invalid command: {e}. command={command:?}"))?;
+
+    // Pi selectors are user-authored configuration and intentionally outrank AC
+    // automation. Canonical Pi identity must win before the independent legacy
+    // provider-token scans below inspect model or provider option values.
+    if CodingAgentKind::detect(&normalized.shell, &normalized.shell_args)
+        == Some(CodingAgentKind::Pi)
+    {
+        return Ok(());
+    }
+
     let mut token_strings = Vec::with_capacity(normalized.shell_args.len() + 1);
     token_strings.push(normalized.shell);
     token_strings.extend(normalized.shell_args);
@@ -2806,6 +2818,74 @@ mod tests {
                 },
             );
         assert!(validate_agent_commands(&settings).is_ok());
+    }
+
+    #[test]
+    fn validate_agent_commands_allows_all_explicit_pi_session_controls_with_provider_overlap() {
+        let selectors = [
+            "-c",
+            "-r",
+            "--continue",
+            "--continue=true",
+            "--resume",
+            "--resume=id",
+            "--session",
+            "--session=id",
+            "--session-id",
+            "--session-id=id",
+            "--fork",
+            "--fork=id",
+            "--no-session",
+            "--no-session=true",
+        ];
+        for provider in ["claude", "codex", "gemini"] {
+            for selector in selectors {
+                let command = format!("pi --provider {provider} {selector}");
+                let settings = settings_with_agents(&[("Pi", command.as_str())]);
+                assert!(
+                    validate_agent_commands(&settings).is_ok(),
+                    "provider={provider:?} selector={selector:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn validate_agent_commands_allows_explicit_pi_controls_in_composed_profile_cells() {
+        let selectors = [
+            "-c",
+            "-r",
+            "--continue",
+            "--resume",
+            "--session",
+            "--session-id",
+            "--fork",
+            "--no-session",
+        ];
+        for provider in ["claude", "codex", "gemini"] {
+            for selector in selectors {
+                let base = format!("pi --provider {provider}");
+                let mut settings = settings_with_agents(&[("Pi", base.as_str())]);
+                settings
+                    .coding_agent_profiles
+                    .profiles_by_agent
+                    .entry("agent-0".to_string())
+                    .or_default()
+                    .insert(
+                        "A".to_string(),
+                        ProfileCellConfig {
+                            enabled: true,
+                            command: format!("--model {provider} {selector}"),
+                            env: BTreeMap::new(),
+                            notes: String::new(),
+                        },
+                    );
+                assert!(
+                    validate_agent_commands(&settings).is_ok(),
+                    "provider={provider:?} selector={selector:?}"
+                );
+            }
+        }
     }
 
     #[test]

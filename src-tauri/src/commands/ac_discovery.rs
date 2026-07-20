@@ -1421,6 +1421,12 @@ pub async fn check_project_path(path: String) -> Result<bool, String> {
 /// Called during project creation, workgroup creation, and opportunistically during discovery.
 pub(crate) fn ensure_workspace_gitignore(workspace_dir: &Path) -> Result<(), String> {
     let gitignore_path = workspace_dir.join(".gitignore");
+    const SEED_MANIFEST_GITIGNORE_BLOCK: &str = "# AgentsCommander: exclude seed-manifest coordination files.\n/.seed-manifest.lock\n/.seed-manifest.*.tmp\n\n# AgentsCommander: keep the seed publication manifest reviewable.\n!/seed-manifest.toml\n";
+    const SEED_MANIFEST_PATTERNS: [&str; 3] = [
+        "/.seed-manifest.lock",
+        "/.seed-manifest.*.tmp",
+        "!/seed-manifest.toml",
+    ];
 
     // Each entry: (pattern, comment explaining why)
     let required_entries: &[(&str, &str)] = &[
@@ -1456,6 +1462,10 @@ pub(crate) fn ensure_workspace_gitignore(workspace_dir: &Path) -> Result<(), Str
             "**/__agent_*/AGENTS.md",
             "# AgentsCommander: exclude managed session context files inside replica agent folders.",
         ),
+        (
+            "/.team-config-write.lock",
+            "# AgentsCommander: exclude team-config coordination files.",
+        ),
     ];
 
     if gitignore_path.exists() {
@@ -1467,6 +1477,13 @@ pub(crate) fn ensure_workspace_gitignore(workspace_dir: &Path) -> Result<(), Str
             if !content.lines().any(|line| line.trim() == *pattern) {
                 additions.push_str(&format!("\n{}\n{}\n", comment, pattern));
             }
+        }
+        if !SEED_MANIFEST_PATTERNS
+            .iter()
+            .all(|pattern| content.lines().any(|line| line.trim() == *pattern))
+        {
+            additions.push('\n');
+            additions.push_str(SEED_MANIFEST_GITIGNORE_BLOCK);
         }
 
         if !additions.is_empty() {
@@ -1482,6 +1499,7 @@ pub(crate) fn ensure_workspace_gitignore(workspace_dir: &Path) -> Result<(), Str
         for (pattern, comment) in required_entries {
             content.push_str(&format!("{}\n{}\n\n", comment, pattern));
         }
+        content.push_str(SEED_MANIFEST_GITIGNORE_BLOCK);
         std::fs::write(&gitignore_path, content)
             .map_err(|e| format!("Failed to create Project AC Root .gitignore: {}", e))?;
     }
@@ -3549,6 +3567,41 @@ mod tests {
                 .any(|line| line.trim() == "_loop_*/config.toml"),
             "workspace .gitignore must not ignore Loop config files"
         );
+        assert!(content.contains(concat!(
+            "# AgentsCommander: exclude seed-manifest coordination files.\n",
+            "/.seed-manifest.lock\n",
+            "/.seed-manifest.*.tmp\n",
+            "\n",
+            "# AgentsCommander: keep the seed publication manifest reviewable.\n",
+            "!/seed-manifest.toml\n"
+        )));
+    }
+
+    #[test]
+    fn ensure_workspace_gitignore_writes_team_config_lock_block_on_create() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path().join(".ac");
+        std::fs::create_dir(&workspace).expect("create .ac");
+
+        ensure_workspace_gitignore(&workspace).expect("ensure workspace .gitignore");
+
+        let content =
+            std::fs::read_to_string(workspace.join(".gitignore")).expect("read .gitignore");
+        let block =
+            "# AgentsCommander: exclude team-config coordination files.\n/.team-config-write.lock";
+        assert_eq!(
+            content.matches(block).count(),
+            1,
+            "workspace .gitignore must contain the exact team-config lock block once"
+        );
+        assert_eq!(
+            content
+                .lines()
+                .filter(|line| *line == "/.team-config-write.lock")
+                .count(),
+            1,
+            "workspace .gitignore must contain the anchored team-config lock pattern once"
+        );
     }
 
     #[test]
@@ -3569,6 +3622,197 @@ mod tests {
         assert_eq!(
             count, 1,
             "workspace .gitignore should append the delete sentinel pattern exactly once"
+        );
+    }
+
+    #[test]
+    fn seed_manifest_gitignore_rules_are_anchored_to_ac_root() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("project");
+        let workspace = project.join(".ac");
+        std::fs::create_dir_all(workspace.join("nested")).expect("create .ac tree");
+        ensure_workspace_gitignore(&workspace).expect("ensure workspace .gitignore");
+
+        for relative in [
+            ".ac/.seed-manifest.lock",
+            ".ac/.seed-manifest.00000000-0000-0000-0000-000000000000.tmp",
+            ".ac/seed-manifest.toml",
+            ".ac/nested/.seed-manifest.lock",
+            ".ac/nested/.seed-manifest.00000000-0000-0000-0000-000000000000.tmp",
+            ".ac/nested/seed-manifest.toml",
+        ] {
+            std::fs::write(project.join(relative), b"fixture").expect("write Git fixture");
+        }
+
+        let init = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&project)
+            .output()
+            .expect("git init");
+        assert!(
+            init.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&init.stderr)
+        );
+
+        let ignored = |relative: &str| {
+            std::process::Command::new("git")
+                .args(["check-ignore", "--quiet", "--no-index", "--", relative])
+                .current_dir(&project)
+                .status()
+                .expect("git check-ignore")
+                .success()
+        };
+        assert!(ignored(".ac/.seed-manifest.lock"));
+        assert!(ignored(
+            ".ac/.seed-manifest.00000000-0000-0000-0000-000000000000.tmp"
+        ));
+        assert!(!ignored(".ac/seed-manifest.toml"));
+        assert!(!ignored(".ac/nested/.seed-manifest.lock"));
+        assert!(!ignored(
+            ".ac/nested/.seed-manifest.00000000-0000-0000-0000-000000000000.tmp"
+        ));
+        assert!(!ignored(".ac/nested/seed-manifest.toml"));
+    }
+
+    #[test]
+    fn ensure_workspace_gitignore_appends_team_config_lock_block_preserving_bytes_and_is_idempotent(
+    ) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path().join(".ac");
+        std::fs::create_dir(&workspace).expect("create .ac");
+        let gitignore_path = workspace.join(".gitignore");
+        let original = b"# User-authored rules\r\n!important.txt\r\n\r\n# AgentsCommander: exclude workgroup cloned repos from parent git tracking.\r\n# Without this, parent repo operations (checkout, reset) corrupt child clones.\r\nwg-*/\r\n"
+            .to_vec();
+        std::fs::write(&gitignore_path, &original).expect("write .gitignore");
+
+        ensure_workspace_gitignore(&workspace).expect("ensure workspace .gitignore");
+
+        let updated = std::fs::read(&gitignore_path).expect("read updated .gitignore");
+        assert!(
+            updated.starts_with(&original),
+            "workspace .gitignore must preserve the original bytes as an exact prefix"
+        );
+        let updated_text = std::str::from_utf8(&updated).expect("updated .gitignore is UTF-8");
+        let block =
+            "# AgentsCommander: exclude team-config coordination files.\n/.team-config-write.lock";
+        assert_eq!(
+            updated_text.matches(block).count(),
+            1,
+            "workspace .gitignore must append the exact team-config lock block once"
+        );
+        assert_eq!(
+            updated_text
+                .lines()
+                .filter(|line| *line == "/.team-config-write.lock")
+                .count(),
+            1,
+            "workspace .gitignore must contain the anchored team-config lock pattern once"
+        );
+
+        let once_updated = updated;
+        ensure_workspace_gitignore(&workspace).expect("ensure workspace .gitignore again");
+        let twice_updated = std::fs::read(&gitignore_path).expect("read .gitignore again");
+        assert_eq!(
+            twice_updated, once_updated,
+            "a repeated ensure must leave .gitignore byte-identical"
+        );
+    }
+
+    #[test]
+    fn ensure_workspace_gitignore_team_config_lock_rule_is_root_anchored() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("project");
+        let workspace = project.join(".ac");
+        std::fs::create_dir_all(&workspace).expect("create .ac");
+        ensure_workspace_gitignore(&workspace).expect("ensure workspace .gitignore");
+
+        let init_status = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&project)
+            .status()
+            .expect("git init must execute");
+        assert!(init_status.success(), "git init must succeed");
+
+        let empty_excludes = project.join("empty-global-excludes");
+        std::fs::write(&empty_excludes, []).expect("create empty global excludes file");
+        std::fs::write(workspace.join(".team-config-write.lock"), [])
+            .expect("create root team-config lock");
+        std::fs::create_dir_all(workspace.join("nested")).expect("create nested directory");
+        std::fs::write(workspace.join("nested").join(".team-config-write.lock"), [])
+            .expect("create nested team-config lock");
+
+        let excludes_override = format!(
+            "core.excludesFile={}",
+            empty_excludes.to_string_lossy().replace('\\', "/")
+        );
+        let root_output = std::process::Command::new("git")
+            .arg("-c")
+            .arg(&excludes_override)
+            .args([
+                "check-ignore",
+                "-v",
+                "--no-index",
+                "--",
+                ".ac/.team-config-write.lock",
+            ])
+            .current_dir(&project)
+            .output()
+            .expect("root git check-ignore must execute");
+        assert!(
+            root_output.status.success(),
+            "root git check-ignore must match: {}",
+            String::from_utf8_lossy(&root_output.stderr)
+        );
+
+        let root_stdout = String::from_utf8(root_output.stdout).expect("root output is UTF-8");
+        let root_line = root_stdout.trim_end_matches(&['\r', '\n'][..]);
+        let (source_and_pattern, target) = root_line
+            .split_once('\t')
+            .expect("verbose git check-ignore output contains a tab");
+        let mut source_fields = source_and_pattern.rsplitn(3, ':');
+        let pattern = source_fields.next().expect("matched pattern");
+        let line_number = source_fields.next().expect("matched line number");
+        let source = source_fields.next().expect("matched source");
+        assert_eq!(
+            source, ".ac/.gitignore",
+            "match source must be .ac/.gitignore"
+        );
+        assert!(
+            line_number.parse::<usize>().is_ok(),
+            "match line number must be numeric"
+        );
+        assert_eq!(
+            pattern, "/.team-config-write.lock",
+            "match pattern must be the anchored team-config lock rule"
+        );
+        assert_eq!(
+            target, ".ac/.team-config-write.lock",
+            "match target must be the root team-config lock"
+        );
+
+        let nested_output = std::process::Command::new("git")
+            .arg("-c")
+            .arg(&excludes_override)
+            .args([
+                "check-ignore",
+                "-v",
+                "--no-index",
+                "--",
+                ".ac/nested/.team-config-write.lock",
+            ])
+            .current_dir(&project)
+            .output()
+            .expect("nested git check-ignore must execute");
+        assert_eq!(
+            nested_output.status.code(),
+            Some(1),
+            "nested git check-ignore must report no match: {}",
+            String::from_utf8_lossy(&nested_output.stderr)
+        );
+        assert!(
+            nested_output.stdout.is_empty(),
+            "nested git check-ignore must emit no stdout"
         );
     }
 
