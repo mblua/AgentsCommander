@@ -11,6 +11,14 @@ pub const COORDINATOR_CONTEXT_TEMPLATE_FILENAME: &str = "Context.coordinator.md"
 pub const ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME: &str = "Context.root-agent.md";
 static CONTEXT_TEMPLATE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CreateOnlyPublication {
+    Published {
+        published_at: chrono::DateTime<chrono::Utc>,
+    },
+    AlreadyPresent,
+}
+
 /// Writes a per-agent copy of AgentsCommanderContext.md with the agent's own
 /// root path interpolated into the GOLDEN RULE. For WG replicas, also exposes
 /// the canonical Agent Matrix scope derived from config.json "identity". Uses a
@@ -865,29 +873,62 @@ fn find_workspace_root(path: &std::path::Path) -> Option<std::path::PathBuf> {
 }
 
 pub fn create_default_context_templates(workspace_dir: &Path) -> Result<(), String> {
-    crate::config::seeded_context_templates::ensure_project_context_templates(workspace_dir)
+    let mut on_publication =
+        |_: &'static str, _: crate::config::seeded_context_templates::ContextPublication| {};
+    create_default_context_templates_with_publications(workspace_dir, &mut on_publication)
 }
 
-pub(crate) fn write_template_if_missing(path: &Path, content: &str) -> Result<(), String> {
-    write_template_if_missing_with(path, content, |path| {
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-    })
+pub(crate) fn create_default_context_templates_with_publications(
+    workspace_dir: &Path,
+    on_publication: &mut dyn FnMut(
+        &'static str,
+        crate::config::seeded_context_templates::ContextPublication,
+    ),
+) -> Result<(), String> {
+    crate::config::seeded_context_templates::ensure_project_context_templates_with_publications(
+        workspace_dir,
+        on_publication,
+    )
+}
+
+pub(crate) fn write_template_if_missing(
+    path: &Path,
+    content: &str,
+) -> Result<CreateOnlyPublication, String> {
+    let mut clock = chrono::Utc::now;
+    write_template_if_missing_with_clock(path, content, &mut clock)
+}
+
+pub(crate) fn write_template_if_missing_with_clock(
+    path: &Path,
+    content: &str,
+    clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
+) -> Result<CreateOnlyPublication, String> {
+    write_template_if_missing_with(
+        path,
+        content,
+        |path| {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+        },
+        clock,
+    )
 }
 
 fn write_template_if_missing_with<W, F>(
     path: &Path,
     content: &str,
     open_new: F,
-) -> Result<(), String>
+    clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
+) -> Result<CreateOnlyPublication, String>
 where
     W: ContextTemplateWriter,
     F: FnOnce(&Path) -> std::io::Result<W>,
 {
     match std::fs::symlink_metadata(path) {
-        Ok(_) => return Ok(()),
+        Ok(_) => return Ok(CreateOnlyPublication::AlreadyPresent),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => {
             return Err(format!(
@@ -938,12 +979,13 @@ where
 
     match std::fs::hard_link(&temp_path, path) {
         Ok(()) => {
+            let published_at = clock();
             cleanup_failed_context_template(&temp_path);
-            Ok(())
+            Ok(CreateOnlyPublication::Published { published_at })
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             cleanup_failed_context_template(&temp_path);
-            Ok(())
+            Ok(CreateOnlyPublication::AlreadyPresent)
         }
         Err(e) => {
             cleanup_failed_context_template(&temp_path);
@@ -1039,24 +1081,82 @@ fn read_or_create_context_template(
     filename: &str,
     default_content: &str,
 ) -> Result<Option<String>, String> {
+    let mut on_publication =
+        |_: &'static str, _: crate::config::seeded_context_templates::ContextPublication| {};
+    read_or_create_context_template_with_publications(
+        agent_root,
+        filename,
+        default_content,
+        &mut on_publication,
+    )
+}
+
+fn read_or_create_context_template_with_publications(
+    agent_root: &str,
+    filename: &str,
+    default_content: &str,
+    on_publication: &mut dyn FnMut(
+        &'static str,
+        crate::config::seeded_context_templates::ContextPublication,
+    ),
+) -> Result<Option<String>, String> {
+    read_or_create_context_template_with_sync(
+        agent_root,
+        filename,
+        default_content,
+        on_publication,
+        |context_dir, filename, on_publication| {
+            crate::config::seeded_context_templates::
+                sync_project_context_template_for_read_with_publications(
+                    context_dir,
+                    filename,
+                    on_publication,
+                )
+        },
+    )
+}
+
+fn read_or_create_context_template_with_sync<F>(
+    agent_root: &str,
+    filename: &str,
+    default_content: &str,
+    on_publication: &mut dyn FnMut(
+        &'static str,
+        crate::config::seeded_context_templates::ContextPublication,
+    ),
+    synchronize: F,
+) -> Result<Option<String>, String>
+where
+    F: FnOnce(
+        &Path,
+        &str,
+        &mut dyn FnMut(&'static str, crate::config::seeded_context_templates::ContextPublication),
+    ) -> Result<(), String>,
+{
     let Some(context_dir) = resolve_workspace_context_dir(Path::new(agent_root)) else {
         return Ok(None);
     };
     if filename == GLOBAL_CONTEXT_TEMPLATE_FILENAME {
         migrate_legacy_agent_context_template(&context_dir)?;
     }
-    if filename == GLOBAL_CONTEXT_TEMPLATE_FILENAME
-        || filename == COORDINATOR_CONTEXT_TEMPLATE_FILENAME
-    {
-        crate::config::seeded_context_templates::sync_project_context_template_for_read(
-            &context_dir,
-            filename,
-        )?;
+    let is_managed_project_template = filename == GLOBAL_CONTEXT_TEMPLATE_FILENAME
+        || filename == COORDINATOR_CONTEXT_TEMPLATE_FILENAME;
+    if is_managed_project_template {
+        if let Err(e) = synchronize(&context_dir, filename, on_publication) {
+            log::warn!(
+                "[context-templates] failed to synchronize {} before reading: {}",
+                context_dir.join(filename).display(),
+                e
+            );
+        }
     }
     if let Some(content) = read_context_template(agent_root, filename)? {
         return Ok(Some(content));
     }
-    write_template_if_missing(&context_dir.join(filename), default_content)?;
+    if is_managed_project_template {
+        return Ok(None);
+    }
+    let _ = write_template_if_missing(&context_dir.join(filename), default_content)?;
     read_context_template(agent_root, filename)
 }
 
@@ -1888,10 +1988,11 @@ pub fn materialize_agent_context_file_with_filename(
     auto_self_clear: bool,
     repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
 ) -> Result<Option<String>, String> {
-    let content = match resolve_session_context_content(cwd, is_coordinator, auto_self_clear, repo_mounts)? {
-        Some(content) => content,
-        None => return Ok(None),
-    };
+    let content =
+        match resolve_session_context_content(cwd, is_coordinator, auto_self_clear, repo_mounts)? {
+            Some(content) => content,
+            None => return Ok(None),
+        };
 
     // String-level guard (path escape): never write outside the root, even if a
     // direct `pub` caller bypassed settings validation. The on-disk link checks
@@ -2016,7 +2117,14 @@ pub fn materialize_agent_context_file(
     // materialize_agent_context_file_with_filename in session.rs, which resolves
     // and passes the real auto_self_clear flag. Pass false here so no production
     // path loses the gated directive.
-    materialize_agent_context_file_with_filename(cwd, target.filename(), &[], is_coordinator, false, None)
+    materialize_agent_context_file_with_filename(
+        cwd,
+        target.filename(),
+        &[],
+        is_coordinator,
+        false,
+        None,
+    )
 }
 
 // ── Context-cache GC (#621) ───────────────────────────────────────────────
@@ -2329,7 +2437,18 @@ fn resolve_agent_context(
     ) {
         LegacyRenderedDefaultContext::Current => Ok(template),
         LegacyRenderedDefaultContext::StaleGenerated => {
-            heal_stale_global_context_template(agent_root, matrix_root, skills_section);
+            let execution =
+                heal_stale_global_context_template(agent_root, matrix_root, skills_section);
+            if let Some(publication) = execution.published {
+                log::debug!(
+                    "#664 self-heal: {} published at {}",
+                    GLOBAL_CONTEXT_TEMPLATE_FILENAME,
+                    publication.published_at
+                );
+            }
+            if let Err(error) = &execution.completion {
+                log::warn!("#664 self-heal: {}", error);
+            }
             Ok(render_default_agent_context(
                 agent_root,
                 matrix_root,
@@ -2380,9 +2499,35 @@ fn heal_stale_global_context_template(
     agent_root: &str,
     matrix_root: Option<&str>,
     skills_section: &str,
-) {
+) -> crate::config::seeded_context_templates::ContextTemplateExecution<
+    crate::config::seeded_context_templates::TemplatePublication,
+> {
+    let mut clock = chrono::Utc::now;
+    heal_stale_global_context_template_with_clock(
+        agent_root,
+        matrix_root,
+        skills_section,
+        &mut clock,
+    )
+}
+
+fn heal_stale_global_context_template_with_clock(
+    agent_root: &str,
+    matrix_root: Option<&str>,
+    skills_section: &str,
+    clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
+) -> crate::config::seeded_context_templates::ContextTemplateExecution<
+    crate::config::seeded_context_templates::TemplatePublication,
+> {
+    use crate::config::seeded_context_templates::{
+        ContextPublication, ContextTemplateExecution, ContextTemplateSkipReason,
+        TemplatePublication,
+    };
+
     let Some(context_dir) = resolve_workspace_context_dir(Path::new(agent_root)) else {
-        return;
+        return ContextTemplateExecution::completed(TemplatePublication::Skipped(
+            ContextTemplateSkipReason::WorkspaceUnavailable,
+        ));
     };
     let path = context_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
 
@@ -2390,10 +2535,17 @@ fn heal_stale_global_context_template(
     // create-if-missing side effects) and re-classify under the exact contract.
     let current = match read_context_template(agent_root, GLOBAL_CONTEXT_TEMPLATE_FILENAME) {
         Ok(Some(content)) => content,
-        Ok(None) => return, // vanished under us; nothing to heal
+        Ok(None) => {
+            return ContextTemplateExecution::completed(TemplatePublication::Skipped(
+                ContextTemplateSkipReason::TargetMissing,
+            ))
+        }
         Err(e) => {
-            log::warn!("#664 self-heal: cannot re-read {}: {}", path.display(), e);
-            return;
+            return ContextTemplateExecution::failed(format!(
+                "cannot re-read {}: {}",
+                path.display(),
+                e
+            ));
         }
     };
     if !matches!(
@@ -2402,21 +2554,29 @@ fn heal_stale_global_context_template(
     ) {
         // Changed under us, or no longer recognized as a generated legacy
         // default: preserve whatever is there, do nothing.
-        return;
+        return ContextTemplateExecution::completed(TemplatePublication::ChangedUnderUs);
     }
 
-    if let Err(e) = atomically_replace_context_template(&path, get_default_agent_template()) {
-        log::warn!(
-            "#664 self-heal: failed to regenerate stale global context template {}: {}",
-            path.display(),
-            e
-        );
-        return;
-    }
+    let published_at =
+        match atomically_replace_context_template(&path, get_default_agent_template(), clock) {
+            Ok(published_at) => published_at,
+            Err(error) => {
+                return ContextTemplateExecution::failed(format!(
+                    "failed to regenerate stale global context template {}: {}",
+                    path.display(),
+                    error
+                ))
+            }
+        };
     log::info!(
         "#664 self-heal: regenerated stale global context template {} to the current default",
         path.display()
     );
+    let publication = ContextPublication { published_at };
+    ContextTemplateExecution::with_publication(
+        Ok(TemplatePublication::Published(publication)),
+        publication,
+    )
 }
 
 /// Atomically replace `path` with `content`: write a unique temp file in the
@@ -2427,7 +2587,20 @@ fn heal_stale_global_context_template(
 pub(crate) fn atomically_replace_context_template(
     path: &Path,
     content: &str,
-) -> Result<(), String> {
+    clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
+) -> Result<chrono::DateTime<chrono::Utc>, String> {
+    atomically_replace_context_template_with(path, content, clock, sync_context_template_parent)
+}
+
+fn atomically_replace_context_template_with<S>(
+    path: &Path,
+    content: &str,
+    clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
+    sync_parent: S,
+) -> Result<chrono::DateTime<chrono::Utc>, String>
+where
+    S: FnOnce(&Path),
+{
     let temp = unique_context_template_temp_path(path);
     let mut file = std::fs::OpenOptions::new()
         .write(true)
@@ -2480,20 +2653,25 @@ pub(crate) fn atomically_replace_context_template(
         cleanup_failed_context_template(&temp);
         return Err(e);
     }
+    let published_at = clock();
 
     if let Some(parent) = path.parent() {
-        if let Ok(dir) = std::fs::File::open(parent) {
-            if let Err(e) = dir.sync_all() {
-                log::warn!(
-                    "#664 self-heal: failed to sync context template directory {}: {}",
-                    parent.display(),
-                    e
-                );
-            }
-        }
+        sync_parent(parent);
     }
 
-    Ok(())
+    Ok(published_at)
+}
+
+fn sync_context_template_parent(parent: &Path) {
+    if let Ok(dir) = std::fs::File::open(parent) {
+        if let Err(e) = dir.sync_all() {
+            log::warn!(
+                "#664 self-heal: failed to sync context template directory {}: {}",
+                parent.display(),
+                e
+            );
+        }
+    }
 }
 
 const MANDATORY_GLOBAL_CONTEXT_PLACEHOLDERS: &[&str] = &[
@@ -3598,8 +3776,9 @@ fn is_provably_generated_legacy_skills_section(
     section: &str,
     skill_owner_root: Option<&str>,
 ) -> bool {
-    let expected =
-        normalize_context_for_compat(&render_skills_section(&discover_skill_index(skill_owner_root)));
+    let expected = normalize_context_for_compat(&render_skills_section(&discover_skill_index(
+        skill_owner_root,
+    )));
     let normalized = normalize_context_for_compat(section);
     if normalized == expected {
         return true;
@@ -3692,6 +3871,12 @@ mod tests {
 
     fn path_string(path: &Path) -> String {
         path.to_string_lossy().to_string()
+    }
+
+    fn fixed_publication_time() -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339("2026-07-20T10:30:45.123Z")
+            .expect("parse fixed publication time")
+            .with_timezone(&chrono::Utc)
     }
 
     fn canonical_display_path(path: &Path) -> String {
@@ -3941,7 +4126,9 @@ For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List
         );
         assert!(out.contains("**You answer to the user, and to no one else.**"));
         // Project-scope write grant (ROOT_PROJECT_SCOPE_ENTRY; #1005 S3 removed the Allowed bullet).
-        assert!(out.contains("you may create, modify, and delete files anywhere under ANY project folder registered"));
+        assert!(out.contains(
+            "you may create, modify, and delete files anywhere under ANY project folder registered"
+        ));
         // The Golden Rule is intentionally duplicated on the stale-Root path
         // (inline stale copy + appended current copy carrying the root sections).
         assert_eq!(count_section_headings(&out, "## GOLDEN RULE"), 2, "{out}");
@@ -4507,9 +4694,11 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     fn root_read_scope_grants_settings_json_and_agency_cache() {
         let out = default_context_as_root("C:/fake/ac-root-agent", None, &no_skill_section());
         assert!(out.contains("- **FORBIDDEN**: Any read operation outside"));
-        assert!(out.contains("You may ALWAYS read the app config `settings.json` to enumerate that set"));
+        assert!(out
+            .contains("You may ALWAYS read the app config `settings.json` to enumerate that set"));
         assert!(out.contains("`agency-templates status` and `agency-templates list` report on"));
-        assert!(out.contains("those two reads are grants, while direct writes to them stay CLI-managed"));
+        assert!(out
+            .contains("those two reads are grants, while direct writes to them stay CLI-managed"));
     }
 
     fn read_forbidden_bullet(out: &str) -> &str {
@@ -4586,7 +4775,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(out.contains(
             "Listing the workspace root that contains them, to discover which `repo-*` folders exist, is allowed"
         ));
-        assert!(out.contains("that grants folder names only, not the contents of anything else inside it"));
+        assert!(out.contains(
+            "that grants folder names only, not the contents of anything else inside it"
+        ));
     }
 
     #[test]
@@ -4600,7 +4791,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(out.contains("`_agent_*` matrices and `__agent_*` replicas"));
         // The repo-* naming restriction must be explicitly waived for the root.
         assert!(out.contains("`repo-*` naming restriction in entry #1 does NOT apply to you"));
-        assert!(out.contains("you may create, modify, and delete files anywhere under ANY project folder registered"));
+        assert!(out.contains(
+            "you may create, modify, and delete files anywhere under ANY project folder registered"
+        ));
     }
 
     #[test]
@@ -4674,7 +4867,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         );
         assert!(!out.contains("Every registered AgentsCommander project folder"));
         // #1005 S3: the Allowed bullet is extinct everywhere; pair on the live grant anchor.
-        assert!(!out.contains("you may create, modify, and delete files anywhere under ANY project folder"));
+        assert!(!out.contains(
+            "you may create, modify, and delete files anywhere under ANY project folder"
+        ));
         assert!(!out.contains("Root Agent Authority and Chain of Command"));
     }
 
@@ -4687,7 +4882,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let out = default_context("C:/fake/ac-root-agent", None, &no_skill_section());
         assert!(!out.contains("Every registered AgentsCommander project folder"));
         // #1005 S3: the Allowed bullet is extinct everywhere; pair on the live grant anchor.
-        assert!(!out.contains("you may create, modify, and delete files anywhere under ANY project folder"));
+        assert!(!out.contains(
+            "you may create, modify, and delete files anywhere under ANY project folder"
+        ));
         assert!(!out.contains("Root Agent Authority and Chain of Command"));
         // ...but the name-based root messaging text is still present (gate unchanged).
         assert!(out.contains("Narrow exception — Root Agent messaging directory"));
@@ -4732,7 +4929,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         );
         assert!(!out.contains("Every registered AgentsCommander project folder"));
         // #1005 S3: the Allowed bullet is extinct everywhere; pair on the live grant anchor.
-        assert!(!out.contains("you may create, modify, and delete files anywhere under ANY project folder"));
+        assert!(!out.contains(
+            "you may create, modify, and delete files anywhere under ANY project folder"
+        ));
         assert!(!out.contains("## Root Agent Authority and Chain of Command"));
         // ...but the name-based Root messaging text is still present (gate unchanged).
         assert!(out.contains("Narrow exception — Root Agent messaging directory"));
@@ -4781,7 +4980,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
 
         // Root project scope and authority, and the Team/Workgroup definitions.
         assert!(out.contains("Every registered AgentsCommander project folder"));
-        assert!(out.contains("you may create, modify, and delete files anywhere under ANY project folder registered"));
+        assert!(out.contains(
+            "you may create, modify, and delete files anywhere under ANY project folder registered"
+        ));
         assert!(out.contains("## Root Agent Authority and Chain of Command"));
         assert!(out.contains("**Team**: the logical capability and organization."));
         assert!(out.contains("**Workgroup**: a runtime replica of a team"));
@@ -5353,6 +5554,22 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let legacy_path = workspace_dir.join(LEGACY_AGENT_CONTEXT_TEMPLATE_FILENAME);
         let new_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
         std::fs::write(&legacy_path, "LEGACY_BODY {{AGENT_ROOT}}").expect("write legacy template");
+        let mut publications = Vec::new();
+
+        let migrated = read_or_create_context_template_with_publications(
+            &path_string(&matrix_root),
+            GLOBAL_CONTEXT_TEMPLATE_FILENAME,
+            get_default_agent_template(),
+            &mut |filename, publication| publications.push((filename, publication)),
+        )
+        .expect("migrate legacy template")
+        .expect("migrated content");
+
+        assert_eq!(migrated, "LEGACY_BODY {{AGENT_ROOT}}");
+        assert!(
+            publications.is_empty(),
+            "the legacy hard-link migration must remain unrecorded"
+        );
 
         let materialized = materialize_agent_context_file(
             &path_string(&matrix_root),
@@ -5925,6 +6142,57 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     }
 
     #[test]
+    fn stale_global_self_heal_returns_commit_point_publication() {
+        use crate::config::seeded_context_templates::{ContextPublication, TemplatePublication};
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let old_matrix_root = workspace_dir.join("_agent_dev-rust");
+        let new_matrix_root = workspace_dir.join("_agent_tech-lead");
+        let old_replica_root = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_dev-rust");
+        let new_replica_root = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_tech-lead");
+        std::fs::create_dir_all(&old_matrix_root).expect("create old matrix root");
+        std::fs::create_dir_all(&new_matrix_root).expect("create new matrix root");
+        std::fs::create_dir_all(&old_replica_root).expect("create old replica root");
+        std::fs::create_dir_all(&new_replica_root).expect("create new replica root");
+        let old_skills_section =
+            render_skills_section(&discover_skill_index(Some(&path_string(&old_matrix_root))));
+        let legacy = legacy_rendered_default_context_for_compat(
+            &path_string(&old_replica_root),
+            Some(&path_string(&old_matrix_root)),
+            &old_skills_section,
+        );
+        let template_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&template_path, legacy).expect("write stale generated default");
+        let expected = fixed_publication_time();
+        let mut clock = || expected;
+
+        let execution = heal_stale_global_context_template_with_clock(
+            &path_string(&new_replica_root),
+            Some(&path_string(&new_matrix_root)),
+            &no_skill_section(),
+            &mut clock,
+        );
+
+        let publication = ContextPublication {
+            published_at: expected,
+        };
+        assert_eq!(execution.published, Some(publication));
+        assert_eq!(
+            execution.completion.expect("self-heal completion"),
+            TemplatePublication::Published(publication)
+        );
+        assert_eq!(
+            std::fs::read_to_string(template_path).expect("read healed target"),
+            get_default_agent_template()
+        );
+    }
+
+    #[test]
     fn current_tokenized_default_on_disk_is_not_rewritten() {
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace_dir = temp.path().join(".ac");
@@ -6265,12 +6533,48 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     }
 
     #[test]
+    fn atomic_context_publication_captures_clock_after_replace() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&path, "old contents").expect("write old target");
+        let expected = fixed_publication_time();
+        let later = expected + chrono::Duration::seconds(30);
+        let observed_time = std::cell::Cell::new(expected);
+        let clock_sampled = std::cell::Cell::new(false);
+        let mut clock = || {
+            assert_eq!(
+                std::fs::read_to_string(&path).expect("read target at commit clock"),
+                "new contents",
+                "the target replacement must commit before the clock sample"
+            );
+            clock_sampled.set(true);
+            observed_time.get()
+        };
+
+        let published_at =
+            atomically_replace_context_template_with(&path, "new contents", &mut clock, |parent| {
+                assert_eq!(parent, temp.path());
+                assert!(
+                    clock_sampled.get(),
+                    "the commit-point clock must be sampled before parent sync"
+                );
+                observed_time.set(later);
+            })
+            .expect("replace target");
+
+        assert_eq!(published_at, expected);
+        assert_eq!(observed_time.get(), later);
+        assert_no_context_template_temp_leftover(temp.path());
+    }
+
+    #[test]
     fn atomically_replace_context_template_writes_absent_and_existing_dest() {
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let mut clock = chrono::Utc::now;
 
         // Absent destination: plain create + rename publish.
-        atomically_replace_context_template(&path, "first contents")
+        atomically_replace_context_template(&path, "first contents", &mut clock)
             .expect("replace over absent dest");
         assert_eq!(
             std::fs::read_to_string(&path).expect("read first"),
@@ -6278,7 +6582,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         );
 
         // Existing destination: exercises the Windows ReplaceFileW branch.
-        atomically_replace_context_template(&path, "second contents")
+        atomically_replace_context_template(&path, "second contents", &mut clock)
             .expect("replace over existing dest");
         assert_eq!(
             std::fs::read_to_string(&path).expect("read second"),
@@ -6295,7 +6599,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         // helper returns Err and never creates the directory or a temp file.
         let missing_dir = temp.path().join("does-not-exist");
         let path = missing_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
-        let result = atomically_replace_context_template(&path, get_default_agent_template());
+        let mut clock = chrono::Utc::now;
+        let result =
+            atomically_replace_context_template(&path, get_default_agent_template(), &mut clock);
         assert!(
             result.is_err(),
             "expected Err when the parent dir is missing"
@@ -6683,19 +6989,26 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         let cwd = path_string(&matrix_root);
 
-        let on = materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], false, true, None)
-            .expect("materialize ON")
-            .expect("context path");
+        let on =
+            materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], false, true, None)
+                .expect("materialize ON")
+                .expect("context path");
         let on_content = std::fs::read_to_string(&on).expect("read ON context");
         assert!(on_content.contains("## Self-Maintenance (auto self-handoff-and-clear)"));
         assert!(on_content.contains("reaches 3 such lines"));
         assert!(on_content.contains("max 240 char forgotten summary"));
         assert!(on_content.contains("closed background"));
 
-        let off =
-            materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], false, false, None)
-                .expect("materialize OFF")
-                .expect("context path");
+        let off = materialize_agent_context_file_with_filename(
+            &cwd,
+            "CLAUDE.md",
+            &[],
+            false,
+            false,
+            None,
+        )
+        .expect("materialize OFF")
+        .expect("context path");
         let off_content = std::fs::read_to_string(&off).expect("read OFF context");
         assert!(!off_content.contains("## Self-Maintenance"));
         assert!(!off_content.contains("max 240 char forgotten summary"));
@@ -6719,9 +7032,10 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         .expect("write legacy coordinator template");
         let cwd = path_string(&matrix_root);
 
-        let on = materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], true, true, None)
-            .expect("materialize ON")
-            .expect("context path");
+        let on =
+            materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], true, true, None)
+                .expect("materialize ON")
+                .expect("context path");
         let on_content = std::fs::read_to_string(&on).expect("read ON context");
         assert_eq!(
             on_content.matches("## Self-Maintenance").count(),
@@ -6741,9 +7055,10 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             "coordinator body preserved"
         );
 
-        let off = materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], true, false, None)
-            .expect("materialize OFF")
-            .expect("context path");
+        let off =
+            materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], true, false, None)
+                .expect("materialize OFF")
+                .expect("context path");
         let off_content = std::fs::read_to_string(&off).expect("read OFF context");
         assert_eq!(
             off_content.matches("## Self-Maintenance").count(),
@@ -6839,6 +7154,116 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     }
 
     #[test]
+    fn create_only_publication_captures_clock_before_temp_cleanup() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let expected = fixed_publication_time();
+        let mut clock_called = false;
+        let mut clock = || {
+            clock_called = true;
+            assert!(
+                path.is_file(),
+                "the final target must exist before publication time is captured"
+            );
+            let temp_still_present = std::fs::read_dir(temp.path())
+                .expect("read template directory")
+                .filter_map(Result::ok)
+                .any(|entry| {
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    name.starts_with(".Context.AgentsCommander.md") && name.ends_with(".tmp")
+                });
+            assert!(
+                temp_still_present,
+                "the winning temp must remain linked until after the clock sample"
+            );
+            expected
+        };
+
+        let outcome = write_template_if_missing_with_clock(&path, "complete", &mut clock)
+            .expect("publish missing template");
+
+        assert_eq!(
+            outcome,
+            CreateOnlyPublication::Published {
+                published_at: expected
+            }
+        );
+        assert!(clock_called);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read target"),
+            "complete"
+        );
+        assert_no_context_template_temp_leftover(temp.path());
+    }
+
+    #[test]
+    fn create_only_lost_race_is_already_present_without_a_clock_sample() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let mut clock_calls = 0_u32;
+        let mut clock = || {
+            clock_calls += 1;
+            fixed_publication_time()
+        };
+
+        let outcome = write_template_if_missing_with::<std::fs::File, _>(
+            &path,
+            "losing contents",
+            |temp_path| {
+                let file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(temp_path)?;
+                std::fs::write(&path, "winning contents")?;
+                Ok(file)
+            },
+            &mut clock,
+        )
+        .expect("lost create race is not an error");
+
+        assert_eq!(outcome, CreateOnlyPublication::AlreadyPresent);
+        assert_eq!(
+            clock_calls, 0,
+            "a lost race must not sample publication time"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read winning target"),
+            "winning contents"
+        );
+        assert_no_context_template_temp_leftover(temp.path());
+    }
+
+    #[test]
+    fn managed_read_never_falls_back_to_an_ungated_direct_create() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        let target = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+
+        for synchronization in [Err("injected synchronization failure".to_string()), Ok(())] {
+            let mut on_publication =
+                |_: &'static str,
+                 _: crate::config::seeded_context_templates::ContextPublication| {};
+            let result = read_or_create_context_template_with_sync(
+                &path_string(&matrix_root),
+                GLOBAL_CONTEXT_TEMPLATE_FILENAME,
+                get_default_agent_template(),
+                &mut on_publication,
+                |_, _, _| synchronization,
+            )
+            .expect("managed fallback remains fail-soft");
+
+            assert_eq!(result, None);
+            assert!(
+                !target.exists(),
+                "managed sync failure or skip must use the in-memory default"
+            );
+        }
+    }
+
+    #[test]
     fn missing_templates_are_created_and_used_during_regeneration() {
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace_dir = temp.path().join(".ac");
@@ -6891,6 +7316,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             ),
         ] {
             let path = workspace_dir.join(filename);
+            let mut clock = chrono::Utc::now;
             let err = write_template_if_missing_with::<PartialFailWriter, _>(
                 &path,
                 default_content,
@@ -6905,6 +7331,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
                         fail_after_bytes: 8,
                     })
                 },
+                &mut clock,
             )
             .expect_err("injected partial write must fail");
 
@@ -6964,6 +7391,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let writer_release_barrier = Arc::clone(&release_barrier);
         let writer_path = path.clone();
         let writer = std::thread::spawn(move || {
+            let mut clock = chrono::Utc::now;
             write_template_if_missing_with::<BlockingPartialWriter, _>(
                 &writer_path,
                 get_default_agent_template(),
@@ -6980,6 +7408,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
                         release_barrier: writer_release_barrier,
                     })
                 },
+                &mut clock,
             )
         });
 
@@ -8379,7 +8808,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let skill_dir = root.join(SKILLS_DIR_NAME).join("agency-agents-roles");
         std::fs::create_dir_all(&skill_dir).expect("create skill dir");
 
-        let broken = crate::config::root_agent::agency_pre_yaml_fix_snapshot().replace('\n', "\r\n");
+        let broken =
+            crate::config::root_agent::agency_pre_yaml_fix_snapshot().replace('\n', "\r\n");
         std::fs::write(skill_dir.join("SKILL.md"), &broken).expect("seed the broken skill");
 
         crate::config::root_agent::ensure_default_root_agent_skills_at(&root)
@@ -8458,8 +8888,11 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         .expect("write valid skill");
         let broken_skill = old_matrix.join(SKILLS_DIR_NAME).join("delta-skill");
         std::fs::create_dir_all(&broken_skill).expect("create broken skill");
-        std::fs::write(broken_skill.join(SKILL_MD_FILENAME), "---\nname: [unclosed\n---\n\nbody\n")
-            .expect("write broken skill");
+        std::fs::write(
+            broken_skill.join(SKILL_MD_FILENAME),
+            "---\nname: [unclosed\n---\n\nbody\n",
+        )
+        .expect("write broken skill");
 
         // The old-generation embedded section: frozen OLD intro + current tail.
         let current_render =
@@ -8561,9 +8994,11 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         .expect("resolve context");
         assert!(!rendered.is_empty());
         let on_disk = std::fs::read_to_string(&template_path).expect("read template");
-        assert_eq!(on_disk, legacy, "edited legacy file must be preserved, never healed");
+        assert_eq!(
+            on_disk, legacy,
+            "edited legacy file must be preserved, never healed"
+        );
     }
-
 }
 
 /// #1005 token-accounting harness (plan section 7). Renders the three boot
@@ -8626,7 +9061,9 @@ mod token_accounting {
     /// replaced by a fixed fake path before counting.
     fn root_skills_section_fixed() -> String {
         let temp = tempfile::tempdir().expect("tempdir");
-        let root = temp.path().join(crate::config::root_agent::ROOT_AGENT_DIR_NAME);
+        let root = temp
+            .path()
+            .join(crate::config::root_agent::ROOT_AGENT_DIR_NAME);
         for (dir, content) in [
             (
                 "role-skill-boundary-audit",
@@ -8652,8 +9089,12 @@ mod token_accounting {
         let skills = synthetic_replica_skills_section();
 
         // Per-block rows (replica-shaped inputs).
-        let values =
-            super::default_context_dynamic_values(FAKE_REPLICA_ROOT, Some(FAKE_MATRIX_ROOT), &skills, false);
+        let values = super::default_context_dynamic_values(
+            FAKE_REPLICA_ROOT,
+            Some(FAKE_MATRIX_ROOT),
+            &skills,
+            false,
+        );
         let write_restrictions = super::render_write_restrictions_block(FAKE_REPLICA_ROOT, &values);
         let messaging = super::render_inter_agent_messaging_block(&values);
         let workspace_repos =
@@ -8664,10 +9105,19 @@ mod token_accounting {
         println!();
         println!("| item | chars | ~tokens |");
         println!("|---|---|---|");
-        print_row("block: write restrictions (A2, replica)", write_restrictions.len());
-        print_row("block: inter-agent messaging (A3, replica)", messaging.len());
+        print_row(
+            "block: write restrictions (A2, replica)",
+            write_restrictions.len(),
+        );
+        print_row(
+            "block: inter-agent messaging (A3, replica)",
+            messaging.len(),
+        );
         print_row("block: CLI context (A4a)", super::DEFAULT_CLI_CONTEXT.len());
-        print_row("block: session credentials (A4b)", super::DEFAULT_SESSION_CREDENTIALS.len());
+        print_row(
+            "block: session credentials (A4b)",
+            super::DEFAULT_SESSION_CREDENTIALS.len(),
+        );
         print_row(
             "block: delegated task reporting (A4c)",
             super::DEFAULT_DELEGATED_TASK_REPORTING.len(),
@@ -8680,7 +9130,10 @@ mod token_accounting {
             "block: workspace repos header (A6, root variant)",
             super::workspace_repos_header(true).len(),
         );
-        print_row("block: skills section (A5, synthetic 2 skills)", skills.len());
+        print_row(
+            "block: skills section (A5, synthetic 2 skills)",
+            skills.len(),
+        );
         print_row("block: workspace repos (A6, empty)", workspace_repos.len());
         print_row(
             "block: self-maintenance (A8)",
@@ -8713,9 +9166,15 @@ mod token_accounting {
 
         print_row("profile: WG replica", replica.len());
         print_row("profile: coordinator", coordinator.len());
-        print_row("profile: coordinator + auto_self_clear", coordinator_auto_clear.len());
+        print_row(
+            "profile: coordinator + auto_self_clear",
+            coordinator_auto_clear.len(),
+        );
         print_row("profile: Root Agent", root.len());
-        print_row("profile: Root Agent + auto_self_clear", root_auto_clear.len());
+        print_row(
+            "profile: Root Agent + auto_self_clear",
+            root_auto_clear.len(),
+        );
 
         // Supplement rows (G4): boot-invisible durables.
         let b1 = crate::config::root_agent::default_root_context_template();
