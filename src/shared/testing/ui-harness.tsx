@@ -6,7 +6,9 @@ import type {
   AppSettings,
   BridgeInfo,
   CodingAgentProfilesConfig,
+  ProjectPathResolution,
   Session,
+  SettingsSnapshot,
 } from "../types";
 import { FakeTransport } from "./fake-transport";
 import { toastStore } from "../stores/toasts";
@@ -174,6 +176,31 @@ export function baseSettings(overrides: Partial<AppSettings> = {}): AppSettings 
     logLevel: null,
     ...overrides,
     codingAgentProfiles: overrides.codingAgentProfiles ?? defaultCodingAgentProfiles(),
+  };
+}
+
+// #1077: baseSettings() stays legacy-shaped (no report) so existing suites keep
+// exercising the absent-report legacy fallback. These focused factories build
+// the new snapshot/report shape only where a test needs it.
+export function projectPathResolution(
+  overrides: Partial<ProjectPathResolution> = {}
+): ProjectPathResolution {
+  return {
+    activeRegistrationCount: 0,
+    archivedRegistrationCount: 0,
+    issues: [],
+    reconciliationError: null,
+    ...overrides,
+  };
+}
+
+export function settingsSnapshot(
+  settingsOverrides: Partial<AppSettings> = {},
+  resolutionOverrides: Partial<ProjectPathResolution> = {}
+): SettingsSnapshot {
+  return {
+    ...baseSettings(settingsOverrides),
+    projectPathResolution: projectPathResolution(resolutionOverrides),
   };
 }
 

@@ -486,6 +486,112 @@ export interface AppSettings {
   screenshotCaptureHotkey?: string;
 }
 
+// ── #1077 Portable dual project paths: get_settings resolution report ────────
+// These mirror the serialize-only Rust wire shapes in
+// `src-tauri/src/commands/config.rs` (SettingsSnapshot / ProjectPathIssue /
+// Raw{String,Json}FieldState / ProjectPathReconciliationError), all camelCase.
+// The report rides on SettingsAPI.get() but is transport-untrusted: it MUST be
+// runtime-validated at its consumption boundary (see sidebar/stores/project.ts),
+// never trusted on the strength of this transport generic alone.
+
+/** A recursive JSON value: the shape of a wrong-typed structural candidate
+ *  field carried through the report. Validated iteratively, never via `any`. */
+export type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
+/** Tagged raw string field state. `present: false` always pairs with
+ *  `value: null`; `present: true, value: null` is an explicit JSON null. */
+export interface RawStringFieldState {
+  present: boolean;
+  value: string | null;
+}
+
+/** Tagged raw JSON field state (needed for wrong-typed structural fields and
+ *  absent-vs-null parity). Same absent/null invariant as RawStringFieldState. */
+export interface RawJsonFieldState {
+  present: boolean;
+  value: JsonValue | null;
+}
+
+export type ReconciliationStage = "read" | "write";
+
+/** Transport/I-O reconciliation error only; structural/candidate issues live in
+ *  `issues`, never here. `retryable` is always `true`. */
+export interface ProjectPathReconciliationError {
+  stage: ReconciliationStage;
+  message: string;
+  retryable: true;
+}
+
+export type ProjectPathIssueSource =
+  | "projectPath"
+  | "projectPaths"
+  | "archivedProjectPaths";
+
+/** Both stored locations resolved to different directories, so neither was
+ *  selected. Both raw candidates and both resolved paths are always present. */
+export interface ProjectPathConflictIssue {
+  kind: "conflict";
+  id: string;
+  source: ProjectPathIssueSource;
+  index?: number;
+  absoluteCandidate: string;
+  instanceRelativeCandidate: string;
+  absoluteResolvedPath: string;
+  instanceRelativeResolvedPath: string;
+  message: string;
+}
+
+/** Every candidate side resolved to a definite NotFound. */
+export interface ProjectPathMissingIssue {
+  kind: "missing";
+  id: string;
+  source: ProjectPathIssueSource;
+  index?: number;
+  absoluteCandidate: RawStringFieldState;
+  instanceRelativeCandidate: RawStringFieldState;
+  absoluteResolvedPath: string | null;
+  instanceRelativeResolvedPath: string | null;
+  message: string;
+}
+
+/** Malformed syntax/type, permission/I-O failure, non-directory, missing `.ac`,
+ *  structural corruption, non-UTF-8, quarantine, or identity failure. */
+export interface ProjectPathInvalidIssue {
+  kind: "invalid";
+  id: string;
+  source: ProjectPathIssueSource;
+  index?: number;
+  absoluteCandidate: RawJsonFieldState;
+  instanceRelativeCandidate: RawJsonFieldState;
+  absoluteResolvedPath: string | null;
+  instanceRelativeResolvedPath: string | null;
+  reason: string;
+}
+
+export type ProjectPathIssue =
+  | ProjectPathConflictIssue
+  | ProjectPathMissingIssue
+  | ProjectPathInvalidIssue;
+
+export interface ProjectPathResolution {
+  activeRegistrationCount: number;
+  archivedRegistrationCount: number;
+  issues: ProjectPathIssue[];
+  reconciliationError: ProjectPathReconciliationError | null;
+}
+
+/** The flattened `get_settings` response: the runtime-selected AppSettings plus
+ *  the structured resolution report. */
+export interface SettingsSnapshot extends AppSettings {
+  projectPathResolution: ProjectPathResolution;
+}
+
 export interface UpdateInfo {
   currentVersion: string;
   latestVersion: string;

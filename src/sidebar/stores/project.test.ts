@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AcAgentReplica, AcLoopSummary, AcWorkgroup } from "../../shared/types";
+import type {
+  AcAgentReplica,
+  AcLoopSummary,
+  AcWorkgroup,
+  ProjectPathConflictIssue,
+  ProjectPathResolution,
+} from "../../shared/types";
+import { toastStore } from "../../shared/stores/toasts";
 
 const m = vi.hoisted(() => ({
   open: vi.fn(),
@@ -129,6 +136,206 @@ describe("projectStore", () => {
 
     expect(projectStore.lastLoadError).toBeNull();
     expect(projectStore.initState).toEqual({ attempted: false, pathCount: 0 });
+  });
+
+  // #1077 — the get_settings resolution report drives conflict toasts, fail-
+  // closed handling of a malformed report, and actionable active-load status.
+  describe("initFromSettings resolution report (#1077)", () => {
+    const CONFLICT_ID_A = "a".repeat(64);
+    const CONFLICT_ID_B = "b".repeat(64);
+
+    function report(overrides: Partial<ProjectPathResolution> = {}): ProjectPathResolution {
+      return {
+        activeRegistrationCount: 0,
+        archivedRegistrationCount: 0,
+        issues: [],
+        reconciliationError: null,
+        ...overrides,
+      };
+    }
+
+    function conflict(
+      overrides: Partial<ProjectPathConflictIssue> = {}
+    ): ProjectPathConflictIssue {
+      return {
+        kind: "conflict",
+        id: CONFLICT_ID_A,
+        source: "projectPaths",
+        absoluteCandidate: "C:\\bundle\\alpha",
+        instanceRelativeCandidate: "..\\alpha",
+        absoluteResolvedPath: "C:\\abs\\alpha",
+        instanceRelativeResolvedPath: "D:\\rel\\alpha",
+        message: "backend message",
+        ...overrides,
+      };
+    }
+
+    beforeEach(() => {
+      toastStore.clear();
+    });
+
+    afterEach(() => {
+      toastStore.clear();
+    });
+
+    it("surfaces one sticky error toast for a conflict-only startup and makes zero project calls", async () => {
+      const errorSpy = vi.spyOn(toastStore, "error");
+
+      await projectStore.initFromSettings([], null, [], report({
+        activeRegistrationCount: 1,
+        issues: [conflict()],
+      }));
+
+      expect(m.open).not.toHaveBeenCalled();
+      expect(m.discover).not.toHaveBeenCalled();
+      expect(projectStore.projects).toHaveLength(0);
+
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      const [message, opts] = errorSpy.mock.calls[0];
+      expect(message).toContain("C:\\abs\\alpha");
+      expect(message).toContain("D:\\rel\\alpha");
+      expect(opts).toEqual({ durationMs: null });
+      expect(toastStore.items).toHaveLength(1);
+      expect(toastStore.items[0].kind).toBe("error");
+
+      // Not misreported as pristine: the merged active count is retained, and an
+      // actionable active blocking issue survives.
+      expect(projectStore.initState).toEqual({ attempted: true, pathCount: 1 });
+      expect(projectStore.lastLoadError).toContain("C:\\abs\\alpha");
+    });
+
+    it("opens and discovers only the selected project when a conflict coexists", async () => {
+      const errorSpy = vi.spyOn(toastStore, "error");
+
+      await projectStore.initFromSettings([PROJECT_PATH], null, [], report({
+        activeRegistrationCount: 2,
+        issues: [conflict()],
+      }));
+
+      expect(m.open).toHaveBeenCalledTimes(1);
+      expect(m.open).toHaveBeenCalledWith(PROJECT_PATH);
+      expect(m.discover).toHaveBeenCalledTimes(1);
+      expect(projectStore.projects).toHaveLength(1);
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("emits exactly one toast per conflict id across repeated initialization", async () => {
+      const errorSpy = vi.spyOn(toastStore, "error");
+      const snapshot = report({ activeRegistrationCount: 1, issues: [conflict()] });
+
+      await projectStore.initFromSettings([], null, [], snapshot);
+      await projectStore.initFromSettings([], null, [], snapshot);
+
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("emits one toast per distinct conflict id", async () => {
+      const errorSpy = vi.spyOn(toastStore, "error");
+
+      await projectStore.initFromSettings([], null, [], report({
+        activeRegistrationCount: 2,
+        issues: [conflict({ id: CONFLICT_ID_A }), conflict({ id: CONFLICT_ID_B })],
+      }));
+
+      expect(errorSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it("escapes control and bidi characters in the toast without truncating printable path text", async () => {
+      const errorSpy = vi.spyOn(toastStore, "error");
+      const longTail = "verylongsegmentthatmustnotbetruncated";
+      const rlo = String.fromCodePoint(0x202e);
+      await projectStore.initFromSettings([], null, [], report({
+        activeRegistrationCount: 1,
+        issues: [
+          conflict({
+            // A newline (U+000A) and an RLO bidi override (U+202E) inside a POSIX
+            // filename must be neutralised so they cannot forge another label.
+            absoluteResolvedPath: `/tmp/a\nAbsolute path: /forged/${longTail}`,
+            instanceRelativeResolvedPath: `/x/${rlo}evil`,
+          }),
+        ],
+      }));
+
+      const [message] = errorSpy.mock.calls[0];
+      expect(message).toContain("\\u{000A}");
+      expect(message).toContain("\\u{202E}");
+      // The printable tail is preserved (never truncated) ...
+      expect(message).toContain(longTail);
+      // ... and the raw newline never produced a second real "Absolute path:" line.
+      expect(message).not.toContain("\nAbsolute path: /forged");
+    });
+
+    it("retains an actionable lastLoadError for an active missing issue", async () => {
+      await projectStore.initFromSettings([], null, [], report({
+        activeRegistrationCount: 1,
+        issues: [
+          {
+            kind: "missing",
+            id: CONFLICT_ID_A,
+            source: "projectPaths",
+            absoluteCandidate: { present: true, value: "C:\\gone" },
+            instanceRelativeCandidate: { present: false, value: null },
+            absoluteResolvedPath: "C:\\gone",
+            instanceRelativeResolvedPath: null,
+            message: "This project directory could not be found.",
+          },
+        ],
+      }));
+
+      expect(projectStore.lastLoadError).toBe("This project directory could not be found.");
+    });
+
+    it("does not claim an active load failure for an archived-only issue", async () => {
+      const errorSpy = vi.spyOn(toastStore, "error");
+
+      await projectStore.initFromSettings([], null, [], report({
+        archivedRegistrationCount: 1,
+        issues: [conflict({ source: "archivedProjectPaths" })],
+      }));
+
+      // The archived conflict is still surfaced, but it is not an active blocker.
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      expect(projectStore.lastLoadError).toBeNull();
+    });
+
+    it("still loads the returned paths under the legacy absent-report fallback", async () => {
+      await projectStore.initFromSettings([PROJECT_PATH], null, []);
+
+      expect(m.open).toHaveBeenCalledWith(PROJECT_PATH);
+      expect(projectStore.projects).toHaveLength(1);
+      expect(projectStore.initState).toEqual({ attempted: true, pathCount: 1 });
+    });
+
+    it("fails closed on a present-but-malformed report, loading nothing", async () => {
+      const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const badReports: unknown[] = [
+        null,
+        42,
+        { activeRegistrationCount: -1, archivedRegistrationCount: 0, issues: [], reconciliationError: null },
+        { activeRegistrationCount: 1.5, archivedRegistrationCount: 0, issues: [], reconciliationError: null },
+        { activeRegistrationCount: 0, archivedRegistrationCount: 0, issues: [{ kind: "unknown", id: CONFLICT_ID_A, source: "projectPaths" }], reconciliationError: null },
+        { activeRegistrationCount: 0, archivedRegistrationCount: 0, issues: [{ ...conflict(), id: "SHORT" }], reconciliationError: null },
+        { activeRegistrationCount: 0, archivedRegistrationCount: 0, issues: [{ ...conflict(), id: "A".repeat(64) }], reconciliationError: null },
+        { activeRegistrationCount: 0, archivedRegistrationCount: 0, issues: [{ kind: "missing", id: CONFLICT_ID_A, source: "projectPaths", absoluteCandidate: { present: false, value: "not-null" }, instanceRelativeCandidate: { present: false, value: null }, absoluteResolvedPath: null, instanceRelativeResolvedPath: null, message: "m" }], reconciliationError: null },
+        { activeRegistrationCount: 0, archivedRegistrationCount: 0, issues: [{ kind: "invalid", id: CONFLICT_ID_A, source: "projectPaths", absoluteCandidate: { present: true, value: Number.NaN }, instanceRelativeCandidate: { present: false, value: null }, absoluteResolvedPath: null, instanceRelativeResolvedPath: null, reason: "r" }], reconciliationError: null },
+        { activeRegistrationCount: 0, archivedRegistrationCount: 0, issues: [], reconciliationError: { stage: "read", message: "m", retryable: false } },
+      ];
+
+      try {
+        for (const bad of badReports) {
+          vi.clearAllMocks();
+          projectStore.clear();
+          await projectStore.initFromSettings([PROJECT_PATH], null, [], bad);
+
+          expect(m.open, `report ${JSON.stringify(bad)}`).not.toHaveBeenCalled();
+          expect(projectStore.projects).toHaveLength(0);
+          expect(projectStore.lastLoadError).toContain("could not be read");
+          expect(projectStore.initState).toEqual({ attempted: true, pathCount: 0 });
+        }
+      } finally {
+        errorLog.mockRestore();
+      }
+    });
   });
 
   // #748 — identity preservation. Object references drive ProjectPanel's
