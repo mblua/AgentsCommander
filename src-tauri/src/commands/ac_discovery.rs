@@ -2054,15 +2054,28 @@ async fn mutate_project_paths_with_settings_path<T>(
 ) -> Result<T, String> {
     let mut s = settings.write().await;
     // #778: reconcile project_paths from disk BEFORE the upsert so a concurrent
-    // CLI append is folded in, not clobbered, then write the deliberate list
-    // verbatim (project_paths is disk-authoritative under Design S). Aborts on a
-    // non-NotFound read error (G2) rather than registering against a stale list.
+    // CLI append is folded in, not clobbered. The raw three-field refresh (not
+    // the validating decoder) keeps a stored-but-missing project in the list so
+    // remove/archive of a vanished directory still matches it lexically (§3.7).
+    // Aborts on a non-NotFound read error (G2) or a wrong-typed project field.
     if let Some(path) = settings_path {
         crate::config::settings::refresh_project_paths_from_path(&mut s, path)?;
     } else {
         crate::config::settings::refresh_project_paths_from_disk(&mut s)?;
     }
+    // #1077: structural project corruption (from the startup decode) blocks any
+    // list mutation; the three-field read above independently aborts on a
+    // wrong-typed primary field.
+    if crate::config::settings::project_state_has_structural(&s) {
+        return Err(
+            "settings.json has malformed project metadata; refusing to modify the project list. Fix or remove the corrupt project fields first.".to_string(),
+        );
+    }
     let result = mutate(&mut s)?;
+    // #1077: rebuild the hidden state to match the mutated runtime lists,
+    // retaining any preserved conflict/missing records, so the reconcile write
+    // emits the new selection plus those raw records (never dropping a project).
+    crate::config::settings::resync_project_state_from_runtime(&mut s);
     let snapshot = s.clone();
     if let Some(path) = settings_path {
         crate::config::settings::save_settings_with_project_paths_to_path(&snapshot, path)?;

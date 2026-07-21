@@ -106,6 +106,14 @@ async fn auto_unarchive_for_activation<R: tauri::Runtime>(
         })?;
 
     crate::config::settings::refresh_project_paths_from_disk(&mut s)?;
+    // #1077: structural project-metadata corruption cannot be mutated; refuse
+    // the auto-unarchive rather than normalizing a corrupt list.
+    if crate::config::settings::project_state_has_structural(&s) {
+        return Err(format!(
+            "Cannot start a session in archived project '{}': settings.json has malformed project metadata. Fix or remove the corrupt project fields first.",
+            folder_name(root)
+        ));
+    }
     let reg = match auto_unarchive_registration(&mut s, root).map_err(|e| {
         format!(
             "Cannot start a session in archived project '{}': {}. Open Archived Projects to restore it, or remove it from the list.",
@@ -117,6 +125,10 @@ async fn auto_unarchive_for_activation<R: tauri::Runtime>(
         None => return Ok(()),
     };
 
+    // #1077: rebuild the hidden pair state from the mutated runtime lists so the
+    // reconcile serializer records the unarchived pair (with its companion)
+    // instead of copying the stale disk list and dropping the move.
+    crate::config::settings::resync_project_state_from_runtime(&mut s);
     let snapshot = s.clone();
     crate::config::settings::save_settings_with_project_paths(&snapshot)?;
     drop(s);

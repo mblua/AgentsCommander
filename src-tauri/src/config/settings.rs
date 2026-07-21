@@ -2426,6 +2426,86 @@ fn synthesize_legacy_state(settings: &AppSettings) -> ProjectPathPersistenceStat
     }
 }
 
+/// A selected pair for a runtime path, canonicalizing so the reconcile write can
+/// encode a real instance-relative companion (a non-existent path yields a null
+/// companion).
+fn resynced_selected_pair(source: ProjectSource, index: usize, path: &str) -> ResolvedPair {
+    let canonical_raw = std::fs::canonicalize(path)
+        .ok()
+        .and_then(|c| c.to_str().map(str::to_string));
+    ResolvedPair {
+        source,
+        index: Some(index),
+        raw_absolute: RawStringField::string(path),
+        raw_relative: RawStringField::absent(),
+        absolute_side: absent_side(),
+        relative_side: absent_side(),
+        selected: Some(path.to_string()),
+        selected_canonical_raw: canonical_raw,
+        selected_identity: None,
+        issue: None,
+        repair: RepairKind::PopulateCompanion,
+    }
+}
+
+/// #1077: after an explicit project mutation updated the three runtime lists,
+/// rebuild the hidden state to match while retaining any unresolved
+/// (conflict/missing/invalid) pairs from the pre-mutation state value-for-value,
+/// so a register/remove/archive/unarchive never drops a preserved conflict or
+/// missing record. The result is runtime-authoritative: a Reconcile write emits
+/// the runtime selection plus the retained raw records. Callers must reject a
+/// structurally-corrupt or conflict-scoped mutation BEFORE calling this.
+pub(crate) fn resync_project_state_from_runtime(settings: &mut AppSettings) {
+    let old = settings.project_path_state.clone();
+    let retained_active: Vec<ResolvedPair> = old
+        .active_pairs()
+        .iter()
+        .filter(|p| p.issue.is_some())
+        .cloned()
+        .collect();
+    let retained_archived: Vec<ResolvedPair> = old
+        .archived_pairs()
+        .iter()
+        .filter(|p| p.issue.is_some())
+        .cloned()
+        .collect();
+
+    let mut active: Vec<ResolvedPair> = settings
+        .project_paths
+        .iter()
+        .enumerate()
+        .map(|(i, p)| resynced_selected_pair(ProjectSource::ProjectPaths, i, p))
+        .collect();
+    active.extend(retained_active);
+    let active_registration_count = active.len();
+
+    let mut archived: Vec<ResolvedPair> = settings
+        .archived_project_paths
+        .iter()
+        .enumerate()
+        .map(|(i, p)| resynced_selected_pair(ProjectSource::ArchivedProjectPaths, i, p))
+        .collect();
+    archived.extend(retained_archived);
+    let archived_registration_count = archived.len();
+
+    let mut pairs = active;
+    pairs.extend(archived);
+
+    settings.project_path_state = Arc::new(ProjectPathPersistenceState {
+        pairs,
+        selected_head: settings.project_paths.first().cloned(),
+        active_registration_count,
+        archived_registration_count,
+        active_companion_present: old.active_companion_present,
+        archived_companion_present: old.archived_companion_present,
+        has_genuine_singular: false,
+        active_reconcile_eligible: false,
+        archived_reconcile_eligible: false,
+        structural_issues: old.structural_issues.clone(),
+        runtime_authoritative: true,
+    });
+}
+
 /// Fresh-read the whole disk object for a project-preserving/reconciling write.
 /// `None` = absent (materialize). `Err` = present-but-unreadable/invalid JSON,
 /// non-object root, or non-project settings that fail to deserialize — in which
@@ -2748,6 +2828,12 @@ pub(crate) fn refresh_project_paths_from_path(
         }
     }
     Ok(())
+}
+
+/// Whether the current hidden project state carries structural corruption, which
+/// must block any explicit project-list mutation (§4.2).
+pub(crate) fn project_state_has_structural(settings: &AppSettings) -> bool {
+    settings.project_path_state.has_structural()
 }
 
 /// Save settings to the app config directory (see config_dir()).
@@ -4677,6 +4763,37 @@ mod tests {
             lists.archived_project_paths,
             Some(vec!["Archived".to_string()])
         );
+    }
+
+    #[test]
+    fn resync_persists_mutation_against_decoded_state() {
+        // Regression: a mutator that changes only the runtime lists against a
+        // DECODED (non-synthesized) hidden state must resync so the reconcile
+        // write records the new project instead of copying the stale disk list.
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let a = real_ac_project_path(temp.path(), "A");
+        let b = real_ac_project_path(temp.path(), "B");
+        super::save_settings_to_path(&settings_with_project_paths(&[&a]), &path).unwrap();
+
+        // A decoded hidden state as the loader produces (runtime_authoritative=false).
+        let value = serde_json::json!({ "projectPaths": [a.clone()], "projectPath": a.clone() });
+        let state = super::decode_project_state(
+            value.as_object().unwrap(),
+            None,
+            &crate::config::projects::FsCandidateResolver,
+        );
+        assert!(!state.runtime_authoritative);
+        let mut settings = settings_with_project_paths(&[&a]);
+        settings.project_path_state = std::sync::Arc::new(state);
+
+        // Register B into the runtime list, then resync + reconcile-write.
+        settings.project_paths.push(b.clone());
+        super::resync_project_state_from_runtime(&mut settings);
+        super::save_settings_with_project_paths_to_path(&settings, &path).unwrap();
+
+        let lists = super::read_project_paths_from_disk(&path).unwrap().unwrap();
+        assert_eq!(lists.project_paths, vec![a, b]);
     }
 
     #[test]
