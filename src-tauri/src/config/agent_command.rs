@@ -41,6 +41,9 @@ pub struct AgentSpawnCommand {
     pub trusted_agent_id: String,
     pub trusted_agent_label: String,
     pub backend: AgentBackendConfig,
+    /// Filesystem preparation deferred until immediately before spawn. This is
+    /// private so callers cannot fabricate or mutate the resolution contract.
+    isolated_codex_home_to_prepare: Option<PathBuf>,
     /// #598 - resolved config-folder seed (pure path math; executed at the
     /// session chokepoint, never here). `None` when the agent has no active seed
     /// or the launch root is not an AC replica/root-agent.
@@ -467,6 +470,7 @@ struct ComputedCodexHome {
     generated_env: BTreeMap<String, String>,
     effective_codex_home: Option<PathBuf>,
     env_remove_keys: Vec<String>,
+    isolated_home_to_prepare: Option<PathBuf>,
 }
 
 fn compute_codex_home(
@@ -484,6 +488,7 @@ fn compute_codex_home(
             generated_env,
             effective_codex_home: None,
             env_remove_keys,
+            isolated_home_to_prepare: None,
         });
     }
 
@@ -493,18 +498,12 @@ fn compute_codex_home(
         let home = config_dir
             .join("codex-home")
             .join(sanitize_codex_home_id(&agent.id));
-        std::fs::create_dir_all(&home).map_err(|e| {
-            format!(
-                "Failed to create isolated CODEX_HOME '{}': {}",
-                home.display(),
-                e
-            )
-        })?;
         generated_env.insert("CODEX_HOME".to_string(), home.to_string_lossy().to_string());
         return Ok(ComputedCodexHome {
             generated_env,
-            effective_codex_home: Some(home),
+            effective_codex_home: Some(home.clone()),
             env_remove_keys,
+            isolated_home_to_prepare: Some(home),
         });
     }
 
@@ -514,6 +513,7 @@ fn compute_codex_home(
             generated_env,
             effective_codex_home: Some(path),
             env_remove_keys,
+            isolated_home_to_prepare: None,
         });
     }
     if let Some(value) = find_env_value(agent_env, "CODEX_HOME") {
@@ -522,6 +522,7 @@ fn compute_codex_home(
             generated_env,
             effective_codex_home: Some(path),
             env_remove_keys,
+            isolated_home_to_prepare: None,
         });
     }
     if let Ok(value) = std::env::var("CODEX_HOME") {
@@ -531,6 +532,7 @@ fn compute_codex_home(
                     generated_env,
                     effective_codex_home: Some(path),
                     env_remove_keys,
+                    isolated_home_to_prepare: None,
                 })
             }
             Err(e) => {
@@ -547,6 +549,7 @@ fn compute_codex_home(
         generated_env,
         effective_codex_home: None,
         env_remove_keys,
+        isolated_home_to_prepare: None,
     })
 }
 
@@ -761,7 +764,7 @@ fn normalize_launch_path_for_spawn(launch_path: Option<&Path>) -> Option<PathBuf
     launch_path.map(crate::path_utils::normalize_windows_verbatim_path_buf)
 }
 
-pub fn build_agent_spawn_command(
+pub(crate) fn resolve_agent_spawn_command(
     settings: &AppSettings,
     agent_id: &str,
     launch_path: Option<&Path>,
@@ -883,9 +886,6 @@ pub fn build_agent_spawn_command(
     )?;
     let computed_codex_home =
         compute_codex_home(agent, &shell, &shell_args, &agent_env, &profile_env)?;
-    // #576 follow-up: opencode exits 1 if OPENCODE_CONFIG_DIR is missing, so
-    // create it before spawn. Best-effort (never aborts the build); see fn docs.
-    ensure_opencode_config_dir(&shell, &shell_args, &agent_env, &profile_env);
     let child_env =
         merge_env_layers(&[&agent_env, &profile_env, &computed_codex_home.generated_env]);
 
@@ -943,8 +943,42 @@ pub fn build_agent_spawn_command(
         trusted_agent_id: agent.id.clone(),
         trusted_agent_label: agent.label.clone(),
         backend: agent.backend.clone(),
+        isolated_codex_home_to_prepare: computed_codex_home.isolated_home_to_prepare,
         seed,
     })
+}
+
+/// Perform the filesystem preparation carried by a read-only spawn resolution.
+/// Isolated CODEX_HOME creation is required; OpenCode configuration-directory
+/// creation preserves its existing best-effort policy.
+pub(crate) fn prepare_agent_spawn_command(command: &AgentSpawnCommand) -> Result<(), String> {
+    if let Some(home) = command.isolated_codex_home_to_prepare.as_ref() {
+        std::fs::create_dir_all(home).map_err(|e| {
+            format!(
+                "Failed to create isolated CODEX_HOME '{}': {}",
+                home.display(),
+                e
+            )
+        })?;
+    }
+    ensure_opencode_config_dir(
+        &command.shell,
+        &command.shell_args,
+        &command.agent_env,
+        &command.profile_env,
+    );
+    Ok(())
+}
+
+pub fn build_agent_spawn_command(
+    settings: &AppSettings,
+    agent_id: &str,
+    launch_path: Option<&Path>,
+    requested_profile: Option<&str>,
+) -> Result<AgentSpawnCommand, String> {
+    let command = resolve_agent_spawn_command(settings, agent_id, launch_path, requested_profile)?;
+    prepare_agent_spawn_command(&command)?;
+    Ok(command)
 }
 
 #[cfg(test)]
@@ -955,8 +989,9 @@ mod tests {
         build_agent_spawn_command, command_runs_opencode,
         default_instructions_filename_for_command, ensure_opencode_config_dir,
         find_opencode_config_dir, is_safe_instructions_filename, managed_instructions_filenames,
-        normalize_legacy_agent_command, profile_content_hash, resolve_instructions_filename,
-        resolve_target_filename, AgentSpawnCommand, OpencodeConfigDirOutcome,
+        normalize_legacy_agent_command, prepare_agent_spawn_command, profile_content_hash,
+        resolve_agent_spawn_command, resolve_instructions_filename, resolve_target_filename,
+        AgentSpawnCommand, OpencodeConfigDirOutcome,
     };
     use crate::config::coding_agent_profiles::ProfileResolution;
     use crate::config::settings::{
@@ -1123,6 +1158,7 @@ mod tests {
             trusted_agent_id: "codex".to_string(),
             trusted_agent_label: "codex".to_string(),
             backend: AgentBackendConfig::default(),
+            isolated_codex_home_to_prepare: None,
             seed: None,
         }
     }
@@ -1944,6 +1980,84 @@ mod tests {
 
         assert_eq!(outcome, OpencodeConfigDirOutcome::Failed);
         assert!(!target.exists());
+    }
+
+    #[test]
+    fn resolve_is_read_only_and_prepare_is_idempotent_for_opencode() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("resolved").join(".opencode");
+        let mut settings = AppSettings {
+            agents: vec![agent("opencode", "opencode")],
+            ..AppSettings::default()
+        };
+        settings
+            .coding_agent_profiles
+            .profiles_by_agent
+            .entry("opencode".to_string())
+            .or_default()
+            .insert(
+                "A".to_string(),
+                ProfileCellConfig {
+                    enabled: true,
+                    command: String::new(),
+                    env: opencode_env(&target.to_string_lossy()),
+                    notes: String::new(),
+                },
+            );
+
+        let spawn = resolve_agent_spawn_command(&settings, "opencode", None, Some("A")).unwrap();
+        assert!(
+            !target.exists(),
+            "read-only resolution must not create the directory"
+        );
+
+        prepare_agent_spawn_command(&spawn).unwrap();
+        assert!(target.is_dir());
+        prepare_agent_spawn_command(&spawn).unwrap();
+        assert!(target.is_dir(), "preparation must be idempotent");
+    }
+
+    #[test]
+    fn resolve_is_read_only_and_public_build_prepares_isolated_codex_home() {
+        let id = format!("codex-resolve-{}", uuid::Uuid::new_v4());
+        let mut codex = agent(&id, "codex");
+        codex.isolated_home = true;
+        let settings = AppSettings {
+            agents: vec![codex],
+            ..AppSettings::default()
+        };
+        let expected = crate::config::config_dir()
+            .unwrap()
+            .join("codex-home")
+            .join(super::sanitize_codex_home_id(&id));
+        let _ = std::fs::remove_dir_all(&expected);
+
+        let resolved = resolve_agent_spawn_command(&settings, &id, None, Some("A")).unwrap();
+        assert_eq!(
+            resolved.effective_codex_home.as_deref(),
+            Some(expected.as_path())
+        );
+        assert!(
+            !expected.exists(),
+            "read-only resolution must not create CODEX_HOME"
+        );
+
+        prepare_agent_spawn_command(&resolved).unwrap();
+        assert!(expected.is_dir());
+        prepare_agent_spawn_command(&resolved).unwrap();
+        assert!(expected.is_dir(), "preparation must be idempotent");
+        std::fs::remove_dir_all(&expected).unwrap();
+
+        let built = build_agent_spawn_command(&settings, &id, None, Some("A")).unwrap();
+        assert_eq!(
+            built.effective_codex_home.as_deref(),
+            Some(expected.as_path())
+        );
+        assert!(
+            expected.is_dir(),
+            "public build must retain preparation behavior"
+        );
+        std::fs::remove_dir_all(expected).unwrap();
     }
 
     #[test]

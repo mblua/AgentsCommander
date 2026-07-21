@@ -8,7 +8,7 @@ use crate::phone::types::OutboxMessage;
 #[derive(Args)]
 #[command(after_help = "\
 DELIVERY MODES:\n  \
-  wake            Inject into PTY. If no session exists, spawn a persistent one; if Exited, respawn. Always delivers.\n\n\
+  wake            File messages inject into PTY and can spawn or respawn a persistent session. Logical PTY actions are capability- and idle-gated and can be terminally rejected before spawn.\n\n\
 ROUTING: Before delivery, the CLI validates that the sender can reach the destination based on team \
 membership and coordinator rules (teams.json). If routing fails, the CLI exits immediately with code 1.\n\n\
 DISCOVERY: Use `list-peers-lean` to get valid agent names for --to. The \"name\" field in the JSON output \
@@ -52,9 +52,12 @@ pub struct SendArgs {
     #[arg(long)]
     pub get_output: bool,
 
-    /// Remote command to execute on the agent's PTY [possible values: clear, compact].
-    /// Not available from the Root Agent; Root Agent messaging is file-based.
-    /// The agent must be idle. Cannot be combined with --send
+    /// Logical PTY action [possible values: clear, compact]. `clear` starts a
+    /// fresh conversation: /new for an exact-stem direct Pi shell and /clear
+    /// for direct Claude/Codex/Gemini-family or Cursor agent shells. Pi compact
+    /// is unsupported. The mapped session must be idle; unsupported mappings
+    /// are terminally rejected before spawn. Not available from the Root Agent.
+    /// Cannot be combined with --send
     #[arg(long)]
     pub command: Option<String>,
 
@@ -997,6 +1000,31 @@ mod tests {
         assert_eq!(
             args.confirm_timeout, 90,
             "--timeout bounds the --get-output wait only; it must not override --confirm-timeout"
+        );
+    }
+
+    #[test]
+    fn send_help_documents_logical_actions_and_pi_mapping() {
+        use clap::CommandFactory;
+        let cmd = crate::cli::Cli::command();
+        let mut subcommand = cmd
+            .get_subcommands()
+            .find(|cmd| cmd.get_name() == "send")
+            .expect("send subcommand")
+            .clone();
+        let help = subcommand.render_long_help().to_string();
+
+        assert!(help.contains("Logical PTY action"), "{help}");
+        assert!(help.contains("clear"), "{help}");
+        assert!(help.contains("/new"), "{help}");
+        assert!(help.contains("/clear"), "{help}");
+        assert!(help.contains("exact-stem direct Pi shell"), "{help}");
+        assert!(help.contains("Pi compact"), "{help}");
+        assert!(help.contains("must be idle"), "{help}");
+        assert!(help.contains("terminally rejected before spawn"), "{help}");
+        assert!(
+            !help.contains("if Exited, respawn. Always delivers"),
+            "logical actions must not inherit an unconditional delivery promise: {help}"
         );
     }
 

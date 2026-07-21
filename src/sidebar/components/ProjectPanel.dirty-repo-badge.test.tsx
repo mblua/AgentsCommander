@@ -13,7 +13,9 @@ import {
 import { projectStore } from "../stores/project";
 import { replicaVolatileStore } from "../stores/replica-volatile";
 
-// #1028 - the repo badge's letters go red when that repo's worktree is dirty.
+// #1028/#1078 - the repo badge's letters go red when that repo has local work not
+// confirmed by cached origin tracking: a dirty worktree, but also a clean local-ahead
+// commit, a missing/gone origin target, or a detached HEAD.
 //
 // These render the real ProjectPanel through the FakeTransport harness and assert
 // the DOM, per the frontend-visual-verification discipline. They cover the CLASS and
@@ -130,7 +132,7 @@ describe("ProjectPanel dirty repo badge (#1028)", () => {
         // ADDITIVE variant: `.branch` must survive alongside it, or the badge loses
         // its background and the `.branch.dirty` rule stops matching at all.
         expect(badge.className).toBe("ac-discovery-badge branch dirty");
-        expect(badge.title).toBe(`${REPO_A} (uncommitted changes)`);
+        expect(badge.title).toBe(`${REPO_A} (local work not confirmed by cached origin tracking)`);
         expect(badge.textContent).toBe("AgentsCommander/main");
       });
     } finally {
@@ -219,7 +221,7 @@ describe("ProjectPanel dirty repo badge (#1028)", () => {
         expect(a.classList.contains("dirty")).toBe(false);
         expect(b.classList.contains("dirty")).toBe(true);
         expect(a.title).toBe(REPO_A);
-        expect(b.title).toBe(`${REPO_B} (uncommitted changes)`);
+        expect(b.title).toBe(`${REPO_B} (local work not confirmed by cached origin tracking)`);
       });
     } finally {
       rendered.cleanup();
@@ -249,7 +251,7 @@ describe("ProjectPanel dirty repo badge (#1028)", () => {
       await waitFor(() => {
         const badge = badgeIn(rendered.root, TREE, "dev-webpage-ui", 0, "AgentsCommander")!;
         expect(badge.classList.contains("dirty")).toBe(true);
-        expect(badge.title).toBe(`${REPO_A} (uncommitted changes)`);
+        expect(badge.title).toBe(`${REPO_A} (local work not confirmed by cached origin tracking)`);
       });
     } finally {
       rendered.cleanup();

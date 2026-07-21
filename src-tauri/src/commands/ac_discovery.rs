@@ -390,10 +390,12 @@ struct DiscoveryBranchPayload {
     /// to the previous repo list. A positional merge would then paint repo A's branch
     /// onto repo B, silently. Matching on the path cannot.
     repo_paths: Vec<String>,
-    /// #1028 - per-repo worktree-dirty, positionally parallel to `repo_paths` exactly as
-    /// `repo_branches` is, and keyed by path by the consumer for the same reason.
-    /// `Some(true)` paints the badge letters red; `None` = never successfully detected
-    /// for that path (rendered violet, like clean).
+    /// #1028/#1078 - per-repo local-work state, positionally parallel to `repo_paths`
+    /// exactly as `repo_branches` is, and keyed by path by the consumer for the same
+    /// reason. `Some(true)` means Git emitted a non-ignored worktree/index entry or the
+    /// checked-out `HEAD` was not confirmed reachable from the configured cached
+    /// `origin/*` upstream. `None` means never successfully detected for that path
+    /// (rendered violet, like clean).
     ///
     /// This rides the feed `repo_branches` already established, which is what covers
     /// DORMANT coordinator rows: Gate A runs for every replica whether or not a session
