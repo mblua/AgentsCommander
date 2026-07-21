@@ -2477,6 +2477,19 @@ fn validate_non_project_settings(disk: &Map<String, Value>) -> Result<(), String
     })
 }
 
+/// #1077 automatic reconciliation boundary (§4.3): reconcile the requested
+/// eligible project group(s) from `settings`' hidden state to `path`, returning
+/// the fresh-decoded settings. A structurally-corrupt or no-eligible-repair
+/// state performs no write and returns the settings unchanged.
+pub(crate) fn reconcile_project_state_to_path(
+    settings: &AppSettings,
+    path: &Path,
+    active: bool,
+    archived: bool,
+) -> Result<AppSettings, String> {
+    save_settings_value(settings, path, ProjectWriteMode::Reconcile { active, archived })
+}
+
 /// The #1077 project-aware atomic writer. Builds the output object per `mode`,
 /// writes it atomically, then re-decodes the exact written value so the returned
 /// `AppSettings` carries fresh runtime projections + hidden state (never the

@@ -8,7 +8,13 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
+use sha2::{Digest, Sha256};
+
 use crate::api::auth;
+use crate::config::projects::{
+    display_canonical, IssueKind, ProjectPathPersistenceState, ProjectSource, RawJsonField,
+    RawStringField, ResolvedPair, SideStatus, StructuralIssue,
+};
 use crate::config::settings::{
     load_settings, merge_protected_coding_agent_settings, parse_api_server_socket_addr,
     save_settings, validate_and_repair_settings, AppSettings, CodingAgentEnv,
@@ -88,12 +94,355 @@ pub fn drain_error_logs() -> Vec<crate::logging::ErrorLogEntry> {
     crate::logging::error_sink().drain()
 }
 
+// ── #1077 SettingsSnapshot: the get_settings client response ────────────────
+
+/// Tagged raw string field state (absent vs JSON null vs string). `present ==
+/// false` always pairs with `value == None`.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawStringFieldState {
+    pub present: bool,
+    pub value: Option<String>,
+}
+
+/// Tagged raw JSON field state (needed for wrong-typed structural fields and
+/// absent/null parity).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawJsonFieldState {
+    pub present: bool,
+    pub value: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ReconciliationStage {
+    Read,
+    Write,
+}
+
+/// The transport/I-O reconciliation error; structural/candidate issues belong in
+/// `issues`, not here. `retryable` is always true.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectPathReconciliationError {
+    pub stage: ReconciliationStage,
+    pub message: String,
+    pub retryable: bool,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum IssueSource {
+    ProjectPath,
+    ProjectPaths,
+    ArchivedProjectPaths,
+}
+
+/// The discriminated project-path issue union. `rename_all_fields` is required
+/// so struct-variant fields are camelCase (plain `rename_all` does not rename
+/// them). Optional `index` is omitted when absent.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum ProjectPathIssue {
+    Conflict {
+        id: String,
+        source: IssueSource,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        index: Option<usize>,
+        absolute_candidate: String,
+        instance_relative_candidate: String,
+        absolute_resolved_path: String,
+        instance_relative_resolved_path: String,
+        message: String,
+    },
+    Missing {
+        id: String,
+        source: IssueSource,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        index: Option<usize>,
+        absolute_candidate: RawStringFieldState,
+        instance_relative_candidate: RawStringFieldState,
+        absolute_resolved_path: Option<String>,
+        instance_relative_resolved_path: Option<String>,
+        message: String,
+    },
+    Invalid {
+        id: String,
+        source: IssueSource,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        index: Option<usize>,
+        absolute_candidate: RawJsonFieldState,
+        instance_relative_candidate: RawJsonFieldState,
+        absolute_resolved_path: Option<String>,
+        instance_relative_resolved_path: Option<String>,
+        reason: String,
+    },
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectPathResolution {
+    pub active_registration_count: usize,
+    pub archived_registration_count: usize,
+    pub issues: Vec<ProjectPathIssue>,
+    pub reconciliation_error: Option<ProjectPathReconciliationError>,
+}
+
+/// The flattened `get_settings` response: the runtime-selected `AppSettings`
+/// plus the structured resolution report. Serialize-only.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsSnapshot {
+    #[serde(flatten)]
+    pub settings: AppSettings,
+    pub project_path_resolution: ProjectPathResolution,
+}
+
+fn issue_source(source: ProjectSource) -> IssueSource {
+    match source {
+        ProjectSource::ProjectPath => IssueSource::ProjectPath,
+        ProjectSource::ProjectPaths => IssueSource::ProjectPaths,
+        ProjectSource::ArchivedProjectPaths => IssueSource::ArchivedProjectPaths,
+    }
+}
+
+/// The active|archived logical list of a source (both active fields collapse to
+/// "active"), used in the stable issue id.
+fn source_list(source: ProjectSource) -> &'static str {
+    match source {
+        ProjectSource::ProjectPath | ProjectSource::ProjectPaths => "active",
+        ProjectSource::ArchivedProjectPaths => "archived",
+    }
+}
+
+fn raw_string_to_json(field: &RawStringField) -> RawJsonField {
+    RawJsonField {
+        present: field.present,
+        value: field.value.clone().map(serde_json::Value::String),
+    }
+}
+
+fn raw_string_state(field: &RawStringField) -> RawStringFieldState {
+    RawStringFieldState {
+        present: field.present,
+        value: field.value.clone(),
+    }
+}
+
+fn raw_json_state(field: &RawJsonField) -> RawJsonFieldState {
+    RawJsonFieldState {
+        present: field.present,
+        value: field.value.clone(),
+    }
+}
+
+/// Stable issue id: full lowercase SHA-256 hex of `(kind, active|archived list,
+/// tagged raw absolute, tagged raw relative)`, absent distinct from JSON null,
+/// excluding source index and resolved paths.
+fn compute_issue_id(kind: &str, list: &str, abs: &RawJsonField, rel: &RawJsonField) -> String {
+    let tuple = serde_json::json!([
+        kind,
+        list,
+        { "present": abs.present, "value": abs.value },
+        { "present": rel.present, "value": rel.value },
+    ]);
+    let serialized = serde_json::to_string(&tuple).unwrap_or_default();
+    let digest = Sha256::digest(serialized.as_bytes());
+    digest.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+fn side_status_label(status: SideStatus) -> &'static str {
+    match status {
+        SideStatus::Absent => "not set",
+        SideStatus::BaseUnavailable => "no portable instance base",
+        SideStatus::Malformed => "malformed",
+        SideStatus::Missing => "not found",
+        SideStatus::Inaccessible => "permission denied",
+        SideStatus::ProbeIoError => "filesystem error",
+        SideStatus::NotADirectory => "not a directory",
+        SideStatus::WorkspaceOrCollectionMissing => "no .ac project or collection",
+        SideStatus::NonUtf8 => "path is not valid UTF-8",
+        SideStatus::ValidDirectProject => "valid project",
+        SideStatus::ValidCollectionRoot => "valid collection root",
+    }
+}
+
+fn pair_to_issue(pair: &ResolvedPair) -> ProjectPathIssue {
+    let source = issue_source(pair.source);
+    let list = source_list(pair.source);
+    let abs_json = raw_string_to_json(&pair.raw_absolute);
+    let rel_json = raw_string_to_json(&pair.raw_relative);
+    let abs_resolved = pair
+        .absolute_side
+        .canonical_path
+        .as_deref()
+        .map(display_canonical);
+    let rel_resolved = pair
+        .relative_side
+        .canonical_path
+        .as_deref()
+        .map(display_canonical);
+    match pair.issue {
+        Some(IssueKind::Conflict) => {
+            let id = compute_issue_id("conflict", list, &abs_json, &rel_json);
+            let abs_path = abs_resolved.clone().unwrap_or_default();
+            let rel_path = rel_resolved.clone().unwrap_or_default();
+            ProjectPathIssue::Conflict {
+                id,
+                source,
+                index: pair.index,
+                absolute_candidate: pair.raw_absolute.value.clone().unwrap_or_default(),
+                instance_relative_candidate: pair.raw_relative.value.clone().unwrap_or_default(),
+                message: format!(
+                    "This project's two stored locations resolve to different directories, so neither was loaded. Absolute path: {abs_path}. Instance-relative path: {rel_path}."
+                ),
+                absolute_resolved_path: abs_path,
+                instance_relative_resolved_path: rel_path,
+            }
+        }
+        Some(IssueKind::Missing) => {
+            let id = compute_issue_id("missing", list, &abs_json, &rel_json);
+            ProjectPathIssue::Missing {
+                id,
+                source,
+                index: pair.index,
+                absolute_candidate: raw_string_state(&pair.raw_absolute),
+                instance_relative_candidate: raw_string_state(&pair.raw_relative),
+                message: "This project directory could not be found. Reconnect the drive or remove it from the list.".to_string(),
+                absolute_resolved_path: pair.absolute_side.syntactic_path.clone(),
+                instance_relative_resolved_path: pair.relative_side.syntactic_path.clone(),
+            }
+        }
+        _ => {
+            let id = compute_issue_id("invalid", list, &abs_json, &rel_json);
+            ProjectPathIssue::Invalid {
+                id,
+                source,
+                index: pair.index,
+                absolute_candidate: raw_json_state(&abs_json),
+                instance_relative_candidate: raw_json_state(&rel_json),
+                reason: format!(
+                    "This project could not be loaded (absolute candidate: {}; instance-relative candidate: {}).",
+                    side_status_label(pair.absolute_side.status),
+                    side_status_label(pair.relative_side.status)
+                ),
+                absolute_resolved_path: pair.absolute_side.syntactic_path.clone(),
+                instance_relative_resolved_path: pair.relative_side.syntactic_path.clone(),
+            }
+        }
+    }
+}
+
+fn structural_to_issue(structural: &StructuralIssue) -> ProjectPathIssue {
+    let id = compute_issue_id(
+        "invalid",
+        source_list(structural.source),
+        &structural.raw_absolute,
+        &structural.raw_relative,
+    );
+    ProjectPathIssue::Invalid {
+        id,
+        source: issue_source(structural.source),
+        index: None,
+        absolute_candidate: raw_json_state(&structural.raw_absolute),
+        instance_relative_candidate: raw_json_state(&structural.raw_relative),
+        absolute_resolved_path: None,
+        instance_relative_resolved_path: None,
+        reason: format!("Malformed project settings: {}.", structural.reason),
+    }
+}
+
+/// Build the structured resolution report from the hidden persistence state.
+pub(crate) fn build_project_path_resolution(
+    state: &ProjectPathPersistenceState,
+    reconciliation_error: Option<ProjectPathReconciliationError>,
+) -> ProjectPathResolution {
+    let mut issues: Vec<ProjectPathIssue> = state.issues().map(pair_to_issue).collect();
+    issues.extend(state.structural_issues.iter().map(structural_to_issue));
+
+    // Counts merged logical records; force a minimum of one for any group that
+    // has a structural issue so a corruption-only startup is never called pristine.
+    let mut active = state.active_registration_count;
+    let mut archived = state.archived_registration_count;
+    for structural in &state.structural_issues {
+        match structural.source {
+            ProjectSource::ProjectPath | ProjectSource::ProjectPaths => active = active.max(1),
+            ProjectSource::ArchivedProjectPaths => archived = archived.max(1),
+        }
+    }
+
+    ProjectPathResolution {
+        active_registration_count: active,
+        archived_registration_count: archived,
+        issues,
+        reconciliation_error,
+    }
+}
+
+/// Pure snapshot builder: clone `settings`, clear the root token, and attach the
+/// resolution report. Shared by the Tauri and WebSocket transports so both
+/// clients receive the identical report and `rootToken` is absent from each.
+pub(crate) fn settings_snapshot_from(
+    settings: &AppSettings,
+    reconciliation_error: Option<ProjectPathReconciliationError>,
+) -> SettingsSnapshot {
+    let resolution = build_project_path_resolution(&settings.project_path_state, reconciliation_error);
+    let mut cleaned = settings.clone();
+    // Clear so the existing skip_serializing_if omits rootToken (absent, not null).
+    cleaned.root_token = None;
+    SettingsSnapshot {
+        settings: cleaned,
+        project_path_resolution: resolution,
+    }
+}
+
+/// The shared, path-injectable settings-snapshot helper. At the first snapshot
+/// boundary it reconciles any eligible pending repair to disk (§4.3), then
+/// returns the report. Tests inject `settings_path`; production resolves it.
+pub(crate) async fn settings_snapshot_helper(
+    settings: &SettingsState,
+    settings_path: Option<PathBuf>,
+) -> SettingsSnapshot {
+    let mut reconciliation_error = None;
+    {
+        // Reconciliation transaction under the write guard; no lock across await.
+        let mut guard = settings.write().await;
+        let state = guard.project_path_state.clone();
+        let eligible = !state.has_structural()
+            && (state.active_reconcile_eligible || state.archived_reconcile_eligible);
+        if eligible {
+            let path = settings_path
+                .clone()
+                .or_else(|| crate::config::config_dir().map(|d| d.join("settings.json")));
+            if let Some(path) = path {
+                match crate::config::settings::reconcile_project_state_to_path(
+                    &guard,
+                    &path,
+                    state.active_reconcile_eligible,
+                    state.archived_reconcile_eligible,
+                ) {
+                    Ok(written) => *guard = written,
+                    Err(message) => {
+                        reconciliation_error = Some(ProjectPathReconciliationError {
+                            stage: ReconciliationStage::Write,
+                            message,
+                            retryable: true,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    let guard = settings.read().await;
+    settings_snapshot_from(&guard, reconciliation_error)
+}
+
 #[tauri::command]
-pub async fn get_settings(settings: State<'_, SettingsState>) -> Result<AppSettings, String> {
-    let s = settings.read().await;
-    let mut result = s.clone();
-    result.root_token = None; // never expose root token to frontend
-    Ok(result)
+pub async fn get_settings(
+    settings: State<'_, SettingsState>,
+) -> Result<SettingsSnapshot, String> {
+    Ok(settings_snapshot_helper(settings.inner(), None).await)
 }
 
 /// #769 Phase 1 - return the externalized coding-agent catalog for the onboarding
@@ -233,6 +582,11 @@ fn build_protected_settings_candidate(
     candidate.project_paths = current.project_paths.clone();
     candidate.project_path = current.project_path.clone();
     candidate.archived_project_paths = current.archived_project_paths.clone();
+    // #1077: restore the hidden project-path pair state too, so a returned
+    // SettingsSnapshot echoed back as an update cannot erase or re-pair the
+    // companion metadata. The disk serializer builds project fields only from
+    // this protected state (or disk truth), never from the incoming payload.
+    candidate.project_path_state = current.project_path_state.clone();
     // #965: rail collapse is mutated only by `set_rail_collapse`. A settings payload
     // from the GUI, CLI, or API must never carry authority for it, so restore both
     // fields from live memory. Same rule and same mechanism as the project lists
@@ -264,6 +618,9 @@ async fn persist_settings_draft_update_with_saver(
     draft.project_paths = current.project_paths.clone();
     draft.project_path = current.project_path.clone();
     draft.archived_project_paths = current.archived_project_paths.clone();
+    // #1077: restore the hidden project-path pair state (see the protected
+    // candidate builder above).
+    draft.project_path_state = current.project_path_state.clone();
     // #965: same protect as `build_protected_settings_candidate`. The SettingsModal
     // Save path lands here, and so does every whole-object writer that reads
     // `settingsStore.current` first (window geometry, zoom, titlebar...). Rail
@@ -1857,6 +2214,182 @@ mod tests {
     use tauri::Manager;
     use tokio::sync::RwLock;
     use tokio_util::sync::CancellationToken;
+
+    // ── #1077 SettingsSnapshot / resolution report ───────────────────────
+    mod snapshot {
+        use super::super::{settings_snapshot_from, ProjectPathIssue};
+        use crate::config::projects::{
+            DirectoryIdentity, IssueKind, ProjectPathPersistenceState, ProjectSource, RawJsonField,
+            RawStringField, RepairKind, ResolvedPair, SideOutcome, SideStatus, StructuralIssue,
+        };
+        use crate::config::settings::AppSettings;
+
+        fn side(status: SideStatus, canonical: Option<&str>) -> SideOutcome {
+            SideOutcome {
+                status,
+                syntactic_path: canonical.map(str::to_string),
+                canonical_path: canonical.map(str::to_string),
+                identity: canonical.map(|_| DirectoryIdentity { volume: 1, file: 1 }),
+            }
+        }
+
+        fn conflict_pair() -> ResolvedPair {
+            ResolvedPair {
+                source: ProjectSource::ProjectPaths,
+                index: Some(0),
+                raw_absolute: RawStringField::string("/abs/alpha"),
+                raw_relative: RawStringField::string("../rel/beta"),
+                absolute_side: side(SideStatus::ValidDirectProject, Some("/abs/alpha")),
+                relative_side: side(SideStatus::ValidDirectProject, Some("/rel/beta")),
+                selected: None,
+                selected_canonical_raw: None,
+                selected_identity: None,
+                issue: Some(IssueKind::Conflict),
+                repair: RepairKind::None,
+            }
+        }
+
+        fn missing_pair() -> ResolvedPair {
+            ResolvedPair {
+                source: ProjectSource::ProjectPaths,
+                index: Some(1),
+                raw_absolute: RawStringField::string("/gone/x"),
+                raw_relative: RawStringField::absent(),
+                absolute_side: SideOutcome {
+                    status: SideStatus::Missing,
+                    syntactic_path: Some("/gone/x".to_string()),
+                    canonical_path: None,
+                    identity: None,
+                },
+                relative_side: SideOutcome {
+                    status: SideStatus::Absent,
+                    syntactic_path: None,
+                    canonical_path: None,
+                    identity: None,
+                },
+                selected: None,
+                selected_canonical_raw: None,
+                selected_identity: None,
+                issue: Some(IssueKind::Missing),
+                repair: RepairKind::None,
+            }
+        }
+
+        fn state_with(pairs: Vec<ResolvedPair>, structural: Vec<StructuralIssue>) -> ProjectPathPersistenceState {
+            let active_registration_count = pairs.len();
+            ProjectPathPersistenceState {
+                pairs,
+                selected_head: None,
+                active_registration_count,
+                archived_registration_count: 0,
+                active_companion_present: true,
+                archived_companion_present: false,
+                has_genuine_singular: false,
+                active_reconcile_eligible: false,
+                archived_reconcile_eligible: false,
+                structural_issues: structural,
+                runtime_authoritative: false,
+            }
+        }
+
+        #[test]
+        fn snapshot_serializes_camelcase_variants_and_omits_root_token() {
+            let mut settings = AppSettings::default();
+            settings.root_token = Some("SUPER-SECRET-TOKEN-VALUE".to_string());
+            settings.project_path_state =
+                std::sync::Arc::new(state_with(vec![conflict_pair(), missing_pair()], vec![]));
+
+            let snap = settings_snapshot_from(&settings, None);
+            let json = serde_json::to_value(&snap).unwrap();
+
+            // rootToken absent from both the flattened settings and anywhere else.
+            let text = serde_json::to_string(&json).unwrap();
+            assert!(!text.contains("rootToken"), "rootToken leaked: {text}");
+            assert!(!text.contains("SUPER-SECRET-TOKEN-VALUE"), "token value leaked");
+
+            let resolution = &json["projectPathResolution"];
+            assert_eq!(resolution["activeRegistrationCount"], 2);
+            assert_eq!(resolution["archivedRegistrationCount"], 0);
+            let issues = resolution["issues"].as_array().unwrap();
+            assert_eq!(issues.len(), 2);
+
+            let conflict = &issues[0];
+            assert_eq!(conflict["kind"], "conflict");
+            assert_eq!(conflict["source"], "projectPaths");
+            assert_eq!(conflict["index"], 0);
+            assert!(conflict["absoluteResolvedPath"].is_string());
+            assert!(conflict["instanceRelativeResolvedPath"].is_string());
+            // id is a full lowercase 64-char hex.
+            let id = conflict["id"].as_str().unwrap();
+            assert_eq!(id.len(), 64);
+            assert!(id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+
+            let missing = &issues[1];
+            assert_eq!(missing["kind"], "missing");
+            // Tagged raw states: absent relative candidate is present:false, value:null.
+            assert_eq!(missing["instanceRelativeCandidate"]["present"], false);
+            assert!(missing["instanceRelativeCandidate"]["value"].is_null());
+            assert_eq!(missing["absoluteCandidate"]["present"], true);
+            assert_eq!(missing["absoluteCandidate"]["value"], "/gone/x");
+        }
+
+        #[test]
+        fn structural_issue_forces_minimum_count_and_invalid_kind() {
+            let structural = StructuralIssue {
+                source: ProjectSource::ProjectPaths,
+                reason: "plural primary is not an array of strings".to_string(),
+                raw_absolute: RawJsonField {
+                    present: true,
+                    value: Some(serde_json::json!("not-an-array")),
+                },
+                raw_relative: RawJsonField {
+                    present: false,
+                    value: None,
+                },
+            };
+            let mut settings = AppSettings::default();
+            settings.project_path_state = std::sync::Arc::new(state_with(vec![], vec![structural]));
+            let snap = settings_snapshot_from(&settings, None);
+            let json = serde_json::to_value(&snap).unwrap();
+            let resolution = &json["projectPathResolution"];
+            // Corruption-only startup is never pristine: min count of 1.
+            assert_eq!(resolution["activeRegistrationCount"], 1);
+            let issues = resolution["issues"].as_array().unwrap();
+            assert_eq!(issues.len(), 1);
+            assert_eq!(issues[0]["kind"], "invalid");
+            // Invalid candidates are tagged RawJsonFieldState (wrong-typed value).
+            assert_eq!(issues[0]["absoluteCandidate"]["present"], true);
+            assert_eq!(issues[0]["absoluteCandidate"]["value"], "not-an-array");
+        }
+
+        #[test]
+        fn issue_id_is_stable_across_index_and_resolved_paths() {
+            // Same kind/list/raw fields but different index → same id (index excluded).
+            let mut a = missing_pair();
+            let mut b = missing_pair();
+            b.index = Some(9);
+            let mut settings_a = AppSettings::default();
+            settings_a.project_path_state = std::sync::Arc::new(state_with(vec![a.clone()], vec![]));
+            let mut settings_b = AppSettings::default();
+            settings_b.project_path_state = std::sync::Arc::new(state_with(vec![b], vec![]));
+            let id_a = issue_id(&settings_snapshot_from(&settings_a, None));
+            let id_b = issue_id(&settings_snapshot_from(&settings_b, None));
+            assert_eq!(id_a, id_b);
+            // A different raw absolute → different id.
+            a.raw_absolute = RawStringField::string("/gone/y");
+            let mut settings_c = AppSettings::default();
+            settings_c.project_path_state = std::sync::Arc::new(state_with(vec![a], vec![]));
+            assert_ne!(id_a, issue_id(&settings_snapshot_from(&settings_c, None)));
+        }
+
+        fn issue_id(snap: &super::super::SettingsSnapshot) -> String {
+            match &snap.project_path_resolution.issues[0] {
+                ProjectPathIssue::Conflict { id, .. }
+                | ProjectPathIssue::Missing { id, .. }
+                | ProjectPathIssue::Invalid { id, .. } => id.clone(),
+            }
+        }
+    }
 
     fn settings_with_single_agent() -> AppSettings {
         AppSettings {
