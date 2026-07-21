@@ -16,6 +16,7 @@ import type {
   PtyOutputEvent,
   PtyScreenSnapshot,
   AppSettings,
+  SettingsSnapshot,
   LogLevel,
   UpdateInfo,
   CodingAgentEnv,
@@ -258,7 +259,11 @@ export const CodingAgentsAPI = {
 };
 
 export const SettingsAPI = {
-  get: () => transport.invoke<AppSettings>("get_settings"),
+  // #1077: get_settings returns the flattened SettingsSnapshot (AppSettings +
+  // projectPathResolution). update/save-draft still take a plain AppSettings;
+  // the extra report field riding along on a round-tripped object is ignored by
+  // the backend (non-deny_unknown_fields) and cannot re-pair persisted state.
+  get: () => transport.invoke<SettingsSnapshot>("get_settings"),
   update: (settings: AppSettings) =>
     transport.invoke<void>("update_settings", { newSettings: settings }),
   saveDraft: (settings: AppSettings) =>

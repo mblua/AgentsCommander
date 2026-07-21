@@ -21,7 +21,7 @@ export function formatReplicaRepoBadgeLabel(repo: Pick<SessionRepo, "label" | "b
 }
 
 export function formatReplicaRepoBadgeTitle(repo: Pick<SessionRepo, "sourcePath" | "dirty">): string {
-  if (repo.dirty === true) return `${repo.sourcePath} (uncommitted changes)`;
+  if (repo.dirty === true) return `${repo.sourcePath} (local work not confirmed by cached origin tracking)`;
   if (repo.dirty === false) return repo.sourcePath;
   return `${repo.sourcePath} (status unknown)`;
 }

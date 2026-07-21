@@ -558,15 +558,19 @@ agentscommander open-project /path/to/project
 
 | Argument | Description |
 |---|---|
-| `PATH` | Absolute or relative path. Relative is resolved against your CWD; the persisted entry is the absolute form. |
+| `PATH` | Absolute or relative path. Relative is resolved against your current working directory. |
 
 Idempotent — re-registering the same path is a no-op (`Project already registered`).
 
 If the folder does not contain `.ac/`, the CLI suggests `new-project` instead.
 
+**Persisted forms.** Relative `PATH` still resolves against your CWD, but the registration records two paths: the canonical absolute path and a portable companion relative to the AC binary's own directory (not your CWD). See [Portable instances](../features/portable-instances.md#portable-project-paths) and the [`projectPaths` schema](settings.md#projects). A project on a different drive or UNC share than the binary records a `null` companion and remains absolute-only.
+
+**Strict settings write.** `open-project` loads `settings.json` strictly before writing: a present-but-unparseable file, or structurally malformed project metadata, is refused with an error and no changes, rather than being silently overwritten.
+
 **No token required** — project registration mutates the local `settings.json`, which any shell-capable process can already write to.
 
-**GUI concurrency caveat**: when AC is running, the in-memory settings are authoritative; a subsequent GUI `update_settings` built from a stale snapshot can clobber a CLI-registered entry. A watcher/reload story is a follow-up issue.
+**GUI concurrency caveat**: when AC is running, the in-memory settings are authoritative; a subsequent GUI `update_settings` built from a stale snapshot can clobber a CLI-registered entry. This last-writer race between separate CLI and GUI processes is unchanged; the dual-path work adds no interprocess lock. A watcher/reload story is a follow-up issue.
 
 ---
 
@@ -583,6 +587,8 @@ agentscommander new-project /path/to/project
 | `PATH` | Absolute or relative. Folder created if it does not yet exist. |
 
 Idempotent: re-running on a folder that already has `.ac/` only sweeps the Project AC Root gitignore and deduplicates the registration.
+
+Registration records both the absolute path and the instance-relative companion, and uses the same strict settings-write behavior as [`open-project`](#open-project).
 
 **No token required** — same reasoning as `open-project`.
 

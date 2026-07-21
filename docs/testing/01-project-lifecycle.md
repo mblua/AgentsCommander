@@ -329,3 +329,143 @@ Evidence Required:
 Pass/Fail Criteria:
 
 Pass if cancel leaves registration and filesystem unchanged. Not applicable if the active UI path does not show a create confirmation for the selected folder. Fail if a visible cancel action creates `.ac/` or registers the project despite canceling.
+
+### PRJ-009: Relocate an instance and confirm a CLI-registered project still loads
+
+Purpose:
+
+Verify that after moving a portable instance and its project together, a project registered through the CLI reloads at its new absolute path via the instance-relative companion, without re-registration.
+
+Preconditions:
+
+- A disposable portable tree under a scratch area: a copy of the AC binary in `<tree>/app/` (for example `agentscommander_reloc.exe`), its config directory created next to it on first run, and a disposable AC project at `<tree>/projects/alpha` containing `.ac/`.
+- The tester can move the whole tree and later launch it from an unrelated working directory.
+- Read-only inspection of the disposable `settings.json` is available.
+
+Steps:
+
+1. Register the project from the source tree: `<tree>/app/agentscommander_reloc.exe open-project <tree>/projects/alpha`.
+2. Inspect the disposable `settings.json` and record `projectPaths` and `projectPathsRelativeToInstance` (expect the absolute path plus a companion such as `../projects/alpha`).
+3. Launch the app from the source tree, confirm alpha loads in the sidebar, then close it.
+4. Move the entire tree (the `app/` folder, its `.agentscommander*` config directory, and the `projects/` folder together) to a new parent, for example `<tree2>/`. Remove or rename the original tree.
+5. From an unrelated working directory, launch `<tree2>/app/agentscommander_reloc.exe --app`.
+6. Confirm alpha appears in the sidebar and resolves to the new absolute path under `<tree2>`.
+7. Re-inspect `settings.json` and confirm `projectPaths` reconciled to the new absolute path while the companion is retained.
+
+Expected Result:
+
+The project loads at its new location with no manual re-registration; `settings.json` reconciles the absolute path to the moved location and keeps the companion.
+
+Evidence Required:
+
+- Pre-move `settings.json` snapshot showing both the absolute and companion fields.
+- Post-move sidebar screenshot showing alpha loaded.
+- Post-move `settings.json` snapshot showing the reconciled absolute path.
+
+Pass/Fail Criteria:
+
+Pass if the project reloads at the new path without re-registration and settings reconcile. Partial if it loads but a JSON snapshot could not be captured. Fail if the project is missing, still points at the stale location, or requires manual re-open.
+
+### PRJ-010: Relocate an instance and confirm a GUI-registered project still loads
+
+Purpose:
+
+Verify the same relocation behavior for a project registered through the GUI `New / Open` flow.
+
+Preconditions:
+
+- A disposable portable tree as in PRJ-009, but with no project registered yet.
+- The tester can register through the UI, move the tree, and relaunch from an unrelated working directory.
+
+Steps:
+
+1. Launch the app from the source tree and register `<tree>/projects/alpha` through `New / Open`.
+2. Inspect `settings.json` and record the absolute path plus its companion.
+3. Confirm alpha is visible in the sidebar, then close the app.
+4. Move the entire tree to a new parent `<tree2>/` and remove or rename the original.
+5. Relaunch `<tree2>/app/agentscommander_reloc.exe --app` from an unrelated working directory.
+6. Confirm alpha loads at the new absolute path and `settings.json` reconciled to it.
+
+Expected Result:
+
+A GUI-registered project reloads at the moved location with no re-registration, and its stored pair reconciles to the new absolute path.
+
+Evidence Required:
+
+- Pre-move `settings.json` snapshot.
+- Post-move sidebar screenshot showing alpha loaded.
+- Post-move `settings.json` snapshot showing the reconciled absolute path.
+
+Pass/Fail Criteria:
+
+Pass if the GUI-registered project reloads at the new path and settings reconcile. Partial if it loads but a snapshot is missing. Fail if the project is lost, points at the stale path, or must be re-opened manually.
+
+### PRJ-011: Archive and unarchive a project after relocating the instance
+
+Purpose:
+
+Verify that an archived registration carries its companion, survives relocation, and that list, unarchive, and remove operate on the moved pair with aligned arrays.
+
+Preconditions:
+
+- A disposable portable tree with one registered project alpha (the PRJ-009 or PRJ-010 setup).
+- Read-only inspection of the disposable `settings.json` is available after each step.
+
+Steps:
+
+1. In the source tree, archive alpha through the UI.
+2. Inspect `settings.json`: confirm the entry moved to `archivedProjectPaths` and `archivedProjectPathsRelativeToInstance` with an aligned companion, and that the active arrays no longer contain it.
+3. Close the app, move the entire tree to a new parent `<tree2>/`, and remove the original.
+4. Launch `<tree2>/app/agentscommander_reloc.exe --app`.
+5. List archived projects and confirm the archived entry is present and resolves to the moved absolute path.
+6. Unarchive alpha and confirm it returns to the active list at the moved path with the companion aligned.
+7. Remove alpha and confirm the whole pair is deleted from both the active absolute and companion arrays.
+
+Expected Result:
+
+The archived pair relocates with the tree, and archive, unarchive, and remove each move or delete the whole pair while keeping the companion arrays aligned.
+
+Evidence Required:
+
+- `settings.json` snapshots after archive, after unarchive, and after remove, each showing aligned arrays.
+- Screenshots of the archived list and of alpha back in the active list after unarchive.
+
+Pass/Fail Criteria:
+
+Pass if each operation moves or deletes the whole pair with aligned arrays and the archived entry survives relocation. Partial if behavior is correct but one snapshot is missing. Fail if arrays desynchronize, the archived entry is lost on move, or an operation touches only one side of the pair.
+
+### PRJ-012: Dual-path conflict shows one sticky toast and does not block other projects
+
+Purpose:
+
+Verify that when the absolute and instance-relative forms of one registration resolve to two different real directories, AC loads neither side for that registration, shows exactly one sticky red dismissible toast naming both resolved paths, changes nothing on disk for that entry, and still loads other valid projects.
+
+Preconditions:
+
+- A disposable portable source tree with the binary and a valid project alpha registered so that both stored forms resolve to the same directory.
+- The tester can copy the tree while retaining the original, and can launch the copy.
+- Read-only inspection of the copied `settings.json` is available.
+
+Steps:
+
+1. In the source tree, register alpha and confirm both stored forms resolve to the same directory.
+2. Close the app. Copy the entire tree to a new parent (for example `<copy>/`) while leaving the source tree in place. In the copy the absolute field still points at the source alpha, while the companion resolves from the copied binary to the copy's alpha, so the two forms now target two different real directories.
+3. In the copied tree, register a second, clean project beta so it resolves through both forms to one directory inside the copy. This is the control that should still load.
+4. Launch the copied instance.
+5. Observe the sidebar: confirm alpha does not load, exactly one sticky red error toast appears listing both resolved paths (source alpha and copy alpha), and beta loads normally.
+6. Confirm the toast is dismissible and does not reappear after dismissing and re-initializing (for example a window reload or reconnect).
+7. Inspect the copied `settings.json` and confirm alpha's stored fields are unchanged (no mutation for the conflicted entry).
+
+Expected Result:
+
+One conflict yields exactly one sticky red dismissible toast with both resolved paths; alpha stays unloaded and unmutated on disk; and the unrelated beta project still loads.
+
+Evidence Required:
+
+- Screenshot of the single sticky red toast showing both resolved paths.
+- Screenshot showing beta loaded while alpha is absent.
+- Before and after `settings.json` snapshots for alpha showing no change.
+
+Pass/Fail Criteria:
+
+Pass if exactly one sticky dismissible toast shows both paths, alpha is neither loaded nor mutated, and beta loads. Partial if behavior is correct but one snapshot is missing. Fail if either alpha side loads, more than one toast or a non-sticky toast appears, alpha's disk entry changes, or beta is blocked.

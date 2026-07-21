@@ -681,6 +681,10 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       appSettings.projectPaths ?? [],
       appSettings.projectPath ?? null,
       appSettings.archivedProjectPaths ?? [],
+      // #1077: pass the resolution report straight through. It is validated as
+      // runtime-unknown inside the store; an absent report (legacy/mixed-version
+      // backend) is the only legacy fallback.
+      appSettings.projectPathResolution,
     );
     if (disposed) return;
 

@@ -18,7 +18,10 @@ use std::path::PathBuf;
 
 use crate::cli::workgroup::write_project_registration_refresh;
 use crate::config::projects::{register_existing_project, ProjectError};
-use crate::config::settings::{load_settings_for_cli, save_settings_with_project_paths};
+use crate::config::settings::{
+    load_settings_for_cli_strict, project_state_has_structural, refresh_project_paths_from_disk,
+    resync_project_state_from_runtime, save_settings_with_project_paths,
+};
 
 #[derive(Args)]
 #[command(after_help = "\
@@ -26,7 +29,11 @@ PURPOSE: Register an existing AC project so it appears in the GUI sidebar on \
 next launch. The folder must already contain `.ac/` (use `new-project` to \
 create one).\n\n\
 PATH: Absolute or relative — relative paths are resolved against the current \
-working directory. The persisted entry is the absolute form.\n\n\
+working directory. The registration is persisted in two forms: the canonical \
+absolute path, plus a portable path relative to the AgentsCommander \
+executable's directory (used to relocate the project when the whole install \
+folder moves). A project on a different drive or share has no portable form and \
+is stored absolute-only.\n\n\
 IDEMPOTENCY: Re-registering the same path is a no-op; the verb prints \
 \"Project already registered\" and exits 0.")]
 pub struct OpenProjectArgs {
@@ -36,10 +43,30 @@ pub struct OpenProjectArgs {
 }
 
 pub fn execute(args: OpenProjectArgs) -> i32 {
-    // Use the CLI-specific loader (Round-1 G5): unlike `load_settings`, this
-    // does NOT auto-generate or persist a `root_token`, so error paths and
-    // pre-validation reads do not silently rewrite settings.json.
-    let mut settings = load_settings_for_cli();
+    // #786/#1077: strict CLI loader (Round-1 G5): unlike `load_settings`, this
+    // does NOT auto-generate or persist a `root_token`, and it refuses to touch a
+    // present-but-unparseable settings.json rather than silently rewriting it.
+    let mut settings = match load_settings_for_cli_strict() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            return 1;
+        }
+    };
+    // #1077: structural project-metadata corruption blocks any list mutation.
+    if project_state_has_structural(&settings) {
+        eprintln!(
+            "Error: settings.json has malformed project metadata; refusing to modify the project list. Fix or remove the corrupt project fields first."
+        );
+        return 1;
+    }
+    // #1077: reconcile the runtime list from the RAW disk fields (which retain a
+    // stored-but-missing project the strict decode filters out) so a subsequent
+    // resync preserves those records in place instead of dropping them.
+    if let Err(e) = refresh_project_paths_from_disk(&mut settings) {
+        eprintln!("Error: {}", e);
+        return 1;
+    }
     let result = match register_existing_project(&mut settings, &args.path) {
         Ok(r) => r,
         Err(e) => {
@@ -54,8 +81,11 @@ pub fn execute(args: OpenProjectArgs) -> i32 {
         }
     };
     if result.registered {
-        // #778: verbatim explicit writer (fresh disk already loaded above); the
-        // preserve-disk default would discard this deliberate append.
+        // #1077: rebuild the hidden pair state from the mutated runtime lists so
+        // the paired reconcile serializer records both the absolute path and its
+        // instance-relative companion (retaining any preserved conflict/missing
+        // records) instead of dropping the append.
+        resync_project_state_from_runtime(&mut settings);
         if let Err(e) = save_settings_with_project_paths(&settings) {
             eprintln!("Error: failed to persist settings: {}", e);
             return 1;

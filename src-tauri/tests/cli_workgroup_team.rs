@@ -34,6 +34,21 @@ fn copy_binary_into(tmp: &Path) -> PathBuf {
     dst
 }
 
+/// Assert a CLI-emitted path string points to the same directory as `expected`.
+/// #1077: `workgroup add` prints the SELECTED CANONICAL path (§3.4), so a raw
+/// `tmp.path()` expectation breaks on a CI runner whose %TEMP% is an 8.3 short
+/// name (`RUNNER~1` vs the canonical `runneradmin`). Canonicalizing both sides
+/// compares filesystem identity, robust to 8.3 short-name and Windows
+/// verbatim-prefix differences. Both paths exist at every call site (the verb
+/// created them), so `canonicalize` always resolves.
+fn assert_same_path(actual: &str, expected: &Path) {
+    let canon_actual = std::fs::canonicalize(actual)
+        .unwrap_or_else(|e| panic!("canonicalize actual path {actual:?}: {e}"));
+    let canon_expected = std::fs::canonicalize(expected)
+        .unwrap_or_else(|e| panic!("canonicalize expected path {expected:?}: {e}"));
+    assert_eq!(canon_actual, canon_expected);
+}
+
 fn config_dir_for_bin(bin: &Path) -> PathBuf {
     let stem = bin
         .file_stem()
@@ -240,7 +255,7 @@ fn create_basic_workgroup(tmp: &Path, bin: &Path, config_dir: &Path) -> (PathBuf
         ],
     );
     let wg_dir = project.join(".ac").join("wg-1-dev-team");
-    assert_eq!(created["path"], wg_dir.to_string_lossy().as_ref());
+    assert_same_path(created["path"].as_str().expect("path"), &wg_dir);
     (project, wg_dir)
 }
 
@@ -484,7 +499,7 @@ fn workgroup_add_creates_task_messaging_replicas_and_lists() {
     );
 
     let wg_dir = project.join(".ac").join("wg-1-dev-team");
-    assert_eq!(json["path"], wg_dir.to_string_lossy().as_ref());
+    assert_same_path(json["path"].as_str().expect("path"), &wg_dir);
     assert!(wg_dir.join("TASK.md").is_file());
     assert!(wg_dir.join("messaging").is_dir());
     assert!(wg_dir
@@ -603,7 +618,7 @@ fn workgroup_remove_deletes_and_reuses_number() {
         ],
     );
     let wg_dir = project.join(".ac").join("wg-1-dev-team");
-    assert_eq!(created["path"], wg_dir.to_string_lossy().as_ref());
+    assert_same_path(created["path"].as_str().expect("path"), &wg_dir);
     assert!(wg_dir.is_dir());
 
     let removed = run_json_machine(

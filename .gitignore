@@ -6,6 +6,8 @@ src-tauri/gen/schemas/
 .DS_Store
 .agentscommander/
 .husky/_
+.visual-specs/
+.vscode/
 plans/
 _logbooks/
 
