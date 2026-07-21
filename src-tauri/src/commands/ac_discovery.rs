@@ -2754,6 +2754,79 @@ mod tests {
         )
     }
 
+    /// The Windows 8.3 short-name form of an existing path, or the path itself
+    /// when the volume has 8.3 generation disabled.
+    #[cfg(windows)]
+    fn short_path(p: &Path) -> PathBuf {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+        let wide: Vec<u16> = p.as_os_str().encode_wide().chain([0]).collect();
+        let len = unsafe { GetShortPathNameW(wide.as_ptr(), std::ptr::null_mut(), 0) };
+        if len == 0 {
+            return p.to_path_buf();
+        }
+        let mut buf = vec![0u16; len as usize];
+        let written = unsafe { GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), len) };
+        if written == 0 {
+            return p.to_path_buf();
+        }
+        buf.truncate(written as usize);
+        PathBuf::from(std::ffi::OsString::from_wide(&buf))
+    }
+
+    /// Regression for the #1080 CI failure: on a Windows runner whose `%TEMP%` is
+    /// an 8.3 short name (`RUNNER~1`), `tempdir()` yields short-form paths and a
+    /// relative `.` archive absolutises to that short form. Storing the raw
+    /// (short) path lets the lexical archive lookup match, while the archived
+    /// RUNTIME field is the decoder's canonical (long) form. Archived must NOT be
+    /// empty (the pre-fix bug: canonical-stored vs short-lookup did not match, the
+    /// project stayed active, and the archived duplicate was dropped by dedupe).
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn archive_relative_path_matches_across_short_name_temp() {
+        let _cwd_lock = cwd_lock().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let settings_path = temp.path().join("settings.json");
+        let project = temp.path().join("proj-archive-relative");
+        std::fs::create_dir_all(project.join(".ac")).expect("create .ac");
+        // Force the runner's condition: access the project via its 8.3 short form.
+        let short = short_path(&project);
+        let path = short.to_string_lossy().to_string();
+        let archived_expected = canonical_display(&project);
+        let settings = AppSettings {
+            project_paths: vec![path.clone()],
+            project_path: Some(path.clone()),
+            ..AppSettings::default()
+        };
+        let (app, state, _rx, session_mgr, pty_mgr) = archive_command_app(settings);
+        let app_handle = app.handle().clone();
+        let prev = std::env::current_dir().expect("current dir");
+        let _guard = CwdGuard(prev);
+        std::env::set_current_dir(&short).expect("set cwd");
+
+        archive_project_inner_with_settings_path(
+            &app_handle,
+            &state,
+            &session_mgr,
+            &pty_mgr,
+            ".",
+            Some(&settings_path),
+        )
+        .await
+        .expect("archive relative project on a short-name temp");
+
+        let archived = state.read().await.archived_project_paths.clone();
+        assert_eq!(
+            archived,
+            vec![archived_expected],
+            "archived must be the canonical path, never empty"
+        );
+        assert!(
+            state.read().await.project_paths.is_empty(),
+            "the project must be removed from the active list"
+        );
+    }
+
     /// CWD is process-wide; serialize tests that intentionally use relative paths.
     struct CwdGuard(PathBuf);
     impl Drop for CwdGuard {
@@ -3049,7 +3122,13 @@ mod tests {
         let settings_path = temp.path().join("settings.json");
         let project = temp.path().join("proj-archive-relative");
         std::fs::create_dir_all(project.join(".ac")).expect("create .ac");
-        let path = canonical_display(&project);
+        // Store the RAW path so the relative "." archive lookup (which absolutises
+        // against the CWD, and on a runner whose %TEMP% is an 8.3 short name is the
+        // short form) still matches lexically. The archived RUNTIME field is the
+        // decoder's SELECTED canonical form (#1077 §3.4), which the assertion
+        // below expects; the event still carries the raw absolutised input.
+        let path = project.to_string_lossy().to_string();
+        let archived_expected = canonical_display(&project);
         let settings = AppSettings {
             project_paths: vec![path.clone()],
             project_path: Some(path.clone()),
@@ -3073,7 +3152,7 @@ mod tests {
         .expect("archive relative project");
 
         let stored = state.read().await.archived_project_paths.clone();
-        assert_eq!(stored, vec![path.clone()]);
+        assert_eq!(stored, vec![archived_expected]);
         let event = recv_ws_event(&mut rx);
         assert_eq!(event["event"], json!("project_archive_changed"));
         assert_eq!(event["payload"]["path"], json!(path));
