@@ -31,7 +31,7 @@ The full enum is in `session/profile.rs::CodingAgentKind`.
 
 ### Logical clear capability is separate from tuned integration
 
-Remote logical clear and canonical text submission use an operation-specific direct-shell capability table, independent of `CodingAgentKind`. Direct Claude/Codex/Gemini-family shells and Cursor exact stem `agent` map logical clear to `/clear`. An exact-stem direct Pi shell maps it to `/new` and uses the same delayed double-Enter submission timing. Pi compact and Pi-origin `self-handoff-and-switch` remain unsupported.
+Remote logical clear and canonical text submission use an operation-specific direct-shell capability table, independent of `CodingAgentKind`. Direct Claude/Codex/Gemini-family shells and Cursor exact stem `agent` map logical clear to `/clear`. An exact-stem direct Pi shell maps it to `/new` and uses the same delayed double-Enter submission timing. An exact-stem direct Pi shell is also a supported `self-handoff-and-switch` source. Pi compact remains unsupported.
 
 Pi is a tuned `CodingAgentKind` for the auto-resume, profile, and wire behavior described below, but that identity does not authorize logical PTY actions. The logical-clear rule is lexical trusted configuration: a direct shell whose final file stem is exactly `pi` matches, including `pi`, `pi.exe`, and the stock `pi.cmd` shim; file-stem extraction discards any final extension. An outer `cmd`/`pwsh` wrapper does not match this operation-specific rule, even when tuned Pi detection supports its command shape. This is not binary attestation. AgentsCommander does not version-probe or semantically acknowledge production clears; stock Pi 0.80.10 is the validated control, and a successful action records PTY write receipt.
 

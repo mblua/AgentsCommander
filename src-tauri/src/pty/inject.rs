@@ -95,7 +95,7 @@ pub(crate) fn supports_auto_self_maintenance(shell: &str) -> bool {
 pub(crate) fn supports_self_handoff_switch(shell: &str) -> bool {
     matches!(
         pty_injection_profile(shell),
-        PtyInjectionProfile::Established | PtyInjectionProfile::Cursor
+        PtyInjectionProfile::Established | PtyInjectionProfile::Cursor | PtyInjectionProfile::Pi
     )
 }
 
@@ -369,7 +369,7 @@ mod tests {
                 "Pi compact remains unsupported: {shell:?}"
             );
             assert!(supports_auto_self_maintenance(shell));
-            assert!(!supports_self_handoff_switch(shell));
+            assert!(supports_self_handoff_switch(shell), "Pi switch source: {shell:?}");
         }
 
         let unsupported = [
