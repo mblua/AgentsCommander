@@ -2743,6 +2743,17 @@ mod tests {
         }
     }
 
+    /// #1077: the display-canonical form of an existing directory - exactly what
+    /// the six-field decoder selects for a valid project. Storing this (instead
+    /// of the raw temp path) keeps the runtime-path assertions platform-robust:
+    /// on Windows it equals the raw path, on Linux/CI it is the symlink-resolved
+    /// canonical path the decoder actually publishes.
+    fn canonical_display(dir: &Path) -> String {
+        crate::config::projects::display_canonical(
+            &std::fs::canonicalize(dir).unwrap().to_string_lossy(),
+        )
+    }
+
     /// CWD is process-wide; serialize tests that intentionally use relative paths.
     struct CwdGuard(PathBuf);
     impl Drop for CwdGuard {
@@ -3038,7 +3049,7 @@ mod tests {
         let settings_path = temp.path().join("settings.json");
         let project = temp.path().join("proj-archive-relative");
         std::fs::create_dir_all(project.join(".ac")).expect("create .ac");
-        let path = project.to_string_lossy().to_string();
+        let path = canonical_display(&project);
         let settings = AppSettings {
             project_paths: vec![path.clone()],
             project_path: Some(path.clone()),
@@ -3112,7 +3123,7 @@ mod tests {
         let project = temp.path().join("proj-f1");
         let agent = project.join(".ac").join("wg-1").join("__agent_dev");
         std::fs::create_dir_all(&agent).expect("create agent dir");
-        let path = project.to_string_lossy().to_string();
+        let path = canonical_display(&project);
         let settings = AppSettings {
             project_paths: vec![path.clone()],
             project_path: Some(path.clone()),
@@ -3204,7 +3215,7 @@ mod tests {
         let project = temp.path().join("proj-rollback");
         let agent = project.join(".ac").join("wg-1").join("__agent_dev");
         std::fs::create_dir_all(&agent).expect("create agent dir");
-        let path = project.to_string_lossy().to_string();
+        let path = canonical_display(&project);
         let settings = AppSettings {
             project_paths: vec![path.clone()],
             project_path: Some(path.clone()),

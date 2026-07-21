@@ -2530,8 +2530,17 @@ mod tests {
     fn real_ac_project(parent: &Path, name: &str) -> String {
         let dir = parent.join(name);
         std::fs::create_dir_all(dir.join(".ac")).unwrap();
-        let canon = std::fs::canonicalize(&dir).unwrap();
-        crate::config::projects::display_canonical(&canon.to_string_lossy())
+        canonical_display(&dir)
+    }
+
+    /// #1077: the display-canonical form of an existing directory - what the
+    /// six-field decoder selects. Storing this instead of the raw temp path keeps
+    /// runtime-path assertions platform-robust (equal to raw on Windows, the
+    /// symlink-resolved canonical on Linux/CI, which the preserving writer publishes).
+    fn canonical_display(dir: &Path) -> String {
+        crate::config::projects::display_canonical(
+            &std::fs::canonicalize(dir).unwrap().to_string_lossy(),
+        )
     }
 
     /// #1077: seed a whole, valid AppSettings object on disk with `keys` removed
@@ -3672,7 +3681,7 @@ mod tests {
         std::fs::create_dir_all(&kept_workdir).expect("create kept workdir");
         std::fs::create_dir_all(&outside_workdir).expect("create outside workdir");
 
-        let project_path = project.to_string_lossy().to_string();
+        let project_path = canonical_display(&project);
         write_settings_file(
             temp.path(),
             &AppSettings {
@@ -3737,7 +3746,7 @@ mod tests {
         let project = temp.path().join("project-a");
         let kept_workdir = project.join(".ac").join("wg-1").join("__agent_dev");
         std::fs::create_dir_all(&kept_workdir).expect("create kept workdir");
-        let project_path = project.to_string_lossy().to_string();
+        let project_path = canonical_display(&project);
 
         write_sessions_file(
             temp.path(),
