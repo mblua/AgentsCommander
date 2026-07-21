@@ -19,8 +19,8 @@ use std::path::PathBuf;
 use crate::cli::workgroup::write_project_registration_refresh;
 use crate::config::projects::{register_existing_project, ProjectError};
 use crate::config::settings::{
-    load_settings_for_cli_strict, project_state_has_structural, resync_project_state_from_runtime,
-    save_settings_with_project_paths,
+    load_settings_for_cli_strict, project_state_has_structural, refresh_project_paths_from_disk,
+    resync_project_state_from_runtime, save_settings_with_project_paths,
 };
 
 #[derive(Args)]
@@ -58,6 +58,13 @@ pub fn execute(args: OpenProjectArgs) -> i32 {
         eprintln!(
             "Error: settings.json has malformed project metadata; refusing to modify the project list. Fix or remove the corrupt project fields first."
         );
+        return 1;
+    }
+    // #1077: reconcile the runtime list from the RAW disk fields (which retain a
+    // stored-but-missing project the strict decode filters out) so a subsequent
+    // resync preserves those records in place instead of dropping them.
+    if let Err(e) = refresh_project_paths_from_disk(&mut settings) {
+        eprintln!("Error: {}", e);
         return 1;
     }
     let result = match register_existing_project(&mut settings, &args.path) {

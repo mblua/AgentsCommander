@@ -2256,7 +2256,7 @@ pub(crate) fn apply_project_decode_to_value(
             FIELD_ARCHIVED.to_string(),
             Value::Array(
                 state
-                    .archived_selected()
+                    .archived_management_paths()
                     .into_iter()
                     .map(Value::String)
                     .collect(),
@@ -2488,22 +2488,17 @@ pub(crate) fn resync_project_state_from_runtime(settings: &mut AppSettings) {
         .cloned()
         .collect();
 
-    let mut active: Vec<ResolvedPair> = settings
-        .project_paths
-        .iter()
-        .enumerate()
-        .map(|(i, p)| resynced_selected_pair(ProjectSource::ProjectPaths, i, p))
-        .collect();
-    active.extend(retained_active);
+    let active = reconcile_group_with_retained(
+        &settings.project_paths,
+        ProjectSource::ProjectPaths,
+        retained_active,
+    );
     let active_registration_count = active.len();
-
-    let mut archived: Vec<ResolvedPair> = settings
-        .archived_project_paths
-        .iter()
-        .enumerate()
-        .map(|(i, p)| resynced_selected_pair(ProjectSource::ArchivedProjectPaths, i, p))
-        .collect();
-    archived.extend(retained_archived);
+    let archived = reconcile_group_with_retained(
+        &settings.archived_project_paths,
+        ProjectSource::ArchivedProjectPaths,
+        retained_archived,
+    );
     let archived_registration_count = archived.len();
 
     let mut pairs = active;
@@ -2522,6 +2517,45 @@ pub(crate) fn resync_project_state_from_runtime(settings: &mut AppSettings) {
         structural_issues: old.structural_issues.clone(),
         runtime_authoritative: true,
     });
+}
+
+/// Rebuild one group's pairs from the mutated `runtime` list while reconciling
+/// the pre-mutation `retained` unresolved (missing/conflict/invalid) records:
+///
+/// - a runtime entry that matches a retained record by normalized key reuses
+///   that record IN PLACE (preserving its raw values, companion, and issue), so
+///   a preserved conflict/missing record is never rebuilt as "selected" nor
+///   duplicated;
+/// - a runtime entry with no retained match becomes a fresh selected pair;
+/// - a retained record whose key is absent from the runtime list was removed by
+///   the mutation and is dropped (so "Remove from list" actually removes it).
+fn reconcile_group_with_retained(
+    runtime: &[String],
+    source: ProjectSource,
+    mut retained: Vec<ResolvedPair>,
+) -> Vec<ResolvedPair> {
+    let mut out = Vec::with_capacity(runtime.len());
+    for (i, path) in runtime.iter().enumerate() {
+        let key = projects::normalize_for_compare(path);
+        let matched = retained.iter().position(|r| {
+            r.raw_absolute
+                .value
+                .as_deref()
+                .map(projects::normalize_for_compare)
+                == Some(key.clone())
+        });
+        match matched {
+            Some(pos) => {
+                let mut pair = retained.remove(pos);
+                pair.source = source;
+                pair.index = Some(i);
+                out.push(pair);
+            }
+            None => out.push(resynced_selected_pair(source, i, path)),
+        }
+    }
+    // Any retained record not matched by the runtime list was removed; drop it.
+    out
 }
 
 /// Fresh-read the whole disk object for a project-preserving/reconciling write.
@@ -2853,6 +2887,26 @@ pub(crate) fn refresh_project_paths_from_path(
         if let Some(archived) = lists.archived_project_paths {
             settings.archived_project_paths = archived;
         }
+    }
+    Ok(())
+}
+
+/// #1077 §4.3 step 2: fresh-read and fully re-decode the six disk fields (so a
+/// post-startup CLI write is authoritative), replacing the runtime lists with the
+/// SELECTED canonical paths and installing the fresh hidden pair state. Aborts
+/// (`Err`) on a present-but-invalid whole object; keeps the live runtime/hidden
+/// state when the file is absent.
+pub(crate) fn refresh_and_decode_project_paths_from_path(
+    settings: &mut AppSettings,
+    path: &Path,
+) -> Result<(), String> {
+    if let Some(map) = read_disk_object_for_write(path)? {
+        let base = production_instance_base();
+        let state = decode_project_state(&map, base.as_deref(), &projects::FsCandidateResolver);
+        settings.project_paths = state.active_selected();
+        settings.project_path = state.selected_head.clone();
+        settings.archived_project_paths = state.archived_management_paths();
+        settings.project_path_state = Arc::new(state);
     }
     Ok(())
 }
@@ -4794,6 +4848,101 @@ mod tests {
             lists.archived_project_paths,
             Some(vec!["Archived".to_string()])
         );
+    }
+
+    #[test]
+    fn resync_reconciles_missing_and_conflict_without_duplication() {
+        // Grinch Defect 1: a decoded state carrying a MISSING and a CONFLICT
+        // record, mutated across register/remove, must never duplicate/resurrect
+        // those records, and remove must actually remove.
+        use crate::config::projects::{
+            IssueKind, ProjectPathPersistenceState, ProjectSource, RawStringField, RepairKind,
+            ResolvedPair,
+        };
+        let pair = |idx: usize, raw: &str, selected: Option<&str>, issue: Option<IssueKind>| {
+            ResolvedPair {
+                source: ProjectSource::ProjectPaths,
+                index: Some(idx),
+                raw_absolute: RawStringField::string(raw),
+                raw_relative: RawStringField::absent(),
+                absolute_side: super::absent_side(),
+                relative_side: super::absent_side(),
+                selected: selected.map(String::from),
+                selected_canonical_raw: selected.map(String::from),
+                selected_identity: None,
+                issue,
+                repair: RepairKind::None,
+            }
+        };
+        let state = ProjectPathPersistenceState {
+            pairs: vec![
+                pair(0, "A", Some("A"), None),
+                pair(1, "M", None, Some(IssueKind::Missing)),
+                pair(2, "C", None, Some(IssueKind::Conflict)),
+            ],
+            selected_head: Some("A".to_string()),
+            active_registration_count: 3,
+            archived_registration_count: 0,
+            active_companion_present: true,
+            archived_companion_present: false,
+            has_genuine_singular: false,
+            active_reconcile_eligible: false,
+            archived_reconcile_eligible: false,
+            structural_issues: Vec::new(),
+            runtime_authoritative: false,
+        };
+        let mut s = AppSettings {
+            project_path_state: std::sync::Arc::new(state),
+            ..AppSettings::default()
+        };
+        // Raw runtime (3-field refresh) carries all three stored absolutes.
+        s.project_paths = vec!["A".to_string(), "M".to_string(), "C".to_string()];
+
+        // Register D.
+        s.project_paths.push("D".to_string());
+        super::resync_project_state_from_runtime(&mut s);
+        {
+            let st = &s.project_path_state;
+            assert_eq!(
+                st.active_registration_count, 4,
+                "no duplication on register"
+            );
+            let keys: Vec<String> = st
+                .active_pairs()
+                .iter()
+                .map(|p| p.raw_absolute.value.clone().unwrap())
+                .collect();
+            assert_eq!(
+                keys,
+                vec!["A", "M", "C", "D"],
+                "order preserved, no duplicates"
+            );
+            assert_eq!(st.active_pairs()[1].issue, Some(IssueKind::Missing));
+            assert_eq!(st.active_pairs()[2].issue, Some(IssueKind::Conflict));
+            assert!(st.active_pairs()[3].issue.is_none());
+        }
+
+        // Remove M ("Remove from list" on the missing entry).
+        s.project_paths = vec!["A".to_string(), "C".to_string(), "D".to_string()];
+        super::resync_project_state_from_runtime(&mut s);
+        {
+            let st = &s.project_path_state;
+            assert_eq!(
+                st.active_registration_count, 3,
+                "the missing record must actually be removed, not resurrected"
+            );
+            let keys: Vec<String> = st
+                .active_pairs()
+                .iter()
+                .map(|p| p.raw_absolute.value.clone().unwrap())
+                .collect();
+            assert_eq!(keys, vec!["A", "C", "D"]);
+            assert_eq!(
+                st.active_pairs()[1].issue,
+                Some(IssueKind::Conflict),
+                "unrelated conflict preserved through the removal"
+            );
+        }
     }
 
     #[test]

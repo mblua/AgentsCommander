@@ -1300,11 +1300,21 @@ impl ProjectPathPersistenceState {
             .filter_map(|p| p.selected.clone())
             .collect()
     }
-    /// Selected canonical (display) archived paths, in order.
-    pub(crate) fn archived_selected(&self) -> Vec<String> {
+    /// Archived management projection (§3.6): every archived pair that is either
+    /// selected or a non-conflicting removable stored row (missing/invalid),
+    /// keeping "Remove from list" working for a project whose directory vanished
+    /// while never exposing one side of an archived conflict. This is the runtime
+    /// `archivedProjectPaths` projection; the active list stays selected-only so
+    /// session restoration never restores an unvalidated project.
+    pub(crate) fn archived_management_paths(&self) -> Vec<String> {
         self.archived_pairs()
             .iter()
-            .filter_map(|p| p.selected.clone())
+            .filter_map(|p| match (&p.selected, p.issue) {
+                (Some(sel), _) => Some(sel.clone()),
+                (None, Some(IssueKind::Conflict)) => None,
+                (None, Some(_)) => p.raw_absolute.value.clone(),
+                (None, None) => None,
+            })
             .collect()
     }
     /// Blocking issues (registrations that selected no path), in `pairs` order.
@@ -1393,8 +1403,10 @@ fn combine_sides(pair: RawPair, abs: SideOutcome, rel: SideOutcome) -> ResolvedP
             );
             match same {
                 SameDir::Same => {
-                    // Prefer the absolute candidate's canonical form.
-                    let canon = abs.canonical_path.clone().unwrap();
+                    // Prefer the absolute candidate's canonical form. A valid side
+                    // always carries a canonical path; default defensively rather
+                    // than panicking if that invariant is ever weakened.
+                    let canon = abs.canonical_path.clone().unwrap_or_default();
                     selected = Some(display_canonical(&canon));
                     selected_canonical_raw = Some(canon);
                     selected_identity = abs.identity;
@@ -1413,7 +1425,7 @@ fn combine_sides(pair: RawPair, abs: SideOutcome, rel: SideOutcome) -> ResolvedP
             }
         }
         (true, false) => {
-            let canon = abs.canonical_path.clone().unwrap();
+            let canon = abs.canonical_path.clone().unwrap_or_default();
             selected = Some(display_canonical(&canon));
             selected_canonical_raw = Some(canon);
             selected_identity = abs.identity;
@@ -1421,7 +1433,7 @@ fn combine_sides(pair: RawPair, abs: SideOutcome, rel: SideOutcome) -> ResolvedP
             repair = RepairKind::PopulateCompanion;
         }
         (false, true) => {
-            let canon = rel.canonical_path.clone().unwrap();
+            let canon = rel.canonical_path.clone().unwrap_or_default();
             selected = Some(display_canonical(&canon));
             selected_canonical_raw = Some(canon);
             selected_identity = rel.identity;
@@ -2669,6 +2681,37 @@ mod tests {
                 Err(RelDecodeError::Backslash)
             );
         }
+
+        #[test]
+        fn posix_paths_are_case_distinct() {
+            // Two POSIX projects differing only by case must produce distinct
+            // wires (encode preserves case) and distinct decoded targets.
+            let base = Path::new("/opt");
+            let upper = encode_instance_relative(Path::new("/opt/Repo"), base).unwrap();
+            let lower = encode_instance_relative(Path::new("/opt/repo"), base).unwrap();
+            assert_eq!(upper, "Repo");
+            assert_eq!(lower, "repo");
+            assert_ne!(upper, lower);
+            assert_ne!(
+                decode_instance_relative(&upper, base).unwrap(),
+                decode_instance_relative(&lower, base).unwrap()
+            );
+        }
+
+        #[test]
+        fn unicode_and_dot_round_trip() {
+            let base = Path::new("/opt/bundle");
+            // `.` names the base itself.
+            assert_eq!(
+                decode_instance_relative(".", base).unwrap(),
+                PathBuf::from("/opt/bundle")
+            );
+            // Non-ASCII components survive an encode/decode round-trip.
+            let project = Path::new("/opt/bundle/проект/Ω-α");
+            let wire = encode_instance_relative(project, base).unwrap();
+            assert_eq!(wire, "проект/Ω-α");
+            assert_eq!(decode_instance_relative(&wire, base).unwrap(), project);
+        }
     }
 
     #[cfg(windows)]
@@ -2793,6 +2836,45 @@ mod tests {
             assert_eq!(
                 decode_instance_relative("../../x", Path::new(r"C:\bundle")),
                 Err(RelDecodeError::EscapesRoot)
+            );
+        }
+
+        #[test]
+        fn decode_rejects_all_illegal_windows_chars_and_controls() {
+            let base = Path::new(r"C:\bundle");
+            for illegal in ["a<b", "a>b", "a\"b", "a|b", "a?b", "a*b"] {
+                assert_eq!(
+                    decode_instance_relative(illegal, base),
+                    Err(RelDecodeError::IllegalWindowsChar),
+                    "must reject {illegal:?}"
+                );
+            }
+            // Control characters (below 0x20) are rejected.
+            assert_eq!(
+                decode_instance_relative("a\u{0001}b", base),
+                Err(RelDecodeError::IllegalWindowsChar)
+            );
+            assert_eq!(
+                decode_instance_relative("a\u{001f}b", base),
+                Err(RelDecodeError::IllegalWindowsChar)
+            );
+        }
+
+        #[test]
+        fn encode_device_namespace_has_no_portable_form() {
+            // A `\\.\` device-namespace path is unsupported and must NOT be
+            // stripped into an ordinary path; it yields no relative companion.
+            assert_eq!(
+                encode_instance_relative(Path::new(r"\\.\COM1"), Path::new(r"C:\bundle")),
+                None
+            );
+            // A verbatim non-disk device path is likewise unsupported.
+            assert_eq!(
+                encode_instance_relative(
+                    Path::new(r"\\?\GLOBALROOT\Device\HarddiskVolume1\x"),
+                    Path::new(r"C:\bundle")
+                ),
+                None
             );
         }
     }
@@ -3043,7 +3125,7 @@ mod tests {
             );
             assert_eq!(report.active_selected(), vec![display_canonical(&a)]);
             assert!(
-                report.archived_selected().is_empty(),
+                report.archived_management_paths().is_empty(),
                 "archived dup of active must drop"
             );
         }

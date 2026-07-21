@@ -2052,38 +2052,54 @@ async fn mutate_project_paths_with_settings_path<T>(
     settings_path: Option<&Path>,
     mutate: impl FnOnce(&mut crate::config::settings::AppSettings) -> Result<T, String>,
 ) -> Result<T, String> {
+    // Resolve the concrete settings path (production uses config_dir).
+    let path_buf;
+    let path: &Path = match settings_path {
+        Some(p) => p,
+        None => {
+            path_buf = crate::config::config_dir()
+                .ok_or("Could not determine settings directory")?
+                .join("settings.json");
+            &path_buf
+        }
+    };
+
     let mut s = settings.write().await;
-    // #778: reconcile project_paths from disk BEFORE the upsert so a concurrent
+    // #778: reconcile project_paths from disk BEFORE the mutation so a concurrent
     // CLI append is folded in, not clobbered. The raw three-field refresh (not
     // the validating decoder) keeps a stored-but-missing project in the list so
     // remove/archive of a vanished directory still matches it lexically (§3.7).
     // Aborts on a non-NotFound read error (G2) or a wrong-typed project field.
-    if let Some(path) = settings_path {
-        crate::config::settings::refresh_project_paths_from_path(&mut s, path)?;
-    } else {
-        crate::config::settings::refresh_project_paths_from_disk(&mut s)?;
-    }
-    // #1077: structural project corruption (from the startup decode) blocks any
-    // list mutation; the three-field read above independently aborts on a
-    // wrong-typed primary field.
+    crate::config::settings::refresh_project_paths_from_path(&mut s, path)?;
+    // #1077: structural project corruption blocks any list mutation; the
+    // three-field read above independently aborts on a wrong-typed primary field.
     if crate::config::settings::project_state_has_structural(&s) {
         return Err(
             "settings.json has malformed project metadata; refusing to modify the project list. Fix or remove the corrupt project fields first.".to_string(),
         );
     }
-    let result = mutate(&mut s)?;
-    // #1077: rebuild the hidden state to match the mutated runtime lists,
-    // retaining any preserved conflict/missing records, so the reconcile write
-    // emits the new selection plus those raw records (never dropping a project).
-    crate::config::settings::resync_project_state_from_runtime(&mut s);
-    let snapshot = s.clone();
-    if let Some(path) = settings_path {
-        crate::config::settings::save_settings_with_project_paths_to_path(&snapshot, path)?;
-    } else {
-        crate::config::settings::save_settings_with_project_paths(&snapshot)?;
+    // #1077 §4.3: apply the operation to a separate candidate clone and publish
+    // only after the atomic save succeeds. On save failure the live guard keeps
+    // the refreshed pre-mutation state (never the unsaved candidate).
+    let mut candidate = s.clone();
+    let result = mutate(&mut candidate)?;
+    // Rebuild the candidate's hidden state to match its mutated runtime lists,
+    // reconciling preserved conflict/missing records against the mutation.
+    crate::config::settings::resync_project_state_from_runtime(&mut candidate);
+    match crate::config::settings::reconcile_project_state_to_path(&candidate, path, true, true) {
+        Ok(written) => {
+            // Publish the fresh-decoded value (selected runtime + hidden state)
+            // that §4.2 requires, not the stale candidate.
+            *s = written;
+            drop(s); // explicit; lock released AFTER the disk write completes
+            Ok(result)
+        }
+        Err(e) => {
+            // Live state is still the refreshed pre-mutation snapshot.
+            drop(s);
+            Err(e)
+        }
     }
-    drop(s); // explicit; lock released AFTER the disk write completes
-    Ok(result)
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize)]
@@ -3297,10 +3313,18 @@ mod tests {
         .expect_err("late liveness should roll back vanished project");
 
         assert!(err.contains("open session"), "{err}");
+        // #1077: the rollback is disk-authoritative. The vanished project is
+        // active again on disk, but excluded from the SELECTED active runtime
+        // (session restoration must not restore an unvalidated directory) and it
+        // is not archived, so both in-memory lists are empty.
         let settings = state.read().await;
-        assert_eq!(settings.project_paths, vec![path.clone()]);
+        assert!(settings.project_paths.is_empty());
         assert!(settings.archived_project_paths.is_empty());
         drop(settings);
+        let disk: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        assert_eq!(disk["projectPaths"], json!([path]));
+        assert!(disk["archivedProjectPaths"].as_array().unwrap().is_empty());
         let event = recv_ws_event(&mut rx);
         assert_eq!(event["payload"]["path"], json!(path));
         assert_eq!(event["payload"]["archived"], json!(false));
@@ -3527,6 +3551,53 @@ mod tests {
             base(&disk()),
             vec!["proj-b", "proj-c", "proj-d"],
             "B and C must not be lost"
+        );
+    }
+
+    #[tokio::test]
+    async fn mutate_save_failure_does_not_publish_unsaved_candidate() {
+        // Grinch Defect 3: on an atomic-save failure the live state must remain
+        // the refreshed pre-mutation state, never the unsaved mutated candidate.
+        let temp = tempfile::tempdir().expect("tempdir");
+        // A regular FILE where the settings directory is expected, so the writer's
+        // create_dir_all (or the pre-mutation read) fails deterministically.
+        let blocker = temp.path().join("blocker");
+        std::fs::write(&blocker, b"x").expect("write blocker file");
+        let settings_path = blocker.join("settings.json");
+        let mk = |name: &str| {
+            let p = temp.path().join(name);
+            std::fs::create_dir_all(p.join(".ac")).expect("create project .ac");
+            p.to_string_lossy().to_string()
+        };
+        let (x, y) = (mk("keep-x"), mk("new-y"));
+        let settings = crate::config::settings::AppSettings {
+            project_paths: vec![x.clone()],
+            project_path: Some(x.clone()),
+            ..Default::default()
+        };
+        let state: SettingsState = std::sync::Arc::new(tokio::sync::RwLock::new(settings));
+
+        let err = open_project_inner_with_settings_path(&state, &y, Some(&settings_path))
+            .await
+            .expect_err("save into a file-blocked directory must fail");
+        assert!(!err.is_empty());
+
+        let live = state.read().await;
+        let names: Vec<&str> = live
+            .project_paths
+            .iter()
+            .map(|p| {
+                std::path::Path::new(p)
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec!["keep-x"],
+            "the unsaved candidate ([keep-x, new-y]) must not leak into the live state"
         );
     }
 

@@ -413,27 +413,53 @@ pub(crate) async fn settings_snapshot_helper(
     {
         // Reconciliation transaction under the write guard; no lock across await.
         let mut guard = settings.write().await;
-        let state = guard.project_path_state.clone();
-        let eligible = !state.has_structural()
-            && (state.active_reconcile_eligible || state.archived_reconcile_eligible);
-        if eligible {
-            let path = settings_path
+        let pending = {
+            let state = &guard.project_path_state;
+            !state.has_structural()
+                && (state.active_reconcile_eligible || state.archived_reconcile_eligible)
+        };
+        if pending {
+            if let Some(path) = settings_path
                 .clone()
-                .or_else(|| crate::config::config_dir().map(|d| d.join("settings.json")));
-            if let Some(path) = path {
-                match crate::config::settings::reconcile_project_state_to_path(
-                    &guard,
-                    &path,
-                    state.active_reconcile_eligible,
-                    state.archived_reconcile_eligible,
+                .or_else(|| crate::config::config_dir().map(|d| d.join("settings.json")))
+            {
+                // §4.3 step 2: re-decode all six project fields from disk and
+                // re-resolve BEFORE reconciling, so a CLI registration that
+                // happened after startup is authoritative and not clobbered. On a
+                // disk read/parse failure, retain the previously validated state,
+                // perform no write, and report stage `read`.
+                match crate::config::settings::refresh_and_decode_project_paths_from_path(
+                    &mut guard, &path,
                 ) {
-                    Ok(written) => *guard = written,
                     Err(message) => {
                         reconciliation_error = Some(ProjectPathReconciliationError {
-                            stage: ReconciliationStage::Write,
+                            stage: ReconciliationStage::Read,
                             message,
                             retryable: true,
                         });
+                    }
+                    Ok(()) => {
+                        let fresh = guard.project_path_state.clone();
+                        let still_eligible = !fresh.has_structural()
+                            && (fresh.active_reconcile_eligible
+                                || fresh.archived_reconcile_eligible);
+                        if still_eligible {
+                            match crate::config::settings::reconcile_project_state_to_path(
+                                &guard,
+                                &path,
+                                fresh.active_reconcile_eligible,
+                                fresh.archived_reconcile_eligible,
+                            ) {
+                                Ok(written) => *guard = written,
+                                Err(message) => {
+                                    reconciliation_error = Some(ProjectPathReconciliationError {
+                                        stage: ReconciliationStage::Write,
+                                        message,
+                                        retryable: true,
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -3543,6 +3569,96 @@ mod tests {
         let disk: AppSettings =
             serde_json::from_str(&std::fs::read_to_string(settings_path).unwrap()).unwrap();
         assert_eq!(disk.archived_project_paths, vec![disk_archived.to_string()]);
+    }
+
+    /// Build a pending (companion-population-eligible) SettingsState by decoding a
+    /// legacy `[project]` file (no companion) from `settings_path`.
+    fn pending_state_from_legacy(settings_path: &Path, project: &str) -> SettingsState {
+        write_settings_file(
+            settings_path.parent().unwrap(),
+            &AppSettings {
+                project_paths: vec![project.to_string()],
+                project_path: Some(project.to_string()),
+                ..AppSettings::default()
+            },
+        );
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(settings_path).unwrap()).unwrap();
+        let decoded = crate::config::settings::decode_project_state(
+            value.as_object().unwrap(),
+            None,
+            &crate::config::projects::FsCandidateResolver,
+        );
+        let startup = AppSettings {
+            project_paths: decoded.active_selected(),
+            project_path: decoded.selected_head.clone(),
+            project_path_state: std::sync::Arc::new(decoded),
+            ..AppSettings::default()
+        };
+        assert!(
+            startup.project_path_state.active_reconcile_eligible,
+            "legacy no-companion state should be pending"
+        );
+        state_for(startup)
+    }
+
+    #[tokio::test]
+    async fn auto_reconcile_redecodes_and_preserves_intervening_cli_write() {
+        // Grinch Defect 2: the get_settings boundary must re-decode disk before
+        // reconciling, so a CLI registration that landed after startup survives.
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let a = real_ac_project(temp.path(), "A");
+        let b = real_ac_project(temp.path(), "B");
+        let state = pending_state_from_legacy(&settings_path, &a);
+
+        // Intervening CLI registration: disk now carries [A, B].
+        write_settings_file(
+            temp.path(),
+            &AppSettings {
+                project_paths: vec![a.clone(), b.clone()],
+                project_path: Some(a.clone()),
+                ..AppSettings::default()
+            },
+        );
+
+        let _snap = super::settings_snapshot_helper(&state, Some(settings_path.clone())).await;
+
+        let disk: AppSettings =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        assert_eq!(
+            disk.project_paths,
+            vec![a.clone(), b.clone()],
+            "CLI-registered B must not be clobbered by the auto-reconcile"
+        );
+        let live = state.read().await;
+        assert_eq!(live.project_paths, vec![a, b]);
+    }
+
+    #[tokio::test]
+    async fn auto_reconcile_reports_stage_read_on_corrupt_disk() {
+        // Grinch Defect 2: a disk re-decode failure at the boundary reports
+        // stage `read`, performs no write, and retains the prior state.
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let a = real_ac_project(temp.path(), "A");
+        let state = pending_state_from_legacy(&settings_path, &a);
+
+        // Corrupt the settings file after startup.
+        std::fs::write(&settings_path, b"{ not valid json").unwrap();
+        let snap = super::settings_snapshot_helper(&state, Some(settings_path.clone())).await;
+
+        let err = snap
+            .project_path_resolution
+            .reconciliation_error
+            .expect("a corrupt disk re-decode must surface a reconciliation error");
+        assert!(matches!(err.stage, super::ReconciliationStage::Read));
+        assert!(err.retryable);
+        // No write: the corrupt bytes are untouched.
+        assert_eq!(
+            std::fs::read_to_string(&settings_path).unwrap(),
+            "{ not valid json"
+        );
     }
 
     #[tokio::test]
