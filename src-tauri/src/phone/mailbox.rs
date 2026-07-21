@@ -8151,6 +8151,7 @@ mod tests {
             was_detached: false,
             detached_geometry: None,
             start_fresh_on_restore: false,
+            context_percent: None,
         }
     }
 

@@ -257,6 +257,7 @@ impl SessionManager {
             was_detached: false,
             detached_geometry: None,
             start_fresh_on_restore: false,
+            context_percent: None,
         };
         state.sessions.insert(id, session.clone());
         state.order.push(id);
@@ -487,6 +488,23 @@ impl SessionManager {
         }
         if let Some(s) = state.sessions.get_mut(&id) {
             s.last_prompt = Some(prompt);
+        }
+    }
+
+    /// #1088 - write the scraper's latest context-usage percent onto one
+    /// session so it rides `Session -> SessionInfo -> snapshot_sessions` into
+    /// `sessions.json` for the disk-reading CLI. No logging (unlike
+    /// `mark_idle`/`mark_busy`) to avoid a log line up to once per 5s per
+    /// changing session. A write for an absent/pending id is a silent no-op,
+    /// matching this mutator family and the scraper's "session may have ended
+    /// between sample and commit" reality.
+    pub async fn set_context_percent(&self, id: Uuid, percent: Option<u8>) {
+        let mut state = self.state.write().await;
+        if state.pending_create.contains_key(&id) {
+            return;
+        }
+        if let Some(s) = state.sessions.get_mut(&id) {
+            s.context_percent = percent;
         }
     }
 
@@ -1526,6 +1544,7 @@ impl SessionManager {
             was_detached: false,
             detached_geometry: None,
             start_fresh_on_restore: false,
+            context_percent: None,
         };
         if state.selection.mode() == SelectionMode::None {
             session.status = SessionStatus::Active;
@@ -2586,6 +2605,69 @@ mod tests {
             SessionStatus::Idle,
             "mark_idle must transition Running → Idle"
         );
+    }
+
+    // ── #1088: set_context_percent mutator ──
+
+    #[tokio::test]
+    async fn set_context_percent_round_trips_including_zero_and_clear() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "codex".into(),
+                vec![],
+                "C:\\proj".into(),
+                None,
+                None,
+                vec![],
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+
+        // Fresh session has no reading.
+        assert_eq!(
+            mgr.get_session(session.id).await.unwrap().context_percent,
+            None
+        );
+
+        mgr.set_context_percent(session.id, Some(42)).await;
+        assert_eq!(
+            mgr.get_session(session.id).await.unwrap().context_percent,
+            Some(42)
+        );
+
+        // `0` is a valid reading, stored as Some(0), never coerced to None.
+        mgr.set_context_percent(session.id, Some(0)).await;
+        assert_eq!(
+            mgr.get_session(session.id).await.unwrap().context_percent,
+            Some(0)
+        );
+
+        // None clears it.
+        mgr.set_context_percent(session.id, None).await;
+        assert_eq!(
+            mgr.get_session(session.id).await.unwrap().context_percent,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn set_context_percent_noops_on_unknown_id() {
+        let mgr = SessionManager::new();
+        // Must not panic; the id is not present, so the write is a silent no-op.
+        mgr.set_context_percent(Uuid::new_v4(), Some(5)).await;
+    }
+
+    #[tokio::test]
+    async fn set_context_percent_noops_on_pending_create_id() {
+        let mgr = SessionManager::new();
+        let (pending, _binding) = pending_fixture(&mgr, false).await;
+        // The pending guard suppresses the write; the row stays invisible and
+        // nothing panics (mirrors mark_idle's pending_create guard).
+        mgr.set_context_percent(pending.id, Some(5)).await;
+        assert!(mgr.get_session(pending.id).await.is_none());
     }
 
     // #552: a WG replica cwd that agent_fqn_from_path resolves to
