@@ -1221,7 +1221,12 @@ impl PtyBackend for LocalProcessBackend {
         )
     }
 
-    fn write(&self, id: Uuid, data: &[u8]) -> Result<(), AppError> {
+    fn write(
+        &self,
+        _authority: &crate::pty::manager::BackendWriteAuthority,
+        id: Uuid,
+        data: &[u8],
+    ) -> Result<(), AppError> {
         // #942 - poison-tolerant: a panic anywhere under this guard (portable-pty unwraps
         // inside its own child polling) must not brick every terminal write that follows.
         write_to_local_pty(&self.ptys, id, data)

@@ -45,7 +45,7 @@ pub async fn handle(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
-    let authorized = match authorize_transport(&state, addr.ip(), &headers, query) {
+    let authorized = match authorize_transport(&state, addr.ip(), &headers, query).await {
         Ok(authorized) => authorized,
         Err(err) => return err.into_response(),
     };
@@ -64,7 +64,7 @@ pub async fn handle(
         })
 }
 
-fn authorize_transport(
+async fn authorize_transport(
     state: &ApiState,
     ip: std::net::IpAddr,
     headers: &HeaderMap,
@@ -81,13 +81,17 @@ fn authorize_transport(
         Ok(presented) => presented,
         Err(_) => return Err(reject_transport_auth(state, ip, None, "missing_token")),
     };
-    let fresh = match state
-        .store
-        .authenticate_pty_input_fresh(&presented)
-        .map_err(|_| uniform_transport_auth_failure())?
-    {
-        Some(fresh) => fresh,
-        None => return Err(reject_transport_auth(state, ip, None, "invalid_token")),
+    let fresh = match classify_fresh_transport_auth(
+        state
+            .store
+            .authenticate_pty_input_fresh_offloaded(presented)
+            .await,
+    ) {
+        FreshTransportAuth::Authenticated(fresh) => *fresh,
+        FreshTransportAuth::InvalidToken => {
+            return Err(reject_transport_auth(state, ip, None, "invalid_token"))
+        }
+        FreshTransportAuth::DependencyUnavailable => return Err(transport_dependency_unavailable()),
     };
     let client = &fresh.client;
     let session_id_text = query.session_id.to_string();
@@ -212,6 +216,41 @@ fn reject_transport_auth(
 
 fn uniform_transport_auth_failure() -> ApiError {
     ApiError::Unauthorized("transport authentication failed".to_string())
+}
+
+fn transport_dependency_unavailable() -> ApiError {
+    ApiError::ServiceUnavailable("transport authentication dependency unavailable".to_string())
+}
+
+/// The transport boundary's decision over the offloaded fresh-registry lookup.
+/// A `FreshRegistryError` is a dependency failure, never evidence a credential
+/// was revoked, so contention must classify as retry-class service
+/// unavailability, not credential failure.
+enum FreshTransportAuth {
+    Authenticated(Box<crate::api::auth::ApiClientFreshGuard>),
+    InvalidToken,
+    DependencyUnavailable,
+}
+
+/// Classify the offloaded fresh-registry lookup result. Extracted from
+/// `authorize_transport` so this exact retry-class-versus-credential-failure
+/// decision is unit-testable: `ApiState` carries a concrete Tauri (`Wry`)
+/// runtime handle that cannot be built headlessly, so the handler cannot be
+/// driven directly from a test. Behavior is identical to the inline match.
+fn classify_fresh_transport_auth(
+    result: Result<
+        Option<crate::api::auth::ApiClientFreshGuard>,
+        crate::api::auth::FreshRegistryError,
+    >,
+) -> FreshTransportAuth {
+    match result {
+        Ok(Some(fresh)) => FreshTransportAuth::Authenticated(Box::new(fresh)),
+        Ok(None) => FreshTransportAuth::InvalidToken,
+        Err(
+            crate::api::auth::FreshRegistryError::Contended
+            | crate::api::auth::FreshRegistryError::Internal,
+        ) => FreshTransportAuth::DependencyUnavailable,
+    }
 }
 
 async fn handle_ws_connection(
@@ -488,14 +527,86 @@ async fn handle_bridge_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::auth::{ApiClientStore, FreshRegistryError, REGISTRY_FILENAME};
     use crate::pty::idle_detector::IdleDetector;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     #[test]
     fn uniform_transport_auth_failure_is_generic_401() {
         let response = uniform_transport_auth_failure().into_response();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn transport_dependency_unavailable_is_retry_class_503() {
+        let response = transport_dependency_unavailable().into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn fresh_registry_dependency_failures_are_retry_class_not_credential_failures() {
+        // A dependency failure of the privileged registry lookup (contention or
+        // an internal error) must never be reported to a container bridge as a
+        // credential failure. Both classify as retry-class unavailability.
+        assert!(matches!(
+            classify_fresh_transport_auth(Err(FreshRegistryError::Contended)),
+            FreshTransportAuth::DependencyUnavailable
+        ));
+        assert!(matches!(
+            classify_fresh_transport_auth(Err(FreshRegistryError::Internal)),
+            FreshTransportAuth::DependencyUnavailable
+        ));
+        // A registry that is readable but holds no matching credential is a real
+        // credential failure.
+        assert!(matches!(
+            classify_fresh_transport_auth(Ok(None)),
+            FreshTransportAuth::InvalidToken
+        ));
+    }
+
+    #[tokio::test]
+    async fn held_registry_lock_makes_transport_auth_retry_class_with_executor_progress() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // Hold the dedicated registry lock so the offloaded fresh lookup that the
+        // transport boundary awaits observes cross-process contention.
+        let _held = crate::api::auth::hold_registry_lock_for_test(dir.path());
+        let store = Arc::new(ApiClientStore::new(dir.path().join(REGISTRY_FILENAME)));
+
+        let lookup = {
+            let store = Arc::clone(&store);
+            tokio::spawn(async move {
+                store
+                    .authenticate_pty_input_fresh_offloaded("presented-token".to_string())
+                    .await
+            })
+        };
+
+        // The async executor must keep running while the blocking registry lookup
+        // polls the held lock on the blocking pool.
+        tokio::time::timeout(Duration::from_millis(100), async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        })
+        .await
+        .expect("the async executor must progress while the registry lock is held");
+
+        let result = lookup.await.unwrap();
+        assert!(
+            matches!(&result, Err(FreshRegistryError::Contended)),
+            "a held registry lock must surface as retry-class contention, not a missing credential"
+        );
+
+        // The transport boundary classifies that contention as retry-class service
+        // unavailability (503), never credential failure (401).
+        assert!(matches!(
+            classify_fresh_transport_auth(result),
+            FreshTransportAuth::DependencyUnavailable
+        ));
+        assert_eq!(
+            transport_dependency_unavailable().into_response().status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
     }
 
     #[tokio::test]

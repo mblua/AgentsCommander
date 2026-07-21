@@ -843,6 +843,37 @@ pub(crate) fn strict_wg_replica_anchor_from_cwd(cwd: &Path) -> Result<Option<Pat
     Ok(None)
 }
 
+/// Derive the universal create-gate key from the verified directory layout
+/// alone. Ordinary session creation must not depend on team membership,
+/// replica config, matrix config, or the privileged SQLite store being healthy.
+/// For a target that is eligible for privileged PTY input this reconstructs the
+/// exact canonical FQN, so ordinary and privileged creates contend on the same
+/// stripe and exact key. Structurally valid legacy layouts that cannot form a
+/// privileged FQN still receive a stable physical-replica key.
+pub(crate) fn pty_input_create_gate_key_from_cwd(cwd: &Path) -> Result<Option<String>, String> {
+    let Some(replica_root) = strict_wg_replica_anchor_from_cwd(cwd)? else {
+        return Ok(None);
+    };
+    let layout = crate::config::workspace::wg_replica_layout_from_agent_dir(&replica_root)?
+        .ok_or_else(|| "target_create_gate_unavailable".to_string())?;
+    let project = layout
+        .project_dir
+        .file_name()
+        .and_then(|value| value.to_str());
+    if let Some(project) = project {
+        let candidate = format!("{}:{}/{}", project, layout.wg_name, layout.agent_name);
+        if parse_strict_pty_fqn(&candidate).is_ok() {
+            return Ok(Some(candidate));
+        }
+    }
+
+    let replica = crate::path_identity::verify_directory(&replica_root)?;
+    Ok(Some(format!(
+        "physical-wg-replica:{:016x}:{:016x}",
+        replica.object_id.volume, replica.object_id.file
+    )))
+}
+
 fn replica_anchor_from_cwd(cwd: &Path) -> Result<PathBuf, String> {
     strict_wg_replica_anchor_from_cwd(cwd)?.ok_or_else(|| "sender_identity_invalid".to_string())
 }

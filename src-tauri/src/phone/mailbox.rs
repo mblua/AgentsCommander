@@ -1786,6 +1786,42 @@ fn session_has_current_pty_submission_provenance(
         .is_some()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PtyInputPreBoundaryStop {
+    Expired,
+    Shutdown,
+}
+
+async fn await_pty_input_before_deadline<F, T>(
+    expires_at: chrono::DateTime<chrono::Utc>,
+    shutdown: &tokio_util::sync::CancellationToken,
+    future: F,
+) -> Result<T, PtyInputPreBoundaryStop>
+where
+    F: std::future::Future<Output = T>,
+{
+    let remaining = expires_at
+        .signed_duration_since(chrono::Utc::now())
+        .to_std()
+        .map_err(|_| PtyInputPreBoundaryStop::Expired)?;
+    tokio::select! {
+        biased;
+        _ = shutdown.cancelled() => Err(PtyInputPreBoundaryStop::Shutdown),
+        _ = tokio::time::sleep(remaining) => Err(PtyInputPreBoundaryStop::Expired),
+        output = future => Ok(output),
+    }
+}
+
+fn pty_input_lease_failure_code(
+    expires_at: chrono::DateTime<chrono::Utc>,
+) -> crate::phone::types::PtyInputReasonCode {
+    if expires_at <= chrono::Utc::now() {
+        crate::phone::types::PtyInputReasonCode::Expired
+    } else {
+        crate::phone::types::PtyInputReasonCode::LeaseLost
+    }
+}
+
 async fn reject_pty_input_before_boundary(
     store: &crate::api::message_store::MessageStore,
     heartbeat: &mut crate::api::message_store::PreparationHeartbeatGuard,
@@ -3776,6 +3812,10 @@ impl MailboxPoller {
             Ok(store) => Arc::clone(store),
             Err(_) => return,
         };
+        let shutdown = app
+            .try_state::<crate::shutdown::ShutdownSignal>()
+            .map(|signal| signal.token().clone())
+            .unwrap_or_else(tokio_util::sync::CancellationToken::new);
         let _operation_lock = match store.try_operation_lock(injection_id) {
             Ok(Some(lock)) => lock,
             _ => return,
@@ -3795,39 +3835,72 @@ impl MailboxPoller {
             Some(target) => target,
             None => return,
         };
-        let target_stripe = match store.try_target_lock(&target) {
+        let target_gate = match &state.target_gate {
+            Ok(gate) => Arc::clone(gate),
+            Err(_) => return,
+        };
+        let target_stripe = match target_gate.try_target_lock(&target) {
             Ok(Some(lock)) => lock,
             _ => return,
         };
-        let target_wait = initial
+        let initial_expires = match initial
             .expires_at
             .as_deref()
             .and_then(|value| crate::phone::types::parse_canonical_pty_timestamp(value).ok())
-            .and_then(|expires| {
-                expires
-                    .signed_duration_since(chrono::Utc::now())
-                    .to_std()
-                    .ok()
-            });
-        let Some(target_wait) = target_wait else {
-            return;
-        };
-        let target_guard =
-            match tokio::time::timeout(target_wait, state.target_locks.acquire(&target)).await {
-                Ok(guard) => guard,
-                Err(_) => {
-                    log::debug!(
-                        "[pty-input] target ownership wait expired id={} code=expired",
+        {
+            Some(expires) => expires,
+            None => {
+                if store
+                    .terminalize_pty_input_offloaded(
+                        injection_id.to_string(),
+                        S::Rejected,
+                        Some(C::StoreCorrupt),
+                        chrono::Utc::now(),
+                    )
+                    .await
+                    .is_err()
+                {
+                    log::warn!(
+                        "[pty-input] invalid initial deadline id={} code=terminal_store_failed",
                         injection_id
                     );
-                    return;
                 }
-            };
-        let target_ownership = match store.target_ownership(&target, &target_stripe, &target_guard)
-        {
-            Ok(ownership) => ownership,
-            Err(_) => return,
+                return;
+            }
         };
+        let target_guard = match await_pty_input_before_deadline(
+            initial_expires,
+            &shutdown,
+            target_gate.acquire_exact(&target),
+        )
+        .await
+        {
+            Ok(guard) => guard,
+            Err(PtyInputPreBoundaryStop::Shutdown) => return,
+            Err(PtyInputPreBoundaryStop::Expired) => {
+                if store
+                    .terminalize_pty_input_offloaded(
+                        injection_id.to_string(),
+                        S::Rejected,
+                        Some(C::Expired),
+                        chrono::Utc::now(),
+                    )
+                    .await
+                    .is_err()
+                {
+                    log::warn!(
+                        "[pty-input] target-wait expiry failed id={} code=terminal_store_failed",
+                        injection_id
+                    );
+                }
+                return;
+            }
+        };
+        let target_ownership =
+            match target_gate.target_ownership(&target, &target_stripe, &target_guard) {
+                Ok(ownership) => ownership,
+                Err(_) => return,
+            };
         let lease_owner = Uuid::new_v4().to_string();
         let claimed = match store
             .claim_pty_input_offloaded(
@@ -3841,25 +3914,34 @@ impl MailboxPoller {
             Ok(Some(claimed)) => claimed,
             _ => return,
         };
-        let mut heartbeat = crate::api::message_store::PreparationHeartbeatGuard::start(
-            Arc::clone(&store),
-            injection_id.to_string(),
-            lease_owner.clone(),
-        );
         let expires = match crate::phone::types::parse_canonical_pty_timestamp(&claimed.expires_at)
         {
             Ok(expires) => expires,
             Err(_) => {
-                reject_pty_input_before_boundary(
-                    &store,
-                    &mut heartbeat,
-                    injection_id,
-                    C::StoreCorrupt,
-                )
-                .await;
+                if store
+                    .terminalize_pty_input_offloaded(
+                        injection_id.to_string(),
+                        S::Rejected,
+                        Some(C::StoreCorrupt),
+                        chrono::Utc::now(),
+                    )
+                    .await
+                    .is_err()
+                {
+                    log::warn!(
+                        "[pty-input] corrupt-expiry rejection failed id={} code=terminal_store_failed",
+                        injection_id
+                    );
+                }
                 return;
             }
         };
+        let mut heartbeat = crate::api::message_store::PreparationHeartbeatGuard::start(
+            Arc::clone(&store),
+            injection_id.to_string(),
+            lease_owner.clone(),
+            expires,
+        );
         if expires <= chrono::Utc::now() {
             reject_pty_input_before_boundary(&store, &mut heartbeat, injection_id, C::Expired)
                 .await;
@@ -4070,8 +4152,10 @@ impl MailboxPoller {
             .await;
             return;
         } else {
-            match self
-                .spawn_pty_input_target(
+            let spawn = await_pty_input_before_deadline(
+                expires,
+                &shutdown,
+                self.spawn_pty_input_target(
                     app,
                     &claimed,
                     &matching,
@@ -4080,11 +4164,12 @@ impl MailboxPoller {
                     source_plane,
                     api_client_store,
                     &target_ownership,
-                )
-                .await
-            {
-                Ok(session) => (session, true),
-                Err(code) => {
+                ),
+            )
+            .await;
+            match spawn {
+                Ok(Ok(session)) => (session, true),
+                Ok(Err(code)) => {
                     finish_pty_input_before_boundary(
                         &store,
                         &mut heartbeat,
@@ -4093,6 +4178,20 @@ impl MailboxPoller {
                         code,
                     )
                     .await;
+                    return;
+                }
+                Err(PtyInputPreBoundaryStop::Expired) => {
+                    reject_pty_input_before_boundary(
+                        &store,
+                        &mut heartbeat,
+                        injection_id,
+                        C::Expired,
+                    )
+                    .await;
+                    return;
+                }
+                Err(PtyInputPreBoundaryStop::Shutdown) => {
+                    heartbeat.finish().await;
                     return;
                 }
             }
@@ -4110,8 +4209,10 @@ impl MailboxPoller {
                 return;
             }
         };
-        if let Err(code) = self
-            .wait_for_pty_input_ready(
+        let readiness = await_pty_input_before_deadline(
+            expires,
+            &shutdown,
+            self.wait_for_pty_input_ready(
                 app,
                 &claimed,
                 &verified_target,
@@ -4120,18 +4221,31 @@ impl MailboxPoller {
                 source_plane,
                 api_client_store,
                 &heartbeat,
-            )
-            .await
-        {
-            finish_pty_input_before_boundary(
-                &store,
-                &mut heartbeat,
-                injection_id,
-                &lease_owner,
-                code,
-            )
-            .await;
-            return;
+            ),
+        )
+        .await;
+        match readiness {
+            Ok(Ok(())) => {}
+            Ok(Err(code)) => {
+                finish_pty_input_before_boundary(
+                    &store,
+                    &mut heartbeat,
+                    injection_id,
+                    &lease_owner,
+                    code,
+                )
+                .await;
+                return;
+            }
+            Err(PtyInputPreBoundaryStop::Expired) => {
+                reject_pty_input_before_boundary(&store, &mut heartbeat, injection_id, C::Expired)
+                    .await;
+                return;
+            }
+            Err(PtyInputPreBoundaryStop::Shutdown) => {
+                heartbeat.finish().await;
+                return;
+            }
         }
         if !matches!(
             store
@@ -4148,14 +4262,20 @@ impl MailboxPoller {
                 &mut heartbeat,
                 injection_id,
                 &lease_owner,
-                C::LeaseLost,
+                pty_input_lease_failure_code(expires),
             )
             .await;
             return;
         }
-        let permit = match PtyManager::acquire_input_writer(&pty_manager, selected_id).await {
-            Ok(permit) => permit,
-            Err(_) => {
+        let permit = match await_pty_input_before_deadline(
+            expires,
+            &shutdown,
+            PtyManager::acquire_input_writer(&pty_manager, selected_id),
+        )
+        .await
+        {
+            Ok(Ok(permit)) => permit,
+            Ok(Err(_)) => {
                 finish_pty_input_before_boundary(
                     &store,
                     &mut heartbeat,
@@ -4164,6 +4284,15 @@ impl MailboxPoller {
                     C::SessionRace,
                 )
                 .await;
+                return;
+            }
+            Err(PtyInputPreBoundaryStop::Expired) => {
+                reject_pty_input_before_boundary(&store, &mut heartbeat, injection_id, C::Expired)
+                    .await;
+                return;
+            }
+            Err(PtyInputPreBoundaryStop::Shutdown) => {
+                heartbeat.finish().await;
                 return;
             }
         };
@@ -4276,12 +4405,17 @@ impl MailboxPoller {
             return;
         }
         if heartbeat.failed() {
+            let code = if expires <= chrono::Utc::now() {
+                C::Expired
+            } else {
+                C::LeaseLost
+            };
             finish_pty_input_before_boundary(
                 &store,
                 &mut heartbeat,
                 injection_id,
                 &lease_owner,
-                C::LeaseLost,
+                code,
             )
             .await;
             return;
@@ -4301,7 +4435,7 @@ impl MailboxPoller {
                 &mut heartbeat,
                 injection_id,
                 &lease_owner,
-                C::LeaseLost,
+                pty_input_lease_failure_code(expires),
             )
             .await;
             return;
@@ -4312,7 +4446,7 @@ impl MailboxPoller {
                 &mut heartbeat,
                 injection_id,
                 &lease_owner,
-                C::LeaseLost,
+                pty_input_lease_failure_code(expires),
             )
             .await;
             return;
@@ -4493,6 +4627,7 @@ impl MailboxPoller {
             }
             return;
         }
+        let boundary_settings = app.state::<SettingsState>().inner().clone();
         let route_guard = match manager
             .prepare_pty_input_boundary(
                 selected_id,
@@ -4504,6 +4639,13 @@ impl MailboxPoller {
                 &authority_route,
                 &permit,
                 &idle_detector,
+                &boundary_settings,
+                |session, settings| {
+                    session_has_current_pty_submission_provenance(
+                        &SessionInfo::from(session),
+                        settings,
+                    )
+                },
                 || {
                     if expires <= chrono::Utc::now()
                         || app
@@ -5093,11 +5235,15 @@ impl MailboxPoller {
         use crate::phone::types::PtyInputReasonCode as C;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
         loop {
-            if heartbeat.failed() {
-                return Err(C::LeaseLost);
-            }
             let expires = crate::phone::types::parse_canonical_pty_timestamp(&claimed.expires_at)
                 .map_err(|_| C::StoreCorrupt)?;
+            if heartbeat.failed() {
+                return Err(if expires <= chrono::Utc::now() {
+                    C::Expired
+                } else {
+                    C::LeaseLost
+                });
+            }
             if expires <= chrono::Utc::now() {
                 return Err(C::Expired);
             }
@@ -9714,7 +9860,12 @@ mod tests {
             })
         }
 
-        fn write(&self, id: Uuid, data: &[u8]) -> Result<(), crate::errors::AppError> {
+        fn write(
+            &self,
+            _authority: &crate::pty::manager::BackendWriteAuthority,
+            id: Uuid,
+            data: &[u8],
+        ) -> Result<(), crate::errors::AppError> {
             self.writes.lock().unwrap().push((id, data.to_vec()));
             Ok(())
         }
@@ -10586,6 +10737,45 @@ mod tests {
         injection_id
     }
 
+    fn enqueue_shared_pty_engine_operation_issued_at(
+        store: &crate::api::message_store::MessageStore,
+        route: &crate::config::teams::VerifiedPtyInputRoute,
+        sender_id: Uuid,
+        text: &[u8],
+        issued_at: chrono::DateTime<chrono::Utc>,
+    ) -> String {
+        let injection_id = Uuid::new_v4().to_string();
+        store
+            .enqueue_pty_input(crate::api::message_store::PtyInputEnqueueRequest {
+                injection_id: injection_id.clone(),
+                sender_fqn: route.sender.canonical_fqn.clone(),
+                target_fqn: route.target.canonical_fqn.clone(),
+                op_id: injection_id.clone(),
+                nonce_sha256: crate::phone::types::sha256_hex(
+                    Uuid::new_v4().to_string().as_bytes(),
+                ),
+                request_fingerprint: crate::phone::types::sha256_hex(
+                    format!("shared-engine:{injection_id}").as_bytes(),
+                ),
+                confirmation_tag: Some("d".repeat(64)),
+                requested_agent_id: None,
+                payload: text.to_vec(),
+                source_plane: crate::phone::types::PtyInputSourcePlane::HostCli,
+                sender_incarnation_fingerprint: route.sender.incarnation_fingerprint.clone(),
+                sender_identity_fingerprint: route.sender.authority_fingerprint.clone(),
+                target_identity_fingerprint: route.target.authority_fingerprint.clone(),
+                authority_session_id: sender_id.to_string(),
+                authority_client_id: None,
+                authority_client_generation: None,
+                issued_at: crate::phone::types::canonical_pty_timestamp(issued_at),
+                expires_at: crate::phone::types::canonical_pty_timestamp(
+                    issued_at + chrono::Duration::minutes(10),
+                ),
+            })
+            .unwrap();
+        injection_id
+    }
+
     fn shared_engine_writes(
         app: &tauri::AppHandle<tauri::test::MockRuntime>,
         session_id: Uuid,
@@ -10689,6 +10879,176 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shared_pty_engine_bounds_held_permit_wait_by_expiry_then_next_target_progresses() {
+        let fixture = make_mailbox_fixture();
+        let app = fixture.app.handle().clone();
+        let (route, sender_id, target_id) =
+            seed_shared_pty_engine_sessions(&fixture, SessionStatus::Idle).await;
+        let store = Arc::new(
+            crate::api::message_store::MessageStore::open(
+                fixture._temp.path().join("shared-engine-expiry.sqlite3"),
+            )
+            .unwrap(),
+        );
+        let state = crate::api::message_store::MessageStoreState::ready(Arc::clone(&store));
+
+        // A user write blocked in backend I/O holds the target's input permit
+        // without having stamped the session busy yet. The privileged operation
+        // must not wait on that permit past its own operation deadline.
+        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        let held_permit = PtyManager::acquire_input_writer(&pty, target_id)
+            .await
+            .unwrap();
+
+        // The fixed 10-minute validity window closes ~3s from now, so the engine
+        // reaches the permit wait while still valid and the deadline fires during
+        // the wait rather than at the dispatch-start expiry check.
+        let issued =
+            chrono::Utc::now() - chrono::Duration::minutes(10) + chrono::Duration::seconds(3);
+        let expiring_id = enqueue_shared_pty_engine_operation_issued_at(
+            &store,
+            &route,
+            sender_id,
+            b"must never be written",
+            issued,
+        );
+
+        tokio::time::timeout(
+            Duration::from_secs(30),
+            MailboxPoller::new().dispatch_pty_input_operation(
+                &app,
+                &state,
+                &expiring_id,
+                crate::phone::types::PtyInputSourcePlane::HostCli,
+                None,
+            ),
+        )
+        .await
+        .expect("the engine must return at the deadline, not wait on the held permit forever");
+
+        // Terminalized as expired, with zero PTY writes.
+        let expired = store
+            .query_pty_input_by_injection(&expiring_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            expired.status,
+            crate::phone::types::PtyInputPublicStatus::Rejected
+        );
+        assert_eq!(
+            expired.reason.map(|reason| reason.code),
+            Some(crate::phone::types::PtyInputReasonCode::Expired)
+        );
+        assert!(shared_engine_writes(&app, target_id).is_empty());
+
+        // Every pre-boundary target reservation was released on the timed-out
+        // path: the exact-target lock map holds no entry for this target.
+        assert_eq!(state.target_gate.as_ref().unwrap().exact_entry_count(), 0);
+
+        // Once the blocking writer releases the permit, a subsequent operation for
+        // the same target progresses to a real injection: capacity and ownership
+        // are restored after a held writer crosses expiry.
+        drop(held_permit);
+        let next_id =
+            enqueue_shared_pty_engine_operation(&store, &route, sender_id, b"next after expiry");
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            MailboxPoller::new().dispatch_pty_input_operation(
+                &app,
+                &state,
+                &next_id,
+                crate::phone::types::PtyInputSourcePlane::HostCli,
+                None,
+            ),
+        )
+        .await
+        .expect("a fresh operation for the freed target must finish");
+        let next = store
+            .query_pty_input_by_injection(&next_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            next.status,
+            crate::phone::types::PtyInputPublicStatus::Injected
+        );
+        assert_eq!(
+            shared_engine_writes(&app, target_id),
+            vec![
+                b"next after expiry".to_vec(),
+                b"\r".to_vec(),
+                b"\r".to_vec()
+            ]
+        );
+        assert_eq!(state.target_gate.as_ref().unwrap().exact_entry_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn shared_pty_engine_worker_drains_promptly_on_shutdown_without_writing() {
+        let fixture = make_mailbox_fixture();
+        let app = fixture.app.handle().clone();
+        // Inject a controllable shutdown signal that the real engine will observe
+        // through app state, exactly as the dispatcher's outer loop does.
+        app.manage(crate::shutdown::ShutdownSignal::new());
+        let (route, sender_id, target_id) =
+            seed_shared_pty_engine_sessions(&fixture, SessionStatus::Idle).await;
+        let store = Arc::new(
+            crate::api::message_store::MessageStore::open(
+                fixture._temp.path().join("shared-engine-shutdown.sqlite3"),
+            )
+            .unwrap(),
+        );
+        let state = crate::api::message_store::MessageStoreState::ready(Arc::clone(&store));
+
+        // Hold the target permit so a real engine worker blocks in its pre-boundary
+        // permit wait on a still-valid (full 10-minute) operation.
+        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        let held_permit = PtyManager::acquire_input_writer(&pty, target_id)
+            .await
+            .unwrap();
+        let injection_id = enqueue_shared_pty_engine_operation(
+            &store,
+            &route,
+            sender_id,
+            b"must never be written",
+        );
+
+        let worker = {
+            let app = app.clone();
+            let state = state.clone();
+            let injection_id = injection_id.clone();
+            tokio::spawn(async move {
+                MailboxPoller::new()
+                    .dispatch_pty_input_operation(
+                        &app,
+                        &state,
+                        &injection_id,
+                        crate::phone::types::PtyInputSourcePlane::HostCli,
+                        None,
+                    )
+                    .await;
+            })
+        };
+
+        // Let the worker reach and block on the held permit, then signal shutdown.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !worker.is_finished(),
+            "the engine worker must still be blocked on the held permit before shutdown"
+        );
+        app.state::<crate::shutdown::ShutdownSignal>().trigger();
+
+        // A blocked real engine worker drains promptly on shutdown, far inside the
+        // 10-minute request window, and never writes a byte.
+        tokio::time::timeout(Duration::from_secs(10), worker)
+            .await
+            .expect("the engine worker must drain on shutdown, not hold its slot until TTL")
+            .expect("the worker task must not panic");
+        assert!(shared_engine_writes(&app, target_id).is_empty());
+        assert_eq!(state.target_gate.as_ref().unwrap().exact_entry_count(), 0);
+        drop(held_permit);
+    }
+
+    #[tokio::test]
     async fn final_pty_boundary_rejects_identity_mutation_and_stamps_busy() {
         use crate::pty::backend::SessionBackendKind;
         use crate::pty::idle_detector::PtyInputBoundaryFailure;
@@ -10768,6 +11128,13 @@ mod tests {
             let manager = state.read().await.clone();
             manager
         };
+        let settings = app.state::<SettingsState>().inner().clone();
+        fn current_recipe(
+            session: &crate::session::session::Session,
+            settings: &AppSettings,
+        ) -> bool {
+            session_has_current_pty_submission_provenance(&SessionInfo::from(session), settings)
+        }
         let team_config = fixture
             .sender_cwd
             .parent()
@@ -10797,6 +11164,8 @@ mod tests {
                 &authority_route,
                 &permit,
                 &idle,
+                &settings,
+                current_recipe,
                 || true,
             )
             .await;
@@ -10820,6 +11189,8 @@ mod tests {
                 &authority_route,
                 &permit,
                 &idle,
+                &settings,
+                current_recipe,
                 || true,
             )
             .await;
@@ -10854,6 +11225,8 @@ mod tests {
                 &authority_route,
                 &permit,
                 &idle,
+                &settings,
+                current_recipe,
                 || true,
             )
             .await;
@@ -10876,6 +11249,8 @@ mod tests {
                 &authority_route,
                 &permit,
                 &idle,
+                &settings,
+                current_recipe,
                 || false,
             )
             .await;
@@ -10895,6 +11270,8 @@ mod tests {
                 &authority_route,
                 &permit,
                 &idle,
+                &settings,
+                current_recipe,
                 || true,
             )
             .await;
@@ -10914,10 +11291,173 @@ mod tests {
                 &authority_route,
                 &permit,
                 &idle,
+                &settings,
+                current_recipe,
                 || true,
             )
             .await;
         assert!(matches!(second, Err(PtyInputBoundaryFailure::Busy)));
+    }
+
+    #[tokio::test]
+    async fn final_pty_boundary_linearizes_wrapper_trust_against_concurrent_settings_mutation() {
+        use crate::pty::backend::SessionBackendKind;
+        use crate::pty::idle_detector::PtyInputBoundaryFailure;
+        use crate::session::profile::IdleTuning;
+
+        let fixture = make_mailbox_fixture();
+        let app = fixture.app.handle().clone();
+        let sender_id = add_mailbox_session(
+            &app,
+            &fixture.sender_cwd,
+            "coordinator",
+            SessionStatus::Running,
+            None,
+        )
+        .await;
+        let target_id = add_mailbox_session(
+            &app,
+            &fixture.target_cwd,
+            "member",
+            SessionStatus::Idle,
+            None,
+        )
+        .await;
+        let paths = vec![fixture._temp.path().to_string_lossy().to_string()];
+        let route = crate::config::teams::verify_pty_input_route(
+            &fixture.sender_cwd,
+            false,
+            CANONICAL_WAKE_TO,
+            &paths,
+        )
+        .expect("verified route");
+        let target_cwd_identity =
+            crate::path_identity::verify_directory(&fixture.target_cwd).expect("target identity");
+        let sender_cwd_identity =
+            crate::path_identity::verify_directory(&fixture.sender_cwd).expect("sender identity");
+        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        pty.lock()
+            .unwrap()
+            .record_route_with_identities(
+                target_id,
+                SessionBackendKind::LocalProcess,
+                Some(target_cwd_identity),
+                Some(route.target.replica_identity.clone()),
+            )
+            .expect("record target route");
+        pty.lock()
+            .unwrap()
+            .record_route_with_identities(
+                sender_id,
+                SessionBackendKind::LocalProcess,
+                Some(sender_cwd_identity),
+                Some(route.sender.replica_identity.clone()),
+            )
+            .expect("record sender route");
+        let authority_route =
+            PtyManager::authority_route_proof(&pty, sender_id).expect("sender authority proof");
+        let permit = PtyManager::acquire_input_writer(&pty, target_id)
+            .await
+            .expect("target permit");
+        let idle = app
+            .state::<Arc<crate::pty::idle_detector::IdleDetector>>()
+            .inner()
+            .clone();
+        idle.register_session(target_id, IdleTuning::DEFAULT);
+        idle.set_pty_input_ready_for_test(target_id);
+        let sessions = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        let settings = app.state::<SettingsState>().inner().clone();
+        fn current_recipe(
+            session: &crate::session::session::Session,
+            settings: &AppSettings,
+        ) -> bool {
+            session_has_current_pty_submission_provenance(&SessionInfo::from(session), settings)
+        }
+        // A wrapper whose configured provenance has just been revoked: the boundary
+        // must re-validate the current recipe rather than trust a stale boolean.
+        fn revoked_recipe(_: &crate::session::session::Session, _: &AppSettings) -> bool {
+            false
+        }
+
+        // A concurrent settings mutation holds the write lock during the exact
+        // window between validation and the first write. The no-await
+        // linearization must fail closed instead of proceeding on a possibly
+        // revoked wrapper.
+        let settings_write = Arc::clone(&settings).write_owned().await;
+        let blocked = sessions
+            .prepare_pty_input_boundary(
+                target_id,
+                &route.target,
+                SessionBackendKind::LocalProcess,
+                sender_id,
+                &route.sender,
+                SessionBackendKind::LocalProcess,
+                &authority_route,
+                &permit,
+                &idle,
+                &settings,
+                current_recipe,
+                || true,
+            )
+            .await;
+        assert!(
+            matches!(&blocked, Err(PtyInputBoundaryFailure::RouteUnavailable)),
+            "a settings write in flight must fail the boundary closed"
+        );
+        drop(blocked);
+        drop(settings_write);
+
+        // With no write in flight but a revoked current recipe, the boundary
+        // rejects rather than accepting the stale wrapper trust.
+        let stale = sessions
+            .prepare_pty_input_boundary(
+                target_id,
+                &route.target,
+                SessionBackendKind::LocalProcess,
+                sender_id,
+                &route.sender,
+                SessionBackendKind::LocalProcess,
+                &authority_route,
+                &permit,
+                &idle,
+                &settings,
+                revoked_recipe,
+                || true,
+            )
+            .await;
+        assert!(
+            matches!(&stale, Err(PtyInputBoundaryFailure::Busy)),
+            "a wrapper whose current recipe no longer holds must be rejected"
+        );
+        drop(stale);
+
+        // Isolation control: neither rejection above mutated session state, so the
+        // otherwise-valid boundary still succeeds once the race conditions clear.
+        let ok = sessions
+            .prepare_pty_input_boundary(
+                target_id,
+                &route.target,
+                SessionBackendKind::LocalProcess,
+                sender_id,
+                &route.sender,
+                SessionBackendKind::LocalProcess,
+                &authority_route,
+                &permit,
+                &idle,
+                &settings,
+                current_recipe,
+                || true,
+            )
+            .await;
+        assert!(
+            ok.is_ok(),
+            "the boundary must otherwise succeed, isolating the two race rejections"
+        );
+        drop(ok);
     }
 
     #[test]
@@ -11019,6 +11559,114 @@ mod tests {
             Some(PtyInputReasonCode::StoreCorrupt)
         );
         assert_eq!(artifact.confirmation_tag.len(), 64);
+    }
+
+    #[tokio::test]
+    async fn live_sender_token_host_request_authenticates_and_injects_end_to_end() {
+        use crate::phone::types::{
+            canonical_pty_timestamp, PtyInputEnterMode, PtyInputHostArtifact, PtyInputHostEnvelope,
+            PtyInputPublicStatus, PtyInputWirePayload,
+        };
+
+        // The real authenticated host path: a live sender session whose actual
+        // session token bears the request, a managed ready store, and an
+        // idle-ready target. This proves ingress authenticates through
+        // find_unique_live_by_token and drives the engine to a real injection,
+        // rather than a random token against an unavailable store.
+        let fixture = make_mailbox_fixture();
+        let app = fixture.app.handle().clone();
+        let (_route, sender_id, target_id) =
+            seed_shared_pty_engine_sessions(&fixture, SessionStatus::Idle).await;
+        let store = Arc::new(
+            crate::api::message_store::MessageStore::open(
+                fixture._temp.path().join("authenticated-host.sqlite3"),
+            )
+            .unwrap(),
+        );
+        app.manage(crate::api::message_store::MessageStoreState::ready(
+            Arc::clone(&store),
+        ));
+
+        // Read the live sender session's real token; the daemon authenticates the
+        // request only if it round-trips to a unique live session.
+        let sender_token = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .list_sessions()
+            .await
+            .into_iter()
+            .find(|session| session.id == sender_id.to_string())
+            .expect("live sender session")
+            .token;
+
+        let outbox = fixture
+            .sender_cwd
+            .join(crate::config::agent_local_dir_name())
+            .join("outbox");
+        std::fs::create_dir_all(&outbox).unwrap();
+        let injection_id = Uuid::new_v4().to_string();
+        let issued = chrono::Utc::now();
+        let issued_at = canonical_pty_timestamp(issued);
+        let text = "authenticated host injection";
+        let envelope = PtyInputHostEnvelope {
+            id: injection_id.clone(),
+            token: sender_token,
+            from: CANONICAL_WAKE_FROM.to_string(),
+            to: CANONICAL_WAKE_TO.to_string(),
+            body: String::new(),
+            mode: "wake".to_string(),
+            get_output: false,
+            preferred_agent: String::new(),
+            priority: "normal".to_string(),
+            timestamp: issued_at.clone(),
+            action: "pty-input".to_string(),
+            pty_input: PtyInputWirePayload {
+                version: crate::phone::types::PTY_INPUT_VERSION,
+                text: text.to_string(),
+                enter: PtyInputEnterMode::AgentSubmit,
+                injection_id: injection_id.clone(),
+                op_id: injection_id.clone(),
+                issued_at,
+                expires_at: canonical_pty_timestamp(issued + chrono::Duration::minutes(10)),
+                nonce: Uuid::new_v4().to_string(),
+                agent_id: None,
+            },
+        };
+        let path = outbox.join(format!("{injection_id}.json"));
+        let bytes = serde_json::to_vec(&envelope).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let source_identity = crate::path_identity::read_bounded_regular(
+            &path,
+            crate::phone::types::PTY_INPUT_HOST_ENVELOPE_MAX_BYTES,
+        )
+        .unwrap()
+        .1;
+
+        MailboxPoller::new()
+            .process_pty_input_file(fixture.app.handle(), &path, false, &bytes, &source_identity)
+            .await;
+
+        // The raw request was consumed and a terminal injected artifact published.
+        assert!(!path.exists());
+        let delivered = outbox
+            .join("delivered")
+            .join(format!("{injection_id}.json"));
+        let artifact: PtyInputHostArtifact =
+            serde_json::from_slice(&std::fs::read(&delivered).unwrap()).unwrap();
+        assert_eq!(artifact.result.injection_id, injection_id);
+        assert_eq!(artifact.result.status, PtyInputPublicStatus::Injected);
+
+        // The store row and the target backend both reflect the exact injection.
+        let row = store
+            .query_pty_input_by_injection(&injection_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.status, PtyInputPublicStatus::Injected);
+        assert_eq!(
+            shared_engine_writes(&app, target_id),
+            vec![text.as_bytes().to_vec(), b"\r".to_vec(), b"\r".to_vec()]
+        );
     }
 
     #[tokio::test]

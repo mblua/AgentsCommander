@@ -3,7 +3,9 @@ use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 use agentscommander_lib::api::auth::{self, MintRequest, SCOPE_SEND};
-use agentscommander_lib::api::message_store::{MessageStore, PtyInputEnqueueRequest, DB_FILENAME};
+use agentscommander_lib::api::message_store::{
+    MessageStore, PtyInputEnqueueRequest, PtyInputTargetGate, DB_FILENAME,
+};
 use agentscommander_lib::phone::types::{
     canonical_pty_timestamp, pty_input_request_fingerprint, sha256_hex, PtyInputPublicStatus,
     PtyInputReasonCode, PtyInputSourcePlane,
@@ -111,6 +113,26 @@ fn child_holds_target_lock() {
     wait_for(&release, Duration::from_secs(30));
 }
 
+#[test]
+fn child_holds_create_gate_target_lock() {
+    // Proves the create gate serializes across processes without any SQLite
+    // store: this child holds the target stripe through a store-less
+    // PtyInputTargetGate.
+    let Some(root) = std::env::var_os("AC_GATE_ROOT") else {
+        return;
+    };
+    let value = std::env::var("AC_GATE_VALUE").expect("gate value");
+    let ready = PathBuf::from(std::env::var_os("AC_GATE_READY").expect("gate ready"));
+    let release = PathBuf::from(std::env::var_os("AC_GATE_RELEASE").expect("gate release"));
+    let gate = PtyInputTargetGate::new(PathBuf::from(root)).expect("child create gate");
+    let _guard = gate
+        .try_target_lock(&value)
+        .expect("gate target lock")
+        .expect("gate target lock acquired");
+    std::fs::write(&ready, b"ready").expect("write gate ready");
+    wait_for(&release, Duration::from_secs(30));
+}
+
 fn pty_request(injection_id: &str, now: chrono::DateTime<Utc>) -> PtyInputEnqueueRequest {
     let payload = b"cross-process exact input".to_vec();
     PtyInputEnqueueRequest {
@@ -213,6 +235,46 @@ fn operation_stripe_blocks_a_second_process() {
 #[test]
 fn target_stripe_blocks_a_second_process() {
     assert_cross_process_exclusive("child_holds_target_lock", true);
+}
+
+#[test]
+fn create_gate_target_stripe_blocks_a_second_process_without_a_store() {
+    // The DB-independent create gate must serialize same-target creates across
+    // processes even when the specialized SQLite store never opened. Neither the
+    // holder child nor this parent constructs a MessageStore.
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let gate = PtyInputTargetGate::new(dir.path().to_path_buf()).expect("parent create gate");
+    let value = "project:wg-1-team/member".to_string();
+    let ready = dir.path().join("gate-ready");
+    let release = dir.path().join("gate-release");
+
+    let mut child = Command::new(std::env::current_exe().expect("current test executable"))
+        .arg("--exact")
+        .arg("child_holds_create_gate_target_lock")
+        .arg("--nocapture")
+        .env("AC_GATE_ROOT", dir.path())
+        .env("AC_GATE_VALUE", &value)
+        .env("AC_GATE_READY", &ready)
+        .env("AC_GATE_RELEASE", &release)
+        .spawn()
+        .expect("spawn gate holder child");
+    wait_for(&ready, Duration::from_secs(10));
+
+    assert!(
+        gate.try_target_lock(&value)
+            .expect("parent gate target try")
+            .is_none(),
+        "a second process must not acquire the create gate stripe held by another owner"
+    );
+
+    std::fs::write(&release, b"release").expect("release gate child");
+    assert!(child.wait().expect("wait gate child").success());
+    assert!(
+        gate.try_target_lock(&value)
+            .expect("parent gate target after release")
+            .is_some(),
+        "the create gate stripe must become available after the owner exits"
+    );
 }
 
 fn spawn_auth_mutator(

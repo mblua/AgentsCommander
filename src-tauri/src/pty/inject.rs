@@ -314,7 +314,12 @@ mod tests {
             Box::pin(async { Ok(()) })
         }
 
-        fn write(&self, _id: Uuid, data: &[u8]) -> Result<(), crate::errors::AppError> {
+        fn write(
+            &self,
+            _authority: &crate::pty::manager::BackendWriteAuthority,
+            _id: Uuid,
+            data: &[u8],
+        ) -> Result<(), crate::errors::AppError> {
             self.calls.lock().unwrap().push(data.to_vec());
             match self.outcomes.lock().unwrap().pop_front().unwrap_or(Ok(())) {
                 Ok(()) => Ok(()),

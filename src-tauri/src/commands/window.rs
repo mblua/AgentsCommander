@@ -864,7 +864,12 @@ mod tests {
             Box::pin(async { Ok(()) })
         }
 
-        fn write(&self, id: Uuid, _data: &[u8]) -> Result<(), crate::errors::AppError> {
+        fn write(
+            &self,
+            _authority: &crate::pty::manager::BackendWriteAuthority,
+            id: Uuid,
+            _data: &[u8],
+        ) -> Result<(), crate::errors::AppError> {
             self.live
                 .load(Ordering::SeqCst)
                 .then_some(())
@@ -872,7 +877,11 @@ mod tests {
         }
 
         fn resize(&self, id: Uuid, _cols: u16, _rows: u16) -> Result<(), crate::errors::AppError> {
-            self.write(id, &[])
+            self.write(
+                &crate::pty::manager::BackendWriteAuthority::for_backend_test(),
+                id,
+                &[],
+            )
         }
 
         fn kill(&self, _id: Uuid) -> Result<(), crate::errors::AppError> {

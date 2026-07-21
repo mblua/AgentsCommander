@@ -816,6 +816,7 @@ pub fn run(
     // One recovered operation store is shared by the filesystem poller and
     // both API start paths. A failure disables only privileged PTY input.
     let message_store_state = crate::api::message_store::MessageStoreState::initialize();
+    let pty_target_gate_state = message_store_state.target_gate_state();
 
     // #714 clipboard + global-shortcut plugins are referenced ONLY on Windows so
     // non-Windows release builds never link them (screenshot capture is
@@ -857,6 +858,7 @@ pub fn run(
         .manage(WebServerHandle::default())
         .manage(ApiServerHandle::default())
         .manage(message_store_state)
+        .manage(pty_target_gate_state)
         .manage(config_seed_lock)
         .manage(update_check_state)
         .manage(ui_automation_state)

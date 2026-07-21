@@ -192,21 +192,6 @@ pub struct Session {
     pub start_fresh_on_restore: bool,
 }
 
-impl Session {
-    /// Strict coding-agent proof used only by privileged exact PTY input.
-    pub fn pty_submission_agent(&self) -> Option<PtySubmissionAgent> {
-        let args = self
-            .effective_shell_args
-            .as_deref()
-            .unwrap_or(&self.shell_args);
-        detect_pty_submission_agent(&self.shell, args, self.agent_kind).or_else(|| {
-            self.trusted_configured_spawn.then(|| {
-                detect_configured_pty_submission_agent(&self.shell, args, self.agent_kind)
-            })?
-        })
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum SessionStatus {
@@ -327,19 +312,6 @@ pub struct SessionInfo {
 }
 
 impl SessionInfo {
-    /// Strict coding-agent proof over the effective launch command.
-    pub fn pty_submission_agent(&self) -> Option<PtySubmissionAgent> {
-        let args = self
-            .effective_shell_args
-            .as_deref()
-            .unwrap_or(&self.shell_args);
-        detect_pty_submission_agent(&self.shell, args, self.agent_kind).or_else(|| {
-            self.trusted_configured_spawn.then(|| {
-                detect_configured_pty_submission_agent(&self.shell, args, self.agent_kind)
-            })?
-        })
-    }
-
     pub(crate) fn pty_submission_agent_matches_current_spawn(
         &self,
         spawn: &crate::config::agent_command::AgentSpawnCommand,

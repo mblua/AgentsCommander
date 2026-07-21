@@ -291,14 +291,23 @@ mod tests {
             })
         }
 
-        fn write(&self, id: Uuid, _data: &[u8]) -> Result<(), crate::errors::AppError> {
+        fn write(
+            &self,
+            _authority: &crate::pty::manager::BackendWriteAuthority,
+            id: Uuid,
+            _data: &[u8],
+        ) -> Result<(), crate::errors::AppError> {
             self.has_session(id)
                 .then_some(())
                 .ok_or_else(|| crate::errors::AppError::SessionNotFound(id.to_string()))
         }
 
         fn resize(&self, id: Uuid, _cols: u16, _rows: u16) -> Result<(), crate::errors::AppError> {
-            self.write(id, &[])
+            self.write(
+                &crate::pty::manager::BackendWriteAuthority::for_backend_test(),
+                id,
+                &[],
+            )
         }
 
         fn kill(&self, id: Uuid) -> Result<(), crate::errors::AppError> {

@@ -349,30 +349,151 @@ impl Drop for PtyInputTargetGuard {
     }
 }
 
+/// DB-independent universal target ownership. The fixed target stripe lives
+/// below the installation config directory, while the exact keyed guard is
+/// shared by every create path in this process. This remains usable when the
+/// privileged SQLite store is missing, corrupt, or otherwise unavailable.
+pub struct PtyInputTargetGate {
+    lock_root: PathBuf,
+    exact_locks: Arc<PtyInputTargetLocks>,
+}
+
+impl PtyInputTargetGate {
+    pub fn new(lock_root: PathBuf) -> Result<Self, MessageStoreError> {
+        std::fs::create_dir_all(&lock_root)?;
+        crate::path_identity::verify_directory(&lock_root)
+            .map_err(|_| MessageStoreError::UnsafePath)?;
+        Ok(Self {
+            lock_root,
+            exact_locks: Arc::new(PtyInputTargetLocks::default()),
+        })
+    }
+
+    pub fn try_target_lock(
+        &self,
+        target_key: &str,
+    ) -> Result<Option<PtyInputStripeGuard>, MessageStoreError> {
+        try_stripe_lock_at(&self.lock_root, target_key, false)
+    }
+
+    pub async fn acquire_target_lock(
+        &self,
+        target_key: &str,
+    ) -> Result<PtyInputStripeGuard, MessageStoreError> {
+        loop {
+            if let Some(guard) = self.try_target_lock(target_key)? {
+                return Ok(guard);
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    pub async fn acquire_exact(&self, target_key: &str) -> PtyInputTargetGuard {
+        self.exact_locks.acquire(target_key).await
+    }
+
+    pub(crate) fn target_ownership<'a>(
+        &self,
+        target: &'a str,
+        stripe: &'a PtyInputStripeGuard,
+        exact: &'a PtyInputTargetGuard,
+    ) -> Result<PtyInputTargetOwnership<'a>, MessageStoreError> {
+        if exact.target != target {
+            return Err(MessageStoreError::StoreCorrupt);
+        }
+        Ok(PtyInputTargetOwnership {
+            target,
+            _stripe: stripe,
+            _exact: exact,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn exact_entry_count(&self) -> usize {
+        self.exact_locks.entry_count()
+    }
+}
+
+#[derive(Clone)]
+pub struct PtyInputTargetGateState {
+    pub gate: Result<Arc<PtyInputTargetGate>, String>,
+}
+
+impl PtyInputTargetGateState {
+    pub fn at_config_dir() -> Self {
+        let gate = crate::config::config_dir()
+            .ok_or(MessageStoreError::MissingConfigDir)
+            .and_then(PtyInputTargetGate::new)
+            .map(Arc::new)
+            .map_err(|_| "target_gate_unavailable".to_string());
+        Self { gate }
+    }
+
+    pub fn for_root(lock_root: PathBuf) -> Self {
+        let gate = PtyInputTargetGate::new(lock_root)
+            .map(Arc::new)
+            .map_err(|_| "target_gate_unavailable".to_string());
+        Self { gate }
+    }
+}
+
 #[derive(Clone)]
 pub struct MessageStoreState {
     pub store: Result<Arc<MessageStore>, String>,
     pub active_operations: Arc<PtyInputActiveOperations>,
     pub target_locks: Arc<PtyInputTargetLocks>,
+    pub target_gate: Result<Arc<PtyInputTargetGate>, String>,
 }
 
 impl MessageStoreState {
     pub fn initialize() -> Self {
+        let target_gate = PtyInputTargetGateState::at_config_dir().gate;
         let store = MessageStore::at_config_dir()
             .map(Arc::new)
             .map_err(|_| "store_unavailable".to_string());
+        let target_locks = target_gate
+            .as_ref()
+            .map(|gate| Arc::clone(&gate.exact_locks))
+            .unwrap_or_else(|_| Arc::new(PtyInputTargetLocks::default()));
         Self {
             store,
             active_operations: Arc::new(PtyInputActiveOperations::default()),
-            target_locks: Arc::new(PtyInputTargetLocks::default()),
+            target_locks,
+            target_gate,
         }
     }
 
     pub fn ready(store: Arc<MessageStore>) -> Self {
+        let lock_root = store
+            .path
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or(MessageStoreError::UnsafePath)
+            .and_then(PtyInputTargetGate::new)
+            .map(Arc::new)
+            .map_err(|_| "target_gate_unavailable".to_string());
+        Self::with_store_and_target_gate(Ok(store), lock_root)
+    }
+
+    pub fn with_store_and_target_gate(
+        store: Result<Arc<MessageStore>, String>,
+        target_gate: Result<Arc<PtyInputTargetGate>, String>,
+    ) -> Self {
+        let target_locks = target_gate
+            .as_ref()
+            .map(|gate| Arc::clone(&gate.exact_locks))
+            .unwrap_or_else(|_| Arc::new(PtyInputTargetLocks::default()));
         Self {
-            store: Ok(store),
+            store,
             active_operations: Arc::new(PtyInputActiveOperations::default()),
-            target_locks: Arc::new(PtyInputTargetLocks::default()),
+            target_locks,
+            target_gate,
+        }
+    }
+
+    pub fn target_gate_state(&self) -> PtyInputTargetGateState {
+        PtyInputTargetGateState {
+            gate: self.target_gate.clone(),
         }
     }
 }
@@ -400,14 +521,26 @@ pub struct PreparationHeartbeatGuard {
 }
 
 impl PreparationHeartbeatGuard {
-    pub fn start(store: Arc<MessageStore>, injection_id: String, lease_owner: String) -> Self {
-        Self::start_with_interval(store, injection_id, lease_owner, Duration::from_secs(30))
+    pub fn start(
+        store: Arc<MessageStore>,
+        injection_id: String,
+        lease_owner: String,
+        expires_at: DateTime<Utc>,
+    ) -> Self {
+        Self::start_with_interval(
+            store,
+            injection_id,
+            lease_owner,
+            expires_at,
+            Duration::from_secs(30),
+        )
     }
 
     fn start_with_interval(
         store: Arc<MessageStore>,
         injection_id: String,
         lease_owner: String,
+        expires_at: DateTime<Utc>,
         heartbeat_interval: Duration,
     ) -> Self {
         let cancellation = tokio_util::sync::CancellationToken::new();
@@ -417,9 +550,20 @@ impl PreparationHeartbeatGuard {
         let task = tokio::spawn(async move {
             let mut interval = tokio::time::interval(heartbeat_interval);
             interval.tick().await;
+            let until_expiry = expires_at
+                .signed_duration_since(Utc::now())
+                .to_std()
+                .unwrap_or(Duration::ZERO);
+            let expiry = tokio::time::sleep(until_expiry);
+            tokio::pin!(expiry);
             loop {
                 tokio::select! {
+                    biased;
                     _ = task_cancellation.cancelled() => break,
+                    _ = &mut expiry => {
+                        task_failed.store(true, std::sync::atomic::Ordering::SeqCst);
+                        break;
+                    }
                     _ = interval.tick() => {
                         let renewal = store
                             .renew_pty_input_lease_offloaded(
@@ -492,6 +636,86 @@ fn verify_existing_sqlite_files(path: &Path) -> Result<(), MessageStoreError> {
         }
     }
     Ok(())
+}
+
+fn try_stripe_lock_at(
+    parent: &Path,
+    value: &str,
+    operation: bool,
+) -> Result<Option<PtyInputStripeGuard>, MessageStoreError> {
+    let parent_identity = crate::path_identity::verify_directory(parent)
+        .map_err(|_| MessageStoreError::UnsafePath)?;
+    let lock_dir = parent.join("pty-input-locks");
+    if !lock_dir.exists() {
+        match std::fs::create_dir(&lock_dir) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(MessageStoreError::Io(error)),
+        }
+    }
+    let lock_dir_identity = crate::path_identity::verify_directory(&lock_dir)
+        .map_err(|_| MessageStoreError::UnsafePath)?;
+    let digest = Sha256::digest(value.as_bytes());
+    let (count, prefix, index) = if operation {
+        (
+            PTY_INPUT_OPERATION_LOCK_STRIPES,
+            "operation",
+            (((digest[0] as usize) << 4) | ((digest[1] as usize) >> 4)),
+        )
+    } else {
+        (
+            PTY_INPUT_TARGET_LOCK_STRIPES,
+            "target",
+            (((digest[0] as usize) << 2) | ((digest[1] as usize) >> 6)),
+        )
+    };
+    let width = if operation { 4 } else { 3 };
+    let index = index % count;
+    let path = lock_dir.join(format!("{prefix}-{index:0width$x}.lock"));
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(0x0002_0000);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+        options
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options.open(&path)?;
+    crate::path_identity::verify_opened_regular_file(&path, &file, true)
+        .map_err(|_| MessageStoreError::UnsafePath)?;
+    match file.try_lock() {
+        Ok(()) => {
+            crate::path_identity::verify_opened_regular_file(&path, &file, true)
+                .map_err(|_| MessageStoreError::UnsafePath)?;
+            let current_parent = crate::path_identity::verify_directory(parent)
+                .map_err(|_| MessageStoreError::UnsafePath)?;
+            let current_lock_dir = crate::path_identity::verify_directory(&lock_dir)
+                .map_err(|_| MessageStoreError::UnsafePath)?;
+            if !crate::path_identity::same_object(&parent_identity, &current_parent)
+                || !crate::path_identity::same_object(&lock_dir_identity, &current_lock_dir)
+            {
+                return Err(MessageStoreError::UnsafePath);
+            }
+            Ok(Some(PtyInputStripeGuard { _file: file }))
+        }
+        Err(error) => {
+            let error: std::io::Error = error.into();
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                Ok(None)
+            } else {
+                Err(MessageStoreError::Io(error))
+            }
+        }
+    }
 }
 
 impl MessageStore {
@@ -1433,101 +1657,13 @@ impl MessageStore {
         }
     }
 
-    pub(crate) fn target_ownership<'a>(
-        &self,
-        target: &'a str,
-        stripe: &'a PtyInputStripeGuard,
-        exact: &'a PtyInputTargetGuard,
-    ) -> Result<PtyInputTargetOwnership<'a>, MessageStoreError> {
-        if exact.target != target {
-            return Err(MessageStoreError::StoreCorrupt);
-        }
-        Ok(PtyInputTargetOwnership {
-            target,
-            _stripe: stripe,
-            _exact: exact,
-        })
-    }
-
     fn try_stripe_lock(
         &self,
         value: &str,
         operation: bool,
     ) -> Result<Option<PtyInputStripeGuard>, MessageStoreError> {
         let parent = self.path.parent().ok_or(MessageStoreError::UnsafePath)?;
-        let parent_identity = crate::path_identity::verify_directory(parent)
-            .map_err(|_| MessageStoreError::UnsafePath)?;
-        let lock_dir = parent.join("pty-input-locks");
-        if !lock_dir.exists() {
-            match std::fs::create_dir(&lock_dir) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(MessageStoreError::Io(error)),
-            }
-        }
-        let lock_dir_identity = crate::path_identity::verify_directory(&lock_dir)
-            .map_err(|_| MessageStoreError::UnsafePath)?;
-        let digest = Sha256::digest(value.as_bytes());
-        let (count, prefix, index) = if operation {
-            (
-                PTY_INPUT_OPERATION_LOCK_STRIPES,
-                "operation",
-                (((digest[0] as usize) << 4) | ((digest[1] as usize) >> 4)),
-            )
-        } else {
-            (
-                PTY_INPUT_TARGET_LOCK_STRIPES,
-                "target",
-                (((digest[0] as usize) << 2) | ((digest[1] as usize) >> 6)),
-            )
-        };
-        let width = if operation { 4 } else { 3 };
-        let index = index % count;
-        let path = lock_dir.join(format!("{prefix}-{index:0width$x}.lock"));
-        let mut options = OpenOptions::new();
-        options.read(true).write(true).create(true).truncate(false);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600).custom_flags(0x0002_0000);
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::OpenOptionsExt;
-            use windows_sys::Win32::Storage::FileSystem::{
-                FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-            };
-            options
-                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-        }
-        let file = options.open(&path)?;
-        crate::path_identity::verify_opened_regular_file(&path, &file, true)
-            .map_err(|_| MessageStoreError::UnsafePath)?;
-        match file.try_lock() {
-            Ok(()) => {
-                crate::path_identity::verify_opened_regular_file(&path, &file, true)
-                    .map_err(|_| MessageStoreError::UnsafePath)?;
-                let current_parent = crate::path_identity::verify_directory(parent)
-                    .map_err(|_| MessageStoreError::UnsafePath)?;
-                let current_lock_dir = crate::path_identity::verify_directory(&lock_dir)
-                    .map_err(|_| MessageStoreError::UnsafePath)?;
-                if !crate::path_identity::same_object(&parent_identity, &current_parent)
-                    || !crate::path_identity::same_object(&lock_dir_identity, &current_lock_dir)
-                {
-                    return Err(MessageStoreError::UnsafePath);
-                }
-                Ok(Some(PtyInputStripeGuard { _file: file }))
-            }
-            Err(error) => {
-                let error: std::io::Error = error.into();
-                if error.kind() == std::io::ErrorKind::WouldBlock {
-                    Ok(None)
-                } else {
-                    Err(MessageStoreError::Io(error))
-                }
-            }
-        }
+        try_stripe_lock_at(parent, value, operation)
     }
 
     fn expire_pty_input_for_admission_page(
@@ -2013,6 +2149,7 @@ impl MessageStore {
             tx.query_row(
                 r#"SELECT injection_id FROM pty_input_operations
                    WHERE injection_id=?1 AND source_plane=?2 AND attempt < 5
+                     AND expires_at > ?3
                      AND ((status IN ('queued','retry') AND next_attempt_at <= ?3)
                        OR (status='preparing' AND lease_until <= ?3))"#,
                 params![injection_id, source, now_s],
@@ -2023,6 +2160,7 @@ impl MessageStore {
             tx.query_row(
                 r#"SELECT injection_id FROM pty_input_operations
                    WHERE source_plane=?1 AND attempt < 5
+                     AND expires_at > ?2
                      AND ((status IN ('queued','retry') AND next_attempt_at <= ?2)
                        OR (status='preparing' AND lease_until <= ?2))
                    ORDER BY next_attempt_at, queued_at, injection_id LIMIT 1"#,
@@ -2038,8 +2176,8 @@ impl MessageStore {
         let changed = tx.execute(
             r#"UPDATE pty_input_operations
                SET status='preparing', attempt=attempt+1, lease_owner=?1,
-                   lease_until=?2, preparing_at=?3, updated_at=?3
-               WHERE injection_id=?4 AND attempt < 5
+                   lease_until=MIN(?2,expires_at), preparing_at=?3, updated_at=?3
+               WHERE injection_id=?4 AND attempt < 5 AND expires_at > ?3
                  AND ((status IN ('queued','retry') AND next_attempt_at <= ?3)
                    OR (status='preparing' AND lease_until <= ?3))"#,
             params![lease_owner, lease_until, now_s, injection_id],
@@ -2076,9 +2214,10 @@ impl MessageStore {
             .lock()
             .map_err(|_| MessageStoreError::StoreCorrupt)?;
         let changed = conn.execute(
-            r#"UPDATE pty_input_operations SET lease_until=?1,updated_at=?2
+            r#"UPDATE pty_input_operations
+               SET lease_until=MIN(?1,expires_at),updated_at=?2
                WHERE injection_id=?3 AND status='preparing'
-                 AND lease_owner=?4 AND lease_until > ?2"#,
+                 AND lease_owner=?4 AND lease_until > ?2 AND expires_at > ?2"#,
             params![lease_until, now_s, injection_id, lease_owner],
         )?;
         Ok(changed == 1)
@@ -4616,6 +4755,7 @@ mod tests {
             Arc::clone(&store),
             id.clone(),
             "lease".to_string(),
+            Utc::now() + chrono::Duration::minutes(5),
             Duration::from_millis(5),
         );
         tokio::time::sleep(Duration::from_millis(15)).await;

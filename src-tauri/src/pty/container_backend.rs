@@ -3103,7 +3103,12 @@ impl PtyBackend for ContainerTransportBackend {
         })
     }
 
-    fn write(&self, id: Uuid, data: &[u8]) -> Result<(), AppError> {
+    fn write(
+        &self,
+        _authority: &crate::pty::manager::BackendWriteAuthority,
+        id: Uuid,
+        data: &[u8],
+    ) -> Result<(), AppError> {
         if data.len() > MAX_TRANSPORT_FRAME_BYTES {
             return Err(AppError::PtyError(
                 "container transport input exceeds 64 KiB".to_string(),
@@ -5443,7 +5448,13 @@ mod tests {
         let (backend, ticket) = pending_backend(id, root).await;
         let mut rx = attach(&backend, id, root, &ticket);
 
-        backend.write(id, b"abc").expect("write");
+        backend
+            .write(
+                &crate::pty::manager::BackendWriteAuthority::for_backend_test(),
+                id,
+                b"abc",
+            )
+            .expect("write");
 
         assert_eq!(
             rx.recv().await.expect("bridge frame"),
@@ -5569,12 +5580,15 @@ mod tests {
         }));
 
         let guard = pty.lock().unwrap();
+        let authority = crate::pty::manager::BackendWriteAuthority::for_backend_test();
         for _ in 0..8 {
-            backend.write(id, b"x").expect("fill outbound queue");
+            backend
+                .write(&authority, id, b"x")
+                .expect("fill outbound queue");
         }
         let started = Instant::now();
         let error = backend
-            .write(id, b"overflow")
+            .write(&authority, id, b"overflow")
             .expect_err("ninth frame must close a full queue");
         assert!(error.to_string().contains("outbound queue full"));
         assert!(started.elapsed() < Duration::from_millis(250));

@@ -129,7 +129,12 @@ pub trait PtyBackend: Any + Send + Sync {
 
     fn spawn(&self, spec: BackendSpawnSpec) -> BoxFuture<'_, Result<(), AppError>>;
 
-    fn write(&self, id: Uuid, data: &[u8]) -> Result<(), AppError>;
+    fn write(
+        &self,
+        authority: &crate::pty::manager::BackendWriteAuthority,
+        id: Uuid,
+        data: &[u8],
+    ) -> Result<(), AppError>;
 
     fn resize(&self, id: Uuid, cols: u16, rows: u16) -> Result<(), AppError>;
 

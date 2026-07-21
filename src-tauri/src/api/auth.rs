@@ -621,6 +621,18 @@ fn open_registry_lock(parent: &Path) -> Result<std::fs::File, String> {
     Ok(file)
 }
 
+/// Hold the dedicated registry lock exactly the way the production acquisition
+/// path does, so another handle in the same process observes contention. Used
+/// by cross-module tests that need `authenticate_pty_input_fresh*` to return
+/// `FreshRegistryError::Contended`. The returned handle keeps the lock until it
+/// is dropped.
+#[cfg(test)]
+pub(crate) fn hold_registry_lock_for_test(parent: &Path) -> std::fs::File {
+    let lock = open_registry_lock(parent).expect("open registry lock for test");
+    lock.lock().expect("hold registry lock for test");
+    lock
+}
+
 fn revalidate_registry_lock(parent: &Path, file: &std::fs::File) -> Result<(), String> {
     crate::path_identity::verify_directory(parent)
         .map_err(|_| "api_registry_lock_failed".to_string())?;

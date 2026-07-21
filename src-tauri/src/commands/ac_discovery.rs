@@ -2643,7 +2643,12 @@ mod tests {
             Box::pin(async { Ok(()) })
         }
 
-        fn write(&self, _id: Uuid, _data: &[u8]) -> Result<(), crate::errors::AppError> {
+        fn write(
+            &self,
+            _authority: &crate::pty::manager::BackendWriteAuthority,
+            _id: Uuid,
+            _data: &[u8],
+        ) -> Result<(), crate::errors::AppError> {
             Ok(())
         }
 

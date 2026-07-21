@@ -44,6 +44,25 @@ struct SpawnRegistry {
     next_route_generation: u64,
 }
 
+/// Unforgeable safe-code authority for a raw backend PTY write. Only the
+/// route-guard chokepoint can issue a production value, so adding an alias or
+/// reformatting a call cannot bypass the permit inventory.
+#[doc(hidden)]
+pub struct BackendWriteAuthority {
+    _private: (),
+}
+
+impl BackendWriteAuthority {
+    fn for_route_guard() -> Self {
+        Self { _private: () }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_backend_test() -> Self {
+        Self { _private: () }
+    }
+}
+
 /// Exclusive per-session input ownership. Holding this guard serializes a
 /// complete multi-phase submission against every other production writer.
 pub struct PtyInputPermit {
@@ -70,11 +89,14 @@ pub struct PtyRouteWriteGuard<'a> {
     backend: Arc<dyn PtyBackend>,
     _guard: std::sync::MutexGuard<'a, ()>,
     _authority_guard: Option<std::sync::MutexGuard<'a, ()>>,
+    _settings_guard:
+        Option<tokio::sync::OwnedRwLockReadGuard<crate::config::settings::AppSettings>>,
 }
 
 impl<'a> PtyRouteWriteGuard<'a> {
     pub fn write(&self, bytes: &[u8]) -> Result<(), AppError> {
-        self.backend.write(self.session_id, bytes)
+        let authority = BackendWriteAuthority::for_route_guard();
+        self.backend.write(&authority, self.session_id, bytes)
     }
 
     pub(crate) fn retain_authority_guard(
@@ -82,6 +104,15 @@ impl<'a> PtyRouteWriteGuard<'a> {
         authority_guard: std::sync::MutexGuard<'a, ()>,
     ) {
         self._authority_guard = Some(authority_guard);
+    }
+
+    pub(crate) fn retain_settings_guard(
+        &mut self,
+        settings_guard: tokio::sync::OwnedRwLockReadGuard<
+            crate::config::settings::AppSettings,
+        >,
+    ) {
+        self._settings_guard = Some(settings_guard);
     }
 }
 
@@ -748,6 +779,7 @@ pub fn lock_route_for_write(permit: &PtyInputPermit) -> Result<PtyRouteWriteGuar
         backend: Arc::clone(&permit.backend),
         _guard: lifecycle_guard,
         _authority_guard: None,
+        _settings_guard: None,
     })
 }
 
@@ -788,6 +820,7 @@ pub(crate) fn lock_route_for_verified_write<'a>(
         backend: Arc::clone(&permit.backend),
         _guard: lifecycle_guard,
         _authority_guard: None,
+        _settings_guard: None,
     })
 }
 
@@ -843,7 +876,12 @@ mod tests {
             })
         }
 
-        fn write(&self, id: Uuid, data: &[u8]) -> Result<(), AppError> {
+        fn write(
+            &self,
+            _authority: &BackendWriteAuthority,
+            id: Uuid,
+            data: &[u8],
+        ) -> Result<(), AppError> {
             self.calls
                 .lock()
                 .unwrap()
@@ -949,7 +987,12 @@ mod tests {
             })
         }
 
-        fn write(&self, _id: Uuid, _data: &[u8]) -> Result<(), AppError> {
+        fn write(
+            &self,
+            _authority: &BackendWriteAuthority,
+            _id: Uuid,
+            _data: &[u8],
+        ) -> Result<(), AppError> {
             Ok(())
         }
 

@@ -488,7 +488,7 @@ impl SessionManager {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn prepare_pty_input_boundary<'a, F>(
+    pub(crate) async fn prepare_pty_input_boundary<'a, F, G>(
         &self,
         id: Uuid,
         expected_target: &crate::config::teams::VerifiedPtyInputIdentity,
@@ -499,6 +499,8 @@ impl SessionManager {
         authority_route: &'a crate::pty::manager::PtyAuthorityRouteProof,
         permit: &'a crate::pty::manager::PtyInputPermit,
         idle_detector: &crate::pty::idle_detector::IdleDetector,
+        settings: &crate::config::settings::SettingsState,
+        final_recipe_check: G,
         final_external_check: F,
     ) -> Result<
         crate::pty::manager::PtyRouteWriteGuard<'a>,
@@ -506,10 +508,14 @@ impl SessionManager {
     >
     where
         F: FnOnce() -> bool,
+        G: FnOnce(&Session, &crate::config::settings::AppSettings) -> bool,
     {
         use crate::pty::idle_detector::PtyInputBoundaryFailure as Failure;
 
         let (route_guard, was_idle) = {
+            let settings_guard = Arc::clone(settings)
+                .try_read_owned()
+                .map_err(|_| Failure::RouteUnavailable)?;
             let mut state = self.state.write().await;
             if state.pending_create.contains_key(&id)
                 || state.pending_create.contains_key(&authority_id)
@@ -585,7 +591,7 @@ impl SessionManager {
             if matches!(session.status, SessionStatus::Exited(_))
                 || !session.waiting_for_input
                 || session.backend_kind != expected_backend
-                || session.pty_submission_agent().is_none()
+                || !final_recipe_check(session, &settings_guard)
             {
                 return Err(Failure::Busy);
             }
@@ -626,6 +632,7 @@ impl SessionManager {
             }
             let (mut route_guard, was_idle) = prepared;
             route_guard.retain_authority_guard(authority_route_guard);
+            route_guard.retain_settings_guard(settings_guard);
             (route_guard, was_idle)
         };
         idle_detector.notify_pty_input_busy(id, was_idle);
