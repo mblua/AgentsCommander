@@ -2414,16 +2414,26 @@ impl NewProjectTransactionHooks {
         &self,
         settings: &crate::config::settings::AppSettings,
         settings_path: Option<&Path>,
-    ) -> Result<(), String> {
+    ) -> Result<crate::config::settings::AppSettings, String> {
         #[cfg(test)]
         if self.fail_settings_save {
             return Err("injected new-project settings save failure".to_string());
         }
-        if let Some(path) = settings_path {
-            crate::config::settings::save_settings_with_project_paths_to_path(settings, path)
-        } else {
-            crate::config::settings::save_settings_with_project_paths(settings)
-        }
+        // #1077 reconciliation: persist through the reconcile writer so the project
+        // fields are rebuilt from the resynced runtime_authoritative hidden state,
+        // and return the fresh-decoded settings for the caller to publish (§4.2).
+        // Mirrors mutate_project_paths_with_settings_path.
+        let path_buf;
+        let path: &Path = match settings_path {
+            Some(p) => p,
+            None => {
+                path_buf = crate::config::config_dir()
+                    .ok_or("Could not determine settings directory")?
+                    .join("settings.json");
+                &path_buf
+            }
+        };
+        crate::config::settings::reconcile_project_state_to_path(settings, path, true, true)
     }
 
     fn before_final_revalidation(&self, workspace_dir: &Path) {
@@ -2454,10 +2464,22 @@ async fn new_project_inner_with_settings_path_and_hooks(
         } else {
             crate::config::settings::refresh_project_paths_from_disk(&mut current)?;
         }
+        // #1077 parity: structural project corruption blocks the registration,
+        // exactly as mutate_project_paths_with_settings_path does for the
+        // open/remove/archive mutators.
+        if crate::config::settings::project_state_has_structural(&current) {
+            return Err(
+                "settings.json has malformed project metadata; refusing to modify the project list. Fix or remove the corrupt project fields first.".to_string(),
+            );
+        }
 
         let before_settings = current.clone();
         let before_archived = current.archived_project_paths.clone();
         let result = crate::config::projects::commit_prepared_new_project(&mut current, &prepared);
+        // #1077 reconciliation step 1: rebuild the hidden state runtime_authoritative
+        // from the upserted runtime lists so the reconcile write emits the runtime
+        // selection rather than the stale disk projection.
+        crate::config::settings::resync_project_state_from_runtime(&mut current);
         if let Err(error) = prepared.revalidate() {
             *current = before_settings;
             return Err(error.to_string());
@@ -2467,17 +2489,29 @@ async fn new_project_inner_with_settings_path_and_hooks(
         // Preserve the established save-failure contract: once the deliberate
         // upsert is in live memory, a disk-save error is returned without
         // reverting that in-memory list.
-        hooks.save_settings(&snapshot, settings_path.as_deref())?;
+        let written = hooks.save_settings(&snapshot, settings_path.as_deref())?;
+        // §4.2: publish the fresh-decoded settings (selected runtime + hidden state).
+        *current = written;
         hooks.before_final_revalidation(prepared.workspace_dir());
         if let Err(error) = prepared.revalidate() {
-            *current = before_settings.clone();
-            let rollback = hooks.save_settings(&before_settings, settings_path.as_deref());
+            // #1077 reconciliation step 3: resync the pre-mutation snapshot so its
+            // pre-mutation runtime list writes runtime_authoritative and CLEARS the
+            // earlier disk entry; publish the fresh-decoded value on success.
+            let mut reverted = before_settings.clone();
+            crate::config::settings::resync_project_state_from_runtime(&mut reverted);
+            let rollback = hooks.save_settings(&reverted, settings_path.as_deref());
             return Err(match rollback {
-                Ok(()) => error.to_string(),
-                Err(rollback_error) => format!(
-                    "{}; failed to roll back project registration settings: {}",
-                    error, rollback_error
-                ),
+                Ok(written) => {
+                    *current = written;
+                    error.to_string()
+                }
+                Err(rollback_error) => {
+                    *current = reverted;
+                    format!(
+                        "{}; failed to roll back project registration settings: {}",
+                        error, rollback_error
+                    )
+                }
             });
         }
         let archived_changed = before_archived != current.archived_project_paths;
