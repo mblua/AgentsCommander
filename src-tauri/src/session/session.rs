@@ -36,14 +36,16 @@ pub const TEMP_SESSION_PREFIX: &str = "[temp]";
 pub struct SessionRepo {
     /// Repo dir name with leading "repo-" stripped (e.g. "AgentsCommander").
     pub label: String,
-    /// Absolute path to the repo root. Branch detection runs `git rev-parse` in this dir.
+    /// Absolute path to the repo root. Local Git status detection runs in this directory.
     pub source_path: String,
     /// Current branch. `None` until first watcher tick, or when detection fails.
     #[serde(default)]
     pub branch: Option<String>,
-    /// #1028 - worktree dirty: untracked, unstaged, or staged-but-uncommitted changes.
-    /// `Some(true)` paints the badge letters red. `None` = never successfully detected
-    /// for this path since process start, rendered violet like clean; a failed detection
+    /// #1028/#1078 - local work not confirmed by cached origin tracking: Git emitted a
+    /// non-ignored worktree/index entry, or the checked-out `HEAD` was not confirmed
+    /// reachable from the current branch's configured cached `origin/*` upstream.
+    /// `Some(true)` paints the badge letters red. `None` means never successfully
+    /// detected for this path since process start, rendered violet like clean; a failed detection
     /// holds the last known answer instead (`git_watcher::remember_dirty`), so `None`
     /// means "no first answer yet", not "flaked once".
     ///
