@@ -19,8 +19,8 @@ use std::path::PathBuf;
 use crate::cli::workgroup::write_project_registration_refresh;
 use crate::config::projects::{register_existing_project, ProjectError};
 use crate::config::settings::{
-    load_settings_for_cli_strict, project_state_has_structural,
-    resync_project_state_from_runtime, save_settings_with_project_paths,
+    load_settings_for_cli_strict, project_state_has_structural, resync_project_state_from_runtime,
+    save_settings_with_project_paths,
 };
 
 #[derive(Args)]

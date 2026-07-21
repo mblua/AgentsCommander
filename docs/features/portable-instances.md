@@ -49,6 +49,25 @@ That's it. The instance creates its own config directory on first launch, gets a
 - **Per-team workspaces.** One instance per team you operate, each with its own coding-agent credentials and project list.
 - **Reset experiments cheaply.** Want to try a different settings layout without losing your current one? Copy the `.exe`, rename it, experiment, delete when done.
 
+## Portable project paths
+
+Every project you register is stored two ways in `settings.json`: the usual absolute path, and a portable path **relative to the folder that holds the running binary** (the same folder the config directory sits next to). Move the whole tree together (the binary, its `.agentscommander_<suffix>/` directory, and the project folders) to a new location, and each project whose relative form still resolves is picked up at its new absolute path automatically. AC reconciles `settings.json` to the new absolute path on the next load.
+
+The relative form is anchored to the executable's own directory, never the process working directory, so it does not matter which shell or folder you launch AC from.
+
+Relocation carries a project across the move when:
+
+- the project keeps the same position relative to the binary's folder (they move together under a new parent), and
+- the binary and the project still share one filesystem root (same Windows drive letter or UNC share).
+
+It does not help when only one side moves, or when the project lives on a different drive or share than the binary. A project on a different drive/share has no relative form at all: its companion value is stored as `null`, it keeps working in place through the absolute path, and it is simply not portable if you later move the install folder.
+
+**Packaging layout.** The anchor is the directory of the real native executable, not a wrapper or an app root. On Windows that is the folder containing `agentscommander*.exe`. On macOS it is `Foo.app/Contents/MacOS` inside the bundle, not the `.app` root. On Linux it is the directory of the raw binary or the running AppImage. A project stored relative to `Contents/MacOS` relocates correctly only when it keeps that relationship to the bundle.
+
+**Conflict handling.** Both stored forms are resolved and validated on every load. If they point at the same directory (symlinks and Windows aliases included), the project loads once. If they resolve to two different real directories, that registration is a conflict: AC loads neither side, writes nothing to disk for it, and the sidebar shows one sticky red error toast listing both resolved paths. Other, non-conflicting projects still load normally. Dismiss the toast, then fix the registration (remove it, then re-open the folder you want) to clear the conflict.
+
+**Sessions stay absolute.** This portability applies to project registrations only. Saved sessions in `sessions.json` keep absolute working directories and absolute nested repo paths, and they follow the existing retention and purge rules. Relocating an instance does not rewrite session paths.
+
 ## What is NOT isolated
 
 A portable instance still shares:

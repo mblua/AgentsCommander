@@ -813,7 +813,10 @@ pub(crate) enum SideStatus {
 
 impl SideStatus {
     pub(crate) fn is_valid(self) -> bool {
-        matches!(self, SideStatus::ValidDirectProject | SideStatus::ValidCollectionRoot)
+        matches!(
+            self,
+            SideStatus::ValidDirectProject | SideStatus::ValidCollectionRoot
+        )
     }
 }
 
@@ -1143,13 +1146,22 @@ pub(crate) struct RawStringField {
 
 impl RawStringField {
     pub(crate) fn absent() -> Self {
-        RawStringField { present: false, value: None }
+        RawStringField {
+            present: false,
+            value: None,
+        }
     }
     pub(crate) fn string(s: impl Into<String>) -> Self {
-        RawStringField { present: true, value: Some(s.into()) }
+        RawStringField {
+            present: true,
+            value: Some(s.into()),
+        }
     }
     pub(crate) fn null() -> Self {
-        RawStringField { present: true, value: None }
+        RawStringField {
+            present: true,
+            value: None,
+        }
     }
 }
 
@@ -1545,9 +1557,17 @@ fn singular_mirrors_first(singular: &ResolvedPair, first: &ResolvedPair) -> bool
             return true;
         }
     }
-    if let (Some(a), Some(b)) = (&singular.selected_canonical_raw, &first.selected_canonical_raw) {
+    if let (Some(a), Some(b)) = (
+        &singular.selected_canonical_raw,
+        &first.selected_canonical_raw,
+    ) {
         return matches!(
-            compare_dirs(a, singular.selected_identity.as_ref(), b, first.selected_identity.as_ref()),
+            compare_dirs(
+                a,
+                singular.selected_identity.as_ref(),
+                b,
+                first.selected_identity.as_ref()
+            ),
             SameDir::Same
         );
     }
@@ -1676,7 +1696,9 @@ fn group_reconcile_eligible(
     companion_present: bool,
     genuine_singular: bool,
 ) -> bool {
-    let has_dirty = pairs.iter().any(|p| p.is_selected() && p.repair != RepairKind::None);
+    let has_dirty = pairs
+        .iter()
+        .any(|p| p.is_selected() && p.repair != RepairKind::None);
     if !has_dirty {
         return false;
     }
@@ -2507,7 +2529,10 @@ mod tests {
         #[test]
         fn encode_child_of_base() {
             assert_eq!(
-                encode_instance_relative(Path::new("/opt/bundle/projects/alpha"), Path::new("/opt/bundle")),
+                encode_instance_relative(
+                    Path::new("/opt/bundle/projects/alpha"),
+                    Path::new("/opt/bundle")
+                ),
                 Some("projects/alpha".to_string())
             );
         }
@@ -2515,7 +2540,10 @@ mod tests {
         #[test]
         fn encode_sibling_uses_dotdot() {
             assert_eq!(
-                encode_instance_relative(Path::new("/opt/projects/alpha"), Path::new("/opt/bundle")),
+                encode_instance_relative(
+                    Path::new("/opt/projects/alpha"),
+                    Path::new("/opt/bundle")
+                ),
                 Some("../projects/alpha".to_string())
             );
         }
@@ -2553,7 +2581,10 @@ mod tests {
             let base = Path::new("/opt/bundle");
             let project = Path::new("/opt/projects/alpha");
             let wire = encode_instance_relative(project, base).unwrap();
-            assert_eq!(decode_instance_relative(&wire, base).unwrap(), PathBuf::from("/opt/projects/alpha"));
+            assert_eq!(
+                decode_instance_relative(&wire, base).unwrap(),
+                PathBuf::from("/opt/projects/alpha")
+            );
         }
 
         #[test]
@@ -2567,15 +2598,42 @@ mod tests {
         #[test]
         fn decode_rejects_noncanonical_and_injection() {
             let base = Path::new("/opt/bundle");
-            assert_eq!(decode_instance_relative("", base), Err(RelDecodeError::Empty));
-            assert_eq!(decode_instance_relative("a\0b", base), Err(RelDecodeError::Nul));
-            assert_eq!(decode_instance_relative("a\\b", base), Err(RelDecodeError::Backslash));
-            assert_eq!(decode_instance_relative("/abs", base), Err(RelDecodeError::EmptySegment));
-            assert_eq!(decode_instance_relative("a/", base), Err(RelDecodeError::EmptySegment));
-            assert_eq!(decode_instance_relative("a//b", base), Err(RelDecodeError::EmptySegment));
-            assert_eq!(decode_instance_relative("a/./b", base), Err(RelDecodeError::DotSegment));
-            assert_eq!(decode_instance_relative("C:/x", base), Err(RelDecodeError::DriveRelative));
-            assert_eq!(decode_instance_relative("C:", base), Err(RelDecodeError::DriveRelative));
+            assert_eq!(
+                decode_instance_relative("", base),
+                Err(RelDecodeError::Empty)
+            );
+            assert_eq!(
+                decode_instance_relative("a\0b", base),
+                Err(RelDecodeError::Nul)
+            );
+            assert_eq!(
+                decode_instance_relative("a\\b", base),
+                Err(RelDecodeError::Backslash)
+            );
+            assert_eq!(
+                decode_instance_relative("/abs", base),
+                Err(RelDecodeError::EmptySegment)
+            );
+            assert_eq!(
+                decode_instance_relative("a/", base),
+                Err(RelDecodeError::EmptySegment)
+            );
+            assert_eq!(
+                decode_instance_relative("a//b", base),
+                Err(RelDecodeError::EmptySegment)
+            );
+            assert_eq!(
+                decode_instance_relative("a/./b", base),
+                Err(RelDecodeError::DotSegment)
+            );
+            assert_eq!(
+                decode_instance_relative("C:/x", base),
+                Err(RelDecodeError::DriveRelative)
+            );
+            assert_eq!(
+                decode_instance_relative("C:", base),
+                Err(RelDecodeError::DriveRelative)
+            );
         }
 
         #[test]
@@ -2621,7 +2679,10 @@ mod tests {
         #[test]
         fn encode_child_and_sibling() {
             assert_eq!(
-                encode_instance_relative(Path::new(r"C:\bundle\projects\alpha"), Path::new(r"C:\bundle")),
+                encode_instance_relative(
+                    Path::new(r"C:\bundle\projects\alpha"),
+                    Path::new(r"C:\bundle")
+                ),
                 Some("projects/alpha".to_string())
             );
             assert_eq!(
@@ -2667,7 +2728,10 @@ mod tests {
         #[test]
         fn encode_verbatim_disk_normalizes_for_comparison() {
             assert_eq!(
-                encode_instance_relative(Path::new(r"\\?\C:\bundle\alpha"), Path::new(r"C:\bundle")),
+                encode_instance_relative(
+                    Path::new(r"\\?\C:\bundle\alpha"),
+                    Path::new(r"C:\bundle")
+                ),
                 Some("alpha".to_string())
             );
         }
@@ -2681,17 +2745,44 @@ mod tests {
             );
             // ADS colon not in drive position → illegal char (drive-position
             // `X:` is caught earlier as DriveRelative, also a rejection).
-            assert_eq!(decode_instance_relative("foo:bar", base), Err(RelDecodeError::IllegalWindowsChar));
-            assert_eq!(decode_instance_relative("a*b", base), Err(RelDecodeError::IllegalWindowsChar));
-            assert_eq!(decode_instance_relative("a:b", base), Err(RelDecodeError::DriveRelative));
+            assert_eq!(
+                decode_instance_relative("foo:bar", base),
+                Err(RelDecodeError::IllegalWindowsChar)
+            );
+            assert_eq!(
+                decode_instance_relative("a*b", base),
+                Err(RelDecodeError::IllegalWindowsChar)
+            );
+            assert_eq!(
+                decode_instance_relative("a:b", base),
+                Err(RelDecodeError::DriveRelative)
+            );
             // Trailing dot/space.
-            assert_eq!(decode_instance_relative("alpha ", base), Err(RelDecodeError::TrailingDotOrSpace));
-            assert_eq!(decode_instance_relative("alpha.", base), Err(RelDecodeError::TrailingDotOrSpace));
+            assert_eq!(
+                decode_instance_relative("alpha ", base),
+                Err(RelDecodeError::TrailingDotOrSpace)
+            );
+            assert_eq!(
+                decode_instance_relative("alpha.", base),
+                Err(RelDecodeError::TrailingDotOrSpace)
+            );
             // Reserved DOS device names, with and without extension.
-            assert_eq!(decode_instance_relative("CON", base), Err(RelDecodeError::ReservedDosName));
-            assert_eq!(decode_instance_relative("con.txt", base), Err(RelDecodeError::ReservedDosName));
-            assert_eq!(decode_instance_relative("COM1", base), Err(RelDecodeError::ReservedDosName));
-            assert_eq!(decode_instance_relative("LPT9", base), Err(RelDecodeError::ReservedDosName));
+            assert_eq!(
+                decode_instance_relative("CON", base),
+                Err(RelDecodeError::ReservedDosName)
+            );
+            assert_eq!(
+                decode_instance_relative("con.txt", base),
+                Err(RelDecodeError::ReservedDosName)
+            );
+            assert_eq!(
+                decode_instance_relative("COM1", base),
+                Err(RelDecodeError::ReservedDosName)
+            );
+            assert_eq!(
+                decode_instance_relative("LPT9", base),
+                Err(RelDecodeError::ReservedDosName)
+            );
             // COM0 / COM10 are not reserved.
             assert!(decode_instance_relative("COM0", base).is_ok());
             assert!(decode_instance_relative("COM10", base).is_ok());
@@ -2808,7 +2899,10 @@ mod tests {
                 false,
                 &resolver,
             );
-            assert_eq!(report.active_selected(), vec![display_canonical(&rel_target)]);
+            assert_eq!(
+                report.active_selected(),
+                vec![display_canonical(&rel_target)]
+            );
             assert_eq!(report.pairs[0].repair, RepairKind::ReplaceStaleAbsolute);
         }
 
@@ -2882,7 +2976,10 @@ mod tests {
                 false,
                 &resolver,
             );
-            assert!(report.active_selected().is_empty(), "alpha reintroduced despite conflict");
+            assert!(
+                report.active_selected().is_empty(),
+                "alpha reintroduced despite conflict"
+            );
             assert_eq!(report.pairs[0].issue, Some(IssueKind::Conflict));
             assert_eq!(report.pairs[1].issue, Some(IssueKind::Invalid));
         }
@@ -2894,9 +2991,18 @@ mod tests {
             let other = abs("elsewhere");
             let child = abs("collection/child");
             let mut map = HashMap::new();
-            map.insert(root.clone(), valid(&root, SideStatus::ValidCollectionRoot, 1, 50));
-            map.insert(other.clone(), valid(&other, SideStatus::ValidDirectProject, 1, 51));
-            map.insert(child.clone(), valid(&child, SideStatus::ValidDirectProject, 1, 52));
+            map.insert(
+                root.clone(),
+                valid(&root, SideStatus::ValidCollectionRoot, 1, 50),
+            );
+            map.insert(
+                other.clone(),
+                valid(&other, SideStatus::ValidDirectProject, 1, 51),
+            );
+            map.insert(
+                child.clone(),
+                valid(&child, SideStatus::ValidDirectProject, 1, 52),
+            );
             let resolver = MapResolver { map };
             let report = resolve_registrations(
                 &[
@@ -2936,7 +3042,10 @@ mod tests {
                 &resolver,
             );
             assert_eq!(report.active_selected(), vec![display_canonical(&a)]);
-            assert!(report.archived_selected().is_empty(), "archived dup of active must drop");
+            assert!(
+                report.archived_selected().is_empty(),
+                "archived dup of active must drop"
+            );
         }
 
         #[test]
@@ -2970,7 +3079,9 @@ mod tests {
         #[test]
         fn neither_valid_definite_notfound_is_missing() {
             let a = abs("gone");
-            let resolver = MapResolver { map: HashMap::new() }; // everything Missing
+            let resolver = MapResolver {
+                map: HashMap::new(),
+            }; // everything Missing
             let report = resolve_registrations(
                 &[active_pair(0, &a, None)],
                 None,
@@ -3000,9 +3111,15 @@ mod tests {
                 &resolver,
             );
             assert_eq!(report.active_selected(), vec![display_canonical(&a)]);
-            assert_eq!(report.pairs[0].relative_side.status, SideStatus::BaseUnavailable);
+            assert_eq!(
+                report.pairs[0].relative_side.status,
+                SideStatus::BaseUnavailable
+            );
             // The raw relative value is retained in hidden state.
-            assert_eq!(report.pairs[0].raw_relative, RawStringField::string("projects/alpha"));
+            assert_eq!(
+                report.pairs[0].raw_relative,
+                RawStringField::string("projects/alpha")
+            );
         }
 
         #[test]
@@ -3028,7 +3145,10 @@ mod tests {
                 false,
                 &resolver,
             );
-            assert_eq!(report.active_registration_count, 2, "genuine singular counts");
+            assert_eq!(
+                report.active_registration_count, 2,
+                "genuine singular counts"
+            );
             assert_eq!(report.active_selected(), vec![display_canonical(&a)]);
             // The unresolved genuine singular blocks active reconciliation.
             assert!(!report.active_reconcile_eligible);
@@ -3055,7 +3175,10 @@ mod tests {
                 false,
                 &resolver,
             );
-            assert_eq!(report.active_registration_count, 1, "redundant singular not counted");
+            assert_eq!(
+                report.active_registration_count, 1,
+                "redundant singular not counted"
+            );
         }
     }
 }

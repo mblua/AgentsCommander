@@ -865,11 +865,8 @@ fn parse_settings_json(contents: &str, source: &str) -> Result<(AppSettings, boo
     // AppSettings, so a wrong-typed project field cannot fail unrelated settings
     // deserialization and unresolved/conflicting pairs survive in hidden state.
     let base = production_instance_base();
-    let state = apply_project_decode_to_value(
-        &mut value,
-        base.as_deref(),
-        &projects::FsCandidateResolver,
-    );
+    let state =
+        apply_project_decode_to_value(&mut value, base.as_deref(), &projects::FsCandidateResolver);
     let mut settings: AppSettings = serde_json::from_value(value)
         .map_err(|e| format!("Failed to deserialize settings from {source}: {e}"))?;
     settings.project_path_state = Arc::new(state);
@@ -1380,10 +1377,7 @@ pub fn validate_and_repair_settings(settings: &mut AppSettings) -> Result<(), St
     validate_resource_settings(settings)
 }
 
-pub(crate) fn parse_api_server_socket_addr(
-    bind: &str,
-    port: u16,
-) -> Result<SocketAddr, String> {
+pub(crate) fn parse_api_server_socket_addr(bind: &str, port: u16) -> Result<SocketAddr, String> {
     let bind = bind.trim();
     if bind.is_empty() {
         return Err("apiServerBind must not be empty".to_string());
@@ -1392,9 +1386,7 @@ pub(crate) fn parse_api_server_socket_addr(
         return Err("apiServerPort must be between 1 and 65535".to_string());
     }
     let ip: IpAddr = bind.parse().map_err(|e| {
-        format!(
-            "apiServerBind must be an IP address such as 127.0.0.1, 0.0.0.0, ::1, or :: ({e})"
-        )
+        format!("apiServerBind must be an IP address such as 127.0.0.1, 0.0.0.0, ::1, or :: ({e})")
     })?;
     Ok(SocketAddr::new(ip, port))
 }
@@ -2127,7 +2119,12 @@ fn extract_singular(root: &Map<String, Value>) -> (Option<RawPair>, Option<Struc
         None => RawStringField::absent(),
         Some(Value::Null) => RawStringField::null(),
         Some(Value::String(s)) => RawStringField::string(s.clone()),
-        Some(_) => return (None, Some(structural("projectPath is not a string or null"))),
+        Some(_) => {
+            return (
+                None,
+                Some(structural("projectPath is not a string or null")),
+            )
+        }
     };
     let companion_field = match companion {
         None => RawStringField::absent(),
@@ -2145,19 +2142,24 @@ fn extract_singular(root: &Map<String, Value>) -> (Option<RawPair>, Option<Struc
     if companion.is_some() && primary.is_none() {
         return (
             None,
-            Some(structural("singular companion present while projectPath is absent")),
+            Some(structural(
+                "singular companion present while projectPath is absent",
+            )),
         );
     }
     if matches!(companion, Some(Value::String(_))) && matches!(primary, Some(Value::Null)) {
         return (
             None,
-            Some(structural("non-null singular companion paired with null projectPath")),
+            Some(structural(
+                "non-null singular companion paired with null projectPath",
+            )),
         );
     }
 
     // A pair exists only when the primary is an actual string candidate; a
     // null/absent primary is the valid empty singular.
-    let pair = primary_field.value.is_some().then(|| RawPair {
+    let has_primary = primary_field.value.is_some();
+    let pair = has_primary.then_some(RawPair {
         source: ProjectSource::ProjectPath,
         index: None,
         absolute: primary_field,
@@ -2242,7 +2244,13 @@ pub(crate) fn apply_project_decode_to_value(
         );
         root.insert(
             FIELD_PROJECT_PATHS.to_string(),
-            Value::Array(state.active_selected().into_iter().map(Value::String).collect()),
+            Value::Array(
+                state
+                    .active_selected()
+                    .into_iter()
+                    .map(Value::String)
+                    .collect(),
+            ),
         );
         root.insert(
             FIELD_ARCHIVED.to_string(),
@@ -2315,7 +2323,11 @@ fn rebuild_group_arrays(pairs: &[ResolvedPair], base: Option<&Path>) -> (Vec<Val
 }
 
 /// Insert the four active fields from hidden state.
-fn write_active_group(out: &mut Map<String, Value>, state: &ProjectPathPersistenceState, base: Option<&Path>) {
+fn write_active_group(
+    out: &mut Map<String, Value>,
+    state: &ProjectPathPersistenceState,
+    base: Option<&Path>,
+) {
     let (primary, companion) = rebuild_group_arrays(state.active_pairs(), base);
     out.insert(
         FIELD_PROJECT_PATH.to_string(),
@@ -2330,7 +2342,11 @@ fn write_active_group(out: &mut Map<String, Value>, state: &ProjectPathPersisten
 }
 
 /// Insert the two archived fields from hidden state.
-fn write_archived_group(out: &mut Map<String, Value>, state: &ProjectPathPersistenceState, base: Option<&Path>) {
+fn write_archived_group(
+    out: &mut Map<String, Value>,
+    state: &ProjectPathPersistenceState,
+    base: Option<&Path>,
+) {
     let (primary, companion) = rebuild_group_arrays(state.archived_pairs(), base);
     out.insert(FIELD_ARCHIVED.to_string(), Value::Array(primary));
     out.insert(FIELD_ARCHIVED_REL.to_string(), Value::Array(companion));
@@ -2367,7 +2383,9 @@ fn archived_has_disk_truth(disk: &Map<String, Value>) -> bool {
 /// If `AppSettings` was constructed directly (empty hidden state) yet carries
 /// runtime project lists, synthesize a legacy absolute-only state so the writers
 /// behave like a legacy-decoded file (companions null, all entries selected).
-fn hidden_state_for_write(settings: &AppSettings) -> std::borrow::Cow<'_, ProjectPathPersistenceState> {
+fn hidden_state_for_write(
+    settings: &AppSettings,
+) -> std::borrow::Cow<'_, ProjectPathPersistenceState> {
     let state = &settings.project_path_state;
     let empty = state.pairs.is_empty() && state.structural_issues.is_empty();
     let runtime_nonempty = settings.project_path.is_some()
@@ -2552,9 +2570,13 @@ fn validate_non_project_settings(disk: &Map<String, Value>) -> Result<(), String
         root.remove(FIELD_ARCHIVED_REL);
     }
     migrate_settings_value_to_v2(&mut probe);
-    serde_json::from_value::<AppSettings>(probe).map(|_| ()).map_err(|e| {
-        format!("Refusing to overwrite present settings whose non-project fields are invalid: {e}")
-    })
+    serde_json::from_value::<AppSettings>(probe)
+        .map(|_| ())
+        .map_err(|e| {
+            format!(
+                "Refusing to overwrite present settings whose non-project fields are invalid: {e}"
+            )
+        })
 }
 
 /// #1077 automatic reconciliation boundary (§4.3): reconcile the requested
@@ -2567,7 +2589,11 @@ pub(crate) fn reconcile_project_state_to_path(
     active: bool,
     archived: bool,
 ) -> Result<AppSettings, String> {
-    save_settings_value(settings, path, ProjectWriteMode::Reconcile { active, archived })
+    save_settings_value(
+        settings,
+        path,
+        ProjectWriteMode::Reconcile { active, archived },
+    )
 }
 
 /// The #1077 project-aware atomic writer. Builds the output object per `mode`,
@@ -2632,8 +2658,9 @@ fn save_settings_value(
             // groups verbatim, matching the pre-#1077 verbatim writer. A real
             // decoded state rebuilds only a dirty+eligible group and otherwise
             // copies disk raw to retain unresolved entries.
-            let write_active_from_state =
-                active && !blocked && (state.runtime_authoritative || state.active_reconcile_eligible);
+            let write_active_from_state = active
+                && !blocked
+                && (state.runtime_authoritative || state.active_reconcile_eligible);
             let write_archived_from_state = archived
                 && !blocked
                 && (state.runtime_authoritative || state.archived_reconcile_eligible);
@@ -2970,7 +2997,11 @@ mod tests {
 
     #[test]
     fn codex_home_template_accepts_each_token_alone_and_as_leading_segment() {
-        for token in ["%AC_REPLICA_ROOT%", "%AC_WORKSPACE_ROOT%", "%AC_MATRIX_ROOT%"] {
+        for token in [
+            "%AC_REPLICA_ROOT%",
+            "%AC_WORKSPACE_ROOT%",
+            "%AC_MATRIX_ROOT%",
+        ] {
             super::validate_codex_home_template_value(token, "ctx")
                 .unwrap_or_else(|e| panic!("{token} alone should be accepted: {e}"));
             super::validate_codex_home_template_value(&format!("{token}\\.codex"), "ctx")
@@ -3053,21 +3084,21 @@ mod tests {
     #[test]
     fn validate_config_seed_dest_rejects_unsafe_names() {
         let bad = [
-            "",                // empty
-            "   ",             // whitespace only
-            ".config/opencode", // forward separator (nested)
-            ".config\\x",      // backslash separator
-            "..",              // parent
-            "a..b",            // contains ..
-            "C:foo",           // drive-relative colon
-            "x:y",             // ADS colon
+            "",                  // empty
+            "   ",               // whitespace only
+            ".config/opencode",  // forward separator (nested)
+            ".config\\x",        // backslash separator
+            "..",                // parent
+            "a..b",              // contains ..
+            "C:foo",             // drive-relative colon
+            "x:y",               // ADS colon
             "%AC_REPLICA_ROOT%", // placeholder marker
-            "$HOME",           // shell marker
-            ".claude.",        // trailing dot (trim does NOT strip dots)
-            "CON",             // reserved device
-            "nul",             // reserved device (case-insensitive)
-            "COM1",            // reserved device
-            "lpt9.claude",     // reserved device before first dot
+            "$HOME",             // shell marker
+            ".claude.",          // trailing dot (trim does NOT strip dots)
+            "CON",               // reserved device
+            "nul",               // reserved device (case-insensitive)
+            "COM1",              // reserved device
+            "lpt9.claude",       // reserved device before first dot
         ];
         for name in bad {
             assert!(
@@ -3120,7 +3151,10 @@ mod tests {
         assert!(json.contains("\"configSeed\""), "{json}");
         assert!(json.contains("\"dest\":\".claude\""), "{json}");
         let back: AgentConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.config_seed.as_ref().map(|c| c.dest.as_str()), Some(".claude"));
+        assert_eq!(
+            back.config_seed.as_ref().map(|c| c.dest.as_str()),
+            Some(".claude")
+        );
 
         // Absent -> key omitted (skip_serializing_if), and old files deserialize to None.
         agent.config_seed = None;
@@ -4086,7 +4120,9 @@ mod tests {
         // Serialize a default, strip ONLY these coordinator keys, deserialize back.
         let mut value =
             serde_json::to_value(AppSettings::default()).expect("serialize default to value");
-        let obj = value.as_object_mut().expect("settings serializes to an object");
+        let obj = value
+            .as_object_mut()
+            .expect("settings serializes to an object");
         obj.remove("coordinatorIdleBadgeYellowMinutes");
         obj.remove("coordinatorIdleBadgeRedMinutes");
         obj.remove("coordinatorAutoCloseEnabled");
@@ -4161,7 +4197,9 @@ mod tests {
         // to the documented defaults: master ON + empty per-agent map.
         let mut value =
             serde_json::to_value(AppSettings::default()).expect("serialize default to value");
-        let obj = value.as_object_mut().expect("settings serializes to an object");
+        let obj = value
+            .as_object_mut()
+            .expect("settings serializes to an object");
         obj.remove("autoSelfClearEnabled");
         obj.remove("autoSelfClearByAgent");
 
@@ -4183,10 +4221,7 @@ mod tests {
         assert!(json.contains("\"autoSelfClearByAgent\":{\"dev-rust\":true}"));
         let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
         assert!(!back.auto_self_clear_enabled);
-        assert_eq!(
-            back.auto_self_clear_by_agent.get("dev-rust"),
-            Some(&true)
-        );
+        assert_eq!(back.auto_self_clear_by_agent.get("dev-rust"), Some(&true));
     }
 
     #[test]
@@ -4632,11 +4667,7 @@ mod tests {
         let path = temp.path().join("settings.json");
         let a = real_ac_project_path(temp.path(), "A");
         let x = real_ac_project_path(temp.path(), "X");
-        super::save_settings_to_path(
-            &settings_with_project_paths(&[&a, &x]),
-            &path,
-        )
-        .unwrap();
+        super::save_settings_to_path(&settings_with_project_paths(&[&a, &x]), &path).unwrap();
 
         let mut candidate = settings_with_project_paths(&[&a]); // stale, missing X
         candidate.sidebar_style = "deep-space".to_string(); // unrelated GUI field
@@ -4648,8 +4679,8 @@ mod tests {
         assert_eq!(reloaded.project_paths, vec![a.clone(), x.clone()]); // X preserved, not clobbered
         assert_eq!(reloaded.project_path.as_deref(), Some(a.as_str()));
         assert_eq!(reloaded.sidebar_style, "deep-space"); // unrelated field persisted
-        // #1077: the returned settings carry the SELECTED (validated) projection,
-        // which equals the preserved disk list because both dirs are real.
+                                                          // #1077: the returned settings carry the SELECTED (validated) projection,
+                                                          // which equals the preserved disk list because both dirs are real.
         assert_eq!(written.project_paths, vec![a.clone(), x.clone()]);
         assert_eq!(written.project_path.as_deref(), Some(a.as_str()));
     }
@@ -5135,8 +5166,8 @@ mod tests {
     #[test]
     fn repair_prunes_invalid_letter_label_overrides_and_keeps_valid() {
         let mut settings = settings_with_agents(&[("Codex", "codex")]); // id = agent-0
-        // Pre-seed the A cell so the config is otherwise repair-clean; the only
-        // change repair makes is dropping the invalid-letter overrides.
+                                                                        // Pre-seed the A cell so the config is otherwise repair-clean; the only
+                                                                        // change repair makes is dropping the invalid-letter overrides.
         settings.coding_agent_profiles.profiles_by_agent.insert(
             "agent-0".to_string(),
             BTreeMap::from([("A".to_string(), super::empty_profile_cell())]),
@@ -5181,10 +5212,7 @@ mod tests {
                 BTreeMap::from([("B".to_string(), "turbo".to_string())]),
             );
 
-        repair_coding_agent_profiles_config(
-            &mut settings.coding_agent_profiles,
-            &settings.agents,
-        );
+        repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
 
         assert_eq!(
             settings.coding_agent_profiles.profile_labels_by_agent["ghost-agent"]["B"],
@@ -5195,7 +5223,7 @@ mod tests {
     #[test]
     fn repair_with_valid_label_map_does_not_flip_changed() {
         let mut settings = settings_with_agents(&[("Codex", "codex")]); // id = agent-0
-        // Make the config otherwise repair-clean: agent-0 already holds its A cell.
+                                                                        // Make the config otherwise repair-clean: agent-0 already holds its A cell.
         settings.coding_agent_profiles.profiles_by_agent.insert(
             "agent-0".to_string(),
             BTreeMap::from([("A".to_string(), super::empty_profile_cell())]),

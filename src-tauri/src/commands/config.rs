@@ -143,7 +143,11 @@ pub enum IssueSource {
 /// so struct-variant fields are camelCase (plain `rename_all` does not rename
 /// them). Optional `index` is omitted when absent.
 #[derive(Debug, Clone, serde::Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum ProjectPathIssue {
     Conflict {
         id: String,
@@ -387,7 +391,8 @@ pub(crate) fn settings_snapshot_from(
     settings: &AppSettings,
     reconciliation_error: Option<ProjectPathReconciliationError>,
 ) -> SettingsSnapshot {
-    let resolution = build_project_path_resolution(&settings.project_path_state, reconciliation_error);
+    let resolution =
+        build_project_path_resolution(&settings.project_path_state, reconciliation_error);
     let mut cleaned = settings.clone();
     // Clear so the existing skip_serializing_if omits rootToken (absent, not null).
     cleaned.root_token = None;
@@ -439,9 +444,7 @@ pub(crate) async fn settings_snapshot_helper(
 }
 
 #[tauri::command]
-pub async fn get_settings(
-    settings: State<'_, SettingsState>,
-) -> Result<SettingsSnapshot, String> {
+pub async fn get_settings(settings: State<'_, SettingsState>) -> Result<SettingsSnapshot, String> {
     Ok(settings_snapshot_helper(settings.inner(), None).await)
 }
 
@@ -2275,7 +2278,10 @@ mod tests {
             }
         }
 
-        fn state_with(pairs: Vec<ResolvedPair>, structural: Vec<StructuralIssue>) -> ProjectPathPersistenceState {
+        fn state_with(
+            pairs: Vec<ResolvedPair>,
+            structural: Vec<StructuralIssue>,
+        ) -> ProjectPathPersistenceState {
             let active_registration_count = pairs.len();
             ProjectPathPersistenceState {
                 pairs,
@@ -2292,12 +2298,23 @@ mod tests {
             }
         }
 
+        fn settings_with_state(state: ProjectPathPersistenceState) -> AppSettings {
+            AppSettings {
+                project_path_state: std::sync::Arc::new(state),
+                ..AppSettings::default()
+            }
+        }
+
         #[test]
         fn snapshot_serializes_camelcase_variants_and_omits_root_token() {
-            let mut settings = AppSettings::default();
-            settings.root_token = Some("SUPER-SECRET-TOKEN-VALUE".to_string());
-            settings.project_path_state =
-                std::sync::Arc::new(state_with(vec![conflict_pair(), missing_pair()], vec![]));
+            let settings = AppSettings {
+                root_token: Some("SUPER-SECRET-TOKEN-VALUE".to_string()),
+                project_path_state: std::sync::Arc::new(state_with(
+                    vec![conflict_pair(), missing_pair()],
+                    vec![],
+                )),
+                ..AppSettings::default()
+            };
 
             let snap = settings_snapshot_from(&settings, None);
             let json = serde_json::to_value(&snap).unwrap();
@@ -2305,7 +2322,10 @@ mod tests {
             // rootToken absent from both the flattened settings and anywhere else.
             let text = serde_json::to_string(&json).unwrap();
             assert!(!text.contains("rootToken"), "rootToken leaked: {text}");
-            assert!(!text.contains("SUPER-SECRET-TOKEN-VALUE"), "token value leaked");
+            assert!(
+                !text.contains("SUPER-SECRET-TOKEN-VALUE"),
+                "token value leaked"
+            );
 
             let resolution = &json["projectPathResolution"];
             assert_eq!(resolution["activeRegistrationCount"], 2);
@@ -2322,7 +2342,9 @@ mod tests {
             // id is a full lowercase 64-char hex.
             let id = conflict["id"].as_str().unwrap();
             assert_eq!(id.len(), 64);
-            assert!(id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+            assert!(id
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
 
             let missing = &issues[1];
             assert_eq!(missing["kind"], "missing");
@@ -2347,8 +2369,7 @@ mod tests {
                     value: None,
                 },
             };
-            let mut settings = AppSettings::default();
-            settings.project_path_state = std::sync::Arc::new(state_with(vec![], vec![structural]));
+            let settings = settings_with_state(state_with(vec![], vec![structural]));
             let snap = settings_snapshot_from(&settings, None);
             let json = serde_json::to_value(&snap).unwrap();
             let resolution = &json["projectPathResolution"];
@@ -2368,17 +2389,14 @@ mod tests {
             let mut a = missing_pair();
             let mut b = missing_pair();
             b.index = Some(9);
-            let mut settings_a = AppSettings::default();
-            settings_a.project_path_state = std::sync::Arc::new(state_with(vec![a.clone()], vec![]));
-            let mut settings_b = AppSettings::default();
-            settings_b.project_path_state = std::sync::Arc::new(state_with(vec![b], vec![]));
+            let settings_a = settings_with_state(state_with(vec![a.clone()], vec![]));
+            let settings_b = settings_with_state(state_with(vec![b], vec![]));
             let id_a = issue_id(&settings_snapshot_from(&settings_a, None));
             let id_b = issue_id(&settings_snapshot_from(&settings_b, None));
             assert_eq!(id_a, id_b);
             // A different raw absolute → different id.
             a.raw_absolute = RawStringField::string("/gone/y");
-            let mut settings_c = AppSettings::default();
-            settings_c.project_path_state = std::sync::Arc::new(state_with(vec![a], vec![]));
+            let settings_c = settings_with_state(state_with(vec![a], vec![]));
             assert_ne!(id_a, issue_id(&settings_snapshot_from(&settings_c, None)));
         }
 
@@ -2448,11 +2466,6 @@ mod tests {
 
     fn write_settings_file(dir: &Path, settings: &AppSettings) {
         let json = serde_json::to_vec_pretty(settings).expect("serialize settings");
-        std::fs::write(dir.join("settings.json"), json).expect("write settings.json");
-    }
-
-    fn write_settings_json(dir: &Path, value: serde_json::Value) {
-        let json = serde_json::to_vec_pretty(&value).expect("serialize settings json");
         std::fs::write(dir.join("settings.json"), json).expect("write settings.json");
     }
 

@@ -961,14 +961,19 @@ mod tests {
     async fn get_settings_route_returns_snapshot_and_omits_root_token() {
         // #1077: the browser get_settings route must reuse the shared snapshot
         // helper, so it carries the resolution report and never leaks rootToken.
-        let mut settings = AppSettings::default();
-        settings.root_token = Some("WS-ROUTE-ROOT-TOKEN".to_string());
+        let settings = AppSettings {
+            root_token: Some("WS-ROUTE-ROOT-TOKEN".to_string()),
+            ..AppSettings::default()
+        };
         let (state, _rx) = ws_state_for(settings);
         let value = dispatch_inner(&state, "get_settings", &json!({}))
             .await
             .expect("get_settings");
         let text = serde_json::to_string(&value).unwrap();
-        assert!(!text.contains("rootToken"), "rootToken leaked over WS: {text}");
+        assert!(
+            !text.contains("rootToken"),
+            "rootToken leaked over WS: {text}"
+        );
         assert!(!text.contains("WS-ROUTE-ROOT-TOKEN"), "token value leaked");
         let resolution = value
             .get("projectPathResolution")

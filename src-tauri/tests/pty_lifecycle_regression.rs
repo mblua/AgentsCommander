@@ -171,11 +171,14 @@ fn make_lifecycle_fixture() -> LifecycleFixture {
     // `save_settings` is now preserve-disk (it would read the not-yet-existent
     // file as empty and write project_paths: []), which is exactly the fail-safe
     // behavior #778 introduced.
-    save_settings_with_project_paths(&AppSettings {
-        default_shell: "powershell.exe".to_string(),
-        default_shell_args: vec!["-NoLogo".to_string()],
-        project_paths: vec![path_to_string(&repo_root)],
-        ..AppSettings::default()
+    save_settings_with_project_paths(&{
+        // #1077: AppSettings carries a crate-private hidden field, so an
+        // out-of-crate struct literal is not permitted; build from Default.
+        let mut s = AppSettings::default();
+        s.default_shell = "powershell.exe".to_string();
+        s.default_shell_args = vec!["-NoLogo".to_string()];
+        s.project_paths = vec![path_to_string(&repo_root)];
+        s
     })
     .expect("seed isolated settings");
 
@@ -235,11 +238,12 @@ fn make_test_app(
         TelegramBridgeManager::new(Arc::clone(&output_senders)),
     ));
     let idle_detector = IdleDetector::new(|_| {}, |_| {});
-    let settings: SettingsState = Arc::new(tokio::sync::RwLock::new(AppSettings {
-        default_shell: "powershell.exe".to_string(),
-        default_shell_args: vec!["-NoLogo".to_string()],
-        project_paths: vec![path_to_string(repo_root)],
-        ..AppSettings::default()
+    let settings: SettingsState = Arc::new(tokio::sync::RwLock::new({
+        let mut s = AppSettings::default();
+        s.default_shell = "powershell.exe".to_string();
+        s.default_shell_args = vec!["-NoLogo".to_string()];
+        s.project_paths = vec![path_to_string(repo_root)];
+        s
     }));
     let git_app = Box::leak(Box::new(
         tauri::Builder::default()

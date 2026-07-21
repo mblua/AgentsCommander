@@ -265,7 +265,10 @@ mod tests {
             exe_err(),
             Some(PathBuf::from("/home/u")),
         );
-        assert_eq!(loc.config_dir.as_deref(), Some(Path::new("relative/.acdir")));
+        assert_eq!(
+            loc.config_dir.as_deref(),
+            Some(Path::new("relative/.acdir"))
+        );
         assert_eq!(loc.instance_base, None);
         assert_eq!(loc.local_dir_stem, "agentscommander");
     }
@@ -303,7 +306,10 @@ mod tests {
             loc.config_dir.as_deref(),
             Some(Path::new("bin/.agentscommander"))
         );
-        assert_eq!(loc.instance_base, None, "relative exe exposes no portable base");
+        assert_eq!(
+            loc.instance_base, None,
+            "relative exe exposes no portable base"
+        );
         assert_eq!(loc.local_dir_stem, "agentscommander");
     }
 
@@ -315,8 +321,7 @@ mod tests {
         } else {
             PathBuf::from("/")
         };
-        let loc =
-            resolve_instance_location(None, Ok(root), Some(PathBuf::from("/home/u")));
+        let loc = resolve_instance_location(None, Ok(root), Some(PathBuf::from("/home/u")));
         let expected = PathBuf::from("/home/u").join(profile::config_dir_name());
         assert_eq!(loc.config_dir.as_deref(), Some(expected.as_path()));
         assert_eq!(loc.instance_base, None);
@@ -324,8 +329,7 @@ mod tests {
 
     #[test]
     fn current_exe_failure_uses_home_fallback_and_default_stem() {
-        let loc =
-            resolve_instance_location(None, exe_err(), Some(PathBuf::from("/home/u")));
+        let loc = resolve_instance_location(None, exe_err(), Some(PathBuf::from("/home/u")));
         let expected = PathBuf::from("/home/u").join(profile::config_dir_name());
         assert_eq!(loc.config_dir.as_deref(), Some(expected.as_path()));
         assert_eq!(loc.instance_base, None);
