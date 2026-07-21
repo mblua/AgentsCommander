@@ -806,8 +806,9 @@ pub(crate) enum SideStatus {
     NonUtf8,
     ValidDirectProject,
     ValidCollectionRoot,
-    /// Two spellings had to be compared but no identity could be obtained.
-    IdentityUnavailable,
+    // Note: an identity-unavailable outcome (two spellings that cannot be proven
+    // the same directory) is recorded at the pair level as an `Invalid` issue,
+    // not as a per-side status, so both sides retain their valid classification.
 }
 
 impl SideStatus {
@@ -1262,6 +1263,12 @@ pub(crate) struct ProjectPathPersistenceState {
     /// all reconciliation and project-list mutation while unrelated preserve
     /// saves remain allowed.
     pub structural_issues: Vec<StructuralIssue>,
+    /// Set for a state synthesized from a direct-constructed `AppSettings`'s
+    /// runtime lists (no decoder-produced hidden state). Such a state is legacy
+    /// runtime-authoritative: a Reconcile write emits its groups verbatim rather
+    /// than copying disk, matching pre-#1077 verbatim-writer behavior until the
+    /// explicit mutators maintain a real hidden state.
+    pub runtime_authoritative: bool,
 }
 
 impl ProjectPathPersistenceState {
@@ -1522,6 +1529,7 @@ pub(crate) fn resolve_registrations(
         active_reconcile_eligible,
         archived_reconcile_eligible,
         structural_issues: Vec::new(),
+        runtime_authoritative: false,
     }
 }
 

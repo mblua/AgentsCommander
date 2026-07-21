@@ -860,8 +860,19 @@ fn parse_settings_json(contents: &str, source: &str) -> Result<(AppSettings, boo
     let mut value: Value = serde_json::from_str(contents)
         .map_err(|e| format!("Failed to parse settings file: {}", e))?;
     let migrated = migrate_settings_value_to_v2(&mut value);
-    let settings: AppSettings = serde_json::from_value(value)
+    // #1077: decode the six project fields and replace the three runtime fields
+    // with the SELECTED canonical paths BEFORE deserializing the rest of
+    // AppSettings, so a wrong-typed project field cannot fail unrelated settings
+    // deserialization and unresolved/conflicting pairs survive in hidden state.
+    let base = production_instance_base();
+    let state = apply_project_decode_to_value(
+        &mut value,
+        base.as_deref(),
+        &projects::FsCandidateResolver,
+    );
+    let mut settings: AppSettings = serde_json::from_value(value)
         .map_err(|e| format!("Failed to deserialize settings from {source}: {e}"))?;
+    settings.project_path_state = Arc::new(state);
     Ok((settings, migrated))
 }
 
@@ -1732,11 +1743,17 @@ fn load_settings_from_path(path: &Path) -> AppSettings {
             true
         };
         if backup_ok {
-            if let Err(e) = save_settings_to_path(&settings, path) {
-                log::error!(
+            // #1077: route the startup root-token/migration write through PRESERVE
+            // mode so it cannot erase project companions/conflicts before the
+            // first snapshot, and so a present-but-invalid file is never
+            // overwritten (the preserve writer's disk gate returns Err). On
+            // success adopt the fresh-decoded settings so runtime/hidden agree.
+            match save_settings_to_path_preserving_project_paths(&settings, path) {
+                Ok(written) => settings = written,
+                Err(e) => log::error!(
                     "Failed to persist settings (root_token gen and/or settings migration): {}",
                     e
-                );
+                ),
             }
         }
     }
@@ -1945,6 +1962,629 @@ pub fn read_log_level_only() -> Option<String> {
 /// counter so the two can be reasoned about independently in diagnostics.
 static SAVE_OP_ID: AtomicU64 = AtomicU64::new(0);
 
+// ── #1077 six-field project-path codec (JSON extraction / serialization) ────
+//
+// The three legacy primary fields keep their names/types; each gains a paired
+// `…RelativeToInstance` companion (string|null, array-aligned). On load the
+// codec resolves both candidates, replaces the runtime fields with the SELECTED
+// canonical paths, and stashes the raw pairs/outcomes in the hidden
+// `AppSettings.project_path_state`. On write, the preserve/reconcile modes
+// re-inject all six fields (companions are `#[serde(skip)]`, so a plain
+// AppSettings serialization would otherwise drop them). See plan #1077 §3.2-§4.3.
+
+use super::projects::{
+    self, ProjectPathPersistenceState, ProjectSource, RawJsonField, RawPair, RawStringField,
+    RepairKind, ResolvedPair, SideOutcome, SideStatus, StructuralIssue,
+};
+
+/// An absent-side outcome (used when synthesizing a legacy hidden state).
+fn absent_side() -> SideOutcome {
+    SideOutcome {
+        status: SideStatus::Absent,
+        syntactic_path: None,
+        canonical_path: None,
+        identity: None,
+    }
+}
+
+const FIELD_PROJECT_PATH: &str = "projectPath";
+const FIELD_PROJECT_PATH_REL: &str = "projectPathRelativeToInstance";
+const FIELD_PROJECT_PATHS: &str = "projectPaths";
+const FIELD_PROJECT_PATHS_REL: &str = "projectPathsRelativeToInstance";
+const FIELD_ARCHIVED: &str = "archivedProjectPaths";
+const FIELD_ARCHIVED_REL: &str = "archivedProjectPathsRelativeToInstance";
+
+/// The authoritative instance base for path pairing, canonicalized at the codec
+/// boundary. `None` in any degraded mode (no base, or a base that fails to
+/// canonicalize); never falls back to the process CWD.
+fn production_instance_base() -> Option<PathBuf> {
+    let base = super::instance_base()?;
+    std::fs::canonicalize(&base).ok()
+}
+
+/// Presence + JSON value of a raw field (absent vs null vs value).
+fn json_field(v: Option<&Value>) -> RawJsonField {
+    match v {
+        None => RawJsonField {
+            present: false,
+            value: None,
+        },
+        Some(Value::Null) => RawJsonField {
+            present: true,
+            value: None,
+        },
+        Some(other) => RawJsonField {
+            present: true,
+            value: Some(other.clone()),
+        },
+    }
+}
+
+/// Extract one plural group (primary + companion arrays) into ordered raw pairs,
+/// returning the companion-present bit and any structural corruption. On
+/// corruption, no entry is exposed (empty pairs) and the raw values are
+/// preserved via the returned `StructuralIssue`.
+fn extract_group(
+    root: &Map<String, Value>,
+    source: ProjectSource,
+    primary_key: &str,
+    companion_key: &str,
+) -> (Vec<RawPair>, bool, Option<StructuralIssue>) {
+    let primary = root.get(primary_key);
+    let companion = root.get(companion_key);
+    let companion_present = companion.is_some();
+    let raw_absolute = json_field(primary);
+    let raw_relative = json_field(companion);
+    let structural = |reason: &str| StructuralIssue {
+        source,
+        reason: reason.to_string(),
+        raw_absolute: raw_absolute.clone(),
+        raw_relative: raw_relative.clone(),
+    };
+    let corrupt = |reason: &str| (Vec::new(), companion_present, Some(structural(reason)));
+
+    // Companion present while primary absent/null → structural corruption.
+    if companion_present {
+        match primary {
+            None => return corrupt("companion present while primary field is absent"),
+            Some(Value::Null) => return corrupt("companion present while primary field is null"),
+            _ => {}
+        }
+    }
+
+    // Interpret the primary field.
+    let primary_list: Vec<String> = match primary {
+        // Absent or null → no active disk truth (a valid empty group here).
+        None | Some(Value::Null) => return (Vec::new(), companion_present, None),
+        Some(Value::Array(arr)) => {
+            let mut out = Vec::with_capacity(arr.len());
+            for el in arr {
+                match el {
+                    Value::String(s) => out.push(s.clone()),
+                    _ => return corrupt("plural primary contains a non-string element"),
+                }
+            }
+            out
+        }
+        Some(_) => return corrupt("plural primary is not an array of strings"),
+    };
+
+    // Interpret the companion field.
+    let companion_list: Option<Vec<RawStringField>> = match companion {
+        None => None,
+        Some(Value::Array(arr)) => {
+            let mut out = Vec::with_capacity(arr.len());
+            for el in arr {
+                match el {
+                    Value::String(s) => out.push(RawStringField::string(s.clone())),
+                    Value::Null => out.push(RawStringField::null()),
+                    _ => return corrupt("plural companion contains a non-string/non-null element"),
+                }
+            }
+            Some(out)
+        }
+        Some(Value::Null) => return corrupt("plural companion is a present null"),
+        Some(_) => return corrupt("plural companion is not an array"),
+    };
+
+    if let Some(ref comp) = companion_list {
+        if comp.len() != primary_list.len() {
+            return corrupt("companion array length differs from primary array");
+        }
+    }
+
+    let pairs = primary_list
+        .into_iter()
+        .enumerate()
+        .map(|(i, abs)| RawPair {
+            source,
+            index: Some(i),
+            absolute: RawStringField::string(abs),
+            relative: companion_list
+                .as_ref()
+                .map(|c| c[i].clone())
+                .unwrap_or_else(RawStringField::absent),
+        })
+        .collect();
+
+    (pairs, companion_present, None)
+}
+
+/// Extract the legacy singular pair, or a structural corruption.
+fn extract_singular(root: &Map<String, Value>) -> (Option<RawPair>, Option<StructuralIssue>) {
+    let primary = root.get(FIELD_PROJECT_PATH);
+    let companion = root.get(FIELD_PROJECT_PATH_REL);
+    let raw_absolute = json_field(primary);
+    let raw_relative = json_field(companion);
+    let structural = |reason: &str| StructuralIssue {
+        source: ProjectSource::ProjectPath,
+        reason: reason.to_string(),
+        raw_absolute: raw_absolute.clone(),
+        raw_relative: raw_relative.clone(),
+    };
+
+    let primary_field = match primary {
+        None => RawStringField::absent(),
+        Some(Value::Null) => RawStringField::null(),
+        Some(Value::String(s)) => RawStringField::string(s.clone()),
+        Some(_) => return (None, Some(structural("projectPath is not a string or null"))),
+    };
+    let companion_field = match companion {
+        None => RawStringField::absent(),
+        Some(Value::Null) => RawStringField::null(),
+        Some(Value::String(s)) => RawStringField::string(s.clone()),
+        Some(_) => {
+            return (
+                None,
+                Some(structural(
+                    "projectPathRelativeToInstance is not a string or null",
+                )),
+            )
+        }
+    };
+    if companion.is_some() && primary.is_none() {
+        return (
+            None,
+            Some(structural("singular companion present while projectPath is absent")),
+        );
+    }
+    if matches!(companion, Some(Value::String(_))) && matches!(primary, Some(Value::Null)) {
+        return (
+            None,
+            Some(structural("non-null singular companion paired with null projectPath")),
+        );
+    }
+
+    // A pair exists only when the primary is an actual string candidate; a
+    // null/absent primary is the valid empty singular.
+    let pair = primary_field.value.is_some().then(|| RawPair {
+        source: ProjectSource::ProjectPath,
+        index: None,
+        absolute: primary_field,
+        relative: companion_field,
+    });
+    (pair, None)
+}
+
+/// Decode the six raw project fields from a settings object into the hidden
+/// persistence state (selected paths, raw pairs, outcomes, structural issues).
+pub(crate) fn decode_project_state(
+    root: &Map<String, Value>,
+    base: Option<&Path>,
+    resolver: &dyn projects::CandidateResolver,
+) -> ProjectPathPersistenceState {
+    let (active_pairs, active_companion, active_structural) = extract_group(
+        root,
+        ProjectSource::ProjectPaths,
+        FIELD_PROJECT_PATHS,
+        FIELD_PROJECT_PATHS_REL,
+    );
+    let (archived_pairs, archived_companion, archived_structural) = extract_group(
+        root,
+        ProjectSource::ArchivedProjectPaths,
+        FIELD_ARCHIVED,
+        FIELD_ARCHIVED_REL,
+    );
+    let (singular, singular_structural) = extract_singular(root);
+
+    // A structurally-corrupt active group exposes no active entry at all,
+    // including its singular mirror.
+    let effective_singular = if active_structural.is_some() {
+        None
+    } else {
+        singular
+    };
+
+    let mut state = projects::resolve_registrations(
+        &active_pairs,
+        effective_singular,
+        &archived_pairs,
+        base,
+        active_companion,
+        archived_companion,
+        resolver,
+    );
+
+    let mut structural = Vec::new();
+    structural.extend(active_structural);
+    structural.extend(archived_structural);
+    structural.extend(singular_structural);
+    if !structural.is_empty() {
+        // Any structural corruption blocks all reconciliation/mutation.
+        state.active_reconcile_eligible = false;
+        state.archived_reconcile_eligible = false;
+    }
+    state.structural_issues = structural;
+    state
+}
+
+/// Decode the six fields from `value`, then overwrite the three primary runtime
+/// fields with the selected values and drop the companion keys so the remainder
+/// of `AppSettings` deserializes cleanly even when a project field was
+/// wrong-typed. Returns the hidden state to attach.
+pub(crate) fn apply_project_decode_to_value(
+    value: &mut Value,
+    base: Option<&Path>,
+    resolver: &dyn projects::CandidateResolver,
+) -> ProjectPathPersistenceState {
+    let state = match value.as_object() {
+        Some(root) => decode_project_state(root, base, resolver),
+        None => ProjectPathPersistenceState::default(),
+    };
+    if let Some(root) = value.as_object_mut() {
+        root.insert(
+            FIELD_PROJECT_PATH.to_string(),
+            state
+                .selected_head
+                .clone()
+                .map(Value::String)
+                .unwrap_or(Value::Null),
+        );
+        root.insert(
+            FIELD_PROJECT_PATHS.to_string(),
+            Value::Array(state.active_selected().into_iter().map(Value::String).collect()),
+        );
+        root.insert(
+            FIELD_ARCHIVED.to_string(),
+            Value::Array(
+                state
+                    .archived_selected()
+                    .into_iter()
+                    .map(Value::String)
+                    .collect(),
+            ),
+        );
+        // Companion keys are not AppSettings fields; strip so nothing lingers.
+        root.remove(FIELD_PROJECT_PATH_REL);
+        root.remove(FIELD_PROJECT_PATHS_REL);
+        root.remove(FIELD_ARCHIVED_REL);
+    }
+    state
+}
+
+/// The project-field write mode. `Preserve` copies the six raw fields from the
+/// fresh disk object (materializing a group only when disk has no truth for it);
+/// `Reconcile` rebuilds the requested eligible group(s) from hidden state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProjectWriteMode {
+    Preserve,
+    Reconcile { active: bool, archived: bool },
+}
+
+/// A slot value for a retained (unresolved/conflict/missing) raw field: string
+/// stays a string, absent/null becomes null (inside an array there is no absent).
+fn raw_slot_value(field: &RawStringField) -> Value {
+    match &field.value {
+        Some(s) => Value::String(s.clone()),
+        None => Value::Null,
+    }
+}
+
+/// The companion wire value for a selected pair: encode against the base when
+/// available; otherwise preserve any existing raw companion (or null).
+fn companion_slot_value(pair: &ResolvedPair, base: Option<&Path>) -> Value {
+    match base {
+        Some(base) => match &pair.selected_canonical_raw {
+            Some(canon) => match projects::encode_instance_relative(Path::new(canon), base) {
+                Some(wire) => Value::String(wire),
+                None => Value::Null,
+            },
+            None => raw_slot_value(&pair.raw_relative),
+        },
+        None => raw_slot_value(&pair.raw_relative),
+    }
+}
+
+/// Rebuild one group's (primary array, companion array) from its resolved pairs:
+/// emit selected pairs (repaired), retain unresolved pairs value-for-value, and
+/// drop silent duplicates.
+fn rebuild_group_arrays(pairs: &[ResolvedPair], base: Option<&Path>) -> (Vec<Value>, Vec<Value>) {
+    let mut primary = Vec::new();
+    let mut companion = Vec::new();
+    for pair in pairs {
+        if let Some(sel) = &pair.selected {
+            primary.push(Value::String(sel.clone()));
+            companion.push(companion_slot_value(pair, base));
+        } else if pair.issue.is_some() {
+            primary.push(raw_slot_value(&pair.raw_absolute));
+            companion.push(raw_slot_value(&pair.raw_relative));
+        }
+        // else: silent dedupe drop — emit nothing.
+    }
+    (primary, companion)
+}
+
+/// Insert the four active fields from hidden state.
+fn write_active_group(out: &mut Map<String, Value>, state: &ProjectPathPersistenceState, base: Option<&Path>) {
+    let (primary, companion) = rebuild_group_arrays(state.active_pairs(), base);
+    out.insert(
+        FIELD_PROJECT_PATH.to_string(),
+        primary.first().cloned().unwrap_or(Value::Null),
+    );
+    out.insert(
+        FIELD_PROJECT_PATH_REL.to_string(),
+        companion.first().cloned().unwrap_or(Value::Null),
+    );
+    out.insert(FIELD_PROJECT_PATHS.to_string(), Value::Array(primary));
+    out.insert(FIELD_PROJECT_PATHS_REL.to_string(), Value::Array(companion));
+}
+
+/// Insert the two archived fields from hidden state.
+fn write_archived_group(out: &mut Map<String, Value>, state: &ProjectPathPersistenceState, base: Option<&Path>) {
+    let (primary, companion) = rebuild_group_arrays(state.archived_pairs(), base);
+    out.insert(FIELD_ARCHIVED.to_string(), Value::Array(primary));
+    out.insert(FIELD_ARCHIVED_REL.to_string(), Value::Array(companion));
+}
+
+/// Copy a field from `disk` into `out`, preserving its present/absent bit.
+fn copy_or_remove(out: &mut Map<String, Value>, disk: &Map<String, Value>, key: &str) {
+    match disk.get(key) {
+        Some(v) => {
+            out.insert(key.to_string(), v.clone());
+        }
+        None => {
+            out.remove(key);
+        }
+    }
+}
+
+/// Whether the disk object has authoritative active truth (§4.1): `projectPaths`
+/// is an array, or (absent/null plural) `projectPath` is a string.
+fn active_has_disk_truth(disk: &Map<String, Value>) -> bool {
+    match disk.get(FIELD_PROJECT_PATHS) {
+        Some(Value::Array(_)) => true,
+        None | Some(Value::Null) => matches!(disk.get(FIELD_PROJECT_PATH), Some(Value::String(_))),
+        Some(_) => true, // wrong-typed: structural, but still "present" disk truth to preserve
+    }
+}
+
+/// Whether the disk object has authoritative archived truth: `archivedProjectPaths`
+/// is an array (or any present value to preserve).
+fn archived_has_disk_truth(disk: &Map<String, Value>) -> bool {
+    matches!(disk.get(FIELD_ARCHIVED), Some(v) if !v.is_null())
+}
+
+/// If `AppSettings` was constructed directly (empty hidden state) yet carries
+/// runtime project lists, synthesize a legacy absolute-only state so the writers
+/// behave like a legacy-decoded file (companions null, all entries selected).
+fn hidden_state_for_write(settings: &AppSettings) -> std::borrow::Cow<'_, ProjectPathPersistenceState> {
+    let state = &settings.project_path_state;
+    let empty = state.pairs.is_empty() && state.structural_issues.is_empty();
+    let runtime_nonempty = settings.project_path.is_some()
+        || !settings.project_paths.is_empty()
+        || !settings.archived_project_paths.is_empty();
+    if empty && runtime_nonempty {
+        std::borrow::Cow::Owned(synthesize_legacy_state(settings))
+    } else {
+        std::borrow::Cow::Borrowed(state)
+    }
+}
+
+fn legacy_selected_pair(source: ProjectSource, index: Option<usize>, path: &str) -> ResolvedPair {
+    ResolvedPair {
+        source,
+        index,
+        raw_absolute: RawStringField::string(path),
+        raw_relative: RawStringField::absent(),
+        absolute_side: absent_side(),
+        relative_side: absent_side(),
+        selected: Some(path.to_string()),
+        selected_canonical_raw: None,
+        selected_identity: None,
+        issue: None,
+        repair: RepairKind::None,
+    }
+}
+
+fn synthesize_legacy_state(settings: &AppSettings) -> ProjectPathPersistenceState {
+    let mut pairs: Vec<ResolvedPair> = settings
+        .project_paths
+        .iter()
+        .enumerate()
+        .map(|(i, p)| legacy_selected_pair(ProjectSource::ProjectPaths, Some(i), p))
+        .collect();
+    let active_registration_count = pairs.len();
+    for (i, p) in settings.archived_project_paths.iter().enumerate() {
+        pairs.push(legacy_selected_pair(
+            ProjectSource::ArchivedProjectPaths,
+            Some(i),
+            p,
+        ));
+    }
+    ProjectPathPersistenceState {
+        pairs,
+        selected_head: settings.project_paths.first().cloned(),
+        active_registration_count,
+        archived_registration_count: settings.archived_project_paths.len(),
+        active_companion_present: false,
+        archived_companion_present: false,
+        has_genuine_singular: false,
+        active_reconcile_eligible: false,
+        archived_reconcile_eligible: false,
+        structural_issues: Vec::new(),
+        runtime_authoritative: true,
+    }
+}
+
+/// Fresh-read the whole disk object for a project-preserving/reconciling write.
+/// `None` = absent (materialize). `Err` = present-but-unreadable/invalid JSON,
+/// non-object root, or non-project settings that fail to deserialize — in which
+/// case the caller must NOT write (§4.1). A valid object is returned for reuse.
+fn read_disk_object_for_write(path: &Path) -> Result<Option<Map<String, Value>>, String> {
+    match std::fs::read_to_string(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!(
+            "Failed to read {} for a project-preserving save (aborting to avoid dropping a project): {e}",
+            path.display()
+        )),
+        Ok(contents) => {
+            let value: Value = serde_json::from_str(&contents).map_err(|e| {
+                format!(
+                    "Refusing to overwrite {}: the existing settings file is not valid JSON ({e})",
+                    path.display()
+                )
+            })?;
+            match value {
+                Value::Object(map) => {
+                    validate_non_project_settings(&map)?;
+                    Ok(Some(map))
+                }
+                _ => Err(format!(
+                    "Refusing to overwrite {}: the existing settings root is not a JSON object",
+                    path.display()
+                )),
+            }
+        }
+    }
+}
+
+/// Confirm the non-project part of a disk object still deserializes as
+/// `AppSettings` (after neutralizing the six project fields), so a present file
+/// with corrupt non-project settings is never silently overwritten.
+fn validate_non_project_settings(disk: &Map<String, Value>) -> Result<(), String> {
+    let mut probe = Value::Object(disk.clone());
+    if let Some(root) = probe.as_object_mut() {
+        root.insert(FIELD_PROJECT_PATH.to_string(), Value::Null);
+        root.insert(FIELD_PROJECT_PATHS.to_string(), Value::Array(Vec::new()));
+        root.insert(FIELD_ARCHIVED.to_string(), Value::Array(Vec::new()));
+        root.remove(FIELD_PROJECT_PATH_REL);
+        root.remove(FIELD_PROJECT_PATHS_REL);
+        root.remove(FIELD_ARCHIVED_REL);
+    }
+    migrate_settings_value_to_v2(&mut probe);
+    serde_json::from_value::<AppSettings>(probe).map(|_| ()).map_err(|e| {
+        format!("Refusing to overwrite present settings whose non-project fields are invalid: {e}")
+    })
+}
+
+/// The #1077 project-aware atomic writer. Builds the output object per `mode`,
+/// writes it atomically, then re-decodes the exact written value so the returned
+/// `AppSettings` carries fresh runtime projections + hidden state (never the
+/// possibly-stale caller state). See §4.2/§4.3.
+fn save_settings_value(
+    settings: &AppSettings,
+    path: &Path,
+    mode: ProjectWriteMode,
+) -> Result<AppSettings, String> {
+    let base = production_instance_base();
+    let disk = read_disk_object_for_write(path)?;
+    let state = hidden_state_for_write(settings);
+
+    let serialize_object = || -> Result<Map<String, Value>, String> {
+        match serde_json::to_value(settings)
+            .map_err(|e| format!("Failed to serialize settings: {e}"))?
+        {
+            Value::Object(m) => Ok(m),
+            _ => Err("settings did not serialize to a JSON object".to_string()),
+        }
+    };
+
+    // Base object: Preserve starts from the incoming settings (non-project edits
+    // apply); Reconcile is project-only and starts from the fresh disk object
+    // (or the live settings when the file is absent).
+    let mut out: Map<String, Value> = match mode {
+        ProjectWriteMode::Preserve => serialize_object()?,
+        ProjectWriteMode::Reconcile { .. } => match &disk {
+            Some(m) => m.clone(),
+            None => serialize_object()?,
+        },
+    };
+
+    match mode {
+        ProjectWriteMode::Preserve => match &disk {
+            None => {
+                write_active_group(&mut out, &state, base.as_deref());
+                write_archived_group(&mut out, &state, base.as_deref());
+            }
+            Some(disk) => {
+                if active_has_disk_truth(disk) {
+                    copy_or_remove(&mut out, disk, FIELD_PROJECT_PATH);
+                    copy_or_remove(&mut out, disk, FIELD_PROJECT_PATH_REL);
+                    copy_or_remove(&mut out, disk, FIELD_PROJECT_PATHS);
+                    copy_or_remove(&mut out, disk, FIELD_PROJECT_PATHS_REL);
+                } else {
+                    write_active_group(&mut out, &state, base.as_deref());
+                }
+                if archived_has_disk_truth(disk) {
+                    copy_or_remove(&mut out, disk, FIELD_ARCHIVED);
+                    copy_or_remove(&mut out, disk, FIELD_ARCHIVED_REL);
+                } else {
+                    write_archived_group(&mut out, &state, base.as_deref());
+                }
+            }
+        },
+        ProjectWriteMode::Reconcile { active, archived } => {
+            let blocked = state.has_structural();
+            // A synthesized (runtime-authoritative) state writes its runtime
+            // groups verbatim, matching the pre-#1077 verbatim writer. A real
+            // decoded state rebuilds only a dirty+eligible group and otherwise
+            // copies disk raw to retain unresolved entries.
+            let write_active_from_state =
+                active && !blocked && (state.runtime_authoritative || state.active_reconcile_eligible);
+            let write_archived_from_state = archived
+                && !blocked
+                && (state.runtime_authoritative || state.archived_reconcile_eligible);
+            // Active group.
+            if write_active_from_state {
+                write_active_group(&mut out, &state, base.as_deref());
+            } else if let Some(disk) = &disk {
+                copy_or_remove(&mut out, disk, FIELD_PROJECT_PATH);
+                copy_or_remove(&mut out, disk, FIELD_PROJECT_PATH_REL);
+                copy_or_remove(&mut out, disk, FIELD_PROJECT_PATHS);
+                copy_or_remove(&mut out, disk, FIELD_PROJECT_PATHS_REL);
+            } else {
+                write_active_group(&mut out, &state, base.as_deref());
+            }
+            // Archived group.
+            if write_archived_from_state {
+                write_archived_group(&mut out, &state, base.as_deref());
+            } else if let Some(disk) = &disk {
+                copy_or_remove(&mut out, disk, FIELD_ARCHIVED);
+                copy_or_remove(&mut out, disk, FIELD_ARCHIVED_REL);
+            } else {
+                write_archived_group(&mut out, &state, base.as_deref());
+            }
+        }
+    }
+
+    // A synthesized legacy state (direct-constructed AppSettings) has no dirty
+    // repair, so the eligible branches above never fire for it; its groups are
+    // written verbatim from the live settings/disk, matching pre-#1077 behavior.
+    let value = Value::Object(out);
+    write_value_atomic(&value, path)?;
+
+    let mut written_value = value;
+    let fresh_state = apply_project_decode_to_value(
+        &mut written_value,
+        base.as_deref(),
+        &projects::FsCandidateResolver,
+    );
+    let mut written: AppSettings = serde_json::from_value(written_value)
+        .map_err(|e| format!("Failed to re-decode written settings: {e}"))?;
+    written.project_path_state = Arc::new(fresh_state);
+    Ok(written)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DiskProjectLists {
     pub project_paths: Vec<String>,
@@ -2125,6 +2765,39 @@ pub fn save_settings(settings: &AppSettings) -> Result<AppSettings, String> {
     save_settings_to_path_preserving_project_paths(settings, &path)
 }
 
+/// #1077: atomic tmp+rename writer over an already-built JSON `Value`. Shared by
+/// the raw and the project-aware writers. Preserves the #774 unique-temp +
+/// `rename_with_retry` behavior; still not fsynced.
+fn write_value_atomic(value: &Value, path: &Path) -> Result<(), String> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| format!("Settings path {} has no parent", path.display()))?;
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("Failed to create settings directory: {}", e))?;
+
+    let json = serde_json::to_string_pretty(value)
+        .map_err(|e| format!("Failed to serialize settings: {}", e))?;
+
+    let op_id = SAVE_OP_ID.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let tmp_path = dir.join(format!("settings.json.{}.{}.tmp", pid, op_id));
+
+    if let Err(e) = std::fs::write(&tmp_path, &json) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(format!("Failed to write temp settings file: {}", e));
+    }
+
+    if let Err((err_msg, _diag)) =
+        crate::config::sessions_persistence::rename_with_retry(&tmp_path, path)
+    {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(format!("Failed to rename settings file: {}", err_msg));
+    }
+
+    log::debug!("Saved settings to {:?}", path);
+    Ok(())
+}
+
 /// #778/#881: EXPLICIT writer. Persists `project_paths`/`project_path` and
 /// `archived_project_paths` VERBATIM (the
 /// pre-#778 `save_settings` behavior, still #774-hardened). ONLY for deliberate
@@ -2142,75 +2815,40 @@ pub(crate) fn save_settings_with_project_paths_to_path(
     settings: &AppSettings,
     path: &Path,
 ) -> Result<(), String> {
-    save_settings_to_path(settings, path)
+    // #1077: deliberate list mutators reconcile both groups from the hidden
+    // state (retaining unresolved/conflict entries value-for-value), so the
+    // now-filtered runtime lists cannot drop an unresolved project.
+    save_settings_value(
+        settings,
+        path,
+        ProjectWriteMode::Reconcile {
+            active: true,
+            archived: true,
+        },
+    )
+    .map(|_| ())
 }
 
-/// #778/#881: the preserve-disk wrapper behind the default `save_settings`.
-/// Reads the current on-disk project lists (G2 abort policy), substitutes
-/// them into a clone of `settings`, then hands off to the verbatim
-/// #774-hardened writer. Split out with an explicit `path` so tests can drive it
-/// against a `tempfile::tempdir()`.
+/// #778/#881 + #1077: the preserve-disk wrapper behind the default
+/// `save_settings`. Preserves all six on-disk project fields (materializing a
+/// group only when disk has no truth), then hands off to the #774-hardened
+/// atomic writer and returns the fresh-decoded settings.
 pub(crate) fn save_settings_to_path_preserving_project_paths(
     settings: &AppSettings,
     path: &Path,
 ) -> Result<AppSettings, String> {
-    let mut to_write = settings.clone();
-    if let Some(lists) = read_project_paths_from_disk(path)? {
-        to_write.project_paths = lists.project_paths;
-        to_write.project_path = lists.project_path;
-        if let Some(archived) = lists.archived_project_paths {
-            to_write.archived_project_paths = archived;
-        }
-    }
-    save_settings_to_path(&to_write, path)?;
-    Ok(to_write)
+    save_settings_value(settings, path, ProjectWriteMode::Preserve)
 }
 
+/// Raw writer: serialize `AppSettings` verbatim (three primary project fields;
+/// the companion fields are `#[serde(skip)]`, yielding a legacy-shaped file).
+/// Used only for test seeding; production writes go through the preserve/
+/// reconcile modes so companions are materialized.
+#[cfg(test)]
 fn save_settings_to_path(settings: &AppSettings, path: &Path) -> Result<(), String> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| format!("Settings path {} has no parent", path.display()))?;
-    // Ensure directory exists
-    std::fs::create_dir_all(dir)
-        .map_err(|e| format!("Failed to create settings directory: {}", e))?;
-
-    let json = serde_json::to_string_pretty(settings)
+    let value = serde_json::to_value(settings)
         .map_err(|e| format!("Failed to serialize settings: {}", e))?;
-
-    // #774 (A): unique temp filename per save. Combined with rename_with_retry
-    // below, this kills the shared-`settings.json.tmp` race: two cross-process
-    // writers (GUI startup, CLI verbs, closing flush) can never collide on the
-    // temp file, and any leftover `.tmp` from a prior crashed run cannot be
-    // mistaken for ours. Mirrors sessions_persistence.rs:763-765.
-    let op_id = SAVE_OP_ID.fetch_add(1, Ordering::Relaxed);
-    let pid = std::process::id();
-    let tmp_path = dir.join(format!("settings.json.{}.{}.tmp", pid, op_id));
-
-    if let Err(e) = std::fs::write(&tmp_path, &json) {
-        // Best-effort cleanup: the partial write may have created the file even
-        // though write returned Err (e.g. ENOSPC mid-stream).
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(format!("Failed to write temp settings file: {}", e));
-    }
-
-    // #774 (B): route the rename through the reviewed retry helper. It absorbs
-    // transient cross-process contention on the DESTINATION (a second AC
-    // instance, AV, or the Indexer briefly holding settings.json; os errors
-    // 5/32/33/1175). With the unique temp above, our source can never be
-    // consumed by another writer, so os error 2 (source absent) is no longer a
-    // concurrency symptom; if it still surfaces it is propagated (with the OS
-    // error in the message) after the bounded retry, not masked.
-    if let Err((err_msg, _diag)) =
-        crate::config::sessions_persistence::rename_with_retry(&tmp_path, path)
-    {
-        // Best-effort cleanup of our unique temp so failed saves don't litter
-        // the config dir. The unique name guarantees this removes only OUR temp.
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(format!("Failed to rename settings file: {}", err_msg));
-    }
-
-    log::debug!("Saved settings to {:?}", path);
-    Ok(())
+    write_value_atomic(&value, path)
 }
 
 pub type SettingsState = Arc<RwLock<AppSettings>>;
@@ -3693,6 +4331,17 @@ mod tests {
         }
     }
 
+    /// #1077: create a real AC project dir (`<parent>/<name>/.ac`) and return its
+    /// display-canonical path, so the six-field decoder validates it and the
+    /// SELECTED runtime path equals the stored string. Used by preserve/reconcile
+    /// tests that assert the returned settings mirror the preserved disk list.
+    fn real_ac_project_path(parent: &std::path::Path, name: &str) -> String {
+        let dir = parent.join(name);
+        std::fs::create_dir_all(dir.join(".ac")).unwrap();
+        let canon = std::fs::canonicalize(&dir).unwrap();
+        crate::config::projects::display_canonical(&canon.to_string_lossy())
+    }
+
     #[test]
     fn read_project_paths_from_disk_returns_list_and_head() {
         let temp = tempfile::tempdir().unwrap();
@@ -3879,25 +4528,31 @@ mod tests {
         // Marquee preserve: disk has [A, X] (X = an append this in-memory candidate
         // never saw); a whole-object save that changed only an unrelated field must
         // leave project_paths = [A, X] on disk (fail-safe) AND persist the field.
+        // #1077: real AC dirs so the selected runtime paths equal the preserved list.
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("settings.json");
-        super::save_settings_to_path(&settings_with_project_paths(&["A", "X"]), &path).unwrap();
+        let a = real_ac_project_path(temp.path(), "A");
+        let x = real_ac_project_path(temp.path(), "X");
+        super::save_settings_to_path(
+            &settings_with_project_paths(&[&a, &x]),
+            &path,
+        )
+        .unwrap();
 
-        let mut candidate = settings_with_project_paths(&["A"]); // stale, missing X
+        let mut candidate = settings_with_project_paths(&[&a]); // stale, missing X
         candidate.sidebar_style = "deep-space".to_string(); // unrelated GUI field
         let written =
             super::save_settings_to_path_preserving_project_paths(&candidate, &path).unwrap();
 
         let contents = std::fs::read_to_string(&path).unwrap();
         let reloaded: AppSettings = serde_json::from_str(&contents).unwrap();
-        assert_eq!(
-            reloaded.project_paths,
-            vec!["A".to_string(), "X".to_string()]
-        ); // X preserved, not clobbered
-        assert_eq!(reloaded.project_path.as_deref(), Some("A"));
+        assert_eq!(reloaded.project_paths, vec![a.clone(), x.clone()]); // X preserved, not clobbered
+        assert_eq!(reloaded.project_path.as_deref(), Some(a.as_str()));
         assert_eq!(reloaded.sidebar_style, "deep-space"); // unrelated field persisted
-        assert_eq!(written.project_paths, reloaded.project_paths);
-        assert_eq!(written.project_path, reloaded.project_path);
+        // #1077: the returned settings carry the SELECTED (validated) projection,
+        // which equals the preserved disk list because both dirs are real.
+        assert_eq!(written.project_paths, vec![a.clone(), x.clone()]);
+        assert_eq!(written.project_path.as_deref(), Some(a.as_str()));
     }
 
     #[test]
@@ -3939,45 +4594,47 @@ mod tests {
     fn save_settings_preserves_disk_archived_list() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("settings.json");
+        let a = real_ac_project_path(temp.path(), "A");
+        let archived_a = real_ac_project_path(temp.path(), "ArchivedA");
         super::save_settings_to_path(
-            &settings_with_project_and_archived_paths(&["A"], &["ArchivedA"]),
+            &settings_with_project_and_archived_paths(&[&a], &[&archived_a]),
             &path,
         )
         .unwrap();
-        let candidate = settings_with_project_and_archived_paths(&["A"], &["ArchivedB"]);
+        let candidate = settings_with_project_and_archived_paths(&[&a], &["ArchivedB"]);
 
         let written =
             super::save_settings_to_path_preserving_project_paths(&candidate, &path).unwrap();
 
         let reloaded: AppSettings =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(
-            reloaded.archived_project_paths,
-            vec!["ArchivedA".to_string()]
-        );
-        assert_eq!(
-            written.archived_project_paths,
-            reloaded.archived_project_paths
-        );
+        assert_eq!(reloaded.archived_project_paths, vec![archived_a.clone()]);
+        assert_eq!(written.archived_project_paths, vec![archived_a.clone()]);
     }
 
     #[test]
     fn save_settings_returns_caller_archived_list_when_disk_key_absent() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("settings.json");
-        std::fs::write(&path, r#"{"projectPaths":["A"],"projectPath":"A"}"#).unwrap();
-        let caller_archived = vec!["Archived".to_string()];
-        let candidate = settings_with_project_and_archived_paths(&["stale"], &["Archived"]);
+        let a = real_ac_project_path(temp.path(), "A");
+        let archived = real_ac_project_path(temp.path(), "Archived");
+        // Seed a whole, valid AppSettings object but with NO archivedProjectPaths
+        // key (the preserve writer's disk gate requires a valid whole object).
+        let mut seed = serde_json::to_value(settings_with_project_paths(&[&a])).unwrap();
+        seed.as_object_mut().unwrap().remove("archivedProjectPaths");
+        std::fs::write(&path, serde_json::to_string_pretty(&seed).unwrap()).unwrap();
 
+        let candidate = settings_with_project_and_archived_paths(&[&a], &[&archived]);
         let written =
             super::save_settings_to_path_preserving_project_paths(&candidate, &path).unwrap();
 
         let reloaded: AppSettings =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(written.project_paths, vec!["A".to_string()]);
-        assert_eq!(written.project_path.as_deref(), Some("A"));
-        assert_eq!(written.archived_project_paths, caller_archived);
-        assert_eq!(reloaded.archived_project_paths, caller_archived);
+        assert_eq!(written.project_paths, vec![a.clone()]);
+        assert_eq!(written.project_path.as_deref(), Some(a.as_str()));
+        // Disk had no archived key → materialize the caller's live archived list.
+        assert_eq!(written.archived_project_paths, vec![archived.clone()]);
+        assert_eq!(reloaded.archived_project_paths, vec![archived.clone()]);
     }
 
     #[test]

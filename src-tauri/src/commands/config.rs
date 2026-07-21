@@ -1952,6 +1952,32 @@ mod tests {
         assert_eq!(settings.project_path.as_deref(), Some(project));
     }
 
+    /// #1077: create a real AC project dir and return its display-canonical path,
+    /// so the six-field decoder validates it and the SELECTED runtime path (in the
+    /// preserving writer's fresh-decoded return) equals the stored string.
+    fn real_ac_project(parent: &Path, name: &str) -> String {
+        let dir = parent.join(name);
+        std::fs::create_dir_all(dir.join(".ac")).unwrap();
+        let canon = std::fs::canonicalize(&dir).unwrap();
+        crate::config::projects::display_canonical(&canon.to_string_lossy())
+    }
+
+    /// #1077: seed a whole, valid AppSettings object on disk with `keys` removed
+    /// (to simulate an absent-key scenario without tripping the preserve writer's
+    /// whole-object gate).
+    fn write_settings_file_without_keys(dir: &Path, settings: &AppSettings, keys: &[&str]) {
+        let mut value = serde_json::to_value(settings).expect("serialize settings");
+        let object = value.as_object_mut().expect("settings object");
+        for key in keys {
+            object.remove(*key);
+        }
+        std::fs::write(
+            dir.join("settings.json"),
+            serde_json::to_vec_pretty(&value).expect("serialize settings json"),
+        )
+        .expect("write settings.json");
+    }
+
     fn api_server_command_test_app(settings: AppSettings) -> tauri::App {
         let session_mgr = Arc::new(RwLock::new(SessionManager::new()));
         let app = tauri::Builder::default()
@@ -2694,12 +2720,12 @@ mod tests {
     async fn settings_update_does_not_clobber_in_memory_project_lists() {
         let temp = tempfile::tempdir().unwrap();
         let settings_path = temp.path().join("settings.json");
-        let disk_project = "C:/disk/project-a";
+        let disk_project = real_ac_project(temp.path(), "disk-project-a");
         write_settings_file(
             temp.path(),
             &AppSettings {
-                project_paths: vec![disk_project.to_string()],
-                project_path: Some(disk_project.to_string()),
+                project_paths: vec![disk_project.clone()],
+                project_path: Some(disk_project.clone()),
                 ..AppSettings::default()
             },
         );
@@ -2725,11 +2751,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert_single_project(&saved, disk_project);
+        assert_single_project(&saved, &disk_project);
         assert_eq!(saved.root_token.as_deref(), Some("current-root-token"));
         {
             let live = protected_state.read().await;
-            assert_single_project(&live, disk_project);
+            assert_single_project(&live, &disk_project);
             assert_eq!(live.root_token.as_deref(), Some("current-root-token"));
         }
 
@@ -2748,10 +2774,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_single_project(&saved, disk_project);
+        assert_single_project(&saved, &disk_project);
         {
             let live = draft_state.read().await;
-            assert_single_project(&live, disk_project);
+            assert_single_project(&live, &disk_project);
         }
     }
 
@@ -2759,14 +2785,16 @@ mod tests {
     async fn update_settings_keeps_live_archived_list_when_disk_key_absent() {
         let temp = tempfile::tempdir().unwrap();
         let settings_path = temp.path().join("settings.json");
-        let live_project = "C:/live/a";
-        let archived_project = "C:/archived/b";
-        write_settings_json(
+        let live_project = real_ac_project(temp.path(), "live-a");
+        let archived_project = real_ac_project(temp.path(), "archived-b");
+        write_settings_file_without_keys(
             temp.path(),
-            serde_json::json!({
-                "projectPaths": [live_project],
-                "projectPath": live_project
-            }),
+            &AppSettings {
+                project_paths: vec![live_project.clone()],
+                project_path: Some(live_project.clone()),
+                ..AppSettings::default()
+            },
+            &["archivedProjectPaths"],
         );
 
         let mut current = settings_with_single_agent();
@@ -2809,14 +2837,16 @@ mod tests {
     async fn save_settings_draft_keeps_live_archived_list_when_disk_key_absent() {
         let temp = tempfile::tempdir().unwrap();
         let settings_path = temp.path().join("settings.json");
-        let live_project = "C:/live/a";
-        let archived_project = "C:/archived/b";
-        write_settings_json(
+        let live_project = real_ac_project(temp.path(), "live-a");
+        let archived_project = real_ac_project(temp.path(), "archived-b");
+        write_settings_file_without_keys(
             temp.path(),
-            serde_json::json!({
-                "projectPaths": [live_project],
-                "projectPath": live_project
-            }),
+            &AppSettings {
+                project_paths: vec![live_project.clone()],
+                project_path: Some(live_project.clone()),
+                ..AppSettings::default()
+            },
+            &["archivedProjectPaths"],
         );
 
         let mut current = settings_with_single_agent();
@@ -2860,11 +2890,11 @@ mod tests {
     async fn update_settings_keeps_live_project_paths_when_settings_file_absent() {
         let temp = tempfile::tempdir().unwrap();
         let settings_path = temp.path().join("settings.json");
-        let live_project = "C:/live/a";
+        let live_project = real_ac_project(temp.path(), "live-a");
 
         let mut current = settings_with_single_agent();
-        current.project_paths = vec![live_project.to_string()];
-        current.project_path = Some(live_project.to_string());
+        current.project_paths = vec![live_project.clone()];
+        current.project_path = Some(live_project.clone());
         let state = state_for(current.clone());
         let payload = settings_payload_without_keys(&current, &["projectPaths", "projectPath"]);
 
@@ -2877,26 +2907,26 @@ mod tests {
         .await
         .unwrap();
 
-        assert_single_project(&saved, live_project);
-        assert!(session_retention_project_paths(&saved).contains(&live_project.to_string()));
+        assert_single_project(&saved, &live_project);
+        assert!(session_retention_project_paths(&saved).contains(&live_project));
         {
             let live = state.read().await;
-            assert_single_project(&live, live_project);
+            assert_single_project(&live, &live_project);
         }
         let disk: AppSettings =
             serde_json::from_str(&std::fs::read_to_string(settings_path).unwrap()).unwrap();
-        assert_single_project(&disk, live_project);
+        assert_single_project(&disk, &live_project);
     }
 
     #[tokio::test]
     async fn save_settings_draft_keeps_live_project_paths_when_settings_file_absent() {
         let temp = tempfile::tempdir().unwrap();
         let settings_path = temp.path().join("settings.json");
-        let live_project = "C:/live/a";
+        let live_project = real_ac_project(temp.path(), "live-a");
 
         let mut current = settings_with_single_agent();
-        current.project_paths = vec![live_project.to_string()];
-        current.project_path = Some(live_project.to_string());
+        current.project_paths = vec![live_project.clone()];
+        current.project_path = Some(live_project.clone());
         let state = state_for(current.clone());
         let payload = settings_payload_without_keys(&current, &["projectPaths", "projectPath"]);
 
@@ -2910,32 +2940,33 @@ mod tests {
             .await
             .unwrap();
 
-        assert_single_project(&saved, live_project);
-        assert!(session_retention_project_paths(&saved).contains(&live_project.to_string()));
+        assert_single_project(&saved, &live_project);
+        assert!(session_retention_project_paths(&saved).contains(&live_project));
         {
             let live = state.read().await;
-            assert_single_project(&live, live_project);
+            assert_single_project(&live, &live_project);
         }
         let disk: AppSettings =
             serde_json::from_str(&std::fs::read_to_string(settings_path).unwrap()).unwrap();
-        assert_single_project(&disk, live_project);
+        assert_single_project(&disk, &live_project);
     }
 
     #[tokio::test]
     async fn update_settings_still_takes_disk_archived_list_when_key_present() {
         let temp = tempfile::tempdir().unwrap();
         let settings_path = temp.path().join("settings.json");
-        let live_project = "C:/live/a";
-        let disk_archived = "C:/archived/a";
-        let live_archived = "C:/archived/b";
-        let payload_archived = "C:/archived/c";
-        write_settings_json(
+        let live_project = real_ac_project(temp.path(), "live-a");
+        let disk_archived = real_ac_project(temp.path(), "archived-a");
+        let live_archived = "C:/archived/b"; // distractor: overridden by disk
+        let payload_archived = "C:/archived/c"; // distractor: overridden by disk
+        write_settings_file(
             temp.path(),
-            serde_json::json!({
-                "projectPaths": [live_project],
-                "projectPath": live_project,
-                "archivedProjectPaths": [disk_archived]
-            }),
+            &AppSettings {
+                project_paths: vec![live_project.clone()],
+                project_path: Some(live_project.clone()),
+                archived_project_paths: vec![disk_archived.clone()],
+                ..AppSettings::default()
+            },
         );
 
         let mut current = settings_with_single_agent();
