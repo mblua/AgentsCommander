@@ -7,7 +7,7 @@ use crate::errors::AppError;
 use crate::pty::backend::{BackendSpawnSpec, PtyBackend, SessionBackendKind};
 use crate::pty::container_backend::ContainerTransportBackend;
 use crate::pty::container_tokens::ContainerApiTokenManager;
-use crate::pty::context_scrape::ScreenRowsRead;
+use crate::pty::context_scrape::{ContextSessionLiveness, ScreenRowsRead};
 use crate::pty::docker_runtime::DockerRuntime;
 use crate::pty::git_watcher::GitWatcher;
 use crate::pty::idle_detector::IdleDetector;
@@ -503,6 +503,13 @@ impl PtyManager {
             return false;
         };
         self.backend_for_kind(kind).has_session(id)
+    }
+
+    pub fn context_session_liveness(&self, id: Uuid) -> ContextSessionLiveness {
+        let Ok(kind) = self.kind_for_session(id) else {
+            return ContextSessionLiveness::SessionOver;
+        };
+        self.backend_for_kind(kind).context_session_liveness(id)
     }
 
     pub fn resize(&self, id: Uuid, cols: u16, rows: u16) -> Result<(), AppError> {
@@ -1119,6 +1126,25 @@ mod tests {
 
         assert!(matches!(err, AppError::SessionNotFound(_)));
         assert!(backend.calls().is_empty());
+    }
+
+    #[test]
+    fn context_liveness_uses_backend_default_and_missing_route_is_over() {
+        let live_id = Uuid::new_v4();
+        let missing_id = Uuid::new_v4();
+        let backend = Arc::new(RecordingBackend::default());
+        backend.set_live(live_id);
+        let manager = PtyManager::new_for_test(backend);
+        manager.record_route(live_id, SessionBackendKind::LocalProcess);
+
+        assert_eq!(
+            manager.context_session_liveness(live_id),
+            ContextSessionLiveness::Live
+        );
+        assert_eq!(
+            manager.context_session_liveness(missing_id),
+            ContextSessionLiveness::SessionOver
+        );
     }
 
     #[test]

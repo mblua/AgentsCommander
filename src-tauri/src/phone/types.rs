@@ -638,6 +638,8 @@ pub struct OutboxMessage {
     #[serde(default)]
     pub priority: String,
     pub timestamp: String,
+    /// Logical PTY action (`clear` or `compact`); provider text is resolved by
+    /// the mailbox and is not part of the wire value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

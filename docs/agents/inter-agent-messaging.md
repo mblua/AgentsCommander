@@ -130,18 +130,27 @@ Build your turn-by-turn loop around that: send a message, wait for a notificatio
 
 Beyond `messaging/`, AC also persists a per-peer conversation snapshot at `<config-dir>/conversations/<NNNN>-<from>_<to>.json`. This is a structured copy of the back-and-forth, useful for offline analysis. It is **not** the canonical source — the messaging files are.
 
-## Remote slash commands
+## Remote logical PTY actions
 
-`send` can also inject a slash command directly into the recipient's PTY (no file involved):
+`send --command` carries a logical action, not literal slash-command text:
 
 ```bash
 agentscommander send --to <peer> --command clear --mode wake
 agentscommander send --to <peer> --command compact --mode wake
 ```
 
-Whitelist: `clear`, `compact`. The recipient must be idle (green dot); the command is rejected otherwise.
+| Direct recipient shell | `clear` text | `compact` text |
+|---|---|---|
+| Claude, Codex, or Gemini filename stem/prefix | `/clear` | `/compact` |
+| Cursor exact stem `agent` | `/clear` | `/compact` |
+| Pi exact stem `pi` | `/new` | Unsupported |
+| Other shells, including outer `cmd` or `pwsh` wrappers | Unsupported | Unsupported |
 
-This is for housekeeping (clear the screen or compact the context), not for content delivery.
+The mapped session must be idle. A supported action against a busy session remains retriable by the mailbox. An unknown logical value or a known action without a verified shell mapping is a terminal capability rejection on the first poll, before session settling, destroy, spawn, PTY writes, boundary bookkeeping, or follow-up work.
+
+Matching is lexical against the trimmed direct shell's case-folded file stem. A directly configured `pi`, `pi.exe`, or npm `pi.cmd` shim therefore maps clear to `/new`; `pip`, `pi-agent`, and `cmd.exe /C pi` do not. Coding-agent commands are trusted configuration, so an arbitrary executable renamed to an exact `pi` stem also matches. AgentsCommander does not attest the binary or probe its version at runtime. Stock Pi 0.80.10 is the validated control, and production success means the PTY writes were accepted, not that Pi semantically acknowledged `/new`.
+
+These actions are for conversation housekeeping, not content delivery.
 
 ## Privileged PTY actuation
 

@@ -22,15 +22,15 @@ pub mod web;
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use commands::ac_discovery::DiscoveryBranchWatcher;
 use config::sessions_persistence;
 use config::settings::SettingsState;
 use pty::context_scrape::{
-    ContextEventSink, ContextPatternSource, ContextScraper, ContextUsagePayload, ScreenRowsRead,
-    ScreenRowsSource,
+    ContextEventSink, ContextPatternSource, ContextSample, ContextSampleSink, ContextScraper,
+    ContextSessionLiveness, ContextUsagePayload, ScreenRowsRead, ScreenRowsSource,
 };
 use pty::git_watcher::GitWatcher;
 use pty::idle_detector::IdleDetector;
@@ -521,12 +521,10 @@ pub(crate) fn should_auto_create_root_agent_on_first_restore(
     commands::session::resolve_root_agent_command(settings, None, last_coding_agent).is_ok()
 }
 
-// ---- #1032: the three adapters ----------------------------------------------------
+// ---- #1032/#1056: the four narrow scrape adapters ---------------------------------
 //
-// This is the boundary. Everything above it holds an `AppHandle` and a `PtyManager` and
-// can do anything to a session; the `ContextScraper` below it holds these three trait
-// objects and can do exactly three things. The narrowing is the feature's one hard rule
-// ("the value never drives an action") made structural instead of remembered.
+// This is the capability boundary. A sample may enqueue an informational coordinator
+// notice, but the scraper itself cannot route, inject, wake, or remediate a session.
 
 /// Rows, via the routed backend. The three states come from the backend, which is the only
 /// thing that holds a liveness oracle.
@@ -550,9 +548,24 @@ impl ScreenRowsSource for ScraperRows {
                         "[context] PtyManager lock is poisoned; context readings are unavailable"
                     );
                 }
-                // NOT SessionOver: a poisoned lock says nothing about whether the session
-                // is alive, and guessing would deregister live sessions.
                 ScreenRowsRead::Unavailable
+            }
+        }
+    }
+
+    fn get_session_liveness(&self, id: uuid::Uuid) -> ContextSessionLiveness {
+        match self.pty_mgr.lock() {
+            Ok(mgr) => mgr.context_session_liveness(id),
+            Err(_) => {
+                if !self
+                    .poison_logged
+                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    log::warn!(
+                        "[context] PtyManager lock is poisoned; context liveness is unavailable"
+                    );
+                }
+                ContextSessionLiveness::Unavailable
             }
         }
     }
@@ -601,6 +614,56 @@ struct ScraperSink {
 impl ContextEventSink for ScraperSink {
     fn emit(&self, payload: ContextUsagePayload) {
         let _ = self.app_handle.emit("session_context", payload);
+    }
+}
+
+/// Nonblocking, bounded bridge from the scraper thread to the alert actor. It deliberately
+/// carries no app, PTY, session, filesystem, or delivery capability.
+struct ScraperSamples {
+    sender: tokio::sync::mpsc::Sender<ContextSample>,
+    closed_logged: AtomicBool,
+    saturated: AtomicBool,
+    dropped: AtomicU64,
+}
+
+impl ContextSampleSink for ScraperSamples {
+    fn observe(&self, sample: ContextSample) {
+        match self.sender.try_send(sample) {
+            Ok(()) => {
+                let recovery_capacity =
+                    crate::session::context_alerts::CONTEXT_SAMPLE_QUEUE_CAPACITY / 4;
+                if self.saturated.load(Ordering::Relaxed)
+                    && self.sender.capacity() >= recovery_capacity
+                    && self
+                        .saturated
+                        .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
+                        .is_ok()
+                {
+                    let dropped = self.dropped.swap(0, Ordering::Relaxed);
+                    log::info!(
+                        "[context-alert] sample queue recovered remainingCapacity={} dropped={}",
+                        self.sender.capacity(),
+                        dropped
+                    );
+                }
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                let dropped = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
+                if !self.saturated.swap(true, Ordering::Relaxed) {
+                    log::warn!(
+                        "[context-alert] sample queue saturated; advisory samples are being dropped (dropped={})",
+                        dropped
+                    );
+                }
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                if !self.closed_logged.swap(true, Ordering::Relaxed) {
+                    log::warn!(
+                        "[context-alert] sample queue is closed; advisory samples are being dropped"
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -934,6 +997,15 @@ pub fn run(
                 .0
                 .store(true, std::sync::atomic::Ordering::SeqCst);
 
+            // #1056 context-alert actor. Start it before the scraper so the bounded sender
+            // exists before the first sample; manage it for final joined shutdown.
+            let context_alert_monitor =
+                crate::session::context_alerts::ContextAlertMonitor::start(
+                    app.handle().clone(),
+                    shutdown_for_setup.token().child_token(),
+                );
+            app.manage(Arc::clone(&context_alert_monitor));
+
             // #1032 context scrape. Must be after `.manage(settings)` above, since the
             // pattern adapter reads settings back out of managed state. Mirrors GitWatcher.
             let context_scraper = ContextScraper::new(
@@ -946,6 +1018,12 @@ pub fn run(
                 }),
                 Arc::new(ScraperSink {
                     app_handle: app.handle().clone(),
+                }),
+                Arc::new(ScraperSamples {
+                    sender: context_alert_monitor.sender(),
+                    closed_logged: AtomicBool::new(false),
+                    saturated: AtomicBool::new(false),
+                    dropped: AtomicU64::new(0),
                 }),
             );
             context_scraper.start(shutdown_for_setup.clone());
@@ -2365,6 +2443,16 @@ pub fn run(
                     log::info!("[shutdown] Triggering background task shutdown (async, not awaited)...");
                     shutdown_for_exit.trigger();
 
+                    // #1056 joins the alert delivery slot and actor before selection or PTY
+                    // teardown, so no notice task is intentionally detached.
+                    if let Some(monitor) = app_handle.try_state::<
+                        Arc<crate::session::context_alerts::ContextAlertMonitor>,
+                    >() {
+                        if let Err(error) = tauri::async_runtime::block_on(monitor.close_and_join()) {
+                            log::warn!("[shutdown] context alert monitor join failed: {}", error);
+                        }
+                    }
+
                     let selection_shutdown = tauri::async_runtime::block_on(
                         selection_coordinator_for_exit.close_and_join(),
                     );
@@ -2538,13 +2626,15 @@ mod tests {
         restore_session_should_become_active, restore_session_should_wake,
         should_auto_create_root_agent_on_first_restore, should_wake_on_restore,
         should_wake_root_agent_on_restore, skip_auto_resume_for_restore, ApiServerHandle,
-        ApiServerTask, ContextPatternSource, PersistedActiveFlagNormalization,
-        RestoreObserverStartBarrier, ScraperPatterns, SettingsState, WebServerHandle,
+        ApiServerTask, ContextPatternSource, ContextSample, ContextSampleSink,
+        PersistedActiveFlagNormalization, RestoreObserverStartBarrier, ScraperPatterns,
+        ScraperSamples, SettingsState, WebServerHandle,
     };
     use crate::config::sessions_persistence::PersistedSession;
     use crate::config::settings::{AgentConfig, AppSettings};
     use crate::session::session::SessionStatus;
     use std::net::SocketAddr;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::time::Duration;
     use tokio_util::sync::CancellationToken;
 
@@ -2581,6 +2671,48 @@ mod tests {
             settings: std::sync::Arc::new(tokio::sync::RwLock::new(settings)) as SettingsState,
         };
         futures::executor::block_on(source.patterns())
+    }
+
+    #[tokio::test]
+    async fn sample_adapter_is_nonblocking_and_recovers_only_after_quarter_capacity() {
+        let capacity = crate::session::context_alerts::CONTEXT_SAMPLE_QUEUE_CAPACITY;
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(capacity);
+        let adapter = ScraperSamples {
+            sender,
+            closed_logged: AtomicBool::new(false),
+            saturated: AtomicBool::new(false),
+            dropped: AtomicU64::new(0),
+        };
+        let sample = || ContextSample::Unavailable {
+            session_id: uuid::Uuid::nil(),
+        };
+
+        for _ in 0..capacity {
+            adapter.observe(sample());
+        }
+        adapter.observe(sample());
+        assert!(adapter.saturated.load(Ordering::Relaxed));
+        assert_eq!(adapter.dropped.load(Ordering::Relaxed), 1);
+
+        receiver.recv().await.expect("one queued sample");
+        adapter.observe(sample());
+        assert!(
+            adapter.saturated.load(Ordering::Relaxed),
+            "a one-slot drain must not end the saturation episode"
+        );
+
+        for _ in 0..257 {
+            receiver.recv().await.expect("queued sample to drain");
+        }
+        adapter.observe(sample());
+        assert!(!adapter.saturated.load(Ordering::Relaxed));
+        assert_eq!(adapter.dropped.load(Ordering::Relaxed), 0);
+        assert!(adapter.sender.capacity() >= capacity / 4);
+
+        drop(receiver);
+        adapter.observe(sample());
+        adapter.observe(sample());
+        assert!(adapter.closed_logged.load(Ordering::Relaxed));
     }
 
     /// #1032 - the adapter must hand `compile` the string the user wrote, byte for byte.

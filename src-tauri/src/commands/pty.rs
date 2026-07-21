@@ -256,8 +256,8 @@ fn classify_substantive<R: tauri::Runtime>(
 /// (`start_fresh_on_restore = true`, persisted under the sessions save lock).
 /// Mirror-first (section 19.3): the death-between-halves residue must fail
 /// FRESH, never resurrect. The intent survives record destruction (idle
-/// auto-close, manual close). Call ONLY after a SUCCESSFUL
-/// `/clear` injection (C1 remote command, C2 self-clear phase-1). The restart
+/// auto-close, manual close). Call only after a successful logical clear
+/// injection (/clear or Pi /new; C1 remote action, C2 self-clear phase 1). The restart
 /// path (C3) stamps the record itself and calls only the mirror half.
 /// Root-agent sessions skip the record half (the root restore path ignores the
 /// marker, #630 scope; mirrors the restart site's exclusion in
@@ -349,7 +349,7 @@ pub(crate) async fn stamp_fresh_boundary_to_session<R: tauri::Runtime>(
 /// `note_user_message_to_session`, whose injection-exclusion protects
 /// silence/badge/auto-close semantics (see its doc comment above); this helper
 /// touches ONLY the fresh intent (mirror first, then record; section 19.3).
-/// Never call it for the bare `/clear` / `/compact` command text.
+/// Never call it for bare logical-action text (/clear, Pi /new, or /compact).
 pub(crate) async fn note_post_boundary_content_to_session<R: tauri::Runtime>(
     app: &AppHandle<R>,
     session_id: Uuid,

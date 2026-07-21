@@ -37,19 +37,50 @@ We are looking for macOS testers. If you can help reproduce or fix macOS-specifi
 
 ### "No coding agents detected"
 
-AC scans `PATH` for `claude`, `codex`, and `gemini` executables. Verify each one is on PATH:
+AC launches the commands configured under `settings.json → agents[]`. Verify that the CLI you use is on the `PATH` inherited by AC:
 
-```bash
-where claude     # Windows
-which codex      # Linux/macOS
-which gemini
+```powershell
+where.exe claude
+where.exe codex
+where.exe gemini
+where.exe pi
 ```
 
-If the binary is installed but not on PATH, either add it or edit `settings.json` and point the `command` field of the matching entry under `agents` at the full path. See [Settings reference](reference/settings.md).
+On Linux or macOS:
 
-### Claude Code wrapper not detected
+```bash
+command -v claude
+command -v codex
+command -v gemini
+command -v pi
+```
 
-AC matches by **executable basename prefix**: `claude`, `codex`, `gemini`. Wrapper binaries like `claude-mb` or `codex-foo` match because the prefix wins. A wrapper named something completely different (`my-llm`) will be treated as a plain shell — the session works, but agent-specific behavior (resume tokens, idle tuning) is skipped.
+Each successful command prints an executable path. If the binary is installed but no path appears, add it to `PATH` or point the matching `agents[]` entry's `command` at the full path. See [Installing the coding-agent CLIs](integrations/coding-agents.md#installing-the-clis) and the [Settings reference](reference/settings.md).
+
+### A coding-agent wrapper is not detected
+
+Claude, Codex, and Gemini use the legacy **executable basename prefix** detector. Wrappers such as `claude-mb`, `codex-foo`, or `gemini-bar` retain tuned behavior because the prefix matches. An unrelated name such as `my-llm` is treated as a plain shell.
+
+Pi is intentionally stricter. Use an exact executable leaf named `pi`, `pi.exe`, or `pi.cmd`, directly or as the first command under `cmd.exe /C` or `/K`. An alias such as `my-pi`, a wrapper such as `npx pi`, `/S /C pi`, grouped Pi, or Pi after a compound separator does not receive Pi resume behavior. Unsupported Pi-shaped positions fail closed rather than being reclassified from a later Claude, Codex, or Gemini option value. See [How AC identifies a tuned integration](integrations/coding-agents.md#how-ac-identifies-a-tuned-integration).
+
+### Pi starts but does not continue a conversation
+
+First determine whether the launch should be fresh. AC adds `--continue` only when its final lifecycle decision requests known state, such as an eligible restore or reopen. A fresh create, fresh restart, or final coordinator fresh override deliberately launches without an AC-authored selector.
+
+For an expected known-state launch, set `logLevel` to `info` and look for:
+
+```text
+Auto-injected Pi `--continue` for trusted agent '<agent-id>'
+```
+
+If the line is absent, check these conditions:
+
+- Launch Pi from a configured Coding Agents entry. Heuristic session metadata does not authorize injection.
+- Use an [exact supported Pi command position](integrations/coding-agents.md#how-ac-identifies-a-tuned-integration), not an alias or unsupported complex cmd shape.
+- Check for an existing `-c`, `-r`, `--continue`, `--resume`, `--session`, `--session-id`, `--fork`, or `--no-session`. These controls intentionally win; remove one only if you want AC to choose automatically.
+- Package/config commands and one-shot help, version, export, and model-list modes intentionally remain unchanged.
+
+If the log line appears but Pi opens a new conversation, Pi found no matching session for the current working directory and effective session directory. That is Pi's normal `--continue` behavior. AC does not inspect Pi storage or retry without the flag. Use the accepted separated spelling `--session-dir <dir>` when selecting custom state; Pi 0.80.10 rejects `--session-dir=<dir>`. See [Pi resume behavior](integrations/coding-agents.md#pi-resume-behavior).
 
 ## Sessions
 

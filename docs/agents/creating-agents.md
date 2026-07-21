@@ -4,13 +4,14 @@ For developers ready to build their own agents instead of using only the templat
 
 ## What an agent is
 
-An agent is a directory with a role-prompt file at its root. The directory IS the agent's identity. AgentsCommander recognises three filenames depending on the coding agent it is launched with:
+An agent is a directory with a role-prompt file at its root. The directory IS the agent's identity. AgentsCommander selects the managed role filename for the coding agent it launches:
 
 | Coding agent | Role file |
 |---|---|
 | Claude Code | `CLAUDE.md` |
 | Codex | `AGENTS.md` (or `CLAUDE.md` fallback) |
 | Gemini | `GEMINI.md` (or `CLAUDE.md` fallback) |
+| Pi | `AGENTS.md` |
 
 When the agent dir lives inside an AC project at `.ac/_agent_<name>/`, AC promotes it to an **agent matrix** with optional `memory/`, `plans/`, `skills/`, and a canonical `Role.md`.
 
@@ -41,7 +42,7 @@ Optional flags:
 
 | Flag | Meaning |
 |---|---|
-| `--launch claude` | Launch Claude Code in the new agent's directory immediately after creation. Same for `codex`, `gemini`. |
+| `--launch claude` | Launch Claude Code in the new agent's directory immediately after creation. Use `codex`, `gemini`, or `pi` for the other first-class coding agents. |
 | `--root <PATH>` | Caller's root directory, for logging only. |
 | `--token <TOKEN>` | Session token from `AGENTSCOMMANDER_TOKEN`. |
 

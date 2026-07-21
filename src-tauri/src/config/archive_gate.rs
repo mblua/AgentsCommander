@@ -106,7 +106,19 @@ async fn auto_unarchive_for_activation<R: tauri::Runtime>(
         })?;
 
     crate::config::settings::refresh_project_paths_from_disk(&mut s)?;
-    let reg = match auto_unarchive_registration(&mut s, root).map_err(|e| {
+    // #1077: structural project-metadata corruption cannot be mutated; refuse
+    // the auto-unarchive rather than normalizing a corrupt list.
+    if crate::config::settings::project_state_has_structural(&s) {
+        return Err(format!(
+            "Cannot start a session in archived project '{}': settings.json has malformed project metadata. Fix or remove the corrupt project fields first.",
+            folder_name(root)
+        ));
+    }
+    // #1077 §4.3: apply the unarchive to a candidate clone; publish only after the
+    // atomic save succeeds. On failure the live guard keeps the refreshed
+    // pre-mutation (disk-authoritative archived) state, never the unsaved move.
+    let mut candidate = s.clone();
+    let reg = match auto_unarchive_registration(&mut candidate, root).map_err(|e| {
         format!(
             "Cannot start a session in archived project '{}': {}. Open Archived Projects to restore it, or remove it from the list.",
             folder_name(root),
@@ -117,8 +129,20 @@ async fn auto_unarchive_for_activation<R: tauri::Runtime>(
         None => return Ok(()),
     };
 
-    let snapshot = s.clone();
-    crate::config::settings::save_settings_with_project_paths(&snapshot)?;
+    // Rebuild the candidate's hidden pairs to match its mutated runtime lists so
+    // the reconcile serializer records the unarchived pair (with its companion).
+    crate::config::settings::resync_project_state_from_runtime(&mut candidate);
+    let path = match crate::config::config_dir() {
+        Some(dir) => dir.join("settings.json"),
+        None => return Err("Could not determine settings directory".to_string()),
+    };
+    match crate::config::settings::reconcile_project_state_to_path(&candidate, &path, true, true) {
+        Ok(written) => *s = written,
+        Err(e) => {
+            drop(s);
+            return Err(e);
+        }
+    }
     drop(s);
 
     log::warn!(

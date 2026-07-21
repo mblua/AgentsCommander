@@ -157,8 +157,8 @@ pub fn compute_config_dir_warning(
     let key = match CodingAgentKind::detect(shell, shell_args) {
         Some(CodingAgentKind::Claude) => "CLAUDE_CONFIG_DIR",
         Some(CodingAgentKind::Codex) => "CODEX_HOME",
-        // Gemini has no AC-managed config-dir env to compare against.
-        Some(CodingAgentKind::Gemini) => return None,
+        // Gemini and Pi have no AC-managed config-dir env to compare against.
+        Some(CodingAgentKind::Gemini | CodingAgentKind::Pi) => return None,
         None => {
             if crate::config::agent_command::command_runs_opencode(shell, shell_args) {
                 "OPENCODE_CONFIG_DIR"
@@ -1291,11 +1291,24 @@ mod tests {
     #[test]
     fn warning_none_for_non_config_dir_agent() {
         let dest = abs(r"C:\replica\.gemini", "/replica/.gemini");
-        // Gemini has no managed config-dir env; a custom command also yields None.
-        assert!(
-            compute_config_dir_warning(&dest, "gemini", &[], &BTreeMap::new(), &BTreeMap::new(), None)
-                .is_none()
-        );
+        // Gemini and Pi have no managed config-dir env; a custom command also yields None.
+        for (shell, args) in [
+            ("gemini", Vec::new()),
+            ("pi", vec!["--model".to_string(), "claude-sonnet".to_string()]),
+        ] {
+            assert!(
+                compute_config_dir_warning(
+                    &dest,
+                    shell,
+                    &args,
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    None,
+                )
+                .is_none(),
+                "shell={shell:?}"
+            );
+        }
         assert!(compute_config_dir_warning(
             &dest,
             "my-custom-agent",

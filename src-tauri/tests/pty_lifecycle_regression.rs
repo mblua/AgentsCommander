@@ -155,6 +155,13 @@ fn make_lifecycle_fixture() -> LifecycleFixture {
     let script_path = temp.path().join("pty-child.ps1");
 
     std::fs::create_dir_all(&repo_root).expect("create repo root");
+    // #1077: a registered project path must resolve to a real AC project (a
+    // directory containing a `.ac` Project Root) for the six-field decoder to
+    // select it into the runtime projectPaths. Without this `.ac`, the CLI loader
+    // (`load_settings_for_cli`) validates repo_root as WorkspaceOrCollectionMissing,
+    // drops it from projectPaths, and session-retention purges the persisted
+    // session — failing the Phase D persistence assertion.
+    std::fs::create_dir_all(repo_root.join(".ac")).expect("create project .ac root");
     if config_dir.exists() {
         std::fs::remove_dir_all(&config_dir).expect("reset config dir");
     }
@@ -171,11 +178,14 @@ fn make_lifecycle_fixture() -> LifecycleFixture {
     // `save_settings` is now preserve-disk (it would read the not-yet-existent
     // file as empty and write project_paths: []), which is exactly the fail-safe
     // behavior #778 introduced.
-    save_settings_with_project_paths(&AppSettings {
-        default_shell: "powershell.exe".to_string(),
-        default_shell_args: vec!["-NoLogo".to_string()],
-        project_paths: vec![path_to_string(&repo_root)],
-        ..AppSettings::default()
+    save_settings_with_project_paths(&{
+        // #1077: AppSettings carries a crate-private hidden field, so an
+        // out-of-crate struct literal is not permitted; build from Default.
+        let mut s = AppSettings::default();
+        s.default_shell = "powershell.exe".to_string();
+        s.default_shell_args = vec!["-NoLogo".to_string()];
+        s.project_paths = vec![path_to_string(&repo_root)];
+        s
     })
     .expect("seed isolated settings");
 
@@ -235,11 +245,12 @@ fn make_test_app(
         TelegramBridgeManager::new(Arc::clone(&output_senders)),
     ));
     let idle_detector = IdleDetector::new(|_| {}, |_| {});
-    let settings: SettingsState = Arc::new(tokio::sync::RwLock::new(AppSettings {
-        default_shell: "powershell.exe".to_string(),
-        default_shell_args: vec!["-NoLogo".to_string()],
-        project_paths: vec![path_to_string(repo_root)],
-        ..AppSettings::default()
+    let settings: SettingsState = Arc::new(tokio::sync::RwLock::new({
+        let mut s = AppSettings::default();
+        s.default_shell = "powershell.exe".to_string();
+        s.default_shell_args = vec!["-NoLogo".to_string()];
+        s.project_paths = vec![path_to_string(repo_root)];
+        s
     }));
     let git_app = Box::leak(Box::new(
         tauri::Builder::default()

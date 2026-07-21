@@ -39,14 +39,16 @@ pub const TEMP_SESSION_PREFIX: &str = "[temp]";
 pub struct SessionRepo {
     /// Repo dir name with leading "repo-" stripped (e.g. "AgentsCommander").
     pub label: String,
-    /// Absolute path to the repo root. Branch detection runs `git rev-parse` in this dir.
+    /// Absolute path to the repo root. Local Git status detection runs in this directory.
     pub source_path: String,
     /// Current branch. `None` until first watcher tick, or when detection fails.
     #[serde(default)]
     pub branch: Option<String>,
-    /// #1028 - worktree dirty: untracked, unstaged, or staged-but-uncommitted changes.
-    /// `Some(true)` paints the badge letters red. `None` = never successfully detected
-    /// for this path since process start, rendered violet like clean; a failed detection
+    /// #1028/#1078 - local work not confirmed by cached origin tracking: Git emitted a
+    /// non-ignored worktree/index entry, or the checked-out `HEAD` was not confirmed
+    /// reachable from the current branch's configured cached `origin/*` upstream.
+    /// `Some(true)` paints the badge letters red. `None` means never successfully
+    /// detected for this path since process start, rendered violet like clean; a failed detection
     /// holds the last known answer instead (`git_watcher::remember_dirty`), so `None`
     /// means "no first answer yet", not "flaked once".
     ///
@@ -87,7 +89,7 @@ pub struct Session {
     #[serde(default)]
     pub backend_kind: SessionBackendKind,
     /// Effective arg vector actually handed to portable-pty at spawn time,
-    /// including dynamic provider resume injections (`--continue`,
+    /// including dynamic provider resume injections (Claude/Pi `--continue`,
     /// `codex resume --last`, `gemini --resume latest`). `None` until the PTY
     /// is spawned for this session; set once by `create_session_inner` right
     /// before `pty_mgr.spawn`. Runtime-only. NOT persisted to `sessions.toml`
@@ -132,8 +134,9 @@ pub struct Session {
     /// Resolved coding-agent identity, or `None` for a plain shell. Set once
     /// by `create_session_inner` via `CodingAgentKind::detect`. The single
     /// source of truth that replaced the #258 `is_claude`/`is_codex`/
-    /// `is_gemini` triple (#260). Drives idle tuning, resume-arg injection,
-    /// and Telegram reader selection.
+    /// `is_gemini` triple (#260). Drives generic idle/resource diagnostics and
+    /// provider capabilities such as resume injection, context targeting,
+    /// auto-self-clear support, and Telegram reader selection.
     #[serde(default)]
     pub agent_kind: Option<CodingAgentKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

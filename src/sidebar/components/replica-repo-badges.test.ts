@@ -292,9 +292,9 @@ describe("#1028 per-repo dirty is merged BY PATH", () => {
 describe("#1028 badge title carries the third state", () => {
   const REPO = "C:\\proj\\.ac\\wg-1-team\\repo-AgentsCommander";
 
-  it("names the uncommitted work when the repo is dirty", () => {
+  it("names local work not confirmed by cached origin tracking when the repo is red", () => {
     expect(formatReplicaRepoBadgeTitle({ sourcePath: REPO, dirty: true })).toBe(
-      `${REPO} (uncommitted changes)`
+      `${REPO} (local work not confirmed by cached origin tracking)`
     );
   });
 

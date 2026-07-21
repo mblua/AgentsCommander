@@ -16,12 +16,14 @@ use crate::config::teams;
 use crate::phone::consumption::{verdict_to_result, ConsumptionVerdict};
 use crate::phone::types::OutboxMessage;
 use crate::pty::backend::SessionBackendKind;
+use crate::pty::inject::LogicalPtyCommand;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
+use crate::session::session::{Session, SessionCommunicationKind, SessionInfo, SessionStatus};
 #[cfg(test)]
 use crate::session::session::{SessionCommunication, SessionRepo};
-use crate::session::session::{SessionCommunicationKind, SessionInfo, SessionStatus};
 use crate::{AppOutbox, MasterToken};
+use tokio_util::sync::CancellationToken;
 
 fn sender_name_for_session_cwd_with_root_flag(
     working_directory: &str,
@@ -64,6 +66,264 @@ pub(crate) fn retain_unarchived_session_dirs(
 pub(crate) enum WakeDeliveryOrigin {
     FilesystemPoller,
     DbQueue,
+}
+
+/// Canonical routing capability for an AgentsCommander-generated notice. The FQN and
+/// replica path are validated and retained together so no internal caller can later route
+/// by spelling alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InternalSystemTarget {
+    fqn: String,
+    replica_dir: PathBuf,
+}
+
+impl InternalSystemTarget {
+    pub(crate) fn for_context_alert(fqn: String, replica_dir: PathBuf) -> Result<Self, String> {
+        let metadata = std::fs::symlink_metadata(&replica_dir).map_err(|e| {
+            format!(
+                "Internal system target replica '{}' is not readable: {}",
+                replica_dir.display(),
+                e
+            )
+        })?;
+        if !metadata.is_dir()
+            || crate::commands::entity_creation::metadata_is_link_or_reparse(&metadata)
+        {
+            return Err(format!(
+                "Internal system target replica '{}' must be a real non-link directory",
+                replica_dir.display()
+            ));
+        }
+        let canonical = std::fs::canonicalize(&replica_dir)
+            .map(|path| crate::path_utils::normalize_windows_verbatim_path_buf(&path))
+            .map_err(|e| {
+                format!(
+                    "Internal system target replica '{}' cannot be canonicalized: {}",
+                    replica_dir.display(),
+                    e
+                )
+            })?;
+        let layout = crate::config::workspace::wg_replica_layout_from_agent_dir(&canonical)?
+            .ok_or_else(|| {
+                format!(
+                    "Internal system target replica '{}' is not a canonical workgroup replica",
+                    canonical.display()
+                )
+            })?;
+        crate::commands::entity_creation::parse_team_from_workgroup_name(&layout.wg_name)?;
+        crate::commands::entity_creation::validate_existing_name(&layout.agent_name, "Agent")?;
+        let project = layout
+            .project_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| {
+                !name.is_empty()
+                    && !name.contains(':')
+                    && !name.chars().any(|ch| ch == '\0' || ch.is_ascii_control())
+            })
+            .ok_or_else(|| {
+                format!(
+                    "Internal system target project '{}' has an invalid FQN component",
+                    layout.project_dir.display()
+                )
+            })?
+            .to_string();
+        let expected = format!("{}:{}/{}", project, layout.wg_name, layout.agent_name);
+        if fqn != expected {
+            return Err(format!(
+                "Internal system target FQN '{}' does not match canonical replica '{}' (expected '{}')",
+                fqn,
+                canonical.display(),
+                expected
+            ));
+        }
+        Ok(Self {
+            fqn,
+            replica_dir: canonical,
+        })
+    }
+
+    pub(crate) fn fqn(&self) -> &str {
+        &self.fqn
+    }
+
+    pub(crate) fn replica_dir(&self) -> &Path {
+        &self.replica_dir
+    }
+}
+
+/// Validated fixed facts rendered by the private system formatter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InternalSystemNotice {
+    member: String,
+    workgroup: String,
+    observed: u8,
+    thresholds: Vec<u8>,
+}
+
+impl InternalSystemNotice {
+    pub(crate) fn for_context_alert(
+        member: String,
+        workgroup: String,
+        observed: u8,
+        thresholds: Vec<u8>,
+    ) -> Result<Self, String> {
+        crate::commands::entity_creation::validate_existing_name(&member, "Agent")?;
+        crate::commands::entity_creation::parse_team_from_workgroup_name(&workgroup)?;
+        if observed > 100 {
+            return Err("Context alert observation must be from 0 through 100".to_string());
+        }
+        if thresholds.is_empty() || thresholds.len() > 3 {
+            return Err("Context alert notice must contain 1 through 3 thresholds".to_string());
+        }
+        if thresholds
+            .iter()
+            .any(|threshold| !(1..=100).contains(threshold) || *threshold > observed)
+            || thresholds.windows(2).any(|pair| pair[0] >= pair[1])
+        {
+            return Err(
+                "Context alert notice thresholds must be strictly ascending, distinct, from 1 through 100, and no greater than the observation"
+                    .to_string(),
+            );
+        }
+        Ok(Self {
+            member,
+            workgroup,
+            observed,
+            thresholds,
+        })
+    }
+
+    pub(crate) fn thresholds(&self) -> &[u8] {
+        &self.thresholds
+    }
+
+    fn line(&self) -> String {
+        let thresholds = self
+            .thresholds
+            .iter()
+            .map(|threshold| format!("{}%", threshold))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "[AgentsCommander context alert] Member '{}' in workgroup '{}' was observed at {}% context use, reaching configured threshold(s): {}. No automatic action was taken; the coordinator decides whether follow-up is needed.",
+            self.member, self.workgroup, self.observed, thresholds
+        )
+    }
+}
+
+pub(crate) type InternalNoticeGuard = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
+
+enum WakeDelivery<'a> {
+    Peer {
+        message: &'a OutboxMessage,
+        origin: WakeDeliveryOrigin,
+    },
+    InternalSystem {
+        target: InternalSystemTarget,
+        notice: InternalSystemNotice,
+        cancellation: CancellationToken,
+        guard: InternalNoticeGuard,
+    },
+}
+
+enum WakeContent<'a> {
+    Peer {
+        from: &'a str,
+        body: &'a str,
+        origin: WakeDeliveryOrigin,
+    },
+    InternalSystem(&'a InternalSystemNotice),
+}
+
+fn format_wake_content(content: WakeContent<'_>) -> String {
+    match content {
+        WakeContent::Peer { from, body, origin } => {
+            let _ = origin;
+            crate::phone::messaging::format_pty_wrap(from, body)
+        }
+        WakeContent::InternalSystem(notice) => format!("\n{}\n\r", notice.line()),
+    }
+}
+
+fn internal_system_envelope(target: &InternalSystemTarget) -> OutboxMessage {
+    OutboxMessage {
+        id: Uuid::new_v4().to_string(),
+        token: None,
+        from: "AgentsCommander".to_string(),
+        to: target.fqn.clone(),
+        body: String::new(),
+        mode: "wake".to_string(),
+        get_output: false,
+        request_id: None,
+        sender_agent: None,
+        preferred_agent: "auto".to_string(),
+        priority: "normal".to_string(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        command: None,
+        action: None,
+        target: None,
+        force: None,
+        timeout_secs: None,
+        switch_coding_agent: None,
+        switch_profile: None,
+        dry_run: None,
+        quiet_period_ms: None,
+        pty_input: None,
+    }
+}
+
+fn canonical_cwd_owned_by_replica(cwd: &str, replica_dir: &Path) -> Result<bool, String> {
+    let lexical = Path::new(cwd);
+    let Some(lexical_replica) = lexical.ancestors().find(|ancestor| {
+        ancestor
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("__agent_"))
+    }) else {
+        return Ok(false);
+    };
+    let Some(lexical_workgroup) = lexical_replica.parent() else {
+        return Ok(false);
+    };
+    let Some(lexical_workspace) = lexical_workgroup.parent() else {
+        return Ok(false);
+    };
+    for (path, label) in [
+        (lexical_replica, "replica"),
+        (lexical_workgroup, "workgroup"),
+        (lexical_workspace, "Project AC Root"),
+    ] {
+        let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+            format!(
+                "Failed to inspect recipient {} '{}': {}",
+                label,
+                path.display(),
+                error
+            )
+        })?;
+        if !metadata.is_dir()
+            || crate::commands::entity_creation::metadata_is_link_or_reparse(&metadata)
+        {
+            return Ok(false);
+        }
+    }
+    let canonical_replica = std::fs::canonicalize(lexical_replica)
+        .map(|path| crate::path_utils::normalize_windows_verbatim_path_buf(&path))
+        .map_err(|error| {
+            format!(
+                "Failed to canonicalize recipient replica '{}': {}",
+                lexical_replica.display(),
+                error
+            )
+        })?;
+    if canonical_replica != replica_dir {
+        return Ok(false);
+    }
+    let canonical = std::fs::canonicalize(cwd)
+        .map(|path| crate::path_utils::normalize_windows_verbatim_path_buf(&path))
+        .map_err(|e| format!("Failed to canonicalize recipient CWD '{}': {}", cwd, e))?;
+    Ok(canonical == replica_dir || canonical.starts_with(replica_dir))
 }
 
 fn container_body_override_for_delivery(
@@ -266,6 +526,17 @@ struct ResolvedWakeAgentCommand {
     agent_label: Option<String>,
     source: String,
     raw_command: String,
+}
+
+#[derive(Debug)]
+struct ResolvedWakeSpawnPlan {
+    resolved_command: ResolvedWakeAgentCommand,
+    cwd: String,
+    session_name: String,
+    spawn_shell: String,
+    spawn_args: Vec<String>,
+    spawn_label: Option<String>,
+    configured_spawn: Option<crate::config::agent_command::AgentSpawnCommand>,
 }
 
 fn normalize_agent_for_wake(
@@ -496,9 +767,55 @@ struct RetryState {
 
 const MAX_DELIVERY_ATTEMPTS: u32 = 10;
 const ERR_UNRESOLVABLE_AGENT: &str = "Could not resolve inbox for agent";
+const ERR_UNSUPPORTED_LOGICAL_REMOTE_COMMAND: &str = "Unsupported logical remote command";
+const ERR_UNMAPPED_LOGICAL_REMOTE_COMMAND: &str = "Cannot execute logical remote command";
 
-/// #617 - sustained-idle window the deferred /clear waits for. `pub(crate)` so the
-/// CLI prose and the response JSON single-source the value (no drift across the
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ResolvedRemotePtyCommand {
+    logical: LogicalPtyCommand,
+    text: &'static str,
+}
+
+fn logical_command_wire_value(command: LogicalPtyCommand) -> &'static str {
+    match command {
+        LogicalPtyCommand::Clear => "clear",
+        LogicalPtyCommand::Compact => "compact",
+    }
+}
+
+fn parse_remote_pty_command(wire_value: &str) -> Result<LogicalPtyCommand, String> {
+    LogicalPtyCommand::from_wire_value(wire_value).ok_or_else(|| {
+        format!(
+            "{} '{}'. Allowed values: clear, compact",
+            ERR_UNSUPPORTED_LOGICAL_REMOTE_COMMAND, wire_value
+        )
+    })
+}
+
+fn resolve_remote_pty_command(
+    shell: &str,
+    wire_value: &str,
+) -> Result<ResolvedRemotePtyCommand, String> {
+    let logical = parse_remote_pty_command(wire_value)?;
+    let text = crate::pty::inject::resolve_logical_command_text(shell, logical).ok_or_else(|| {
+        format!(
+            "{} '{}': session shell '{}' has no verified mapping. Claude / Codex / Gemini / Cursor agent direct shells use /clear and /compact; exact Pi uses /new for clear only. cmd / pwsh outer wrappers and Pi compact are unsupported.",
+            ERR_UNMAPPED_LOGICAL_REMOTE_COMMAND,
+            logical_command_wire_value(logical),
+            shell
+        )
+    })?;
+    Ok(ResolvedRemotePtyCommand { logical, text })
+}
+
+fn is_permanent_delivery_error(error: &str) -> bool {
+    error.contains(ERR_UNRESOLVABLE_AGENT)
+        || error.starts_with(ERR_UNSUPPORTED_LOGICAL_REMOTE_COMMAND)
+        || error.starts_with(ERR_UNMAPPED_LOGICAL_REMOTE_COMMAND)
+}
+
+/// #617 - sustained-idle window before a deferred provider-resolved logical
+/// clear. `pub(crate)` so the CLI prose and response JSON single-source the
 /// gate, the response `settle_secs`, and the CLI's conditional wording).
 pub(crate) const SELF_CLEAR_SETTLE_SECS: u64 = 30;
 // The next three are consumed only by the `#[cfg(not(test))]` spawn in
@@ -1152,9 +1469,10 @@ pub(crate) fn settle_tick(
 /// #626 - which leg of the self-handoff-and-clear gate we are in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SelfClearPhase {
-    /// Waiting for sustained idle to inject `/clear`.
+    /// Waiting for sustained idle to inject provider-resolved logical-clear text.
     Clear,
-    /// `/clear` already injected; waiting for a FRESH sustained idle POST-clear to inject the
+    /// Logical clear already injected; waiting for a fresh sustained idle
+    /// window after clear before injecting the
     /// stand-alone handoff prompt.
     Handoff,
 }
@@ -1186,7 +1504,7 @@ impl SelfClearGateState {
 pub(crate) enum SelfClearGateAction {
     /// Keep polling; the driver adopts the returned state and carries it forward.
     Wait,
-    /// Phase 1 settle: inject `/clear`. The returned state is already advanced to Phase 2 with the
+    /// Phase 1 settle: inject provider-resolved logical-clear text. The returned state is already advanced to Phase 2 with the
     /// idle clock reset, so the driver just injects and keeps looping.
     InjectClear,
     /// Phase 2 settle: inject the handoff prompt, then stop.
@@ -1200,7 +1518,7 @@ pub(crate) enum SelfClearGateAction {
 /// drivers stay free of app state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SelfClearBoundary {
-    /// Phase-1 `/clear` reached the PTY: stamp the durable fresh intent (C2).
+    /// Phase-1 logical clear (/clear or Pi /new) reached the PTY: stamp the durable fresh intent (C2).
     Cleared,
     /// Phase-2 handoff prompt reached the PTY: post-boundary content, drop it.
     ContentInjected,
@@ -2062,7 +2380,18 @@ struct MailboxTestHooks {
     /// - so the AC3 hooked test exercises the real conversion, not a copy.
     consumption_results: Arc<Mutex<VecDeque<ConsumptionVerdict>>>,
     inject_calls: Arc<Mutex<Vec<Uuid>>>,
+    settle_calls: Arc<Mutex<Vec<Uuid>>>,
+    /// Sessions whose hooked live-settle step removes the SessionManager
+    /// record, deterministically exercising the post-preflight race path.
+    remove_session_on_settle: Arc<Mutex<std::collections::HashSet<Uuid>>>,
+    /// Sessions that record hook observability but continue through the real
+    /// command branch and canonical injector instead of scripted injection.
+    real_inject_sessions: Arc<Mutex<std::collections::HashSet<Uuid>>>,
+    internal_payloads: Arc<Mutex<Vec<String>>>,
+    internal_bookkeeping: Arc<Mutex<Vec<InternalSystemBookkeeping>>>,
+    internal_live_settle_gate: Arc<Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>,
     destroy_calls: Arc<Mutex<Vec<Uuid>>>,
+    destroy_results: Arc<Mutex<VecDeque<Result<(), String>>>>,
     spawn_calls: Arc<Mutex<Vec<MailboxSpawnCall>>>,
     attach_calls: MailboxAttachCalls,
     events: Arc<Mutex<Vec<MailboxTestEvent>>>,
@@ -2072,6 +2401,19 @@ struct MailboxTestHooks {
     /// wake that respawns a coordinator target yields a coordinator record;
     /// tests exercising the raised-hand carry set this to mirror that.
     spawn_is_coordinator: Arc<Mutex<bool>>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InternalSystemBookkeeping {
+    session_id: Uuid,
+    post_boundary: bool,
+    silence_touch: bool,
+    set_last_prompt: bool,
+    peer_event: bool,
+    response_watcher: bool,
+    consumption_verdict: bool,
+    mailbox_archive: bool,
 }
 
 #[cfg(test)]
@@ -2356,7 +2698,7 @@ impl MailboxPoller {
     }
 
     /// One poll cycle: scan all repo outbox dirs, process each message.
-    async fn poll(&mut self, app: &tauri::AppHandle) -> Result<(), String> {
+    async fn poll<R: tauri::Runtime>(&mut self, app: &tauri::AppHandle<R>) -> Result<(), String> {
         if let Some(state) = app.try_state::<crate::api::message_store::MessageStoreState>() {
             if let Ok(store) = &state.store {
                 let active = state.active_operations.snapshot();
@@ -2471,7 +2813,7 @@ impl MailboxPoller {
                         self.retry_tracker.remove(&path);
                     }
                     Err(e) => {
-                        let is_permanent = e.contains(ERR_UNRESOLVABLE_AGENT);
+                        let is_permanent = is_permanent_delivery_error(&e);
                         let should_reject = is_permanent || {
                             let state =
                                 self.retry_tracker
@@ -5810,6 +6152,54 @@ impl MailboxPoller {
         msg: &OutboxMessage,
         origin: WakeDeliveryOrigin,
     ) -> Result<(), String> {
+        self.deliver_wake_engine(
+            app,
+            WakeDelivery::Peer {
+                message: msg,
+                origin,
+            },
+        )
+        .await
+    }
+
+    /// Single private entry for every wake delivery kind. The variant is selected only by
+    /// code: serialized peer messages can enter only `Peer`, while the validated target,
+    /// notice, cancellation, and guard capability are required for `InternalSystem`.
+    async fn deliver_wake_engine<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        delivery: WakeDelivery<'_>,
+    ) -> Result<(), String> {
+        match delivery {
+            WakeDelivery::Peer { message, origin } => {
+                self.deliver_peer_wake(app, message, origin).await
+            }
+            WakeDelivery::InternalSystem {
+                target,
+                notice,
+                cancellation,
+                guard,
+            } => {
+                self.deliver_internal_system_wake(app, target, notice, cancellation, guard)
+                    .await
+            }
+        }
+    }
+
+    async fn deliver_peer_wake<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        msg: &OutboxMessage,
+        origin: WakeDeliveryOrigin,
+    ) -> Result<(), String> {
+        // Parse a hand-authored logical action after process_message's
+        // authorization/routing gates but before any recipient actuation.
+        let parsed_remote_command = msg
+            .command
+            .as_deref()
+            .map(parse_remote_pty_command)
+            .transpose()?;
+
         // (#885 J2) A purge is destroying this agent's record right now. A wake
         // delivered into that window falls through to spawn-persistent below and
         // would cold-spawn the agent we are purging, silently breaking the verb's
@@ -5891,6 +6281,28 @@ impl MailboxPoller {
 
             match wake_action_for(status) {
                 WakeAction::Inject => {
+                    if parsed_remote_command.is_some() {
+                        let shell = {
+                            let session_mgr =
+                                app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                            let mgr = session_mgr.read().await;
+                            mgr.get_session(session_id)
+                                .await
+                                .map(|session| session.shell)
+                        };
+                        let Some(shell) = shell else {
+                            lost_inject_to_race = true;
+                            log::warn!(
+                                "[mailbox] wake: candidate {} vanished during logical-command preflight, trying next",
+                                session_id
+                            );
+                            continue;
+                        };
+                        if let Some(wire_value) = msg.command.as_deref() {
+                            resolve_remote_pty_command(&shell, wire_value)?;
+                        }
+                    }
+
                     // (#1001 PR2 / B) Settle the live session to paste-ready before
                     // injecting. The MEASURED live-path drop is the still-starting
                     // case (100% here / 83% baseline, P2), which the alive_age
@@ -5983,6 +6395,42 @@ impl MailboxPoller {
             );
         }
 
+        // No viable Inject candidate succeeded, so the fallback would spawn a
+        // persistent session. Root Agent remains user-launched only.
+        log::info!(
+            "[mailbox] wake: no active session for '{}', spawning persistent session",
+            msg.to
+        );
+        if crate::config::root_agent::is_root_agent_target(&msg.to) {
+            let restoring = app
+                .state::<Arc<crate::RestoreInProgress>>()
+                .0
+                .load(std::sync::atomic::Ordering::SeqCst);
+            return if restoring {
+                Err(format!(
+                    "Root Agent session not yet restored for '{}'; daemon restart in progress — will retry.",
+                    msg.to
+                ))
+            } else {
+                Err(format!(
+                    "No live Root Agent session for '{}'. The Root Agent must be running locally to receive messages — ask the user to launch it.",
+                    msg.to
+                ))
+            };
+        }
+
+        // A logical action must be mapped against the exact carried spawn shell
+        // before an Exited record is destroyed or provider directories are made.
+        let mut spawn_plan = if parsed_remote_command.is_some() {
+            let plan = self.resolve_wake_spawn_plan(app, msg).await?;
+            if let Some(wire_value) = msg.command.as_deref() {
+                resolve_remote_pty_command(&plan.spawn_shell, wire_value)?;
+            }
+            Some(plan)
+        } else {
+            None
+        };
+
         if let Some(exited_id) = pending_exited_destroy {
             log::debug!(
                 "[mailbox] wake: executing deferred destroy for Exited candidate {}",
@@ -6007,94 +6455,23 @@ impl MailboxPoller {
             }
         }
 
-        // ── No viable Inject candidate succeeded — spawn a persistent one ──
-        log::info!(
-            "[mailbox] wake: no active session for '{}', spawning persistent session",
-            msg.to
-        );
-
-        // #293: Root Agent is user-launched; never auto-spawn or destroy a
-        // root session implicitly via this path. Reject with an explicit
-        // message instead. The Exited filter in `find_root_session_candidate`
-        // already preserves the user's session record (the deferred-destroy
-        // block above does not fire because the Exited candidate was never
-        // returned).
-        if crate::config::root_agent::is_root_agent_target(&msg.to) {
-            // Soft-handle the daemon-restart window: if the SessionManager is
-            // still restoring sessions, the root may be on its way back. We
-            // do NOT pin this rejection as `ERR_UNRESOLVABLE_AGENT`-class, so
-            // the retry tracker keeps cycling and the message redelivers on
-            // the next poll once the root session reappears.
-            let restoring = app
-                .state::<Arc<crate::RestoreInProgress>>()
-                .0
-                .load(std::sync::atomic::Ordering::SeqCst);
-            return if restoring {
-                Err(format!(
-                    "Root Agent session not yet restored for '{}'; daemon restart in progress — will retry.",
-                    msg.to
-                ))
-            } else {
-                Err(format!(
-                    "No live Root Agent session for '{}'. The Root Agent must be running locally to receive messages — ask the user to launch it.",
-                    msg.to
-                ))
-            };
+        // Normal messages retain their original ordering: resolve the plan only
+        // after any deferred Exited destroy. Logical actions already carry the
+        // read-only plan proven safe above.
+        if spawn_plan.is_none() {
+            spawn_plan = Some(self.resolve_wake_spawn_plan(app, msg).await?);
         }
-
-        let resolved_command = self.resolve_agent_command(app, msg).await?;
-        let resolved_command = resolved_command.ok_or_else(|| {
-            format!(
-                "No agent command resolved for '{}'; preferredAgent={:?}. Configure lastCodingAgent or agents in settings.",
-                msg.to, msg.preferred_agent
-            )
-        })?;
-
-        let dest_path = self.resolve_repo_path(&msg.to, app).await;
-        let cwd = match dest_path {
-            Some(path) => path,
-            None => {
-                // Fallback: for WG agents (wg-name/agent), derive path from sibling session CWDs
-                self.resolve_wg_path_from_sessions(app, &msg.to)
-                    .await
-                    .ok_or_else(|| {
-                        format!(
-                            "Cannot resolve repo path for '{}' — cannot spawn session",
-                            msg.to
-                        )
-                    })?
-            }
-        };
-
-        // §AR2-session-name: strip optional `<project>:` prefix from the display
-        // name so the sidebar label stays short (e.g. "wg-1-devs/tech-lead" not
-        // "proj-a:wg-1-devs/tech-lead"). The canonical FQN stays recoverable via
-        // `agent_fqn_from_path(&cwd)` at any list-sessions time.
-        let session_name = {
-            let (_, local) = crate::config::teams::split_project_prefix(&msg.to);
-            local.to_string()
-        };
-
-        let resolved_spawn = if let Some(aid) = resolved_command.agent_id.as_deref() {
-            let settings = app.state::<SettingsState>();
-            let cfg = settings.read().await;
-            crate::commands::session::build_configured_agent_spawn_for_cwd(&cfg, aid, &cwd, None)?
-        } else {
-            None
-        };
-        let (spawn_shell, spawn_args, spawn_label) = if let Some(spawn) = resolved_spawn.as_ref() {
-            (
-                spawn.shell.clone(),
-                spawn.shell_args.clone(),
-                Some(spawn.trusted_agent_label.clone()),
-            )
-        } else {
-            (
-                resolved_command.shell.clone(),
-                resolved_command.shell_args.clone(),
-                resolved_command.agent_label.clone(),
-            )
-        };
+        let plan = spawn_plan
+            .ok_or_else(|| "Internal error: wake spawn plan was not resolved".to_string())?;
+        let ResolvedWakeSpawnPlan {
+            resolved_command,
+            cwd,
+            session_name,
+            spawn_shell,
+            spawn_args,
+            spawn_label,
+            configured_spawn,
+        } = plan;
         let spawn_source = resolved_command.source.clone();
         let spawn_raw = resolved_command.raw_command.clone();
 
@@ -6107,6 +6484,9 @@ impl MailboxPoller {
             spawn_args
         );
 
+        if let Some(spawn) = configured_spawn.as_ref() {
+            crate::config::agent_command::prepare_agent_spawn_command(spawn)?;
+        }
         let info = self
             .spawn_wake_session(
                 app,
@@ -6118,7 +6498,7 @@ impl MailboxPoller {
                 spawn_shell.clone(),
                 spawn_args.clone(),
                 spawn_label,
-                resolved_spawn,
+                configured_spawn,
             )
             .await
             .map_err(|e| {
@@ -6187,6 +6567,602 @@ impl MailboxPoller {
             .await
     }
 
+    /// Deliver a validated AgentsCommander-generated notice through the existing wake,
+    /// resume, background-spawn, settle, and canonical injection plumbing. No serialized
+    /// message field can select this path.
+    pub(crate) async fn deliver_internal_system_notice<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        target: InternalSystemTarget,
+        notice: InternalSystemNotice,
+        cancellation: CancellationToken,
+        guard: InternalNoticeGuard,
+    ) -> Result<(), String> {
+        self.deliver_wake_engine(
+            app,
+            WakeDelivery::InternalSystem {
+                target,
+                notice,
+                cancellation,
+                guard,
+            },
+        )
+        .await
+    }
+
+    async fn deliver_internal_system_wake<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        target: InternalSystemTarget,
+        notice: InternalSystemNotice,
+        cancellation: CancellationToken,
+        guard: InternalNoticeGuard,
+    ) -> Result<(), String> {
+        if cancellation.is_cancelled() {
+            return Err("Context alert delivery was canceled".to_string());
+        }
+        if let Some(purge) = app.try_state::<Arc<crate::session::purge_guard::PurgeGuard>>() {
+            if purge.blocks_agent(target.fqn()) {
+                return Err(format!(
+                    "purge-wg in progress for '{}'; context alert deferred",
+                    target.fqn()
+                ));
+            }
+        }
+        Self::run_internal_guard(Arc::clone(&guard)).await?;
+
+        let envelope = internal_system_envelope(&target);
+        let mut exited: Option<SessionInfo> = None;
+        for (candidate, has_pty) in self.find_internal_system_candidates(app, &target).await? {
+            match candidate.status {
+                SessionStatus::Exited(_) => {
+                    if exited.is_none() {
+                        exited = Some(candidate);
+                    }
+                }
+                _ if has_pty => {
+                    tokio::select! {
+                        biased;
+                        _ = cancellation.cancelled() => {
+                            return Err("Context alert delivery was canceled during live settle".to_string());
+                        }
+                        _ = self.settle_internal_live_before_inject(app, Uuid::parse_str(&candidate.id)
+                            .map_err(|e| format!("Invalid coordinator session id '{}': {}", candidate.id, e))?) => {}
+                    }
+                    if cancellation.is_cancelled() {
+                        return Err(
+                            "Context alert delivery was canceled before live injection".to_string()
+                        );
+                    }
+                    let session_id = Uuid::parse_str(&candidate.id)
+                        .map_err(|e| format!("Invalid coordinator session id: {}", e))?;
+                    match self
+                        .inject_internal_system_notice(
+                            app,
+                            session_id,
+                            &target,
+                            &notice,
+                            Arc::clone(&guard),
+                        )
+                        .await
+                    {
+                        Ok(()) => return Ok(()),
+                        Err(error) if err_is_pty_session_missing(&error) => {
+                            log::warn!(
+                                "[context-alert] coordinator session {} vanished before injection: {}",
+                                session_id,
+                                error
+                            );
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut spawn_with_resume = false;
+        let mut carried_bot: Option<String> = None;
+        let mut carried_communication = None;
+        if let Some(exited_candidate) = exited {
+            if cancellation.is_cancelled() {
+                return Err(
+                    "Context alert delivery was canceled before exited-session actuation"
+                        .to_string(),
+                );
+            }
+            let exited_id = Uuid::parse_str(&exited_candidate.id)
+                .map_err(|e| format!("Invalid exited coordinator session id: {}", e))?;
+            self.recheck_internal_exited_candidate(app, exited_id, &target)
+                .await?;
+            Self::run_internal_guard(Arc::clone(&guard)).await?;
+            self.recheck_internal_exited_record(
+                app,
+                exited_id,
+                &target,
+                &exited_candidate.working_directory,
+            )
+            .await?;
+            carried_bot = exited_candidate.telegram_bot_id.clone();
+            carried_communication = exited_candidate.communication.clone();
+            self.destroy_exited_wake_session(app, exited_id)
+                .await
+                .map_err(|error| {
+                    format!(
+                        "Failed to destroy stale coordinator session {}: {}",
+                        exited_id, error
+                    )
+                })?;
+            spawn_with_resume = true;
+        }
+
+        // Final pre-spawn authorization followed by a fresh exact-path enumeration. A
+        // supported recipient that appeared wins; this attempt returns stale rather than
+        // creating a duplicate.
+        Self::run_internal_guard(Arc::clone(&guard)).await?;
+        if !self
+            .find_internal_system_candidates(app, &target)
+            .await?
+            .is_empty()
+        {
+            return Err(format!(
+                "Coordinator recipient '{}' changed immediately before background spawn",
+                target.fqn()
+            ));
+        }
+
+        let resolved_command = self
+            .resolve_internal_agent_command(app, &target)
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "No supported coding-agent command is configured for '{}'",
+                    target.fqn()
+                )
+            })?;
+        let agent_id = resolved_command.agent_id.as_deref().ok_or_else(|| {
+            format!(
+                "Resolved command for '{}' has no trusted coding-agent id",
+                target.fqn()
+            )
+        })?;
+        let cwd = target.replica_dir().to_string_lossy().to_string();
+        let settings_snapshot = {
+            let settings = app.state::<SettingsState>();
+            let snapshot = settings.read().await.clone();
+            snapshot
+        };
+        let spawn_agent_id = agent_id.to_string();
+        let spawn_cwd = cwd.clone();
+        let resolved_spawn = tokio::task::spawn_blocking(move || {
+            crate::commands::session::build_configured_agent_spawn_for_cwd(
+                &settings_snapshot,
+                &spawn_agent_id,
+                &spawn_cwd,
+                None,
+            )
+        })
+        .await
+        .map_err(|error| format!("Internal profile resolution task failed: {}", error))??
+        .ok_or_else(|| {
+            format!(
+                "Configured coding-agent '{}' could not produce a trusted spawn for '{}'",
+                agent_id,
+                target.fqn()
+            )
+        })?;
+        if resolved_spawn.trusted_agent_id.trim().is_empty()
+            || resolved_spawn.trusted_agent_id != agent_id
+        {
+            return Err(format!(
+                "Resolved spawn for '{}' lost its trusted coding-agent identity",
+                target.fqn()
+            ));
+        }
+        if !crate::pty::inject::needs_explicit_enter(&resolved_spawn.shell) {
+            return Err(format!(
+                "Resolved spawn shell '{}' for '{}' is not a supported coding-agent CLI",
+                resolved_spawn.shell,
+                target.fqn()
+            ));
+        }
+
+        // Repeat the guard and exact-path absence check immediately before actuation. Command
+        // and profile resolution above can perform filesystem work and must not widen this race.
+        Self::run_internal_guard(Arc::clone(&guard)).await?;
+        if !self
+            .find_internal_system_candidates(app, &target)
+            .await?
+            .is_empty()
+        {
+            return Err(format!(
+                "Coordinator recipient '{}' changed immediately before background spawn",
+                target.fqn()
+            ));
+        }
+
+        if cancellation.is_cancelled() {
+            return Err("Context alert delivery was canceled before background spawn".to_string());
+        }
+        let (_, local) = crate::config::teams::split_project_prefix(target.fqn());
+        let info = self
+            .spawn_wake_session(
+                app,
+                &envelope,
+                &resolved_command,
+                cwd,
+                local.to_string(),
+                spawn_with_resume,
+                resolved_spawn.shell.clone(),
+                resolved_spawn.shell_args.clone(),
+                Some(resolved_spawn.trusted_agent_label.clone()),
+                Some(resolved_spawn),
+            )
+            .await
+            .map_err(|error| {
+                format!(
+                    "Failed to spawn supported coordinator session for '{}': {}",
+                    target.fqn(),
+                    error
+                )
+            })?;
+        let session_id = Uuid::parse_str(&info.id)
+            .map_err(|e| format!("Invalid spawned coordinator session id: {}", e))?;
+
+        if carried_bot.is_some() {
+            self.attach_persisted_telegram_for_wake(app, session_id, carried_bot.as_deref())
+                .await;
+        }
+        if let Some(communication) = carried_communication {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let manager = session_mgr.read().await.clone();
+            let restored = manager
+                .restore_communication(session_id, communication.clone())
+                .await;
+            if restored {
+                crate::session::selection::publish_session_communication(
+                    app,
+                    session_id,
+                    Some(&communication),
+                );
+            }
+        }
+
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                return Err("Context alert delivery was canceled during spawned-session settle".to_string());
+            }
+            result = self.wait_for_spawned_wake_idle(app, session_id) => result?,
+        }
+        if cancellation.is_cancelled() {
+            return Err(
+                "Context alert delivery was canceled before spawned-session injection".to_string(),
+            );
+        }
+        self.inject_internal_system_notice(app, session_id, &target, &notice, guard)
+            .await
+    }
+
+    async fn settle_internal_live_before_inject<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_id: Uuid,
+    ) {
+        #[cfg(test)]
+        if let Some(hooks) = &self.test_hooks {
+            let gate = hooks.internal_live_settle_gate.lock().unwrap().take();
+            if let Some(gate) = gate {
+                let _ = gate.await;
+                return;
+            }
+        }
+        self.settle_live_before_inject(app, session_id).await;
+    }
+
+    async fn run_internal_guard(guard: InternalNoticeGuard) -> Result<(), String> {
+        tokio::task::spawn_blocking(move || guard())
+            .await
+            .map_err(|error| format!("Internal notice guard task failed: {}", error))?
+    }
+
+    async fn resolve_internal_agent_command<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        target: &InternalSystemTarget,
+    ) -> Result<Option<ResolvedWakeAgentCommand>, String> {
+        let agents = {
+            let settings = app.state::<SettingsState>();
+            let agents = settings.read().await.agents.clone();
+            agents
+        };
+        let replica_dir = target.replica_dir().to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let current = crate::config::coding_agent_profiles::read_replica_current_coding_agent(
+                &replica_dir,
+            );
+            let config_path = replica_dir
+                .join(crate::config::agent_local_dir_name())
+                .join("config.json");
+            let last = std::fs::read_to_string(&config_path)
+                .ok()
+                .and_then(|content| serde_json::from_str::<AgentLocalConfig>(&content).ok())
+                .and_then(|config| config.tooling.last_coding_agent);
+            resolve_wake_agent_command_from_sources(
+                &agents,
+                "auto",
+                current.as_deref(),
+                last.as_deref(),
+                Some(&config_path),
+                None,
+            )
+        })
+        .await
+        .map_err(|error| format!("Internal command lookup task failed: {}", error))?
+    }
+
+    async fn find_internal_system_candidates<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        target: &InternalSystemTarget,
+    ) -> Result<Vec<(SessionInfo, bool)>, String> {
+        let sessions = {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let manager = session_mgr.read().await.clone();
+            manager.list_sessions().await
+        };
+        let target_fqn = target.fqn().to_string();
+        let replica_dir = target.replica_dir().to_path_buf();
+        let structural: Vec<SessionInfo> = sessions
+            .into_iter()
+            .filter(|session| {
+                !session.is_root_agent
+                    && session.agent_id.is_some()
+                    && crate::pty::inject::needs_explicit_enter(&session.shell)
+                    && crate::config::teams::agent_fqn_from_path(&session.working_directory)
+                        == target_fqn
+            })
+            .collect();
+        let mut owned = tokio::task::spawn_blocking(move || {
+            structural
+                .into_iter()
+                .filter(|session| {
+                    canonical_cwd_owned_by_replica(&session.working_directory, &replica_dir)
+                        .unwrap_or(false)
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .map_err(|error| format!("Coordinator candidate path task failed: {}", error))?;
+        owned.sort_by_key(|session| {
+            let temporary = session
+                .name
+                .starts_with(crate::session::session::TEMP_SESSION_PREFIX);
+            let status = match session.status {
+                SessionStatus::Active | SessionStatus::Running => 0u8,
+                SessionStatus::Idle => 1,
+                SessionStatus::Exited(_) => 2,
+            };
+            (temporary, status)
+        });
+
+        let mut result = Vec::with_capacity(owned.len());
+        for session in owned {
+            let id = Uuid::parse_str(&session.id)
+                .map_err(|e| format!("Invalid coordinator session id '{}': {}", session.id, e))?;
+            let has_pty = self.has_pty_session_for_wake(app, id).await;
+            if matches!(session.status, SessionStatus::Exited(_)) || has_pty {
+                result.push((session, has_pty));
+            }
+        }
+        Ok(result)
+    }
+
+    async fn recheck_internal_exited_candidate<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_id: Uuid,
+        target: &InternalSystemTarget,
+    ) -> Result<(), String> {
+        let session = {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let manager = session_mgr.read().await.clone();
+            manager.get_session(session_id).await
+        }
+        .ok_or_else(|| format!("Exited coordinator session {} disappeared", session_id))?;
+        if !matches!(session.status, SessionStatus::Exited(_))
+            || session.is_root_agent
+            || session.agent_id.is_none()
+            || !crate::pty::inject::needs_explicit_enter(&session.shell)
+        {
+            return Err(format!(
+                "Coordinator session {} changed before exited-session destruction",
+                session_id
+            ));
+        }
+        let cwd = session.working_directory;
+        let replica = target.replica_dir().to_path_buf();
+        let owned =
+            tokio::task::spawn_blocking(move || canonical_cwd_owned_by_replica(&cwd, &replica))
+                .await
+                .map_err(|error| format!("Exited coordinator path task failed: {}", error))??;
+        if !owned {
+            return Err(format!(
+                "Coordinator session {} no longer belongs to target replica",
+                session_id
+            ));
+        }
+        Ok(())
+    }
+
+    async fn recheck_internal_exited_record<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_id: Uuid,
+        target: &InternalSystemTarget,
+        expected_cwd: &str,
+    ) -> Result<(), String> {
+        let session = {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let manager = session_mgr.read().await.clone();
+            manager.get_session(session_id).await
+        }
+        .ok_or_else(|| format!("Exited coordinator session {} disappeared", session_id))?;
+        if !matches!(session.status, SessionStatus::Exited(_))
+            || session.is_root_agent
+            || session.agent_id.is_none()
+            || !crate::pty::inject::needs_explicit_enter(&session.shell)
+            || session.working_directory != expected_cwd
+            || crate::config::teams::agent_fqn_from_path(&session.working_directory) != target.fqn()
+        {
+            return Err(format!(
+                "Coordinator session {} restarted or changed immediately before destruction",
+                session_id
+            ));
+        }
+        let cwd = session.working_directory;
+        let replica = target.replica_dir().to_path_buf();
+        let owned =
+            tokio::task::spawn_blocking(move || canonical_cwd_owned_by_replica(&cwd, &replica))
+                .await
+                .map_err(|error| {
+                    format!(
+                        "Final exited coordinator path task failed for {}: {}",
+                        session_id, error
+                    )
+                })??;
+        if !owned {
+            return Err(format!(
+                "Coordinator session {} escaped the canonical target before destruction",
+                session_id
+            ));
+        }
+        Ok(())
+    }
+
+    async fn inject_internal_system_notice<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_id: Uuid,
+        target: &InternalSystemTarget,
+        notice: &InternalSystemNotice,
+        guard: InternalNoticeGuard,
+    ) -> Result<(), String> {
+        let payload = format_wake_content(WakeContent::InternalSystem(notice));
+
+        #[cfg(test)]
+        if let Some(hooks) = &self.test_hooks {
+            let session = {
+                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let manager = session_mgr.read().await.clone();
+                manager.get_session(session_id).await
+            }
+            .ok_or_else(|| format!("Session {} missing before test injection", session_id))?;
+            if session.is_root_agent
+                || matches!(session.status, SessionStatus::Exited(_))
+                || session.agent_id.is_none()
+                || !crate::pty::inject::needs_explicit_enter(&session.shell)
+                || !canonical_cwd_owned_by_replica(
+                    &session.working_directory,
+                    target.replica_dir(),
+                )?
+            {
+                return Err(format!(
+                    "Session {} failed supported-agent final validation",
+                    session_id
+                ));
+            }
+            guard()?;
+            hooks.inject_calls.lock().unwrap().push(session_id);
+            hooks
+                .internal_payloads
+                .lock()
+                .unwrap()
+                .push(payload.clone());
+            hooks
+                .events
+                .lock()
+                .unwrap()
+                .push(MailboxTestEvent::Inject(session_id));
+            hooks
+                .inject_results
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(Ok(()))?;
+            hooks
+                .internal_bookkeeping
+                .lock()
+                .unwrap()
+                .push(InternalSystemBookkeeping {
+                    session_id,
+                    post_boundary: true,
+                    silence_touch: true,
+                    set_last_prompt: false,
+                    peer_event: false,
+                    response_watcher: false,
+                    consumption_verdict: false,
+                    mailbox_archive: false,
+                });
+            return Ok(());
+        } else {
+            crate::pty::inject::inject_text_into_supported_agent_session_with_pre_write_check(
+                app,
+                session_id,
+                &payload,
+                |session: &Session| {
+                    if !canonical_cwd_owned_by_replica(
+                        &session.working_directory,
+                        target.replica_dir(),
+                    )? {
+                        return Err(format!(
+                            "Coordinator session {} escaped canonical target replica",
+                            session_id
+                        ));
+                    }
+                    guard()
+                },
+            )
+            .await?;
+        }
+
+        #[cfg(not(test))]
+        crate::pty::inject::inject_text_into_supported_agent_session_with_pre_write_check(
+            app,
+            session_id,
+            &payload,
+            |session: &Session| {
+                if !canonical_cwd_owned_by_replica(
+                    &session.working_directory,
+                    target.replica_dir(),
+                )? {
+                    return Err(format!(
+                        "Coordinator session {} escaped canonical target replica",
+                        session_id
+                    ));
+                }
+                guard()
+            },
+        )
+        .await?;
+
+        crate::commands::pty::note_post_boundary_content_to_session(app, session_id).await;
+        if let Some(idle) = app.try_state::<Arc<crate::pty::idle_detector::IdleDetector>>() {
+            idle.touch_silence(session_id);
+        }
+        let (project, _) = crate::config::teams::split_project_prefix(target.fqn());
+        log::info!(
+            "[context-alert] delivered coordinatorSession={} project={} workgroup={} member={} observed={} thresholds={:?}",
+            session_id,
+            project.unwrap_or(""),
+            notice.workgroup,
+            notice.member,
+            notice.observed,
+            notice.thresholds
+        );
+        Ok(())
+    }
+
     async fn has_pty_session_for_wake<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -6225,22 +7201,29 @@ impl MailboxPoller {
                 let mut events = hooks.events.lock().unwrap();
                 events.push(MailboxTestEvent::Inject(session_id));
             }
-            let inject_result = {
-                let mut results = hooks.inject_results.lock().unwrap();
-                results.pop_front()
+            let use_real_inject = hooks
+                .real_inject_sessions
+                .lock()
+                .unwrap()
+                .contains(&session_id);
+            if !use_real_inject {
+                let inject_result = {
+                    let mut results = hooks.inject_results.lock().unwrap();
+                    results.pop_front()
+                }
+                .unwrap_or(Ok(()));
+                // (#1001 PR1 / G6) On a successful inject, if a consumption
+                // verdict is scripted, run the SAME verdict_to_result the
+                // production path uses so AC3 covers the real conversion. No
+                // scripted verdict => Ok (existing hooked tests unchanged).
+                return match inject_result {
+                    Ok(()) => match hooks.consumption_results.lock().unwrap().pop_front() {
+                        Some(verdict) => verdict_to_result(verdict),
+                        None => Ok(()),
+                    },
+                    Err(e) => Err(e),
+                };
             }
-            .unwrap_or(Ok(()));
-            // (#1001 PR1 / G6) On a successful inject, if a consumption
-            // verdict is scripted, run the SAME verdict_to_result the
-            // production path uses so AC3 covers the real conversion. No
-            // scripted verdict => Ok (existing hooked tests unchanged).
-            return match inject_result {
-                Ok(()) => match hooks.consumption_results.lock().unwrap().pop_front() {
-                    Some(verdict) => verdict_to_result(verdict),
-                    None => Ok(()),
-                },
-                Err(e) => Err(e),
-            };
         }
 
         let result = self
@@ -6285,6 +7268,9 @@ impl MailboxPoller {
             {
                 let mut events = hooks.events.lock().unwrap();
                 events.push(MailboxTestEvent::Destroy(session_id));
+            }
+            if let Some(result) = hooks.destroy_results.lock().unwrap().pop_front() {
+                result?;
             }
             let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
             let mgr = session_mgr.read().await;
@@ -6557,7 +7543,20 @@ impl MailboxPoller {
         session_id: Uuid,
     ) {
         #[cfg(test)]
-        if self.test_hooks.is_some() {
+        if let Some(hooks) = &self.test_hooks {
+            hooks.settle_calls.lock().unwrap().push(session_id);
+            let remove_session = hooks
+                .remove_session_on_settle
+                .lock()
+                .unwrap()
+                .remove(&session_id);
+            if remove_session {
+                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let mgr = session_mgr.read().await;
+                mgr.destroy_session(session_id)
+                    .await
+                    .expect("remove test session after logical-command preflight");
+            }
             return; // hooked tests exercise the inject wiring, not real timers
         }
 
@@ -6647,105 +7646,64 @@ impl MailboxPoller {
     ) -> Result<(), String> {
         let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
 
-        // ── Remote command path: delegate to the canonical injector ──
-        // `/clear` and `/compact` are submitted to the agent's PTY exactly the
-        // same way as a normal message body: through `inject_text_into_session`,
-        // which owns shell detection and the agent-specific double-Enter safety
-        // net (see pty/inject.rs). The injector — not this branch — appends the
-        // Enter(s); we pass just the `/command` text.
+        // Remote logical actions use the same canonical text-block injector as
+        // messages. Resolve against the actual session shell before the busy
+        // check, and never synthesize provider text from the wire value.
         if let Some(ref command) = msg.command {
-            const ALLOWED_COMMANDS: &[&str] = &["clear", "compact"];
-            if !ALLOWED_COMMANDS.contains(&command.as_str()) {
-                return Err(format!("Unsupported remote command '{}'", command));
-            }
-
-            // Precondition: agent must be idle (waiting_for_input) AND the
-            // shell must be a coding-agent CLI that owns explicit-Enter
-            // handling in the canonical injector. The shell check guards
-            // against silent failure on non-agent shells (plain bash/pwsh)
-            // and on cmd-wrapped Codex sessions: under R1 the injector
-            // sends ZERO carriage returns when `needs_explicit_enter` is
-            // false, so writing `/clear` into such a shell would leave the
-            // text un-submitted and let subsequent user input concatenate
-            // with it. Reject explicitly instead — closes grinch's G1 + G3.
-            // Removing this reject requires extending `needs_explicit_enter`
-            // to recognize the rejected case as agent-aware first; see
-            // `#233-followup-cmd-wrapper`.
-            {
+            let (shell, waiting_for_input) = {
                 let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
                 let mgr = session_mgr.read().await;
                 let sessions = mgr.list_sessions().await;
-                match sessions.iter().find(|s| s.id == session_id.to_string()) {
+                match sessions
+                    .iter()
+                    .find(|session| session.id == session_id.to_string())
+                {
+                    Some(session) => (session.shell.clone(), session.waiting_for_input),
                     None => {
                         return Err(format!(
-                            "Session {} not found — cannot execute remote command '{}'",
+                            "Session not found: {} - cannot execute logical remote command '{}'",
                             session_id, command
-                        ))
+                        ));
                     }
-                    Some(s) if !crate::pty::inject::needs_explicit_enter(&s.shell) => {
-                        return Err(format!(
-                            "Cannot execute remote command '/{}': session shell '{}' is not a coding-agent CLI (Claude / Codex / Gemini / Cursor agent). cmd / pwsh wrappers around an agent are tracked separately as #233-followup-cmd-wrapper.",
-                            command, s.shell
-                        ))
-                    }
-                    Some(s) if !s.waiting_for_input => {
-                        return Err(format!(
-                            "Cannot execute remote command '{}': agent is busy (not idle)",
-                            command
-                        ))
-                    }
-                    _ => {} // idle agent-shell — proceed
                 }
+            };
+            let resolved = resolve_remote_pty_command(&shell, command)?;
+            if !waiting_for_input {
+                return Err(format!(
+                    "Cannot execute remote command '{}': agent is busy (not idle)",
+                    command
+                ));
             }
 
-            // Submit `/<command>` via the canonical text-block injector.
-            //
-            // TOCTOU note (round-2 correction): the gap between the idle check
-            // above and the FINAL `\r` is now ~2 s (text → 1500 ms → \r →
-            // 500 ms → \r inside `inject_text_into_session`), not microseconds
-            // as the original direct-write path. Two things can interleave
-            // inside that window:
-            //   1. User keystrokes from xterm.js — they take the path
-            //      `frontend → invoke("pty_write") → commands/pty.rs::pty_write
-            //      → PtyManager::write` (raw bytes, bypasses the injector). A
-            //      user typing between the staggered Enters concatenates with
-            //      the un-Enter'd `/<command>`.
-            //   2. The idle detector flipping `waiting_for_input` to false
-            //      based on independent PTY output, leaving the second `\r`
-            //      to land on a busy agent (harmless — at worst an extra
-            //      Enter on empty input, per pty/inject.rs:78-79).
-            // We accept this race because the standard-message path at
-            // mailbox.rs:972 already exhibits it identically and the
-            // staggered double-Enter is the empirically-tuned defense
-            // against the dominant single-`\r`-eaten failure mode that
-            // motivated #233.
-            let cmd_text = format!("/{}", command); // NO trailing \r — the injector adds it
-            crate::pty::inject::inject_text_into_session(app, session_id, &cmd_text)
+            // Submit the resolved static text through the canonical injector.
+            // The accepted idle-to-final-Enter race is the same one as normal
+            // message delivery; delayed double Enter remains the shared defense.
+            crate::pty::inject::inject_text_into_session(app, session_id, resolved.text)
                 .await
                 .map_err(|e| {
                     log::error!(
-                        "[mailbox] PTY injection FAILED for command '/{}' session={} msg={}: {}",
-                        command,
-                        session_id,
+                        "[mailbox] PTY injection FAILED msg={} session={} logical={} resolved={}: {}",
                         msg.id,
+                        session_id,
+                        command,
+                        resolved.text,
                         e
                     );
                     e
                 })?;
 
             log::info!(
-                "Executed remote command '{}' on session {} (from: {})",
-                command,
+                "[mailbox] logical PTY action executed msg={} session={} logical={} resolved={}",
+                msg.id,
                 session_id,
-                msg.from
+                command,
+                resolved.text
             );
 
-            // (#756) C1: a successful /clear injection is a fresh-conversation
-            // boundary; stamp record + coordinator mirror. Placed BEFORE the
-            // follow-up spawn below so stamp-then-drop ordering is guaranteed
-            // when the message carries a body. /compact preserves the
-            // conversation: no stamp.
-            if command == "clear" {
+            // Logical clear is a fresh-conversation boundary regardless of
+            // whether the provider text was /clear or Pi /new. Compact keeps
+            // the conversation and does not stamp.
+            if resolved.logical.creates_fresh_boundary() {
                 crate::commands::pty::stamp_fresh_boundary_to_session(app, session_id).await;
             }
 
@@ -6762,14 +7720,14 @@ impl MailboxPoller {
                 }),
             );
 
-            // Post-command background work:
-            //  - `/clear` and `/compact` both keep the still-live child process environment.
-            //  - Credentials are env-only; nothing is re-sent through the PTY here.
-            //  - If the message has a follow-up body, inject it after the agent becomes idle.
-            // Never block the delivery pipeline — spawn as a detached task.
+            // Logical actions keep the live child environment. If the message
+            // has a follow-up body, inject it only after the agent becomes idle.
+            // Credentials remain environment-only. Detached work never blocks
+            // the delivery pipeline.
             let app_clone = app.clone();
             let msg_clone = msg.clone();
             let command_owned = command.clone();
+            let resolved_text = resolved.text;
             tauri::async_runtime::spawn(async move {
                 if !msg_clone.body.is_empty() {
                     if let Err(e) =
@@ -6777,8 +7735,9 @@ impl MailboxPoller {
                             .await
                     {
                         log::warn!(
-                            "[mailbox] Failed to inject follow-up after /{} for session {}: {}",
+                            "[mailbox] Failed to inject follow-up after logical {} resolved as {} for session {}: {}",
                             command_owned,
+                            resolved_text,
                             session_id,
                             e
                         );
@@ -6827,7 +7786,11 @@ impl MailboxPoller {
             (true, Some(rid)) => {
                 crate::phone::messaging::format_pty_wrap_with_markers(&msg.from, body, rid)
             }
-            _ => crate::phone::messaging::format_pty_wrap(&msg.from, body),
+            _ => format_wake_content(WakeContent::Peer {
+                from: &msg.from,
+                body,
+                origin,
+            }),
         };
 
         // Register response watcher only for non-interactive sessions
@@ -6875,9 +7838,8 @@ impl MailboxPoller {
             msg.id
         );
         // (#756) AC-injected message CONTENT creates a post-boundary transcript:
-        // drop any pending fresh intent (record + mirror). The bare /clear /
-        // /compact command text never reaches this line (the command branch
-        // returned above).
+        // drop any pending fresh intent (record + mirror). Bare logical action
+        // text (/clear, Pi /new, or /compact) never reaches this line.
         crate::commands::pty::note_post_boundary_content_to_session(app, session_id).await;
         let _ = tauri::Emitter::emit(
             app,
@@ -6934,7 +7896,7 @@ impl MailboxPoller {
         // between the idle check above and this write. Acceptable for this use case.
         let payload = crate::phone::messaging::format_pty_wrap(&msg.from, &msg.body);
         crate::pty::inject::inject_text_into_session(app, session_id, &payload).await?;
-        // (#756) follow-up body delivered post-/clear: post-boundary content.
+        // A follow-up body after logical clear is post-boundary content.
         crate::commands::pty::note_post_boundary_content_to_session(app, session_id).await;
         Ok(())
     }
@@ -8027,21 +8989,26 @@ impl MailboxPoller {
             }
         };
 
-        // 2. Shell guard - /clear is only meaningful on a coding-agent CLI, and the
-        //    injector only sends explicit Enter for those shells. Same constraint as
-        //    send --command clear (cmd/pwsh wrappers tracked under #233-followup-cmd-wrapper).
-        if !crate::pty::inject::needs_explicit_enter(&session.shell) {
-            return self
-                .reject_message(
-                    path,
-                    msg,
-                    &format!(
-                        "self-clear: session shell '{}' is not a coding-agent CLI (Claude / Codex / Gemini / Cursor agent); /clear is not supported here",
-                        session.shell
-                    ),
-                )
-                .await;
-        }
+        // Resolve before the handoff existence gate so an unsupported source
+        // cannot archive or queue self-maintenance state.
+        let clear_text = match crate::pty::inject::resolve_logical_command_text(
+            &session.shell,
+            LogicalPtyCommand::Clear,
+        ) {
+            Some(text) => text,
+            None => {
+                return self
+                    .reject_message(
+                        path,
+                        msg,
+                        &format!(
+                            "self-handoff-and-clear: session shell '{}' has no verified logical-clear mapping. Claude / Codex / Gemini / Cursor agent direct shells use /clear; exact Pi uses /new. cmd / pwsh outer wrappers remain unsupported.",
+                            session.shell
+                        ),
+                    )
+                    .await;
+            }
+        };
 
         // 2b. #626 existence gate - REFUSE if the agent did not write its handoff notes. Clearing with
         //     no SELF-HANDOFF.md would wipe context with no way to resume (the agent would post-clear
@@ -8120,6 +9087,7 @@ impl MailboxPoller {
                     Self::run_self_clear_after_sustained_idle(
                         &app_clone,
                         session_id,
+                        clear_text,
                         root,
                         forgotten_summary,
                         SELF_CLEAR_SETTLE,
@@ -8130,7 +9098,7 @@ impl MailboxPoller {
                 });
             }
             #[cfg(test)]
-            let _ = &forgotten_summary;
+            let _ = (clear_text, &forgotten_summary);
             log::info!(
                 "[mailbox] self-handoff-and-clear queued for session {} (from '{}')",
                 session_id,
@@ -8317,13 +9285,13 @@ impl MailboxPoller {
             }
         };
 
-        if !crate::pty::inject::needs_explicit_enter(&session.shell) {
+        if !crate::pty::inject::supports_self_handoff_switch(&session.shell) {
             return self
                 .reject_message(
                     path,
                     msg,
                     &format!(
-                        "self-handoff-and-switch: session shell '{}' is not a coding-agent CLI (Claude / Codex / Gemini / Cursor agent); switch is not supported here",
+                        "self-handoff-and-switch: session shell '{}' is not a supported source shell (Claude / Codex / Gemini direct family, Cursor agent, or Pi); switch is not supported here",
                         session.shell
                     ),
                 )
@@ -8442,15 +9410,17 @@ impl MailboxPoller {
             .await
     }
 
-    /// #626 - thin timer driver around `self_clear_gate_advance`. Fire-and-forget. Drives BOTH phases
-    /// on the stable `session_id` (the PTY and id survive `/clear`), injecting `/clear`, then (#749)
+    /// #626 - thin timer driver around `self_clear_gate_advance`. Fire-and-forget. Drives both phases
+    /// on the stable `session_id`, injecting provider-resolved logical-clear text, then (#749)
     /// archiving `SELF-HANDOFF.md` and injecting the handoff prompt that names the archived path,
     /// and ALWAYS de-registers on exit. No "inject anyway" fallback - a busy or never-idle session
     /// is never cleared (the user-approved "30s sustained idle" semantic).
+    #[allow(clippy::too_many_arguments)]
     #[cfg_attr(test, allow(dead_code))]
     async fn run_self_clear_after_sustained_idle<R: tauri::Runtime>(
         app: &tauri::AppHandle<R>,
         session_id: Uuid,
+        clear_text: &'static str,
         root: PathBuf,
         forgotten_summary: Option<ForgottenSummary>,
         settle: std::time::Duration,
@@ -8500,6 +9470,7 @@ impl MailboxPoller {
 
         Self::drive_self_clear_after_sustained_idle(
             session_id,
+            clear_text,
             root,
             pending,
             forgotten_summary,
@@ -8523,6 +9494,7 @@ impl MailboxPoller {
         NoteFut,
     >(
         session_id: Uuid,
+        clear_text: &'static str,
         root: PathBuf,
         pending: Arc<crate::PendingSelfClear>,
         forgotten_summary: Option<ForgottenSummary>,
@@ -8562,21 +9534,22 @@ impl MailboxPoller {
                 SelfClearGateAction::Wait => continue,
                 SelfClearGateAction::InjectClear => {
                     log::info!(
-                        "[mailbox] self-handoff-and-clear: session {} idle >={}s; injecting /clear (phase 1)",
+                        "[mailbox] self-handoff-and-clear: session {} idle >={}s; injecting {} (phase 1)",
                         session_id,
-                        settle.as_secs()
+                        settle.as_secs(),
+                        clear_text
                     );
-                    // TOCTOU between settle and the final \r is accepted, identical to the
-                    // existing send --command clear path.
-                    if let Err(e) = inject(session_id, "/clear".to_string()).await {
+                    // The idle-to-final-Enter race matches the remote logical-clear path.
+                    if let Err(e) = inject(session_id, clear_text.to_string()).await {
                         log::warn!(
-                            "[mailbox] self-handoff-and-clear: /clear injection failed for session {}: {}",
+                            "[mailbox] self-handoff-and-clear: {} injection failed for session {}: {}",
+                            clear_text,
                             session_id,
                             e
                         );
                         break; // abandon the handoff if the clear could not even be sent
                     }
-                    // (#756) C2: /clear reached the PTY; stamp before phase 2
+                    // Logical clear reached the PTY; stamp before phase 2
                     // can possibly drop (stamp-then-drop ordering).
                     note_boundary(session_id, SelfClearBoundary::Cleared).await;
                     continue; // state is already Phase 2 with reset clocks
@@ -9373,6 +10346,73 @@ impl MailboxPoller {
         crate::config::teams::can_communicate(from, to, discovered_teams)
     }
 
+    /// Resolve a wake fallback completely without preparing directories or
+    /// mutating recipient lifecycle state. The returned command is carried
+    /// unchanged through capability preflight and the later spawn.
+    async fn resolve_wake_spawn_plan<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        msg: &OutboxMessage,
+    ) -> Result<ResolvedWakeSpawnPlan, String> {
+        let resolved_command = self.resolve_agent_command(app, msg).await?;
+        let resolved_command = resolved_command.ok_or_else(|| {
+            format!(
+                "No agent command resolved for '{}'; preferredAgent={:?}. Configure lastCodingAgent or agents in settings.",
+                msg.to, msg.preferred_agent
+            )
+        })?;
+
+        let cwd = match self.resolve_repo_path(&msg.to, app).await {
+            Some(path) => path,
+            None => self
+                .resolve_wg_path_from_sessions(app, &msg.to)
+                .await
+                .ok_or_else(|| {
+                    format!(
+                        "Cannot resolve repo path for '{}' - cannot spawn session",
+                        msg.to
+                    )
+                })?,
+        };
+        let session_name = {
+            let (_, local) = crate::config::teams::split_project_prefix(&msg.to);
+            local.to_string()
+        };
+        let configured_spawn = if let Some(agent_id) = resolved_command.agent_id.as_deref() {
+            let settings = app.state::<SettingsState>();
+            let cfg = settings.read().await;
+            crate::commands::session::resolve_configured_agent_spawn_for_cwd(
+                &cfg, agent_id, &cwd, None,
+            )?
+        } else {
+            None
+        };
+        let (spawn_shell, spawn_args, spawn_label) = if let Some(spawn) = configured_spawn.as_ref()
+        {
+            (
+                spawn.shell.clone(),
+                spawn.shell_args.clone(),
+                Some(spawn.trusted_agent_label.clone()),
+            )
+        } else {
+            (
+                resolved_command.shell.clone(),
+                resolved_command.shell_args.clone(),
+                resolved_command.agent_label.clone(),
+            )
+        };
+
+        Ok(ResolvedWakeSpawnPlan {
+            resolved_command,
+            cwd,
+            session_name,
+            spawn_shell,
+            spawn_args,
+            spawn_label,
+            configured_spawn,
+        })
+    }
+
     /// Resolve which agent CLI to spawn when `deliver_wake` needs a new
     /// persistent session for the destination agent.
     async fn resolve_agent_command<R: tauri::Runtime>(
@@ -9535,7 +10575,7 @@ impl MailboxPoller {
     }
 
     /// Poll ~/.agentscommander/project-refresh-requests/ for sidebar refresh requests.
-    async fn poll_project_refresh_requests(&self, app: &tauri::AppHandle) {
+    async fn poll_project_refresh_requests<R: tauri::Runtime>(&self, app: &tauri::AppHandle<R>) {
         let config_dir = match crate::config::config_dir() {
             Some(d) => d,
             None => return,
@@ -9559,7 +10599,7 @@ impl MailboxPoller {
     }
 
     /// Poll ~/.agentscommander/session-requests/ for launch requests from the CLI.
-    async fn poll_session_requests(&self, app: &tauri::AppHandle) {
+    async fn poll_session_requests<R: tauri::Runtime>(&self, app: &tauri::AppHandle<R>) {
         let config_dir = match crate::config::config_dir() {
             Some(d) => d,
             None => return,
@@ -9688,7 +10728,7 @@ impl MailboxPoller {
     /// `.processing`) against it, and on Applied swap the in-memory state and emit
     /// `coding_agent_settings_updated` AFTER the guard drops. `save_settings` is
     /// synchronous, so the write guard is never held across an await.
-    async fn poll_coding_agent_requests(&self, app: &tauri::AppHandle) {
+    async fn poll_coding_agent_requests<R: tauri::Runtime>(&self, app: &tauri::AppHandle<R>) {
         use crate::config::coding_agent_mutations as ca;
         let config_dir = match crate::config::config_dir() {
             Some(d) => d,
@@ -9818,6 +10858,130 @@ mod tests {
 
     use crate::pty::backend::{BackendSpawnSpec, PtyBackend};
     use crate::pty::manager::PtyManager;
+
+    fn internal_target_fixture() -> (tempfile::TempDir, InternalSystemTarget) {
+        let temp = tempfile::tempdir().unwrap();
+        let replica = temp
+            .path()
+            .join("project-a")
+            .join(".ac")
+            .join("wg-2-dev-team")
+            .join("__agent_coordinator");
+        std::fs::create_dir_all(&replica).unwrap();
+        let target = InternalSystemTarget::for_context_alert(
+            "project-a:wg-2-dev-team/coordinator".to_string(),
+            replica,
+        )
+        .unwrap();
+        (temp, target)
+    }
+
+    #[test]
+    fn internal_target_binds_exact_fqn_to_canonical_replica() {
+        let (temp, target) = internal_target_fixture();
+        assert_eq!(target.fqn(), "project-a:wg-2-dev-team/coordinator");
+        assert!(target.replica_dir().is_absolute());
+
+        let replica = temp
+            .path()
+            .join("project-a")
+            .join(".ac")
+            .join("wg-2-dev-team")
+            .join("__agent_coordinator");
+        let error = InternalSystemTarget::for_context_alert(
+            "project-a:wg-3-dev-team/coordinator".to_string(),
+            replica,
+        )
+        .unwrap_err();
+        assert!(error.contains("does not match canonical replica"));
+        assert!(InternalSystemTarget::for_context_alert(
+            "project-a:wg-2-dev-team/coordinator".to_string(),
+            temp.path().join("missing-replica"),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn internal_notice_validates_and_formats_exact_trusted_line() {
+        let notice = InternalSystemNotice::for_context_alert(
+            "dev-rust".to_string(),
+            "wg-2-dev-team".to_string(),
+            91,
+            vec![50, 75, 90],
+        )
+        .unwrap();
+        assert_eq!(
+            format_wake_content(WakeContent::InternalSystem(&notice)),
+            "\n[AgentsCommander context alert] Member 'dev-rust' in workgroup 'wg-2-dev-team' was observed at 91% context use, reaching configured threshold(s): 50%, 75%, 90%. No automatic action was taken; the coordinator decides whether follow-up is needed.\n\r"
+        );
+        for (member, workgroup, observed, thresholds) in [
+            ("../escape", "wg-2-dev-team", 91, vec![50]),
+            ("dev-rust", "wg-0-dev-team", 91, vec![50]),
+            ("dev-rust", "wg-2-dev-team", 101, vec![50]),
+            ("dev-rust", "wg-2-dev-team", 91, vec![]),
+            ("dev-rust", "wg-2-dev-team", 91, vec![25, 50, 75, 90]),
+            ("dev-rust", "wg-2-dev-team", 91, vec![75, 50]),
+            ("dev-rust", "wg-2-dev-team", 91, vec![50, 50]),
+            ("dev-rust", "wg-2-dev-team", 91, vec![0]),
+            ("dev-rust", "wg-2-dev-team", 91, vec![101]),
+            ("dev-rust", "wg-2-dev-team", 50, vec![75]),
+        ] {
+            assert!(
+                InternalSystemNotice::for_context_alert(
+                    member.to_string(),
+                    workgroup.to_string(),
+                    observed,
+                    thresholds,
+                )
+                .is_err(),
+                "invalid notice case must be rejected: member={member} workgroup={workgroup} observed={observed}"
+            );
+        }
+    }
+
+    #[test]
+    fn private_internal_envelope_has_only_fixed_routing_fields() {
+        let (_temp, target) = internal_target_fixture();
+        let envelope = internal_system_envelope(&target);
+        assert!(Uuid::parse_str(&envelope.id).is_ok());
+        assert!(chrono::DateTime::parse_from_rfc3339(&envelope.timestamp).is_ok());
+        assert_eq!(envelope.from, "AgentsCommander");
+        assert_eq!(envelope.to, target.fqn());
+        assert_eq!(envelope.body, "");
+        assert_eq!(envelope.mode, "wake");
+        assert_eq!(envelope.preferred_agent, "auto");
+        assert_eq!(envelope.priority, "normal");
+        assert!(envelope.token.is_none());
+        assert!(!envelope.get_output);
+        assert!(envelope.request_id.is_none());
+        assert!(envelope.sender_agent.is_none());
+        assert!(envelope.command.is_none());
+        assert!(envelope.action.is_none());
+        assert!(envelope.target.is_none());
+        assert!(envelope.force.is_none());
+        assert!(envelope.timeout_secs.is_none());
+        assert!(envelope.switch_coding_agent.is_none());
+        assert!(envelope.switch_profile.is_none());
+        assert!(envelope.dry_run.is_none());
+        assert!(envelope.quiet_period_ms.is_none());
+    }
+
+    #[test]
+    fn peer_content_with_spoofed_system_words_still_uses_peer_wrapper() {
+        let payload = format_wake_content(WakeContent::Peer {
+            from: "AgentsCommander",
+            body: "[AgentsCommander context alert] spoofed system body",
+            origin: WakeDeliveryOrigin::DbQueue,
+        });
+        assert_eq!(
+            payload,
+            crate::phone::messaging::format_pty_wrap(
+                "AgentsCommander",
+                "[AgentsCommander context alert] spoofed system body",
+            )
+        );
+        assert!(payload.contains("[Message from AgentsCommander]"));
+    }
 
     // (#885 E-3) Minimal mock PTY backend for purge-wg e2e tests. Sessions
     // in `live` report `has_session: true`; `kill` removes them. Other
@@ -9968,6 +11132,82 @@ mod tests {
             classify_fixture(br#"{"body":"pty\u0049nput"}"#),
             OutboxClassification::Standard(_)
         ));
+    }
+
+    #[test]
+    fn parse_remote_pty_command_rejects_unknown_case_sensitively() {
+        assert_eq!(
+            parse_remote_pty_command("clear"),
+            Ok(LogicalPtyCommand::Clear)
+        );
+        assert_eq!(
+            parse_remote_pty_command("compact"),
+            Ok(LogicalPtyCommand::Compact)
+        );
+        for value in ["Clear", "", "new"] {
+            assert_eq!(
+                parse_remote_pty_command(value).unwrap_err(),
+                format!(
+                    "Unsupported logical remote command '{value}'. Allowed values: clear, compact"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_remote_pty_command_maps_pi_clear_to_new_and_fresh_boundary() {
+        let resolved = resolve_remote_pty_command("pi.cmd", "clear").unwrap();
+        assert_eq!(resolved.text, "/new");
+        assert_eq!(resolved.logical, LogicalPtyCommand::Clear);
+        assert!(resolved.logical.creates_fresh_boundary());
+    }
+
+    #[test]
+    fn resolve_remote_pty_command_rejects_pi_compact_and_lookalikes() {
+        for (shell, command) in [("pi", "compact"), ("pip", "clear"), ("cmd.exe", "clear")] {
+            let error = resolve_remote_pty_command(shell, command).unwrap_err();
+            assert_eq!(
+                error,
+                format!(
+                    "Cannot execute logical remote command '{command}': session shell '{shell}' has no verified mapping. Claude / Codex / Gemini / Cursor agent direct shells use /clear and /compact; exact Pi uses /new for clear only. cmd / pwsh outer wrappers and Pi compact are unsupported."
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_remote_pty_command_preserves_established_and_cursor_controls() {
+        for shell in ["claude-wrapper", "codex.exe", "gemini.cmd", "agent.exe"] {
+            assert_eq!(
+                resolve_remote_pty_command(shell, "clear").unwrap().text,
+                "/clear"
+            );
+            assert_eq!(
+                resolve_remote_pty_command(shell, "compact").unwrap().text,
+                "/compact"
+            );
+        }
+    }
+
+    #[test]
+    fn is_permanent_delivery_error_classifies_only_terminal_shapes() {
+        assert!(is_permanent_delivery_error(
+            "Unsupported logical remote command 'Clear'. Allowed values: clear, compact"
+        ));
+        assert!(is_permanent_delivery_error(
+            "Cannot execute logical remote command 'compact': session shell 'pi' has no verified mapping."
+        ));
+        assert!(is_permanent_delivery_error(
+            "Could not resolve inbox for agent 'missing'"
+        ));
+        for transient in [
+            "Cannot execute remote command 'clear': agent is busy (not idle)",
+            "Session not found: 00000000-0000-0000-0000-000000000000",
+            "Failed to spawn session",
+            "PTY write failed",
+        ] {
+            assert!(!is_permanent_delivery_error(transient), "{transient}");
+        }
     }
 
     #[test]
@@ -10591,21 +11831,50 @@ mod tests {
         status: SessionStatus,
         telegram_bot_id: Option<&str>,
     ) -> Uuid {
+        add_mailbox_session_with_shape(
+            app,
+            cwd,
+            name,
+            status,
+            telegram_bot_id,
+            "codex",
+            Some("codex"),
+            false,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn add_mailbox_session_with_shape<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
+        cwd: &Path,
+        name: &str,
+        status: SessionStatus,
+        telegram_bot_id: Option<&str>,
+        shell: &str,
+        agent_id: Option<&str>,
+        is_root: bool,
+    ) -> Uuid {
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let mgr = session_mgr.read().await;
         let session = mgr
             .create_session(
-                "codex".into(),
-                vec!["--yolo".into()],
+                shell.into(),
+                if shell == "codex" {
+                    vec!["--yolo".into()]
+                } else {
+                    Vec::new()
+                },
                 cwd.to_string_lossy().to_string(),
-                Some("codex".into()),
-                Some("Codex".into()),
+                agent_id.map(str::to_string),
+                agent_id.map(str::to_string),
                 Vec::new(),
                 false,
                 crate::pty::backend::SessionBackendKind::LocalProcess,
             )
             .await
             .unwrap();
+        mgr.set_is_root_agent(session.id, is_root).await;
         mgr.rename_session(session.id, name.to_string())
             .await
             .unwrap();
@@ -11810,6 +13079,65 @@ mod tests {
         assert!(marker_path.exists());
     }
 
+    async fn add_mailbox_session_with_shell<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
+        cwd: &Path,
+        name: &str,
+        shell: &str,
+        status: SessionStatus,
+    ) -> Uuid {
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = session_mgr.read().await;
+        let session = mgr
+            .create_session(
+                shell.to_string(),
+                Vec::new(),
+                cwd.to_string_lossy().to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        mgr.rename_session(session.id, name.to_string())
+            .await
+            .unwrap();
+        match status {
+            SessionStatus::Active => mgr.switch_session(session.id).await.unwrap(),
+            SessionStatus::Running => {}
+            SessionStatus::Idle => mgr.mark_idle(session.id).await,
+            SessionStatus::Exited(code) => {
+                mgr.mark_exited(session.id, code).await;
+            }
+        }
+        session.id
+    }
+
+    fn register_mock_pty_route<R: tauri::Runtime>(app: &tauri::AppHandle<R>, id: Uuid) {
+        let pty_mgr = app.state::<Arc<std::sync::Mutex<PtyManager>>>();
+        let manager = pty_mgr.lock().unwrap();
+        manager.record_route(id, SessionBackendKind::LocalProcess);
+        let backend = manager.backend_for_kind(SessionBackendKind::LocalProcess);
+        backend
+            .as_any()
+            .downcast_ref::<MailboxMockPtyBackend>()
+            .expect("mailbox mock PTY backend")
+            .set_live(id);
+    }
+
+    fn mock_pty_writes_for<R: tauri::Runtime>(app: &tauri::AppHandle<R>, id: Uuid) -> Vec<Vec<u8>> {
+        let pty_mgr = app.state::<Arc<std::sync::Mutex<PtyManager>>>();
+        let manager = pty_mgr.lock().unwrap();
+        let backend = manager.backend_for_kind(SessionBackendKind::LocalProcess);
+        backend
+            .as_any()
+            .downcast_ref::<MailboxMockPtyBackend>()
+            .expect("mailbox mock PTY backend")
+            .writes_for(id)
+    }
+
     fn write_wake_outbox_message(sender_cwd: &Path, msg_id: &str) -> PathBuf {
         write_wake_outbox_message_with_route(
             sender_cwd,
@@ -11933,6 +13261,926 @@ mod tests {
         assert_eq!(delivered_msg.to, CANONICAL_WAKE_TO);
         assert_eq!(delivered_msg.body, WAKE_BODY);
         assert_eq!(delivered_msg.mode, "wake");
+    }
+
+    #[tokio::test]
+    async fn internal_live_delivery_uses_exact_payload_guard_and_system_bookkeeping() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let coordinator_id = add_mailbox_session(
+            &app,
+            &fixture.sender_cwd,
+            "wg-1-dev-team/tech-lead",
+            SessionStatus::Running,
+            None,
+        )
+        .await;
+        let target = InternalSystemTarget::for_context_alert(
+            CANONICAL_WAKE_FROM.to_string(),
+            fixture.sender_cwd.clone(),
+        )
+        .unwrap();
+        let notice = InternalSystemNotice::for_context_alert(
+            "dev-rust".to_string(),
+            "wg-1-dev-team".to_string(),
+            80,
+            vec![50, 75],
+        )
+        .unwrap();
+        let calls = Arc::new(AtomicU32::new(0));
+        let guard_calls = Arc::clone(&calls);
+        let guard: InternalNoticeGuard = Arc::new(move || {
+            guard_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        });
+        let hooks = MailboxTestHooks::default();
+        hooks
+            .pty_presence
+            .lock()
+            .unwrap()
+            .insert(coordinator_id, true);
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+
+        poller
+            .deliver_internal_system_notice(&app, target, notice, CancellationToken::new(), guard)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            hooks.inject_calls.lock().unwrap().as_slice(),
+            &[coordinator_id]
+        );
+        assert_eq!(
+            hooks.internal_payloads.lock().unwrap().as_slice(),
+            &["\n[AgentsCommander context alert] Member 'dev-rust' in workgroup 'wg-1-dev-team' was observed at 80% context use, reaching configured threshold(s): 50%, 75%. No automatic action was taken; the coordinator decides whether follow-up is needed.\n\r".to_string()]
+        );
+        assert_eq!(
+            hooks.internal_bookkeeping.lock().unwrap().as_slice(),
+            &[InternalSystemBookkeeping {
+                session_id: coordinator_id,
+                post_boundary: true,
+                silence_touch: true,
+                set_last_prompt: false,
+                peer_event: false,
+                response_watcher: false,
+                consumption_verdict: false,
+                mailbox_archive: false,
+            }]
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_no_spawn_or_destroy_events(&hooks);
+    }
+
+    #[tokio::test]
+    async fn internal_same_fqn_at_another_root_is_not_injected_and_exact_target_spawns() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let wrong_replica = fixture
+            ._temp
+            .path()
+            .join("other-root")
+            .join("proj-a")
+            .join(".ac")
+            .join("wg-1-dev-team")
+            .join("__agent_tech-lead");
+        std::fs::create_dir_all(&wrong_replica).unwrap();
+        let wrong_id = add_mailbox_session(
+            &app,
+            &wrong_replica,
+            "wrong-root",
+            SessionStatus::Running,
+            None,
+        )
+        .await;
+        let target = InternalSystemTarget::for_context_alert(
+            CANONICAL_WAKE_FROM.to_string(),
+            fixture.sender_cwd.clone(),
+        )
+        .unwrap();
+        // Spawn must use the target's canonical path, not a caller's possible 8.3 spelling.
+        let expected_spawn_cwd = target.replica_dir().to_string_lossy().into_owned();
+        let notice = InternalSystemNotice::for_context_alert(
+            "dev-rust".to_string(),
+            "wg-1-dev-team".to_string(),
+            50,
+            vec![50],
+        )
+        .unwrap();
+        let hooks = MailboxTestHooks::default();
+        hooks.pty_presence.lock().unwrap().insert(wrong_id, true);
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+
+        poller
+            .deliver_internal_system_notice(
+                &app,
+                target,
+                notice,
+                CancellationToken::new(),
+                Arc::new(|| Ok(())),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(hooks.spawn_calls.lock().unwrap().len(), 1);
+        let spawn = hooks.spawn_calls.lock().unwrap()[0].clone();
+        assert_eq!(spawn.to, CANONICAL_WAKE_FROM);
+        assert_eq!(spawn.cwd, expected_spawn_cwd);
+        assert_ne!(hooks.inject_calls.lock().unwrap()[0], wrong_id);
+        assert_eq!(hooks.destroy_calls.lock().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn internal_exited_recipient_is_destroyed_then_resumed_without_selection_spawn() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let exited_id = add_mailbox_session(
+            &app,
+            &fixture.sender_cwd,
+            "exited-coordinator",
+            SessionStatus::Exited(0),
+            None,
+        )
+        .await;
+        let target = InternalSystemTarget::for_context_alert(
+            CANONICAL_WAKE_FROM.to_string(),
+            fixture.sender_cwd.clone(),
+        )
+        .unwrap();
+        let notice = InternalSystemNotice::for_context_alert(
+            "dev-rust".to_string(),
+            "wg-1-dev-team".to_string(),
+            50,
+            vec![50],
+        )
+        .unwrap();
+        let hooks = MailboxTestHooks::default();
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+
+        poller
+            .deliver_internal_system_notice(
+                &app,
+                target,
+                notice,
+                CancellationToken::new(),
+                Arc::new(|| Ok(())),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(hooks.destroy_calls.lock().unwrap().as_slice(), &[exited_id]);
+        assert_eq!(hooks.spawn_calls.lock().unwrap().len(), 1);
+        assert!(!hooks.spawn_calls.lock().unwrap()[0].skip_auto_resume);
+        let events = hooks.events.lock().unwrap();
+        assert!(matches!(events[0], MailboxTestEvent::Destroy(id) if id == exited_id));
+        assert!(matches!(events[1], MailboxTestEvent::Spawn(_)));
+        assert!(matches!(events[2], MailboxTestEvent::Inject(_)));
+    }
+
+    #[tokio::test]
+    async fn internal_precanceled_attempt_performs_no_wake_actuation() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let target = InternalSystemTarget::for_context_alert(
+            CANONICAL_WAKE_FROM.to_string(),
+            fixture.sender_cwd.clone(),
+        )
+        .unwrap();
+        let notice = InternalSystemNotice::for_context_alert(
+            "dev-rust".to_string(),
+            "wg-1-dev-team".to_string(),
+            50,
+            vec![50],
+        )
+        .unwrap();
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let hooks = MailboxTestHooks::default();
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+
+        assert!(
+            poller
+                .deliver_internal_system_notice(
+                    &app,
+                    target,
+                    notice,
+                    cancellation,
+                    Arc::new(|| Ok(())),
+                )
+                .await
+                .is_err()
+        );
+        assert!(hooks.events.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn internal_unsupported_root_agentless_plain_shell_and_escaped_records_are_untouched() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let root_id = add_mailbox_session_with_shape(
+            &app,
+            &fixture.sender_cwd,
+            "root",
+            SessionStatus::Running,
+            None,
+            "codex",
+            Some("codex"),
+            true,
+        )
+        .await;
+        let agentless_id = add_mailbox_session_with_shape(
+            &app,
+            &fixture.sender_cwd,
+            "agentless",
+            SessionStatus::Running,
+            None,
+            "codex",
+            None,
+            false,
+        )
+        .await;
+        let shell_id = add_mailbox_session_with_shape(
+            &app,
+            &fixture.sender_cwd,
+            "plain-shell",
+            SessionStatus::Running,
+            None,
+            "pwsh",
+            Some("codex"),
+            false,
+        )
+        .await;
+        let escape_subdir = fixture.sender_cwd.join("subdir");
+        std::fs::create_dir_all(&escape_subdir).unwrap();
+        let escaped_cwd = escape_subdir.join("..").join("..").join("__agent_dev-rust");
+        let escaped_id = add_mailbox_session_with_shape(
+            &app,
+            &escaped_cwd,
+            "escaped",
+            SessionStatus::Running,
+            None,
+            "codex",
+            Some("codex"),
+            false,
+        )
+        .await;
+        let hooks = MailboxTestHooks::default();
+        for id in [root_id, agentless_id, shell_id, escaped_id] {
+            hooks.pty_presence.lock().unwrap().insert(id, true);
+        }
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+        let target = InternalSystemTarget::for_context_alert(
+            CANONICAL_WAKE_FROM.to_string(),
+            fixture.sender_cwd.clone(),
+        )
+        .unwrap();
+        let notice = InternalSystemNotice::for_context_alert(
+            "dev-rust".to_string(),
+            "wg-1-dev-team".to_string(),
+            50,
+            vec![50],
+        )
+        .unwrap();
+
+        poller
+            .deliver_internal_system_notice(
+                &app,
+                target,
+                notice,
+                CancellationToken::new(),
+                Arc::new(|| Ok(())),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(hooks.spawn_calls.lock().unwrap().len(), 1);
+        let injected = hooks.inject_calls.lock().unwrap()[0];
+        assert!(![root_id, agentless_id, shell_id, escaped_id].contains(&injected));
+        assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+        let manager = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        for id in [root_id, agentless_id, shell_id, escaped_id] {
+            assert!(manager.get_session(id).await.is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn internal_missing_command_and_unsupported_resolved_shell_never_spawn() {
+        let missing = make_mailbox_fixture();
+        let missing_app = app_handle(&missing.app);
+        missing_app
+            .state::<SettingsState>()
+            .write()
+            .await
+            .agents
+            .clear();
+        let missing_hooks = MailboxTestHooks::default();
+        let missing_poller = MailboxPoller::new_with_test_hooks(missing_hooks.clone());
+        let missing_target = InternalSystemTarget::for_context_alert(
+            CANONICAL_WAKE_FROM.to_string(),
+            missing.sender_cwd.clone(),
+        )
+        .unwrap();
+        let notice = InternalSystemNotice::for_context_alert(
+            "dev-rust".to_string(),
+            "wg-1-dev-team".to_string(),
+            50,
+            vec![50],
+        )
+        .unwrap();
+        let error = missing_poller
+            .deliver_internal_system_notice(
+                &missing_app,
+                missing_target,
+                notice.clone(),
+                CancellationToken::new(),
+                Arc::new(|| Ok(())),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.contains("No supported coding-agent command"));
+        assert!(missing_hooks.spawn_calls.lock().unwrap().is_empty());
+
+        let unsupported = make_mailbox_fixture();
+        let unsupported_app = app_handle(&unsupported.app);
+        unsupported_app
+            .state::<SettingsState>()
+            .write()
+            .await
+            .agents = vec![wake_agent("codex", "Codex", "pwsh")];
+        std::fs::write(
+            unsupported.sender_cwd.join("config.json"),
+            r#"{"identity":"../../_agent_tech-lead","tooling":{"currentCodingAgent":"codex"}}"#,
+        )
+        .unwrap();
+        let unsupported_hooks = MailboxTestHooks::default();
+        let unsupported_poller = MailboxPoller::new_with_test_hooks(unsupported_hooks.clone());
+        let unsupported_target = InternalSystemTarget::for_context_alert(
+            CANONICAL_WAKE_FROM.to_string(),
+            unsupported.sender_cwd.clone(),
+        )
+        .unwrap();
+        let error = unsupported_poller
+            .deliver_internal_system_notice(
+                &unsupported_app,
+                unsupported_target,
+                notice,
+                CancellationToken::new(),
+                Arc::new(|| Ok(())),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.contains("not a supported coding-agent CLI"));
+        assert!(unsupported_hooks.spawn_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn internal_repeatable_guard_blocks_live_destroy_and_spawn_boundaries() {
+        let live = make_mailbox_fixture();
+        let live_app = app_handle(&live.app);
+        let live_id = add_mailbox_session(
+            &live_app,
+            &live.sender_cwd,
+            "live",
+            SessionStatus::Running,
+            None,
+        )
+        .await;
+        let live_hooks = MailboxTestHooks::default();
+        live_hooks
+            .pty_presence
+            .lock()
+            .unwrap()
+            .insert(live_id, true);
+        let live_calls = Arc::new(AtomicU32::new(0));
+        let live_guard_calls = Arc::clone(&live_calls);
+        let live_error = MailboxPoller::new_with_test_hooks(live_hooks.clone())
+            .deliver_internal_system_notice(
+                &live_app,
+                InternalSystemTarget::for_context_alert(
+                    CANONICAL_WAKE_FROM.to_string(),
+                    live.sender_cwd.clone(),
+                )
+                .unwrap(),
+                InternalSystemNotice::for_context_alert(
+                    "dev-rust".to_string(),
+                    "wg-1-dev-team".to_string(),
+                    50,
+                    vec![50],
+                )
+                .unwrap(),
+                CancellationToken::new(),
+                Arc::new(move || {
+                    if live_guard_calls.fetch_add(1, Ordering::SeqCst) >= 1 {
+                        Err("stale before write".to_string())
+                    } else {
+                        Ok(())
+                    }
+                }),
+            )
+            .await
+            .unwrap_err();
+        assert!(live_error.contains("stale before write"));
+        assert!(live_hooks.inject_calls.lock().unwrap().is_empty());
+
+        let exited = make_mailbox_fixture();
+        let exited_app = app_handle(&exited.app);
+        let exited_id = add_mailbox_session(
+            &exited_app,
+            &exited.sender_cwd,
+            "exited",
+            SessionStatus::Exited(0),
+            None,
+        )
+        .await;
+        let exited_hooks = MailboxTestHooks::default();
+        let exited_calls = Arc::new(AtomicU32::new(0));
+        let exited_guard_calls = Arc::clone(&exited_calls);
+        let exited_error = MailboxPoller::new_with_test_hooks(exited_hooks.clone())
+            .deliver_internal_system_notice(
+                &exited_app,
+                InternalSystemTarget::for_context_alert(
+                    CANONICAL_WAKE_FROM.to_string(),
+                    exited.sender_cwd.clone(),
+                )
+                .unwrap(),
+                InternalSystemNotice::for_context_alert(
+                    "dev-rust".to_string(),
+                    "wg-1-dev-team".to_string(),
+                    50,
+                    vec![50],
+                )
+                .unwrap(),
+                CancellationToken::new(),
+                Arc::new(move || {
+                    if exited_guard_calls.fetch_add(1, Ordering::SeqCst) >= 1 {
+                        Err("stale before destroy".to_string())
+                    } else {
+                        Ok(())
+                    }
+                }),
+            )
+            .await
+            .unwrap_err();
+        assert!(exited_error.contains("stale before destroy"));
+        assert!(exited_hooks.destroy_calls.lock().unwrap().is_empty());
+        assert!(exited_hooks.spawn_calls.lock().unwrap().is_empty());
+        assert!(exited_app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .get_session(exited_id)
+            .await
+            .is_some());
+
+        let absent = make_mailbox_fixture();
+        let absent_app = app_handle(&absent.app);
+        let absent_hooks = MailboxTestHooks::default();
+        let absent_calls = Arc::new(AtomicU32::new(0));
+        let absent_guard_calls = Arc::clone(&absent_calls);
+        let absent_error = MailboxPoller::new_with_test_hooks(absent_hooks.clone())
+            .deliver_internal_system_notice(
+                &absent_app,
+                InternalSystemTarget::for_context_alert(
+                    CANONICAL_WAKE_FROM.to_string(),
+                    absent.sender_cwd.clone(),
+                )
+                .unwrap(),
+                InternalSystemNotice::for_context_alert(
+                    "dev-rust".to_string(),
+                    "wg-1-dev-team".to_string(),
+                    50,
+                    vec![50],
+                )
+                .unwrap(),
+                CancellationToken::new(),
+                Arc::new(move || {
+                    if absent_guard_calls.fetch_add(1, Ordering::SeqCst) >= 1 {
+                        Err("stale before spawn".to_string())
+                    } else {
+                        Ok(())
+                    }
+                }),
+            )
+            .await
+            .unwrap_err();
+        assert!(absent_error.contains("stale before spawn"));
+        assert!(absent_hooks.spawn_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn internal_destroy_failure_is_retryable_and_never_falls_through_to_spawn() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let exited_id = add_mailbox_session(
+            &app,
+            &fixture.sender_cwd,
+            "exited",
+            SessionStatus::Exited(0),
+            None,
+        )
+        .await;
+        let hooks = MailboxTestHooks::default();
+        hooks
+            .destroy_results
+            .lock()
+            .unwrap()
+            .push_back(Err("scripted destruction failure".to_string()));
+        let error = MailboxPoller::new_with_test_hooks(hooks.clone())
+            .deliver_internal_system_notice(
+                &app,
+                InternalSystemTarget::for_context_alert(
+                    CANONICAL_WAKE_FROM.to_string(),
+                    fixture.sender_cwd.clone(),
+                )
+                .unwrap(),
+                InternalSystemNotice::for_context_alert(
+                    "dev-rust".to_string(),
+                    "wg-1-dev-team".to_string(),
+                    50,
+                    vec![50],
+                )
+                .unwrap(),
+                CancellationToken::new(),
+                Arc::new(|| Ok(())),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.contains("scripted destruction failure"));
+        assert_eq!(hooks.destroy_calls.lock().unwrap().as_slice(), &[exited_id]);
+        assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+        assert!(hooks.inject_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn internal_candidate_appearing_at_pre_spawn_recheck_prevents_spawn() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let hooks = MailboxTestHooks::default();
+        let (start_sender, start_receiver) = tokio::sync::oneshot::channel();
+        let (done_sender, done_receiver) = std::sync::mpsc::channel();
+        let start_sender = Arc::new(Mutex::new(Some(start_sender)));
+        let done_receiver = Arc::new(Mutex::new(done_receiver));
+        let appeared = Arc::new(Mutex::new(None));
+        let task_app = app.clone();
+        let task_cwd = fixture.sender_cwd.clone();
+        let task_hooks = hooks.clone();
+        let task_appeared = Arc::clone(&appeared);
+        let appearance = tokio::spawn(async move {
+            let _ = start_receiver.await;
+            let id = add_mailbox_session(
+                &task_app,
+                &task_cwd,
+                "appeared",
+                SessionStatus::Running,
+                None,
+            )
+            .await;
+            task_hooks.pty_presence.lock().unwrap().insert(id, true);
+            *task_appeared.lock().unwrap() = Some(id);
+            done_sender.send(()).unwrap();
+        });
+        let guard_calls = Arc::new(AtomicU32::new(0));
+        let guard_counter = Arc::clone(&guard_calls);
+        let guard_start = Arc::clone(&start_sender);
+        let guard_done = Arc::clone(&done_receiver);
+        let guard: InternalNoticeGuard = Arc::new(move || {
+            if guard_counter.fetch_add(1, Ordering::SeqCst) == 1 {
+                guard_start
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .unwrap()
+                    .send(())
+                    .unwrap();
+                guard_done
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(1))
+                    .map_err(|error| format!("appearance task did not finish: {error}"))?;
+            }
+            Ok(())
+        });
+        let error = MailboxPoller::new_with_test_hooks(hooks.clone())
+            .deliver_internal_system_notice(
+                &app,
+                InternalSystemTarget::for_context_alert(
+                    CANONICAL_WAKE_FROM.to_string(),
+                    fixture.sender_cwd.clone(),
+                )
+                .unwrap(),
+                InternalSystemNotice::for_context_alert(
+                    "dev-rust".to_string(),
+                    "wg-1-dev-team".to_string(),
+                    50,
+                    vec![50],
+                )
+                .unwrap(),
+                CancellationToken::new(),
+                guard,
+            )
+            .await
+            .unwrap_err();
+        appearance.await.unwrap();
+        assert!(error.contains("changed immediately before background spawn"));
+        assert!(appeared.lock().unwrap().is_some());
+        assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+        assert!(hooks.inject_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn internal_exited_candidate_disappearing_during_guard_cannot_spawn_duplicate() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let exited_id = add_mailbox_session(
+            &app,
+            &fixture.sender_cwd,
+            "exited",
+            SessionStatus::Exited(0),
+            None,
+        )
+        .await;
+        let hooks = MailboxTestHooks::default();
+        let (start_sender, start_receiver) = tokio::sync::oneshot::channel();
+        let (done_sender, done_receiver) = std::sync::mpsc::channel();
+        let start_sender = Arc::new(Mutex::new(Some(start_sender)));
+        let done_receiver = Arc::new(Mutex::new(done_receiver));
+        let task_app = app.clone();
+        let task_cwd = fixture.sender_cwd.clone();
+        let task_hooks = hooks.clone();
+        let replacement = tokio::spawn(async move {
+            let _ = start_receiver.await;
+            let manager = task_app
+                .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+                .read()
+                .await
+                .clone();
+            manager.destroy_session(exited_id).await.unwrap();
+            let replacement_id = add_mailbox_session(
+                &task_app,
+                &task_cwd,
+                "replacement",
+                SessionStatus::Running,
+                None,
+            )
+            .await;
+            task_hooks
+                .pty_presence
+                .lock()
+                .unwrap()
+                .insert(replacement_id, true);
+            done_sender.send(()).unwrap();
+        });
+        let guard_calls = Arc::new(AtomicU32::new(0));
+        let guard_counter = Arc::clone(&guard_calls);
+        let guard_start = Arc::clone(&start_sender);
+        let guard_done = Arc::clone(&done_receiver);
+        let guard: InternalNoticeGuard = Arc::new(move || {
+            if guard_counter.fetch_add(1, Ordering::SeqCst) == 1 {
+                guard_start
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .unwrap()
+                    .send(())
+                    .unwrap();
+                guard_done
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(1))
+                    .map_err(|error| format!("replacement task did not finish: {error}"))?;
+            }
+            Ok(())
+        });
+        let error = MailboxPoller::new_with_test_hooks(hooks.clone())
+            .deliver_internal_system_notice(
+                &app,
+                InternalSystemTarget::for_context_alert(
+                    CANONICAL_WAKE_FROM.to_string(),
+                    fixture.sender_cwd.clone(),
+                )
+                .unwrap(),
+                InternalSystemNotice::for_context_alert(
+                    "dev-rust".to_string(),
+                    "wg-1-dev-team".to_string(),
+                    50,
+                    vec![50],
+                )
+                .unwrap(),
+                CancellationToken::new(),
+                guard,
+            )
+            .await
+            .unwrap_err();
+        replacement.await.unwrap();
+        assert!(error.contains("disappeared"));
+        assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+        assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+        assert!(hooks.inject_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn internal_cancellation_during_live_settle_returns_without_injection() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let live_id = add_mailbox_session(
+            &app,
+            &fixture.sender_cwd,
+            "live",
+            SessionStatus::Running,
+            None,
+        )
+        .await;
+        let hooks = MailboxTestHooks::default();
+        hooks.pty_presence.lock().unwrap().insert(live_id, true);
+        let (settle_release, settle_gate) = tokio::sync::oneshot::channel();
+        *hooks.internal_live_settle_gate.lock().unwrap() = Some(settle_gate);
+        let cancellation = CancellationToken::new();
+        let cancel_when_settling = cancellation.clone();
+        let settle_hooks = hooks.clone();
+        let canceller = tokio::spawn(async move {
+            for _ in 0..2_000 {
+                if settle_hooks
+                    .internal_live_settle_gate
+                    .lock()
+                    .unwrap()
+                    .is_none()
+                {
+                    cancel_when_settling.cancel();
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+            panic!("internal settle gate was not entered");
+        });
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            MailboxPoller::new_with_test_hooks(hooks.clone()).deliver_internal_system_notice(
+                &app,
+                InternalSystemTarget::for_context_alert(
+                    CANONICAL_WAKE_FROM.to_string(),
+                    fixture.sender_cwd.clone(),
+                )
+                .unwrap(),
+                InternalSystemNotice::for_context_alert(
+                    "dev-rust".to_string(),
+                    "wg-1-dev-team".to_string(),
+                    50,
+                    vec![50],
+                )
+                .unwrap(),
+                cancellation,
+                Arc::new(|| Ok(())),
+            ),
+        )
+        .await
+        .expect("cancellation must not wait for the settle cap");
+        canceller.await.unwrap();
+        drop(settle_release);
+        assert!(result.unwrap_err().contains("canceled during live settle"));
+        assert!(hooks.inject_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn internal_injection_failure_returns_without_system_bookkeeping_or_spawn() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let live_id = add_mailbox_session(
+            &app,
+            &fixture.sender_cwd,
+            "live",
+            SessionStatus::Running,
+            None,
+        )
+        .await;
+        let hooks = MailboxTestHooks::default();
+        hooks.pty_presence.lock().unwrap().insert(live_id, true);
+        hooks
+            .inject_results
+            .lock()
+            .unwrap()
+            .push_back(Err("scripted text write failure".to_string()));
+        let error = MailboxPoller::new_with_test_hooks(hooks.clone())
+            .deliver_internal_system_notice(
+                &app,
+                InternalSystemTarget::for_context_alert(
+                    CANONICAL_WAKE_FROM.to_string(),
+                    fixture.sender_cwd.clone(),
+                )
+                .unwrap(),
+                InternalSystemNotice::for_context_alert(
+                    "dev-rust".to_string(),
+                    "wg-1-dev-team".to_string(),
+                    50,
+                    vec![50],
+                )
+                .unwrap(),
+                CancellationToken::new(),
+                Arc::new(|| Ok(())),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.contains("scripted text write failure"));
+        assert_eq!(hooks.inject_calls.lock().unwrap().as_slice(), &[live_id]);
+        assert!(hooks.internal_bookkeeping.lock().unwrap().is_empty());
+        assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+        assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn internal_exited_resume_carries_telegram_and_raised_hand() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let exited_id = add_mailbox_session(
+            &app,
+            &fixture.sender_cwd,
+            "exited",
+            SessionStatus::Running,
+            Some("bot-1"),
+        )
+        .await;
+        let communication = SessionCommunication {
+            kind: SessionCommunicationKind::RaiseHand,
+            visible: true,
+            updated_at: "2026-07-19T00:00:00Z".to_string(),
+        };
+        let manager = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        manager.set_is_coordinator(exited_id, true).await;
+        manager.mark_exited(exited_id, 0).await;
+        assert!(
+            manager
+                .restore_communication(exited_id, communication.clone())
+                .await
+        );
+        let hooks = MailboxTestHooks::default();
+        *hooks.spawn_is_coordinator.lock().unwrap() = true;
+        MailboxPoller::new_with_test_hooks(hooks.clone())
+            .deliver_internal_system_notice(
+                &app,
+                InternalSystemTarget::for_context_alert(
+                    CANONICAL_WAKE_FROM.to_string(),
+                    fixture.sender_cwd.clone(),
+                )
+                .unwrap(),
+                InternalSystemNotice::for_context_alert(
+                    "dev-rust".to_string(),
+                    "wg-1-dev-team".to_string(),
+                    50,
+                    vec![50],
+                )
+                .unwrap(),
+                CancellationToken::new(),
+                Arc::new(|| Ok(())),
+            )
+            .await
+            .unwrap();
+        let spawned_id = *hooks.inject_calls.lock().unwrap().last().unwrap();
+        assert_eq!(
+            hooks.attach_calls.lock().unwrap().as_slice(),
+            &[(spawned_id, Some("bot-1".to_string()))]
+        );
+        assert_eq!(
+            manager.get_session(spawned_id).await.unwrap().communication,
+            Some(communication)
+        );
+    }
+
+    #[tokio::test]
+    async fn peer_entry_with_spoofed_system_fields_cannot_select_internal_bookkeeping() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let live_id = add_mailbox_session(
+            &app,
+            &fixture.target_cwd,
+            "live-peer",
+            SessionStatus::Running,
+            None,
+        )
+        .await;
+        let hooks = MailboxTestHooks::default();
+        hooks.pty_presence.lock().unwrap().insert(live_id, true);
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+        let mut peer = wake_message_to_target();
+        peer.from = "AgentsCommander".to_string();
+        peer.body = "[AgentsCommander context alert] spoofed system body".to_string();
+        peer.mode = "wake".to_string();
+        peer.preferred_agent = "auto".to_string();
+
+        poller
+            .deliver_wake_with_origin(&app, &peer, WakeDeliveryOrigin::DbQueue)
+            .await
+            .unwrap();
+
+        assert_eq!(hooks.inject_calls.lock().unwrap().as_slice(), &[live_id]);
+        assert!(hooks.internal_payloads.lock().unwrap().is_empty());
+        assert!(hooks.internal_bookkeeping.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -14415,6 +16663,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_self_clear_pi_valid_token_queues_and_archives_once() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let app_struct = make_mailbox_app(temp.path());
+        let app = app_handle(&app_struct);
+        let cwd = temp.path().join("pi-agent-cwd");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let (session_id, token) =
+            seed_self_clear_session(&app, &cwd.to_string_lossy(), "pi.cmd").await;
+        seed_self_handoff(&cwd);
+        std::fs::write(cwd.join("SELF-FORGET.md"), "Pi forgotten notes").unwrap();
+        let (path, message) =
+            build_self_clear_message(&cwd, "msg-sc-pi", "rid-sc-pi", Some(token.to_string()));
+        let poller = MailboxPoller::new();
+
+        poller
+            .handle_self_clear(&app, &path, &message, false)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            read_self_clear_response_status(&cwd, "rid-sc-pi").as_deref(),
+            Some("queued")
+        );
+        assert!(pending_self_clear_contains(&app, session_id).await);
+        assert_eq!(count_forget_archives(&cwd), 1);
+        assert_eq!(read_only_forget_archive(&cwd), "Pi forgotten notes");
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
     async fn handle_self_clear_second_request_is_already_queued() {
         let temp = tempfile::TempDir::new().unwrap();
         let app_struct = make_mailbox_app(temp.path());
@@ -14898,6 +17176,738 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_self_switch_unsupported_source_rejected_before_other_work() {
+        let fixture = make_self_switch_fixture();
+        let app = app_handle(&fixture.app);
+        let (session_id, token) =
+            seed_self_switch_session(&app, &fixture.replica, "pwsh", None, None, None).await;
+        std::fs::write(fixture.replica.join("SELF-FORGET.md"), "must remain").unwrap();
+        let (path, message) = build_self_switch_message(
+            &fixture.replica,
+            "msg-ss-unsupported-source",
+            "rid-ss-unsupported-source",
+            Some(token.to_string()),
+            Some("deliberately-invalid-target"),
+            Some("not-a-profile"),
+            "proj-a:wg-1-dev-team/dev-rust",
+        );
+        let poller = MailboxPoller::new();
+
+        poller
+            .handle_self_handoff_switch(&app, &path, &message, false)
+            .await
+            .unwrap();
+
+        let reason = read_reject_reason(&fixture.replica, "msg-ss-unsupported-source").unwrap();
+        assert!(reason.contains("not a supported source shell"), "{reason}");
+        assert!(!reason.contains("deliberately-invalid-target"), "{reason}");
+        assert!(!reason.contains("SELF-HANDOFF"), "{reason}");
+        assert!(!pending_self_clear_contains(&app, session_id).await);
+        assert_eq!(count_forget_archives(&fixture.replica), 0);
+        assert_eq!(
+            std::fs::read_to_string(fixture.replica.join("SELF-FORGET.md")).unwrap(),
+            "must remain"
+        );
+    }
+
+    #[tokio::test]
+    async fn self_switch_established_source_to_pi_target_remains_supported() {
+        let fixture = make_self_switch_fixture();
+        let app = app_handle(&fixture.app);
+        {
+            let settings = app.state::<SettingsState>();
+            settings
+                .write()
+                .await
+                .agents
+                .push(wake_agent("pi", "Pi", "pi"));
+        }
+        let (source_id, token) = seed_self_switch_session(
+            &app,
+            &fixture.replica,
+            "codex",
+            Some("codex"),
+            Some("A"),
+            Some("A"),
+        )
+        .await;
+        {
+            let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = state.read().await;
+            mgr.mark_idle(source_id).await;
+        }
+        seed_self_handoff(&fixture.replica);
+        let (path, message) = build_self_switch_message(
+            &fixture.replica,
+            "msg-ss-pi-target",
+            "rid-ss-pi-target",
+            Some(token.to_string()),
+            Some("pi"),
+            Some("A"),
+            "proj-a:wg-1-dev-team/dev-rust",
+        );
+        let poller = MailboxPoller::new();
+
+        poller
+            .handle_self_handoff_switch(&app, &path, &message, false)
+            .await
+            .unwrap();
+        let response = read_response_json(&fixture.replica, "rid-ss-pi-target").unwrap();
+        assert_eq!(response["status"], "queued");
+        assert_eq!(response["target_coding_agent"], "pi");
+        assert_eq!(response["target_profile"], "A");
+
+        let target_agent = response["target_coding_agent"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let target_profile = response["target_profile"].as_str().unwrap().to_string();
+        let pending = app.state::<Arc<crate::PendingSelfClear>>().inner().clone();
+        let state_ids = Arc::new(Mutex::new(Vec::<Uuid>::new()));
+        let state_ids_seen = Arc::clone(&state_ids);
+        let app_for_state = app.clone();
+        let session_state = move |session_id: Uuid| {
+            let app = app_for_state.clone();
+            let state_ids = Arc::clone(&state_ids_seen);
+            async move {
+                state_ids.lock().unwrap().push(session_id);
+                let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let mgr = state.read().await;
+                match mgr.get_session(session_id).await {
+                    Some(session) => (true, session.waiting_for_input),
+                    None => (false, false),
+                }
+            }
+        };
+
+        let app_for_persist = app.clone();
+        let persist = move |cwd: PathBuf, agent: String, profile: String| {
+            let app = app_for_persist.clone();
+            async move {
+                let settings = app.state::<SettingsState>();
+                let snapshot = settings.read().await.clone();
+                crate::config::coding_agent_profiles::set_replica_coding_agent_selection(
+                    &snapshot, &cwd, &agent, &profile,
+                )
+            }
+        };
+
+        let restarted_id = Arc::new(Mutex::new(None::<Uuid>));
+        let restarted_id_seen = Arc::clone(&restarted_id);
+        let app_for_restart = app.clone();
+        let replica_for_restart = fixture.replica.clone();
+        let restart = move |session_id: Uuid, agent: String, profile: String| {
+            let app = app_for_restart.clone();
+            let replica = replica_for_restart.clone();
+            let restarted_id = Arc::clone(&restarted_id_seen);
+            async move {
+                assert_eq!(session_id, source_id);
+                assert_eq!(agent, "pi");
+                assert_eq!(profile, "A");
+                {
+                    let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                    let mgr = state.read().await;
+                    mgr.destroy_session(session_id).await.unwrap();
+                }
+                let (new_id, _token) = seed_self_switch_session(
+                    &app,
+                    &replica,
+                    "pi",
+                    Some("pi"),
+                    Some(&profile),
+                    Some(&profile),
+                )
+                .await;
+                {
+                    let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                    let mgr = state.read().await;
+                    mgr.mark_idle(new_id).await;
+                }
+                register_mock_pty_route(&app, new_id);
+                *restarted_id.lock().unwrap() = Some(new_id);
+                Ok(new_id.to_string())
+            }
+        };
+
+        let injected_prompts = Arc::new(Mutex::new(Vec::<(Uuid, String)>::new()));
+        let injected_prompts_seen = Arc::clone(&injected_prompts);
+        let app_for_inject = app.clone();
+        let inject = move |session_id: Uuid, prompt: String| {
+            let app = app_for_inject.clone();
+            let injected_prompts = Arc::clone(&injected_prompts_seen);
+            async move {
+                injected_prompts
+                    .lock()
+                    .unwrap()
+                    .push((session_id, prompt.clone()));
+                crate::pty::inject::inject_text_into_session(&app, session_id, &prompt).await
+            }
+        };
+        let boundaries = Arc::new(Mutex::new(Vec::<(Uuid, SelfClearBoundary)>::new()));
+        let boundaries_seen = Arc::clone(&boundaries);
+        let note_boundary = move |session_id: Uuid, boundary: SelfClearBoundary| {
+            let boundaries = Arc::clone(&boundaries_seen);
+            async move {
+                boundaries.lock().unwrap().push((session_id, boundary));
+            }
+        };
+
+        MailboxPoller::drive_self_switch_after_sustained_idle(
+            source_id,
+            fixture.replica.clone(),
+            target_agent,
+            target_profile,
+            None,
+            Arc::clone(&pending),
+            Duration::ZERO,
+            Duration::ZERO,
+            // The real app-backed restart can exceed one second under the full
+            // parallel suite. Only settle and poll need to be zero in this test.
+            Duration::from_secs(30),
+            session_state,
+            persist,
+            restart,
+            inject,
+            note_boundary,
+        )
+        .await;
+
+        let target_id = restarted_id
+            .lock()
+            .unwrap()
+            .expect("restart seam must return the configured Pi session id");
+        assert_ne!(target_id, source_id);
+        assert_eq!(*state_ids.lock().unwrap(), vec![source_id, target_id]);
+        let prompts = injected_prompts.lock().unwrap().clone();
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts[0].0, target_id);
+        assert!(prompts[0].1.contains("self-clear/"), "{}", prompts[0].1);
+        assert_eq!(
+            mock_pty_writes_for(&app, target_id),
+            vec![
+                prompts[0].1.as_bytes().to_vec(),
+                b"\r".to_vec(),
+                b"\r".to_vec()
+            ]
+        );
+        assert_eq!(
+            *boundaries.lock().unwrap(),
+            vec![(target_id, SelfClearBoundary::ContentInjected)]
+        );
+        let manager = {
+            let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let guard = state.read().await;
+            guard.clone()
+        };
+        assert!(manager.get_session(source_id).await.is_none());
+        let target = manager.get_session(target_id).await.unwrap();
+        assert_eq!(target.shell, "pi");
+        assert_eq!(target.agent_id.as_deref(), Some("pi"));
+        assert_eq!(target.requested_profile.as_deref(), Some("A"));
+        assert_eq!(target.effective_profile.as_deref(), Some("A"));
+        assert!(pending.0.lock().unwrap().is_empty());
+        let saved: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(fixture.replica.join("config.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved["tooling"]["currentCodingAgent"], "pi");
+        assert_eq!(saved["tooling"]["profile"], "A");
+    }
+
+    #[tokio::test]
+    async fn handle_self_switch_pi_source_queues_with_resolved_targets() {
+        let fixture = make_self_switch_fixture();
+        let app = app_handle(&fixture.app);
+        // A Pi source needs no `pi` agent push: the target is `codex` (already in
+        // the fixture wake_agents) and the source agent_id is never
+        // configured-checked, only used as a target-resolution fallback.
+        let (session_id, token) = seed_self_switch_session(
+            &app,
+            &fixture.replica,
+            "pi",
+            Some("pi"),
+            Some("A"),
+            Some("B"),
+        )
+        .await;
+        seed_self_handoff(&fixture.replica);
+        std::fs::write(fixture.replica.join("SELF-FORGET.md"), "topic to forget").unwrap();
+
+        let (path, msg) = build_self_switch_message(
+            &fixture.replica,
+            "msg-ss-pi-queue",
+            "rid-ss-pi-queue",
+            Some(token.to_string()),
+            Some("codex"),
+            Some("c"),
+            "proj-a:wg-1-dev-team/dev-rust",
+        );
+        let poller = MailboxPoller::new();
+        poller
+            .handle_self_handoff_switch(&app, &path, &msg, false)
+            .await
+            .unwrap();
+
+        let response = read_response_json(&fixture.replica, "rid-ss-pi-queue").unwrap();
+        assert_eq!(response["action"], SELF_SWITCH_ACTION);
+        assert_eq!(response["status"], "queued");
+        assert_eq!(response["target_coding_agent"], "codex");
+        assert_eq!(response["target_profile"], "C");
+        assert!(pending_self_clear_contains(&app, session_id).await);
+        assert_eq!(pending_self_clear_len(&app).await, 1);
+        assert_eq!(count_forget_archives(&fixture.replica), 1);
+        assert!(!fixture.replica.join("SELF-FORGET.md").is_file());
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn self_switch_pi_source_to_established_target_completes() {
+        let fixture = make_self_switch_fixture();
+        let app = app_handle(&fixture.app);
+        let (source_id, token) = seed_self_switch_session(
+            &app,
+            &fixture.replica,
+            "pi",
+            Some("pi"),
+            Some("A"),
+            Some("A"),
+        )
+        .await;
+        {
+            let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = state.read().await;
+            mgr.mark_idle(source_id).await;
+        }
+        seed_self_handoff(&fixture.replica);
+        let (path, message) = build_self_switch_message(
+            &fixture.replica,
+            "msg-ss-pi-to-codex",
+            "rid-ss-pi-to-codex",
+            Some(token.to_string()),
+            Some("codex"),
+            Some("A"),
+            "proj-a:wg-1-dev-team/dev-rust",
+        );
+        let poller = MailboxPoller::new();
+
+        poller
+            .handle_self_handoff_switch(&app, &path, &message, false)
+            .await
+            .unwrap();
+        let response = read_response_json(&fixture.replica, "rid-ss-pi-to-codex").unwrap();
+        assert_eq!(response["status"], "queued");
+        assert_eq!(response["target_coding_agent"], "codex");
+        assert_eq!(response["target_profile"], "A");
+
+        let target_agent = response["target_coding_agent"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let target_profile = response["target_profile"].as_str().unwrap().to_string();
+        let pending = app.state::<Arc<crate::PendingSelfClear>>().inner().clone();
+        let state_ids = Arc::new(Mutex::new(Vec::<Uuid>::new()));
+        let state_ids_seen = Arc::clone(&state_ids);
+        let app_for_state = app.clone();
+        let session_state = move |session_id: Uuid| {
+            let app = app_for_state.clone();
+            let state_ids = Arc::clone(&state_ids_seen);
+            async move {
+                state_ids.lock().unwrap().push(session_id);
+                let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let mgr = state.read().await;
+                match mgr.get_session(session_id).await {
+                    Some(session) => (true, session.waiting_for_input),
+                    None => (false, false),
+                }
+            }
+        };
+
+        let app_for_persist = app.clone();
+        let persist = move |cwd: PathBuf, agent: String, profile: String| {
+            let app = app_for_persist.clone();
+            async move {
+                let settings = app.state::<SettingsState>();
+                let snapshot = settings.read().await.clone();
+                crate::config::coding_agent_profiles::set_replica_coding_agent_selection(
+                    &snapshot, &cwd, &agent, &profile,
+                )
+            }
+        };
+
+        let restarted_id = Arc::new(Mutex::new(None::<Uuid>));
+        let restarted_id_seen = Arc::clone(&restarted_id);
+        let app_for_restart = app.clone();
+        let replica_for_restart = fixture.replica.clone();
+        let restart = move |session_id: Uuid, agent: String, profile: String| {
+            let app = app_for_restart.clone();
+            let replica = replica_for_restart.clone();
+            let restarted_id = Arc::clone(&restarted_id_seen);
+            async move {
+                assert_eq!(session_id, source_id);
+                assert_eq!(agent, "codex");
+                assert_eq!(profile, "A");
+                {
+                    let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                    let mgr = state.read().await;
+                    mgr.destroy_session(session_id).await.unwrap();
+                }
+                let (new_id, _token) = seed_self_switch_session(
+                    &app,
+                    &replica,
+                    "codex",
+                    Some("codex"),
+                    Some(&profile),
+                    Some(&profile),
+                )
+                .await;
+                {
+                    let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                    let mgr = state.read().await;
+                    mgr.mark_idle(new_id).await;
+                }
+                register_mock_pty_route(&app, new_id);
+                *restarted_id.lock().unwrap() = Some(new_id);
+                Ok(new_id.to_string())
+            }
+        };
+
+        let injected_prompts = Arc::new(Mutex::new(Vec::<(Uuid, String)>::new()));
+        let injected_prompts_seen = Arc::clone(&injected_prompts);
+        let app_for_inject = app.clone();
+        let inject = move |session_id: Uuid, prompt: String| {
+            let app = app_for_inject.clone();
+            let injected_prompts = Arc::clone(&injected_prompts_seen);
+            async move {
+                injected_prompts
+                    .lock()
+                    .unwrap()
+                    .push((session_id, prompt.clone()));
+                crate::pty::inject::inject_text_into_session(&app, session_id, &prompt).await
+            }
+        };
+        let boundaries = Arc::new(Mutex::new(Vec::<(Uuid, SelfClearBoundary)>::new()));
+        let boundaries_seen = Arc::clone(&boundaries);
+        let note_boundary = move |session_id: Uuid, boundary: SelfClearBoundary| {
+            let boundaries = Arc::clone(&boundaries_seen);
+            async move {
+                boundaries.lock().unwrap().push((session_id, boundary));
+            }
+        };
+
+        MailboxPoller::drive_self_switch_after_sustained_idle(
+            source_id,
+            fixture.replica.clone(),
+            target_agent,
+            target_profile,
+            None,
+            Arc::clone(&pending),
+            Duration::ZERO,
+            Duration::ZERO,
+            Duration::from_secs(30),
+            session_state,
+            persist,
+            restart,
+            inject,
+            note_boundary,
+        )
+        .await;
+
+        let target_id = restarted_id
+            .lock()
+            .unwrap()
+            .expect("restart seam must return the configured target session id");
+        assert_ne!(target_id, source_id);
+        assert_eq!(*state_ids.lock().unwrap(), vec![source_id, target_id]);
+        let prompts = injected_prompts.lock().unwrap().clone();
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts[0].0, target_id);
+        assert!(prompts[0].1.contains("self-clear/"), "{}", prompts[0].1);
+        assert_eq!(
+            mock_pty_writes_for(&app, target_id),
+            vec![
+                prompts[0].1.as_bytes().to_vec(),
+                b"\r".to_vec(),
+                b"\r".to_vec()
+            ]
+        );
+        assert_eq!(
+            *boundaries.lock().unwrap(),
+            vec![(target_id, SelfClearBoundary::ContentInjected)]
+        );
+        let manager = {
+            let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let guard = state.read().await;
+            guard.clone()
+        };
+        assert!(manager.get_session(source_id).await.is_none());
+        let target = manager.get_session(target_id).await.unwrap();
+        assert_eq!(target.shell, "codex");
+        assert_eq!(target.agent_id.as_deref(), Some("codex"));
+        assert!(pending.0.lock().unwrap().is_empty());
+        let saved: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(fixture.replica.join("config.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved["tooling"]["currentCodingAgent"], "codex");
+        assert_eq!(saved["tooling"]["profile"], "A");
+    }
+
+    #[tokio::test]
+    async fn self_switch_pi_source_omitted_target_hard_resets_to_pi() {
+        let fixture = make_self_switch_fixture();
+        let app = app_handle(&fixture.app);
+        // The target resolves to `pi` (the source agent_id fallback), so `pi`
+        // must be configured for target spawn validation.
+        {
+            let settings = app.state::<SettingsState>();
+            settings
+                .write()
+                .await
+                .agents
+                .push(wake_agent("pi", "Pi", "pi"));
+        }
+        let (source_id, token) = seed_self_switch_session(
+            &app,
+            &fixture.replica,
+            "pi",
+            Some("pi"),
+            Some("A"),
+            Some("A"),
+        )
+        .await;
+        {
+            let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = state.read().await;
+            mgr.mark_idle(source_id).await;
+        }
+        seed_self_handoff(&fixture.replica);
+        // Both --coding-agent and --profile omitted: the target resolves from the
+        // source agent_id fallback back to `pi` (the #1081 hard-reset headline).
+        let (path, message) = build_self_switch_message(
+            &fixture.replica,
+            "msg-ss-pi-hard-reset",
+            "rid-ss-pi-hard-reset",
+            Some(token.to_string()),
+            None,
+            None,
+            "proj-a:wg-1-dev-team/dev-rust",
+        );
+        let poller = MailboxPoller::new();
+
+        poller
+            .handle_self_handoff_switch(&app, &path, &message, false)
+            .await
+            .unwrap();
+        let response = read_response_json(&fixture.replica, "rid-ss-pi-hard-reset").unwrap();
+        assert_eq!(response["status"], "queued");
+        assert_eq!(response["target_coding_agent"], "pi");
+        assert_eq!(response["target_profile"], "A");
+
+        let target_agent = response["target_coding_agent"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let target_profile = response["target_profile"].as_str().unwrap().to_string();
+        let pending = app.state::<Arc<crate::PendingSelfClear>>().inner().clone();
+        let state_ids = Arc::new(Mutex::new(Vec::<Uuid>::new()));
+        let state_ids_seen = Arc::clone(&state_ids);
+        let app_for_state = app.clone();
+        let session_state = move |session_id: Uuid| {
+            let app = app_for_state.clone();
+            let state_ids = Arc::clone(&state_ids_seen);
+            async move {
+                state_ids.lock().unwrap().push(session_id);
+                let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let mgr = state.read().await;
+                match mgr.get_session(session_id).await {
+                    Some(session) => (true, session.waiting_for_input),
+                    None => (false, false),
+                }
+            }
+        };
+
+        let app_for_persist = app.clone();
+        let persist = move |cwd: PathBuf, agent: String, profile: String| {
+            let app = app_for_persist.clone();
+            async move {
+                let settings = app.state::<SettingsState>();
+                let snapshot = settings.read().await.clone();
+                crate::config::coding_agent_profiles::set_replica_coding_agent_selection(
+                    &snapshot, &cwd, &agent, &profile,
+                )
+            }
+        };
+
+        let restarted_id = Arc::new(Mutex::new(None::<Uuid>));
+        let restarted_id_seen = Arc::clone(&restarted_id);
+        let app_for_restart = app.clone();
+        let replica_for_restart = fixture.replica.clone();
+        let restart = move |session_id: Uuid, agent: String, profile: String| {
+            let app = app_for_restart.clone();
+            let replica = replica_for_restart.clone();
+            let restarted_id = Arc::clone(&restarted_id_seen);
+            async move {
+                assert_eq!(session_id, source_id);
+                assert_eq!(agent, "pi");
+                assert_eq!(profile, "A");
+                {
+                    let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                    let mgr = state.read().await;
+                    mgr.destroy_session(session_id).await.unwrap();
+                }
+                let (new_id, _token) = seed_self_switch_session(
+                    &app,
+                    &replica,
+                    "pi",
+                    Some("pi"),
+                    Some(&profile),
+                    Some(&profile),
+                )
+                .await;
+                {
+                    let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                    let mgr = state.read().await;
+                    mgr.mark_idle(new_id).await;
+                }
+                register_mock_pty_route(&app, new_id);
+                *restarted_id.lock().unwrap() = Some(new_id);
+                Ok(new_id.to_string())
+            }
+        };
+
+        let injected_prompts = Arc::new(Mutex::new(Vec::<(Uuid, String)>::new()));
+        let injected_prompts_seen = Arc::clone(&injected_prompts);
+        let app_for_inject = app.clone();
+        let inject = move |session_id: Uuid, prompt: String| {
+            let app = app_for_inject.clone();
+            let injected_prompts = Arc::clone(&injected_prompts_seen);
+            async move {
+                injected_prompts
+                    .lock()
+                    .unwrap()
+                    .push((session_id, prompt.clone()));
+                crate::pty::inject::inject_text_into_session(&app, session_id, &prompt).await
+            }
+        };
+        let boundaries = Arc::new(Mutex::new(Vec::<(Uuid, SelfClearBoundary)>::new()));
+        let boundaries_seen = Arc::clone(&boundaries);
+        let note_boundary = move |session_id: Uuid, boundary: SelfClearBoundary| {
+            let boundaries = Arc::clone(&boundaries_seen);
+            async move {
+                boundaries.lock().unwrap().push((session_id, boundary));
+            }
+        };
+
+        MailboxPoller::drive_self_switch_after_sustained_idle(
+            source_id,
+            fixture.replica.clone(),
+            target_agent,
+            target_profile,
+            None,
+            Arc::clone(&pending),
+            Duration::ZERO,
+            Duration::ZERO,
+            Duration::from_secs(30),
+            session_state,
+            persist,
+            restart,
+            inject,
+            note_boundary,
+        )
+        .await;
+
+        let target_id = restarted_id
+            .lock()
+            .unwrap()
+            .expect("restart seam must return the reseeded Pi session id");
+        assert_ne!(target_id, source_id);
+        assert_eq!(*state_ids.lock().unwrap(), vec![source_id, target_id]);
+        let prompts = injected_prompts.lock().unwrap().clone();
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts[0].0, target_id);
+        assert!(prompts[0].1.contains("self-clear/"), "{}", prompts[0].1);
+        assert_eq!(
+            mock_pty_writes_for(&app, target_id),
+            vec![
+                prompts[0].1.as_bytes().to_vec(),
+                b"\r".to_vec(),
+                b"\r".to_vec()
+            ]
+        );
+        assert_eq!(
+            *boundaries.lock().unwrap(),
+            vec![(target_id, SelfClearBoundary::ContentInjected)]
+        );
+        let manager = {
+            let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let guard = state.read().await;
+            guard.clone()
+        };
+        assert!(manager.get_session(source_id).await.is_none());
+        let target = manager.get_session(target_id).await.unwrap();
+        assert_eq!(target.shell, "pi");
+        assert_eq!(target.agent_id.as_deref(), Some("pi"));
+        assert!(pending.0.lock().unwrap().is_empty());
+        let saved: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(fixture.replica.join("config.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved["tooling"]["currentCodingAgent"], "pi");
+        assert_eq!(saved["tooling"]["profile"], "A");
+    }
+
+    #[tokio::test]
+    async fn self_switch_pi_source_none_agent_id_omitted_target_resolves_pi_via_replica() {
+        // A real Pi session may spawn with agent_id = None. With no --coding-agent
+        // and no live agent_id, target resolution takes the third arm
+        // (read_replica_current_coding_agent), which must yield `pi`.
+        let fixture = make_self_switch_fixture();
+        let app = app_handle(&fixture.app);
+        {
+            let settings = app.state::<SettingsState>();
+            settings
+                .write()
+                .await
+                .agents
+                .push(wake_agent("pi", "Pi", "pi"));
+        }
+        {
+            let settings = app.state::<SettingsState>();
+            let snapshot = settings.read().await.clone();
+            crate::config::coding_agent_profiles::set_replica_coding_agent_selection(
+                &snapshot,
+                &fixture.replica,
+                "pi",
+                "A",
+            )
+            .unwrap();
+        }
+        let (session_id, token) =
+            seed_self_switch_session(&app, &fixture.replica, "pi", None, None, None).await;
+        seed_self_handoff(&fixture.replica);
+        let (path, message) = build_self_switch_message(
+            &fixture.replica,
+            "msg-ss-pi-none-agent",
+            "rid-ss-pi-none-agent",
+            Some(token.to_string()),
+            None,
+            None,
+            "proj-a:wg-1-dev-team/dev-rust",
+        );
+        let poller = MailboxPoller::new();
+
+        poller
+            .handle_self_handoff_switch(&app, &path, &message, false)
+            .await
+            .unwrap();
+        let response = read_response_json(&fixture.replica, "rid-ss-pi-none-agent").unwrap();
+        assert_eq!(response["status"], "queued");
+        assert_eq!(response["target_coding_agent"], "pi");
+        assert_eq!(response["target_profile"], "A");
+        assert!(pending_self_clear_contains(&app, session_id).await);
+    }
+
+    #[tokio::test]
     async fn handle_self_switch_pending_alias_reports_already_queued() {
         let fixture = make_self_switch_fixture();
         let app = app_handle(&fixture.app);
@@ -15065,6 +18075,259 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn self_clear_driver_pi_injects_new_then_handoff_in_boundary_order() {
+        let session_id = Uuid::new_v4();
+        let pending = Arc::new(crate::PendingSelfClear::default());
+        pending.0.lock().unwrap().insert(session_id);
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::write(temp.path().join("SELF-HANDOFF.md"), "Pi resume notes").unwrap();
+        let injected = Arc::new(Mutex::new(Vec::<String>::new()));
+        let injected_seen = Arc::clone(&injected);
+        let boundaries = Arc::new(Mutex::new(Vec::<SelfClearBoundary>::new()));
+        let boundaries_seen = Arc::clone(&boundaries);
+
+        MailboxPoller::drive_self_clear_after_sustained_idle(
+            session_id,
+            "/new",
+            temp.path().to_path_buf(),
+            Arc::clone(&pending),
+            None,
+            Duration::ZERO,
+            Duration::ZERO,
+            Duration::from_secs(1),
+            |_session_id| async { (true, true) },
+            move |_session_id, prompt| {
+                let injected_seen = Arc::clone(&injected_seen);
+                async move {
+                    injected_seen.lock().unwrap().push(prompt);
+                    Ok(())
+                }
+            },
+            move |_session_id, boundary| {
+                let boundaries_seen = Arc::clone(&boundaries_seen);
+                async move {
+                    boundaries_seen.lock().unwrap().push(boundary);
+                }
+            },
+        )
+        .await;
+
+        let injected = injected.lock().unwrap().clone();
+        assert_eq!(injected.len(), 2);
+        assert_eq!(injected[0], "/new");
+        assert!(!injected.iter().any(|text| text == "/clear"));
+        assert!(injected[1].contains("self-clear/"));
+        assert_eq!(
+            *boundaries.lock().unwrap(),
+            vec![
+                SelfClearBoundary::Cleared,
+                SelfClearBoundary::ContentInjected
+            ]
+        );
+        assert!(pending.0.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn self_clear_driver_waits_for_phase1_injector_before_boundary_or_phase2() {
+        let session_id = Uuid::new_v4();
+        let pending = Arc::new(crate::PendingSelfClear::default());
+        pending.0.lock().unwrap().insert(session_id);
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::write(temp.path().join("SELF-HANDOFF.md"), "barrier notes").unwrap();
+        let events = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+        let state_calls = Arc::new(AtomicU32::new(0));
+        let entered = Arc::new(tokio::sync::Barrier::new(2));
+        let release = Arc::new(tokio::sync::Barrier::new(2));
+
+        let events_for_state = Arc::clone(&events);
+        let calls_for_state = Arc::clone(&state_calls);
+        let session_state = move |_session_id| {
+            let events = Arc::clone(&events_for_state);
+            let calls = Arc::clone(&calls_for_state);
+            async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                events.lock().unwrap().push("poll");
+                (true, true)
+            }
+        };
+        let events_for_inject = Arc::clone(&events);
+        let entered_for_inject = Arc::clone(&entered);
+        let release_for_inject = Arc::clone(&release);
+        let inject = move |_session_id, prompt: String| {
+            let events = Arc::clone(&events_for_inject);
+            let entered = Arc::clone(&entered_for_inject);
+            let release = Arc::clone(&release_for_inject);
+            async move {
+                if prompt == "/new" {
+                    events.lock().unwrap().push("inject-start");
+                    entered.wait().await;
+                    release.wait().await;
+                    events.lock().unwrap().push("inject-end");
+                } else {
+                    events.lock().unwrap().push("handoff");
+                }
+                Ok(())
+            }
+        };
+        let events_for_boundary = Arc::clone(&events);
+        let note_boundary = move |_session_id, boundary| {
+            let events = Arc::clone(&events_for_boundary);
+            async move {
+                events.lock().unwrap().push(match boundary {
+                    SelfClearBoundary::Cleared => "cleared",
+                    SelfClearBoundary::ContentInjected => "content",
+                });
+            }
+        };
+        let root = temp.path().to_path_buf();
+        let pending_for_driver = Arc::clone(&pending);
+        let driver = tokio::spawn(async move {
+            MailboxPoller::drive_self_clear_after_sustained_idle(
+                session_id,
+                "/new",
+                root,
+                pending_for_driver,
+                None,
+                Duration::ZERO,
+                Duration::ZERO,
+                Duration::from_secs(1),
+                session_state,
+                inject,
+                note_boundary,
+            )
+            .await;
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), entered.wait())
+            .await
+            .expect("phase-1 injector reached barrier");
+        assert_eq!(state_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(*events.lock().unwrap(), vec!["poll", "inject-start"]);
+        assert!(temp.path().join("SELF-HANDOFF.md").exists());
+        release.wait().await;
+        tokio::time::timeout(Duration::from_secs(1), driver)
+            .await
+            .expect("driver completes")
+            .expect("driver task joins");
+
+        let events = events.lock().unwrap().clone();
+        let cleared = events.iter().position(|event| *event == "cleared").unwrap();
+        let phase2_poll = events
+            .iter()
+            .enumerate()
+            .skip(cleared + 1)
+            .find(|(_, event)| **event == "poll")
+            .map(|(index, _)| index)
+            .unwrap();
+        assert!(cleared < phase2_poll, "{events:?}");
+        assert!(
+            events
+                .iter()
+                .position(|event| *event == "inject-end")
+                .unwrap()
+                < cleared
+        );
+        assert!(events.iter().position(|event| *event == "handoff").unwrap() > phase2_poll);
+        assert!(pending.0.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn self_clear_handoff_busy_after_pi_new_restarts_fresh_idle() {
+        let settle = Duration::from_secs(10);
+        let max_defer = Duration::from_secs(100);
+        let start = std::time::Instant::now();
+        let mut state = SelfClearGateState::new(start);
+        (state, _) = self_clear_gate_advance(state, true, true, start, settle, max_defer);
+        let (next, action) =
+            self_clear_gate_advance(state, true, true, start + settle, settle, max_defer);
+        state = next;
+        assert_eq!(action, SelfClearGateAction::InjectClear);
+        assert_eq!(state.phase, SelfClearPhase::Handoff);
+
+        (state, _) = self_clear_gate_advance(
+            state,
+            true,
+            true,
+            start + Duration::from_secs(11),
+            settle,
+            max_defer,
+        );
+        let (next, action) = self_clear_gate_advance(
+            state,
+            true,
+            false,
+            start + Duration::from_secs(15),
+            settle,
+            max_defer,
+        );
+        state = next;
+        assert_eq!(action, SelfClearGateAction::Wait);
+        assert_eq!(state.idle_since, None);
+        (state, _) = self_clear_gate_advance(
+            state,
+            true,
+            true,
+            start + Duration::from_secs(20),
+            settle,
+            max_defer,
+        );
+        let (state, action) = self_clear_gate_advance(
+            state,
+            true,
+            true,
+            start + Duration::from_secs(30),
+            settle,
+            max_defer,
+        );
+        assert_eq!(state.phase, SelfClearPhase::Handoff);
+        assert_eq!(action, SelfClearGateAction::InjectHandoff);
+    }
+
+    #[tokio::test]
+    async fn self_clear_driver_pi_phase1_failure_has_no_boundary_or_handoff() {
+        let session_id = Uuid::new_v4();
+        let pending = Arc::new(crate::PendingSelfClear::default());
+        pending.0.lock().unwrap().insert(session_id);
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::write(temp.path().join("SELF-HANDOFF.md"), "Pi resume notes").unwrap();
+        let attempted = Arc::new(Mutex::new(Vec::<String>::new()));
+        let attempted_seen = Arc::clone(&attempted);
+        let boundaries = Arc::new(Mutex::new(Vec::<SelfClearBoundary>::new()));
+        let boundaries_seen = Arc::clone(&boundaries);
+
+        MailboxPoller::drive_self_clear_after_sustained_idle(
+            session_id,
+            "/new",
+            temp.path().to_path_buf(),
+            Arc::clone(&pending),
+            None,
+            Duration::ZERO,
+            Duration::ZERO,
+            Duration::from_secs(1),
+            |_session_id| async { (true, true) },
+            move |_session_id, prompt| {
+                let attempted = Arc::clone(&attempted_seen);
+                async move {
+                    attempted.lock().unwrap().push(prompt);
+                    Err("injection failed".to_string())
+                }
+            },
+            move |_session_id, boundary| {
+                let boundaries = Arc::clone(&boundaries_seen);
+                async move {
+                    boundaries.lock().unwrap().push(boundary);
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(*attempted.lock().unwrap(), vec!["/new"]);
+        assert!(boundaries.lock().unwrap().is_empty());
+        assert!(temp.path().join("SELF-HANDOFF.md").exists());
+        assert!(pending.0.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn self_clear_driver_injects_first_captured_summary_not_later_file() {
         let session_id = Uuid::new_v4();
         let pending = Arc::new(crate::PendingSelfClear::default());
@@ -15103,6 +18366,7 @@ mod tests {
 
         MailboxPoller::drive_self_clear_after_sustained_idle(
             session_id,
+            "/clear",
             temp.path().to_path_buf(),
             pending.clone(),
             forgotten_summary,
@@ -15173,6 +18437,7 @@ mod tests {
 
         MailboxPoller::drive_self_clear_after_sustained_idle(
             session_id,
+            "/clear",
             temp.path().to_path_buf(),
             pending.clone(),
             None,
@@ -15256,6 +18521,7 @@ mod tests {
 
         MailboxPoller::drive_self_clear_after_sustained_idle(
             session_id,
+            "/clear",
             temp.path().to_path_buf(),
             pending.clone(),
             None,
@@ -15329,6 +18595,7 @@ mod tests {
 
         MailboxPoller::drive_self_clear_after_sustained_idle(
             session_id,
+            "/clear",
             temp.path().to_path_buf(),
             pending.clone(),
             None,
@@ -15372,6 +18639,7 @@ mod tests {
 
         MailboxPoller::drive_self_clear_after_sustained_idle(
             session_id,
+            "/clear",
             temp.path().to_path_buf(),
             pending.clone(),
             None,
@@ -15917,11 +19185,12 @@ mod tests {
     }
 
     #[test]
-    fn err_is_pty_session_missing_matches_bare_form() {
-        // Matches even without the inject_text_into_session wrapping, in case
-        // a future call site propagates the inner error directly.
-        let e = "Session not found: abcdef";
-        assert!(err_is_pty_session_missing(e));
+    fn err_is_pty_session_missing_matches_bare_and_contextual_forms() {
+        // Matches both the canonical bare error and command-branch context.
+        assert!(err_is_pty_session_missing("Session not found: abcdef"));
+        assert!(err_is_pty_session_missing(
+            "Session not found: abcdef - cannot execute logical remote command 'clear'"
+        ));
     }
 
     #[test]
@@ -16545,6 +19814,595 @@ mod tests {
             quiet_period_ms: None,
             pty_input: None,
         }
+    }
+
+    fn logical_command_message(command: &str, body: &str) -> OutboxMessage {
+        let mut message = wake_message_to_target();
+        message.id = format!("logical-{command}");
+        message.command = Some(command.to_string());
+        message.body = body.to_string();
+        message
+    }
+
+    fn write_logical_command_message(
+        sender_cwd: &Path,
+        msg_id: &str,
+        command: &str,
+        body: &str,
+    ) -> PathBuf {
+        let outbox_dir = sender_cwd
+            .join(crate::config::agent_local_dir_name())
+            .join("outbox");
+        std::fs::create_dir_all(&outbox_dir).unwrap();
+        let path = outbox_dir.join(format!("{msg_id}.json"));
+        let mut message = logical_command_message(command, body);
+        message.id = msg_id.to_string();
+        message.token = Some(MAILBOX_MASTER_TOKEN.to_string());
+        std::fs::write(&path, serde_json::to_string_pretty(&message).unwrap()).unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn remote_pi_clear_command_branch_writes_new_emits_logical_event_and_stamps_boundary() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let session_id = add_mailbox_session_with_shell(
+            &app,
+            &fixture.target_cwd,
+            "pi-live",
+            "pi.cmd",
+            SessionStatus::Idle,
+        )
+        .await;
+        register_mock_pty_route(&app, session_id);
+        {
+            let manager = {
+                let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let guard = state.read().await;
+                guard.clone()
+            };
+            assert!(
+                !manager
+                    .get_session(session_id)
+                    .await
+                    .unwrap()
+                    .start_fresh_on_restore
+            );
+        }
+        let events = Arc::new(Mutex::new(Vec::<String>::new()));
+        let captured = Arc::clone(&events);
+        fixture.app.listen_any("message_delivered", move |event| {
+            captured.lock().unwrap().push(event.payload().to_string());
+        });
+        let poller = MailboxPoller::new();
+        let message = logical_command_message("clear", "");
+
+        poller
+            .inject_into_pty(
+                &app,
+                session_id,
+                &message,
+                true,
+                WakeDeliveryOrigin::FilesystemPoller,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            mock_pty_writes_for(&app, session_id),
+            vec![b"/new".to_vec(), b"\r".to_vec(), b"\r".to_vec()]
+        );
+        let manager = {
+            let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let guard = state.read().await;
+            guard.clone()
+        };
+        assert!(
+            manager
+                .get_session(session_id)
+                .await
+                .unwrap()
+                .start_fresh_on_restore
+        );
+        let delivered = events.lock().unwrap().clone();
+        assert_eq!(delivered.len(), 1);
+        let payload: serde_json::Value = serde_json::from_str(&delivered[0]).unwrap();
+        assert_eq!(payload["command"], "clear");
+        assert_eq!(payload["id"], message.id);
+    }
+
+    async fn assert_wired_clear_and_compact_submission(clear_shell: &str, compact_shell: &str) {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let clear_id = add_mailbox_session_with_shell(
+            &app,
+            &fixture.target_cwd,
+            "wired-clear",
+            clear_shell,
+            SessionStatus::Idle,
+        )
+        .await;
+        let compact_id = add_mailbox_session_with_shell(
+            &app,
+            &fixture.target_cwd,
+            "wired-compact",
+            compact_shell,
+            SessionStatus::Idle,
+        )
+        .await;
+        register_mock_pty_route(&app, clear_id);
+        register_mock_pty_route(&app, compact_id);
+        let clear_message = logical_command_message("clear", "");
+        let compact_message = logical_command_message("compact", "");
+        let poller = MailboxPoller::new();
+        let started = std::time::Instant::now();
+
+        let (clear_result, compact_result) = tokio::join!(
+            poller.inject_into_pty(
+                &app,
+                clear_id,
+                &clear_message,
+                true,
+                WakeDeliveryOrigin::FilesystemPoller,
+            ),
+            poller.inject_into_pty(
+                &app,
+                compact_id,
+                &compact_message,
+                true,
+                WakeDeliveryOrigin::FilesystemPoller,
+            )
+        );
+        clear_result.unwrap();
+        compact_result.unwrap();
+        assert!(
+            started.elapsed() >= Duration::from_millis(2000),
+            "wired submissions must await both canonical delayed Enter writes"
+        );
+
+        assert_eq!(
+            mock_pty_writes_for(&app, clear_id),
+            vec![b"/clear".to_vec(), b"\r".to_vec(), b"\r".to_vec()]
+        );
+        assert_eq!(
+            mock_pty_writes_for(&app, compact_id),
+            vec![b"/compact".to_vec(), b"\r".to_vec(), b"\r".to_vec()]
+        );
+        let manager = {
+            let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let guard = state.read().await;
+            guard.clone()
+        };
+        assert!(
+            manager
+                .get_session(clear_id)
+                .await
+                .unwrap()
+                .start_fresh_on_restore
+        );
+        assert!(
+            !manager
+                .get_session(compact_id)
+                .await
+                .unwrap()
+                .start_fresh_on_restore
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_established_command_branches_preserve_text_and_submission() {
+        tokio::join!(
+            assert_wired_clear_and_compact_submission("claude.exe", "claude-wrapper.cmd"),
+            assert_wired_clear_and_compact_submission("codex.exe", "codex-wrapper.cmd"),
+            assert_wired_clear_and_compact_submission("gemini.exe", "gemini-wrapper.cmd")
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_cursor_command_branches_preserve_text_and_submission() {
+        assert_wired_clear_and_compact_submission("agent.exe", "agent.cmd").await;
+    }
+
+    #[tokio::test]
+    async fn pi_canonical_injector_writes_arbitrary_text_then_two_enters() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let session_id = add_mailbox_session_with_shell(
+            &app,
+            &fixture.target_cwd,
+            "pi-live",
+            "pi",
+            SessionStatus::Idle,
+        )
+        .await;
+        register_mock_pty_route(&app, session_id);
+
+        crate::pty::inject::inject_text_into_session(&app, session_id, "arbitrary Pi payload")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            mock_pty_writes_for(&app, session_id),
+            vec![
+                b"arbitrary Pi payload".to_vec(),
+                b"\r".to_vec(),
+                b"\r".to_vec()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_pi_compact_existing_session_has_no_actuation() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let session_id = add_mailbox_session_with_shell(
+            &app,
+            &fixture.target_cwd,
+            "pi-live",
+            "pi",
+            SessionStatus::Idle,
+        )
+        .await;
+        register_mock_pty_route(&app, session_id);
+        let events = Arc::new(Mutex::new(Vec::<String>::new()));
+        let captured = Arc::clone(&events);
+        fixture.app.listen_any("message_delivered", move |event| {
+            captured.lock().unwrap().push(event.payload().to_string());
+        });
+        let message = logical_command_message("compact", "must not follow up");
+        let poller = MailboxPoller::new();
+
+        let error = poller
+            .inject_into_pty(
+                &app,
+                session_id,
+                &message,
+                true,
+                WakeDeliveryOrigin::FilesystemPoller,
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            "Cannot execute logical remote command 'compact': session shell 'pi' has no verified mapping. Claude / Codex / Gemini / Cursor agent direct shells use /clear and /compact; exact Pi uses /new for clear only. cmd / pwsh outer wrappers and Pi compact are unsupported."
+        );
+        assert!(mock_pty_writes_for(&app, session_id).is_empty());
+        assert!(events.lock().unwrap().is_empty());
+        let manager = {
+            let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let guard = state.read().await;
+            guard.clone()
+        };
+        assert!(
+            !manager
+                .get_session(session_id)
+                .await
+                .unwrap()
+                .start_fresh_on_restore
+        );
+    }
+
+    #[tokio::test]
+    async fn deliver_wake_terminal_commands_preflight_before_lifecycle() {
+        // Live Pi compact rejects before settle or injection.
+        let live_fixture = make_mailbox_fixture();
+        let live_app = app_handle(&live_fixture.app);
+        let live_id = add_mailbox_session_with_shell(
+            &live_app,
+            &live_fixture.target_cwd,
+            "pi-live",
+            "pi",
+            SessionStatus::Idle,
+        )
+        .await;
+        let live_hooks = MailboxTestHooks::default();
+        live_hooks
+            .pty_presence
+            .lock()
+            .unwrap()
+            .insert(live_id, true);
+        let live_poller = MailboxPoller::new_with_test_hooks(live_hooks.clone());
+        let live_error = live_poller
+            .deliver_wake_with_origin(
+                &live_app,
+                &logical_command_message("compact", "follow-up"),
+                WakeDeliveryOrigin::FilesystemPoller,
+            )
+            .await
+            .unwrap_err();
+        assert!(live_error.starts_with(ERR_UNMAPPED_LOGICAL_REMOTE_COMMAND));
+        assert!(live_hooks.settle_calls.lock().unwrap().is_empty());
+        assert!(live_hooks.events.lock().unwrap().is_empty());
+
+        // No-session Pi compact rejects before spawn.
+        let cold_fixture = make_mailbox_fixture();
+        let cold_app = app_handle(&cold_fixture.app);
+        {
+            let settings = cold_app.state::<SettingsState>();
+            settings.write().await.agents = vec![wake_agent("pi", "Pi", "pi")];
+        }
+        let cold_hooks = MailboxTestHooks::default();
+        let cold_poller = MailboxPoller::new_with_test_hooks(cold_hooks.clone());
+        let mut cold_message = logical_command_message("compact", "follow-up");
+        cold_message.preferred_agent = "pi".to_string();
+        let cold_error = cold_poller
+            .deliver_wake_with_origin(
+                &cold_app,
+                &cold_message,
+                WakeDeliveryOrigin::FilesystemPoller,
+            )
+            .await
+            .unwrap_err();
+        assert!(cold_error.starts_with(ERR_UNMAPPED_LOGICAL_REMOTE_COMMAND));
+        assert!(cold_hooks.events.lock().unwrap().is_empty());
+
+        // An Exited Pi record is left intact when the carried spawn shell has no mapping.
+        let exited_fixture = make_mailbox_fixture();
+        let exited_app = app_handle(&exited_fixture.app);
+        {
+            let settings = exited_app.state::<SettingsState>();
+            settings.write().await.agents = vec![wake_agent("pi", "Pi", "pi")];
+        }
+        let exited_id = add_mailbox_session_with_shell(
+            &exited_app,
+            &exited_fixture.target_cwd,
+            "pi-exited",
+            "pi",
+            SessionStatus::Exited(0),
+        )
+        .await;
+        let exited_hooks = MailboxTestHooks::default();
+        exited_hooks
+            .pty_presence
+            .lock()
+            .unwrap()
+            .insert(exited_id, false);
+        let exited_poller = MailboxPoller::new_with_test_hooks(exited_hooks.clone());
+        let mut exited_message = logical_command_message("compact", "follow-up");
+        exited_message.preferred_agent = "pi".to_string();
+        let exited_error = exited_poller
+            .deliver_wake_with_origin(
+                &exited_app,
+                &exited_message,
+                WakeDeliveryOrigin::FilesystemPoller,
+            )
+            .await
+            .unwrap_err();
+        assert!(exited_error.starts_with(ERR_UNMAPPED_LOGICAL_REMOTE_COMMAND));
+        assert!(exited_hooks.events.lock().unwrap().is_empty());
+        let exited_manager = {
+            let state = exited_app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let guard = state.read().await;
+            guard.clone()
+        };
+        assert!(exited_manager.get_session(exited_id).await.is_some());
+
+        // Unknown wire input is parsed before candidate settling.
+        let unknown_fixture = make_mailbox_fixture();
+        let unknown_app = app_handle(&unknown_fixture.app);
+        let unknown_id = add_mailbox_session_with_shell(
+            &unknown_app,
+            &unknown_fixture.target_cwd,
+            "pi-live",
+            "pi",
+            SessionStatus::Idle,
+        )
+        .await;
+        let unknown_hooks = MailboxTestHooks::default();
+        unknown_hooks
+            .pty_presence
+            .lock()
+            .unwrap()
+            .insert(unknown_id, true);
+        let unknown_poller = MailboxPoller::new_with_test_hooks(unknown_hooks.clone());
+        let unknown_error = unknown_poller
+            .deliver_wake_with_origin(
+                &unknown_app,
+                &logical_command_message("Clear", ""),
+                WakeDeliveryOrigin::FilesystemPoller,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            unknown_error,
+            "Unsupported logical remote command 'Clear'. Allowed values: clear, compact"
+        );
+        assert!(unknown_hooks.settle_calls.lock().unwrap().is_empty());
+        assert!(unknown_hooks.events.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn deliver_wake_logical_command_session_race_continues_to_next_candidate() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let vanished_id = add_mailbox_session_with_shell(
+            &app,
+            &fixture.target_cwd,
+            "pi-vanishes-after-preflight",
+            "pi",
+            SessionStatus::Idle,
+        )
+        .await;
+        let surviving_id = add_mailbox_session_with_shell(
+            &app,
+            &fixture.target_cwd,
+            "pi-survives",
+            "pi",
+            SessionStatus::Idle,
+        )
+        .await;
+        register_mock_pty_route(&app, vanished_id);
+        register_mock_pty_route(&app, surviving_id);
+
+        let hooks = MailboxTestHooks::default();
+        {
+            let mut presence = hooks.pty_presence.lock().unwrap();
+            presence.insert(vanished_id, true);
+            presence.insert(surviving_id, true);
+        }
+        hooks
+            .remove_session_on_settle
+            .lock()
+            .unwrap()
+            .insert(vanished_id);
+        {
+            let mut real = hooks.real_inject_sessions.lock().unwrap();
+            real.insert(vanished_id);
+            real.insert(surviving_id);
+        }
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+
+        poller
+            .deliver_wake_with_origin(
+                &app,
+                &logical_command_message("clear", ""),
+                WakeDeliveryOrigin::FilesystemPoller,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            *hooks.settle_calls.lock().unwrap(),
+            vec![vanished_id, surviving_id],
+            "the missing-record error must continue the same delivery attempt"
+        );
+        assert_eq!(
+            *hooks.inject_calls.lock().unwrap(),
+            vec![vanished_id, surviving_id]
+        );
+        assert!(mock_pty_writes_for(&app, vanished_id).is_empty());
+        assert_eq!(
+            mock_pty_writes_for(&app, surviving_id),
+            vec![b"/new".to_vec(), b"\r".to_vec(), b"\r".to_vec()]
+        );
+        assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+        assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+        let manager = {
+            let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let guard = state.read().await;
+            guard.clone()
+        };
+        assert!(manager.get_session(vanished_id).await.is_none());
+        assert!(
+            manager
+                .get_session(surviving_id)
+                .await
+                .unwrap()
+                .start_fresh_on_restore
+        );
+    }
+
+    #[tokio::test]
+    async fn deliver_wake_supported_established_command_keeps_spawn_path() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let hooks = MailboxTestHooks::default();
+        hooks.inject_results.lock().unwrap().push_back(Ok(()));
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+        let message = logical_command_message("clear", "");
+
+        poller
+            .deliver_wake_with_origin(&app, &message, WakeDeliveryOrigin::FilesystemPoller)
+            .await
+            .unwrap();
+
+        assert_eq!(hooks.spawn_calls.lock().unwrap().len(), 1);
+        assert_eq!(hooks.inject_calls.lock().unwrap().len(), 1);
+        assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn poll_rejects_terminal_logical_command_on_first_attempt() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let session_id = add_mailbox_session_with_shell(
+            &app,
+            &fixture.target_cwd,
+            "pi-live",
+            "pi",
+            SessionStatus::Idle,
+        )
+        .await;
+        let hooks = MailboxTestHooks::default();
+        hooks.pty_presence.lock().unwrap().insert(session_id, true);
+        {
+            let settings = app.state::<SettingsState>();
+            settings
+                .write()
+                .await
+                .project_paths
+                .push(fixture.sender_cwd.to_string_lossy().to_string());
+        }
+        let source = write_logical_command_message(
+            &fixture.sender_cwd,
+            "poll-pi-compact",
+            "compact",
+            "follow-up",
+        );
+        let mut poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+
+        poller.poll(&app).await.unwrap();
+
+        assert!(!source.exists());
+        let reason_path = source
+            .parent()
+            .unwrap()
+            .join("rejected")
+            .join("poll-pi-compact.reason.txt");
+        let reason = std::fs::read_to_string(reason_path).unwrap();
+        assert_eq!(
+            reason,
+            "Cannot execute logical remote command 'compact': session shell 'pi' has no verified mapping. Claude / Codex / Gemini / Cursor agent direct shells use /clear and /compact; exact Pi uses /new for clear only. cmd / pwsh outer wrappers and Pi compact are unsupported."
+        );
+        assert!(!reason.contains("Undeliverable after"));
+        assert!(!poller.retry_tracker.contains_key(&source));
+        assert!(hooks.events.lock().unwrap().is_empty());
+        assert!(hooks.settle_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn poll_keeps_supported_busy_command_retriable() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let session_id = add_mailbox_session_with_shell(
+            &app,
+            &fixture.target_cwd,
+            "pi-busy",
+            "pi",
+            SessionStatus::Running,
+        )
+        .await;
+        register_mock_pty_route(&app, session_id);
+        {
+            let settings = app.state::<SettingsState>();
+            settings
+                .write()
+                .await
+                .project_paths
+                .push(fixture.sender_cwd.to_string_lossy().to_string());
+        }
+        let source =
+            write_logical_command_message(&fixture.sender_cwd, "poll-pi-busy-clear", "clear", "");
+        let mut poller = MailboxPoller::new();
+
+        poller.poll(&app).await.unwrap();
+
+        assert!(source.exists());
+        assert_eq!(
+            poller
+                .retry_tracker
+                .get(&source)
+                .map(|state| state.attempt_count),
+            Some(1)
+        );
+        assert!(!source
+            .parent()
+            .unwrap()
+            .join("rejected")
+            .join("poll-pi-busy-clear.reason.txt")
+            .exists());
+        assert!(mock_pty_writes_for(&app, session_id).is_empty());
     }
 
     #[tokio::test]

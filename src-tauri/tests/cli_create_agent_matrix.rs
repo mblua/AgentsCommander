@@ -107,6 +107,21 @@ fn project_with_workspace(tmp: &Path) -> PathBuf {
     project
 }
 
+/// Assert a CLI-emitted path string points to the same directory/file as
+/// `expected`. #1077: `create-agent-matrix` prints the SELECTED CANONICAL path
+/// (§3.4), so a raw `tmp.path()` expectation breaks on a CI runner whose %TEMP%
+/// is an 8.3 short name (`RUNNER~1` vs the canonical `runneradmin`).
+/// Canonicalizing both sides compares filesystem identity, robust to 8.3
+/// short-name and Windows verbatim-prefix differences. Both paths exist at every
+/// call site (the verb created them), so `canonicalize` always resolves.
+fn assert_same_path(actual: &str, expected: &Path) {
+    let canon_actual = std::fs::canonicalize(actual)
+        .unwrap_or_else(|e| panic!("canonicalize actual path {actual:?}: {e}"));
+    let canon_expected = std::fs::canonicalize(expected)
+        .unwrap_or_else(|e| panic!("canonicalize expected path {expected:?}: {e}"));
+    assert_eq!(canon_actual, canon_expected);
+}
+
 fn session_request_paths(config_dir: &Path) -> Vec<PathBuf> {
     let requests_dir = config_dir.join("session-requests");
     if !requests_dir.exists() {
@@ -197,14 +212,11 @@ fn create_agent_matrix_success_prints_json_and_writes_layout() {
     let json: serde_json::Value =
         serde_json::from_slice(&out.stdout).expect("stdout should be JSON");
     let agent_dir = project.join(".ac").join("_agent_architect");
-    assert_eq!(
-        json["agentPath"].as_str().expect("agentPath"),
-        agent_dir.to_string_lossy().as_ref()
-    );
+    assert_same_path(json["agentPath"].as_str().expect("agentPath"), &agent_dir);
     assert_eq!(json["agentName"], "ProjectAlpha/architect");
-    assert_eq!(
+    assert_same_path(
         json["rolePath"].as_str().expect("rolePath"),
-        agent_dir.join("Role.md").to_string_lossy().as_ref()
+        &agent_dir.join("Role.md"),
     );
     assert_eq!(json["launched"], false);
     assert!(json["launchAgent"].is_null());
@@ -262,10 +274,7 @@ fn create_agent_matrix_resolves_project_name_from_settings_for_unrelated_root() 
     let json: serde_json::Value =
         serde_json::from_slice(&out.stdout).expect("stdout should be JSON");
     let agent_dir = project.join(".ac").join("_agent_architect");
-    assert_eq!(
-        json["agentPath"].as_str().expect("agentPath"),
-        agent_dir.to_string_lossy().as_ref()
-    );
+    assert_same_path(json["agentPath"].as_str().expect("agentPath"), &agent_dir);
     assert_eq!(json["agentName"], "ProjectAlpha/architect");
     assert!(agent_dir.join("Role.md").is_file());
     assert_single_project_refresh_request(&config_dir, &project);
@@ -538,9 +547,9 @@ fn create_agent_matrix_project_name_resolves_from_settings_not_cwd() {
         serde_json::from_slice(&out.stdout).expect("stdout should be JSON");
     let registered_agent_dir = registered_project.join(".ac").join("_agent_architect");
     let cwd_agent_dir = cwd_project.join(".ac").join("_agent_architect");
-    assert_eq!(
+    assert_same_path(
         json["agentPath"].as_str().expect("agentPath"),
-        registered_agent_dir.to_string_lossy().as_ref()
+        &registered_agent_dir,
     );
     assert!(registered_agent_dir.join("Role.md").is_file());
     assert!(
@@ -590,14 +599,11 @@ fn create_agent_project_mode_delegates_to_matrix_creation() {
     let json: serde_json::Value =
         serde_json::from_slice(&out.stdout).expect("stdout should be JSON");
     let agent_dir = project.join(".ac").join("_agent_architect");
-    assert_eq!(
-        json["agentPath"].as_str().expect("agentPath"),
-        agent_dir.to_string_lossy().as_ref()
-    );
+    assert_same_path(json["agentPath"].as_str().expect("agentPath"), &agent_dir);
     assert_eq!(json["agentName"], "ProjectAlpha/architect");
-    assert_eq!(
+    assert_same_path(
         json["rolePath"].as_str().expect("rolePath"),
-        agent_dir.join("Role.md").to_string_lossy().as_ref()
+        &agent_dir.join("Role.md"),
     );
     assert!(json.get("claudeMd").is_none());
     assert!(agent_dir.join("Role.md").is_file());
@@ -797,10 +803,7 @@ fn create_agent_matrix_launch_writes_session_request() {
         serde_json::from_str(&std::fs::read_to_string(&requests[0]).expect("read request"))
             .expect("request json");
     let agent_dir = project.join(".ac").join("_agent_architect");
-    assert_eq!(
-        request["cwd"].as_str().expect("cwd"),
-        agent_dir.to_string_lossy().as_ref()
-    );
+    assert_same_path(request["cwd"].as_str().expect("cwd"), &agent_dir);
     assert_eq!(request["sessionName"], "ProjectAlpha/architect");
     assert_eq!(request["agentId"], "codex");
 

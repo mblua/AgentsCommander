@@ -83,7 +83,7 @@ See [AgentsCommander Harness Roadmap](../harness-roadmap.md) for the phase 1 thr
 
 ## `send`
 
-Send a file notification, a remote slash command, or privileged exact PTY input.
+Send a file notification, a remote logical PTY action, or privileged exact PTY input.
 
 ```bash
 # File notification
@@ -117,7 +117,7 @@ printf '%s' "$PROMPT" | agentscommander send \
 | `--root` | Yes | Sender's root directory (your CWD inside the workgroup or matrix). Used to derive your canonical name. |
 | `--to` | Yes | Destination peer's canonical FQN. Get this from `list-peers-lean`. |
 | `--send` | * | Filename only, not a path. The file must already exist in `<workgroup-root>/messaging/`. |
-| `--command` | * | Remote slash command. Whitelist: `clear`, `compact`. Recipient must be idle. |
+| `--command` | * | Logical PTY action: `clear` or `compact`. `clear` resolves to `/new` for an exact-stem direct Pi shell and `/clear` for direct Claude/Codex/Gemini-family or Cursor `agent` shells. Pi compact and outer `cmd`/`pwsh` wrappers are unsupported. The mapped session must be idle. Mutually exclusive with `--send`. |
 | `--pty-input` | * | Exact UTF-8 text argument. Hyphen-leading values are accepted. The caller's shell applies quoting and expansion before AC receives the value. |
 | `--pty-input-stdin` | * | Read exact UTF-8 bytes from stdin. Recommended for multiline, clipboard, hyphen-leading, process-list-sensitive, or otherwise sensitive text. |
 | `--mode` | No | Delivery mode. Default and only supported value: `wake`. |
@@ -130,6 +130,8 @@ printf '%s' "$PROMPT" | agentscommander send \
 \* Exactly one of `--send`, `--command`, `--pty-input`, or `--pty-input-stdin` is required.
 
 **Routing** is pre-validated against team membership and coordinator rules before delivery. PTY input uses a narrower identity-verified route described below. Failures exit 1 without writing to the outbox.
+
+Logical values and missing mappings are validated after authorization/routing but before recipient actuation. Unknown values and unsupported mappings are terminal first-poll rejections. A supported action against a busy session remains retriable. Exact-stem matching is lexical trusted configuration, not binary attestation or a runtime version/semantic-success probe. See [Inter-agent messaging](../agents/inter-agent-messaging.md) for the full mapping and trust boundary.
 
 ### Privileged exact PTY input
 
@@ -158,6 +160,12 @@ CLI output has distinct meanings:
 A confirmation timeout exits 1 without canceling queued or actuating work. Keep the printed operation ID, do not resubmit under a new ID, and inspect the metadata-only `delivered/`, `rejected/`, and `indeterminate/` artifacts below the verified sender outbox. The raw host request, ignored temporary request, and queued SQLite payload are sensitive until marker conversion, expiry, or actuation; terminal artifacts contain metadata only.
 
 See [Inter-agent messaging](../agents/inter-agent-messaging.md) for the ordinary file protocol and the separate privileged actuation contract.
+
+### `self-handoff-and-clear`
+
+`self-handoff-and-clear` is a token-authorized operation on the caller's own session. Write `SELF-HANDOFF.md` first. Phase 1 waits for 30 seconds of continuous idle, then injects provider-resolved logical-clear text: `/new` for an exact-stem direct Pi shell or `/clear` for direct Claude/Codex/Gemini-family and Cursor `agent` shells. Phase 2 starts only after the full phase-1 injection returns, waits for a fresh 30 seconds of sustained idle, archives the handoff into `self-clear/`, and injects a resume prompt naming that archive.
+
+Both phases are best-effort. A busy transition resets the current sustained-idle window, and a daemon restart or failed phase-1 injection abandons the cycle. Outer `cmd`/`pwsh` wrappers remain unsupported.
 
 ---
 
@@ -385,6 +393,7 @@ Create a full Agent Matrix (`_agent_<id>/` with a `Role.md`) in a registered AC 
 ```bash
 agentscommander create-agent --project MyProject --name "QA Bot" --description "Runs the integration suite and reports failures."
 agentscommander create-agent --project MyProject --name "QA Bot" --description "Runs the integration suite." --role-template agency:dev-rust --launch claude
+agentscommander create-agent --project MyProject --name "Pi Reviewer" --description "Reviews the current change." --launch pi
 ```
 
 | Flag | Required | Description |
@@ -416,7 +425,7 @@ Create a full Agent Matrix in a registered AC project from a role template; opti
 
 ```bash
 agentscommander create-agent-matrix --project MyProject --name "dev-rust" --description "Implements the Rust backend."
-agentscommander create-agent-matrix --project MyProject --name "dev-rust" --description "Implements the Rust backend." --role-template agency:dev-rust --launch claude
+agentscommander create-agent-matrix --project MyProject --name "dev-rust" --description "Implements the Rust backend." --role-template agency:dev-rust --launch pi
 ```
 
 | Flag | Required | Description |
@@ -444,8 +453,9 @@ Scriptable create/inspect/update/remove of Coding Agent configurations (`setting
 ```bash
 agentscommander coding-agent list
 agentscommander coding-agent show --id claude
+agentscommander coding-agent show --id pi
 agentscommander coding-agent catalog
-agentscommander coding-agent add --from-catalog claude
+agentscommander coding-agent add --from-catalog pi
 agentscommander coding-agent add --label "My Claude" --command "claude" --color "#6366f1" --env FOO=bar
 agentscommander coding-agent update --id agent_123_abc --command "claude --model opus" --clear-envs
 agentscommander coding-agent remove --id agent_123_abc
@@ -469,7 +479,7 @@ Subcommands:
 | `--from-catalog <key>` | (add) Seed label/command/color/envs/isolatedHome (and optional instructions/seed) from a catalog entry; explicit flags below override. Without it, `--label` and `--command` are required. The final label must still be non-empty: a catalog entry with an empty label requires `--label`. |
 | `--id <id>` | (add) Custom id, `^[a-z0-9][a-z0-9_-]{0,63}$`. Default: a minted `agent_<ms>_<hex>` id. Ids are unique case-insensitively. |
 | `--label <s>` | Display label (non-empty, trimmed). |
-| `--command <s>` | Launch command. Banned: Claude `--continue`/`-c`, Codex `resume`/`--last`, Gemini `--resume` (AC injects resume automatically). |
+| `--command <s>` | Launch command. Banned for AC-managed providers: Claude `--continue`/`-c`, Codex `resume`/`--last`, and Gemini `--resume`. Pi is the intentional exception: canonical Pi commands may contain `-c`, `-r`, `--continue`, `--resume`, `--session`, `--session-id`, `--fork`, or `--no-session`, including long `--name=value` forms. These user-authored controls remain configured and veto AC injection. See [Pi resume behavior](../integrations/coding-agents.md#pi-resume-behavior). |
 | `--color <#rrggbb>` | Strict 6-digit hex (only enforced for the explicit flag; catalog-seeded colors are accepted as-is). Default `#6366f1` for custom agents. |
 | `--env KEY=VALUE` | Repeatable. Split on the first `=` (`FOO=a=b` -> value `a=b`). All CLI envs are `source=user`, `enabled=true`. On `update`, any `--env` REPLACES the whole env list (including `source=system` rows). |
 | `--clear-envs` | (update) Empty the env list. Conflicts with `--env`. |
@@ -596,15 +606,19 @@ agentscommander open-project /path/to/project
 
 | Argument | Description |
 |---|---|
-| `PATH` | Absolute or relative path. Relative is resolved against your CWD; the persisted entry is the absolute form. |
+| `PATH` | Absolute or relative path. Relative is resolved against your current working directory. |
 
 Idempotent — re-registering the same path is a no-op (`Project already registered`).
 
 If the folder does not contain `.ac/`, the CLI suggests `new-project` instead.
 
+**Persisted forms.** Relative `PATH` still resolves against your CWD, but the registration records two paths: the canonical absolute path and a portable companion relative to the AC binary's own directory (not your CWD). See [Portable instances](../features/portable-instances.md#portable-project-paths) and the [`projectPaths` schema](settings.md#projects). A project on a different drive or UNC share than the binary records a `null` companion and remains absolute-only.
+
+**Strict settings write.** `open-project` loads `settings.json` strictly before writing: a present-but-unparseable file, or structurally malformed project metadata, is refused with an error and no changes, rather than being silently overwritten.
+
 **No token required** — project registration mutates the local `settings.json`, which any shell-capable process can already write to.
 
-**GUI concurrency caveat**: when AC is running, the in-memory settings are authoritative; a subsequent GUI `update_settings` built from a stale snapshot can clobber a CLI-registered entry. A watcher/reload story is a follow-up issue.
+**GUI concurrency caveat**: when AC is running, the in-memory settings are authoritative; a subsequent GUI `update_settings` built from a stale snapshot can clobber a CLI-registered entry. This last-writer race between separate CLI and GUI processes is unchanged; the dual-path work adds no interprocess lock. A watcher/reload story is a follow-up issue.
 
 ---
 
@@ -621,6 +635,8 @@ agentscommander new-project /path/to/project
 | `PATH` | Absolute or relative. Folder created if it does not yet exist. |
 
 Idempotent: re-running on a folder that already has `.ac/` only sweeps the Project AC Root gitignore and deduplicates the registration.
+
+Registration records both the absolute path and the instance-relative companion, and uses the same strict settings-write behavior as [`open-project`](#open-project).
 
 **No token required** — same reasoning as `open-project`.
 

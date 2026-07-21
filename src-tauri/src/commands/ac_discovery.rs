@@ -390,10 +390,12 @@ struct DiscoveryBranchPayload {
     /// to the previous repo list. A positional merge would then paint repo A's branch
     /// onto repo B, silently. Matching on the path cannot.
     repo_paths: Vec<String>,
-    /// #1028 - per-repo worktree-dirty, positionally parallel to `repo_paths` exactly as
-    /// `repo_branches` is, and keyed by path by the consumer for the same reason.
-    /// `Some(true)` paints the badge letters red; `None` = never successfully detected
-    /// for that path (rendered violet, like clean).
+    /// #1028/#1078 - per-repo local-work state, positionally parallel to `repo_paths`
+    /// exactly as `repo_branches` is, and keyed by path by the consumer for the same
+    /// reason. `Some(true)` means Git emitted a non-ignored worktree/index entry or the
+    /// checked-out `HEAD` was not confirmed reachable from the configured cached
+    /// `origin/*` upstream. `None` means never successfully detected for that path
+    /// (rendered violet, like clean).
     ///
     /// This rides the feed `repo_branches` already established, which is what covers
     /// DORMANT coordinator rows: Gate A runs for every replica whether or not a session
@@ -1421,6 +1423,12 @@ pub async fn check_project_path(path: String) -> Result<bool, String> {
 /// Called during project creation, workgroup creation, and opportunistically during discovery.
 pub(crate) fn ensure_workspace_gitignore(workspace_dir: &Path) -> Result<(), String> {
     let gitignore_path = workspace_dir.join(".gitignore");
+    const SEED_MANIFEST_GITIGNORE_BLOCK: &str = "# AgentsCommander: exclude seed-manifest coordination files.\n/.seed-manifest.lock\n/.seed-manifest.*.tmp\n\n# AgentsCommander: keep the seed publication manifest reviewable.\n!/seed-manifest.toml\n";
+    const SEED_MANIFEST_PATTERNS: [&str; 3] = [
+        "/.seed-manifest.lock",
+        "/.seed-manifest.*.tmp",
+        "!/seed-manifest.toml",
+    ];
 
     // Each entry: (pattern, comment explaining why)
     let required_entries: &[(&str, &str)] = &[
@@ -1456,6 +1464,10 @@ pub(crate) fn ensure_workspace_gitignore(workspace_dir: &Path) -> Result<(), Str
             "**/__agent_*/AGENTS.md",
             "# AgentsCommander: exclude managed session context files inside replica agent folders.",
         ),
+        (
+            "/.team-config-write.lock",
+            "# AgentsCommander: exclude team-config coordination files.",
+        ),
     ];
 
     if gitignore_path.exists() {
@@ -1467,6 +1479,13 @@ pub(crate) fn ensure_workspace_gitignore(workspace_dir: &Path) -> Result<(), Str
             if !content.lines().any(|line| line.trim() == *pattern) {
                 additions.push_str(&format!("\n{}\n{}\n", comment, pattern));
             }
+        }
+        if !SEED_MANIFEST_PATTERNS
+            .iter()
+            .all(|pattern| content.lines().any(|line| line.trim() == *pattern))
+        {
+            additions.push('\n');
+            additions.push_str(SEED_MANIFEST_GITIGNORE_BLOCK);
         }
 
         if !additions.is_empty() {
@@ -1482,6 +1501,7 @@ pub(crate) fn ensure_workspace_gitignore(workspace_dir: &Path) -> Result<(), Str
         for (pattern, comment) in required_entries {
             content.push_str(&format!("{}\n{}\n\n", comment, pattern));
         }
+        content.push_str(SEED_MANIFEST_GITIGNORE_BLOCK);
         std::fs::write(&gitignore_path, content)
             .map_err(|e| format!("Failed to create Project AC Root .gitignore: {}", e))?;
     }
@@ -2034,25 +2054,54 @@ async fn mutate_project_paths_with_settings_path<T>(
     settings_path: Option<&Path>,
     mutate: impl FnOnce(&mut crate::config::settings::AppSettings) -> Result<T, String>,
 ) -> Result<T, String> {
+    // Resolve the concrete settings path (production uses config_dir).
+    let path_buf;
+    let path: &Path = match settings_path {
+        Some(p) => p,
+        None => {
+            path_buf = crate::config::config_dir()
+                .ok_or("Could not determine settings directory")?
+                .join("settings.json");
+            &path_buf
+        }
+    };
+
     let mut s = settings.write().await;
-    // #778: reconcile project_paths from disk BEFORE the upsert so a concurrent
-    // CLI append is folded in, not clobbered, then write the deliberate list
-    // verbatim (project_paths is disk-authoritative under Design S). Aborts on a
-    // non-NotFound read error (G2) rather than registering against a stale list.
-    if let Some(path) = settings_path {
-        crate::config::settings::refresh_project_paths_from_path(&mut s, path)?;
-    } else {
-        crate::config::settings::refresh_project_paths_from_disk(&mut s)?;
+    // #778: reconcile project_paths from disk BEFORE the mutation so a concurrent
+    // CLI append is folded in, not clobbered. The raw three-field refresh (not
+    // the validating decoder) keeps a stored-but-missing project in the list so
+    // remove/archive of a vanished directory still matches it lexically (§3.7).
+    // Aborts on a non-NotFound read error (G2) or a wrong-typed project field.
+    crate::config::settings::refresh_project_paths_from_path(&mut s, path)?;
+    // #1077: structural project corruption blocks any list mutation; the
+    // three-field read above independently aborts on a wrong-typed primary field.
+    if crate::config::settings::project_state_has_structural(&s) {
+        return Err(
+            "settings.json has malformed project metadata; refusing to modify the project list. Fix or remove the corrupt project fields first.".to_string(),
+        );
     }
-    let result = mutate(&mut s)?;
-    let snapshot = s.clone();
-    if let Some(path) = settings_path {
-        crate::config::settings::save_settings_with_project_paths_to_path(&snapshot, path)?;
-    } else {
-        crate::config::settings::save_settings_with_project_paths(&snapshot)?;
+    // #1077 §4.3: apply the operation to a separate candidate clone and publish
+    // only after the atomic save succeeds. On save failure the live guard keeps
+    // the refreshed pre-mutation state (never the unsaved candidate).
+    let mut candidate = s.clone();
+    let result = mutate(&mut candidate)?;
+    // Rebuild the candidate's hidden state to match its mutated runtime lists,
+    // reconciling preserved conflict/missing records against the mutation.
+    crate::config::settings::resync_project_state_from_runtime(&mut candidate);
+    match crate::config::settings::reconcile_project_state_to_path(&candidate, path, true, true) {
+        Ok(written) => {
+            // Publish the fresh-decoded value (selected runtime + hidden state)
+            // that §4.2 requires, not the stale candidate.
+            *s = written;
+            drop(s); // explicit; lock released AFTER the disk write completes
+            Ok(result)
+        }
+        Err(e) => {
+            // Live state is still the refreshed pre-mutation snapshot.
+            drop(s);
+            Err(e)
+        }
     }
-    drop(s); // explicit; lock released AFTER the disk write completes
-    Ok(result)
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize)]
@@ -2700,6 +2749,90 @@ mod tests {
         }
     }
 
+    /// #1077: the display-canonical form of an existing directory - exactly what
+    /// the six-field decoder selects for a valid project. Storing this (instead
+    /// of the raw temp path) keeps the runtime-path assertions platform-robust:
+    /// on Windows it equals the raw path, on Linux/CI it is the symlink-resolved
+    /// canonical path the decoder actually publishes.
+    fn canonical_display(dir: &Path) -> String {
+        crate::config::projects::display_canonical(
+            &std::fs::canonicalize(dir).unwrap().to_string_lossy(),
+        )
+    }
+
+    /// The Windows 8.3 short-name form of an existing path, or the path itself
+    /// when the volume has 8.3 generation disabled.
+    #[cfg(windows)]
+    fn short_path(p: &Path) -> PathBuf {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+        let wide: Vec<u16> = p.as_os_str().encode_wide().chain([0]).collect();
+        let len = unsafe { GetShortPathNameW(wide.as_ptr(), std::ptr::null_mut(), 0) };
+        if len == 0 {
+            return p.to_path_buf();
+        }
+        let mut buf = vec![0u16; len as usize];
+        let written = unsafe { GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), len) };
+        if written == 0 {
+            return p.to_path_buf();
+        }
+        buf.truncate(written as usize);
+        PathBuf::from(std::ffi::OsString::from_wide(&buf))
+    }
+
+    /// Regression for the #1080 CI failure: on a Windows runner whose `%TEMP%` is
+    /// an 8.3 short name (`RUNNER~1`), `tempdir()` yields short-form paths and a
+    /// relative `.` archive absolutises to that short form. Storing the raw
+    /// (short) path lets the lexical archive lookup match, while the archived
+    /// RUNTIME field is the decoder's canonical (long) form. Archived must NOT be
+    /// empty (the pre-fix bug: canonical-stored vs short-lookup did not match, the
+    /// project stayed active, and the archived duplicate was dropped by dedupe).
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn archive_relative_path_matches_across_short_name_temp() {
+        let _cwd_lock = cwd_lock().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let settings_path = temp.path().join("settings.json");
+        let project = temp.path().join("proj-archive-relative");
+        std::fs::create_dir_all(project.join(".ac")).expect("create .ac");
+        // Force the runner's condition: access the project via its 8.3 short form.
+        let short = short_path(&project);
+        let path = short.to_string_lossy().to_string();
+        let archived_expected = canonical_display(&project);
+        let settings = AppSettings {
+            project_paths: vec![path.clone()],
+            project_path: Some(path.clone()),
+            ..AppSettings::default()
+        };
+        let (app, state, _rx, session_mgr, pty_mgr) = archive_command_app(settings);
+        let app_handle = app.handle().clone();
+        let prev = std::env::current_dir().expect("current dir");
+        let _guard = CwdGuard(prev);
+        std::env::set_current_dir(&short).expect("set cwd");
+
+        archive_project_inner_with_settings_path(
+            &app_handle,
+            &state,
+            &session_mgr,
+            &pty_mgr,
+            ".",
+            Some(&settings_path),
+        )
+        .await
+        .expect("archive relative project on a short-name temp");
+
+        let archived = state.read().await.archived_project_paths.clone();
+        assert_eq!(
+            archived,
+            vec![archived_expected],
+            "archived must be the canonical path, never empty"
+        );
+        assert!(
+            state.read().await.project_paths.is_empty(),
+            "the project must be removed from the active list"
+        );
+    }
+
     /// CWD is process-wide; serialize tests that intentionally use relative paths.
     struct CwdGuard(PathBuf);
     impl Drop for CwdGuard {
@@ -2995,7 +3128,13 @@ mod tests {
         let settings_path = temp.path().join("settings.json");
         let project = temp.path().join("proj-archive-relative");
         std::fs::create_dir_all(project.join(".ac")).expect("create .ac");
+        // Store the RAW path so the relative "." archive lookup (which absolutises
+        // against the CWD, and on a runner whose %TEMP% is an 8.3 short name is the
+        // short form) still matches lexically. The archived RUNTIME field is the
+        // decoder's SELECTED canonical form (#1077 §3.4), which the assertion
+        // below expects; the event still carries the raw absolutised input.
         let path = project.to_string_lossy().to_string();
+        let archived_expected = canonical_display(&project);
         let settings = AppSettings {
             project_paths: vec![path.clone()],
             project_path: Some(path.clone()),
@@ -3019,7 +3158,7 @@ mod tests {
         .expect("archive relative project");
 
         let stored = state.read().await.archived_project_paths.clone();
-        assert_eq!(stored, vec![path.clone()]);
+        assert_eq!(stored, vec![archived_expected]);
         let event = recv_ws_event(&mut rx);
         assert_eq!(event["event"], json!("project_archive_changed"));
         assert_eq!(event["payload"]["path"], json!(path));
@@ -3069,7 +3208,7 @@ mod tests {
         let project = temp.path().join("proj-f1");
         let agent = project.join(".ac").join("wg-1").join("__agent_dev");
         std::fs::create_dir_all(&agent).expect("create agent dir");
-        let path = project.to_string_lossy().to_string();
+        let path = canonical_display(&project);
         let settings = AppSettings {
             project_paths: vec![path.clone()],
             project_path: Some(path.clone()),
@@ -3161,7 +3300,7 @@ mod tests {
         let project = temp.path().join("proj-rollback");
         let agent = project.join(".ac").join("wg-1").join("__agent_dev");
         std::fs::create_dir_all(&agent).expect("create agent dir");
-        let path = project.to_string_lossy().to_string();
+        let path = canonical_display(&project);
         let settings = AppSettings {
             project_paths: vec![path.clone()],
             project_path: Some(path.clone()),
@@ -3272,10 +3411,18 @@ mod tests {
         .expect_err("late liveness should roll back vanished project");
 
         assert!(err.contains("open session"), "{err}");
+        // #1077: the rollback is disk-authoritative. The vanished project is
+        // active again on disk, but excluded from the SELECTED active runtime
+        // (session restoration must not restore an unvalidated directory) and it
+        // is not archived, so both in-memory lists are empty.
         let settings = state.read().await;
-        assert_eq!(settings.project_paths, vec![path.clone()]);
+        assert!(settings.project_paths.is_empty());
         assert!(settings.archived_project_paths.is_empty());
         drop(settings);
+        let disk: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        assert_eq!(disk["projectPaths"], json!([path]));
+        assert!(disk["archivedProjectPaths"].as_array().unwrap().is_empty());
         let event = recv_ws_event(&mut rx);
         assert_eq!(event["payload"]["path"], json!(path));
         assert_eq!(event["payload"]["archived"], json!(false));
@@ -3506,6 +3653,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mutate_save_failure_does_not_publish_unsaved_candidate() {
+        // Grinch Defect 3: on an atomic-save failure the live state must remain
+        // the refreshed pre-mutation state, never the unsaved mutated candidate.
+        let temp = tempfile::tempdir().expect("tempdir");
+        // A regular FILE where the settings directory is expected, so the writer's
+        // create_dir_all (or the pre-mutation read) fails deterministically.
+        let blocker = temp.path().join("blocker");
+        std::fs::write(&blocker, b"x").expect("write blocker file");
+        let settings_path = blocker.join("settings.json");
+        let mk = |name: &str| {
+            let p = temp.path().join(name);
+            std::fs::create_dir_all(p.join(".ac")).expect("create project .ac");
+            p.to_string_lossy().to_string()
+        };
+        let (x, y) = (mk("keep-x"), mk("new-y"));
+        let settings = crate::config::settings::AppSettings {
+            project_paths: vec![x.clone()],
+            project_path: Some(x.clone()),
+            ..Default::default()
+        };
+        let state: SettingsState = std::sync::Arc::new(tokio::sync::RwLock::new(settings));
+
+        let err = open_project_inner_with_settings_path(&state, &y, Some(&settings_path))
+            .await
+            .expect_err("save into a file-blocked directory must fail");
+        assert!(!err.is_empty());
+
+        let live = state.read().await;
+        let names: Vec<&str> = live
+            .project_paths
+            .iter()
+            .map(|p| {
+                std::path::Path::new(p)
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec!["keep-x"],
+            "the unsaved candidate ([keep-x, new-y]) must not leak into the live state"
+        );
+    }
+
+    #[tokio::test]
     async fn keep_custom_context_template_rejects_workspace_path() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let workspace = tmp.path().join(".ac");
@@ -3555,6 +3749,41 @@ mod tests {
                 .any(|line| line.trim() == "_loop_*/config.toml"),
             "workspace .gitignore must not ignore Loop config files"
         );
+        assert!(content.contains(concat!(
+            "# AgentsCommander: exclude seed-manifest coordination files.\n",
+            "/.seed-manifest.lock\n",
+            "/.seed-manifest.*.tmp\n",
+            "\n",
+            "# AgentsCommander: keep the seed publication manifest reviewable.\n",
+            "!/seed-manifest.toml\n"
+        )));
+    }
+
+    #[test]
+    fn ensure_workspace_gitignore_writes_team_config_lock_block_on_create() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path().join(".ac");
+        std::fs::create_dir(&workspace).expect("create .ac");
+
+        ensure_workspace_gitignore(&workspace).expect("ensure workspace .gitignore");
+
+        let content =
+            std::fs::read_to_string(workspace.join(".gitignore")).expect("read .gitignore");
+        let block =
+            "# AgentsCommander: exclude team-config coordination files.\n/.team-config-write.lock";
+        assert_eq!(
+            content.matches(block).count(),
+            1,
+            "workspace .gitignore must contain the exact team-config lock block once"
+        );
+        assert_eq!(
+            content
+                .lines()
+                .filter(|line| *line == "/.team-config-write.lock")
+                .count(),
+            1,
+            "workspace .gitignore must contain the anchored team-config lock pattern once"
+        );
     }
 
     #[test]
@@ -3575,6 +3804,197 @@ mod tests {
         assert_eq!(
             count, 1,
             "workspace .gitignore should append the delete sentinel pattern exactly once"
+        );
+    }
+
+    #[test]
+    fn seed_manifest_gitignore_rules_are_anchored_to_ac_root() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("project");
+        let workspace = project.join(".ac");
+        std::fs::create_dir_all(workspace.join("nested")).expect("create .ac tree");
+        ensure_workspace_gitignore(&workspace).expect("ensure workspace .gitignore");
+
+        for relative in [
+            ".ac/.seed-manifest.lock",
+            ".ac/.seed-manifest.00000000-0000-0000-0000-000000000000.tmp",
+            ".ac/seed-manifest.toml",
+            ".ac/nested/.seed-manifest.lock",
+            ".ac/nested/.seed-manifest.00000000-0000-0000-0000-000000000000.tmp",
+            ".ac/nested/seed-manifest.toml",
+        ] {
+            std::fs::write(project.join(relative), b"fixture").expect("write Git fixture");
+        }
+
+        let init = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&project)
+            .output()
+            .expect("git init");
+        assert!(
+            init.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&init.stderr)
+        );
+
+        let ignored = |relative: &str| {
+            std::process::Command::new("git")
+                .args(["check-ignore", "--quiet", "--no-index", "--", relative])
+                .current_dir(&project)
+                .status()
+                .expect("git check-ignore")
+                .success()
+        };
+        assert!(ignored(".ac/.seed-manifest.lock"));
+        assert!(ignored(
+            ".ac/.seed-manifest.00000000-0000-0000-0000-000000000000.tmp"
+        ));
+        assert!(!ignored(".ac/seed-manifest.toml"));
+        assert!(!ignored(".ac/nested/.seed-manifest.lock"));
+        assert!(!ignored(
+            ".ac/nested/.seed-manifest.00000000-0000-0000-0000-000000000000.tmp"
+        ));
+        assert!(!ignored(".ac/nested/seed-manifest.toml"));
+    }
+
+    #[test]
+    fn ensure_workspace_gitignore_appends_team_config_lock_block_preserving_bytes_and_is_idempotent(
+    ) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path().join(".ac");
+        std::fs::create_dir(&workspace).expect("create .ac");
+        let gitignore_path = workspace.join(".gitignore");
+        let original = b"# User-authored rules\r\n!important.txt\r\n\r\n# AgentsCommander: exclude workgroup cloned repos from parent git tracking.\r\n# Without this, parent repo operations (checkout, reset) corrupt child clones.\r\nwg-*/\r\n"
+            .to_vec();
+        std::fs::write(&gitignore_path, &original).expect("write .gitignore");
+
+        ensure_workspace_gitignore(&workspace).expect("ensure workspace .gitignore");
+
+        let updated = std::fs::read(&gitignore_path).expect("read updated .gitignore");
+        assert!(
+            updated.starts_with(&original),
+            "workspace .gitignore must preserve the original bytes as an exact prefix"
+        );
+        let updated_text = std::str::from_utf8(&updated).expect("updated .gitignore is UTF-8");
+        let block =
+            "# AgentsCommander: exclude team-config coordination files.\n/.team-config-write.lock";
+        assert_eq!(
+            updated_text.matches(block).count(),
+            1,
+            "workspace .gitignore must append the exact team-config lock block once"
+        );
+        assert_eq!(
+            updated_text
+                .lines()
+                .filter(|line| *line == "/.team-config-write.lock")
+                .count(),
+            1,
+            "workspace .gitignore must contain the anchored team-config lock pattern once"
+        );
+
+        let once_updated = updated;
+        ensure_workspace_gitignore(&workspace).expect("ensure workspace .gitignore again");
+        let twice_updated = std::fs::read(&gitignore_path).expect("read .gitignore again");
+        assert_eq!(
+            twice_updated, once_updated,
+            "a repeated ensure must leave .gitignore byte-identical"
+        );
+    }
+
+    #[test]
+    fn ensure_workspace_gitignore_team_config_lock_rule_is_root_anchored() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("project");
+        let workspace = project.join(".ac");
+        std::fs::create_dir_all(&workspace).expect("create .ac");
+        ensure_workspace_gitignore(&workspace).expect("ensure workspace .gitignore");
+
+        let init_status = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&project)
+            .status()
+            .expect("git init must execute");
+        assert!(init_status.success(), "git init must succeed");
+
+        let empty_excludes = project.join("empty-global-excludes");
+        std::fs::write(&empty_excludes, []).expect("create empty global excludes file");
+        std::fs::write(workspace.join(".team-config-write.lock"), [])
+            .expect("create root team-config lock");
+        std::fs::create_dir_all(workspace.join("nested")).expect("create nested directory");
+        std::fs::write(workspace.join("nested").join(".team-config-write.lock"), [])
+            .expect("create nested team-config lock");
+
+        let excludes_override = format!(
+            "core.excludesFile={}",
+            empty_excludes.to_string_lossy().replace('\\', "/")
+        );
+        let root_output = std::process::Command::new("git")
+            .arg("-c")
+            .arg(&excludes_override)
+            .args([
+                "check-ignore",
+                "-v",
+                "--no-index",
+                "--",
+                ".ac/.team-config-write.lock",
+            ])
+            .current_dir(&project)
+            .output()
+            .expect("root git check-ignore must execute");
+        assert!(
+            root_output.status.success(),
+            "root git check-ignore must match: {}",
+            String::from_utf8_lossy(&root_output.stderr)
+        );
+
+        let root_stdout = String::from_utf8(root_output.stdout).expect("root output is UTF-8");
+        let root_line = root_stdout.trim_end_matches(&['\r', '\n'][..]);
+        let (source_and_pattern, target) = root_line
+            .split_once('\t')
+            .expect("verbose git check-ignore output contains a tab");
+        let mut source_fields = source_and_pattern.rsplitn(3, ':');
+        let pattern = source_fields.next().expect("matched pattern");
+        let line_number = source_fields.next().expect("matched line number");
+        let source = source_fields.next().expect("matched source");
+        assert_eq!(
+            source, ".ac/.gitignore",
+            "match source must be .ac/.gitignore"
+        );
+        assert!(
+            line_number.parse::<usize>().is_ok(),
+            "match line number must be numeric"
+        );
+        assert_eq!(
+            pattern, "/.team-config-write.lock",
+            "match pattern must be the anchored team-config lock rule"
+        );
+        assert_eq!(
+            target, ".ac/.team-config-write.lock",
+            "match target must be the root team-config lock"
+        );
+
+        let nested_output = std::process::Command::new("git")
+            .arg("-c")
+            .arg(&excludes_override)
+            .args([
+                "check-ignore",
+                "-v",
+                "--no-index",
+                "--",
+                ".ac/nested/.team-config-write.lock",
+            ])
+            .current_dir(&project)
+            .output()
+            .expect("nested git check-ignore must execute");
+        assert_eq!(
+            nested_output.status.code(),
+            Some(1),
+            "nested git check-ignore must report no match: {}",
+            String::from_utf8_lossy(&nested_output.stderr)
+        );
+        assert!(
+            nested_output.stdout.is_empty(),
+            "nested git check-ignore must emit no stdout"
         );
     }
 

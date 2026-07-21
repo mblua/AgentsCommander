@@ -13,6 +13,69 @@ const CONTEXT_TEMPLATE_CHANGED: &str =
 const CONTEXT_TEMPLATE_DEFAULT_CHANGED: &str =
     "Context template default changed; reload the project before overwriting.";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ContextPublication {
+    pub(crate) published_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContextTemplateSkipReason {
+    CreationDisabled,
+    MissingAfterCreate,
+    AmbiguousWithoutState,
+    IgnoredByUser,
+    WorkspaceUnavailable,
+    TargetMissing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TemplatePublication {
+    Published(ContextPublication),
+    AlreadyCurrent,
+    ChangedUnderUs,
+    Observed,
+    Skipped(ContextTemplateSkipReason),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ContextTemplateExecution<T> {
+    pub(crate) completion: Result<T, String>,
+    pub(crate) published: Option<ContextPublication>,
+}
+
+impl<T> ContextTemplateExecution<T> {
+    pub(crate) fn from_parts(
+        completion: Result<T, String>,
+        published: Option<ContextPublication>,
+    ) -> Self {
+        Self {
+            completion,
+            published,
+        }
+    }
+
+    pub(crate) fn completed(value: T) -> Self {
+        Self::from_parts(Ok(value), None)
+    }
+
+    pub(crate) fn failed(error: String) -> Self {
+        Self::from_parts(Err(error), None)
+    }
+
+    pub(crate) fn with_publication(
+        completion: Result<T, String>,
+        publication: ContextPublication,
+    ) -> Self {
+        Self::from_parts(completion, Some(publication))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct TemplateSyncOutcome {
+    pub(crate) pending_update: Option<ContextTemplateUpdate>,
+    pub(crate) target_outcome: TemplatePublication,
+}
+
 const OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND: &str = "You are the coordinator for your team. You must:\n\
      - Keep your base role; coordination is an additional assignment, not a replacement.\n\
      - Receive team work requests.\n\
@@ -745,38 +808,88 @@ fn make_update(
     }
 }
 
-fn create_missing_template(path: &Path, content: &str) -> Result<(), String> {
-    crate::config::session_context::write_template_if_missing(path, content)?;
-    validate_existing_file(path, "Context template")
+fn create_missing_template(
+    path: &Path,
+    content: &str,
+    clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
+) -> ContextTemplateExecution<crate::config::session_context::CreateOnlyPublication> {
+    let outcome = match crate::config::session_context::write_template_if_missing_with_clock(
+        path, content, clock,
+    ) {
+        Ok(outcome) => outcome,
+        Err(error) => return ContextTemplateExecution::failed(error),
+    };
+    let published = match outcome {
+        crate::config::session_context::CreateOnlyPublication::Published { published_at } => {
+            Some(ContextPublication { published_at })
+        }
+        crate::config::session_context::CreateOnlyPublication::AlreadyPresent => None,
+    };
+    ContextTemplateExecution::from_parts(
+        validate_existing_file(path, "Context template").map(|()| outcome),
+        published,
+    )
 }
 
 fn auto_update_generated_template(
     path: &Path,
     spec: SeededContextTemplateSpec,
     expected_file_sha256: &str,
-) -> Result<bool, String> {
-    let Some(snapshot) = read_validated_snapshot(path, "Context template")? else {
-        return Ok(false);
+    clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
+) -> ContextTemplateExecution<TemplatePublication> {
+    auto_update_generated_template_with(
+        path,
+        spec,
+        expected_file_sha256,
+        clock,
+        crate::config::session_context::atomically_replace_context_template,
+    )
+}
+
+fn auto_update_generated_template_with<R>(
+    path: &Path,
+    spec: SeededContextTemplateSpec,
+    expected_file_sha256: &str,
+    clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
+    replace: R,
+) -> ContextTemplateExecution<TemplatePublication>
+where
+    R: FnOnce(
+        &Path,
+        &str,
+        &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
+    ) -> Result<chrono::DateTime<chrono::Utc>, String>,
+{
+    let snapshot = match read_validated_snapshot(path, "Context template") {
+        Ok(Some(snapshot)) => snapshot,
+        Ok(None) => {
+            return ContextTemplateExecution::completed(TemplatePublication::ChangedUnderUs)
+        }
+        Err(error) => return ContextTemplateExecution::failed(error),
     };
     if snapshot.sha256 != expected_file_sha256 {
         log::warn!(
             "[context-templates] {} changed before generated update; preserving current content",
             path.display()
         );
-        return Ok(false);
+        return ContextTemplateExecution::completed(TemplatePublication::ChangedUnderUs);
     }
     if !(spec.is_known_generated)(&snapshot.content) {
         log::warn!(
             "[context-templates] {} no longer matches a known generated default; preserving current content",
             path.display()
         );
-        return Ok(false);
+        return ContextTemplateExecution::completed(TemplatePublication::ChangedUnderUs);
     }
-    crate::config::session_context::atomically_replace_context_template(
-        path,
-        (spec.current_content)(),
-    )?;
-    Ok(true)
+    let published_at = match replace(path, (spec.current_content)(), clock) {
+        Ok(published_at) => published_at,
+        Err(error) => return ContextTemplateExecution::failed(error),
+    };
+    let publication = ContextPublication { published_at };
+    ContextTemplateExecution::with_publication(
+        Ok(TemplatePublication::Published(publication)),
+        publication,
+    )
 }
 
 fn sync_one_template(
@@ -786,33 +899,81 @@ fn sync_one_template(
     loaded: &mut LoadedState,
     allow_create_missing: bool,
     return_pending: bool,
-) -> Result<Option<ContextTemplateUpdate>, String> {
+    clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
+) -> ContextTemplateExecution<TemplateSyncOutcome> {
     let path = workspace_dir.join(spec.filename);
     let current_default = (spec.current_content)();
     let current_default_sha256 = sha256_hex(current_default.as_bytes());
-    let mut snapshot = read_validated_snapshot(&path, "Context template")?;
+    let mut snapshot = match read_validated_snapshot(&path, "Context template") {
+        Ok(snapshot) => snapshot,
+        Err(error) => return ContextTemplateExecution::failed(error),
+    };
+    let mut carried_publication = None;
 
     if snapshot.is_none() {
         if !allow_create_missing {
-            return Ok(None);
+            return ContextTemplateExecution::completed(TemplateSyncOutcome {
+                pending_update: None,
+                target_outcome: TemplatePublication::Skipped(
+                    ContextTemplateSkipReason::CreationDisabled,
+                ),
+            });
         }
-        create_missing_template(&path, current_default)?;
-        snapshot = read_validated_snapshot(&path, "Context template")?;
+        let creation = create_missing_template(&path, current_default, clock);
+        carried_publication = creation.published;
+        if let Err(error) = creation.completion {
+            return ContextTemplateExecution::from_parts(Err(error), carried_publication);
+        }
+        snapshot = match read_validated_snapshot(&path, "Context template") {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                return ContextTemplateExecution::from_parts(Err(error), carried_publication)
+            }
+        };
         if let Some(snapshot) = &snapshot {
             if snapshot.sha256 == current_default_sha256 {
                 loaded.mark_seeded(spec, &current_default_sha256);
-                return Ok(None);
+                let target_outcome = carried_publication
+                    .map(TemplatePublication::Published)
+                    .unwrap_or(TemplatePublication::AlreadyCurrent);
+                return ContextTemplateExecution::from_parts(
+                    Ok(TemplateSyncOutcome {
+                        pending_update: None,
+                        target_outcome,
+                    }),
+                    carried_publication,
+                );
             }
         }
     }
 
     let Some(snapshot) = snapshot else {
-        return Ok(None);
+        let target_outcome = carried_publication
+            .map(TemplatePublication::Published)
+            .unwrap_or(TemplatePublication::Skipped(
+                ContextTemplateSkipReason::MissingAfterCreate,
+            ));
+        return ContextTemplateExecution::from_parts(
+            Ok(TemplateSyncOutcome {
+                pending_update: None,
+                target_outcome,
+            }),
+            carried_publication,
+        );
     };
 
     if snapshot.sha256 == current_default_sha256 {
         loaded.mark_seeded(spec, &current_default_sha256);
-        return Ok(None);
+        let target_outcome = carried_publication
+            .map(TemplatePublication::Published)
+            .unwrap_or(TemplatePublication::AlreadyCurrent);
+        return ContextTemplateExecution::from_parts(
+            Ok(TemplateSyncOutcome {
+                pending_update: None,
+                target_outcome,
+            }),
+            carried_publication,
+        );
     }
 
     let trusted_entry = loaded.trusted_entry(spec).cloned();
@@ -821,19 +982,45 @@ fn sync_one_template(
             && entry.last_seeded_sha256.as_deref() != Some(current_default_sha256.as_str())
             && (spec.is_known_generated)(&snapshot.content)
         {
-            if auto_update_generated_template(&path, spec, &snapshot.sha256)? {
-                loaded.mark_seeded(spec, &current_default_sha256);
-            }
-            return Ok(None);
+            let execution = auto_update_generated_template(&path, spec, &snapshot.sha256, clock);
+            let published = execution.published;
+            return match execution.completion {
+                Ok(target_outcome) => {
+                    if matches!(target_outcome, TemplatePublication::Published(_)) {
+                        loaded.mark_seeded(spec, &current_default_sha256);
+                    }
+                    ContextTemplateExecution::from_parts(
+                        Ok(TemplateSyncOutcome {
+                            pending_update: None,
+                            target_outcome,
+                        }),
+                        published,
+                    )
+                }
+                Err(error) => ContextTemplateExecution::from_parts(Err(error), published),
+            };
         }
     }
 
     let has_valid_entry = trusted_entry.is_some();
     if !has_valid_entry && (spec.is_known_generated)(&snapshot.content) {
-        if auto_update_generated_template(&path, spec, &snapshot.sha256)? {
-            loaded.mark_seeded(spec, &current_default_sha256);
-        }
-        return Ok(None);
+        let execution = auto_update_generated_template(&path, spec, &snapshot.sha256, clock);
+        let published = execution.published;
+        return match execution.completion {
+            Ok(target_outcome) => {
+                if matches!(target_outcome, TemplatePublication::Published(_)) {
+                    loaded.mark_seeded(spec, &current_default_sha256);
+                }
+                ContextTemplateExecution::from_parts(
+                    Ok(TemplateSyncOutcome {
+                        pending_update: None,
+                        target_outcome,
+                    }),
+                    published,
+                )
+            }
+            Err(error) => ContextTemplateExecution::from_parts(Err(error), published),
+        };
     }
 
     if spec.suppress_unknown_without_state && !has_valid_entry {
@@ -841,40 +1028,78 @@ fn sync_one_template(
             "[context-templates] preserving ambiguous global context template {} without prompting",
             path.display()
         );
-        return Ok(None);
+        let target_outcome = carried_publication
+            .map(TemplatePublication::Published)
+            .unwrap_or(TemplatePublication::Skipped(
+                ContextTemplateSkipReason::AmbiguousWithoutState,
+            ));
+        return ContextTemplateExecution::from_parts(
+            Ok(TemplateSyncOutcome {
+                pending_update: None,
+                target_outcome,
+            }),
+            carried_publication,
+        );
     }
 
     if let Some(entry) = trusted_entry.as_ref() {
         if entry.ignored_observed_sha256.as_deref() == Some(snapshot.sha256.as_str())
             && entry.ignored_default_sha256.as_deref() == Some(current_default_sha256.as_str())
         {
-            return Ok(None);
+            let target_outcome = carried_publication
+                .map(TemplatePublication::Published)
+                .unwrap_or(TemplatePublication::Skipped(
+                    ContextTemplateSkipReason::IgnoredByUser,
+                ));
+            return ContextTemplateExecution::from_parts(
+                Ok(TemplateSyncOutcome {
+                    pending_update: None,
+                    target_outcome,
+                }),
+                carried_publication,
+            );
         }
     }
 
     loaded.mark_observed(spec, &snapshot.sha256);
-    if return_pending {
-        let project_dir = project_dir.ok_or_else(|| {
-            format!(
-                "Cannot create context template update for {} without a project path",
-                path.display()
-            )
-        })?;
-        Ok(Some(make_update(
+    let pending_update = if return_pending {
+        let project_dir = match project_dir {
+            Some(project_dir) => project_dir,
+            None => {
+                return ContextTemplateExecution::from_parts(
+                    Err(format!(
+                        "Cannot create context template update for {} without a project path",
+                        path.display()
+                    )),
+                    carried_publication,
+                )
+            }
+        };
+        Some(make_update(
             project_dir,
             workspace_dir,
             &path,
             spec,
             snapshot.sha256,
             current_default_sha256,
-        )))
+        ))
     } else {
         log::warn!(
             "[context-templates] preserving customized context template {}; a newer default is available",
             path.display()
         );
-        Ok(None)
-    }
+        None
+    };
+    let target_outcome = carried_publication
+        .map(TemplatePublication::Published)
+        .unwrap_or(TemplatePublication::Observed);
+    ContextTemplateExecution::from_parts(
+        Ok(TemplateSyncOutcome {
+            pending_update,
+            target_outcome,
+        }),
+        carried_publication,
+    )
 }
 
 fn compute_pending_update(
@@ -950,7 +1175,42 @@ fn validate_project_workspace_for_scan(
     Ok(())
 }
 
+fn consume_template_execution(
+    spec: SeededContextTemplateSpec,
+    execution: ContextTemplateExecution<TemplateSyncOutcome>,
+    on_publication: &mut dyn FnMut(&'static str, ContextPublication),
+) -> Result<TemplateSyncOutcome, String> {
+    if let Some(publication) = execution.published {
+        on_publication(spec.filename, publication);
+    }
+    if let Ok(outcome) = &execution.completion {
+        log::debug!(
+            "[context-templates] {} target outcome: {:?}",
+            spec.filename,
+            outcome.target_outcome
+        );
+    }
+    execution.completion
+}
+
 pub fn ensure_project_context_templates(workspace_dir: &Path) -> Result<(), String> {
+    let mut on_publication = |_: &'static str, _: ContextPublication| {};
+    ensure_project_context_templates_with_publications(workspace_dir, &mut on_publication)
+}
+
+pub(crate) fn ensure_project_context_templates_with_publications(
+    workspace_dir: &Path,
+    on_publication: &mut dyn FnMut(&'static str, ContextPublication),
+) -> Result<(), String> {
+    let mut clock = chrono::Utc::now;
+    ensure_project_context_templates_with_clock(workspace_dir, &mut clock, on_publication)
+}
+
+fn ensure_project_context_templates_with_clock(
+    workspace_dir: &Path,
+    clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
+    on_publication: &mut dyn FnMut(&'static str, ContextPublication),
+) -> Result<(), String> {
     std::fs::create_dir_all(workspace_dir).map_err(|e| {
         format!(
             "failed to create context templates directory {}: {}",
@@ -961,7 +1221,9 @@ pub fn ensure_project_context_templates(workspace_dir: &Path) -> Result<(), Stri
     validate_existing_dir(workspace_dir, "Context template directory")?;
     let mut loaded = load_state(workspace_dir, false)?;
     for spec in project_specs() {
-        sync_one_template(None, workspace_dir, spec, &mut loaded, true, false)?;
+        let execution =
+            sync_one_template(None, workspace_dir, spec, &mut loaded, true, false, clock);
+        let _ = consume_template_execution(spec, execution, on_publication)?;
     }
     persist_state_best_effort(workspace_dir, &loaded);
     Ok(())
@@ -971,18 +1233,50 @@ pub fn scan_project_context_template_updates(
     project_dir: &Path,
     workspace_dir: &Path,
 ) -> Result<Vec<ContextTemplateUpdate>, String> {
+    let mut on_publication = |_: &'static str, _: ContextPublication| {};
+    scan_project_context_template_updates_with_publications(
+        project_dir,
+        workspace_dir,
+        &mut on_publication,
+    )
+}
+
+pub(crate) fn scan_project_context_template_updates_with_publications(
+    project_dir: &Path,
+    workspace_dir: &Path,
+    on_publication: &mut dyn FnMut(&'static str, ContextPublication),
+) -> Result<Vec<ContextTemplateUpdate>, String> {
+    let mut clock = chrono::Utc::now;
+    scan_project_context_template_updates_with_clock(
+        project_dir,
+        workspace_dir,
+        &mut clock,
+        on_publication,
+    )
+}
+
+fn scan_project_context_template_updates_with_clock(
+    project_dir: &Path,
+    workspace_dir: &Path,
+    clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
+    on_publication: &mut dyn FnMut(&'static str, ContextPublication),
+) -> Result<Vec<ContextTemplateUpdate>, String> {
     validate_project_workspace_for_scan(project_dir, workspace_dir)?;
     let mut loaded = load_state(workspace_dir, false)?;
     let mut updates = Vec::new();
     for spec in project_specs() {
-        if let Some(update) = sync_one_template(
+        let execution = sync_one_template(
             Some(project_dir),
             workspace_dir,
             spec,
             &mut loaded,
             false,
             true,
-        )? {
+            clock,
+        );
+        if let Some(update) =
+            consume_template_execution(spec, execution, on_publication)?.pending_update
+        {
             updates.push(update);
         }
     }
@@ -995,14 +1289,43 @@ pub fn sync_project_context_template_for_read(
     context_dir: &Path,
     filename: &str,
 ) -> Result<(), String> {
+    let mut on_publication = |_: &'static str, _: ContextPublication| {};
+    sync_project_context_template_for_read_with_publications(
+        context_dir,
+        filename,
+        &mut on_publication,
+    )
+}
+
+pub(crate) fn sync_project_context_template_for_read_with_publications(
+    context_dir: &Path,
+    filename: &str,
+    on_publication: &mut dyn FnMut(&'static str, ContextPublication),
+) -> Result<(), String> {
+    let mut clock = chrono::Utc::now;
+    sync_project_context_template_for_read_with_clock(
+        context_dir,
+        filename,
+        &mut clock,
+        on_publication,
+    )
+}
+
+fn sync_project_context_template_for_read_with_clock(
+    context_dir: &Path,
+    filename: &str,
+    clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
+    on_publication: &mut dyn FnMut(&'static str, ContextPublication),
+) -> Result<(), String> {
     let Some(spec) = project_spec_by_filename(filename) else {
         return Ok(());
     };
     validate_existing_dir(context_dir, "Context template directory")?;
     let mut loaded = load_state(context_dir, false)?;
-    let result = sync_one_template(None, context_dir, spec, &mut loaded, true, false);
+    let execution = sync_one_template(None, context_dir, spec, &mut loaded, true, false, clock);
+    let result = consume_template_execution(spec, execution, on_publication).map(|_| ());
     persist_state_best_effort(context_dir, &loaded);
-    result.map(|_| ())
+    result
 }
 
 pub fn ensure_root_context_template(config_dir: &Path) -> Result<(), String> {
@@ -1015,7 +1338,17 @@ pub fn ensure_root_context_template(config_dir: &Path) -> Result<(), String> {
     })?;
     validate_existing_dir(config_dir, "Root agent config directory")?;
     let mut loaded = load_state(config_dir, false)?;
-    sync_one_template(None, config_dir, root_spec(), &mut loaded, true, false)?;
+    let mut clock = chrono::Utc::now;
+    let execution = sync_one_template(
+        None,
+        config_dir,
+        root_spec(),
+        &mut loaded,
+        true,
+        false,
+        &mut clock,
+    );
+    execution.completion?;
     persist_state_best_effort(config_dir, &loaded);
     Ok(())
 }
@@ -1343,9 +1676,52 @@ pub fn overwrite_context_template_with_default(
     expected_file_sha256: &str,
     expected_default_sha256: &str,
 ) -> Result<ContextTemplateOverwriteResult, String> {
+    let mut on_publication = |_: &'static str, _: ContextPublication| {};
+    let execution = overwrite_context_template_with_default_with_publications(
+        workspace_dir,
+        filename,
+        expected_file_sha256,
+        expected_default_sha256,
+        &mut on_publication,
+    );
+    if let Some(publication) = execution.published {
+        log::debug!(
+            "[context-templates] {} overwrite published at {}",
+            filename,
+            publication.published_at
+        );
+    }
+    execution.completion
+}
+
+pub(crate) fn overwrite_context_template_with_default_with_publications(
+    workspace_dir: &Path,
+    filename: &str,
+    expected_file_sha256: &str,
+    expected_default_sha256: &str,
+    on_publication: &mut dyn FnMut(&'static str, ContextPublication),
+) -> ContextTemplateExecution<ContextTemplateOverwriteResult> {
+    let mut clock = chrono::Utc::now;
+    overwrite_context_template_with_default_with(
+        workspace_dir,
+        filename,
+        expected_file_sha256,
+        expected_default_sha256,
+        &mut clock,
+        on_publication,
+        persist_state_strict,
+    )
+}
+
+fn prepare_context_template_overwrite(
+    workspace_dir: &Path,
+    filename: &str,
+    expected_file_sha256: &str,
+    expected_default_sha256: &str,
+) -> Result<(SeededContextTemplateSpec, LoadedState, PathBuf, PathBuf), String> {
     let spec = actionable_project_spec_by_filename(filename)?;
     let project_dir = validate_project_workspace_dir(workspace_dir)?;
-    let mut loaded = load_state(workspace_dir, true)?;
+    let loaded = load_state(workspace_dir, true)?;
     validate_expected_hashes(
         &project_dir,
         workspace_dir,
@@ -1374,25 +1750,59 @@ pub fn overwrite_context_template_with_default(
         return Err(CONTEXT_TEMPLATE_CHANGED.to_string());
     }
 
-    if let Err(e) = crate::config::session_context::atomically_replace_context_template(
+    Ok((spec, loaded, path, backup_path))
+}
+
+fn overwrite_context_template_with_default_with<P>(
+    workspace_dir: &Path,
+    filename: &str,
+    expected_file_sha256: &str,
+    expected_default_sha256: &str,
+    clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
+    on_publication: &mut dyn FnMut(&'static str, ContextPublication),
+    persist: P,
+) -> ContextTemplateExecution<ContextTemplateOverwriteResult>
+where
+    P: FnOnce(&Path, &LoadedState) -> Result<(), String>,
+{
+    let (spec, mut loaded, path, backup_path) = match prepare_context_template_overwrite(
+        workspace_dir,
+        filename,
+        expected_file_sha256,
+        expected_default_sha256,
+    ) {
+        Ok(prepared) => prepared,
+        Err(error) => return ContextTemplateExecution::failed(error),
+    };
+
+    let published_at = match crate::config::session_context::atomically_replace_context_template(
         &path,
         (spec.current_content)(),
+        clock,
     ) {
-        log::warn!(
-            "[context-templates] replacement failed after backup {} was created: {}",
-            backup_path.display(),
-            e
-        );
-        return Err(e);
-    }
+        Ok(published_at) => published_at,
+        Err(error) => {
+            log::warn!(
+                "[context-templates] replacement failed after backup {} was created: {}",
+                backup_path.display(),
+                error
+            );
+            return ContextTemplateExecution::failed(error);
+        }
+    };
+    let publication = ContextPublication { published_at };
+    on_publication(spec.filename, publication);
 
     loaded.mark_seeded(spec, expected_default_sha256);
-    persist_state_strict(workspace_dir, &loaded)?;
-    Ok(ContextTemplateOverwriteResult {
+    let result = ContextTemplateOverwriteResult {
         file_path: display_path(&path),
         backup_path: display_path(&backup_path),
         current_default_sha256: expected_default_sha256.to_string(),
-    })
+    };
+    ContextTemplateExecution::with_publication(
+        persist(workspace_dir, &loaded).map(|()| result),
+        publication,
+    )
 }
 
 fn create_backup(path: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
@@ -1494,6 +1904,40 @@ mod tests {
         sha256_hex(content.as_bytes())
     }
 
+    fn fixed_publication_time() -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339("2026-07-20T10:30:45.123Z")
+            .expect("parse fixed publication time")
+            .with_timezone(&chrono::Utc)
+    }
+
+    fn sync_for_read_at(
+        workspace: &Path,
+        filename: &str,
+        published_at: chrono::DateTime<chrono::Utc>,
+    ) -> Vec<(&'static str, ContextPublication)> {
+        let mut clock = || published_at;
+        let mut publications = Vec::new();
+        sync_project_context_template_for_read_with_clock(
+            workspace,
+            filename,
+            &mut clock,
+            &mut |filename, publication| publications.push((filename, publication)),
+        )
+        .expect("sync for read");
+        publications
+    }
+
+    fn assert_one_publication(
+        publications: &[(&'static str, ContextPublication)],
+        filename: &'static str,
+        published_at: chrono::DateTime<chrono::Utc>,
+    ) {
+        assert_eq!(
+            publications,
+            &[(filename, ContextPublication { published_at })]
+        );
+    }
+
     #[test]
     fn old_coordinator_default_is_known_generated_without_raise_hand() {
         assert!(
@@ -1567,8 +2011,17 @@ mod tests {
         )
         .expect("write pristine v2 coordinator");
 
-        sync_project_context_template_for_read(&workspace, COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
-            .expect("sync for read");
+        let published_at = fixed_publication_time();
+        let publications = sync_for_read_at(
+            &workspace,
+            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            published_at,
+        );
+        assert_one_publication(
+            &publications,
+            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            published_at,
+        );
 
         let content =
             std::fs::read_to_string(workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
@@ -1626,8 +2079,14 @@ mod tests {
         )
         .expect("write pristine v1 global");
 
-        sync_project_context_template_for_read(&workspace, GLOBAL_CONTEXT_TEMPLATE_FILENAME)
-            .expect("sync for read");
+        let published_at = fixed_publication_time();
+        let publications =
+            sync_for_read_at(&workspace, GLOBAL_CONTEXT_TEMPLATE_FILENAME, published_at);
+        assert_one_publication(
+            &publications,
+            GLOBAL_CONTEXT_TEMPLATE_FILENAME,
+            published_at,
+        );
 
         let content = std::fs::read_to_string(workspace.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
             .expect("read global");
@@ -1662,13 +2121,205 @@ mod tests {
     }
 
     #[test]
+    fn equal_default_observation_has_no_publication() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join(".ac");
+        std::fs::create_dir(&workspace).expect("create workspace");
+        std::fs::write(
+            workspace.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            crate::config::session_context::get_default_agent_template(),
+        )
+        .expect("write current global default");
+
+        let publications = sync_for_read_at(
+            &workspace,
+            GLOBAL_CONTEXT_TEMPLATE_FILENAME,
+            fixed_publication_time(),
+        );
+
+        assert!(
+            publications.is_empty(),
+            "observing equal default bytes must not manufacture a publication"
+        );
+    }
+
+    #[test]
+    fn generated_update_lost_race_has_no_publication_or_clock_sample() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join(".ac");
+        std::fs::create_dir(&workspace).expect("create workspace");
+        let path = workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(
+            &path,
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION,
+        )
+        .expect("write generated coordinator");
+        let spec = project_spec_by_filename(COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+            .expect("coordinator spec");
+        let mut clock_calls = 0_u32;
+        let mut clock = || {
+            clock_calls += 1;
+            fixed_publication_time()
+        };
+
+        let execution =
+            auto_update_generated_template(&path, spec, "different-observed-hash", &mut clock);
+
+        assert_eq!(execution.published, None);
+        assert_eq!(
+            execution.completion.expect("lost race outcome"),
+            TemplatePublication::ChangedUnderUs
+        );
+        assert_eq!(clock_calls, 0);
+        assert_eq!(
+            std::fs::read_to_string(path).expect("read preserved target"),
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
+        );
+    }
+
+    #[test]
+    fn generated_update_publish_failure_has_no_publication() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(
+            &path,
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION,
+        )
+        .expect("write generated coordinator");
+        let expected_hash = hash_text(COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION);
+        let spec = project_spec_by_filename(COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+            .expect("coordinator spec");
+        let mut clock = || fixed_publication_time();
+
+        let execution = auto_update_generated_template_with(
+            &path,
+            spec,
+            &expected_hash,
+            &mut clock,
+            |_, _, _| Err("injected atomic publication failure".to_string()),
+        );
+
+        assert_eq!(execution.published, None);
+        assert_eq!(
+            execution
+                .completion
+                .expect_err("publication failure must remain an error"),
+            "injected atomic publication failure"
+        );
+        assert_eq!(
+            std::fs::read_to_string(path).expect("read preserved target"),
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn readonly_generated_update_has_no_publication_or_clock_sample() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(
+            &path,
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION,
+        )
+        .expect("write generated coordinator");
+        let expected_hash = hash_text(COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION);
+        let original_permissions = std::fs::metadata(&path)
+            .expect("read target metadata")
+            .permissions();
+        let mut permissions = original_permissions.clone();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&path, permissions).expect("make target read-only");
+        let spec = project_spec_by_filename(COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+            .expect("coordinator spec");
+        let mut clock_calls = 0_u32;
+        let mut clock = || {
+            clock_calls += 1;
+            fixed_publication_time()
+        };
+
+        let execution = auto_update_generated_template(&path, spec, &expected_hash, &mut clock);
+
+        std::fs::set_permissions(&path, original_permissions).expect("restore target permissions");
+        assert_eq!(execution.published, None);
+        assert!(execution.completion.is_err());
+        assert_eq!(clock_calls, 0);
+        assert_eq!(
+            std::fs::read_to_string(path).expect("read preserved target"),
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
+        );
+    }
+
+    #[test]
+    fn create_publication_survives_post_commit_validation_error() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let published_at = fixed_publication_time();
+        let mut clock = || {
+            std::fs::remove_file(&path).expect("remove published target at validation seam");
+            std::fs::create_dir(&path).expect("replace published target with directory");
+            published_at
+        };
+
+        let execution = create_missing_template(&path, "published bytes", &mut clock);
+
+        assert_eq!(
+            execution.published,
+            Some(ContextPublication { published_at })
+        );
+        assert!(execution
+            .completion
+            .expect_err("post-commit validation must fail")
+            .contains("not a regular file"));
+    }
+
+    #[test]
+    fn ensure_consumes_first_publication_before_the_next_target_error() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join(".ac");
+        std::fs::create_dir(&workspace).expect("create workspace");
+        std::fs::create_dir(workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+            .expect("block coordinator target with directory");
+        let published_at = fixed_publication_time();
+        let mut clock = || published_at;
+        let mut publications = Vec::new();
+
+        let error = ensure_project_context_templates_with_clock(
+            &workspace,
+            &mut clock,
+            &mut |filename, publication| publications.push((filename, publication)),
+        )
+        .expect_err("second target must fail");
+
+        assert!(error.contains("not a regular file"), "{error}");
+        assert_one_publication(
+            &publications,
+            GLOBAL_CONTEXT_TEMPLATE_FILENAME,
+            published_at,
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read first published target"),
+            crate::config::session_context::get_default_agent_template()
+        );
+    }
+
+    #[test]
     fn read_sync_creates_missing_coordinator_template() {
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join(".ac");
         std::fs::create_dir(&workspace).expect("create workspace");
 
-        sync_project_context_template_for_read(&workspace, COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
-            .expect("sync for read");
+        let published_at = fixed_publication_time();
+        let publications = sync_for_read_at(
+            &workspace,
+            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            published_at,
+        );
+        assert_one_publication(
+            &publications,
+            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            published_at,
+        );
 
         let content =
             std::fs::read_to_string(workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
@@ -1687,8 +2338,17 @@ mod tests {
         )
         .expect("write old coordinator");
 
-        sync_project_context_template_for_read(&workspace, COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
-            .expect("sync for read");
+        let published_at = fixed_publication_time();
+        let publications = sync_for_read_at(
+            &workspace,
+            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            published_at,
+        );
+        assert_one_publication(
+            &publications,
+            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            published_at,
+        );
 
         let content =
             std::fs::read_to_string(workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
@@ -1724,8 +2384,17 @@ mod tests {
         )
         .expect("write pristine v3 coordinator");
 
-        sync_project_context_template_for_read(&workspace, COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
-            .expect("sync for read");
+        let published_at = fixed_publication_time();
+        let publications = sync_for_read_at(
+            &workspace,
+            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            published_at,
+        );
+        assert_one_publication(
+            &publications,
+            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            published_at,
+        );
 
         let content =
             std::fs::read_to_string(workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
@@ -1794,8 +2463,17 @@ mod tests {
             "row 3 requires the pristine v3 body to be recognized as generated"
         );
 
-        sync_project_context_template_for_read(&workspace, COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
-            .expect("sync for read");
+        let published_at = fixed_publication_time();
+        let publications = sync_for_read_at(
+            &workspace,
+            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            published_at,
+        );
+        assert_one_publication(
+            &publications,
+            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            published_at,
+        );
 
         let content =
             std::fs::read_to_string(workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
@@ -1834,10 +2512,21 @@ mod tests {
         )
         .expect("write custom coordinator");
 
-        let updates =
-            scan_project_context_template_updates(temp.path(), &workspace).expect("scan updates");
+        let mut clock = || fixed_publication_time();
+        let mut publications = Vec::new();
+        let updates = scan_project_context_template_updates_with_clock(
+            temp.path(),
+            &workspace,
+            &mut clock,
+            &mut |filename, publication| publications.push((filename, publication)),
+        )
+        .expect("scan updates");
 
         assert_eq!(updates.len(), 1);
+        assert!(
+            publications.is_empty(),
+            "observing custom content must not produce publication evidence"
+        );
         assert_eq!(updates[0].filename, COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
         assert_eq!(
             std::fs::read_to_string(workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
@@ -1923,9 +2612,20 @@ mod tests {
         )
         .expect("dismiss");
 
-        let updates =
-            scan_project_context_template_updates(temp.path(), &workspace).expect("scan again");
+        let mut clock = || fixed_publication_time();
+        let mut publications = Vec::new();
+        let updates = scan_project_context_template_updates_with_clock(
+            temp.path(),
+            &workspace,
+            &mut clock,
+            &mut |filename, publication| publications.push((filename, publication)),
+        )
+        .expect("scan again");
         assert!(updates.is_empty());
+        assert!(
+            publications.is_empty(),
+            "a dismissed observation must not manufacture publication evidence"
+        );
     }
 
     #[test]
@@ -1993,6 +2693,63 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(result.backup_path).expect("read backup"),
             custom
+        );
+    }
+
+    #[test]
+    fn overwrite_publication_survives_later_strict_state_save_error() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join(".ac");
+        std::fs::create_dir(&workspace).expect("create workspace");
+        let path = workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
+        let custom = "custom coordinator guidance";
+        std::fs::write(&path, custom).expect("write custom coordinator");
+        let update = scan_project_context_template_updates(temp.path(), &workspace)
+            .expect("scan updates")
+            .pop()
+            .expect("pending update");
+        let published_at = fixed_publication_time();
+        let mut clock = || published_at;
+        let handled_publication = std::cell::Cell::new(None);
+
+        let execution = overwrite_context_template_with_default_with(
+            &workspace,
+            &update.filename,
+            &update.current_file_sha256,
+            &update.current_default_sha256,
+            &mut clock,
+            &mut |filename, publication| {
+                assert_eq!(filename, COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
+                handled_publication.set(Some(publication));
+            },
+            |_, _| {
+                assert_eq!(
+                    std::fs::read_to_string(&path).expect("read target before state save"),
+                    get_default_coordinator_template(),
+                    "the physical replacement must precede specialized state persistence"
+                );
+                assert_eq!(
+                    handled_publication.get(),
+                    Some(ContextPublication { published_at }),
+                    "the publication must be consumed before specialized state persistence"
+                );
+                Err("injected strict state persistence failure".to_string())
+            },
+        );
+
+        assert_eq!(
+            execution.published,
+            Some(ContextPublication { published_at })
+        );
+        assert_eq!(
+            execution
+                .completion
+                .expect_err("strict state save failure remains an outer error"),
+            "injected strict state persistence failure"
+        );
+        assert_eq!(
+            std::fs::read_to_string(path).expect("read surviving published target"),
+            get_default_coordinator_template()
         );
     }
 
