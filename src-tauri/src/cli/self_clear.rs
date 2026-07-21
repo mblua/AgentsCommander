@@ -23,7 +23,7 @@ fn interpret_self_clear_response_exit_code(content: &str) -> i32 {
 #[derive(Args)]
 #[command(after_help = "\
 Hands off, then clears the CALLER'S OWN agent context and resumes from the handoff file. Two deferred phases:\n\n\
-  Phase 1 (clear): waits until this session is continuously idle for 30s, then injects /clear.\n\
+  Phase 1 (clear): waits until this session is continuously idle for 30s, then injects provider-resolved clear text: /new for an exact-stem direct Pi shell, /clear for direct Claude/Codex/Gemini-family and Cursor agent shells.\n\
   Phase 2 (handoff): after the clear, waits a FRESH 30s of sustained idle, archives \
 SELF-HANDOFF.md -> self-clear/<timestamp>_SELF-HANDOFF.md in your root, then injects a prompt naming \
 that exact archived path to resume from. If the archive rename fails, the prompt points at \
@@ -41,7 +41,7 @@ owns the token you present.\n\n\
 BEST-EFFORT: neither phase is guaranteed. A perpetually busy session that never reaches 30s sustained \
 idle, or a daemon restart mid-cycle, drops the remainder (a greppable warn line is logged). Re-issue \
 if your context is still present later.\n\n\
-SCOPE: only coding-agent CLIs (Claude / Codex / Gemini / Cursor agent).")]
+SCOPE: direct Claude / Codex / Gemini-family shells, Cursor agent, and exact-stem direct Pi shells. Outer cmd / pwsh wrappers remain unsupported; matching is lexical, not binary attestation.")]
 pub struct SelfClearArgs {
     /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;
     /// per-session authorization happens at the daemon mailbox.
@@ -71,6 +71,12 @@ pub struct SelfClearArgs {
 pub(crate) fn resolve_self_clear_sender(root: &str) -> String {
     let root_is_root_agent = crate::config::root_agent::is_root_agent_path(root);
     sender_for_root(root, root_is_root_agent)
+}
+
+fn self_clear_queued_status(settle_secs: u64) -> String {
+    format!(
+        "self-handoff-and-clear requested. Phase 1 injects provider-resolved clear text only after this session is continuously idle for {settle_secs}s: /new for an exact-stem direct Pi shell, or /clear for direct Claude/Codex/Gemini-family and Cursor agent shells. Phase 2 then waits a fresh {settle_secs}s of post-clear idle, archives SELF-HANDOFF.md into self-clear/ and injects a prompt naming the exact archived file to resume from. If SELF-FORGET.md was present at queue time, that prompt includes a compact closed-background forgotten summary. Best-effort and NOT guaranteed (a busy session or a daemon restart drops it). If your context is still present later, re-issue."
+    )
 }
 
 pub fn execute(args: SelfClearArgs) -> i32 {
@@ -205,14 +211,10 @@ pub fn execute(args: SelfClearArgs) -> i32 {
                         .as_deref()
                     {
                         Some("queued") => crate::cli_println!(
-                            "self-handoff-and-clear requested. Phase 1 injects /clear only after this session is \
-                             continuously idle for {0}s; Phase 2 then waits a fresh {0}s of post-clear idle, \
-                             archives SELF-HANDOFF.md into self-clear/ and injects a prompt naming the exact \
-                             archived file to resume from. If SELF-FORGET.md was present at queue time, that \
-                             prompt includes a compact closed-background forgotten summary. Best-effort and NOT \
-                             guaranteed (a busy session or a daemon restart drops it). If your context is still \
-                             present later, re-issue.",
-                            crate::phone::mailbox::SELF_CLEAR_SETTLE_SECS
+                            "{}",
+                            self_clear_queued_status(
+                                crate::phone::mailbox::SELF_CLEAR_SETTLE_SECS
+                            )
                         ),
                         Some("already_queued") => crate::cli_println!(
                             "self-handoff-and-clear already pending for this session (or a clear/handoff is in \
@@ -363,6 +365,37 @@ mod tests {
             parsed.is_err(),
             "the old `self-clear` name must be rejected after the #626 rename"
         );
+    }
+
+    #[test]
+    fn self_clear_help_documents_provider_resolved_clear() {
+        use clap::CommandFactory;
+        let cmd = crate::cli::Cli::command();
+        let mut subcommand = cmd
+            .get_subcommands()
+            .find(|cmd| cmd.get_name() == "self-handoff-and-clear")
+            .expect("self-handoff-and-clear subcommand")
+            .clone();
+        let help = subcommand.render_long_help().to_string();
+
+        assert!(help.contains("provider-resolved clear text"), "{help}");
+        assert!(help.contains("/new"), "{help}");
+        assert!(help.contains("/clear"), "{help}");
+        assert!(help.contains("exact-stem direct Pi shell"), "{help}");
+        assert!(help.contains("continuously idle"), "{help}");
+        assert!(help.contains("Outer cmd / pwsh wrappers"), "{help}");
+        assert!(!help.contains("then injects /clear."), "{help}");
+    }
+
+    #[test]
+    fn self_clear_queued_status_documents_provider_resolved_clear() {
+        let status = self_clear_queued_status(30);
+        assert!(status.contains("provider-resolved clear text"), "{status}");
+        assert!(status.contains("/new"), "{status}");
+        assert!(status.contains("/clear"), "{status}");
+        assert!(status.contains("exact-stem direct Pi shell"), "{status}");
+        assert!(status.contains("continuously idle for 30s"), "{status}");
+        assert!(!status.contains("Phase 1 injects /clear"), "{status}");
     }
 
     #[test]

@@ -53,8 +53,9 @@ pub struct ClockEntry {
     /// (#756) Durable fresh-conversation intent, mirrored from the session
     /// record's `start_fresh_on_restore` for coordinators. `Some` means: the
     /// newest provider transcript for this cwd predates the user's last
-    /// fresh-boundary action (restart or AC-driven /clear) and no post-boundary
-    /// content exists yet, so the create path must suppress provider resume
+    /// fresh-boundary action (restart or successful logical clear: /clear or Pi
+    /// /new) and no post-boundary content exists yet, so the create path must
+    /// suppress provider resume
     /// injection (Claude/Pi --continue / Codex resume --last / Gemini --resume
     /// latest). Survives record destruction (idle auto-close, manual close).
     /// Cleared by typed user input and by AC-injected message content; NOT
