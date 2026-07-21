@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::process::{Child, Command, Stdio};
@@ -29,16 +29,83 @@ fn normalized_app_error_text(error: &AppError) -> String {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+fn redact_command_values(input: &str, spec: &DockerCommandSpec) -> String {
+    spec.secret_env
+        .values()
+        .chain(spec.redacted_values.iter())
+        .filter(|value| !value.is_empty())
+        .fold(input.to_string(), |text, value| {
+            text.replace(value, "[REDACTED]")
+        })
+}
+
+fn redact_command_bytes(bytes: &mut Vec<u8>, spec: &DockerCommandSpec) {
+    for value in spec
+        .secret_env
+        .values()
+        .chain(spec.redacted_values.iter())
+        .filter(|value| !value.is_empty())
+    {
+        let needle = value.as_bytes();
+        if !bytes.windows(needle.len()).any(|window| window == needle) {
+            continue;
+        }
+        let original = std::mem::take(bytes);
+        let mut redacted = Vec::with_capacity(original.len());
+        let mut cursor = 0;
+        while cursor < original.len() {
+            let next = original[cursor..]
+                .windows(needle.len())
+                .position(|window| window == needle);
+            let Some(offset) = next else {
+                redacted.extend_from_slice(&original[cursor..]);
+                break;
+            };
+            let position = cursor + offset;
+            redacted.extend_from_slice(&original[cursor..position]);
+            redacted.extend_from_slice(b"[REDACTED]");
+            cursor = position + needle.len();
+        }
+        *bytes = redacted;
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub struct DockerCommandSpec {
     pub program: String,
     pub args: Vec<String>,
+    pub secret_env: BTreeMap<String, String>,
+    redacted_values: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+impl std::fmt::Debug for DockerCommandSpec {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DockerCommandSpec")
+            .field("program", &"[REDACTED_COMMAND]")
+            .field("args_count", &self.args.len())
+            .field(
+                "secret_env_keys",
+                &self.secret_env.keys().collect::<Vec<_>>(),
+            )
+            .finish()
+    }
+}
+
+#[derive(Clone, Default, PartialEq, Eq)]
 struct CappedCommandStream {
     bytes: Vec<u8>,
     truncated: bool,
+}
+
+impl std::fmt::Debug for CappedCommandStream {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CappedCommandStream")
+            .field("bytes", &self.bytes.len())
+            .field("truncated", &self.truncated)
+            .finish()
+    }
 }
 
 #[derive(Debug)]
@@ -695,16 +762,13 @@ impl DockerRuntime {
             "--env".to_string(),
             format!("AGENTSCOMMANDER_API_URL={}", request.api_url),
             "--env".to_string(),
-            format!("AGENTSCOMMANDER_API_TOKEN={}", request.api_token),
+            "AGENTSCOMMANDER_API_TOKEN".to_string(),
             "--env".to_string(),
             format!("AGENTSCOMMANDER_SESSION_ID={}", request.session_id),
             "--env".to_string(),
-            format!(
-                "AGENTSCOMMANDER_SESSION_REGISTRATION_TOKEN={}",
-                request.registration_ticket
-            ),
+            "AGENTSCOMMANDER_SESSION_REGISTRATION_TOKEN".to_string(),
             "--env".to_string(),
-            format!("AGENTSCOMMANDER_ROOT={}", request.host_root),
+            "AGENTSCOMMANDER_ROOT".to_string(),
             "--env".to_string(),
             format!("AGENTSCOMMANDER_LOCAL_DIR={}", request.local_dir),
             "--env".to_string(),
@@ -717,11 +781,11 @@ impl DockerRuntime {
                 request.container_workdir
             ),
             "--env".to_string(),
-            format!("AGENTSCOMMANDER_BRIDGE_COMMAND={}", request.command),
+            "AGENTSCOMMANDER_BRIDGE_COMMAND".to_string(),
             "--env".to_string(),
-            format!("AGENTSCOMMANDER_BRIDGE_ARGS_JSON={}", args_json),
+            "AGENTSCOMMANDER_BRIDGE_ARGS_JSON".to_string(),
             "--env".to_string(),
-            format!("AGENTSCOMMANDER_BRIDGE_ENV_JSON={}", child_env_json),
+            "AGENTSCOMMANDER_BRIDGE_ENV_JSON".to_string(),
             "--env".to_string(),
             // This is a flat key-name array, not key/value pairs. Do not add
             // AGENTSCOMMANDER_BRIDGE_ENV_UNSET_JSON to SENSITIVE_LOG_KEYS:
@@ -759,9 +823,41 @@ impl DockerRuntime {
         args.push(DEFAULT_BRIDGE_ENTRYPOINT.to_string());
 
         args.retain(|arg| !arg.is_empty());
+        let secret_env = BTreeMap::from([
+            (
+                "AGENTSCOMMANDER_API_TOKEN".to_string(),
+                request.api_token.clone(),
+            ),
+            (
+                "AGENTSCOMMANDER_SESSION_REGISTRATION_TOKEN".to_string(),
+                request.registration_ticket.clone(),
+            ),
+            (
+                "AGENTSCOMMANDER_ROOT".to_string(),
+                request.host_root.clone(),
+            ),
+            (
+                "AGENTSCOMMANDER_BRIDGE_COMMAND".to_string(),
+                request.command.clone(),
+            ),
+            ("AGENTSCOMMANDER_BRIDGE_ARGS_JSON".to_string(), args_json),
+            (
+                "AGENTSCOMMANDER_BRIDGE_ENV_JSON".to_string(),
+                child_env_json,
+            ),
+        ]);
+        let mut redacted_values = vec![request.host_root.clone()];
+        redacted_values.extend(
+            request
+                .repo_mounts
+                .iter()
+                .map(|mount| mount.host_path.to_string_lossy().to_string()),
+        );
         Ok(DockerCommandSpec {
             program: self.program.clone(),
             args,
+            secret_env,
+            redacted_values,
         })
     }
 
@@ -782,6 +878,8 @@ impl DockerRuntime {
                 timeout.as_secs().to_string(),
                 handle.container_id.clone(),
             ],
+            secret_env: BTreeMap::new(),
+            redacted_values: Vec::new(),
         }
     }
 
@@ -793,6 +891,8 @@ impl DockerRuntime {
                 "-f".to_string(),
                 handle.container_id.clone(),
             ],
+            secret_env: BTreeMap::new(),
+            redacted_values: Vec::new(),
         }
     }
 
@@ -808,6 +908,8 @@ impl DockerRuntime {
                 "{{json .State}}".to_string(),
                 handle.container_id.clone(),
             ],
+            secret_env: BTreeMap::new(),
+            redacted_values: Vec::new(),
         }
     }
 
@@ -824,6 +926,8 @@ impl DockerRuntime {
                 tail_lines.to_string(),
                 handle.container_id.clone(),
             ],
+            secret_env: BTreeMap::new(),
+            redacted_values: Vec::new(),
         }
     }
 
@@ -838,6 +942,8 @@ impl DockerRuntime {
                 "--format".to_string(),
                 format!("{{{{.ID}}}}\t{{{{.Label \"{}\"}}}}", SESSION_LABEL),
             ],
+            secret_env: BTreeMap::new(),
+            redacted_values: Vec::new(),
         }
     }
 
@@ -957,6 +1063,7 @@ impl DockerRuntime {
 
         let mut cmd = Command::new(&spec.program);
         cmd.args(&spec.args)
+            .envs(&spec.secret_env)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
@@ -1134,7 +1241,7 @@ impl DockerRuntime {
             .shutdown_deadline()
             .map(|deadline| deadline.min(hard_deadline))
             .unwrap_or(hard_deadline);
-        let output = match owner.collect_output_until(dynamic_hard_deadline) {
+        let mut output = match owner.collect_output_until(dynamic_hard_deadline) {
             Some(Ok(output)) => output,
             Some(Err(error)) => {
                 return Err(DockerCommandError {
@@ -1146,6 +1253,8 @@ impl DockerRuntime {
                 return Err(self.retain_reader_owner_at_deadline(owner));
             }
         };
+        redact_command_bytes(&mut output.stdout.bytes, &spec);
+        redact_command_bytes(&mut output.stderr.bytes, &spec);
         let DockerCommandOutput { stdout, stderr } = output;
         if !status.success() {
             let stderr_text = stderr.trimmed_text();
@@ -1155,6 +1264,7 @@ impl DockerRuntime {
             } else {
                 stderr_text.trim()
             };
+            let detail = redact_command_values(detail, &spec);
             return Err(DockerCommandError {
                 source: AppError::PtyError(format!(
                     "container runtime command exited {}: {}",
@@ -1768,12 +1878,56 @@ mod tests {
             SESSION_LABEL
         )));
         assert!(joined.contains("AGENTSCOMMANDER_API_URL=http://host.docker.internal:8765"));
-        assert!(joined.contains("AGENTSCOMMANDER_SESSION_REGISTRATION_TOKEN=ticket-secret"));
-        assert!(joined.contains("AGENTSCOMMANDER_API_TOKEN=api-secret"));
+        assert!(joined.contains("--env AGENTSCOMMANDER_SESSION_REGISTRATION_TOKEN"));
+        assert!(joined.contains("--env AGENTSCOMMANDER_API_TOKEN"));
+        assert!(joined.contains("--env AGENTSCOMMANDER_ROOT"));
+        assert!(!joined.contains("AGENTSCOMMANDER_ROOT=C:/project"));
+        assert!(!joined.contains("ticket-secret"));
+        assert!(!joined.contains("api-secret"));
+        assert_eq!(
+            spec.secret_env
+                .get("AGENTSCOMMANDER_SESSION_REGISTRATION_TOKEN")
+                .map(String::as_str),
+            Some("ticket-secret")
+        );
+        assert_eq!(
+            spec.secret_env
+                .get("AGENTSCOMMANDER_API_TOKEN")
+                .map(String::as_str),
+            Some("api-secret")
+        );
+        assert_eq!(
+            spec.secret_env
+                .get("AGENTSCOMMANDER_ROOT")
+                .map(String::as_str),
+            Some("C:/project/.ac/wg-1-team/__agent_dev")
+        );
         assert!(joined.contains(&format!(
             "AGENTSCOMMANDER_BINARY_PATH={DEFAULT_API_HELPER_PATH}"
         )));
-        assert!(joined.contains("AGENTSCOMMANDER_BRIDGE_COMMAND=codex"));
+        assert!(joined.contains("--env AGENTSCOMMANDER_BRIDGE_COMMAND"));
+        assert!(joined.contains("--env AGENTSCOMMANDER_BRIDGE_ARGS_JSON"));
+        assert!(joined.contains("--env AGENTSCOMMANDER_BRIDGE_ENV_JSON"));
+        assert!(!joined.contains("AGENTSCOMMANDER_BRIDGE_COMMAND=codex"));
+        assert!(!joined.contains("CODEX_HOME"));
+        assert_eq!(
+            spec.secret_env
+                .get("AGENTSCOMMANDER_BRIDGE_COMMAND")
+                .map(String::as_str),
+            Some("codex")
+        );
+        assert_eq!(
+            spec.secret_env
+                .get("AGENTSCOMMANDER_BRIDGE_ARGS_JSON")
+                .map(String::as_str),
+            Some("[\"--version\"]")
+        );
+        assert_eq!(
+            spec.secret_env
+                .get("AGENTSCOMMANDER_BRIDGE_ENV_JSON")
+                .map(String::as_str),
+            Some("[[\"CODEX_HOME\",\"/workspace/.codex\"]]")
+        );
         assert!(joined.contains("AGENTSCOMMANDER_BRIDGE_ENV_UNSET_JSON=[\"CLAUDE_CONFIG_DIR\"]"));
         assert!(joined
             .contains("type=bind,source=C:/project/.ac/wg-1-team/__agent_dev,target=/workspace"));
@@ -1787,6 +1941,32 @@ mod tests {
         assert!(!joined.contains("docker.sock"));
         assert!(!joined.contains("messaging"));
         assert!(!joined.contains("api-clients.json"));
+    }
+
+    #[test]
+    fn docker_command_debug_and_captured_output_redact_commands_paths_and_secret_values() {
+        let runtime = DockerRuntime::with_program("docker-secret-program");
+        let spec = runtime.build_run_command(&request()).unwrap();
+        let rendered = format!("{spec:?}");
+        for sentinel in [
+            "docker-secret-program",
+            "C:/project",
+            "codex",
+            "api-secret",
+            "ticket-secret",
+        ] {
+            assert!(!rendered.contains(sentinel), "debug leaked {sentinel}");
+        }
+        assert!(rendered.contains("AGENTSCOMMANDER_API_TOKEN"));
+        assert!(rendered.contains("AGENTSCOMMANDER_SESSION_REGISTRATION_TOKEN"));
+
+        let mut bytes = b"prefix api-secret middle ticket-secret path C:/project/.ac/wg-1-team/__agent_dev suffix".to_vec();
+        redact_command_bytes(&mut bytes, &spec);
+        let output = String::from_utf8(bytes).unwrap();
+        assert_eq!(
+            output,
+            "prefix [REDACTED] middle [REDACTED] path [REDACTED] suffix"
+        );
     }
 
     #[test]
@@ -2176,11 +2356,15 @@ mod tests {
                 "-Command".to_string(),
                 "Start-Sleep -Seconds 30".to_string(),
             ],
+            secret_env: BTreeMap::new(),
+            redacted_values: Vec::new(),
         };
         #[cfg(not(windows))]
         let spec = DockerCommandSpec {
             program: "sleep".to_string(),
             args: vec!["30".to_string()],
+            secret_env: BTreeMap::new(),
+            redacted_values: Vec::new(),
         };
         let worker_runtime = Arc::clone(&runtime);
         let worker_control = control.clone();

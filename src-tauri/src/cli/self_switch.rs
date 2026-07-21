@@ -225,6 +225,7 @@ pub fn execute(args: SelfSwitchArgs) -> i32 {
         switch_profile,
         dry_run: None,
         quiet_period_ms: None,
+        pty_input: None,
     };
 
     let outbox_dir = if is_root {

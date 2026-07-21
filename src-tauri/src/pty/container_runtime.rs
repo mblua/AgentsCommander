@@ -118,7 +118,7 @@ impl ContainerRuntimeControl {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ContainerStartRequest {
     pub session_id: Uuid,
     pub image: String,
@@ -136,6 +136,36 @@ pub struct ContainerStartRequest {
     pub rows: u16,
     /// #935 - read-write repo bind mounts, each rendered as its own --mount.
     pub repo_mounts: Vec<crate::pty::container_repos::ContainerRepoMount>,
+}
+
+impl std::fmt::Debug for ContainerStartRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ContainerStartRequest")
+            .field("session_id", &self.session_id)
+            .field("image", &self.image)
+            .field("host_root", &"[REDACTED_PATH]")
+            .field("container_workdir", &self.container_workdir)
+            .field("api_url", &self.api_url)
+            .field("api_token", &"[REDACTED]")
+            .field("registration_ticket", &"[REDACTED]")
+            .field("local_dir", &self.local_dir)
+            .field("command", &"[REDACTED_COMMAND]")
+            .field("args_count", &self.args.len())
+            .field(
+                "child_env_keys",
+                &self
+                    .child_env
+                    .iter()
+                    .map(|(key, _)| key)
+                    .collect::<Vec<_>>(),
+            )
+            .field("env_unset", &self.env_unset)
+            .field("cols", &self.cols)
+            .field("rows", &self.rows)
+            .field("repo_mount_count", &self.repo_mounts.len())
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
