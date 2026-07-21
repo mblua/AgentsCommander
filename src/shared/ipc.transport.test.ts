@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeTransport } from "./testing/fake-transport";
-import { baseSettings } from "./testing/ui-harness";
+import { baseSettings, settingsSnapshot } from "./testing/ui-harness";
 import { liveSelection, SESSION_A } from "./testing/session-selection";
 
 describe("shared ipc transport seam", () => {
@@ -38,6 +38,49 @@ describe("shared ipc transport seam", () => {
     expect(fake.lastCall("get_settings")?.args).toEqual({});
     expect(websocketCtor).not.toHaveBeenCalled();
     expect(setTimeoutSpy).not.toHaveBeenCalled();
+  });
+
+  it("returns the structured SettingsSnapshot from get_settings without text parsing", async () => {
+    const ipc = await import("./ipc");
+    const fake = new FakeTransport();
+    const snapshot = settingsSnapshot(
+      { projectPaths: ["C:\\bundle\\projects\\alpha"] },
+      {
+        activeRegistrationCount: 2,
+        issues: [
+          {
+            kind: "conflict",
+            id: "a".repeat(64),
+            source: "projectPaths",
+            index: 0,
+            absoluteCandidate: "C:\\bundle\\projects\\alpha",
+            instanceRelativeCandidate: "..\\projects\\beta",
+            absoluteResolvedPath: "C:\\abs\\alpha",
+            instanceRelativeResolvedPath: "C:\\rel\\beta",
+            message: "backend message",
+          },
+        ],
+      },
+    );
+    fake.resolve("get_settings", snapshot);
+    const restore = ipc.__setTransportForTests(fake);
+    try {
+      const result = await ipc.SettingsAPI.get();
+      // The structured report is returned verbatim: no error-string parsing, no
+      // reshaping. AppSettings fields are flattened alongside it.
+      expect(result.projectPaths).toEqual(["C:\\bundle\\projects\\alpha"]);
+      expect(result.projectPathResolution.activeRegistrationCount).toBe(2);
+      expect(result.projectPathResolution.issues).toHaveLength(1);
+      expect(result.projectPathResolution.issues[0]).toMatchObject({
+        kind: "conflict",
+        source: "projectPaths",
+        absoluteResolvedPath: "C:\\abs\\alpha",
+        instanceRelativeResolvedPath: "C:\\rel\\beta",
+      });
+      expect(fake.lastCall("get_settings")?.args).toEqual({});
+    } finally {
+      restore();
+    }
   });
 
   it("decodes selection hydration and events before invoking consumers", async () => {

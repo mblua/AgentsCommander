@@ -138,10 +138,41 @@ The copied file is a full-account credential (access token plus long-lived refre
 
 ### Projects
 
+Each registered project is stored in two forms: a canonical absolute path (the existing fields) and a portable path relative to the folder holding the running binary (the companion fields, added for [portable instances](../features/portable-instances.md#portable-project-paths)). The three absolute fields and their three companions are index-aligned.
+
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `projectPath` | string \| null | `null` | Legacy single-project field. Kept for backward compat. |
-| `projectPaths` | string[] | `[]` | All projects registered in the sidebar. New entries appended by `new-project` / `open-project`. |
+| `projectPath` | string \| null | `null` | Legacy single-project field: the first active registration's absolute path. Kept for backward compat. |
+| `projectPathRelativeToInstance` | string \| null | `null` | Companion of `projectPath`. Portable form relative to the binary's directory, or `null` when there is no portable form. |
+| `projectPaths` | string[] | `[]` | All active projects registered in the sidebar. New entries appended by `new-project` / `open-project`. |
+| `projectPathsRelativeToInstance` | (string \| null)[] | `[]` | Companion array of `projectPaths`: one slot per entry, same length and order. `null` where an entry has no portable form. |
+| `archivedProjectPaths` | string[] | `[]` | Absolute paths of archived (registered but hidden) projects. |
+| `archivedProjectPathsRelativeToInstance` | (string \| null)[] | `[]` | Companion array of `archivedProjectPaths`: same length and order. |
+
+**Companion format.** A companion string is relative to the directory of the running executable (see [Portable instances](../features/portable-instances.md#portable-project-paths)), always written with `/` separators on every OS. `.` means the instance folder itself; `..` is allowed as long as it does not climb above the filesystem root. A project on a different Windows drive or UNC share than the binary has no relative form, so its companion slot is `null` and it stays absolute-only.
+
+**Array alignment.** Each plural companion array has exactly the same length and index meaning as its absolute array: slot `i` in `projectPathsRelativeToInstance` is the portable form of `projectPaths[i]`, or `null`. A length mismatch, an orphan companion (a companion present while its absolute field is absent), a wrong-typed field, or a non-null companion beside a `null` primary is structural corruption (see below).
+
+**Legacy migration.** A `settings.json` written by an older build has the three absolute fields and no companions. AC loads it unchanged (absolute-only) and adds a companion only after that project successfully validates, at the first reconciliation boundary or an explicit register/archive operation. Absent companions are valid legacy metadata, never corruption.
+
+**Resolution at load (fail-closed).** On every load AC resolves and validates both candidates for each registration. Validation canonicalizes on the filesystem and requires an existing directory that is either a project containing `.ac/` or a legacy collection root with a project child. The per-registration outcome:
+
+| Absolute side | Relative side | Result |
+|---|---|---|
+| valid | absent, invalid, or unavailable | select the absolute path; add or repair the companion after validation |
+| invalid or missing | valid | select the relative path; refresh the stale absolute side |
+| valid | valid, same directory | select one absolute path (prefers the absolute spelling) |
+| valid | valid, different directory | conflict: select neither, mutate nothing, raise one sticky red toast with both paths |
+| invalid | invalid | load issue: select neither, preserve both raw values |
+| valid | present, but no instance base available | evaluate the absolute side only; keep the relative value for a later normal launch |
+
+"Same" and "different" are decided by filesystem identity, not string comparison, so symlinks and Windows case/alias spellings collapse to one directory. Only validated canonical absolute paths reach startup restoration, team discovery, archive/session gates, and the sidebar. Unresolved or conflicting entries are filtered from the runtime lists but preserved on disk.
+
+**Atomic reconciliation.** When a load selects a path whose companion must be added, repaired, or normalized, AC rewrites only the affected field group (active or archived) through the existing atomic writer (temp file plus rename with retry). Writes are atomic and never torn, but there is no `fsync`, so this is not a power-loss durability guarantee. Generic settings saves use a preserve mode that copies the six raw project fields from disk verbatim rather than rebuilding them, so an unrelated save can never re-pair, reorder, or drop project metadata. A structurally malformed project field blocks all project-list reconciliation and mutation while unrelated settings saves still succeed; the malformed bytes are retained and reported, not normalized.
+
+**Archive pairing.** Archiving, unarchiving, and removing a project move or delete the whole pair (absolute plus companion) together, preserving array order. Archived entries carry their own companion array with the same alignment rules as the active one.
+
+**Downgrade.** An older AgentsCommander build ignores the companion fields and reads only the absolute fields, so a downgraded install still opens your projects. The caveat: if a dual-path conflict exists, the old build does not see it (it reads only the absolute side) and therefore loses the newer build's fail-closed protection for that registration. Resolve conflicts before downgrading.
 
 ### Window & UI
 

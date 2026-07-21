@@ -83,7 +83,7 @@ See [AgentsCommander Harness Roadmap](../harness-roadmap.md) for the phase 1 thr
 
 ## `send`
 
-Send a message to another agent. File-based (default) or remote slash command.
+Send a message to another agent. File-based (default) or a remote logical PTY action.
 
 ```bash
 agentscommander send \
@@ -100,7 +100,7 @@ agentscommander send \
 | `--root` | Yes | Sender's root directory (your CWD inside the workgroup or matrix). Used to derive your canonical name. |
 | `--to` | Yes | Destination peer's canonical FQN. Get this from `list-peers-lean`. |
 | `--send` | * | Filename only — no path. The file must already exist in `<workgroup-root>/messaging/`. Mutually exclusive with `--command`. |
-| `--command` | * | Remote slash command. Whitelist: `clear`, `compact`. Recipient must be idle. Mutually exclusive with `--send`. |
+| `--command` | * | Logical PTY action: `clear` or `compact`. `clear` resolves to `/new` for an exact-stem direct Pi shell and `/clear` for direct Claude/Codex/Gemini-family or Cursor `agent` shells. Pi compact and outer `cmd`/`pwsh` wrappers are unsupported. The mapped session must be idle. Mutually exclusive with `--send`. |
 | `--mode` | No | Delivery mode. Default and only supported value: `wake`. |
 | `--agent` | No | Coding agent to use when `wake` spawns a new session for the recipient. Default `auto` (uses recipient's `lastCodingAgent`). |
 | `--get-output` | No | Reserved for future modes. Non-functional under `--mode wake`. |
@@ -111,7 +111,13 @@ agentscommander send \
 
 **Routing** is pre-validated against team membership and coordinator rules before delivery. Failures exit 1 without writing to the outbox.
 
-See [Inter-agent messaging](../agents/inter-agent-messaging.md) for the full protocol.
+Logical values and missing mappings are validated after authorization/routing but before recipient actuation. Unknown values and unsupported mappings are terminal first-poll rejections. A supported action against a busy session remains retriable. Exact-stem matching is lexical trusted configuration, not binary attestation or a runtime version/semantic-success probe. See [Inter-agent messaging](../agents/inter-agent-messaging.md) for the full mapping and trust boundary.
+
+### `self-handoff-and-clear`
+
+`self-handoff-and-clear` is a token-authorized operation on the caller's own session. Write `SELF-HANDOFF.md` first. Phase 1 waits for 30 seconds of continuous idle, then injects provider-resolved logical-clear text: `/new` for an exact-stem direct Pi shell or `/clear` for direct Claude/Codex/Gemini-family and Cursor `agent` shells. Phase 2 starts only after the full phase-1 injection returns, waits for a fresh 30 seconds of sustained idle, archives the handoff into `self-clear/`, and injects a resume prompt naming that archive.
+
+Both phases are best-effort. A busy transition resets the current sustained-idle window, and a daemon restart or failed phase-1 injection abandons the cycle. Outer `cmd`/`pwsh` wrappers remain unsupported.
 
 ---
 
@@ -552,15 +558,19 @@ agentscommander open-project /path/to/project
 
 | Argument | Description |
 |---|---|
-| `PATH` | Absolute or relative path. Relative is resolved against your CWD; the persisted entry is the absolute form. |
+| `PATH` | Absolute or relative path. Relative is resolved against your current working directory. |
 
 Idempotent — re-registering the same path is a no-op (`Project already registered`).
 
 If the folder does not contain `.ac/`, the CLI suggests `new-project` instead.
 
+**Persisted forms.** Relative `PATH` still resolves against your CWD, but the registration records two paths: the canonical absolute path and a portable companion relative to the AC binary's own directory (not your CWD). See [Portable instances](../features/portable-instances.md#portable-project-paths) and the [`projectPaths` schema](settings.md#projects). A project on a different drive or UNC share than the binary records a `null` companion and remains absolute-only.
+
+**Strict settings write.** `open-project` loads `settings.json` strictly before writing: a present-but-unparseable file, or structurally malformed project metadata, is refused with an error and no changes, rather than being silently overwritten.
+
 **No token required** — project registration mutates the local `settings.json`, which any shell-capable process can already write to.
 
-**GUI concurrency caveat**: when AC is running, the in-memory settings are authoritative; a subsequent GUI `update_settings` built from a stale snapshot can clobber a CLI-registered entry. A watcher/reload story is a follow-up issue.
+**GUI concurrency caveat**: when AC is running, the in-memory settings are authoritative; a subsequent GUI `update_settings` built from a stale snapshot can clobber a CLI-registered entry. This last-writer race between separate CLI and GUI processes is unchanged; the dual-path work adds no interprocess lock. A watcher/reload story is a follow-up issue.
 
 ---
 
@@ -577,6 +587,8 @@ agentscommander new-project /path/to/project
 | `PATH` | Absolute or relative. Folder created if it does not yet exist. |
 
 Idempotent: re-running on a folder that already has `.ac/` only sweeps the Project AC Root gitignore and deduplicates the registration.
+
+Registration records both the absolute path and the instance-relative companion, and uses the same strict settings-write behavior as [`open-project`](#open-project).
 
 **No token required** — same reasoning as `open-project`.
 

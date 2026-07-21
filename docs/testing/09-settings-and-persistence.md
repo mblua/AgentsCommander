@@ -34,6 +34,11 @@ Test data: TBD
 | SET-004 | NOT RUN | No evidence because NOT RUN. | Window geometry persistence checks not executed in this run. |
 | SET-005 | NOT RUN | No evidence because NOT RUN. | Test reset boundary checks not executed in this run. |
 | SET-006 | NOT RUN | No evidence because NOT RUN. | Invalid/missing settings recovery not executed in this run. |
+| SET-007 | NOT RUN | No evidence because NOT RUN. | Dual-path six-field raw inspection not executed in this run. |
+| SET-008 | NOT RUN | No evidence because NOT RUN. | Legacy/new/mixed schema loading not executed in this run. |
+| SET-009 | NOT RUN | No evidence because NOT RUN. | Malformed companion retention not executed in this run. |
+| SET-010 | NOT RUN | No evidence because NOT RUN. | Failed-write byte preservation not executed in this run. |
+| SET-011 | NOT RUN | No evidence because NOT RUN. | CLI/GUI interleaving pair preservation not executed in this run. |
 
 Residual test data:
 
@@ -271,3 +276,179 @@ Evidence Required:
 Pass/Fail Criteria:
 
 PASS if a documented safe method is used and recovery/error behavior is clear and limited to disposable identity. PARTIAL if recovery is safe but one optional cleanup artifact is missing. FAIL if the app corrupts state, touches live settings, or fails without clear error. BLOCKED if no documented safe invalid-settings method exists.
+
+### SET-007: Dual-path project fields are written and aligned
+
+Purpose:
+
+Verify that registering active and archived projects writes all six project fields in `settings.json` with correctly aligned companion arrays, portable companions in `/`-separated form, and a `null` companion for a cross-drive/share project.
+
+Preconditions:
+
+- Depends on SET-001.
+- A disposable testable identity with at least one disposable AC project on the same drive/share as the binary, and, if available, one disposable project on a different drive or UNC share.
+- Read-only inspection of the disposable `settings.json` is available.
+
+Steps:
+
+1. Register one disposable project on the binary's drive/share through the UI or CLI.
+2. If a second drive/share is available, register a disposable project located there.
+3. Archive one registered project so the archived arrays are populated.
+4. Capture a `settings.json` snapshot and inspect the six fields: `projectPath`, `projectPathRelativeToInstance`, `projectPaths`, `projectPathsRelativeToInstance`, `archivedProjectPaths`, `archivedProjectPathsRelativeToInstance`.
+5. Confirm each companion array has the same length and order as its absolute array, companion strings use `/` separators, and the cross-drive/share project (if present) has a `null` companion while keeping its absolute path.
+
+Expected Result:
+
+All six fields are present, companion arrays are index-aligned with their absolute arrays, portable companions are `/`-separated, and a cross-drive/share entry stores `null` and remains absolute-only.
+
+Evidence Required:
+
+- `SET-007-settings-snapshot.json` showing the six fields.
+- Notes mapping each companion slot to its absolute entry, including the `null` cross-drive/share slot when tested.
+
+Pass/Fail Criteria:
+
+PASS if all six fields are present and aligned and the `null` cross-drive/share case is correct (or noted as untested when no second drive/share exists). PARTIAL if fields are correct but the cross-drive/share case could not be exercised. FAIL if arrays are misaligned, a companion is absolute or backslash-separated, or a same-drive project stores `null`. BLOCKED if `settings.json` cannot be inspected.
+
+### SET-008: Legacy, new, and mixed schemas all load
+
+Purpose:
+
+Verify that a legacy absolute-only `settings.json`, a fully paired new-schema file, and a mixed file (some entries paired, some companion-absent) all load their projects, and that a legacy entry gains a companion only after a validating operation.
+
+Preconditions:
+
+- The testable GUI is closed.
+- The test edits only the disposable testable identity's `settings.json` under `.agentscommander_testeable`.
+- Two or more disposable AC projects exist on disk for registration in each variant.
+
+Steps:
+
+1. Prepare variant A (legacy): `settings.json` with `projectPaths` populated and no companion fields at all.
+2. Launch the testable app, confirm the projects load, then close it. Confirm the file still has no companion fields (loading alone does not migrate).
+3. Trigger a validating operation (register or archive a project through the UI/CLI) and confirm a companion is then added for the reconciled entries.
+4. Prepare variant B (new): `settings.json` with fully aligned companion arrays. Launch, confirm the projects load, close.
+5. Prepare variant C (mixed): `projectPaths` with an aligned companion array where one slot is `null` and one legacy singular-only carrier is present. Launch, confirm every valid entry loads and no entry is dropped.
+
+Expected Result:
+
+Each schema variant loads its valid projects; a legacy file gains companions only after a validating operation, not from a plain load.
+
+Evidence Required:
+
+- The three input `settings.json` variants (or diffs) captured before launch.
+- Post-launch sidebar screenshots for each variant.
+- Post-operation `settings.json` snapshot for variant A showing companions added only after the validating operation.
+
+Pass/Fail Criteria:
+
+PASS if all three variants load correctly and legacy migration happens only after a validating operation. PARTIAL if loading is correct but one migration snapshot is missing. FAIL if any valid project fails to load, a plain load rewrites a legacy file, or a mixed entry is dropped. BLOCKED if the disposable `settings.json` cannot be prepared safely.
+
+### SET-009: Misaligned companion is retained, not normalized
+
+Purpose:
+
+Verify that a structurally malformed project pair (a companion array whose length does not match its absolute array) is preserved on disk rather than silently normalized, is reported instead of loaded, and blocks project mutation while unrelated settings saves still succeed.
+
+Preconditions:
+
+- The testable GUI is closed.
+- The test edits only the disposable testable identity's `settings.json` under `.agentscommander_testeable`.
+- A documented safe method exists to create the malformed disposable file. If not, mark this case `BLOCKED`.
+
+Steps:
+
+1. Capture a baseline `settings.json` snapshot and its byte size/mtime.
+2. Edit the disposable file so `projectPathsRelativeToInstance` has a different length than `projectPaths` (a misaligned companion).
+3. Launch the testable app.
+4. Confirm the malformed list produces no loaded projects from that list and the app reports the malformed condition rather than crashing.
+5. Without triggering a project mutation, capture the `settings.json` bytes/mtime and confirm they are unchanged (no auto-normalization write).
+6. Change one unrelated harmless setting and save; confirm the save succeeds and the malformed project fields are still present verbatim.
+7. Attempt a project mutation (open, archive, or remove); confirm it is refused while the malformed field is present.
+
+Expected Result:
+
+The malformed companion is retained byte-for-byte on load, reported rather than loaded, and blocks project mutation, while an unrelated settings save still succeeds and leaves the malformed fields intact.
+
+Evidence Required:
+
+- `SET-009-before.json` and `SET-009-after-load.json` (or a byte/mtime comparison) proving no normalization write.
+- Structured error or log evidence of the malformed report.
+- `SET-009-after-unrelated-save.json` showing the malformed fields preserved after a harmless save.
+- Evidence that a project mutation was refused.
+
+Pass/Fail Criteria:
+
+PASS if the malformed pair is preserved, reported, and blocks mutation while unrelated saves succeed. PARTIAL if behavior is correct but one artifact is missing. FAIL if the file is normalized/overwritten, the malformed entry loads, a project mutation proceeds, or an unrelated save is blocked. BLOCKED if no safe method exists to create the malformed disposable file.
+
+### SET-010: Failed settings write leaves the file intact
+
+Purpose:
+
+Verify that when a settings write cannot complete, the on-disk `settings.json` is left unchanged, the app still uses the validated selected project paths for the current run, and the failure is reported as an actionable diagnostic.
+
+Preconditions:
+
+- The testable GUI is closed for setup.
+- The test operates only on the disposable testable identity directory.
+- A documented safe method exists to make the disposable settings directory or file temporarily unwritable. If not, mark this case `BLOCKED`.
+
+Steps:
+
+1. With a disposable project registered, capture a baseline `settings.json` snapshot and its bytes/mtime.
+2. Make the disposable settings directory or file unwritable using the documented safe method.
+3. Launch the app (or trigger an operation that would reconcile/write settings).
+4. Confirm the registered project still loads and is usable for this run from the validated selected path.
+5. Capture the `settings.json` bytes/mtime and confirm they are unchanged.
+6. Capture the diagnostic warning/error and confirm it is actionable and does not claim a successful write.
+7. Restore writability and confirm a later save succeeds normally.
+
+Expected Result:
+
+A failed write leaves the file byte-identical, the project remains usable for the run via the in-memory selected path, and the failure surfaces as an actionable diagnostic without corrupting or partially writing the file.
+
+Evidence Required:
+
+- `SET-010-before.json` and `SET-010-after.json` (or byte/mtime comparison) showing no change.
+- Screenshot or log of the actionable failure diagnostic.
+- Evidence the project loaded despite the failed write.
+
+Pass/Fail Criteria:
+
+PASS if the file is unchanged, the project stays usable, and the diagnostic is actionable. PARTIAL if behavior is correct but one artifact is missing. FAIL if the file is truncated, partially written, or overwritten, or the failure is silent or misreported as success. BLOCKED if no safe method exists to make the disposable settings unwritable.
+
+### SET-011: CLI and GUI interleaving preserves both pair forms
+
+Purpose:
+
+Verify that a CLI registration performed while the GUI is open, followed by a GUI settings save and a GUI project mutation, preserves every active and archived pair with aligned absolute and companion arrays and loses no registration.
+
+Preconditions:
+
+- Depends on SET-001.
+- The testable GUI is running for the interleaving steps.
+- Two or more disposable AC projects exist for registration.
+- Read-only inspection of the disposable `settings.json` is available.
+
+Steps:
+
+1. With the GUI open and at least one project already registered, capture the baseline project list and `settings.json`.
+2. Run a CLI `open-project` for a second disposable project against the same testable identity.
+3. In the GUI, perform an unrelated settings save (a harmless setting change).
+4. In the GUI, perform a project mutation (archive or unarchive an existing project).
+5. Capture the final `settings.json` and project list.
+6. Confirm both projects remain registered, the CLI-registered entry survives, and every active and archived entry has an aligned absolute path and companion.
+
+Expected Result:
+
+After the interleaving, no registration or companion is lost, the CLI-registered project persists, and all pairs remain aligned and ordered.
+
+Evidence Required:
+
+- Baseline and final `settings.json` snapshots.
+- Baseline and final project-list screenshots.
+- Notes confirming pair alignment for every active and archived entry.
+
+Pass/Fail Criteria:
+
+PASS if all registrations and companions survive the interleaving with aligned pairs. PARTIAL if state is correct but one snapshot is missing. FAIL if the CLI-registered entry is clobbered, a companion is dropped or misaligned, or a project registration is lost. BLOCKED if the interleaving cannot be exercised on the testable identity.

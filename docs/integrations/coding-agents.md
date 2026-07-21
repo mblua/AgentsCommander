@@ -29,6 +29,12 @@ Pi aliases and arbitrary wrappers such as `my-pi` are not inferred. Prefix looka
 
 The full enum is in `session/profile.rs::CodingAgentKind`.
 
+### Logical clear capability is separate from tuned integration
+
+Remote logical clear and canonical text submission use an operation-specific direct-shell capability table, independent of `CodingAgentKind`. Direct Claude/Codex/Gemini-family shells and Cursor exact stem `agent` map logical clear to `/clear`. An exact-stem direct Pi shell maps it to `/new` and uses the same delayed double-Enter submission timing. An exact-stem direct Pi shell is also a supported `self-handoff-and-switch` source. Pi compact remains unsupported.
+
+Pi is a tuned `CodingAgentKind` for the auto-resume, profile, and wire behavior described below, but that identity does not authorize logical PTY actions. The logical-clear rule is lexical trusted configuration: a direct shell whose final file stem is exactly `pi` matches, including `pi`, `pi.exe`, and the stock `pi.cmd` shim; file-stem extraction discards any final extension. An outer `cmd`/`pwsh` wrapper does not match this operation-specific rule, even when tuned Pi detection supports its command shape. This is not binary attestation. AgentsCommander does not version-probe or semantically acknowledge production clears; stock Pi 0.80.10 is the validated control, and a successful action records PTY write receipt.
+
 ## Installing the CLIs
 
 AC does not install the coding-agent binaries. Use the upstream installers:
@@ -133,7 +139,7 @@ If Pi cannot continue because of its version, configuration, permissions, storag
 - Telegram uses the generic PTY reader for Pi. AC has no Pi-specific JSONL transcript reader.
 - Pi has no Pi-specific config-seed convention or factory seed. The generic [config-seed feature](../features/config-seed.md) still works when you explicitly configure a destination.
 - AC does not copy Pi credentials or state into containers, map host `~/.pi/agent/`, translate `PI_CODING_AGENT_SESSION_DIR`, or provision `--session-dir` paths.
-- Pi is excluded from generated auto-self-clear instructions and Pi-specific explicit-Enter or mailbox submission tuning, even if a setting requests self-clear.
+- Generated auto-self-clear instructions, explicit-Enter submission, and mailbox logical clear use the separate exact-stem direct-shell capability above. An eligible direct Pi shell receives them when settings allow; tuned outer-`cmd` Pi auto-resume shapes do not. Pi compact remains unsupported.
 
 ## Profiles: launch variants per coding agent
 
