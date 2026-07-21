@@ -343,8 +343,12 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
 
         // --- Settings ---
         "get_settings" => {
-            let cfg = state.settings.read().await;
-            serde_json::to_value(&*cfg).map_err(|e| e.to_string())
+            // #1077: route through the exact shared snapshot helper so browser
+            // and native clients receive the identical resolution report and
+            // `rootToken` is omitted from both transports.
+            let snapshot =
+                crate::commands::config::settings_snapshot_helper(&state.settings, None).await;
+            serde_json::to_value(&snapshot).map_err(|e| e.to_string())
         }
 
         "update_settings" => {
@@ -951,6 +955,33 @@ mod tests {
                 "invalid payload accepted for {event}: {payload}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn get_settings_route_returns_snapshot_and_omits_root_token() {
+        // #1077: the browser get_settings route must reuse the shared snapshot
+        // helper, so it carries the resolution report and never leaks rootToken.
+        let settings = AppSettings {
+            root_token: Some("WS-ROUTE-ROOT-TOKEN".to_string()),
+            ..AppSettings::default()
+        };
+        let (state, _rx) = ws_state_for(settings);
+        let value = dispatch_inner(&state, "get_settings", &json!({}))
+            .await
+            .expect("get_settings");
+        let text = serde_json::to_string(&value).unwrap();
+        assert!(
+            !text.contains("rootToken"),
+            "rootToken leaked over WS: {text}"
+        );
+        assert!(!text.contains("WS-ROUTE-ROOT-TOKEN"), "token value leaked");
+        let resolution = value
+            .get("projectPathResolution")
+            .expect("snapshot must carry projectPathResolution");
+        assert_eq!(resolution["activeRegistrationCount"], 0);
+        assert_eq!(resolution["archivedRegistrationCount"], 0);
+        assert!(resolution["issues"].as_array().unwrap().is_empty());
+        assert!(resolution["reconciliationError"].is_null());
     }
 
     #[tokio::test]

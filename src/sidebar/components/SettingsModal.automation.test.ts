@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "solid-js/web";
 import SettingsModal from "./SettingsModal";
-import type { AppSettings } from "../../shared/types";
+import type { AppSettings, SettingsSnapshot } from "../../shared/types";
 import { SettingsAPI } from "../../shared/ipc";
 import {
   AC_MATRIX_ROOT_PLACEHOLDER,
@@ -67,7 +67,7 @@ vi.mock("../stores/sessions", () => ({
   },
 }));
 
-function settings(overrides: Partial<AppSettings> = {}): AppSettings {
+function settings(overrides: Partial<AppSettings> = {}): SettingsSnapshot {
   return {
     defaultShell: "pwsh",
     defaultShellArgs: [],
@@ -155,6 +155,14 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     logLevel: null,
     ...overrides,
     archivedProjectPaths: overrides.archivedProjectPaths ?? [],
+    // #1077: get_settings returns a SettingsSnapshot; SettingsModal ignores the
+    // report, so a pristine empty resolution keeps these mocks well-typed.
+    projectPathResolution: {
+      activeRegistrationCount: 0,
+      archivedRegistrationCount: 0,
+      issues: [],
+      reconciliationError: null,
+    },
   };
 }
 
@@ -749,9 +757,9 @@ describe("SettingsModal automation hooks", () => {
   });
 
   it("keeps an early custom agent draft when the fresh load resolves late", async () => {
-    let resolveLoadedSettings: (value: AppSettings) => void = () => {};
+    let resolveLoadedSettings: (value: SettingsSnapshot) => void = () => {};
     vi.mocked(SettingsAPI.get).mockReturnValueOnce(
-      new Promise<AppSettings>((resolve) => {
+      new Promise<SettingsSnapshot>((resolve) => {
         resolveLoadedSettings = resolve;
       }),
     );
@@ -783,9 +791,9 @@ describe("SettingsModal automation hooks", () => {
   });
 
   it("keeps early environment edits when the fresh load resolves late", async () => {
-    let resolveLoadedSettings: (value: AppSettings) => void = () => {};
+    let resolveLoadedSettings: (value: SettingsSnapshot) => void = () => {};
     vi.mocked(SettingsAPI.get).mockReturnValueOnce(
-      new Promise<AppSettings>((resolve) => {
+      new Promise<SettingsSnapshot>((resolve) => {
         resolveLoadedSettings = resolve;
       }),
     );
@@ -1246,9 +1254,9 @@ describe("SettingsModal automation hooks", () => {
   });
 
   it("keeps early profile cell edits when the fresh load resolves late", async () => {
-    let resolveLoadedSettings: (value: AppSettings) => void = () => {};
+    let resolveLoadedSettings: (value: SettingsSnapshot) => void = () => {};
     vi.mocked(SettingsAPI.get).mockReturnValueOnce(
-      new Promise<AppSettings>((resolve) => {
+      new Promise<SettingsSnapshot>((resolve) => {
         resolveLoadedSettings = resolve;
       }),
     );
