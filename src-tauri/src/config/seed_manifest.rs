@@ -1554,14 +1554,14 @@ struct HandleFacts {
 }
 
 #[derive(Debug)]
-struct PinnedDirectory {
+pub(crate) struct PinnedDirectory {
     path: PathBuf,
     file: File,
     identity: FileIdentity,
 }
 
 impl PinnedDirectory {
-    fn open(path: &Path) -> Result<Self, SeedManifestError> {
+    pub(crate) fn open(path: &Path) -> Result<Self, SeedManifestError> {
         let file = open_directory_no_follow(path).map_err(|source| {
             classify_open_error(path, source, "open directory without following links", true)
         })?;
@@ -1583,11 +1583,15 @@ impl PinnedDirectory {
         })
     }
 
-    fn revalidate(&self) -> Result<(), SeedManifestError> {
-        let reopened = Self::open(&self.path)?;
+    pub(crate) fn revalidate(&self) -> Result<(), SeedManifestError> {
+        self.revalidate_at(&self.path)
+    }
+
+    pub(crate) fn revalidate_at(&self, path: &Path) -> Result<(), SeedManifestError> {
+        let reopened = Self::open(path)?;
         if reopened.identity != self.identity {
             return Err(SeedManifestError::UnsafePath {
-                path: self.path.clone(),
+                path: path.to_path_buf(),
                 reason: "directory identity changed while the project gate was held".to_string(),
             });
         }
@@ -2900,12 +2904,12 @@ const BLOCKING_WORK_QUEUED: u8 = 0;
 const BLOCKING_WORK_STARTED: u8 = 1;
 const BLOCKING_WORK_CANCELED: u8 = 2;
 
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Error)]
 pub(crate) enum BlockingTaskError {
     #[error("blocking task canceled before start")]
     CanceledBeforeStart,
     #[error("blocking task join failed: {0}")]
-    Join(String),
+    Join(#[source] tokio::task::JoinError),
 }
 
 enum BlockingWorkResult<T> {
@@ -2985,7 +2989,7 @@ where
         {
             Err(BlockingTaskError::CanceledBeforeStart)
         }
-        Err(error) => Err(BlockingTaskError::Join(error.to_string())),
+        Err(error) => Err(BlockingTaskError::Join(error)),
     }
 }
 
@@ -3449,7 +3453,12 @@ mod tests {
         let error = run_blocking_owned(|| -> () { panic!("injected blocking panic") })
             .await
             .expect_err("panic must surface as a join error");
-        assert!(matches!(error, BlockingTaskError::Join(_)), "{error:?}");
+        let BlockingTaskError::Join(join_error) = &error else {
+            panic!("expected typed join error, got {error:?}");
+        };
+        assert!(join_error.is_panic());
+        let source = std::error::Error::source(&error).expect("join error remains the source");
+        assert!(source.downcast_ref::<tokio::task::JoinError>().is_some());
     }
 
     fn timestamp(value: &str) -> DateTime<Utc> {

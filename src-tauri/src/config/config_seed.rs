@@ -18,7 +18,8 @@ use crate::config::placeholders::{
 };
 use crate::config::seed_manifest::{
     config_batch_base_serialized_len, exact_config_row_serialized_len, ManifestSource,
-    ResourceBoundKind, SeedManifestError, MAX_FIELD_BYTES, MAX_MANIFEST_BYTES, MAX_MANIFEST_ROWS,
+    PinnedDirectory, ResourceBoundKind, SeedManifestError, MAX_FIELD_BYTES, MAX_MANIFEST_BYTES,
+    MAX_MANIFEST_ROWS,
 };
 use crate::config::settings::{validate_config_seed_dest, ConfigSeedConfig};
 use crate::session::profile::CodingAgentKind;
@@ -329,10 +330,87 @@ pub(crate) fn perform_config_seed(seed: &ResolvedConfigSeed, unique_sfx: &str) -
     perform_config_seed_with_clock(seed, unique_sfx, &Utc::now)
 }
 
+#[derive(Default)]
+struct ConfigSeedTestHooks {
+    #[cfg(test)]
+    fail_install: bool,
+    #[cfg(test)]
+    fail_restore: bool,
+    #[cfg(test)]
+    destination_appears_before_restore: bool,
+    #[cfg(test)]
+    fail_staged_metadata: bool,
+}
+
+impl ConfigSeedTestHooks {
+    fn install(&self, staging: &Path, dest: &Path) -> std::io::Result<()> {
+        #[cfg(test)]
+        if self.fail_install {
+            return Err(std::io::Error::other(
+                "injected config-seed install failure",
+            ));
+        }
+        std::fs::rename(staging, dest)
+    }
+
+    fn before_restore(&self, dest: &Path) {
+        #[cfg(test)]
+        if self.destination_appears_before_restore {
+            std::fs::create_dir_all(dest).expect("inject replacement destination");
+            std::fs::write(dest.join("foreign.txt"), b"FOREIGN")
+                .expect("populate replacement destination");
+        }
+        #[cfg(not(test))]
+        let _ = dest;
+    }
+
+    fn restore(&self, trash: &Path, dest: &Path) -> std::io::Result<()> {
+        #[cfg(test)]
+        if self.fail_restore {
+            return Err(std::io::Error::other(
+                "injected config-seed restore failure",
+            ));
+        }
+        std::fs::rename(trash, dest)
+    }
+
+    fn staged_diagnostic(&self, staged: &PinnedDirectory, trash: &Path) -> String {
+        #[cfg(test)]
+        if self.fail_staged_metadata {
+            return "staged-tree metadata inspection failed: injected metadata failure".to_string();
+        }
+        match staged.revalidate_at(trash) {
+            Ok(()) => format!(
+                "operation-owned previous config remains staged at {}",
+                trash.display()
+            ),
+            Err(error) => format!(
+                "staged-tree metadata inspection failed at {}: {}",
+                trash.display(),
+                error
+            ),
+        }
+    }
+}
+
 fn perform_config_seed_with_clock(
     seed: &ResolvedConfigSeed,
     unique_sfx: &str,
     clock: &dyn Fn() -> DateTime<Utc>,
+) -> ConfigSeedReport {
+    perform_config_seed_with_clock_and_hooks(
+        seed,
+        unique_sfx,
+        clock,
+        &ConfigSeedTestHooks::default(),
+    )
+}
+
+fn perform_config_seed_with_clock_and_hooks(
+    seed: &ResolvedConfigSeed,
+    unique_sfx: &str,
+    clock: &dyn Fn() -> DateTime<Utc>,
+    hooks: &ConfigSeedTestHooks,
 ) -> ConfigSeedReport {
     if let Err(reason) = revalidate_seed_owner(seed) {
         log::warn!(
@@ -351,10 +429,32 @@ fn perform_config_seed_with_clock(
     //    The #769 P2 CatalogDefault tier is gated ABSENT-ONLY + NON-EMPTY here, so
     //    it never overwrites an existing replica config and an empty/absent master
     //    reads as "not present".
-    let Some((tier, src)) = seed.candidates.iter().find(|(tier, src)| match tier {
-        ConfigSeedTier::CatalogDefault => !seed.dest.exists() && is_nonempty_seed_dir(src),
-        _ => is_readable_dir(src),
-    }) else {
+    let mut selected = seed
+        .candidates
+        .iter()
+        .find(|(tier, src)| *tier != ConfigSeedTier::CatalogDefault && is_readable_dir(src));
+    if selected.is_none() {
+        if let Some(candidate) = seed.candidates.iter().find(|(tier, src)| {
+            *tier == ConfigSeedTier::CatalogDefault && is_nonempty_seed_dir(src)
+        }) {
+            match destination_absent_no_follow(&seed.dest) {
+                Ok(true) => selected = Some(candidate),
+                Ok(false) => {}
+                Err(error) => {
+                    log::warn!(
+                        "[config-seed] cannot inspect catalog-default destination {} without following links: {}; skipping",
+                        seed.dest.display(),
+                        error
+                    );
+                    return ConfigSeedReport::Skipped(ConfigSeedSkipReason::DestinationInUse {
+                        dest: seed.dest.clone(),
+                        error,
+                    });
+                }
+            }
+        }
+    }
+    let Some((tier, src)) = selected else {
         // #598: seeding is active but no template exists at any tier. This is a
         // benign no-op (nothing to copy), but a SILENT one confused users who
         // enabled the feature, created no template, and saw nothing happen. Log
@@ -428,58 +528,76 @@ fn perform_config_seed_with_clock(
 
     // 4. Move the existing dest aside (atomic). If it is locked by a live
     //    process, keep the existing config and SKIP (dest stays fully intact).
-    let mut previous_scope_staged = false;
-    if seed.dest.exists() {
-        if let Err(e) = std::fs::rename(&seed.dest, &trash) {
+    let previous_scope_staged = match pin_seed_destination_if_present(&seed.dest) {
+        Ok(None) => None,
+        Ok(Some(pinned)) => {
+            if let Err(e) = std::fs::rename(&seed.dest, &trash) {
+                log::warn!(
+                    "[config-seed] dest {} is in use ({}); keeping existing config, skipping this seed",
+                    seed.dest.display(),
+                    e
+                );
+                remove_seed_scratch(&temp, "destination-in-use cleanup", unique_sfx);
+                return ConfigSeedReport::Skipped(ConfigSeedSkipReason::DestinationInUse {
+                    dest: seed.dest.clone(),
+                    error: e.to_string(),
+                });
+            }
+            Some(pinned)
+        }
+        Err(error) => {
             log::warn!(
-                "[config-seed] dest {} is in use ({}); keeping existing config, skipping this seed",
+                "[config-seed] cannot inspect destination {} without following links: {}; keeping existing config, skipping this seed",
                 seed.dest.display(),
-                e
+                error
             );
-            remove_seed_scratch(&temp, "destination-in-use cleanup", unique_sfx);
+            remove_seed_scratch(&temp, "destination-inspection cleanup", unique_sfx);
             return ConfigSeedReport::Skipped(ConfigSeedSkipReason::DestinationInUse {
                 dest: seed.dest.clone(),
-                error: e.to_string(),
+                error,
             });
         }
-        previous_scope_staged = true;
-    }
+    };
 
     // 5. Install the freshly staged temp (atomic).
-    if let Err(e) = std::fs::rename(&temp, &seed.dest) {
+    if let Err(e) = hooks.install(&temp, &seed.dest) {
         let install_error = e.to_string();
         log::warn!(
             "[config-seed] failed to install seed at {}: {}",
             seed.dest.display(),
             e
         );
-        // Restore the old config if we moved it aside and the dest is now gone.
-        if previous_scope_staged && !seed.dest.exists() && trash.exists() {
-            if let Err(re) = std::fs::rename(&trash, &seed.dest) {
+        // A successful dest-to-trash rename is operation-owned proof that the
+        // previous logical scope was removed. Always attempt its inverse after
+        // an install failure. A later destination appearance or metadata error
+        // must not collapse an un-restored old tree into ordinary `Failed`.
+        if let Some(staged) = previous_scope_staged.as_ref() {
+            hooks.before_restore(&seed.dest);
+            if let Err(re) = hooks.restore(&trash, &seed.dest) {
+                let staged_diagnostic = hooks.staged_diagnostic(staged, &trash);
                 let restore_error = re.to_string();
                 log::warn!(
-                    "[config-seed] failed to restore previous config at {}: {}",
+                    "[config-seed] failed to restore previous config at {}: {}; {}",
                     seed.dest.display(),
-                    restore_error
+                    restore_error,
+                    staged_diagnostic
                 );
                 remove_seed_scratch(&temp, "failed install cleanup", unique_sfx);
-                if !seed.dest.exists() && trash.exists() {
-                    return ConfigSeedReport::FailedAfterLogicalRemoval(
-                        ConfigSeedRollbackFailure::PreviousScopeStillStaged {
-                            scope: config_scope_for_seed(seed).unwrap_or_else(|reason| {
-                                log::warn!(
-                                    "[config-seed] failed to derive config scope for rollback at {}: {}",
-                                    seed.dest.display(),
-                                    reason
-                                );
-                                format!("config:{}", dest_name)
-                            }),
-                            trash_path: trash,
-                            install_error,
-                            restore_error,
-                        },
-                    );
-                }
+                return ConfigSeedReport::FailedAfterLogicalRemoval(
+                    ConfigSeedRollbackFailure::PreviousScopeStillStaged {
+                        scope: config_scope_for_seed(seed).unwrap_or_else(|reason| {
+                            log::warn!(
+                                "[config-seed] failed to derive config scope for rollback at {}: {}",
+                                seed.dest.display(),
+                                reason
+                            );
+                            format!("config:{}", dest_name)
+                        }),
+                        trash_path: trash,
+                        install_error,
+                        restore_error: format!("{restore_error}; {staged_diagnostic}"),
+                    },
+                );
             }
         }
         remove_seed_scratch(&temp, "failed install cleanup", unique_sfx);
@@ -512,6 +630,31 @@ fn perform_config_seed_with_clock(
         files,
         published_at,
     })
+}
+
+fn destination_absent_no_follow(path: &Path) -> Result<bool, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(format!("inspect destination metadata: {error}")),
+    }
+}
+
+fn pin_seed_destination_if_present(path: &Path) -> Result<Option<PinnedDirectory>, String> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("inspect destination metadata: {error}")),
+    };
+    if !metadata.is_dir() || metadata.file_type().is_symlink() || metadata_is_reparse(&metadata) {
+        return Err("destination is not an ordinary non-reparse directory".to_string());
+    }
+    let pinned = PinnedDirectory::open(path)
+        .map_err(|error| format!("pin destination directory identity: {error}"))?;
+    pinned
+        .revalidate()
+        .map_err(|error| format!("revalidate destination directory identity: {error}"))?;
+    Ok(Some(pinned))
 }
 
 /// True iff `path` is a readable directory. Follows symlinks on the ROOT (the
@@ -1024,6 +1167,18 @@ mod tests {
         assert!(matches!(report, ConfigSeedReport::Failed(_)), "{report:?}");
     }
 
+    fn seed_swap_fixture() -> (tempfile::TempDir, ResolvedConfigSeed, PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("ws");
+        let replica = workspace.join("wg-1-team").join("__agent_x");
+        std::fs::create_dir_all(&replica).unwrap();
+        write_file(&workspace.join("default.claude").join("new.txt"), b"NEW");
+        write_file(&replica.join(".claude").join("old.txt"), b"OLD");
+        let ctx = ctx_with(&replica, Some(&workspace), None);
+        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
+        (temp, resolved, replica)
+    }
+
     // ---- resolve_config_seed (pure path math, fail-soft) -------------------
 
     #[test]
@@ -1182,6 +1337,102 @@ mod tests {
             std::fs::read(replica.join(".claude").join("keep.txt")).unwrap(),
             b"OLD"
         );
+    }
+
+    #[test]
+    fn install_failure_restores_the_operation_owned_previous_scope() {
+        let (_temp, resolved, replica) = seed_swap_fixture();
+        let hooks = ConfigSeedTestHooks {
+            fail_install: true,
+            ..ConfigSeedTestHooks::default()
+        };
+
+        let report =
+            perform_config_seed_with_clock_and_hooks(&resolved, "restore-ok", &Utc::now, &hooks);
+
+        assert_failed(report);
+        assert_eq!(
+            std::fs::read(replica.join(".claude").join("old.txt")).unwrap(),
+            b"OLD"
+        );
+        assert!(!replica.join(".claude.acseed-old-restore-ok").exists());
+    }
+
+    #[test]
+    fn install_and_restore_failure_reports_logical_removal_and_preserves_trash() {
+        let (_temp, resolved, replica) = seed_swap_fixture();
+        let hooks = ConfigSeedTestHooks {
+            fail_install: true,
+            fail_restore: true,
+            ..ConfigSeedTestHooks::default()
+        };
+
+        let report =
+            perform_config_seed_with_clock_and_hooks(&resolved, "restore-fail", &Utc::now, &hooks);
+
+        let ConfigSeedReport::FailedAfterLogicalRemoval(
+            ConfigSeedRollbackFailure::PreviousScopeStillStaged {
+                trash_path,
+                install_error,
+                restore_error,
+                ..
+            },
+        ) = report
+        else {
+            panic!("expected logical-removal failure, got {report:?}");
+        };
+        assert!(install_error.contains("injected config-seed install failure"));
+        assert!(restore_error.contains("injected config-seed restore failure"));
+        assert!(restore_error.contains("operation-owned previous config remains staged"));
+        assert_eq!(std::fs::read(trash_path.join("old.txt")).unwrap(), b"OLD");
+        assert!(!replica.join(".claude").exists());
+    }
+
+    #[test]
+    fn destination_appearing_before_restore_cannot_collapse_logical_removal() {
+        let (_temp, resolved, replica) = seed_swap_fixture();
+        let hooks = ConfigSeedTestHooks {
+            fail_install: true,
+            destination_appears_before_restore: true,
+            ..ConfigSeedTestHooks::default()
+        };
+
+        let report =
+            perform_config_seed_with_clock_and_hooks(&resolved, "dest-appeared", &Utc::now, &hooks);
+
+        let ConfigSeedReport::FailedAfterLogicalRemoval(
+            ConfigSeedRollbackFailure::PreviousScopeStillStaged { trash_path, .. },
+        ) = report
+        else {
+            panic!("expected logical-removal failure, got {report:?}");
+        };
+        assert_eq!(
+            std::fs::read(replica.join(".claude").join("foreign.txt")).unwrap(),
+            b"FOREIGN"
+        );
+        assert_eq!(std::fs::read(trash_path.join("old.txt")).unwrap(), b"OLD");
+    }
+
+    #[test]
+    fn staged_metadata_error_after_restore_failure_remains_logical_removal() {
+        let (_temp, resolved, _replica) = seed_swap_fixture();
+        let hooks = ConfigSeedTestHooks {
+            fail_install: true,
+            fail_restore: true,
+            fail_staged_metadata: true,
+            ..ConfigSeedTestHooks::default()
+        };
+
+        let report =
+            perform_config_seed_with_clock_and_hooks(&resolved, "metadata-fail", &Utc::now, &hooks);
+
+        let ConfigSeedReport::FailedAfterLogicalRemoval(
+            ConfigSeedRollbackFailure::PreviousScopeStillStaged { restore_error, .. },
+        ) = report
+        else {
+            panic!("expected logical-removal failure, got {report:?}");
+        };
+        assert!(restore_error.contains("injected metadata failure"));
     }
 
     #[test]

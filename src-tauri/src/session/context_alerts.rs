@@ -1754,6 +1754,7 @@ mod tests {
     struct ManualClock {
         now: Mutex<Instant>,
         waiters: Mutex<Vec<(Instant, tokio::sync::oneshot::Sender<()>)>>,
+        waiters_changed: tokio::sync::Notify,
     }
 
     impl ManualClock {
@@ -1761,6 +1762,7 @@ mod tests {
             Arc::new(Self {
                 now: Mutex::new(now),
                 waiters: Mutex::new(Vec::new()),
+                waiters_changed: tokio::sync::Notify::new(),
             })
         }
 
@@ -1790,6 +1792,25 @@ mod tests {
                 .iter()
                 .any(|(deadline, sender)| !sender.is_closed() && *deadline <= latest)
         }
+
+        async fn wait_for_live_waiter_within(&self, duration: Duration) {
+            wait_until_notified(
+                &self.waiters_changed,
+                "manual clock waiter",
+                || self.has_live_waiter_within(duration),
+                || {
+                    let live_waiters = self
+                        .waiters
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .filter(|(_, sender)| !sender.is_closed())
+                        .count();
+                    format!("live_waiters={live_waiters} window={duration:?}")
+                },
+            )
+            .await;
+        }
     }
 
     impl AlertClock for ManualClock {
@@ -1804,6 +1825,7 @@ mod tests {
             }
             let (sender, receiver) = tokio::sync::oneshot::channel();
             self.waiters.lock().unwrap().push((deadline, sender));
+            self.waiters_changed.notify_one();
             Box::pin(async move {
                 let _ = receiver.await;
             })
@@ -1822,9 +1844,11 @@ mod tests {
         delivery_results: Mutex<VecDeque<Result<(), String>>>,
         blocked_delivery: Mutex<Option<tokio::sync::oneshot::Receiver<Result<(), String>>>>,
         blocked_resolution: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+        blocked_live_check: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
         cancel_during_live_check: Mutex<Option<CancellationToken>>,
         panic_next_delivery: AtomicBool,
         retired: Mutex<Vec<Uuid>>,
+        changed: tokio::sync::Notify,
     }
 
     impl ScriptedRuntime {
@@ -1854,9 +1878,11 @@ mod tests {
                 delivery_results: Mutex::new(VecDeque::new()),
                 blocked_delivery: Mutex::new(None),
                 blocked_resolution: Mutex::new(None),
+                blocked_live_check: Mutex::new(None),
                 cancel_during_live_check: Mutex::new(None),
                 panic_next_delivery: AtomicBool::new(false),
                 retired: Mutex::new(Vec::new()),
+                changed: tokio::sync::Notify::new(),
             })
         }
 
@@ -1874,6 +1900,66 @@ mod tests {
             self.deliveries.lock().unwrap().len()
         }
 
+        async fn wait_for_delivery_count(&self, expected: usize) {
+            wait_until_notified(
+                &self.changed,
+                "scripted delivery count",
+                || self.delivery_count() >= expected,
+                || {
+                    format!(
+                        "expected_at_least={expected} actual={}",
+                        self.delivery_count()
+                    )
+                },
+            )
+            .await;
+        }
+
+        async fn wait_for_resolve_calls(&self, expected: usize) {
+            wait_until_notified(
+                &self.changed,
+                "scripted policy resolutions",
+                || self.resolve_calls.load(Ordering::SeqCst) >= expected,
+                || {
+                    format!(
+                        "expected_at_least={expected} actual={}",
+                        self.resolve_calls.load(Ordering::SeqCst)
+                    )
+                },
+            )
+            .await;
+        }
+
+        async fn wait_for_live_checks(&self, expected: usize) {
+            wait_until_notified(
+                &self.changed,
+                "scripted liveness checks",
+                || self.live_checks.load(Ordering::SeqCst) >= expected,
+                || {
+                    format!(
+                        "expected_at_least={expected} actual={}",
+                        self.live_checks.load(Ordering::SeqCst)
+                    )
+                },
+            )
+            .await;
+        }
+
+        async fn wait_for_retirement(&self, session_id: Uuid) {
+            wait_until_notified(
+                &self.changed,
+                "scripted sample retirement",
+                || self.retired.lock().unwrap().contains(&session_id),
+                || {
+                    format!(
+                        "session_id={session_id} retired={:?}",
+                        self.retired.lock().unwrap().as_slice()
+                    )
+                },
+            )
+            .await;
+        }
+
         fn block_next_delivery(&self) -> tokio::sync::oneshot::Sender<Result<(), String>> {
             let (sender, receiver) = tokio::sync::oneshot::channel();
             *self.blocked_delivery.lock().unwrap() = Some(receiver);
@@ -1885,6 +1971,12 @@ mod tests {
             *self.blocked_resolution.lock().unwrap() = Some(receiver);
             sender
         }
+
+        fn block_next_live_check(&self) -> tokio::sync::oneshot::Sender<()> {
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            *self.blocked_live_check.lock().unwrap() = Some(receiver);
+            sender
+        }
     }
 
     impl ContextAlertRuntime for ScriptedRuntime {
@@ -1893,6 +1985,7 @@ mod tests {
             session_id: Uuid,
         ) -> BoxFuture<'static, MemberPolicyResolution> {
             self.resolve_calls.fetch_add(1, Ordering::SeqCst);
+            self.changed.notify_one();
             let resolution = self
                 .policies
                 .lock()
@@ -1914,9 +2007,14 @@ mod tests {
 
         fn check_session_live(&self, _session_id: Uuid) -> BoxFuture<'static, bool> {
             self.live_checks.fetch_add(1, Ordering::SeqCst);
+            self.changed.notify_one();
             let live = self.live.load(Ordering::SeqCst);
+            let blocked = self.blocked_live_check.lock().unwrap().take();
             let cancel = self.cancel_during_live_check.lock().unwrap().take();
             Box::pin(async move {
+                if let Some(blocked) = blocked {
+                    let _ = blocked.await;
+                }
                 if let Some(cancel) = cancel {
                     cancel.cancel();
                 }
@@ -1926,6 +2024,7 @@ mod tests {
 
         fn retire_sample_registration(&self, session_id: Uuid) {
             self.retired.lock().unwrap().push(session_id);
+            self.changed.notify_one();
         }
 
         fn prepare_attempt(
@@ -1983,6 +2082,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(attempt.snapshot.clone());
+            self.changed.notify_one();
             if self.panic_next_delivery.swap(false, Ordering::SeqCst) {
                 return Box::pin(async move {
                     panic!("scripted delivery panic");
@@ -2005,17 +2105,27 @@ mod tests {
         }
     }
 
-    async fn yield_until(mut predicate: impl FnMut() -> bool) {
-        for _ in 0..2_000 {
-            if predicate() {
-                return;
+    async fn wait_until_notified(
+        notify: &tokio::sync::Notify,
+        label: &str,
+        mut predicate: impl FnMut() -> bool,
+        diagnostics: impl Fn() -> String,
+    ) {
+        let wait = async {
+            loop {
+                let notified = notify.notified();
+                if predicate() {
+                    return;
+                }
+                notified.await;
             }
-            tokio::task::yield_now().await;
+        };
+        if tokio::time::timeout(Duration::from_secs(5), wait)
+            .await
+            .is_err()
+        {
+            panic!("timed out waiting for {label}: {}", diagnostics());
         }
-        assert!(
-            predicate(),
-            "condition did not become true after bounded yields"
-        );
     }
 
     struct IdentityFixture {
@@ -3190,17 +3300,16 @@ mod tests {
             })
             .await
             .unwrap();
-        yield_until(|| runtime.delivery_count() == 1).await;
-        yield_until(|| clock.has_live_waiter_within(Duration::from_secs(5))).await;
+        runtime.wait_for_delivery_count(1).await;
+        clock
+            .wait_for_live_waiter_within(Duration::from_secs(5))
+            .await;
 
         clock.advance(Duration::from_secs(4));
-        for _ in 0..100 {
-            tokio::task::yield_now().await;
-        }
         assert_eq!(runtime.delivery_count(), 1);
 
         clock.advance(Duration::from_secs(1));
-        yield_until(|| runtime.delivery_count() == 2).await;
+        runtime.wait_for_delivery_count(2).await;
         {
             let deliveries = runtime.deliveries.lock().unwrap();
             assert_eq!(deliveries[0].generation, deliveries[1].generation);
@@ -3230,13 +3339,10 @@ mod tests {
             })
             .await
             .unwrap();
-        yield_until(|| runtime.delivery_count() == 1).await;
+        runtime.wait_for_delivery_count(1).await;
 
         let closing_monitor = Arc::clone(&monitor);
         let close = tokio::spawn(async move { closing_monitor.close_and_join().await });
-        for _ in 0..100 {
-            tokio::task::yield_now().await;
-        }
         assert!(
             !close.is_finished(),
             "shutdown must join, not detach, delivery"
@@ -3336,6 +3442,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn maintenance_committed_false_liveness_retirement_is_not_skipped_by_shutdown() {
+        let id = Uuid::new_v4();
+        let now = Instant::now();
+        let runtime = ScriptedRuntime::new();
+        runtime.live.store(false, Ordering::SeqCst);
+        let shutdown = CancellationToken::new();
+        *runtime.cancel_during_live_check.lock().unwrap() = Some(shutdown.clone());
+        let runtime_dyn = Arc::clone(&runtime) as Arc<dyn ContextAlertRuntime>;
+        let mut state = ActorState::new();
+        apply_numeric_resolution(&mut state, None, id, 60, eligible(id, &[50]), now);
+
+        run_maintenance(&runtime_dyn, &mut state, None, &shutdown).await;
+
+        assert!(shutdown.is_cancelled());
+        assert!(!state.sessions.contains_key(&id));
+        assert_eq!(runtime.retired.lock().unwrap().as_slice(), &[id]);
+    }
+
+    #[tokio::test]
     async fn definite_end_has_no_tombstone_and_new_uuid_starts_fresh() {
         let old_id = Uuid::new_v4();
         let new_id = Uuid::new_v4();
@@ -3393,7 +3518,7 @@ mod tests {
             })
             .await
             .unwrap();
-        yield_until(|| runtime.delivery_count() == 1).await;
+        runtime.wait_for_delivery_count(1).await;
         monitor
             .sender()
             .send(ContextSample::Reading {
@@ -3402,20 +3527,22 @@ mod tests {
             })
             .await
             .unwrap();
-        yield_until(|| runtime.resolve_calls.load(Ordering::SeqCst) >= 2).await;
+        runtime.wait_for_resolve_calls(2).await;
         assert_eq!(
             runtime.delivery_count(),
             1,
             "the second due batch must wait"
         );
 
-        yield_until(|| clock.has_live_waiter_within(CONTEXT_ALERT_MAINTENANCE_INTERVAL)).await;
+        clock
+            .wait_for_live_waiter_within(CONTEXT_ALERT_MAINTENANCE_INTERVAL)
+            .await;
         clock.advance(CONTEXT_ALERT_MAINTENANCE_INTERVAL);
-        yield_until(|| runtime.live_checks.load(Ordering::SeqCst) >= 1).await;
+        runtime.wait_for_live_checks(1).await;
         assert_eq!(runtime.delivery_count(), 1);
 
         release.send(Ok(())).unwrap();
-        yield_until(|| runtime.delivery_count() == 2).await;
+        runtime.wait_for_delivery_count(2).await;
         {
             let deliveries = runtime.deliveries.lock().unwrap();
             assert_eq!(deliveries[0].thresholds, vec![50]);
@@ -3444,16 +3571,17 @@ mod tests {
             })
             .await
             .unwrap();
-        yield_until(|| runtime.resolve_calls.load(Ordering::SeqCst) == 1).await;
-        yield_until(|| clock.has_live_waiter_within(CONTEXT_ALERT_MAINTENANCE_INTERVAL)).await;
+        runtime.wait_for_resolve_calls(1).await;
+        clock
+            .wait_for_live_waiter_within(CONTEXT_ALERT_MAINTENANCE_INTERVAL)
+            .await;
 
         clock.advance(CONTEXT_ALERT_MAINTENANCE_INTERVAL * 10);
-        yield_until(|| runtime.live_checks.load(Ordering::SeqCst) == 1).await;
-        for _ in 0..100 {
-            tokio::task::yield_now().await;
-        }
+        runtime.wait_for_live_checks(1).await;
         assert_eq!(runtime.live_checks.load(Ordering::SeqCst), 1);
-        assert!(clock.has_live_waiter_within(CONTEXT_ALERT_MAINTENANCE_INTERVAL));
+        clock
+            .wait_for_live_waiter_within(CONTEXT_ALERT_MAINTENANCE_INTERVAL)
+            .await;
         monitor.close_and_join().await.unwrap();
     }
 
@@ -3477,10 +3605,12 @@ mod tests {
             })
             .await
             .unwrap();
-        yield_until(|| runtime.delivery_count() == 1).await;
-        yield_until(|| clock.has_live_waiter_within(Duration::from_secs(5))).await;
+        runtime.wait_for_delivery_count(1).await;
+        clock
+            .wait_for_live_waiter_within(Duration::from_secs(5))
+            .await;
         clock.advance(Duration::from_secs(5));
-        yield_until(|| runtime.delivery_count() == 2).await;
+        runtime.wait_for_delivery_count(2).await;
         {
             let deliveries = runtime.deliveries.lock().unwrap();
             assert_eq!(deliveries[0].generation, deliveries[1].generation);
@@ -3500,6 +3630,7 @@ mod tests {
             .extend([Err("retry".to_string()), Ok(())]);
         let clock = ManualClock::new(Instant::now());
         let shutdown = CancellationToken::new();
+        let release_live_check = runtime.block_next_live_check();
         let (sender, receiver) = mpsc::channel(2_048);
         let actor = tauri::async_runtime::spawn(run_context_alert_actor(
             Arc::clone(&runtime) as Arc<dyn ContextAlertRuntime>,
@@ -3514,16 +3645,22 @@ mod tests {
             })
             .await
             .unwrap();
-        yield_until(|| runtime.delivery_count() == 1).await;
-        yield_until(|| clock.has_live_waiter_within(Duration::from_secs(5))).await;
+        runtime.wait_for_delivery_count(1).await;
+        clock
+            .wait_for_live_waiter_within(Duration::from_secs(5))
+            .await;
         for _ in 0..1_000 {
             sender
                 .try_send(ContextSample::Unavailable { session_id: id })
                 .unwrap();
         }
         drop(sender);
+        runtime.wait_for_live_checks(1).await;
         clock.advance(Duration::from_secs(5));
-        yield_until(|| runtime.delivery_count() == 2).await;
+        release_live_check
+            .send(())
+            .expect("release the first queued liveness check");
+        runtime.wait_for_delivery_count(2).await;
         assert!(
             runtime.live_checks.load(Ordering::SeqCst) < 1_000,
             "the biased due deadline must run before draining a ready sample backlog"
@@ -3552,7 +3689,7 @@ mod tests {
             })
             .await
             .unwrap();
-        yield_until(|| runtime.resolve_calls.load(Ordering::SeqCst) == 1).await;
+        runtime.wait_for_resolve_calls(1).await;
 
         tokio::time::timeout(Duration::from_secs(1), monitor.close_and_join())
             .await
@@ -3581,7 +3718,7 @@ mod tests {
                 })
                 .await
                 .unwrap();
-            yield_until(|| runtime.delivery_count() == expected).await;
+            runtime.wait_for_delivery_count(expected).await;
             monitor.close_and_join().await.unwrap();
         }
         assert_ne!(
@@ -3613,11 +3750,13 @@ mod tests {
             })
             .await
             .unwrap();
-        yield_until(|| runtime.resolve_calls.load(Ordering::SeqCst) == 1).await;
-        yield_until(|| clock.has_live_waiter_within(CONTEXT_ALERT_MAINTENANCE_INTERVAL)).await;
+        runtime.wait_for_resolve_calls(1).await;
+        clock
+            .wait_for_live_waiter_within(CONTEXT_ALERT_MAINTENANCE_INTERVAL)
+            .await;
         runtime.live.store(false, Ordering::SeqCst);
         clock.advance(CONTEXT_ALERT_MAINTENANCE_INTERVAL);
-        yield_until(|| runtime.retired.lock().unwrap().contains(&id)).await;
+        runtime.wait_for_retirement(id).await;
 
         monitor.close_and_join().await.unwrap();
     }
@@ -3639,7 +3778,7 @@ mod tests {
             .send(ContextSample::Unavailable { session_id: id })
             .await
             .unwrap();
-        yield_until(|| runtime.retired.lock().unwrap().contains(&id)).await;
+        runtime.wait_for_retirement(id).await;
 
         monitor.close_and_join().await.unwrap();
     }

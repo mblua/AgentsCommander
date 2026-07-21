@@ -1536,13 +1536,120 @@ fn create_ac_project_impl<F>(path: &str, create_context_templates: F) -> Result<
 where
     F: FnOnce(&Path) -> Result<(), String>,
 {
-    let workspace_dir = workspace_dir_for_project(Path::new(&path));
-    let created = !workspace_dir.exists();
-    std::fs::create_dir_all(&workspace_dir).map_err(|e| {
+    create_ac_project_impl_with_hook(path, create_context_templates, |_, _| {})
+}
+
+fn create_ac_project_impl_with_hook<F, H>(
+    path: &str,
+    create_context_templates: F,
+    after_create_before_gate: H,
+) -> Result<(), String>
+where
+    F: FnOnce(&Path) -> Result<(), String>,
+    H: FnOnce(&Path, bool),
+{
+    let project_dir =
+        crate::config::projects::absolutise(path).map_err(|error| error.to_string())?;
+    match std::fs::symlink_metadata(&project_dir) {
+        Ok(metadata) if !metadata.is_dir() => {
+            return Err(format!(
+                "Project path is not a directory: {}",
+                project_dir.display()
+            ))
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(&project_dir).map_err(|error| {
+                format!(
+                    "Failed to create project directory {}: {}",
+                    project_dir.display(),
+                    error
+                )
+            })?;
+        }
+        Err(error) => {
+            return Err(format!(
+                "Failed to inspect project directory {}: {}",
+                project_dir.display(),
+                error
+            ))
+        }
+    }
+
+    let workspace_dir = workspace_dir_for_project(&project_dir);
+    let created = match std::fs::create_dir(&workspace_dir) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+        Err(error) => {
+            return Err(format!(
+                "Failed to create {} directory: {}",
+                canonical_workspace_dir_label(),
+                error
+            ))
+        }
+    };
+    let pinned_project = crate::config::seed_manifest::PinnedDirectory::open(&project_dir)
+        .map_err(|error| {
+            format!(
+                "Failed to pin project directory {}: {}",
+                project_dir.display(),
+                error
+            )
+        })?;
+    let pinned_workspace = crate::config::seed_manifest::PinnedDirectory::open(&workspace_dir)
+        .map_err(|error| {
+            format!(
+                "Failed to pin {} directory {}: {}",
+                canonical_workspace_dir_label(),
+                workspace_dir.display(),
+                error
+            )
+        })?;
+    after_create_before_gate(&workspace_dir, created);
+    pinned_project.revalidate().map_err(|error| {
         format!(
-            "Failed to create {} directory: {}",
-            canonical_workspace_dir_label(),
-            e
+            "AC project setup at {} changed before gate acquisition: {}; retry the operation",
+            project_dir.display(),
+            error
+        )
+    })?;
+    pinned_workspace.revalidate().map_err(|error| {
+        format!(
+            "AC project setup at {} changed before gate acquisition: {}; retry the operation",
+            project_dir.display(),
+            error
+        )
+    })?;
+
+    let guard = crate::config::seed_manifest::ProjectSeedManifestGuard::acquire(&project_dir)
+        .map_err(|error| {
+            format!(
+                "AC project setup at {} changed or is unavailable: {}; retry the operation",
+                project_dir.display(),
+                error
+            )
+        })?;
+    pinned_project.revalidate().map_err(|error| {
+        format!(
+            "AC project setup at {} changed before gate acquisition: {}; retry the operation",
+            project_dir.display(),
+            error
+        )
+    })?;
+    pinned_workspace
+        .revalidate_at(guard.ac_root())
+        .map_err(|error| {
+            format!(
+                "AC project setup at {} changed before gate acquisition: {}; retry the operation",
+                project_dir.display(),
+                error
+            )
+        })?;
+    guard.revalidate_owner().map_err(|error| {
+        format!(
+            "AC project setup at {} changed while preparing: {}; retry the operation",
+            project_dir.display(),
+            error
         )
     })?;
     if created {
@@ -1551,6 +1658,14 @@ where
     } else {
         ensure_workspace_gitignore(&workspace_dir)?;
     }
+    guard.revalidate_owner().map_err(|error| {
+        format!(
+            "AC project setup at {} changed while preparing: {}; retry the operation",
+            project_dir.display(),
+            error
+        )
+    })?;
+    guard.release();
     Ok(())
 }
 
@@ -2243,19 +2358,104 @@ async fn new_project_inner_with_settings_path(
     path: &str,
     settings_path: Option<&Path>,
 ) -> Result<(crate::config::projects::ProjectRegistration, bool), String> {
+    new_project_inner_with_settings_path_and_hooks(
+        settings,
+        path,
+        settings_path,
+        NewProjectTransactionHooks::default(),
+    )
+    .await
+}
+
+#[cfg(test)]
+type NewProjectFinalRevalidationHook = std::sync::Arc<dyn Fn(&Path) + Send + Sync>;
+
+#[derive(Clone, Default)]
+struct NewProjectTransactionHooks {
+    #[cfg(test)]
+    fail_settings_save: bool,
+    #[cfg(test)]
+    before_final_revalidation: Option<NewProjectFinalRevalidationHook>,
+}
+
+impl NewProjectTransactionHooks {
+    fn save_settings(
+        &self,
+        settings: &crate::config::settings::AppSettings,
+        settings_path: Option<&Path>,
+    ) -> Result<(), String> {
+        #[cfg(test)]
+        if self.fail_settings_save {
+            return Err("injected new-project settings save failure".to_string());
+        }
+        if let Some(path) = settings_path {
+            crate::config::settings::save_settings_with_project_paths_to_path(settings, path)
+        } else {
+            crate::config::settings::save_settings_with_project_paths(settings)
+        }
+    }
+
+    fn before_final_revalidation(&self, workspace_dir: &Path) {
+        #[cfg(test)]
+        if let Some(hook) = &self.before_final_revalidation {
+            hook(workspace_dir);
+        }
+        #[cfg(not(test))]
+        let _ = workspace_dir;
+    }
+}
+
+async fn new_project_inner_with_settings_path_and_hooks(
+    settings: &SettingsState,
+    path: &str,
+    settings_path: Option<&Path>,
+    hooks: NewProjectTransactionHooks,
+) -> Result<(crate::config::projects::ProjectRegistration, bool), String> {
     let path = path.to_string();
-    let prepared = crate::config::seed_manifest::run_blocking_owned(move || {
-        crate::config::projects::prepare_new_project(&path)
+    let settings = std::sync::Arc::clone(settings);
+    let settings_path = settings_path.map(Path::to_path_buf);
+    crate::config::seed_manifest::run_blocking_owned(move || {
+        let prepared = crate::config::projects::prepare_new_project(&path)
+            .map_err(|error| error.to_string())?;
+        let mut current = settings.blocking_write();
+        if let Some(path) = settings_path.as_deref() {
+            crate::config::settings::refresh_project_paths_from_path(&mut current, path)?;
+        } else {
+            crate::config::settings::refresh_project_paths_from_disk(&mut current)?;
+        }
+
+        let before_settings = current.clone();
+        let before_archived = current.archived_project_paths.clone();
+        let result = crate::config::projects::commit_prepared_new_project(&mut current, &prepared);
+        if let Err(error) = prepared.revalidate() {
+            *current = before_settings;
+            return Err(error.to_string());
+        }
+
+        let snapshot = current.clone();
+        // Preserve the established save-failure contract: once the deliberate
+        // upsert is in live memory, a disk-save error is returned without
+        // reverting that in-memory list.
+        hooks.save_settings(&snapshot, settings_path.as_deref())?;
+        hooks.before_final_revalidation(prepared.workspace_dir());
+        if let Err(error) = prepared.revalidate() {
+            *current = before_settings.clone();
+            let rollback = hooks.save_settings(&before_settings, settings_path.as_deref());
+            return Err(match rollback {
+                Ok(()) => error.to_string(),
+                Err(rollback_error) => format!(
+                    "{}; failed to roll back project registration settings: {}",
+                    error, rollback_error
+                ),
+            });
+        }
+        let archived_changed = before_archived != current.archived_project_paths;
+        drop(current);
+        prepared.release();
+        Ok((result, archived_changed))
     })
     .await
-    .map_err(|error| format!("new project blocking preparation failed: {error}"))?
-    .map_err(|error| error.to_string())?;
-    mutate_project_paths_with_settings_path(settings, settings_path, |s| {
-        let before = s.archived_project_paths.clone();
-        let result = crate::config::projects::commit_prepared_new_project(s, prepared);
-        Ok((result, before != s.archived_project_paths))
-    })
-    .await
+    .map_err(|error| format!("new project blocking transaction failed: {error}"))?
 }
 
 /// #778 Part 3: targeted project removal. `project_paths` is disk-authoritative
@@ -3484,6 +3684,54 @@ mod tests {
             .exists());
     }
 
+    #[test]
+    fn create_ac_project_creation_intent_comes_only_from_the_create_dir_winner() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().to_string_lossy().to_string();
+        let creator_path = path.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let creator = std::thread::spawn(move || {
+            create_ac_project_impl_with_hook(
+                &creator_path,
+                |workspace_dir| {
+                    crate::config::session_context::create_default_context_templates(workspace_dir)
+                },
+                move |_, created| {
+                    assert!(created, "creator must own the create_dir win");
+                    ready_tx.send(()).expect("signal visible root");
+                    release_rx
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .expect("release creator");
+                },
+            )
+        });
+
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("creator published .ac");
+        create_ac_project_impl(&path, |_| {
+            panic!("create_dir loser must not backfill context templates")
+        })
+        .expect("contending bare create");
+        assert!(!tmp
+            .path()
+            .join(".ac")
+            .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME)
+            .exists());
+
+        release_tx.send(()).expect("release creator");
+        creator
+            .join()
+            .expect("join creator")
+            .expect("creator completes");
+        assert!(tmp
+            .path()
+            .join(".ac")
+            .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME)
+            .is_file());
+    }
+
     #[tokio::test]
     async fn missing_settings_file_project_mutators_preserve_live_list() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -3558,6 +3806,125 @@ mod tests {
             vec!["proj-b", "proj-c", "proj-d"],
             "B and C must not be lost"
         );
+    }
+
+    #[tokio::test]
+    async fn new_project_settings_save_failure_keeps_live_registration_and_valid_root() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let settings_path = temp.path().join("settings.json");
+        let project = temp.path().join("project");
+        let project_text = project.to_string_lossy().to_string();
+        let state: SettingsState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(AppSettings::default()));
+        let hooks = NewProjectTransactionHooks {
+            fail_settings_save: true,
+            ..NewProjectTransactionHooks::default()
+        };
+
+        let error = new_project_inner_with_settings_path_and_hooks(
+            &state,
+            &project_text,
+            Some(&settings_path),
+            hooks,
+        )
+        .await
+        .expect_err("injected save failure must surface");
+
+        assert!(error.contains("injected new-project settings save failure"));
+        assert_eq!(state.read().await.project_paths, vec![project_text]);
+        assert!(!settings_path.exists());
+        assert!(project
+            .join(".ac")
+            .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME)
+            .is_file());
+        assert!(project
+            .join(".ac")
+            .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+            .is_file());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn new_project_replacement_after_save_rolls_back_registration_and_is_retryable() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let settings_path = temp.path().join("settings.json");
+        let project = temp.path().join("project");
+        let project_text = project.to_string_lossy().to_string();
+        let state: SettingsState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(AppSettings::default()));
+        let hooks = NewProjectTransactionHooks {
+            before_final_revalidation: Some(std::sync::Arc::new(|workspace_dir| {
+                let detached = workspace_dir.with_extension("ac-detached-after-save");
+                std::fs::rename(workspace_dir, &detached).expect("detach prepared root");
+                std::fs::create_dir(workspace_dir).expect("install replacement root");
+                std::fs::write(workspace_dir.join("foreign.txt"), b"FOREIGN")
+                    .expect("write replacement marker");
+            })),
+            ..NewProjectTransactionHooks::default()
+        };
+
+        let error = new_project_inner_with_settings_path_and_hooks(
+            &state,
+            &project_text,
+            Some(&settings_path),
+            hooks,
+        )
+        .await
+        .expect_err("replacement must reject registration");
+
+        assert!(error.contains("retry the operation"));
+        assert!(state.read().await.project_paths.is_empty());
+        let disk: AppSettings =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        assert!(disk.project_paths.is_empty());
+        assert_eq!(
+            std::fs::read(project.join(".ac").join("foreign.txt")).unwrap(),
+            b"FOREIGN"
+        );
+        assert!(!project
+            .join(".ac")
+            .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME)
+            .exists());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn new_project_lock_replacement_after_save_rolls_back_registration_and_is_retryable() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let settings_path = temp.path().join("settings.json");
+        let project = temp.path().join("project");
+        let project_text = project.to_string_lossy().to_string();
+        let state: SettingsState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(AppSettings::default()));
+        let hooks = NewProjectTransactionHooks {
+            before_final_revalidation: Some(std::sync::Arc::new(|workspace_dir| {
+                let lock =
+                    workspace_dir.join(crate::config::seed_manifest::SEED_MANIFEST_LOCK_FILENAME);
+                let detached = workspace_dir.join(".seed-manifest.lock-detached-after-save");
+                std::fs::rename(&lock, &detached).expect("detach held lock identity");
+                std::fs::write(&lock, b"").expect("install replacement lock identity");
+            })),
+            ..NewProjectTransactionHooks::default()
+        };
+
+        let error = new_project_inner_with_settings_path_and_hooks(
+            &state,
+            &project_text,
+            Some(&settings_path),
+            hooks,
+        )
+        .await
+        .expect_err("lock replacement must reject registration");
+
+        assert!(error.contains("retry the operation"));
+        assert!(state.read().await.project_paths.is_empty());
+        let disk: AppSettings =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        assert!(disk.project_paths.is_empty());
+        assert!(project
+            .join(".ac")
+            .join(".seed-manifest.lock-detached-after-save")
+            .is_file());
     }
 
     #[tokio::test]

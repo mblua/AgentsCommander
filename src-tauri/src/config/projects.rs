@@ -66,6 +66,13 @@ pub enum ProjectError {
     WorkspaceGitignoreFailed(PathBuf, String),
     #[error("failed to create context templates in .ac directory at {0}: {1}")]
     ContextTemplatesCreateFailed(PathBuf, String),
+    #[error("AC project setup at {0} is no longer stable: {1}; retry the operation")]
+    ProjectSetupChanged(PathBuf, String),
+    #[error("failed to {operation} project registration settings: {error}")]
+    ProjectSettingsFailed {
+        operation: &'static str,
+        error: String,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -126,16 +133,133 @@ pub fn register_new_project(
     settings: &mut AppSettings,
     raw_path: &str,
 ) -> Result<ProjectRegistration, ProjectError> {
+    #[cfg(test)]
+    let store = NewProjectSettingsStore::CallerOwned;
+    #[cfg(not(test))]
+    let store = NewProjectSettingsStore::Production;
+    register_new_project_with_store(settings, raw_path, store)
+}
+
+enum NewProjectSettingsStore {
+    #[cfg(test)]
+    CallerOwned,
+    #[cfg(test)]
+    Path(PathBuf),
+    #[cfg(not(test))]
+    Production,
+}
+
+impl NewProjectSettingsStore {
+    fn refresh(&self, settings: &mut AppSettings) -> Result<(), ProjectError> {
+        let result = match self {
+            #[cfg(test)]
+            Self::CallerOwned => Ok(()),
+            #[cfg(test)]
+            Self::Path(path) => {
+                crate::config::settings::refresh_project_paths_from_path(settings, path)
+            }
+            #[cfg(not(test))]
+            Self::Production => crate::config::settings::refresh_project_paths_from_disk(settings),
+        };
+        result.map_err(|error| ProjectError::ProjectSettingsFailed {
+            operation: "refresh",
+            error,
+        })
+    }
+
+    fn save(&self, settings: &AppSettings) -> Result<(), ProjectError> {
+        let result = match self {
+            #[cfg(test)]
+            Self::CallerOwned => Ok(()),
+            #[cfg(test)]
+            Self::Path(path) => {
+                crate::config::settings::save_settings_with_project_paths_to_path(settings, path)
+            }
+            #[cfg(not(test))]
+            Self::Production => crate::config::settings::save_settings_with_project_paths(settings),
+        };
+        result.map_err(|error| ProjectError::ProjectSettingsFailed {
+            operation: "persist",
+            error,
+        })
+    }
+}
+
+fn register_new_project_with_store(
+    settings: &mut AppSettings,
+    raw_path: &str,
+    store: NewProjectSettingsStore,
+) -> Result<ProjectRegistration, ProjectError> {
     let prepared = prepare_new_project_impl(raw_path, |workspace_dir| {
         crate::config::session_context::create_default_context_templates(workspace_dir)
     })?;
-    Ok(commit_prepared_new_project(settings, prepared))
+    store.refresh(settings)?;
+    let before_settings = settings.clone();
+    let result = commit_prepared_new_project(settings, &prepared);
+    if let Err(error) = prepared.revalidate() {
+        *settings = before_settings;
+        return Err(error);
+    }
+    // Save while the project gate is held when the historical CLI contract
+    // would save. Its caller-owned repeat is the same snapshot after this
+    // transaction and does not establish registration authority.
+    let saved = result.created || result.registered;
+    if saved {
+        store.save(settings)?;
+    }
+    if let Err(error) = prepared.revalidate() {
+        *settings = before_settings.clone();
+        if saved {
+            if let Err(rollback_error) = store.save(&before_settings) {
+                return Err(ProjectError::ProjectSetupChanged(
+                    prepared.abs.clone(),
+                    format!(
+                        "{}; failed to roll back project registration settings: {}",
+                        error, rollback_error
+                    ),
+                ));
+            }
+        }
+        return Err(error);
+    }
+    prepared.release();
+    Ok(result)
+}
+
+#[cfg(test)]
+fn register_new_project_with_settings_path(
+    settings: &mut AppSettings,
+    raw_path: &str,
+    settings_path: &Path,
+) -> Result<ProjectRegistration, ProjectError> {
+    register_new_project_with_store(
+        settings,
+        raw_path,
+        NewProjectSettingsStore::Path(settings_path.to_path_buf()),
+    )
 }
 
 #[derive(Debug)]
 pub(crate) struct PreparedNewProject {
     abs: PathBuf,
     created: bool,
+    guard: crate::config::seed_manifest::ProjectSeedManifestGuard,
+}
+
+impl PreparedNewProject {
+    pub(crate) fn workspace_dir(&self) -> &Path {
+        self.guard.ac_root()
+    }
+
+    pub(crate) fn revalidate(&self) -> Result<(), ProjectError> {
+        self.guard
+            .revalidate_owner()
+            .map_err(|error| ProjectError::ProjectSetupChanged(self.abs.clone(), error.to_string()))
+    }
+
+    pub(crate) fn release(self) {
+        self.guard.release();
+    }
 }
 
 pub(crate) fn prepare_new_project(raw_path: &str) -> Result<PreparedNewProject, ProjectError> {
@@ -151,6 +275,18 @@ fn prepare_new_project_impl<F>(
 where
     F: FnOnce(&Path) -> Result<(), String>,
 {
+    prepare_new_project_impl_with_hook(raw_path, create_context_templates, |_, _| {})
+}
+
+fn prepare_new_project_impl_with_hook<F, H>(
+    raw_path: &str,
+    create_context_templates: F,
+    after_create_before_gate: H,
+) -> Result<PreparedNewProject, ProjectError>
+where
+    F: FnOnce(&Path) -> Result<(), String>,
+    H: FnOnce(&Path, bool),
+{
     let abs = absolutise(raw_path)?;
     // Allow PATH to not yet exist as a directory. Reject if PATH exists and
     // is a regular file (caller almost certainly fat-fingered).
@@ -164,27 +300,42 @@ where
     std::fs::create_dir_all(&abs)
         .map_err(|e| ProjectError::WorkspaceCreateFailed(abs.clone(), e))?;
 
-    let (workspace_dir, created) = match existing_workspace_dir(&abs) {
-        Some(dir) => (dir, false),
-        None => {
-            let workspace_dir = workspace_dir_for_project(&abs);
-            // Authoritative `created` flag (Round-1 G9): use non-recursive
-            // `create_dir` so we can distinguish "we made the dir" from "another
-            // process beat us to it" via `ErrorKind::AlreadyExists`. The previous
-            // `is_dir()` check then `create_dir_all` pattern lied under that race.
-            let created = match std::fs::create_dir(&workspace_dir) {
-                Ok(()) => true,
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
-                Err(e) => {
-                    return Err(ProjectError::WorkspaceCreateFailed(
-                        workspace_dir.clone(),
-                        e,
-                    ))
-                }
-            };
-            (workspace_dir, created)
+    let workspace_dir = workspace_dir_for_project(&abs);
+    // The create syscall is the sole creation-intent authority. An earlier
+    // existence observation cannot distinguish this caller from a contender.
+    let created = match std::fs::create_dir(&workspace_dir) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
+        Err(e) => {
+            return Err(ProjectError::WorkspaceCreateFailed(
+                workspace_dir.clone(),
+                e,
+            ))
         }
     };
+    let pinned_project = crate::config::seed_manifest::PinnedDirectory::open(&abs)
+        .map_err(|error| ProjectError::ProjectSetupChanged(abs.clone(), error.to_string()))?;
+    let pinned_workspace = crate::config::seed_manifest::PinnedDirectory::open(&workspace_dir)
+        .map_err(|error| ProjectError::ProjectSetupChanged(abs.clone(), error.to_string()))?;
+    after_create_before_gate(&workspace_dir, created);
+    pinned_project
+        .revalidate()
+        .map_err(|error| ProjectError::ProjectSetupChanged(abs.clone(), error.to_string()))?;
+    pinned_workspace
+        .revalidate()
+        .map_err(|error| ProjectError::ProjectSetupChanged(abs.clone(), error.to_string()))?;
+
+    let guard = crate::config::seed_manifest::ProjectSeedManifestGuard::acquire(&abs)
+        .map_err(|error| ProjectError::ProjectSetupChanged(abs.clone(), error.to_string()))?;
+    pinned_project
+        .revalidate()
+        .map_err(|error| ProjectError::ProjectSetupChanged(abs.clone(), error.to_string()))?;
+    pinned_workspace
+        .revalidate_at(guard.ac_root())
+        .map_err(|error| ProjectError::ProjectSetupChanged(abs.clone(), error.to_string()))?;
+    guard
+        .revalidate_owner()
+        .map_err(|error| ProjectError::ProjectSetupChanged(abs.clone(), error.to_string()))?;
     if created {
         if let Err(e) = crate::commands::ac_discovery::ensure_workspace_gitignore(&workspace_dir) {
             return Err(ProjectError::WorkspaceGitignoreFailed(
@@ -211,20 +362,27 @@ where
         ));
     }
 
-    Ok(PreparedNewProject { abs, created })
+    guard
+        .revalidate_owner()
+        .map_err(|error| ProjectError::ProjectSetupChanged(abs.clone(), error.to_string()))?;
+
+    Ok(PreparedNewProject {
+        abs,
+        created,
+        guard,
+    })
 }
 
 pub(crate) fn commit_prepared_new_project(
     settings: &mut AppSettings,
-    prepared: PreparedNewProject,
+    prepared: &PreparedNewProject,
 ) -> ProjectRegistration {
-    let PreparedNewProject { abs, created } = prepared;
-    let abs_str = abs.to_string_lossy().into_owned();
+    let abs_str = prepared.abs.to_string_lossy().into_owned();
     let registered = upsert_project_path(settings, &abs_str);
     ProjectRegistration {
         path: abs_str,
         registered,
-        created,
+        created: prepared.created,
     }
 }
 
@@ -757,6 +915,234 @@ mod tests {
             .join(".ac")
             .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
             .is_file());
+    }
+
+    #[test]
+    fn new_project_contender_can_complete_on_the_same_visible_root_before_creator_gate() {
+        let fix = FixtureRoot::new("proj-new-contender");
+        let path = fix.path().to_string_lossy().to_string();
+        let creator_path = path.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let creator = std::thread::spawn(move || {
+            let prepared = prepare_new_project_impl_with_hook(
+                &creator_path,
+                |workspace_dir| {
+                    crate::config::session_context::create_default_context_templates(workspace_dir)
+                },
+                move |_, created| {
+                    assert!(created, "creator must own the create_dir win");
+                    ready_tx.send(()).expect("signal visible root");
+                    release_rx
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .expect("release creator gate acquisition");
+                },
+            )
+            .expect("creator preparation");
+            let created = prepared.created;
+            prepared.release();
+            created
+        });
+
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("creator published .ac");
+        let mut contender_settings = AppSettings::default();
+        let contender = register_new_project(&mut contender_settings, &path)
+            .expect("contender completes shared-root setup");
+        assert!(!contender.created);
+        assert!(contender.registered);
+        assert!(fix
+            .path()
+            .join(".ac")
+            .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME)
+            .is_file());
+        assert!(fix
+            .path()
+            .join(".ac")
+            .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+            .is_file());
+
+        release_tx.send(()).expect("release creator");
+        assert!(creator.join().expect("join creator"));
+        assert!(fix.path().join(".ac").is_dir());
+    }
+
+    #[test]
+    fn new_project_creator_failure_after_gate_preserves_contender_output_and_root() {
+        // Plan acceptance item 14 (lines 654/765): after the contender acquires/
+        // releases the same in-root gate and publishes into the unchanged identity,
+        // a creator that fails AFTER acquiring its own gate must not delete the root
+        // or the contender's output and must register nothing; a later registration
+        // then repairs from the truthful partial state. This directly exercises the
+        // plan-line-1214 no-deletion fix in the same-identity contender race
+        // (creation intent is revalidation data, never recursive-deletion authority).
+        let fix = FixtureRoot::new("proj-new-contender-creator-fails");
+        let path = fix.path().to_string_lossy().to_string();
+        let creator_path = path.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let creator = std::thread::spawn(move || {
+            // The template closure runs post-acquisition (projects.rs create path),
+            // so returning Err here is a deterministic "creator fails after its own
+            // gate acquisition". It writes nothing, so the contender's published
+            // templates must be left untouched. Reduce to a Send-safe result.
+            match prepare_new_project_impl_with_hook(
+                &creator_path,
+                |_workspace_dir| Err("injected creator failure after gate".to_string()),
+                move |_, created| {
+                    assert!(created, "creator must own the create_dir win");
+                    ready_tx.send(()).expect("signal visible root");
+                    release_rx
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .expect("release creator gate acquisition");
+                },
+            ) {
+                Ok(prepared) => {
+                    prepared.release();
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            }
+        });
+
+        // Contender uses the same unchanged root while the creator is paused before
+        // its own acquisition; it acquires/releases the in-root gate and publishes
+        // both templates.
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("creator published .ac");
+        let mut contender_settings = AppSettings::default();
+        let contender = register_new_project(&mut contender_settings, &path)
+            .expect("contender completes shared-root setup");
+        assert!(!contender.created);
+        assert!(contender.registered);
+        let agent_template = fix
+            .path()
+            .join(".ac")
+            .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let coordinator_template = fix
+            .path()
+            .join(".ac")
+            .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
+        assert!(agent_template.is_file());
+        assert!(coordinator_template.is_file());
+        let agent_bytes = std::fs::read(&agent_template).expect("read contender agent template");
+        let coordinator_bytes =
+            std::fs::read(&coordinator_template).expect("read contender coordinator template");
+
+        // Release the creator; it acquires the now-free gate and then fails.
+        release_tx.send(()).expect("release creator");
+        let creator_result = creator.join().expect("join creator");
+        assert!(
+            matches!(
+                creator_result,
+                Err(ProjectError::ContextTemplatesCreateFailed(_, _))
+            ),
+            "creator must fail after gate acquisition, got {creator_result:?}"
+        );
+
+        // Neither the root nor the contender's output was deleted by the failed creator,
+        // and the creator registered no incomplete setup.
+        assert!(
+            fix.path().join(".ac").is_dir(),
+            "root must survive creator failure"
+        );
+        assert!(
+            agent_template.is_file(),
+            "contender agent template must survive creator failure"
+        );
+        assert!(
+            coordinator_template.is_file(),
+            "contender coordinator template must survive creator failure"
+        );
+        assert_eq!(
+            std::fs::read(&agent_template).expect("re-read agent template"),
+            agent_bytes,
+            "contender agent template bytes must be untouched"
+        );
+        assert_eq!(
+            std::fs::read(&coordinator_template).expect("re-read coordinator template"),
+            coordinator_bytes,
+            "contender coordinator template bytes must be untouched"
+        );
+
+        // A later registration re-runs template ensure under the gate and completes
+        // from the truthful partial state (the failed creator registered nothing).
+        let mut repair_settings = AppSettings::default();
+        let repair = register_new_project(&mut repair_settings, &path)
+            .expect("later registration repairs from truthful partial state");
+        assert!(!repair.created);
+        assert!(repair.registered);
+    }
+
+    #[test]
+    fn new_project_rejects_a_replaced_root_before_gate_without_touching_replacement() {
+        let fix = FixtureRoot::new("proj-new-replaced-root");
+        let replacement_marker = fix.path().join(".ac").join("foreign.txt");
+
+        let result = prepare_new_project_impl_with_hook(
+            fix.path().to_str().unwrap(),
+            |workspace_dir| {
+                crate::config::session_context::create_default_context_templates(workspace_dir)
+            },
+            |workspace_dir, created| {
+                assert!(created);
+                let detached = workspace_dir.with_extension("ac-detached");
+                std::fs::rename(workspace_dir, &detached).expect("detach created root");
+                std::fs::create_dir(workspace_dir).expect("install replacement root");
+                std::fs::write(workspace_dir.join("foreign.txt"), b"FOREIGN")
+                    .expect("write replacement marker");
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(ProjectError::ProjectSetupChanged(_, _))
+        ));
+        assert_eq!(std::fs::read(&replacement_marker).unwrap(), b"FOREIGN");
+        assert!(!fix
+            .path()
+            .join(".ac")
+            .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME)
+            .exists());
+        assert!(!fix.path().join(".ac").join(".seed-manifest.lock").exists());
+    }
+
+    #[test]
+    fn synchronous_new_project_refreshes_and_saves_disk_authoritative_settings() {
+        let fix = FixtureRoot::new("proj-new-sync-settings");
+        let settings_path = fix.path().join("settings.json");
+        let disk_only = fix.path().join("disk-only").to_string_lossy().to_string();
+        let mut disk_settings = AppSettings {
+            project_paths: vec![disk_only.clone()],
+            project_path: Some(disk_only.clone()),
+            ..AppSettings::default()
+        };
+        crate::config::settings::save_settings_with_project_paths_to_path(
+            &disk_settings,
+            &settings_path,
+        )
+        .expect("seed disk settings");
+        disk_settings.project_paths = vec!["stale-memory".to_string()];
+        disk_settings.project_path = Some("stale-memory".to_string());
+        let project = fix.path().join("new-project");
+
+        let result = register_new_project_with_settings_path(
+            &mut disk_settings,
+            project.to_str().unwrap(),
+            &settings_path,
+        )
+        .expect("gated synchronous registration");
+
+        assert!(result.registered);
+        assert_eq!(
+            disk_settings.project_paths,
+            vec![disk_only.clone(), result.path.clone()]
+        );
+        let saved: AppSettings =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        assert_eq!(saved.project_paths, vec![disk_only, result.path]);
     }
 
     #[test]
