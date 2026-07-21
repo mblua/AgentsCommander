@@ -414,6 +414,14 @@ pub struct AppSettings {
     /// preserves the on-disk copy and only dedicated list commands mutate it.
     #[serde(default)]
     pub archived_project_paths: Vec<String>,
+    /// #1077 - hidden persistence state for the portable dual project paths. Holds
+    /// the resolved raw/selected pairs, their instance-relative companions,
+    /// outcomes, and reconcile-eligibility bits so the codec can rebuild the six
+    /// disk fields without re-reading disk. Never serialized directly (the codec
+    /// owns the six on-disk fields); behind an `Arc` so the ubiquitous
+    /// `AppSettings::clone()` stays cheap and copy-on-write mutation is explicit.
+    #[serde(skip, default)]
+    pub(crate) project_path_state: Arc<crate::config::projects::ProjectPathPersistenceState>,
     /// Sidebar visual style: "noir-minimal", "card-sections", "command-center", "deep-space", "arctic-ops", "obsidian-mesh", "neon-circuit"
     #[serde(default = "default_sidebar_style")]
     pub sidebar_style: String,
@@ -722,6 +730,7 @@ impl Default for AppSettings {
             project_path: None,
             project_paths: vec![],
             archived_project_paths: vec![],
+            project_path_state: Arc::default(),
             sidebar_style: default_sidebar_style(),
             root_token: None,
             onboarding_dismissed: false,
