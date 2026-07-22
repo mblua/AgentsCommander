@@ -323,12 +323,28 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                 })
                 .unwrap_or_default();
 
-            state
-                .pty_mgr
-                .lock()
-                .unwrap()
-                .write(uuid, &data)
-                .map_err(|e| e.to_string())?;
+            let permit = crate::pty::manager::PtyManager::acquire_input_writer(
+                &state.pty_mgr,
+                uuid,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+            if state
+                .app_handle
+                .try_state::<std::sync::Arc<crate::session::purge_guard::PurgeGuard>>()
+                .is_some_and(|guard| guard.blocks_session(uuid))
+            {
+                return Err("purge-wg in progress for this session; input rejected".to_string());
+            }
+            crate::pty::manager::PtyManager::write_with_permit(&permit, &data)
+                .map_err(|error| error.to_string())?;
+            crate::commands::pty::mark_successful_pty_write_busy(
+                &state.app_handle,
+                uuid,
+                data.len(),
+            )
+            .await;
+            drop(permit);
 
             // #552 web UI input is a real user message (resets badge + silence).
             crate::commands::pty::note_user_message_to_session(

@@ -83,14 +83,31 @@ See [AgentsCommander Harness Roadmap](../harness-roadmap.md) for the phase 1 thr
 
 ## `send`
 
-Send a message to another agent. File-based (default) or a remote logical PTY action.
+Send a file notification, a remote logical PTY action, or privileged exact PTY input.
 
 ```bash
+# File notification
 agentscommander send \
   --token "$AGENTSCOMMANDER_TOKEN" \
   --root  "$AGENTSCOMMANDER_ROOT" \
   --to    "<canonical-peer-name>" \
   --send  "<filename>" \
+  --mode wake
+
+# Exact text argument
+agentscommander send \
+  --token "$AGENTSCOMMANDER_TOKEN" \
+  --root "$AGENTSCOMMANDER_ROOT" \
+  --to "<canonical-peer-name>" \
+  --pty-input "review the current diff" \
+  --mode wake
+
+# Exact stdin, recommended for multiline or sensitive text
+printf '%s' "$PROMPT" | agentscommander send \
+  --token "$AGENTSCOMMANDER_TOKEN" \
+  --root "$AGENTSCOMMANDER_ROOT" \
+  --to "<canonical-peer-name>" \
+  --pty-input-stdin \
   --mode wake
 ```
 
@@ -99,19 +116,50 @@ agentscommander send \
 | `--token` | Yes | Session token. Shape-validated. |
 | `--root` | Yes | Sender's root directory (your CWD inside the workgroup or matrix). Used to derive your canonical name. |
 | `--to` | Yes | Destination peer's canonical FQN. Get this from `list-peers-lean`. |
-| `--send` | * | Filename only — no path. The file must already exist in `<workgroup-root>/messaging/`. Mutually exclusive with `--command`. |
+| `--send` | * | Filename only, not a path. The file must already exist in `<workgroup-root>/messaging/`. |
 | `--command` | * | Logical PTY action: `clear` or `compact`. `clear` resolves to `/new` for an exact-stem direct Pi shell and `/clear` for direct Claude/Codex/Gemini-family or Cursor `agent` shells. Pi compact and outer `cmd`/`pwsh` wrappers are unsupported. The mapped session must be idle. Mutually exclusive with `--send`. |
+| `--pty-input` | * | Exact UTF-8 text argument. Hyphen-leading values are accepted. The caller's shell applies quoting and expansion before AC receives the value. |
+| `--pty-input-stdin` | * | Read exact UTF-8 bytes from stdin. Recommended for multiline, clipboard, hyphen-leading, process-list-sensitive, or otherwise sensitive text. |
 | `--mode` | No | Delivery mode. Default and only supported value: `wake`. |
-| `--agent` | No | Coding agent to use when `wake` spawns a new session for the recipient. Default `auto` (uses recipient's `lastCodingAgent`). |
-| `--get-output` | No | Reserved for future modes. Non-functional under `--mode wake`. |
-| `--timeout` | No | Timeout in seconds for `--get-output`. Default 300. |
-| `--outbox` | No | Write to a non-default outbox directory. |
+| `--agent` | No | Configured coding-agent id used only if PTY input must spawn or respawn the target. Default `auto`. It never selects a session, executable, or backend directly. |
+| `--confirm-timeout` | No | PTY-input terminal confirmation wait, 0 through 3,600 seconds. Default 90. Timeout does not cancel the operation. |
+| `--get-output` | No | Reserved for future modes. Conflicts with PTY input and is non-functional under `--mode wake`. |
+| `--timeout` | No | Timeout in seconds for `--get-output`. Default 300. It does not control PTY-input confirmation. |
+| `--outbox` | No | Write to a non-default outbox directory. Conflicts with PTY input. |
 
-\* Exactly one of `--send` / `--command` is required.
+\* Exactly one of `--send`, `--command`, `--pty-input`, or `--pty-input-stdin` is required.
 
-**Routing** is pre-validated against team membership and coordinator rules before delivery. Failures exit 1 without writing to the outbox.
+**Routing** is pre-validated against team membership and coordinator rules before delivery. PTY input uses a narrower identity-verified route described below. Failures exit 1 without writing to the outbox.
 
 Logical values and missing mappings are validated after authorization/routing but before recipient actuation. Unknown values and unsupported mappings are terminal first-poll rejections. A supported action against a busy session remains retriable. Exact-stem matching is lexical trusted configuration, not binary attestation or a runtime version/semantic-success probe. See [Inter-agent messaging](../agents/inter-agent-messaging.md) for the full mapping and trust boundary.
+
+### Privileged exact PTY input
+
+PTY input writes validated text to one already trusted coding-agent PTY. It is not an ordinary message and never passes the accepted value to a host or container shell evaluator, command line, environment variable, or path.
+
+The accepted text is 1 through 65,536 UTF-8 bytes, inclusive. AC preserves accepted bytes exactly, including spaces, LF, TAB, Unicode, quotes, leading hyphens, and shell metacharacters. It rejects CR, NUL, ESC, DEL, other C0 controls except LF and TAB, C1 controls, Unicode line and paragraph separators, and Unicode bidi controls. AC does not trim, normalize, wrap, or append Enter to the text write. After the one exact text write it waits 1,500 ms, writes the required Enter, waits 500 ms, then attempts one redundant Enter.
+
+Only these routes are authorized:
+
+- A live identity-verified workgroup coordinator can target one verified non-coordinator member in the same exact project and workgroup.
+- A live local Root Agent can target one verified workgroup coordinator.
+- A container coordinator uses the dedicated API helper and a live automatically bound container credential.
+
+Workers, origin coordinators, coordinator-to-coordinator requests, cross-workgroup or cross-project requests, Root-to-worker requests, master credentials without a live session, manual API clients, and filesystem requests from container sessions are rejected before target lifecycle mutation or PTY input. `--to` must be the exact canonical name returned by `list-peers-lean`.
+
+Target lifecycle is deterministic. One idle supported persistent session is selected. A busy or unsupported live session rejects with zero writes. An exited persistent session may be destroyed and respawned with its validated configured profile; a missing target may be spawned once. A newly spawned session must remain continuously ready before submission. No busy bypass, fan-out, broadcast, or deferred text exists.
+
+CLI output has distinct meanings:
+
+- `Operation ID` identifies the stable operation before publication.
+- `Queued` means durable admission only. It does not mean bytes were injected.
+- `Injected` means the backend accepted the exact text write and required first Enter. It does not prove model consumption or completion.
+- `Rejected` means the operation stopped before the no-replay boundary and made zero PTY writes.
+- `Indeterminate` means the no-replay boundary committed but complete text-plus-first-Enter submission cannot be proven. Do not submit the text again under a new ID.
+
+A confirmation timeout exits 1 without canceling queued or actuating work. Keep the printed operation ID, do not resubmit under a new ID, and inspect the metadata-only `delivered/`, `rejected/`, and `indeterminate/` artifacts below the verified sender outbox. The raw host request, ignored temporary request, and queued SQLite payload are sensitive until marker conversion, expiry, or actuation; terminal artifacts contain metadata only.
+
+See [Inter-agent messaging](../agents/inter-agent-messaging.md) for the ordinary file protocol and the separate privileged actuation contract.
 
 ### `self-handoff-and-clear`
 

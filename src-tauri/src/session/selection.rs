@@ -1493,6 +1493,14 @@ impl<R: Runtime> SelectionTransaction<R> {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn for_test(app: AppHandle<R>) -> Self {
+        Self {
+            app,
+            capability: CommitCapability::for_test(),
+        }
+    }
+
     pub(crate) fn app(&self) -> &AppHandle<R> {
         &self.app
     }
@@ -2143,6 +2151,7 @@ async fn execute_restore_dormant<R: Runtime>(
         effective_codex_home: None,
         resolved_claude_projects_dir: None,
         profile_content_hash: None,
+        trusted_configured_spawn: false,
         telegram_bot_id: persisted.telegram_bot_id,
         was_detached: persisted.was_detached,
         detached_geometry: persisted.detached_geometry,
@@ -2746,14 +2755,17 @@ mod tests {
         }
     }
 
-    fn real_container_spawn_spec(session_id: Uuid) -> crate::pty::backend::BackendSpawnSpec {
+    fn real_container_spawn_spec(
+        session_id: Uuid,
+        cwd: String,
+    ) -> crate::pty::backend::BackendSpawnSpec {
         crate::pty::backend::BackendSpawnSpec {
             id: session_id,
             agent_id: None,
             coding_agent: None,
             cmd: "container".to_string(),
             args: Vec::new(),
-            cwd: "C:/repo/.ac/wg-1/__agent_dev".to_string(),
+            cwd,
             selected_cwd: None,
             cols: 120,
             rows: 30,
@@ -2786,7 +2798,12 @@ mod tests {
             })
         }
 
-        fn write(&self, id: Uuid, _data: &[u8]) -> Result<(), crate::errors::AppError> {
+        fn write(
+            &self,
+            _authority: &crate::pty::manager::BackendWriteAuthority,
+            id: Uuid,
+            _data: &[u8],
+        ) -> Result<(), crate::errors::AppError> {
             self.live
                 .lock()
                 .unwrap()
@@ -2796,7 +2813,11 @@ mod tests {
         }
 
         fn resize(&self, id: Uuid, _cols: u16, _rows: u16) -> Result<(), crate::errors::AppError> {
-            self.write(id, &[])
+            self.write(
+                &crate::pty::manager::BackendWriteAuthority::for_backend_test(),
+                id,
+                &[],
+            )
         }
 
         fn kill(&self, id: Uuid) -> Result<(), crate::errors::AppError> {
@@ -3127,6 +3148,8 @@ mod tests {
         use crate::pty::container_tokens::ContainerApiTokenManager;
 
         let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let root_dir = tempfile::TempDir::new().expect("create container root directory");
+        let root = root_dir.path().to_string_lossy().into_owned();
         let (start_started, start_started_rx) = oneshot::channel();
         let (stop_started, stop_started_rx) = oneshot::channel();
         let close_budget = Duration::from_millis(200);
@@ -3203,7 +3226,7 @@ mod tests {
                 &mut ticket,
                 "container".to_string(),
                 Vec::new(),
-                "C:/repo/.ac/wg-1/__agent_dev".to_string(),
+                root.clone(),
                 None,
                 None,
                 Vec::new(),
@@ -3215,6 +3238,7 @@ mod tests {
         let pending_id = pending.id;
         let create_shutdown = coordinator.inner.shutdown.clone();
         let create_pty = Arc::clone(&pty);
+        let create_root = root.clone();
         let mut create = tokio::task::spawn_blocking(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -3225,7 +3249,7 @@ mod tests {
                 let _spawn_mark = create_pty
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())
-                    .mark_spawning("C:/repo/.ac/wg-1/__agent_dev", "container");
+                    .mark_spawning(&create_root, "container");
                 tokio::select! {
                     biased;
                     _ = create_shutdown.cancelled() => {
@@ -3234,7 +3258,7 @@ mod tests {
                     result = PtyManager::spawn(
                         &create_pty,
                         SessionBackendKind::ContainerTransport,
-                        real_container_spawn_spec(pending_id),
+                        real_container_spawn_spec(pending_id, create_root),
                     ) => result.map_err(|error| error.to_string()),
                 }
             })

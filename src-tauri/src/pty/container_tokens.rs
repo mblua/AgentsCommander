@@ -3,16 +3,34 @@ use std::path::{Path, PathBuf};
 use chrono::{Duration as ChronoDuration, Utc};
 use uuid::Uuid;
 
-use crate::api::auth::{self, MintRequest, SCOPE_LIST_PEERS, SCOPE_SEND, SCOPE_SESSION_TRANSPORT};
+use crate::api::auth::{
+    self, MintRequest, SCOPE_LIST_PEERS, SCOPE_PTY_INPUT, SCOPE_SEND, SCOPE_SESSION_TRANSPORT,
+};
 use crate::errors::AppError;
 
 const CONTAINER_TOKEN_TTL_HOURS: i64 = 24;
 const CONTAINER_LABEL_PREFIX: &str = "container:";
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ContainerApiToken {
     pub client_id: String,
+    pub credential_generation: String,
+    pub bound_session_id: String,
     pub secret: String,
+    pub token_hash: String,
+}
+
+impl std::fmt::Debug for ContainerApiToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ContainerApiToken")
+            .field("client_id", &self.client_id)
+            .field("credential_generation", &self.credential_generation)
+            .field("bound_session_id", &self.bound_session_id)
+            .field("secret", &"[REDACTED]")
+            .field("token_hash", &"[REDACTED]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -45,9 +63,20 @@ impl ContainerApiTokenManager {
     ) -> Result<ContainerApiToken, AppError> {
         let issued_at = Utc::now();
         let expires_at = issued_at + ChronoDuration::hours(CONTAINER_TOKEN_TTL_HOURS);
-        let client_id = format!("container-{}", session_id);
+        let credential_generation = Uuid::new_v4().to_string();
+        let bound_session_id = session_id.to_string();
+        let client_id = format!("container-{}-{}", session_id, credential_generation);
         let secret = format!("ac-container-{}-{}", Uuid::new_v4(), Uuid::new_v4());
+        let token_hash = auth::hash_token(&secret);
         let bound_fqn = crate::config::teams::agent_fqn_from_path(bound_root);
+        let mut scopes = vec![
+            SCOPE_SEND.to_string(),
+            SCOPE_LIST_PEERS.to_string(),
+            SCOPE_SESSION_TRANSPORT.to_string(),
+        ];
+        if crate::config::teams::verify_pty_input_coordinator_root(Path::new(bound_root)).is_ok() {
+            scopes.push(SCOPE_PTY_INPUT.to_string());
+        }
         let outcome = auth::mint(
             &self.registry_path,
             MintRequest {
@@ -56,20 +85,21 @@ impl ContainerApiTokenManager {
                 label: format!("{}{}", CONTAINER_LABEL_PREFIX, session_id),
                 bound_root: bound_root.to_string(),
                 bound_fqn,
-                scopes: vec![
-                    SCOPE_SEND.to_string(),
-                    SCOPE_LIST_PEERS.to_string(),
-                    SCOPE_SESSION_TRANSPORT.to_string(),
-                ],
+                scopes,
                 issued_at: issued_at.to_rfc3339(),
                 expires_at: Some(expires_at.to_rfc3339()),
+                bound_session_id: Some(bound_session_id.clone()),
+                credential_generation: Some(credential_generation.clone()),
             },
         )
         .map_err(|e| AppError::Other(format!("failed to mint container API token: {e}")))?;
 
         Ok(ContainerApiToken {
             client_id: outcome.client_id,
+            credential_generation,
+            bound_session_id,
             secret: outcome.secret,
+            token_hash,
         })
     }
 
@@ -224,6 +254,8 @@ mod tests {
                 scopes: vec![SCOPE_SEND.to_string()],
                 issued_at: Utc::now().to_rfc3339(),
                 expires_at: None,
+                bound_session_id: None,
+                credential_generation: None,
             },
         )
         .unwrap();
@@ -258,6 +290,8 @@ mod tests {
             scopes: vec![SCOPE_SEND.to_string()],
             issued_at: Utc::now().to_rfc3339(),
             expires_at,
+            bound_session_id: None,
+            credential_generation: None,
         }
     }
 
@@ -298,19 +332,25 @@ mod tests {
     /// these tests minted through `mint_for_session`, which stamps +24h, so they never
     /// expired anything and would have stayed green against a predicate that was broken
     /// on exactly the state they were named for.
-    fn assert_client_is_expired(manager: &ContainerApiTokenManager, client_id: &str, revoked: bool) {
+    fn assert_client_is_expired(
+        manager: &ContainerApiTokenManager,
+        client_id: &str,
+        revoked: bool,
+    ) {
         let registry = auth::list(manager.path());
         let client = registry
             .clients
             .iter()
             .find(|client| client.client_id == client_id)
             .expect("the client the test minted");
-        let expiry = chrono::DateTime::parse_from_rfc3339(
-            client.expires_at.as_deref().expect("expires_at"),
-        )
-        .expect("rfc3339 expiry")
-        .with_timezone(&Utc);
-        assert!(expiry < Utc::now(), "this test must actually expire the client");
+        let expiry =
+            chrono::DateTime::parse_from_rfc3339(client.expires_at.as_deref().expect("expires_at"))
+                .expect("rfc3339 expiry")
+                .with_timezone(&Utc);
+        assert!(
+            expiry < Utc::now(),
+            "this test must actually expire the client"
+        );
         assert_eq!(
             client.revoked, revoked,
             "this test must leave the client revoked={revoked}"

@@ -39,7 +39,7 @@ const API_SERVER_STOP_TIMEOUT_MS: u64 = 5_000;
 const MINT_API_CLIENT_DEFAULT_TTL_HOURS: i64 = 24;
 const MINT_API_CLIENT_MAX_TTL_DAYS: i64 = 30;
 const MINT_API_CLIENT_NOTE: &str =
-    "Store this token now; it is shown only once. The registry keeps only a hash.";
+    "Store this token now; it is shown only once. The registry keeps only a hash. A manually requested pty-input scope does not grant actuation without an automatically bound live container session.";
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1800,6 +1800,8 @@ fn mint_api_client_with_path(
             scopes: scopes.clone(),
             issued_at,
             expires_at: Some(expires_at.clone()),
+            bound_session_id: None,
+            credential_generation: None,
         },
     )?;
 
@@ -2561,9 +2563,22 @@ mod tests {
 
     fn api_server_command_test_app(settings: AppSettings) -> tauri::App {
         let session_mgr = Arc::new(RwLock::new(SessionManager::new()));
+        let store_dir = tempfile::tempdir().expect("create API store directory");
+        let message_store = Arc::new(
+            crate::api::message_store::MessageStore::open(
+                store_dir
+                    .path()
+                    .join(crate::api::message_store::DB_FILENAME),
+            )
+            .expect("open API message store"),
+        );
         let app = tauri::Builder::default()
             .any_thread()
             .manage(ApiServerHandle::default())
+            .manage(crate::api::message_store::MessageStoreState::ready(
+                message_store,
+            ))
+            .manage(store_dir)
             .manage(state_for(settings))
             .manage(Arc::clone(&session_mgr))
             .manage(crate::shutdown::ShutdownSignal::new())

@@ -1954,6 +1954,10 @@ fn resolve_session_context_content(
             content.push_str("\n\n---\n\n# Coordinator Context\n\n");
             content.push_str(&coordinator_body);
         }
+        if crate::config::teams::verify_pty_input_coordinator_root(Path::new(cwd)).is_ok() {
+            content.push_str("\n\n");
+            content.push_str(PTY_INPUT_COORDINATOR_CONTEXT);
+        }
     }
 
     // #640 Single-source the self-maintenance directive. Strip any legacy block
@@ -2245,6 +2249,19 @@ You are running inside an AgentsCommander session - a terminal session manager c
 {{INTER_AGENT_MESSAGING}}
 "#
 }
+
+pub(crate) const PTY_INPUT_COORDINATOR_CONTEXT: &str = r#"## Privileged PTY Input
+
+This capability is present only because this session is an identity-verified workgroup coordinator replica. You may ask AgentsCommander to submit validated text to exactly one non-coordinator member in this same project and workgroup. Resolve the exact target with `list-peers-lean`. This writes text into the target coding-agent PTY; it never directly executes a host or container OS shell command.
+
+Local host session:
+"<AGENTSCOMMANDER_BINARY_PATH>" send --token <AGENTSCOMMANDER_TOKEN> --root "<AGENTSCOMMANDER_ROOT>" --to "<agent_name>" --pty-input-stdin --mode wake
+
+Container session with `AGENTSCOMMANDER_TRANSPORT=api`:
+"<AGENTSCOMMANDER_BINARY_PATH>" send --to "<agent_name>" --pty-input-stdin --mode wake
+"<AGENTSCOMMANDER_BINARY_PATH>" pty-input-status --op-id "<operation_id>"
+
+Prefer stdin for multiline or sensitive text. `Queued` is not `Injected`. If confirmation times out, keep the reported operation ID and inspect its status; do not create a new operation to retry it."#;
 
 pub fn get_default_coordinator_template() -> &'static str {
     "You are the coordinator for your team. You must:\n\
@@ -2803,6 +2820,14 @@ const ROOT_RUNTIME_PROLOGUE_HEADER: &str = r#"# AgentsCommander Root Runtime Con
 
 You are running inside an AgentsCommander session - a terminal session manager coordinating multiple AI agents."#;
 
+pub(crate) const ROOT_PTY_INPUT_CONTEXT: &str = r#"## Privileged PTY Input to Workgroup Coordinators
+
+As the live local Root Agent, you may ask AgentsCommander to submit validated text only to an identity-verified workgroup coordinator replica returned by `list-peers-lean`. Worker replicas, origin coordinators, Root itself, and coordinator-to-coordinator requests from any non-Root sender are not valid targets. This writes text into the target coding-agent PTY; it never directly executes a host or container OS shell command.
+
+"<AGENTSCOMMANDER_BINARY_PATH>" send --token <AGENTSCOMMANDER_TOKEN> --root "<AGENTSCOMMANDER_ROOT>" --to "<coordinator_name>" --pty-input-stdin --mode wake
+
+Prefer stdin for multiline or sensitive text. `Queued` is not `Injected`. If confirmation times out, keep the reported injection ID and inspect the metadata-only outbox artifact; do not submit the text again under a new ID."#;
+
 /// #979 G4: Root is the agent that creates and coordinates teams and workgroups,
 /// so it keeps the Core Concepts prose it receives today through
 /// `get_default_agent_template()`. Byte-identical to that template's section; a
@@ -2894,6 +2919,10 @@ fn render_root_runtime_prologue_inner(
             out.push_str("\n\n");
         }
         out.push_str(block);
+    }
+    if is_root_agent {
+        out.push_str("\n\n");
+        out.push_str(ROOT_PTY_INPUT_CONTEXT);
     }
     out.push('\n');
     out
@@ -4910,6 +4939,11 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             render_root_runtime_prologue(&root, &no_skill_section(), Path::new(&root), None, None);
         assert!(out.contains("Every registered AgentsCommander project folder"));
         assert!(out.contains("## Root Agent Authority and Chain of Command"));
+        assert_eq!(
+            out.matches("## Privileged PTY Input to Workgroup Coordinators")
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -4935,6 +4969,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             "you may create, modify, and delete files anywhere under ANY project folder"
         ));
         assert!(!out.contains("## Root Agent Authority and Chain of Command"));
+        assert!(!out.contains("## Privileged PTY Input to Workgroup Coordinators"));
         // ...but the name-based Root messaging text is still present (gate unchanged).
         assert!(out.contains("Narrow exception — Root Agent messaging directory"));
     }
@@ -4960,7 +4995,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             true,
         );
 
-        // The nine blocks, each exactly once (#979 G4: Core Concepts is block 2).
+        // The ten blocks, each exactly once (#979 G4: Core Concepts is block 2).
         for heading in [
             "# AgentsCommander Root Runtime Context",
             "## Core Concepts",
@@ -4971,6 +5006,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             "## CLI executable",
             "## Session credentials",
             "## Inter-Agent Messaging",
+            "## Privileged PTY Input to Workgroup Coordinators",
         ] {
             assert_eq!(
                 out.matches(heading).count(),
@@ -6914,6 +6950,71 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             std::fs::read_to_string(workspace_dir.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read coordinator template"),
             "CUSTOM_COORDINATOR_BODY"
+        );
+    }
+
+    #[test]
+    fn privileged_pty_context_is_added_only_to_verified_workgroup_coordinator() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("project-a");
+        let workspace = project.join(".ac");
+        let team = workspace.join("_team_dev-team");
+        let workgroup = workspace.join("wg-1-dev-team");
+        let coordinator_matrix = workspace.join("_agent_tech-lead");
+        let member_matrix = workspace.join("_agent_dev-rust");
+        let coordinator = workgroup.join("__agent_tech-lead");
+        let member = workgroup.join("__agent_dev-rust");
+        for directory in [
+            &team,
+            &coordinator_matrix,
+            &member_matrix,
+            &coordinator,
+            &member,
+        ] {
+            std::fs::create_dir_all(directory).expect("create fixture directory");
+        }
+        std::fs::write(
+            team.join("config.json"),
+            r#"{"coordinator":"../_agent_tech-lead","agents":["../_agent_dev-rust"]}"#,
+        )
+        .expect("write team config");
+        std::fs::write(
+            coordinator.join("config.json"),
+            r#"{"identity":"../../_agent_tech-lead","context":["$AGENTSCOMMANDER_CONTEXT"]}"#,
+        )
+        .expect("write coordinator config");
+        std::fs::write(
+            member.join("config.json"),
+            r#"{"identity":"../../_agent_dev-rust","context":["$AGENTSCOMMANDER_CONTEXT"]}"#,
+        )
+        .expect("write member config");
+        std::fs::write(
+            workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            "CUSTOM_COORDINATOR_BYTES",
+        )
+        .expect("write custom coordinator template");
+
+        let coordinator_content =
+            resolve_session_context_content(&path_string(&coordinator), true, false, None)
+                .expect("resolve coordinator context")
+                .expect("coordinator context");
+        assert_eq!(
+            coordinator_content
+                .matches("## Privileged PTY Input")
+                .count(),
+            1
+        );
+        assert!(coordinator_content.contains("CUSTOM_COORDINATOR_BYTES"));
+
+        let member_content =
+            resolve_session_context_content(&path_string(&member), true, false, None)
+                .expect("resolve member context")
+                .expect("member context");
+        assert!(!member_content.contains("## Privileged PTY Input"));
+        assert_eq!(
+            std::fs::read_to_string(workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read custom template"),
+            "CUSTOM_COORDINATOR_BYTES"
         );
     }
 

@@ -19,12 +19,20 @@ pub enum ApiError {
     Unauthorized(String),
     /// 403 - valid token but not scoped / routing denied / root-agent excluded.
     Forbidden(String),
+    /// 404 - operation not found for the authenticated sender.
+    NotFound(String),
+    /// 409 - idempotency key reused with different semantics.
+    Conflict(String),
     /// 413 - inline payload exceeds the semantic cap.
     PayloadTooLarge(String),
     /// 422 - the engine refused delivery (`deliver_wake` returned `Err`).
     Rejected(String),
     /// 429 - per-source failed-auth lockout or per-client rate limit.
     TooManyRequests(String),
+    /// Stable PTY-input reason with a reason-specific HTTP status.
+    PtyInput(crate::phone::types::PtyInputFailure),
+    /// 503 - a bounded dependency is temporarily unavailable.
+    ServiceUnavailable(String),
     /// 500 - internal error (never leaks a host path).
     Internal(String),
 }
@@ -35,9 +43,19 @@ impl ApiError {
             ApiError::BadRequest(d) => (StatusCode::BAD_REQUEST, "bad_request", d),
             ApiError::Unauthorized(d) => (StatusCode::UNAUTHORIZED, "unauthorized", d),
             ApiError::Forbidden(d) => (StatusCode::FORBIDDEN, "forbidden", d),
+            ApiError::NotFound(d) => (StatusCode::NOT_FOUND, "not_found", d),
+            ApiError::Conflict(d) => (StatusCode::CONFLICT, "idempotency_conflict", d),
             ApiError::PayloadTooLarge(d) => (StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large", d),
             ApiError::Rejected(d) => (StatusCode::UNPROCESSABLE_ENTITY, "rejected", d),
             ApiError::TooManyRequests(d) => (StatusCode::TOO_MANY_REQUESTS, "rate_limited", d),
+            ApiError::PtyInput(failure) => (
+                pty_input_http_status(failure.code),
+                crate::phone::types::pty_input_reason_code_name(failure.code),
+                crate::phone::types::safe_detail(failure.code),
+            ),
+            ApiError::ServiceUnavailable(d) => {
+                (StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", d)
+            }
             ApiError::Internal(d) => (StatusCode::INTERNAL_SERVER_ERROR, "internal", d),
         }
     }
@@ -50,6 +68,65 @@ impl ApiError {
     /// The stable machine code (used by tests).
     pub fn code(&self) -> &'static str {
         self.parts().1
+    }
+}
+
+fn pty_input_http_status(code: crate::phone::types::PtyInputReasonCode) -> StatusCode {
+    use crate::phone::types::PtyInputReasonCode as C;
+    match code {
+        C::InvalidEnvelope
+        | C::MixedPayload
+        | C::UnsupportedVersion
+        | C::InvalidEnterMode
+        | C::InvalidId
+        | C::InvalidNonce
+        | C::InvalidTimestamp
+        | C::InvalidTarget
+        | C::InvalidText
+        | C::UnsupportedProfile => StatusCode::BAD_REQUEST,
+        C::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+        C::Expired => StatusCode::GONE,
+        C::SessionTokenRequired | C::InvalidSessionToken | C::ApiClientStale => {
+            StatusCode::UNAUTHORIZED
+        }
+        C::SenderBackendNotLocal
+        | C::SenderIdentityInvalid
+        | C::SenderNotCoordinator
+        | C::RootIdentityInvalid
+        | C::TargetNotMember
+        | C::TargetIsCoordinator
+        | C::TargetOutOfScope
+        | C::UnsafePath
+        | C::ApiScopeRequired
+        | C::ApiClientUnbound
+        | C::ApiBindingMismatch => StatusCode::FORBIDDEN,
+        C::SenderSessionNotLive => StatusCode::NOT_FOUND,
+        C::IdempotencyConflict
+        | C::AmbiguousSessionToken
+        | C::AuthorityChanged
+        | C::Busy
+        | C::ResizeUnsettled
+        | C::UntrackedReadiness
+        | C::UnsupportedSession
+        | C::NonpersistentLiveSession
+        | C::InconsistentSession
+        | C::SessionRace
+        | C::LeaseLost
+        | C::FinalRevalidationFailed => StatusCode::CONFLICT,
+        C::CapacityExceeded => StatusCode::TOO_MANY_REQUESTS,
+        C::RestoreInProgress | C::PurgeInProgress => StatusCode::LOCKED,
+        C::ReadinessTimeout | C::SpawnFailedSafe | C::StoreTransient => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+        C::StoreCorrupt
+        | C::TextWriteFailed
+        | C::RequiredEnterFailed
+        | C::DaemonRestartAfterActuation
+        | C::RuntimeActuationOrphan
+        | C::TerminalStoreFailed
+        | C::RedundantEnterFailed
+        | C::BoundaryMetadataFailed
+        | C::ArtifactUnclaimed => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
@@ -147,6 +224,14 @@ mod tests {
             StatusCode::FORBIDDEN
         );
         assert_eq!(
+            ApiError::NotFound("x".into()).status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            ApiError::Conflict("x".into()).status(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
             ApiError::PayloadTooLarge("x".into()).status(),
             StatusCode::PAYLOAD_TOO_LARGE
         );
@@ -158,6 +243,47 @@ mod tests {
             ApiError::TooManyRequests("x".into()).status(),
             StatusCode::TOO_MANY_REQUESTS
         );
+        assert_eq!(
+            ApiError::ServiceUnavailable("x".into()).status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        for (reason, status) in [
+            (
+                crate::phone::types::PtyInputReasonCode::InvalidText,
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                crate::phone::types::PtyInputReasonCode::PayloadTooLarge,
+                StatusCode::PAYLOAD_TOO_LARGE,
+            ),
+            (
+                crate::phone::types::PtyInputReasonCode::ApiClientStale,
+                StatusCode::UNAUTHORIZED,
+            ),
+            (
+                crate::phone::types::PtyInputReasonCode::TargetOutOfScope,
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                crate::phone::types::PtyInputReasonCode::Busy,
+                StatusCode::CONFLICT,
+            ),
+            (
+                crate::phone::types::PtyInputReasonCode::CapacityExceeded,
+                StatusCode::TOO_MANY_REQUESTS,
+            ),
+            (
+                crate::phone::types::PtyInputReasonCode::StoreTransient,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+        ] {
+            let error = ApiError::PtyInput(crate::phone::types::PtyInputFailure::reject(reason));
+            assert_eq!(error.status(), status);
+            assert_eq!(
+                error.code(),
+                crate::phone::types::pty_input_reason_code_name(reason)
+            );
+        }
         assert_eq!(
             ApiError::Internal("x".into()).status(),
             StatusCode::INTERNAL_SERVER_ERROR

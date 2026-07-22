@@ -2614,6 +2614,7 @@ mod tests {
             profile_fallback_applied: false,
             effective_codex_home: None,
             profile_content_hash: None,
+            trusted_configured_spawn: false,
             profile_outdated: false,
             telegram_bot_id: None,
             was_detached: false,
@@ -2692,7 +2693,12 @@ mod tests {
             Box::pin(async { Ok(()) })
         }
 
-        fn write(&self, _id: Uuid, _data: &[u8]) -> Result<(), crate::errors::AppError> {
+        fn write(
+            &self,
+            _authority: &crate::pty::manager::BackendWriteAuthority,
+            _id: Uuid,
+            _data: &[u8],
+        ) -> Result<(), crate::errors::AppError> {
             Ok(())
         }
 

@@ -89,6 +89,14 @@ pub struct PurgeReadiness {
     pub silence_age: Option<Duration>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PtyInputBoundaryFailure {
+    Busy,
+    ResizeUnsettled,
+    UntrackedReadiness,
+    RouteUnavailable,
+}
+
 impl IdleDetector {
     pub fn new(
         on_idle: impl Fn(Uuid) + Send + Sync + 'static,
@@ -234,6 +242,29 @@ impl IdleDetector {
             .insert(session_id, now.checked_sub(alive_age).unwrap_or(now));
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_pty_input_ready_for_test(&self, session_id: Uuid) {
+        let tuning = self
+            .tuning
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(&session_id)
+            .copied()
+            .unwrap_or(IdleTuning::DEFAULT);
+        let age = tuning
+            .idle_threshold
+            .checked_add(Duration::from_secs(3))
+            .expect("test idle age");
+        self.activity
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(session_id, Instant::now() - age);
+        self.idle_set
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(session_id);
+    }
+
     /// #552 Time since last silence-reset for a session, or None if untracked.
     /// Read by the auto-close evaluator.
     pub fn silence_age(&self, session_id: Uuid) -> Option<Duration> {
@@ -319,6 +350,86 @@ impl IdleDetector {
                 }
             })
             .collect()
+    }
+
+    /// Validate all privileged readiness legs, acquire the caller's route
+    /// lifecycle guard in the documented lock order, and stamp the watcher busy
+    /// as one synchronous boundary. The callback is deliberately deferred until
+    /// the SessionManager guard has also been released.
+    pub(crate) fn prepare_pty_input_boundary<T, F>(
+        &self,
+        session_id: Uuid,
+        lock_route: F,
+    ) -> Result<(T, bool), PtyInputBoundaryFailure>
+    where
+        F: FnOnce() -> Result<T, crate::errors::AppError>,
+    {
+        let tuning = self
+            .tuning
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let resizes = self
+            .resize_grace
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut activity = self
+            .activity
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut idle_set = self
+            .idle_set
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let now = Instant::now();
+        let resolved = tuning
+            .get(&session_id)
+            .copied()
+            .ok_or(PtyInputBoundaryFailure::UntrackedReadiness)?;
+        let activity_at = activity
+            .get(&session_id)
+            .copied()
+            .ok_or(PtyInputBoundaryFailure::UntrackedReadiness)?;
+        let activity_age = now
+            .checked_duration_since(activity_at)
+            .ok_or(PtyInputBoundaryFailure::UntrackedReadiness)?;
+        let required_activity = resolved
+            .idle_threshold
+            .checked_add(Duration::from_secs(2))
+            .ok_or(PtyInputBoundaryFailure::UntrackedReadiness)?;
+        if !idle_set.contains(&session_id) || activity_age < required_activity {
+            return Err(PtyInputBoundaryFailure::Busy);
+        }
+        if let Some(last_resize) = resizes.get(&session_id).copied() {
+            let resize_age = now
+                .checked_duration_since(last_resize)
+                .ok_or(PtyInputBoundaryFailure::ResizeUnsettled)?;
+            let required_resize = resolved
+                .resize_grace
+                .checked_add(Duration::from_secs(2))
+                .ok_or(PtyInputBoundaryFailure::ResizeUnsettled)?;
+            if resize_age < required_resize {
+                return Err(PtyInputBoundaryFailure::ResizeUnsettled);
+            }
+        }
+
+        let route = lock_route().map_err(|_| PtyInputBoundaryFailure::RouteUnavailable)?;
+        activity.insert(session_id, now);
+        let was_idle = idle_set.remove(&session_id);
+        drop(idle_set);
+        drop(activity);
+        drop(resizes);
+        drop(tuning);
+        self.silence
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(session_id, now);
+        Ok((route, was_idle))
+    }
+
+    pub(crate) fn notify_pty_input_busy(&self, session_id: Uuid, was_idle: bool) {
+        if was_idle {
+            (self.on_busy)(session_id);
+        }
     }
 
     /// (#580) Time since this session's PTY was registered (spawned), or None if
@@ -760,6 +871,74 @@ mod tests {
             IdleTuning::DEFAULT.resize_grace,
             "resize_grace must be the session's tuning value"
         );
+    }
+
+    #[test]
+    fn pty_input_boundary_revalidates_idle_and_defers_busy_callback() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let busy_calls = Arc::new(AtomicUsize::new(0));
+        let busy_calls_for_callback = Arc::clone(&busy_calls);
+        let detector = IdleDetector::new(
+            |_| {},
+            move |_| {
+                busy_calls_for_callback.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        let id = Uuid::new_v4();
+        detector.register_session(id, IdleTuning::DEFAULT);
+        detector.activity.lock().unwrap().insert(
+            id,
+            Instant::now() - IdleTuning::DEFAULT.idle_threshold - Duration::from_secs(3),
+        );
+        detector.idle_set.lock().unwrap().insert(id);
+        let route_calls = AtomicUsize::new(0);
+        let (marker, was_idle) = detector
+            .prepare_pty_input_boundary(id, || {
+                route_calls.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, crate::errors::AppError>("route")
+            })
+            .unwrap();
+        assert_eq!(marker, "route");
+        assert!(was_idle);
+        assert_eq!(route_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(busy_calls.load(Ordering::SeqCst), 0);
+        assert!(!detector.idle_set.lock().unwrap().contains(&id));
+        assert!(detector.purge_readiness(&[id])[0]
+            .activity_age
+            .is_some_and(|age| age < Duration::from_secs(1)));
+        detector.notify_pty_input_busy(id, was_idle);
+        assert_eq!(busy_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn pty_input_boundary_rejects_busy_and_unsettled_resize_before_route_lock() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let detector = IdleDetector::new(|_| {}, |_| {});
+        let id = Uuid::new_v4();
+        detector.register_session(id, IdleTuning::DEFAULT);
+        let route_calls = AtomicUsize::new(0);
+        let busy = detector.prepare_pty_input_boundary(id, || {
+            route_calls.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, crate::errors::AppError>(())
+        });
+        assert_eq!(busy.unwrap_err(), PtyInputBoundaryFailure::Busy);
+        assert_eq!(route_calls.load(Ordering::SeqCst), 0);
+
+        detector.activity.lock().unwrap().insert(
+            id,
+            Instant::now() - IdleTuning::DEFAULT.idle_threshold - Duration::from_secs(3),
+        );
+        detector.idle_set.lock().unwrap().insert(id);
+        detector.record_resize(id);
+        let resize = detector.prepare_pty_input_boundary(id, || {
+            route_calls.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, crate::errors::AppError>(())
+        });
+        assert_eq!(
+            resize.unwrap_err(),
+            PtyInputBoundaryFailure::ResizeUnsettled
+        );
+        assert_eq!(route_calls.load(Ordering::SeqCst), 0);
     }
 
     /// (#885 F-1) The core bug: inside resize grace, `record_activity_with_bytes`

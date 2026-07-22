@@ -160,6 +160,14 @@
       "issue": 1005,
       "reason": "Deliberate token-accounting reporting harness for #1005 (plan section 7). It prints per-block and per-profile char/token tables and asserts only non-emptiness, so it must stay out of the standard cargo test lane.",
       "resolution": "Run manually with `cargo test --manifest-path src-tauri/Cargo.toml token_accounting_report -- --ignored --nocapture` per stage; paste the tables into the stage PR and checklist."
+    },
+    {
+      "id": "rust:src-tauri/src/pty/local_backend.rs::blocked_writer_teardown_tests::real_blocked_conpty_writer_is_unblocked_by_session_teardown",
+      "category": "ignored-rust-test",
+      "owner": "dev-rust",
+      "issue": 1057,
+      "reason": "Real-ConPTY writer-block precondition is parallel-load sensitive: it holds deterministically when the test runs in isolation but the 65,536-byte write can drain before the detection window under the full parallel cargo test --lib run. The teardown behavior under test is sound; only the setup precondition is timing fragile, and it is a real platform boundary that cannot be simulated under automated parallel load. The frozen plan routes real-ConPTY behavior to the manual Windows matrix (section 14 acceptance item 10, section 15).",
+      "resolution": "Run manually in isolation with `cargo test --lib real_blocked_conpty_writer_is_unblocked_by_session_teardown -- --ignored --test-threads=1` as part of the manual Windows ConPTY matrix."
     }
   ]
 }

@@ -174,6 +174,7 @@ pub fn build_inline_wake_message(id: &str, from: &str, to: &str, body: String) -
         switch_profile: None,
         dry_run: None,
         quiet_period_ms: None,
+        pty_input: None,
     }
 }
 

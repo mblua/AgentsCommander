@@ -9,7 +9,7 @@
 //! truth; the in-memory copy is a cache keyed by mtime.
 
 use std::collections::{HashMap, VecDeque};
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Write};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -17,6 +17,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 use super::error::ApiError;
 
@@ -26,15 +27,23 @@ pub const SCOPE_SEND: &str = "send";
 pub const SCOPE_LIST_PEERS: &str = "list-peers-lean";
 /// The container session transport scope (GET /api/v1/session-transport).
 pub const SCOPE_SESSION_TRANSPORT: &str = "session-transport";
-/// The only scopes mintable in increment 1.
-pub const VALID_SCOPES: &[&str] = &[SCOPE_SEND, SCOPE_LIST_PEERS, SCOPE_SESSION_TRANSPORT];
+/// Dedicated privileged exact PTY-input scope.
+pub const SCOPE_PTY_INPUT: &str = "pty-input";
+/// Scopes accepted by the registry. Possession of `pty-input` alone is not
+/// authority; the handler also requires an automatic live container binding.
+pub const VALID_SCOPES: &[&str] = &[
+    SCOPE_SEND,
+    SCOPE_LIST_PEERS,
+    SCOPE_SESSION_TRANSPORT,
+    SCOPE_PTY_INPUT,
+];
 
 /// Registry file basename in `config_dir()`.
 pub const REGISTRY_FILENAME: &str = "api-clients.json";
 
 /// One registered API client. `boundRoot` is the identity source (the `from` is
 /// derived from it at request time); `boundFqn` is an audit hint only (§0.5 G5).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiClient {
     /// Stable id, safe to log.
@@ -58,6 +67,31 @@ pub struct ApiClient {
     /// Revocation flag.
     #[serde(default)]
     pub revoked: bool,
+    /// Present only on automatically minted container credentials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound_session_id: Option<String>,
+    /// Fresh automatic credential generation, paired with `boundSessionId`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_generation: Option<String>,
+}
+
+impl std::fmt::Debug for ApiClient {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ApiClient")
+            .field("client_id", &self.client_id)
+            .field("label", &self.label)
+            .field("token_hash", &"[REDACTED]")
+            .field("bound_fqn", &self.bound_fqn)
+            .field("bound_root", &"[REDACTED_PATH]")
+            .field("scopes", &self.scopes)
+            .field("issued_at", &self.issued_at)
+            .field("expires_at", &self.expires_at)
+            .field("revoked", &self.revoked)
+            .field("bound_session_id", &self.bound_session_id)
+            .field("credential_generation", &self.credential_generation)
+            .finish()
+    }
 }
 
 impl ApiClient {
@@ -68,11 +102,21 @@ impl ApiClient {
 }
 
 /// On-disk registry document.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ApiClientRegistry {
     pub version: u32,
     #[serde(default)]
     pub clients: Vec<ApiClient>,
+}
+
+impl std::fmt::Debug for ApiClientRegistry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ApiClientRegistry")
+            .field("version", &self.version)
+            .field("clients", &self.clients)
+            .finish()
+    }
 }
 
 impl Default for ApiClientRegistry {
@@ -92,10 +136,20 @@ pub struct RegistryLoadProblem {
 }
 
 /// Registry plus any fail-closed load problem operators should see.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RegistrySnapshot {
     pub registry: ApiClientRegistry,
     pub problem: Option<RegistryLoadProblem>,
+}
+
+impl std::fmt::Debug for RegistrySnapshot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RegistrySnapshot")
+            .field("registry", &self.registry)
+            .field("problem", &self.problem)
+            .finish()
+    }
 }
 
 /// SHA-256 the secret, formatted `"sha256:<lowercase-hex>"`.
@@ -119,7 +173,10 @@ pub fn constant_time_eq(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    a.iter()
+        .zip(b.iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
 }
 
 /// Whether the client is expired as of `now`. A present-but-unparseable
@@ -196,6 +253,20 @@ pub struct ApiClientStore {
     cache: Mutex<CacheInner>,
 }
 
+pub struct ApiClientFreshGuard {
+    pub client: ApiClient,
+    pub presented_token_hash: String,
+    _registry_lock: std::fs::File,
+}
+
+/// Fresh privileged-registry acquisition failures. These are dependency
+/// failures, not evidence that a credential was revoked or a binding changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FreshRegistryError {
+    Contended,
+    Internal,
+}
+
 impl ApiClientStore {
     /// Build a store over an explicit path (used by tests).
     pub fn new(path: PathBuf) -> Self {
@@ -253,6 +324,128 @@ impl ApiClientStore {
             !c.revoked && constant_time_eq(&c.token_hash, &presented_hash) && !is_expired(c, now)
         }))
     }
+
+    fn acquire_fresh_registry_lock(&self) -> Result<(PathBuf, std::fs::File), FreshRegistryError> {
+        let parent = self
+            .path
+            .parent()
+            .ok_or(FreshRegistryError::Internal)?
+            .to_path_buf();
+        let lock = open_registry_lock(&parent).map_err(|_| FreshRegistryError::Internal)?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            match lock.try_lock() {
+                Ok(()) => break,
+                Err(error) => {
+                    let error: std::io::Error = error.into();
+                    if error.kind() != std::io::ErrorKind::WouldBlock {
+                        return Err(FreshRegistryError::Internal);
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return Err(FreshRegistryError::Contended);
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+        }
+        revalidate_registry_lock(&parent, &lock).map_err(|_| FreshRegistryError::Internal)?;
+        Ok((parent, lock))
+    }
+
+    fn read_fresh_registry(
+        &self,
+    ) -> Result<Option<(ApiClientRegistry, std::fs::File)>, FreshRegistryError> {
+        let (_parent, lock) = self.acquire_fresh_registry_lock()?;
+        let (bytes, _) =
+            match crate::path_identity::read_bounded_regular(&self.path, REGISTRY_MAX_BYTES) {
+                Ok(value) => value,
+                Err(code)
+                    if code == "unsafe_path"
+                        && matches!(
+                            std::fs::symlink_metadata(&self.path),
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+                        ) =>
+                {
+                    return Ok(None);
+                }
+                Err(_) => return Err(FreshRegistryError::Internal),
+            };
+        let value = crate::path_identity::parse_json_no_duplicates(&bytes)
+            .map_err(|_| FreshRegistryError::Internal)?;
+        let registry: ApiClientRegistry =
+            serde_json::from_value(value).map_err(|_| FreshRegistryError::Internal)?;
+        validate_registry_strict(&registry).map_err(|_| FreshRegistryError::Internal)?;
+        Ok(Some((registry, lock)))
+    }
+
+    /// Fresh, cross-process-locked authentication for privileged PTY input.
+    /// The ordinary mtime cache is deliberately bypassed.
+    pub fn authenticate_pty_input_fresh(
+        &self,
+        presented: &str,
+    ) -> Result<Option<ApiClientFreshGuard>, FreshRegistryError> {
+        let Some((registry, lock)) = self.read_fresh_registry()? else {
+            return Ok(None);
+        };
+        let presented_token_hash = hash_token(presented);
+        let now = chrono::Utc::now();
+        let client = registry.clients.into_iter().find(|client| {
+            !client.revoked
+                && !is_expired(client, now)
+                && constant_time_eq(&client.token_hash, &presented_token_hash)
+        });
+        Ok(client.map(|client| ApiClientFreshGuard {
+            client,
+            presented_token_hash,
+            _registry_lock: lock,
+        }))
+    }
+
+    pub async fn authenticate_pty_input_fresh_offloaded(
+        self: &std::sync::Arc<Self>,
+        presented: String,
+    ) -> Result<Option<ApiClientFreshGuard>, FreshRegistryError> {
+        let store = std::sync::Arc::clone(self);
+        tokio::task::spawn_blocking(move || store.authenticate_pty_input_fresh(&presented))
+            .await
+            .map_err(|_| FreshRegistryError::Internal)?
+    }
+
+    pub fn load_active_binding_fresh(
+        &self,
+        client_id: &str,
+        generation: &str,
+    ) -> Result<Option<ApiClientFreshGuard>, FreshRegistryError> {
+        let Some((registry, lock)) = self.read_fresh_registry()? else {
+            return Ok(None);
+        };
+        let now = chrono::Utc::now();
+        let client = registry.clients.into_iter().find(|client| {
+            client.client_id == client_id
+                && client.credential_generation.as_deref() == Some(generation)
+                && !client.revoked
+                && !is_expired(client, now)
+                && client.has_scope(SCOPE_PTY_INPUT)
+        });
+        Ok(client.map(|client| ApiClientFreshGuard {
+            presented_token_hash: client.token_hash.clone(),
+            client,
+            _registry_lock: lock,
+        }))
+    }
+
+    pub async fn load_active_binding_fresh_offloaded(
+        self: &std::sync::Arc<Self>,
+        client_id: String,
+        generation: String,
+    ) -> Result<Option<ApiClientFreshGuard>, FreshRegistryError> {
+        let store = std::sync::Arc::clone(self);
+        tokio::task::spawn_blocking(move || {
+            store.load_active_binding_fresh(&client_id, &generation)
+        })
+        .await
+        .map_err(|_| FreshRegistryError::Internal)?
+    }
 }
 
 /// Outcome of a successful mint: the plaintext secret (shown ONCE) + the id.
@@ -290,12 +483,50 @@ pub struct MintRequest {
     pub scopes: Vec<String>,
     pub issued_at: String,
     pub expires_at: Option<String>,
+    pub bound_session_id: Option<String>,
+    pub credential_generation: Option<String>,
+}
+
+fn automatic_client(client: &ApiClient) -> bool {
+    if client.bound_session_id.is_some() {
+        return true;
+    }
+    let Some(session_id) = client.client_id.strip_prefix("container-") else {
+        return false;
+    };
+    let Ok(parsed) = Uuid::parse_str(session_id) else {
+        return false;
+    };
+    parsed.get_version_num() == 4
+        && parsed.to_string() == session_id
+        && client.label == format!("container:{session_id}")
+}
+
+fn compact_inert_automatic_clients(registry: &mut ApiClientRegistry) {
+    let now = chrono::Utc::now();
+    let mut retained_witness = false;
+    registry.clients.retain(|client| {
+        if !automatic_client(client) || (!client.revoked && !is_expired(client, now)) {
+            return true;
+        }
+        if retained_witness {
+            false
+        } else {
+            retained_witness = true;
+            true
+        }
+    });
 }
 
 /// Mint a new client bound to `bound_root`, persisting atomically. Returns the
 /// plaintext secret to show once.
 pub fn mint(path: &Path, req: MintRequest) -> Result<MintOutcome, String> {
     validate_scopes(&req.scopes)?;
+    if req.bound_session_id.is_some() != req.credential_generation.is_some() {
+        return Err(
+            "bound session and credential generation must be populated together".to_string(),
+        );
+    }
     let client = ApiClient {
         client_id: req.client_id.clone(),
         label: req.label,
@@ -306,8 +537,24 @@ pub fn mint(path: &Path, req: MintRequest) -> Result<MintOutcome, String> {
         issued_at: req.issued_at,
         expires_at: req.expires_at,
         revoked: false,
+        bound_session_id: req.bound_session_id,
+        credential_generation: req.credential_generation,
     };
     write_registry(path, |reg| {
+        if let Some(session_id) = client.bound_session_id.as_deref() {
+            let legacy_id = format!("container-{session_id}");
+            for existing in &mut reg.clients {
+                if existing.bound_session_id.as_deref() == Some(session_id)
+                    || existing.client_id == legacy_id
+                {
+                    existing.revoked = true;
+                }
+            }
+            compact_inert_automatic_clients(reg);
+        }
+        if reg.clients.len() >= REGISTRY_MAX_CLIENTS {
+            return Err("api_registry_capacity".to_string());
+        }
         reg.clients.push(client.clone());
         Ok(())
     })?;
@@ -343,28 +590,232 @@ pub fn list_with_status(path: &Path) -> RegistrySnapshot {
     load_registry(path)
 }
 
-/// Atomic read-modify-write of the whole typed registry, reusing the process-
-/// wide-locked `update_config_json_object` primitive (temp + `ReplaceFileW` /
-/// rename publish).
+const REGISTRY_MAX_BYTES: usize = 4 * 1024 * 1024;
+const REGISTRY_MAX_CLIENTS: usize = 4_096;
+
+fn open_registry_lock(parent: &Path) -> Result<std::fs::File, String> {
+    crate::path_identity::verify_directory(parent)?;
+    let path = parent.join("api-clients.lock");
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(0x0002_0000);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+        options
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options
+        .open(&path)
+        .map_err(|_| "api_registry_lock_failed".to_string())?;
+    crate::path_identity::verify_opened_regular_file(&path, &file, true)
+        .map_err(|_| "api_registry_lock_failed".to_string())?;
+    Ok(file)
+}
+
+/// Hold the dedicated registry lock exactly the way the production acquisition
+/// path does, so another handle in the same process observes contention. Used
+/// by cross-module tests that need `authenticate_pty_input_fresh*` to return
+/// `FreshRegistryError::Contended`. The returned handle keeps the lock until it
+/// is dropped.
+#[cfg(test)]
+pub(crate) fn hold_registry_lock_for_test(parent: &Path) -> std::fs::File {
+    let lock = open_registry_lock(parent).expect("open registry lock for test");
+    lock.lock().expect("hold registry lock for test");
+    lock
+}
+
+fn revalidate_registry_lock(parent: &Path, file: &std::fs::File) -> Result<(), String> {
+    crate::path_identity::verify_directory(parent)
+        .map_err(|_| "api_registry_lock_failed".to_string())?;
+    crate::path_identity::verify_opened_regular_file(&parent.join("api-clients.lock"), file, true)
+        .map(|_| ())
+        .map_err(|_| "api_registry_lock_failed".to_string())
+}
+
+fn validate_registry_strict(registry: &ApiClientRegistry) -> Result<(), String> {
+    if registry.version != 1 || registry.clients.len() > REGISTRY_MAX_CLIENTS {
+        return Err("api_registry_invalid".to_string());
+    }
+    let mut ids = std::collections::HashSet::new();
+    let mut hashes = std::collections::HashSet::new();
+    let mut generations = std::collections::HashSet::new();
+    for client in &registry.clients {
+        let hash = client.token_hash.strip_prefix("sha256:");
+        if client.client_id.is_empty()
+            || !ids.insert(client.client_id.as_str())
+            || !hashes.insert(client.token_hash.as_str())
+            || client.bound_session_id.is_some() != client.credential_generation.is_some()
+            || !hash.is_some_and(|hash| {
+                hash.len() == 64
+                    && hash
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
+            || validate_scopes(&client.scopes).is_err()
+        {
+            return Err("api_registry_invalid".to_string());
+        }
+        if let (Some(session_id), Some(generation)) = (
+            client.bound_session_id.as_deref(),
+            client.credential_generation.as_deref(),
+        ) {
+            if crate::phone::types::parse_canonical_uuid_v4(session_id).is_err()
+                || crate::phone::types::parse_canonical_uuid_v4(generation).is_err()
+                || !generations.insert(generation)
+            {
+                return Err("api_registry_invalid".to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn read_registry_strict(path: &Path) -> Result<ApiClientRegistry, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ApiClientRegistry::default());
+        }
+        Err(_) => return Err("api_registry_invalid".to_string()),
+    }
+    let (bytes, _) = crate::path_identity::read_bounded_regular(path, REGISTRY_MAX_BYTES)
+        .map_err(|_| "api_registry_invalid".to_string())?;
+    let value = crate::path_identity::parse_json_no_duplicates(&bytes)
+        .map_err(|_| "api_registry_invalid".to_string())?;
+    let registry: ApiClientRegistry =
+        serde_json::from_value(value).map_err(|_| "api_registry_invalid".to_string())?;
+    validate_registry_strict(&registry)?;
+    Ok(registry)
+}
+
+fn write_registry_bytes(path: &Path, registry: &ApiClientRegistry) -> Result<(), String> {
+    let bytes =
+        serde_json::to_vec_pretty(registry).map_err(|_| "api_registry_write_failed".to_string())?;
+    if bytes.len() > REGISTRY_MAX_BYTES {
+        return Err("api_registry_capacity".to_string());
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| "api_registry_write_failed".to_string())?;
+    let parent_identity = crate::path_identity::verify_directory(parent)
+        .map_err(|_| "api_registry_write_failed".to_string())?;
+    let destination_identity = match std::fs::symlink_metadata(path) {
+        Ok(_) => Some(
+            crate::path_identity::verify_regular_file(path)
+                .map_err(|_| "api_registry_write_failed".to_string())?,
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => return Err("api_registry_write_failed".to_string()),
+    };
+    let temp = parent.join(format!(".api-clients-{}.tmp", uuid::Uuid::new_v4()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(0x0002_0000);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+        options
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let mut file = options
+        .open(&temp)
+        .map_err(|_| "api_registry_write_failed".to_string())?;
+    let publish = (|| {
+        file.write_all(&bytes)
+            .map_err(|_| "api_registry_write_failed".to_string())?;
+        file.flush()
+            .map_err(|_| "api_registry_write_failed".to_string())?;
+        file.sync_all()
+            .map_err(|_| "api_registry_write_failed".to_string())?;
+        let temp_identity = crate::path_identity::verify_opened_regular_file(&temp, &file, false)
+            .map_err(|_| "api_registry_write_failed".to_string())?;
+        drop(file);
+        let current_parent = crate::path_identity::verify_directory(parent)
+            .map_err(|_| "api_registry_write_failed".to_string())?;
+        let current_temp = crate::path_identity::verify_regular_file(&temp)
+            .map_err(|_| "api_registry_write_failed".to_string())?;
+        if !crate::path_identity::same_object(&parent_identity, &current_parent)
+            || !crate::path_identity::same_object(&temp_identity, &current_temp)
+        {
+            return Err("api_registry_write_failed".to_string());
+        }
+        match &destination_identity {
+            Some(expected) => {
+                let current = crate::path_identity::verify_regular_file(path)
+                    .map_err(|_| "api_registry_write_failed".to_string())?;
+                if !crate::path_identity::same_object(expected, &current) {
+                    return Err("api_registry_write_failed".to_string());
+                }
+            }
+            None => match std::fs::symlink_metadata(path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                _ => return Err("api_registry_write_failed".to_string()),
+            },
+        }
+        crate::config::root_agent::atomic_replace_existing(&temp, path)
+            .map_err(|_| "api_registry_write_failed".to_string())?;
+        let (published, _) = crate::path_identity::read_bounded_regular(path, REGISTRY_MAX_BYTES)
+            .map_err(|_| "api_registry_write_failed".to_string())?;
+        if published != bytes {
+            return Err("api_registry_write_failed".to_string());
+        }
+        let published_parent = crate::path_identity::verify_directory(parent)
+            .map_err(|_| "api_registry_write_failed".to_string())?;
+        if !crate::path_identity::same_object(&parent_identity, &published_parent) {
+            return Err("api_registry_write_failed".to_string());
+        }
+        if let Ok(directory) = std::fs::File::open(parent) {
+            directory
+                .sync_all()
+                .map_err(|_| "api_registry_write_failed".to_string())?;
+        }
+        Ok(())
+    })();
+    if publish.is_err() {
+        if let Err(error) = std::fs::remove_file(&temp) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                return Err("api_registry_write_failed".to_string());
+            }
+        }
+    }
+    publish
+}
+
+/// Cross-process atomic read-modify-write of the strict bounded registry. The
+/// stable dedicated lock remains held through file and parent-directory fsync.
 fn write_registry<F>(path: &Path, mutate: F) -> Result<(), String>
 where
     F: FnOnce(&mut ApiClientRegistry) -> Result<(), String>,
 {
-    crate::config::local_config_io::update_config_json_object(path, true, |obj| {
-        let mut reg: ApiClientRegistry =
-            serde_json::from_value(serde_json::Value::Object(obj.clone()))
-                .unwrap_or_default();
-        if reg.version == 0 {
-            reg.version = 1;
-        }
-        mutate(&mut reg)?;
-        let new = serde_json::to_value(&reg).map_err(|e| e.to_string())?;
-        if let serde_json::Value::Object(map) = new {
-            *obj = map;
-        }
-        Ok(())
-    })
-    .map(|_| ())
+    let parent = path
+        .parent()
+        .ok_or_else(|| "api_registry_write_failed".to_string())?;
+    std::fs::create_dir_all(parent).map_err(|_| "api_registry_write_failed".to_string())?;
+    let lock = open_registry_lock(parent)?;
+    lock.lock()
+        .map_err(|_| "api_registry_lock_failed".to_string())?;
+    revalidate_registry_lock(parent, &lock)?;
+    let mut registry = read_registry_strict(path)?;
+    mutate(&mut registry)?;
+    validate_registry_strict(&registry)?;
+    write_registry_bytes(path, &registry)
 }
 
 // ── Per-source failed-auth lockout (§0.5 DESIGN DECISION) ──────────────────
@@ -475,10 +926,16 @@ mod tests {
             token_hash: hash.into(),
             bound_fqn: "proj:wg-1/dev".into(),
             bound_root: "C:/root".into(),
-            scopes: vec![SCOPE_SEND.into(), SCOPE_LIST_PEERS.into(), SCOPE_SESSION_TRANSPORT.into()],
+            scopes: vec![
+                SCOPE_SEND.into(),
+                SCOPE_LIST_PEERS.into(),
+                SCOPE_SESSION_TRANSPORT.into(),
+            ],
             issued_at: "2026-01-01T00:00:00Z".into(),
             expires_at: expires.map(|s| s.to_string()),
             revoked,
+            bound_session_id: None,
+            credential_generation: None,
         }
     }
 
@@ -545,13 +1002,18 @@ mod tests {
                 scopes: vec![SCOPE_SEND.into()],
                 issued_at: "2026-01-01T00:00:00Z".into(),
                 expires_at: None,
+                bound_session_id: None,
+                credential_generation: None,
             },
         )
         .unwrap();
         assert_eq!(out.secret, "the-secret");
 
         let raw = std::fs::read_to_string(&path).unwrap();
-        assert!(!raw.contains("the-secret"), "plaintext must not be persisted");
+        assert!(
+            !raw.contains("the-secret"),
+            "plaintext must not be persisted"
+        );
         assert!(raw.contains("sha256:"));
 
         // A fresh store (empty cache) reads through to disk on first auth.
@@ -575,6 +1037,8 @@ mod tests {
                 scopes: vec![SCOPE_SEND.into()],
                 issued_at: "2026-01-01T00:00:00Z".into(),
                 expires_at: None,
+                bound_session_id: None,
+                credential_generation: None,
             },
         )
         .unwrap();
@@ -598,13 +1062,45 @@ mod tests {
             version: 1,
             clients: vec![
                 client(&hash_token("revoked-tok"), true, None),
-                client(&hash_token("expired-tok"), false, Some("2000-01-01T00:00:00Z")),
+                client(
+                    &hash_token("expired-tok"),
+                    false,
+                    Some("2000-01-01T00:00:00Z"),
+                ),
             ],
         };
         std::fs::write(&path, serde_json::to_string_pretty(&reg).unwrap()).unwrap();
         let store = ApiClientStore::new(path);
         assert!(store.authenticate("revoked-tok").unwrap().is_none());
         assert!(store.authenticate("expired-tok").unwrap().is_none());
+    }
+
+    #[test]
+    fn privileged_registry_rejects_a_dangling_link_when_supported() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(REGISTRY_FILENAME);
+        let missing = dir.path().join("missing-registry.json");
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&missing, &path).is_ok();
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(&missing, &path).is_ok();
+        #[cfg(not(any(unix, windows)))]
+        let linked = false;
+        if linked {
+            assert!(read_registry_strict(&path).is_err());
+            let store = ApiClientStore::new(path);
+            assert!(store.authenticate_pty_input_fresh("anything").is_err());
+        }
+    }
+
+    #[test]
+    fn api_client_debug_redacts_credential_and_bound_path() {
+        let mut value = client(&hash_token("credential-sentinel"), false, None);
+        value.bound_root = "C:/bound-path-sentinel".to_string();
+        let rendered = format!("{value:?}");
+        assert!(!rendered.contains("credential-sentinel"));
+        assert!(!rendered.contains(&value.token_hash));
+        assert!(!rendered.contains("bound-path-sentinel"));
     }
 
     #[test]
@@ -634,6 +1130,174 @@ mod tests {
 
         let err = store.authenticate("anything").unwrap_err();
         assert!(matches!(err, ApiError::Internal(_)));
+    }
+
+    #[test]
+    fn automatic_generation_compaction_preserves_manual_and_one_history_witness() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(REGISTRY_FILENAME);
+        mint(
+            &path,
+            MintRequest {
+                client_id: "container-manual-name".into(),
+                secret: "manual-secret".into(),
+                label: "container:manual".into(),
+                bound_root: "C:/manual".into(),
+                bound_fqn: "project:wg-1-team/manual".into(),
+                scopes: vec![SCOPE_SEND.into()],
+                issued_at: chrono::Utc::now().to_rfc3339(),
+                expires_at: None,
+                bound_session_id: None,
+                credential_generation: None,
+            },
+        )
+        .unwrap();
+        let session_id = uuid::Uuid::new_v4().to_string();
+        for index in 0..3 {
+            let generation = uuid::Uuid::new_v4().to_string();
+            mint(
+                &path,
+                MintRequest {
+                    client_id: format!("container-{session_id}-{generation}"),
+                    secret: format!("automatic-secret-{index}"),
+                    label: format!("container:{session_id}"),
+                    bound_root: "C:/automatic".into(),
+                    bound_fqn: "project:wg-1-team/coordinator".into(),
+                    scopes: vec![SCOPE_SEND.into(), SCOPE_PTY_INPUT.into()],
+                    issued_at: chrono::Utc::now().to_rfc3339(),
+                    expires_at: None,
+                    bound_session_id: Some(session_id.clone()),
+                    credential_generation: Some(generation),
+                },
+            )
+            .unwrap();
+        }
+        let registry = read_registry_strict(&path).unwrap();
+        assert!(registry
+            .clients
+            .iter()
+            .any(|client| client.client_id == "container-manual-name" && !client.revoked));
+        let automatic: Vec<_> = registry
+            .clients
+            .iter()
+            .filter(|client| automatic_client(client))
+            .collect();
+        assert_eq!(automatic.len(), 2, "one live generation plus one witness");
+        assert_eq!(automatic.iter().filter(|client| !client.revoked).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn privileged_registry_lock_wait_is_offloaded_from_async_ingress() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(REGISTRY_FILENAME);
+        let lock = open_registry_lock(dir.path()).unwrap();
+        lock.lock().unwrap();
+        let store = std::sync::Arc::new(ApiClientStore::new(path));
+        let waiting = {
+            let store = std::sync::Arc::clone(&store);
+            tokio::spawn(async move {
+                store
+                    .authenticate_pty_input_fresh_offloaded("not-a-secret".to_string())
+                    .await
+            })
+        };
+
+        tokio::time::timeout(Duration::from_millis(100), async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        })
+        .await
+        .expect("the async executor must progress while the file lock is held");
+        assert!(matches!(
+            waiting.await.unwrap(),
+            Err(FreshRegistryError::Contended)
+        ));
+    }
+
+    #[tokio::test]
+    async fn dispatch_and_final_binding_reads_preserve_registry_contention() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(REGISTRY_FILENAME);
+        let lock = open_registry_lock(dir.path()).unwrap();
+        lock.lock().unwrap();
+        let store = std::sync::Arc::new(ApiClientStore::new(path));
+        let waiting = {
+            let store = std::sync::Arc::clone(&store);
+            tokio::spawn(async move {
+                store
+                    .load_active_binding_fresh_offloaded(
+                        "container-client".to_string(),
+                        uuid::Uuid::new_v4().to_string(),
+                    )
+                    .await
+            })
+        };
+
+        tokio::time::timeout(Duration::from_millis(100), async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        })
+        .await
+        .expect("binding lookup must not block the async executor");
+        assert!(matches!(
+            waiting.await.unwrap(),
+            Err(FreshRegistryError::Contended)
+        ));
+    }
+
+    #[test]
+    fn privileged_registry_contention_is_retry_class_not_stale() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(REGISTRY_FILENAME);
+        let lock = open_registry_lock(dir.path()).unwrap();
+        lock.lock().unwrap();
+        let store = ApiClientStore::new(path);
+
+        let error = match store.authenticate_pty_input_fresh("not-a-secret") {
+            Err(error) => error,
+            Ok(_) => panic!("a held registry lock must report contention"),
+        };
+
+        assert_eq!(
+            error,
+            FreshRegistryError::Contended,
+            "lock contention is retryable and must never be classified as stale authority"
+        );
+    }
+
+    #[test]
+    fn fresh_privileged_auth_observes_revocation_without_cache() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(REGISTRY_FILENAME);
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let generation = uuid::Uuid::new_v4().to_string();
+        mint(
+            &path,
+            MintRequest {
+                client_id: format!("container-{session_id}-{generation}"),
+                secret: "fresh-secret".into(),
+                label: format!("container:{session_id}"),
+                bound_root: "C:/automatic".into(),
+                bound_fqn: "project:wg-1-team/coordinator".into(),
+                scopes: vec![SCOPE_PTY_INPUT.into()],
+                issued_at: chrono::Utc::now().to_rfc3339(),
+                expires_at: None,
+                bound_session_id: Some(session_id),
+                credential_generation: Some(generation),
+            },
+        )
+        .unwrap();
+        let store = ApiClientStore::new(path.clone());
+        assert!(store
+            .authenticate_pty_input_fresh("fresh-secret")
+            .unwrap()
+            .is_some());
+        let client_id = read_registry_strict(&path).unwrap().clients[0]
+            .client_id
+            .clone();
+        assert!(revoke(&path, &client_id).unwrap());
+        assert!(store
+            .authenticate_pty_input_fresh("fresh-secret")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
