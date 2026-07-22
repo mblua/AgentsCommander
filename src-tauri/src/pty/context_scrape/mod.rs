@@ -169,6 +169,9 @@ pub struct ContextScraper {
     /// their sessions and triggers the whole-file persist. The concrete impl
     /// (`lib.rs`) owns the `SessionManager` handle; the scraper holds only this.
     persist: Arc<dyn ContextPersistSink>,
+    /// Linearizes registration retirement against sample and badge publication.
+    /// Lock order is always sequence, then registered.
+    sequence: Mutex<()>,
     registered: Mutex<HashMap<Uuid, Registered>>,
     compiled: Mutex<HashMap<String, Cached>>,
     /// Rotates the sorted producer order so partial saturation cannot starve a fixed tail.
@@ -192,6 +195,7 @@ impl ContextScraper {
             sink,
             samples,
             persist,
+            sequence: Mutex::new(()),
             registered: Mutex::new(HashMap::new()),
             compiled: Mutex::new(HashMap::new()),
             sample_cursor: AtomicUsize::new(0),
@@ -228,6 +232,7 @@ impl ContextScraper {
     /// A fresh entry always starts at `last_emitted: None`. It can never meet an existing
     /// entry: session ids are minted per spawn and AC never reuses one, not even on respawn.
     pub fn register_session(&self, id: Uuid, agent_id: String) {
+        let _sequence = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
         let mut registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
         registered.insert(
             id,
@@ -240,11 +245,31 @@ impl ContextScraper {
 
     /// Stop sampling a session. Producer-side end pruning and monitor maintenance both use
     /// this idempotent operation.
-    pub(crate) fn unregister_session(&self, id: Uuid) {
-        self.registered
+    pub(crate) fn retire_session(&self, id: Uuid) {
+        let _sequence = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
+        self.retire_session_under_sequence(id);
+    }
+
+    /// Retire under an already-held sequence lock. Returns whether a final `None`
+    /// badge was emitted (true only when the session had a live last reading), so the
+    /// tick loop can persist that same clear through the #1088 sink: the gate that
+    /// drives the badge drives the persist.
+    fn retire_session_under_sequence(&self, id: Uuid) -> bool {
+        let last_emitted = self
+            .registered
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&id);
+            .remove(&id)
+            .and_then(|entry| entry.last_emitted);
+        if last_emitted.is_some() {
+            self.sink.emit(ContextUsagePayload {
+                session_id: id.to_string(),
+                percent: None,
+            });
+            true
+        } else {
+            false
+        }
     }
 
     pub(crate) fn is_session_registered(&self, id: Uuid) -> bool {
@@ -321,7 +346,6 @@ impl ContextScraper {
             ids.rotate_left(start);
         }
 
-        let mut over: Vec<Uuid> = Vec::new();
         // #1088 - accumulate this tick's changed readings, handed to the persist
         // sink exactly once after the loop (coalesced: <=1 whole-file write per
         // tick regardless of how many sessions changed).
@@ -363,9 +387,29 @@ impl ContextScraper {
                 },
             };
 
+            let _sequence = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
+            if !self
+                .registered
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(&id)
+            {
+                continue;
+            }
+
             // Every scrape outcome is offered before the badge equality gate. The production
             // sink is nonblocking and fail-soft, so a drop cannot suppress this gate or pruning.
             self.samples.observe(sample);
+
+            if session_over {
+                // #1088 - if retirement cleared a live reading it emits the final
+                // `None` badge; persist that same clear so the CLI value tracks the
+                // badge. An already-cleared session emits nothing and persists nothing.
+                if self.retire_session_under_sequence(id) {
+                    changed_readings.push((id, None));
+                }
+                continue;
+            }
 
             let changed = {
                 let mut registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
@@ -386,24 +430,13 @@ impl ContextScraper {
                 // persist, so the CLI value tracks the badge point-for-point.
                 changed_readings.push((id, reading));
             }
-
-            if session_over {
-                over.push(id);
-            }
-        }
-
-        // After the loop, never during it. This pruning is independent of sample delivery.
-        if !over.is_empty() {
-            let mut registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
-            registered.retain(|id, _| !over.contains(id));
         }
 
         // #1088 - hand this tick's changed readings to the persist sink exactly
-        // once. Order-independent with the `over` pruning above. The `registered`
-        // std Mutex is scoped to the loop/prune blocks and released before this
-        // `.await`, so no std guard is held across the commit. Empty vector =>
-        // no commit call, so an all-unchanged tick takes no manager lock and
-        // performs no write.
+        // once. The `registered` std Mutex and the per-iteration `sequence` guard
+        // are both scoped inside the loop and released before this `.await`, so no
+        // std guard is held across the commit. Empty vector => no commit call, so an
+        // all-unchanged tick takes no manager lock and performs no write.
         if !changed_readings.is_empty() {
             self.persist.commit(changed_readings).await;
         }
@@ -687,12 +720,81 @@ mod tests {
         let id = Uuid::new_v4();
         h.scraper.register_session(id, AGENT.to_string());
 
-        h.scraper.unregister_session(id);
-        h.scraper.unregister_session(id);
+        h.scraper.retire_session(id);
+        h.scraper.retire_session(id);
         h.scraper.tick().await;
 
         assert!(!h.scraper.is_session_registered(id));
         assert_eq!(rows.liveness_call_count(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn retirement_discards_an_inflight_row_result_and_emits_final_null_once() {
+        struct BlockingRows {
+            calls: AtomicUsize,
+            started: std::sync::mpsc::Sender<()>,
+            release: StdMutex<std::sync::mpsc::Receiver<()>>,
+        }
+
+        impl ScreenRowsSource for BlockingRows {
+            fn get_screen_rows(&self, _id: Uuid) -> ScreenRowsRead {
+                if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return ScreenRowsRead::Rows(vec![row(42)]);
+                }
+                self.started.send(()).expect("signal row probe");
+                self.release
+                    .lock()
+                    .unwrap()
+                    .recv()
+                    .expect("release row probe");
+                ScreenRowsRead::Rows(vec![row(7)])
+            }
+        }
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let rows = Arc::new(BlockingRows {
+            calls: AtomicUsize::new(0),
+            started: started_tx,
+            release: StdMutex::new(release_rx),
+        });
+        let patterns = PatternFake::with(AGENT, CLAUDE);
+        let sink = Arc::new(SinkFake::default());
+        let samples = Arc::new(SamplesFake::default());
+        let persist = Arc::new(PersistFake::default());
+        let scraper = ContextScraper::new(
+            Arc::clone(&rows) as Arc<dyn ScreenRowsSource>,
+            patterns as Arc<dyn ContextPatternSource>,
+            Arc::clone(&sink) as Arc<dyn ContextEventSink>,
+            Arc::clone(&samples) as Arc<dyn ContextSampleSink>,
+            Arc::clone(&persist) as Arc<dyn ContextPersistSink>,
+        );
+        let id = Uuid::new_v4();
+        scraper.register_session(id, AGENT.to_string());
+        scraper.tick().await;
+        assert_eq!(sink.emitted(), vec![Some(42)]);
+
+        let tick = {
+            let scraper = Arc::clone(&scraper);
+            tokio::spawn(async move { scraper.tick().await })
+        };
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("row probe started");
+        scraper.retire_session(id);
+        scraper.retire_session(id);
+        release_tx.send(()).expect("release row probe");
+        tick.await.expect("join tick");
+
+        assert_eq!(sink.emitted(), vec![Some(42), None]);
+        assert_eq!(
+            samples.observed(),
+            vec![ContextSample::Reading {
+                session_id: id,
+                percent: 42,
+            }]
+        );
+        assert!(!scraper.is_registered(id));
     }
 
     /// The empty-map guard, in the only window it covers: app start until the first agent

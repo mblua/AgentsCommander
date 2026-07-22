@@ -2390,6 +2390,8 @@ struct MailboxTestHooks {
     internal_payloads: Arc<Mutex<Vec<String>>>,
     internal_bookkeeping: Arc<Mutex<Vec<InternalSystemBookkeeping>>>,
     internal_live_settle_gate: Arc<Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>,
+    internal_spawn_gate: Arc<Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>,
+    internal_spawn_started: Arc<tokio::sync::Notify>,
     destroy_calls: Arc<Mutex<Vec<Uuid>>>,
     destroy_results: Arc<Mutex<VecDeque<Result<(), String>>>>,
     spawn_calls: Arc<Mutex<Vec<MailboxSpawnCall>>>,
@@ -6785,27 +6787,33 @@ impl MailboxPoller {
             return Err("Context alert delivery was canceled before background spawn".to_string());
         }
         let (_, local) = crate::config::teams::split_project_prefix(target.fqn());
-        let info = self
-            .spawn_wake_session(
-                app,
-                &envelope,
-                &resolved_command,
-                cwd,
-                local.to_string(),
-                spawn_with_resume,
-                resolved_spawn.shell.clone(),
-                resolved_spawn.shell_args.clone(),
-                Some(resolved_spawn.trusted_agent_label.clone()),
-                Some(resolved_spawn),
+        let spawn = self.spawn_wake_session(
+            app,
+            &envelope,
+            &resolved_command,
+            cwd,
+            local.to_string(),
+            spawn_with_resume,
+            resolved_spawn.shell.clone(),
+            resolved_spawn.shell_args.clone(),
+            Some(resolved_spawn.trusted_agent_label.clone()),
+            Some(resolved_spawn),
+        );
+        tokio::pin!(spawn);
+        let spawn_result = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                return Err("Context alert delivery was canceled during background spawn".to_string());
+            }
+            result = &mut spawn => result,
+        };
+        let info = spawn_result.map_err(|error| {
+            format!(
+                "Failed to spawn supported coordinator session for '{}': {}",
+                target.fqn(),
+                error
             )
-            .await
-            .map_err(|error| {
-                format!(
-                    "Failed to spawn supported coordinator session for '{}': {}",
-                    target.fqn(),
-                    error
-                )
-            })?;
+        })?;
         let session_id = Uuid::parse_str(&info.id)
             .map_err(|e| format!("Invalid spawned coordinator session id: {}", e))?;
 
@@ -7320,6 +7328,12 @@ impl MailboxPoller {
             {
                 let mut events = hooks.events.lock().unwrap();
                 events.push(MailboxTestEvent::Spawn(call));
+            }
+
+            let spawn_gate = hooks.internal_spawn_gate.lock().unwrap().take();
+            if let Some(spawn_gate) = spawn_gate {
+                hooks.internal_spawn_started.notify_one();
+                let _ = spawn_gate.await;
             }
 
             let spawn_is_coordinator = *hooks.spawn_is_coordinator.lock().unwrap();
@@ -13388,6 +13402,56 @@ mod tests {
         assert_eq!(spawn.cwd, expected_spawn_cwd);
         assert_ne!(hooks.inject_calls.lock().unwrap()[0], wrong_id);
         assert_eq!(hooks.destroy_calls.lock().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn internal_cancellation_during_background_spawn_drops_the_response_waiter() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let target = InternalSystemTarget::for_context_alert(
+            CANONICAL_WAKE_FROM.to_string(),
+            fixture.sender_cwd.clone(),
+        )
+        .unwrap();
+        let notice = InternalSystemNotice::for_context_alert(
+            "dev-rust".to_string(),
+            "wg-1-dev-team".to_string(),
+            50,
+            vec![50],
+        )
+        .unwrap();
+        let hooks = MailboxTestHooks::default();
+        let (spawn_release, spawn_gate) = tokio::sync::oneshot::channel();
+        *hooks.internal_spawn_gate.lock().unwrap() = Some(spawn_gate);
+        let cancellation = CancellationToken::new();
+        let cancel_during_spawn = cancellation.clone();
+        let cancel_hooks = hooks.clone();
+        let canceller = tokio::spawn(async move {
+            cancel_hooks.internal_spawn_started.notified().await;
+            cancel_during_spawn.cancel();
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            MailboxPoller::new_with_test_hooks(hooks.clone()).deliver_internal_system_notice(
+                &app,
+                target,
+                notice,
+                cancellation,
+                Arc::new(|| Ok(())),
+            ),
+        )
+        .await
+        .expect("spawn cancellation must return promptly");
+        canceller.await.unwrap();
+        drop(spawn_release);
+
+        assert!(result
+            .unwrap_err()
+            .contains("canceled during background spawn"));
+        assert_eq!(hooks.spawn_calls.lock().unwrap().len(), 1);
+        assert!(hooks.inject_calls.lock().unwrap().is_empty());
+        assert!(hooks.internal_bookkeeping.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

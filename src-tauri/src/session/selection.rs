@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use thiserror::Error;
-use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{mpsc, oneshot, Notify, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -426,6 +426,218 @@ impl CoordinatorPhase {
     }
 }
 
+#[derive(Debug, Error, PartialEq, Eq)]
+pub(crate) enum BlockingSeedTaskError {
+    #[error("selectionCoordinatorUnavailable")]
+    Unavailable,
+    #[error("blocking seed task canceled before start")]
+    CanceledBeforeStart,
+    #[error("blocking seed task join failed: {0}")]
+    Join(String),
+}
+
+enum BlockingSeedWorkState {
+    Queued {
+        abort: Option<tokio::task::AbortHandle>,
+    },
+    Started,
+}
+
+struct BlockingSeedTrackerState {
+    accepting: bool,
+    next_id: u64,
+    work: BTreeMap<u64, BlockingSeedWorkState>,
+}
+
+struct BlockingSeedWorkTracker {
+    state: Mutex<BlockingSeedTrackerState>,
+    notify: Notify,
+}
+
+impl BlockingSeedWorkTracker {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(BlockingSeedTrackerState {
+                accepting: true,
+                next_id: 1,
+                work: BTreeMap::new(),
+            }),
+            notify: Notify::new(),
+        }
+    }
+
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, BlockingSeedTrackerState> {
+        self.state.lock().unwrap_or_else(|error| {
+            log::error!("[selection] blocking seed tracker mutex poisoned; recovering");
+            error.into_inner()
+        })
+    }
+
+    fn register(&self, phase: &AtomicU8) -> Result<u64, BlockingSeedTaskError> {
+        let mut state = self.lock_state();
+        if !state.accepting
+            || CoordinatorPhase::from_u8(phase.load(Ordering::Acquire)) != CoordinatorPhase::Running
+        {
+            return Err(BlockingSeedTaskError::Unavailable);
+        }
+        let id = state.next_id;
+        let Some(next_id) = id.checked_add(1) else {
+            state.accepting = false;
+            log::error!("[selection] blocking seed tracker id space exhausted");
+            return Err(BlockingSeedTaskError::Unavailable);
+        };
+        state.next_id = next_id;
+        state
+            .work
+            .insert(id, BlockingSeedWorkState::Queued { abort: None });
+        Ok(id)
+    }
+
+    fn attach_abort(&self, id: u64, abort: tokio::task::AbortHandle) {
+        let abort_now = {
+            let mut state = self.lock_state();
+            match state.work.get_mut(&id) {
+                Some(BlockingSeedWorkState::Queued { abort: slot }) => {
+                    *slot = Some(abort.clone());
+                    false
+                }
+                Some(BlockingSeedWorkState::Started) => false,
+                None => true,
+            }
+        };
+        if abort_now {
+            abort.abort();
+        }
+    }
+
+    fn begin(&self, id: u64) -> bool {
+        let mut state = self.lock_state();
+        match state.work.get_mut(&id) {
+            Some(slot @ BlockingSeedWorkState::Queued { .. }) => {
+                *slot = BlockingSeedWorkState::Started;
+                true
+            }
+            Some(BlockingSeedWorkState::Started) | None => false,
+        }
+    }
+
+    fn cancel_waiter(&self, id: u64) -> Option<tokio::task::AbortHandle> {
+        let (abort, empty) = {
+            let mut state = self.lock_state();
+            let abort = match state.work.get(&id) {
+                Some(BlockingSeedWorkState::Queued { .. }) => match state.work.remove(&id) {
+                    Some(BlockingSeedWorkState::Queued { abort }) => abort,
+                    _ => None,
+                },
+                Some(BlockingSeedWorkState::Started) | None => None,
+            };
+            (abort, state.work.is_empty())
+        };
+        if empty {
+            self.notify.notify_waiters();
+        }
+        abort
+    }
+
+    fn complete_started(&self, id: u64) {
+        let empty = {
+            let mut state = self.lock_state();
+            match state.work.remove(&id) {
+                Some(BlockingSeedWorkState::Started) => {}
+                Some(BlockingSeedWorkState::Queued { .. }) => {
+                    log::error!("[selection] blocking seed tracker completed queued work id={id}");
+                }
+                None => {
+                    log::error!("[selection] blocking seed tracker lost started work id={id}");
+                }
+            }
+            state.work.is_empty()
+        };
+        if empty {
+            self.notify.notify_waiters();
+        }
+    }
+
+    fn seal(&self) -> Vec<tokio::task::AbortHandle> {
+        let (aborts, empty) = {
+            let mut state = self.lock_state();
+            state.accepting = false;
+            let queued_ids = state
+                .work
+                .iter()
+                .filter_map(|(id, work)| {
+                    matches!(work, BlockingSeedWorkState::Queued { .. }).then_some(*id)
+                })
+                .collect::<Vec<_>>();
+            let mut aborts = Vec::new();
+            for id in queued_ids {
+                if let Some(BlockingSeedWorkState::Queued { abort: Some(abort) }) =
+                    state.work.remove(&id)
+                {
+                    aborts.push(abort);
+                }
+            }
+            (aborts, state.work.is_empty())
+        };
+        if empty {
+            self.notify.notify_waiters();
+        }
+        aborts
+    }
+
+    async fn wait_quiescent_until(&self, deadline: Instant) -> bool {
+        loop {
+            let notified = self.notify.notified();
+            if self.lock_state().work.is_empty() {
+                return true;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() || tokio::time::timeout(remaining, notified).await.is_err() {
+                return self.lock_state().work.is_empty();
+            }
+        }
+    }
+}
+
+struct BlockingSeedAwaitGuard {
+    tracker: Arc<BlockingSeedWorkTracker>,
+    id: u64,
+    armed: bool,
+}
+
+impl BlockingSeedAwaitGuard {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for BlockingSeedAwaitGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        if let Some(abort) = self.tracker.cancel_waiter(self.id) {
+            abort.abort();
+        }
+    }
+}
+
+struct WorkerCompletionGuard {
+    tracker: Arc<BlockingSeedWorkTracker>,
+    id: u64,
+}
+
+impl Drop for WorkerCompletionGuard {
+    fn drop(&mut self) {
+        self.tracker.complete_started(self.id);
+    }
+}
+
+enum BlockingSeedWorkerResult<T> {
+    Completed(T),
+    CanceledBeforeStart,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelectionRequest {
     UserSwitch { session_id: Uuid },
@@ -526,6 +738,7 @@ struct CoordinatorInner {
     create_tickets: Arc<Semaphore>,
     manager: Arc<tokio::sync::RwLock<SessionManager>>,
     phase: AtomicU8,
+    blocking_seed_work: Arc<BlockingSeedWorkTracker>,
     critical_keys: Mutex<HashSet<CriticalAdmissionKey>>,
     shutdown: CancellationToken,
     worker: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
@@ -562,6 +775,7 @@ impl SelectionCoordinator {
                 create_tickets: Arc::new(Semaphore::new(CREATE_TICKET_CAPACITY)),
                 manager,
                 phase: AtomicU8::new(CoordinatorPhase::Bootstrapping as u8),
+                blocking_seed_work: Arc::new(BlockingSeedWorkTracker::new()),
                 critical_keys: Mutex::new(HashSet::new()),
                 shutdown,
                 worker: Mutex::new(None),
@@ -616,6 +830,45 @@ impl SelectionCoordinator {
 
     pub(crate) fn shutdown_token(&self) -> CancellationToken {
         self.inner.shutdown.clone()
+    }
+
+    pub(crate) async fn run_blocking_seed_work<F, T>(
+        &self,
+        work: F,
+    ) -> Result<T, BlockingSeedTaskError>
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        let tracker = Arc::clone(&self.inner.blocking_seed_work);
+        let id = tracker.register(&self.inner.phase)?;
+        let worker_tracker = Arc::clone(&tracker);
+        let handle = tokio::task::spawn_blocking(move || {
+            if !worker_tracker.begin(id) {
+                return BlockingSeedWorkerResult::CanceledBeforeStart;
+            }
+            let _completion = WorkerCompletionGuard {
+                tracker: worker_tracker,
+                id,
+            };
+            BlockingSeedWorkerResult::Completed(work())
+        });
+        tracker.attach_abort(id, handle.abort_handle());
+        let mut waiter = BlockingSeedAwaitGuard {
+            tracker,
+            id,
+            armed: true,
+        };
+        let joined = handle.await;
+        waiter.disarm();
+        match joined {
+            Ok(BlockingSeedWorkerResult::Completed(result)) => Ok(result),
+            Ok(BlockingSeedWorkerResult::CanceledBeforeStart) => {
+                Err(BlockingSeedTaskError::CanceledBeforeStart)
+            }
+            Err(error) if error.is_cancelled() => Err(BlockingSeedTaskError::CanceledBeforeStart),
+            Err(error) => Err(BlockingSeedTaskError::Join(error.to_string())),
+        }
     }
 
     fn check_external_submission(&self) -> Result<(), SelectionCoordinatorError> {
@@ -1189,6 +1442,10 @@ impl SelectionCoordinator {
         self.inner
             .phase
             .store(CoordinatorPhase::Closing as u8, Ordering::Release);
+        let queued_aborts = self.inner.blocking_seed_work.seal();
+        for abort in queued_aborts {
+            abort.abort();
+        }
         self.inner.admission.close();
         self.inner.create_tickets.close();
         self.inner.shutdown.cancel();
@@ -1249,6 +1506,15 @@ impl SelectionCoordinator {
                     }
                 }
             }
+        }
+
+        if !self
+            .inner
+            .blocking_seed_work
+            .wait_quiescent_until(worker_deadline)
+            .await
+        {
+            retained.push("reason=blocking-seed-transaction-await state=retained".to_string());
         }
 
         retained.extend(cleanup_pending_creates_after_join(&self.inner, deadline).await);
@@ -5108,6 +5374,212 @@ mod tests {
             SelectionCoordinatorError::RecursiveSubmission.to_string()
         );
         assert!(coordinator.inner.critical_keys.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn blocking_seed_tracker_completes_and_removes_started_work() {
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let coordinator = SelectionCoordinator::new(manager, CancellationToken::new());
+        coordinator
+            .inner
+            .phase
+            .store(CoordinatorPhase::Running as u8, Ordering::Release);
+
+        assert_eq!(coordinator.run_blocking_seed_work(|| 42_u8).await, Ok(42));
+        assert!(coordinator
+            .inner
+            .blocking_seed_work
+            .lock_state()
+            .work
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn blocking_seed_tracker_is_panic_safe() {
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let coordinator = SelectionCoordinator::new(manager, CancellationToken::new());
+        coordinator
+            .inner
+            .phase
+            .store(CoordinatorPhase::Running as u8, Ordering::Release);
+
+        let error = coordinator
+            .run_blocking_seed_work(|| -> () { panic!("injected tracker panic") })
+            .await
+            .expect_err("panic must surface through the response join");
+        assert!(matches!(error, BlockingSeedTaskError::Join(_)), "{error:?}");
+        assert!(coordinator
+            .inner
+            .blocking_seed_work
+            .lock_state()
+            .work
+            .is_empty());
+    }
+
+    #[test]
+    fn blocking_seed_tracker_seal_suppresses_queued_user_work() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            let (blocker_started_tx, blocker_started_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let blocker = tokio::task::spawn_blocking(move || {
+                blocker_started_tx.send(()).expect("signal blocker");
+                release_rx.recv().expect("release blocker");
+            });
+            blocker_started_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("blocking pool occupied");
+
+            let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+            let coordinator = SelectionCoordinator::new(manager, CancellationToken::new());
+            coordinator
+                .inner
+                .phase
+                .store(CoordinatorPhase::Running as u8, Ordering::Release);
+            let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let waiter = {
+                let coordinator = coordinator.clone();
+                let ran = Arc::clone(&ran);
+                tokio::spawn(async move {
+                    coordinator
+                        .run_blocking_seed_work(move || ran.store(true, Ordering::Release))
+                        .await
+                })
+            };
+            loop {
+                if !coordinator
+                    .inner
+                    .blocking_seed_work
+                    .lock_state()
+                    .work
+                    .is_empty()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            coordinator
+                .inner
+                .phase
+                .store(CoordinatorPhase::Closing as u8, Ordering::Release);
+            for abort in coordinator.inner.blocking_seed_work.seal() {
+                abort.abort();
+            }
+            release_tx.send(()).expect("release blocker");
+            blocker.await.expect("join blocker");
+            assert!(matches!(
+                waiter.await.expect("join waiter"),
+                Err(BlockingSeedTaskError::CanceledBeforeStart)
+            ));
+            assert!(!ran.load(Ordering::Acquire));
+        });
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn blocking_seed_tracker_keeps_detached_started_work_accounted() {
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let coordinator = SelectionCoordinator::new(manager, CancellationToken::new());
+        coordinator
+            .inner
+            .phase
+            .store(CoordinatorPhase::Running as u8, Ordering::Release);
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let waiter = {
+            let coordinator = coordinator.clone();
+            let started = Arc::clone(&started);
+            tokio::spawn(async move {
+                coordinator
+                    .run_blocking_seed_work(move || {
+                        started.store(true, Ordering::Release);
+                        release_rx.recv().expect("release started work");
+                    })
+                    .await
+            })
+        };
+        while !started.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+        waiter.abort();
+        let _ = waiter.await;
+        coordinator
+            .inner
+            .phase
+            .store(CoordinatorPhase::Closing as u8, Ordering::Release);
+        assert!(coordinator.inner.blocking_seed_work.seal().is_empty());
+        assert!(
+            !coordinator
+                .inner
+                .blocking_seed_work
+                .wait_quiescent_until(Instant::now())
+                .await
+        );
+
+        release_tx.send(()).expect("release worker");
+        assert!(
+            coordinator
+                .inner
+                .blocking_seed_work
+                .wait_quiescent_until(Instant::now() + Duration::from_secs(1))
+                .await
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shutdown_reports_the_exact_retained_blocking_seed_reason() {
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let coordinator = SelectionCoordinator::new(manager, CancellationToken::new());
+        coordinator
+            .inner
+            .phase
+            .store(CoordinatorPhase::Running as u8, Ordering::Release);
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let waiter = {
+            let coordinator = coordinator.clone();
+            let started = Arc::clone(&started);
+            tokio::spawn(async move {
+                coordinator
+                    .run_blocking_seed_work(move || {
+                        started.store(true, Ordering::Release);
+                        release_rx.recv().expect("release retained work");
+                    })
+                    .await
+            })
+        };
+        while !started.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+
+        let report = coordinator
+            .close_and_join_with_budget(Duration::from_millis(20))
+            .await;
+        waiter.abort();
+        let _ = waiter.await;
+        release_tx.send(()).expect("release worker");
+        assert!(
+            coordinator
+                .inner
+                .blocking_seed_work
+                .wait_quiescent_until(Instant::now() + Duration::from_secs(1))
+                .await
+        );
+        assert!(!report.persistence_safe);
+        assert_eq!(
+            report
+                .retained
+                .iter()
+                .filter(|reason| {
+                    reason.as_str() == "reason=blocking-seed-transaction-await state=retained"
+                })
+                .count(),
+            1
+        );
     }
 
     #[test]

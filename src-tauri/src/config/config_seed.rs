@@ -9,10 +9,17 @@
 //!   fully-old or fully-new, never half-written. It never aborts the spawn.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+
+use chrono::{DateTime, Utc};
 
 use crate::config::placeholders::{
     expand_placeholders_in_content, PlaceholderContext, PlaceholderRootKind,
+};
+use crate::config::seed_manifest::{
+    config_batch_base_serialized_len, exact_config_row_serialized_len, ManifestSource,
+    PinnedDirectory, ResourceBoundKind, SeedManifestError, MAX_FIELD_BYTES, MAX_MANIFEST_BYTES,
+    MAX_MANIFEST_ROWS,
 };
 use crate::config::settings::{validate_config_seed_dest, ConfigSeedConfig};
 use crate::session::profile::CodingAgentKind;
@@ -65,13 +72,77 @@ pub struct ResolvedConfigSeed {
     pub config_dir_warning: Option<String>,
 }
 
-/// Outcome of [`perform_config_seed`]. Returned for testing and to gate the
-/// post-seed `.claude` re-apply.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConfigSeedReport {
-    Seeded,
-    Skipped,
-    Failed,
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) struct ConfigSeedPublication {
+    pub tier: ConfigSeedTier,
+    pub dest: PathBuf,
+    pub files: CollectedSeedFiles,
+    pub published_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum CollectedSeedFiles {
+    Exact(Vec<PathBuf>),
+    OverBound {
+        reason: ResourceBoundKind,
+        observed_at_least: u64,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum ConfigSeedSkipReason {
+    NoSource,
+    InvalidDestination {
+        dest: PathBuf,
+        reason: String,
+    },
+    StaleReplica {
+        replica_root: PathBuf,
+        reason: String,
+    },
+    DestinationInUse {
+        dest: PathBuf,
+        error: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum ConfigSeedFailure {
+    Staging {
+        source: PathBuf,
+        staging_path: PathBuf,
+        error: String,
+    },
+    Install {
+        staging_path: PathBuf,
+        dest: PathBuf,
+        error: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum ConfigSeedRollbackFailure {
+    PreviousScopeStillStaged {
+        scope: String,
+        trash_path: PathBuf,
+        install_error: String,
+        restore_error: String,
+    },
+}
+
+/// Outcome of [`perform_config_seed`]. The publication boundary carries the
+/// exact winning tier, staged regular files, destination, and commit-point time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ConfigSeedReport {
+    Published(ConfigSeedPublication),
+    Skipped(ConfigSeedSkipReason),
+    Failed(ConfigSeedFailure),
+    FailedAfterLogicalRemoval(ConfigSeedRollbackFailure),
 }
 
 /// Resolve the seed candidates + destination. Returns `None` (and warns/debug-
@@ -221,7 +292,11 @@ fn lookup_env_ci<'a>(
     profile_env
         .iter()
         .find(|(k, _)| k.to_ascii_uppercase() == want)
-        .or_else(|| agent_env.iter().find(|(k, _)| k.to_ascii_uppercase() == want))
+        .or_else(|| {
+            agent_env
+                .iter()
+                .find(|(k, _)| k.to_ascii_uppercase() == want)
+        })
         .map(|(_, v)| v)
 }
 
@@ -251,16 +326,135 @@ fn segments_eq(a: &str, b: &str) -> bool {
 /// (see [`clear_stale_seed_scratch`]) and would otherwise delete a concurrent
 /// spawn's in-flight temp/trash mid-swap. The only caller, the session spawn
 /// chokepoint, holds `ConfigSeedLockState` across this call for all dests.
-pub fn perform_config_seed(seed: &ResolvedConfigSeed, unique_sfx: &str) -> ConfigSeedReport {
+pub(crate) fn perform_config_seed(seed: &ResolvedConfigSeed, unique_sfx: &str) -> ConfigSeedReport {
+    perform_config_seed_with_clock(seed, unique_sfx, &Utc::now)
+}
+
+#[derive(Default)]
+struct ConfigSeedTestHooks {
+    #[cfg(test)]
+    fail_install: bool,
+    #[cfg(test)]
+    fail_restore: bool,
+    #[cfg(test)]
+    destination_appears_before_restore: bool,
+    #[cfg(test)]
+    fail_staged_metadata: bool,
+}
+
+impl ConfigSeedTestHooks {
+    fn install(&self, staging: &Path, dest: &Path) -> std::io::Result<()> {
+        #[cfg(test)]
+        if self.fail_install {
+            return Err(std::io::Error::other(
+                "injected config-seed install failure",
+            ));
+        }
+        std::fs::rename(staging, dest)
+    }
+
+    fn before_restore(&self, dest: &Path) {
+        #[cfg(test)]
+        if self.destination_appears_before_restore {
+            std::fs::create_dir_all(dest).expect("inject replacement destination");
+            std::fs::write(dest.join("foreign.txt"), b"FOREIGN")
+                .expect("populate replacement destination");
+        }
+        #[cfg(not(test))]
+        let _ = dest;
+    }
+
+    fn restore(&self, trash: &Path, dest: &Path) -> std::io::Result<()> {
+        #[cfg(test)]
+        if self.fail_restore {
+            return Err(std::io::Error::other(
+                "injected config-seed restore failure",
+            ));
+        }
+        std::fs::rename(trash, dest)
+    }
+
+    fn staged_diagnostic(&self, staged: &PinnedDirectory, trash: &Path) -> String {
+        #[cfg(test)]
+        if self.fail_staged_metadata {
+            return "staged-tree metadata inspection failed: injected metadata failure".to_string();
+        }
+        match staged.revalidate_at(trash) {
+            Ok(()) => format!(
+                "operation-owned previous config remains staged at {}",
+                trash.display()
+            ),
+            Err(error) => format!(
+                "staged-tree metadata inspection failed at {}: {}",
+                trash.display(),
+                error
+            ),
+        }
+    }
+}
+
+fn perform_config_seed_with_clock(
+    seed: &ResolvedConfigSeed,
+    unique_sfx: &str,
+    clock: &dyn Fn() -> DateTime<Utc>,
+) -> ConfigSeedReport {
+    perform_config_seed_with_clock_and_hooks(
+        seed,
+        unique_sfx,
+        clock,
+        &ConfigSeedTestHooks::default(),
+    )
+}
+
+fn perform_config_seed_with_clock_and_hooks(
+    seed: &ResolvedConfigSeed,
+    unique_sfx: &str,
+    clock: &dyn Fn() -> DateTime<Utc>,
+    hooks: &ConfigSeedTestHooks,
+) -> ConfigSeedReport {
+    if let Err(reason) = revalidate_seed_owner(seed) {
+        log::warn!(
+            "[config-seed] stale replica owner {}: {}; skipping",
+            seed.context.replica_root.display(),
+            reason
+        );
+        return ConfigSeedReport::Skipped(ConfigSeedSkipReason::StaleReplica {
+            replica_root: seed.context.replica_root.clone(),
+            reason,
+        });
+    }
+
     // 1. Pick the winning tier by source-folder presence (highest precedence first).
     //    The four legacy tiers are unchanged (readable dir wins and overwrites).
     //    The #769 P2 CatalogDefault tier is gated ABSENT-ONLY + NON-EMPTY here, so
     //    it never overwrites an existing replica config and an empty/absent master
     //    reads as "not present".
-    let Some((tier, src)) = seed.candidates.iter().find(|(tier, src)| match tier {
-        ConfigSeedTier::CatalogDefault => !seed.dest.exists() && is_nonempty_seed_dir(src),
-        _ => is_readable_dir(src),
-    }) else {
+    let mut selected = seed
+        .candidates
+        .iter()
+        .find(|(tier, src)| *tier != ConfigSeedTier::CatalogDefault && is_readable_dir(src));
+    if selected.is_none() {
+        if let Some(candidate) = seed.candidates.iter().find(|(tier, src)| {
+            *tier == ConfigSeedTier::CatalogDefault && is_nonempty_seed_dir(src)
+        }) {
+            match destination_absent_no_follow(&seed.dest) {
+                Ok(true) => selected = Some(candidate),
+                Ok(false) => {}
+                Err(error) => {
+                    log::warn!(
+                        "[config-seed] cannot inspect catalog-default destination {} without following links: {}; skipping",
+                        seed.dest.display(),
+                        error
+                    );
+                    return ConfigSeedReport::Skipped(ConfigSeedSkipReason::DestinationInUse {
+                        dest: seed.dest.clone(),
+                        error,
+                    });
+                }
+            }
+        }
+    }
+    let Some((tier, src)) = selected else {
         // #598: seeding is active but no template exists at any tier. This is a
         // benign no-op (nothing to copy), but a SILENT one confused users who
         // enabled the feature, created no template, and saw nothing happen. Log
@@ -285,7 +479,7 @@ pub fn perform_config_seed(seed: &ResolvedConfigSeed, unique_sfx: &str) -> Confi
             seed.dest.display(),
             looked_in
         );
-        return ConfigSeedReport::Skipped;
+        return ConfigSeedReport::Skipped(ConfigSeedSkipReason::NoSource);
     };
 
     let (Some(parent), Some(dest_name)) = (
@@ -296,7 +490,10 @@ pub fn perform_config_seed(seed: &ResolvedConfigSeed, unique_sfx: &str) -> Confi
             "[config-seed] dest {} has no parent/name; skipping",
             seed.dest.display()
         );
-        return ConfigSeedReport::Skipped;
+        return ConfigSeedReport::Skipped(ConfigSeedSkipReason::InvalidDestination {
+            dest: seed.dest.clone(),
+            reason: "destination has no parent or UTF-8 file name".to_string(),
+        });
     };
 
     // M3: unique per spawn. Same-volume siblings of dest, so renames are atomic.
@@ -312,54 +509,110 @@ pub fn perform_config_seed(seed: &ResolvedConfigSeed, unique_sfx: &str) -> Confi
 
     // 3. Stage the template into temp. On any error the dest is untouched.
     //    master->replica copy substitutes the 3 AC tokens (substitute = true).
-    if let Err(e) = copy_tree(src, &temp, 0, Some(&seed.context), true) {
+    let mut collector = SeedFileCollector::new(seed, *tier);
+    if let Err(e) = copy_tree_collecting(src, &temp, Some(&seed.context), true, &mut collector) {
         log::warn!(
             "[config-seed] failed to stage template {} -> {}: {}",
             src.display(),
             temp.display(),
             e
         );
-        let _ = std::fs::remove_dir_all(&temp);
-        return ConfigSeedReport::Failed;
+        remove_seed_scratch(&temp, "failed staging cleanup", unique_sfx);
+        return ConfigSeedReport::Failed(ConfigSeedFailure::Staging {
+            source: src.clone(),
+            staging_path: temp,
+            error: e,
+        });
     }
+    let files = collector.finish();
 
     // 4. Move the existing dest aside (atomic). If it is locked by a live
     //    process, keep the existing config and SKIP (dest stays fully intact).
-    if seed.dest.exists() {
-        if let Err(e) = std::fs::rename(&seed.dest, &trash) {
-            log::warn!(
-                "[config-seed] dest {} is in use ({}); keeping existing config, skipping this seed",
-                seed.dest.display(),
-                e
-            );
-            let _ = std::fs::remove_dir_all(&temp);
-            return ConfigSeedReport::Skipped;
+    let previous_scope_staged = match pin_seed_destination_if_present(&seed.dest) {
+        Ok(None) => None,
+        Ok(Some(pinned)) => {
+            if let Err(e) = std::fs::rename(&seed.dest, &trash) {
+                log::warn!(
+                    "[config-seed] dest {} is in use ({}); keeping existing config, skipping this seed",
+                    seed.dest.display(),
+                    e
+                );
+                remove_seed_scratch(&temp, "destination-in-use cleanup", unique_sfx);
+                return ConfigSeedReport::Skipped(ConfigSeedSkipReason::DestinationInUse {
+                    dest: seed.dest.clone(),
+                    error: e.to_string(),
+                });
+            }
+            Some(pinned)
         }
-    }
+        Err(error) => {
+            log::warn!(
+                "[config-seed] cannot inspect destination {} without following links: {}; keeping existing config, skipping this seed",
+                seed.dest.display(),
+                error
+            );
+            remove_seed_scratch(&temp, "destination-inspection cleanup", unique_sfx);
+            return ConfigSeedReport::Skipped(ConfigSeedSkipReason::DestinationInUse {
+                dest: seed.dest.clone(),
+                error,
+            });
+        }
+    };
 
     // 5. Install the freshly staged temp (atomic).
-    if let Err(e) = std::fs::rename(&temp, &seed.dest) {
+    if let Err(e) = hooks.install(&temp, &seed.dest) {
+        let install_error = e.to_string();
         log::warn!(
             "[config-seed] failed to install seed at {}: {}",
             seed.dest.display(),
             e
         );
-        // Restore the old config if we moved it aside and the dest is now gone.
-        if !seed.dest.exists() && trash.exists() {
-            if let Err(re) = std::fs::rename(&trash, &seed.dest) {
+        // A successful dest-to-trash rename is operation-owned proof that the
+        // previous logical scope was removed. Always attempt its inverse after
+        // an install failure. A later destination appearance or metadata error
+        // must not collapse an un-restored old tree into ordinary `Failed`.
+        if let Some(staged) = previous_scope_staged.as_ref() {
+            hooks.before_restore(&seed.dest);
+            if let Err(re) = hooks.restore(&trash, &seed.dest) {
+                let staged_diagnostic = hooks.staged_diagnostic(staged, &trash);
+                let restore_error = re.to_string();
                 log::warn!(
-                    "[config-seed] failed to restore previous config at {}: {}",
+                    "[config-seed] failed to restore previous config at {}: {}; {}",
                     seed.dest.display(),
-                    re
+                    restore_error,
+                    staged_diagnostic
+                );
+                remove_seed_scratch(&temp, "failed install cleanup", unique_sfx);
+                return ConfigSeedReport::FailedAfterLogicalRemoval(
+                    ConfigSeedRollbackFailure::PreviousScopeStillStaged {
+                        scope: config_scope_for_seed(seed).unwrap_or_else(|reason| {
+                            log::warn!(
+                                "[config-seed] failed to derive config scope for rollback at {}: {}",
+                                seed.dest.display(),
+                                reason
+                            );
+                            format!("config:{}", dest_name)
+                        }),
+                        trash_path: trash,
+                        install_error,
+                        restore_error: format!("{restore_error}; {staged_diagnostic}"),
+                    },
                 );
             }
         }
-        let _ = std::fs::remove_dir_all(&temp);
-        return ConfigSeedReport::Failed;
+        remove_seed_scratch(&temp, "failed install cleanup", unique_sfx);
+        return ConfigSeedReport::Failed(ConfigSeedFailure::Install {
+            staging_path: temp,
+            dest: seed.dest.clone(),
+            error: install_error,
+        });
     }
 
+    // The successful directory-install syscall is the publication boundary.
+    let published_at = clock();
+
     // 6. Drop the old config (ignore if locked; it lingers, cleared next run).
-    let _ = std::fs::remove_dir_all(&trash);
+    remove_seed_scratch(&trash, "published old-destination cleanup", unique_sfx);
 
     // 7. Emit the deferred config-dir warning + the success line.
     if let Some(w) = &seed.config_dir_warning {
@@ -371,7 +624,37 @@ pub fn perform_config_seed(seed: &ResolvedConfigSeed, unique_sfx: &str) -> Confi
         tier,
         src.display()
     );
-    ConfigSeedReport::Seeded
+    ConfigSeedReport::Published(ConfigSeedPublication {
+        tier: *tier,
+        dest: seed.dest.clone(),
+        files,
+        published_at,
+    })
+}
+
+fn destination_absent_no_follow(path: &Path) -> Result<bool, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(format!("inspect destination metadata: {error}")),
+    }
+}
+
+fn pin_seed_destination_if_present(path: &Path) -> Result<Option<PinnedDirectory>, String> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("inspect destination metadata: {error}")),
+    };
+    if !metadata.is_dir() || metadata.file_type().is_symlink() || metadata_is_reparse(&metadata) {
+        return Err("destination is not an ordinary non-reparse directory".to_string());
+    }
+    let pinned = PinnedDirectory::open(path)
+        .map_err(|error| format!("pin destination directory identity: {error}"))?;
+    pinned
+        .revalidate()
+        .map_err(|error| format!("revalidate destination directory identity: {error}"))?;
+    Ok(Some(pinned))
 }
 
 /// True iff `path` is a readable directory. Follows symlinks on the ROOT (the
@@ -379,6 +662,217 @@ pub fn perform_config_seed(seed: &ResolvedConfigSeed, unique_sfx: &str) -> Confi
 /// filtered for reparse points during the copy (see [`is_symlink_or_reparse`]).
 fn is_readable_dir(path: &Path) -> bool {
     std::fs::metadata(path).map(|m| m.is_dir()).unwrap_or(false)
+}
+
+fn revalidate_seed_owner(seed: &ResolvedConfigSeed) -> Result<(), String> {
+    let replica_root = &seed.context.replica_root;
+    let metadata = std::fs::symlink_metadata(replica_root)
+        .map_err(|error| format!("inspect replica root: {error}"))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() || metadata_is_reparse(&metadata) {
+        return Err("replica root is not an existing ordinary directory".to_string());
+    }
+    let parent = seed
+        .dest
+        .parent()
+        .ok_or_else(|| "destination has no parent".to_string())?;
+    if !parent.starts_with(replica_root) {
+        return Err(format!(
+            "destination parent {} is outside replica root",
+            parent.display()
+        ));
+    }
+    let parent_metadata = std::fs::symlink_metadata(parent)
+        .map_err(|error| format!("inspect destination parent: {error}"))?;
+    if !parent_metadata.is_dir()
+        || parent_metadata.file_type().is_symlink()
+        || metadata_is_reparse(&parent_metadata)
+    {
+        return Err("destination parent is not an existing ordinary directory".to_string());
+    }
+    if let Ok(dest_metadata) = std::fs::symlink_metadata(&seed.dest) {
+        if dest_metadata.file_type().is_symlink() || metadata_is_reparse(&dest_metadata) {
+            return Err("destination is a symlink or reparse point".to_string());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn metadata_is_reparse(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    metadata.file_attributes() & 0x0400 != 0
+}
+
+#[cfg(not(windows))]
+fn metadata_is_reparse(_metadata: &std::fs::Metadata) -> bool {
+    false
+}
+
+fn manifest_source_for_tier(tier: ConfigSeedTier) -> ManifestSource {
+    match tier {
+        ConfigSeedTier::WorkspaceProfile => ManifestSource::WorkspaceProfile,
+        ConfigSeedTier::WorkspaceBase => ManifestSource::WorkspaceBase,
+        ConfigSeedTier::MatrixProfile => ManifestSource::MatrixProfile,
+        ConfigSeedTier::MatrixBase => ManifestSource::MatrixBase,
+        ConfigSeedTier::CatalogDefault => ManifestSource::CatalogDefault,
+    }
+}
+
+fn project_relative_dest(seed: &ResolvedConfigSeed) -> Result<PathBuf, String> {
+    let workspace_root = seed
+        .context
+        .workspace_root
+        .as_ref()
+        .ok_or_else(|| "launch root has no project workspace".to_string())?;
+    let inside_workspace = seed.dest.strip_prefix(workspace_root).map_err(|_| {
+        format!(
+            "destination {} is outside workspace {}",
+            seed.dest.display(),
+            workspace_root.display()
+        )
+    })?;
+    // `workspace_root` is the `.ac` workspace in production. Focused unit tests
+    // use a synthetic leaf, so add the stable project-relative `.ac` component
+    // rather than depending on that leaf's fixture name.
+    let relative = PathBuf::from(".ac").join(inside_workspace);
+    if relative.is_absolute()
+        || relative.components().next() != Some(Component::Normal(".ac".as_ref()))
+    {
+        return Err("project-relative config destination is not under .ac".to_string());
+    }
+    Ok(relative)
+}
+
+fn config_scope_for_seed(seed: &ResolvedConfigSeed) -> Result<String, String> {
+    let relative = project_relative_dest(seed)?;
+    let mut components = Vec::new();
+    for component in relative.components() {
+        let Component::Normal(component) = component else {
+            return Err("config scope contains a non-normal component".to_string());
+        };
+        let component = component
+            .to_str()
+            .ok_or_else(|| "config scope is not valid UTF-8".to_string())?;
+        components.push(component);
+    }
+    Ok(format!("config:{}", components.join("/")))
+}
+
+struct SeedFileCollector {
+    files: CollectedSeedFiles,
+    project_relative_dest: Option<PathBuf>,
+    scope: Option<String>,
+    source: ManifestSource,
+    prospective_bytes: usize,
+}
+
+impl SeedFileCollector {
+    fn new(seed: &ResolvedConfigSeed, tier: ConfigSeedTier) -> Self {
+        let project_relative_dest = project_relative_dest(seed).ok();
+        let scope = config_scope_for_seed(seed).ok();
+        let files = if project_relative_dest.is_some() && scope.is_some() {
+            CollectedSeedFiles::Exact(Vec::new())
+        } else {
+            CollectedSeedFiles::OverBound {
+                reason: ResourceBoundKind::ScopeBytes,
+                observed_at_least: 1,
+            }
+        };
+        Self {
+            files,
+            project_relative_dest,
+            scope,
+            source: manifest_source_for_tier(tier),
+            prospective_bytes: config_batch_base_serialized_len(),
+        }
+    }
+
+    fn record(&mut self, staging_relative_path: PathBuf) {
+        let CollectedSeedFiles::Exact(paths) = &self.files else {
+            return;
+        };
+        let observed_rows = paths.len().saturating_add(1);
+        if observed_rows > MAX_MANIFEST_ROWS {
+            self.files = CollectedSeedFiles::OverBound {
+                reason: ResourceBoundKind::Rows,
+                observed_at_least: observed_rows as u64,
+            };
+            return;
+        }
+        let Some(project_relative_dest) = self.project_relative_dest.as_ref() else {
+            return;
+        };
+        let Some(scope) = self.scope.as_deref() else {
+            return;
+        };
+        if scope.len() > MAX_FIELD_BYTES {
+            self.files = CollectedSeedFiles::OverBound {
+                reason: ResourceBoundKind::ScopeBytes,
+                observed_at_least: scope.len() as u64,
+            };
+            return;
+        }
+        let project_relative_path = project_relative_dest.join(&staging_relative_path);
+        let row_bytes =
+            match exact_config_row_serialized_len(&project_relative_path, scope, self.source) {
+                Ok(bytes) => bytes,
+                Err(SeedManifestError::ResourceBound {
+                    kind,
+                    observed_at_least,
+                    ..
+                }) => {
+                    self.files = CollectedSeedFiles::OverBound {
+                        reason: kind,
+                        observed_at_least,
+                    };
+                    return;
+                }
+                Err(_) => {
+                    self.files = CollectedSeedFiles::OverBound {
+                        reason: ResourceBoundKind::PathBytes,
+                        observed_at_least: MAX_FIELD_BYTES.saturating_add(1) as u64,
+                    };
+                    return;
+                }
+            };
+        let Some(prospective_bytes) = self.prospective_bytes.checked_add(row_bytes) else {
+            self.files = CollectedSeedFiles::OverBound {
+                reason: ResourceBoundKind::ArithmeticOverflow,
+                observed_at_least: u64::MAX,
+            };
+            return;
+        };
+        if prospective_bytes as u64 > MAX_MANIFEST_BYTES {
+            self.files = CollectedSeedFiles::OverBound {
+                reason: ResourceBoundKind::OutputBytes,
+                observed_at_least: prospective_bytes as u64,
+            };
+            return;
+        }
+        self.prospective_bytes = prospective_bytes;
+        if let CollectedSeedFiles::Exact(paths) = &mut self.files {
+            paths.push(staging_relative_path);
+        }
+    }
+
+    fn finish(self) -> CollectedSeedFiles {
+        self.files
+    }
+}
+
+fn remove_seed_scratch(path: &Path, context: &str, unique_sfx: &str) {
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => log::warn!(
+            "[config-seed] {} failed for owned scratch {} session={}: {}",
+            context,
+            path.display(),
+            unique_sfx,
+            error
+        ),
+    }
 }
 
 /// #769 P2 - true iff `path` is a readable directory containing at least one
@@ -423,13 +917,42 @@ pub(crate) fn is_nonempty_seed_dir(path: &Path) -> bool {
 fn clear_stale_seed_scratch(parent: &Path, dest_name: &str) {
     let tmp_prefix = format!("{}.acseed-tmp-", dest_name);
     let old_prefix = format!("{}.acseed-old-", dest_name);
-    let Ok(entries) = std::fs::read_dir(parent) else {
-        return;
+    let entries = match std::fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(error) => {
+            log::warn!(
+                "[config-seed] failed to inspect stale scratch siblings for {}: {}",
+                parent.display(),
+                error
+            );
+            return;
+        }
     };
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                log::warn!(
+                    "[config-seed] failed to inspect a stale scratch entry under {}: {}",
+                    parent.display(),
+                    error
+                );
+                continue;
+            }
+        };
         if let Some(name) = entry.file_name().to_str() {
             if name.starts_with(&tmp_prefix) || name.starts_with(&old_prefix) {
-                let _ = std::fs::remove_dir_all(entry.path());
+                let path = entry.path();
+                if let Err(error) = std::fs::remove_dir_all(&path) {
+                    if error.kind() != std::io::ErrorKind::NotFound {
+                        log::warn!(
+                            "[config-seed] failed to reclaim stale scratch {} scope={}: {}",
+                            path.display(),
+                            dest_name,
+                            error
+                        );
+                    }
+                }
             }
         }
     }
@@ -441,6 +964,46 @@ pub(crate) fn copy_tree(
     depth: u32,
     ctx: Option<&PlaceholderContext>,
     substitute: bool,
+) -> Result<(), String> {
+    let mut collector = None;
+    copy_tree_internal(
+        src_dir,
+        dst_dir,
+        depth,
+        Path::new(""),
+        ctx,
+        substitute,
+        &mut collector,
+    )
+}
+
+fn copy_tree_collecting(
+    src_dir: &Path,
+    dst_dir: &Path,
+    ctx: Option<&PlaceholderContext>,
+    substitute: bool,
+    collector: &mut SeedFileCollector,
+) -> Result<(), String> {
+    let mut collector = Some(collector);
+    copy_tree_internal(
+        src_dir,
+        dst_dir,
+        0,
+        Path::new(""),
+        ctx,
+        substitute,
+        &mut collector,
+    )
+}
+
+fn copy_tree_internal(
+    src_dir: &Path,
+    dst_dir: &Path,
+    depth: u32,
+    relative_dir: &Path,
+    ctx: Option<&PlaceholderContext>,
+    substitute: bool,
+    collector: &mut Option<&mut SeedFileCollector>,
 ) -> Result<(), String> {
     if depth > MAX_SEED_DEPTH {
         log::warn!(
@@ -467,10 +1030,22 @@ pub(crate) fn copy_tree(
             .file_type()
             .map_err(|e| format!("file type of {}: {}", entry.path().display(), e))?;
         let dst = dst_dir.join(entry.file_name());
+        let relative = relative_dir.join(entry.file_name());
         if ft.is_dir() {
-            copy_tree(&entry.path(), &dst, depth + 1, ctx, substitute)?;
+            copy_tree_internal(
+                &entry.path(),
+                &dst,
+                depth + 1,
+                &relative,
+                ctx,
+                substitute,
+                collector,
+            )?;
         } else if ft.is_file() {
             copy_file_substituted(&entry.path(), &dst, ctx, substitute)?;
+            if let Some(collector) = collector.as_deref_mut() {
+                collector.record(relative);
+            }
         }
         // Anything else (already-filtered symlinks/reparse) is ignored.
     }
@@ -513,7 +1088,9 @@ fn copy_file_substituted(
         Ok(text) => std::fs::write(dst, expand_placeholders_in_content(text, ctx).as_bytes())
             .map_err(|e| format!("write {}: {}", dst.display(), e)),
         // Non-UTF-8 (no NUL): copy verbatim.
-        Err(_) => std::fs::write(dst, &bytes).map_err(|e| format!("write {}: {}", dst.display(), e)),
+        Err(_) => {
+            std::fs::write(dst, &bytes).map_err(|e| format!("write {}: {}", dst.display(), e))
+        }
     }
 }
 
@@ -575,6 +1152,33 @@ mod tests {
         PathBuf::from(if cfg!(windows) { win } else { unix })
     }
 
+    fn assert_published(report: ConfigSeedReport) -> ConfigSeedPublication {
+        let ConfigSeedReport::Published(publication) = report else {
+            panic!("expected config publication, got {report:?}");
+        };
+        publication
+    }
+
+    fn assert_skipped(report: ConfigSeedReport) {
+        assert!(matches!(report, ConfigSeedReport::Skipped(_)), "{report:?}");
+    }
+
+    fn assert_failed(report: ConfigSeedReport) {
+        assert!(matches!(report, ConfigSeedReport::Failed(_)), "{report:?}");
+    }
+
+    fn seed_swap_fixture() -> (tempfile::TempDir, ResolvedConfigSeed, PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("ws");
+        let replica = workspace.join("wg-1-team").join("__agent_x");
+        std::fs::create_dir_all(&replica).unwrap();
+        write_file(&workspace.join("default.claude").join("new.txt"), b"NEW");
+        write_file(&replica.join(".claude").join("old.txt"), b"OLD");
+        let ctx = ctx_with(&replica, Some(&workspace), None);
+        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
+        (temp, resolved, replica)
+    }
+
     // ---- resolve_config_seed (pure path math, fail-soft) -------------------
 
     #[test]
@@ -624,7 +1228,10 @@ mod tests {
         let tiers: Vec<_> = resolved.candidates.iter().map(|(t, _)| *t).collect();
         assert_eq!(
             tiers,
-            vec![ConfigSeedTier::WorkspaceProfile, ConfigSeedTier::WorkspaceBase]
+            vec![
+                ConfigSeedTier::WorkspaceProfile,
+                ConfigSeedTier::WorkspaceBase
+            ]
         );
     }
 
@@ -673,9 +1280,12 @@ mod tests {
 
         let ctx = ctx_with(&replica, Some(&workspace), None);
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "C", Some(&ctx)).unwrap();
+        let publication = assert_published(perform_config_seed(&resolved, "sfx1"));
+        assert_eq!(publication.tier, ConfigSeedTier::WorkspaceProfile);
+        assert_eq!(publication.dest, replica.join(".claude"));
         assert_eq!(
-            perform_config_seed(&resolved, "sfx1"),
-            ConfigSeedReport::Seeded
+            publication.files,
+            CollectedSeedFiles::Exact(vec![PathBuf::from("f.txt")])
         );
 
         assert_eq!(
@@ -699,7 +1309,7 @@ mod tests {
 
         let ctx = ctx_with(&replica, Some(&workspace), None);
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
-        assert_eq!(perform_config_seed(&resolved, "s"), ConfigSeedReport::Skipped);
+        assert_skipped(perform_config_seed(&resolved, "s"));
         // Dest fully intact.
         assert_eq!(
             std::fs::read(replica.join(".claude").join("keep.txt")).unwrap(),
@@ -721,14 +1331,170 @@ mod tests {
 
         let ctx = ctx_with(&replica, Some(&workspace), None);
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
-        assert_eq!(
-            perform_config_seed(&resolved, "sfx"),
-            ConfigSeedReport::Failed
-        );
+        assert_failed(perform_config_seed(&resolved, "sfx"));
         // Dest fully intact (old content kept).
         assert_eq!(
             std::fs::read(replica.join(".claude").join("keep.txt")).unwrap(),
             b"OLD"
+        );
+    }
+
+    #[test]
+    fn install_failure_restores_the_operation_owned_previous_scope() {
+        let (_temp, resolved, replica) = seed_swap_fixture();
+        let hooks = ConfigSeedTestHooks {
+            fail_install: true,
+            ..ConfigSeedTestHooks::default()
+        };
+
+        let report =
+            perform_config_seed_with_clock_and_hooks(&resolved, "restore-ok", &Utc::now, &hooks);
+
+        assert_failed(report);
+        assert_eq!(
+            std::fs::read(replica.join(".claude").join("old.txt")).unwrap(),
+            b"OLD"
+        );
+        assert!(!replica.join(".claude.acseed-old-restore-ok").exists());
+    }
+
+    #[test]
+    fn install_and_restore_failure_reports_logical_removal_and_preserves_trash() {
+        let (_temp, resolved, replica) = seed_swap_fixture();
+        let hooks = ConfigSeedTestHooks {
+            fail_install: true,
+            fail_restore: true,
+            ..ConfigSeedTestHooks::default()
+        };
+
+        let report =
+            perform_config_seed_with_clock_and_hooks(&resolved, "restore-fail", &Utc::now, &hooks);
+
+        let ConfigSeedReport::FailedAfterLogicalRemoval(
+            ConfigSeedRollbackFailure::PreviousScopeStillStaged {
+                trash_path,
+                install_error,
+                restore_error,
+                ..
+            },
+        ) = report
+        else {
+            panic!("expected logical-removal failure, got {report:?}");
+        };
+        assert!(install_error.contains("injected config-seed install failure"));
+        assert!(restore_error.contains("injected config-seed restore failure"));
+        assert!(restore_error.contains("operation-owned previous config remains staged"));
+        assert_eq!(std::fs::read(trash_path.join("old.txt")).unwrap(), b"OLD");
+        assert!(!replica.join(".claude").exists());
+    }
+
+    #[test]
+    fn destination_appearing_before_restore_cannot_collapse_logical_removal() {
+        let (_temp, resolved, replica) = seed_swap_fixture();
+        let hooks = ConfigSeedTestHooks {
+            fail_install: true,
+            destination_appears_before_restore: true,
+            ..ConfigSeedTestHooks::default()
+        };
+
+        let report =
+            perform_config_seed_with_clock_and_hooks(&resolved, "dest-appeared", &Utc::now, &hooks);
+
+        let ConfigSeedReport::FailedAfterLogicalRemoval(
+            ConfigSeedRollbackFailure::PreviousScopeStillStaged { trash_path, .. },
+        ) = report
+        else {
+            panic!("expected logical-removal failure, got {report:?}");
+        };
+        assert_eq!(
+            std::fs::read(replica.join(".claude").join("foreign.txt")).unwrap(),
+            b"FOREIGN"
+        );
+        assert_eq!(std::fs::read(trash_path.join("old.txt")).unwrap(), b"OLD");
+    }
+
+    #[test]
+    fn staged_metadata_error_after_restore_failure_remains_logical_removal() {
+        let (_temp, resolved, _replica) = seed_swap_fixture();
+        let hooks = ConfigSeedTestHooks {
+            fail_install: true,
+            fail_restore: true,
+            fail_staged_metadata: true,
+            ..ConfigSeedTestHooks::default()
+        };
+
+        let report =
+            perform_config_seed_with_clock_and_hooks(&resolved, "metadata-fail", &Utc::now, &hooks);
+
+        let ConfigSeedReport::FailedAfterLogicalRemoval(
+            ConfigSeedRollbackFailure::PreviousScopeStillStaged { restore_error, .. },
+        ) = report
+        else {
+            panic!("expected logical-removal failure, got {report:?}");
+        };
+        assert!(restore_error.contains("injected metadata failure"));
+    }
+
+    #[test]
+    fn perform_refuses_to_recreate_a_stale_missing_replica() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("ws");
+        let replica = workspace.join("wg-1-team").join("__agent_x");
+        std::fs::create_dir_all(&replica).unwrap();
+        write_file(&workspace.join("default.claude").join("f.txt"), b"NEW");
+        let ctx = ctx_with(&replica, Some(&workspace), None);
+        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
+        std::fs::remove_dir_all(&replica).unwrap();
+
+        let report = perform_config_seed(&resolved, "stale");
+
+        assert!(matches!(
+            report,
+            ConfigSeedReport::Skipped(ConfigSeedSkipReason::StaleReplica { .. })
+        ));
+        assert!(!replica.exists());
+    }
+
+    #[test]
+    fn publication_carries_the_injected_commit_point_time() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("ws");
+        let replica = workspace.join("wg-1-team").join("__agent_x");
+        std::fs::create_dir_all(&replica).unwrap();
+        write_file(&workspace.join("default.claude").join("f.txt"), b"NEW");
+        let ctx = ctx_with(&replica, Some(&workspace), None);
+        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
+        let expected = DateTime::parse_from_rfc3339("2026-07-20T15:47:23.456Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let publication =
+            assert_published(perform_config_seed_with_clock(&resolved, "clock", &|| {
+                expected
+            }));
+
+        assert_eq!(publication.published_at, expected);
+    }
+
+    #[test]
+    fn collector_switches_irreversibly_to_constant_memory_at_the_row_bound() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("ws");
+        let replica = workspace.join("wg-1-team").join("__agent_x");
+        std::fs::create_dir_all(&replica).unwrap();
+        let ctx = ctx_with(&replica, Some(&workspace), None);
+        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
+        let mut collector = SeedFileCollector::new(&resolved, ConfigSeedTier::WorkspaceBase);
+        for index in 0..=MAX_MANIFEST_ROWS {
+            collector.record(PathBuf::from(format!("f-{index}")));
+        }
+
+        assert_eq!(
+            collector.finish(),
+            CollectedSeedFiles::OverBound {
+                reason: ResourceBoundKind::Rows,
+                observed_at_least: (MAX_MANIFEST_ROWS + 1) as u64,
+            }
         );
     }
 
@@ -757,7 +1523,7 @@ mod tests {
         let report = perform_config_seed(&resolved, "sfx");
         drop(locked);
 
-        assert_eq!(report, ConfigSeedReport::Skipped);
+        assert_skipped(report);
         // Existing config fully intact.
         assert_eq!(
             std::fs::read(replica.join(".claude").join("keep.txt")).unwrap(),
@@ -786,10 +1552,7 @@ mod tests {
 
         let ctx = ctx_with(&replica, Some(&workspace), None);
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
-        assert_eq!(
-            perform_config_seed(&resolved, "sfx"),
-            ConfigSeedReport::Seeded
-        );
+        assert_published(perform_config_seed(&resolved, "sfx"));
         assert_eq!(
             std::fs::read(replica.join(".claude").join("f.txt")).unwrap(),
             b"NEW"
@@ -818,10 +1581,7 @@ mod tests {
 
         let ctx = ctx_with(&replica, Some(&workspace), None);
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
-        assert_eq!(
-            perform_config_seed(&resolved, "NEWID"),
-            ConfigSeedReport::Seeded
-        );
+        assert_published(perform_config_seed(&resolved, "NEWID"));
         assert!(!replica.join(".claude.acseed-old-OLDID").exists());
         assert!(!replica.join(".claude.acseed-tmp-OLDID").exists());
     }
@@ -857,8 +1617,14 @@ mod tests {
         // rename(temp_A->dest) and restore(trash_A->dest) would both fail,
         // leaving the replica with NO .claude-amp -> the exact data loss the
         // chokepoint lock serializes against.
-        assert!(!temp_a.exists(), "prefix-sweep deletes a concurrent spawn's staged temp");
-        assert!(!trash_a.exists(), "prefix-sweep deletes a concurrent spawn's only old copy");
+        assert!(
+            !temp_a.exists(),
+            "prefix-sweep deletes a concurrent spawn's staged temp"
+        );
+        assert!(
+            !trash_a.exists(),
+            "prefix-sweep deletes a concurrent spawn's only old copy"
+        );
     }
 
     // ---- CatalogDefault tier (#769 P2: absent-only + non-empty) ------------
@@ -887,10 +1653,7 @@ mod tests {
         let resolved = with_catalog_default(resolved, &master);
 
         // dest absent + master non-empty -> CatalogDefault wins and fills.
-        assert_eq!(
-            perform_config_seed(&resolved, "sfx"),
-            ConfigSeedReport::Seeded
-        );
+        assert_published(perform_config_seed(&resolved, "sfx"));
         assert_eq!(
             std::fs::read(replica.join(".claude").join("settings.json")).unwrap(),
             b"{\"seeded\":true}"
@@ -914,7 +1677,7 @@ mod tests {
         let resolved = with_catalog_default(resolved, &master);
 
         // dest present -> CatalogDefault gate fails -> Skipped, dest fully intact.
-        assert_eq!(perform_config_seed(&resolved, "sfx"), ConfigSeedReport::Skipped);
+        assert_skipped(perform_config_seed(&resolved, "sfx"));
         assert_eq!(
             std::fs::read(replica.join(".claude").join("creds.json")).unwrap(),
             b"SECRET"
@@ -938,7 +1701,7 @@ mod tests {
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
         let resolved = with_catalog_default(resolved, &master);
 
-        assert_eq!(perform_config_seed(&resolved, "sfx"), ConfigSeedReport::Skipped);
+        assert_skipped(perform_config_seed(&resolved, "sfx"));
         assert!(!replica.join(".claude").exists());
     }
 
@@ -950,7 +1713,10 @@ mod tests {
         let workspace = temp.path().join("ws");
         let replica = workspace.join("wg-1-team").join("__agent_x");
         std::fs::create_dir_all(&replica).unwrap();
-        write_file(&workspace.join("default.claude").join("f.txt"), b"WORKSPACE");
+        write_file(
+            &workspace.join("default.claude").join("f.txt"),
+            b"WORKSPACE",
+        );
         let master = temp.path().join("master");
         write_file(&master.join("f.txt"), b"CATALOG");
 
@@ -958,7 +1724,7 @@ mod tests {
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
         let resolved = with_catalog_default(resolved, &master);
 
-        assert_eq!(perform_config_seed(&resolved, "sfx"), ConfigSeedReport::Seeded);
+        assert_published(perform_config_seed(&resolved, "sfx"));
         assert_eq!(
             std::fs::read(replica.join(".claude").join("f.txt")).unwrap(),
             b"WORKSPACE"
@@ -1137,10 +1903,7 @@ mod tests {
 
         let ctx = ctx_with(&replica, Some(&workspace), None);
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
-        assert_eq!(
-            perform_config_seed(&resolved, "sfx924"),
-            ConfigSeedReport::Seeded
-        );
+        assert_published(perform_config_seed(&resolved, "sfx924"));
 
         let out =
             std::fs::read_to_string(replica.join(".claude").join("settings.local.json")).unwrap();
@@ -1170,7 +1933,10 @@ mod tests {
         let ctx = ctx_with(&abs(r"C:\r", "/r"), Some(&abs(r"C:\ws", "/ws")), None);
         // Start already over the bound -> immediate Ok, nothing created.
         copy_tree(&src, &dst, MAX_SEED_DEPTH + 1, Some(&ctx), true).unwrap();
-        assert!(!dst.exists(), "over-depth call must not create the dst tree");
+        assert!(
+            !dst.exists(),
+            "over-depth call must not create the dst tree"
+        );
     }
 
     #[test]
@@ -1229,15 +1995,9 @@ mod tests {
                 .to_string_lossy()
                 .to_string(),
         );
-        let w = compute_config_dir_warning(
-            &dest,
-            "claude",
-            &[],
-            &BTreeMap::new(),
-            &profile_env,
-            None,
-        )
-        .expect("warning");
+        let w =
+            compute_config_dir_warning(&dest, "claude", &[], &BTreeMap::new(), &profile_env, None)
+                .expect("warning");
         assert!(w.contains("does not match"), "{w}");
     }
 
@@ -1294,7 +2054,10 @@ mod tests {
         // Gemini and Pi have no managed config-dir env; a custom command also yields None.
         for (shell, args) in [
             ("gemini", Vec::new()),
-            ("pi", vec!["--model".to_string(), "claude-sonnet".to_string()]),
+            (
+                "pi",
+                vec!["--model".to_string(), "claude-sonnet".to_string()],
+            ),
         ] {
             assert!(
                 compute_config_dir_warning(

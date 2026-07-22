@@ -1883,14 +1883,35 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
         };
 
         if let Some(ref target_filename) = target_filename {
-            match crate::config::session_context::materialize_agent_context_file_with_filename(
-                &cwd,
-                target_filename,
-                &managed_filenames,
-                is_coordinator,
-                auto_self_clear,
-                container_repos.as_ref(),
-            ) {
+            let context_result = coordinator
+                .run_blocking_seed_work({
+                    let cwd = cwd.clone();
+                    let target_filename = target_filename.clone();
+                    let managed_filenames = managed_filenames.clone();
+                    let container_repos = container_repos.clone();
+                    move || {
+                        crate::config::session_context::materialize_agent_context_file_with_filename(
+                            &cwd,
+                            &target_filename,
+                            &managed_filenames,
+                            is_coordinator,
+                            auto_self_clear,
+                            container_repos.as_ref(),
+                        )
+                    }
+                })
+                .await;
+            let context_result = match context_result {
+                Ok(result) => result,
+                Err(error) => {
+                    let error = format!("replica context blocking preparation failed: {error}");
+                    release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+                    drop(mgr);
+                    rollback_pre_created_session(app, session_mgr, pty_mgr, id, &error).await;
+                    return Err(error);
+                }
+            };
+            match context_result {
                 Ok(_) => {}
                 Err(e) => {
                     log::error!("Replica context validation failed: {}", e);
@@ -2032,11 +2053,26 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             // Under this lock any other-id scratch is truly stale, so the
             // leak-reclaim sweep stays safe. Clone the Arc out of State first so the
             // owned guard does not borrow a State temporary (E0716).
-            let _seed_guard = {
-                let lock = app.state::<crate::ConfigSeedLockState>().inner().clone();
-                lock.lock_owned().await
-            };
-            let _ = crate::config::config_seed::perform_config_seed(seed, &id.to_string());
+            let seed = seed.clone();
+            let lock = app.state::<crate::ConfigSeedLockState>().inner().clone();
+            let seed_result = coordinator
+                .run_blocking_seed_work(move || {
+                    let _seed_guard = lock.blocking_lock_owned();
+                    crate::config::config_seed::perform_config_seed(&seed, &id.to_string())
+                })
+                .await;
+            match seed_result {
+                Ok(report) => {
+                    log::debug!("[config-seed] session {} outcome: {:?}", id, report);
+                }
+                Err(error) => {
+                    let error = format!("config seed blocking preparation failed: {error}");
+                    release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+                    drop(mgr);
+                    rollback_pre_created_session(app, session_mgr, pty_mgr, id, &error).await;
+                    return Err(error);
+                }
+            }
         }
 
         let viewport = viewport.unwrap_or(PtyViewport::DEFAULT);

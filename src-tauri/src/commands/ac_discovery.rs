@@ -990,7 +990,7 @@ pub async fn discover_ac_agents(
     branch_watcher: State<'_, Arc<DiscoveryBranchWatcher>>,
     coordinator_clocks: State<'_, crate::config::coordinator_clocks::CoordinatorClocksState>,
 ) -> Result<AcDiscoveryResult, String> {
-    let cfg = settings.read().await;
+    let cfg = settings.read().await.clone();
     // #552 snapshot the persisted badge/auto-closed store once so the per-replica
     // scan below never locks inside the loop.
     let clocks_snapshot: std::collections::HashMap<
@@ -1003,8 +1003,8 @@ pub async fn discover_ac_agents(
     // Discovery-wide team snapshot — used per-replica for is_coordinator
     // and at the end for refresh_coordinator_flags. Computed once so a
     // single discovery pass presents a coherent coordinator view.
-    // Lock-safe: discover_teams() reads settings from disk via load_settings()
-    // and does NOT acquire SettingsState; the read guard above stays valid.
+    // Lock-safe: the settings snapshot is owned and the read guard was dropped
+    // before any filesystem scan.
     let teams_snapshot = crate::config::teams::discover_teams();
     let call_id = DISCOVERY_CALL_ID.fetch_add(1, Ordering::Relaxed);
     let mut agents: Vec<AcAgentMatrix> = Vec::new();
@@ -1050,13 +1050,26 @@ pub async fn discover_ac_agents(
 
             // Opportunistic: ensure gitignore exists for existing projects
             let _ = ensure_workspace_gitignore(&workspace_dir);
-            match crate::config::seeded_context_templates::scan_project_context_template_updates(
-                &repo_dir,
-                &workspace_dir,
-            ) {
-                Ok(mut updates) => context_template_updates.append(&mut updates),
-                Err(e) => log::warn!(
+            let context_scan = crate::config::seed_manifest::run_blocking_owned({
+                let repo_dir = repo_dir.clone();
+                let workspace_dir = workspace_dir.clone();
+                move || {
+                    crate::config::seeded_context_templates::scan_project_context_template_updates(
+                        &repo_dir,
+                        &workspace_dir,
+                    )
+                }
+            })
+            .await;
+            match context_scan {
+                Ok(Ok(mut updates)) => context_template_updates.append(&mut updates),
+                Ok(Err(e)) => log::warn!(
                     "[context-templates] scan failed for {}: {}",
+                    workspace_dir.display(),
+                    e
+                ),
+                Err(e) => log::warn!(
+                    "[context-templates] blocking scan failed for {}: {}",
                     workspace_dir.display(),
                     e
                 ),
@@ -1512,40 +1525,149 @@ pub(crate) fn ensure_workspace_gitignore(workspace_dir: &Path) -> Result<(), Str
 /// Create a canonical .ac/ directory inside the given path.
 #[tauri::command]
 pub async fn create_ac_project(path: String) -> Result<(), String> {
-    create_ac_project_impl(&path, |workspace_dir| {
-        crate::config::session_context::create_default_context_templates(workspace_dir)
+    crate::config::seed_manifest::run_blocking_owned(move || {
+        create_ac_project_impl(&path, |workspace_dir| {
+            crate::config::session_context::create_default_context_templates(workspace_dir)
+        })
     })
+    .await
+    .map_err(|error| format!("AC project blocking preparation failed: {error}"))?
 }
 
 fn create_ac_project_impl<F>(path: &str, create_context_templates: F) -> Result<(), String>
 where
     F: FnOnce(&Path) -> Result<(), String>,
 {
-    let workspace_dir = workspace_dir_for_project(Path::new(&path));
-    let created = !workspace_dir.exists();
-    std::fs::create_dir_all(&workspace_dir).map_err(|e| {
+    create_ac_project_impl_with_hook(path, create_context_templates, |_, _| {})
+}
+
+fn create_ac_project_impl_with_hook<F, H>(
+    path: &str,
+    create_context_templates: F,
+    after_create_before_gate: H,
+) -> Result<(), String>
+where
+    F: FnOnce(&Path) -> Result<(), String>,
+    H: FnOnce(&Path, bool),
+{
+    let project_dir =
+        crate::config::projects::absolutise(path).map_err(|error| error.to_string())?;
+    match std::fs::symlink_metadata(&project_dir) {
+        Ok(metadata) if !metadata.is_dir() => {
+            return Err(format!(
+                "Project path is not a directory: {}",
+                project_dir.display()
+            ))
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(&project_dir).map_err(|error| {
+                format!(
+                    "Failed to create project directory {}: {}",
+                    project_dir.display(),
+                    error
+                )
+            })?;
+        }
+        Err(error) => {
+            return Err(format!(
+                "Failed to inspect project directory {}: {}",
+                project_dir.display(),
+                error
+            ))
+        }
+    }
+
+    let workspace_dir = workspace_dir_for_project(&project_dir);
+    let created = match std::fs::create_dir(&workspace_dir) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+        Err(error) => {
+            return Err(format!(
+                "Failed to create {} directory: {}",
+                canonical_workspace_dir_label(),
+                error
+            ))
+        }
+    };
+    let pinned_project = crate::config::seed_manifest::PinnedDirectory::open(&project_dir)
+        .map_err(|error| {
+            format!(
+                "Failed to pin project directory {}: {}",
+                project_dir.display(),
+                error
+            )
+        })?;
+    let pinned_workspace = crate::config::seed_manifest::PinnedDirectory::open(&workspace_dir)
+        .map_err(|error| {
+            format!(
+                "Failed to pin {} directory {}: {}",
+                canonical_workspace_dir_label(),
+                workspace_dir.display(),
+                error
+            )
+        })?;
+    after_create_before_gate(&workspace_dir, created);
+    pinned_project.revalidate().map_err(|error| {
         format!(
-            "Failed to create {} directory: {}",
-            canonical_workspace_dir_label(),
-            e
+            "AC project setup at {} changed before gate acquisition: {}; retry the operation",
+            project_dir.display(),
+            error
+        )
+    })?;
+    pinned_workspace.revalidate().map_err(|error| {
+        format!(
+            "AC project setup at {} changed before gate acquisition: {}; retry the operation",
+            project_dir.display(),
+            error
+        )
+    })?;
+
+    let guard = crate::config::seed_manifest::ProjectSeedManifestGuard::acquire(&project_dir)
+        .map_err(|error| {
+            format!(
+                "AC project setup at {} changed or is unavailable: {}; retry the operation",
+                project_dir.display(),
+                error
+            )
+        })?;
+    pinned_project.revalidate().map_err(|error| {
+        format!(
+            "AC project setup at {} changed before gate acquisition: {}; retry the operation",
+            project_dir.display(),
+            error
+        )
+    })?;
+    pinned_workspace
+        .revalidate_at(guard.ac_root())
+        .map_err(|error| {
+            format!(
+                "AC project setup at {} changed before gate acquisition: {}; retry the operation",
+                project_dir.display(),
+                error
+            )
+        })?;
+    guard.revalidate_owner().map_err(|error| {
+        format!(
+            "AC project setup at {} changed while preparing: {}; retry the operation",
+            project_dir.display(),
+            error
         )
     })?;
     if created {
-        if let Err(err) = ensure_workspace_gitignore(&workspace_dir)
-            .and_then(|_| create_context_templates(&workspace_dir))
-        {
-            if let Err(cleanup_err) = std::fs::remove_dir_all(&workspace_dir) {
-                log::warn!(
-                    "Failed to clean up newly created {} directory after setup failure: {}",
-                    workspace_dir.display(),
-                    cleanup_err
-                );
-            }
-            return Err(err);
-        }
+        ensure_workspace_gitignore(&workspace_dir)
+            .and_then(|_| create_context_templates(&workspace_dir))?;
     } else {
         ensure_workspace_gitignore(&workspace_dir)?;
     }
+    guard.revalidate_owner().map_err(|error| {
+        format!(
+            "AC project setup at {} changed while preparing: {}; retry the operation",
+            project_dir.display(),
+            error
+        )
+    })?;
+    guard.release();
     Ok(())
 }
 
@@ -1585,7 +1707,7 @@ pub(crate) async fn discover_project_inner(
         return Err(format!("Path is not a directory: {}", path));
     }
 
-    let cfg = settings.read().await;
+    let cfg = settings.read().await.clone();
     // #552 snapshot the persisted badge/auto-closed store once (see discover_ac_agents).
     let clocks_snapshot: std::collections::HashMap<
         String,
@@ -1607,25 +1729,40 @@ pub(crate) async fn discover_project_inner(
 
     // Opportunistic: ensure gitignore protects workgroup clones
     let _ = ensure_workspace_gitignore(&workspace_dir);
-    let mut context_template_updates =
-        match crate::config::seeded_context_templates::scan_project_context_template_updates(
-            base,
-            &workspace_dir,
-        ) {
-            Ok(updates) => updates,
-            Err(e) => {
-                log::warn!(
-                    "[context-templates] scan failed for {}: {}",
-                    workspace_dir.display(),
-                    e
-                );
-                Vec::new()
-            }
-        };
+    let context_scan = crate::config::seed_manifest::run_blocking_owned({
+        let base = base.to_path_buf();
+        let workspace_dir = workspace_dir.clone();
+        move || {
+            crate::config::seeded_context_templates::scan_project_context_template_updates(
+                &base,
+                &workspace_dir,
+            )
+        }
+    })
+    .await;
+    let mut context_template_updates = match context_scan {
+        Ok(Ok(updates)) => updates,
+        Ok(Err(e)) => {
+            log::warn!(
+                "[context-templates] scan failed for {}: {}",
+                workspace_dir.display(),
+                e
+            );
+            Vec::new()
+        }
+        Err(e) => {
+            log::warn!(
+                "[context-templates] blocking scan failed for {}: {}",
+                workspace_dir.display(),
+                e
+            );
+            Vec::new()
+        }
+    };
 
     // Discovery-wide team snapshot — see discover_ac_agents for rationale.
-    // Lock-safe: discover_teams() reads settings from disk via load_settings()
-    // and does NOT acquire SettingsState; the read guard above stays valid.
+    // Lock-safe: the settings snapshot is owned and the read guard was dropped
+    // before any filesystem scan.
     // Placed AFTER the workspace-missing early return so non-AC folders don't
     // pay a wasted filesystem scan (§15 Finding F1).
     let teams_snapshot = crate::config::teams::discover_teams();
@@ -1993,12 +2130,16 @@ pub async fn overwrite_context_template_with_default(
 ) -> Result<crate::config::seeded_context_templates::ContextTemplateOverwriteResult, String> {
     let workspace_dir = existing_workspace_dir(Path::new(&path))
         .ok_or_else(|| format!("Project AC Root not found for {}", path))?;
-    crate::config::seeded_context_templates::overwrite_context_template_with_default(
-        &workspace_dir,
-        &filename,
-        &current_file_sha256,
-        &current_default_sha256,
-    )
+    crate::config::seed_manifest::run_blocking_owned(move || {
+        crate::config::seeded_context_templates::overwrite_context_template_with_default(
+            &workspace_dir,
+            &filename,
+            &current_file_sha256,
+            &current_default_sha256,
+        )
+    })
+    .await
+    .map_err(|error| format!("context template overwrite blocking task failed: {error}"))?
 }
 
 /// Read the `context` array from a replica's config.json.
@@ -2248,13 +2389,138 @@ async fn new_project_inner_with_settings_path(
     path: &str,
     settings_path: Option<&Path>,
 ) -> Result<(crate::config::projects::ProjectRegistration, bool), String> {
-    mutate_project_paths_with_settings_path(settings, settings_path, |s| {
-        let before = s.archived_project_paths.clone();
-        let result =
-            crate::config::projects::register_new_project(s, path).map_err(|e| e.to_string())?;
-        Ok((result, before != s.archived_project_paths))
+    new_project_inner_with_settings_path_and_hooks(
+        settings,
+        path,
+        settings_path,
+        NewProjectTransactionHooks::default(),
+    )
+    .await
+}
+
+#[cfg(test)]
+type NewProjectFinalRevalidationHook = std::sync::Arc<dyn Fn(&Path) + Send + Sync>;
+
+#[derive(Clone, Default)]
+struct NewProjectTransactionHooks {
+    #[cfg(test)]
+    fail_settings_save: bool,
+    #[cfg(test)]
+    before_final_revalidation: Option<NewProjectFinalRevalidationHook>,
+}
+
+impl NewProjectTransactionHooks {
+    fn save_settings(
+        &self,
+        settings: &crate::config::settings::AppSettings,
+        settings_path: Option<&Path>,
+    ) -> Result<crate::config::settings::AppSettings, String> {
+        #[cfg(test)]
+        if self.fail_settings_save {
+            return Err("injected new-project settings save failure".to_string());
+        }
+        // #1077 reconciliation: persist through the reconcile writer so the project
+        // fields are rebuilt from the resynced runtime_authoritative hidden state,
+        // and return the fresh-decoded settings for the caller to publish (§4.2).
+        // Mirrors mutate_project_paths_with_settings_path.
+        let path_buf;
+        let path: &Path = match settings_path {
+            Some(p) => p,
+            None => {
+                path_buf = crate::config::config_dir()
+                    .ok_or("Could not determine settings directory")?
+                    .join("settings.json");
+                &path_buf
+            }
+        };
+        crate::config::settings::reconcile_project_state_to_path(settings, path, true, true)
+    }
+
+    fn before_final_revalidation(&self, workspace_dir: &Path) {
+        #[cfg(test)]
+        if let Some(hook) = &self.before_final_revalidation {
+            hook(workspace_dir);
+        }
+        #[cfg(not(test))]
+        let _ = workspace_dir;
+    }
+}
+
+async fn new_project_inner_with_settings_path_and_hooks(
+    settings: &SettingsState,
+    path: &str,
+    settings_path: Option<&Path>,
+    hooks: NewProjectTransactionHooks,
+) -> Result<(crate::config::projects::ProjectRegistration, bool), String> {
+    let path = path.to_string();
+    let settings = std::sync::Arc::clone(settings);
+    let settings_path = settings_path.map(Path::to_path_buf);
+    crate::config::seed_manifest::run_blocking_owned(move || {
+        let prepared = crate::config::projects::prepare_new_project(&path)
+            .map_err(|error| error.to_string())?;
+        let mut current = settings.blocking_write();
+        if let Some(path) = settings_path.as_deref() {
+            crate::config::settings::refresh_project_paths_from_path(&mut current, path)?;
+        } else {
+            crate::config::settings::refresh_project_paths_from_disk(&mut current)?;
+        }
+        // #1077 parity: structural project corruption blocks the registration,
+        // exactly as mutate_project_paths_with_settings_path does for the
+        // open/remove/archive mutators.
+        if crate::config::settings::project_state_has_structural(&current) {
+            return Err(
+                "settings.json has malformed project metadata; refusing to modify the project list. Fix or remove the corrupt project fields first.".to_string(),
+            );
+        }
+
+        let before_settings = current.clone();
+        let before_archived = current.archived_project_paths.clone();
+        let result = crate::config::projects::commit_prepared_new_project(&mut current, &prepared);
+        // #1077 reconciliation step 1: rebuild the hidden state runtime_authoritative
+        // from the upserted runtime lists so the reconcile write emits the runtime
+        // selection rather than the stale disk projection.
+        crate::config::settings::resync_project_state_from_runtime(&mut current);
+        if let Err(error) = prepared.revalidate() {
+            *current = before_settings;
+            return Err(error.to_string());
+        }
+
+        let snapshot = current.clone();
+        // Preserve the established save-failure contract: once the deliberate
+        // upsert is in live memory, a disk-save error is returned without
+        // reverting that in-memory list.
+        let written = hooks.save_settings(&snapshot, settings_path.as_deref())?;
+        // §4.2: publish the fresh-decoded settings (selected runtime + hidden state).
+        *current = written;
+        hooks.before_final_revalidation(prepared.workspace_dir());
+        if let Err(error) = prepared.revalidate() {
+            // #1077 reconciliation step 3: resync the pre-mutation snapshot so its
+            // pre-mutation runtime list writes runtime_authoritative and CLEARS the
+            // earlier disk entry; publish the fresh-decoded value on success.
+            let mut reverted = before_settings.clone();
+            crate::config::settings::resync_project_state_from_runtime(&mut reverted);
+            let rollback = hooks.save_settings(&reverted, settings_path.as_deref());
+            return Err(match rollback {
+                Ok(written) => {
+                    *current = written;
+                    error.to_string()
+                }
+                Err(rollback_error) => {
+                    *current = reverted;
+                    format!(
+                        "{}; failed to roll back project registration settings: {}",
+                        error, rollback_error
+                    )
+                }
+            });
+        }
+        let archived_changed = before_archived != current.archived_project_paths;
+        drop(current);
+        prepared.release();
+        Ok((result, archived_changed))
     })
     .await
+    .map_err(|error| format!("new project blocking transaction failed: {error}"))?
 }
 
 /// #778 Part 3: targeted project removal. `project_paths` is disk-authoritative
@@ -3525,7 +3791,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_ac_project_retries_after_failed_fresh_seed() {
+    async fn create_ac_project_preserves_partial_root_for_registration_repair() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().to_string_lossy().to_string();
 
@@ -3541,17 +3807,28 @@ mod tests {
 
         assert!(first_result.is_err());
         assert!(
-            !tmp.path().join(".ac").exists(),
-            "fresh .ac directory should be cleaned up after seed failure"
+            tmp.path().join(".ac").exists(),
+            "fresh partial .ac directory must remain after seed failure"
         );
 
-        create_ac_project(path).await.expect("retry create project");
+        create_ac_project(path.clone())
+            .await
+            .expect("bare retry keeps the existing project");
 
         assert!(tmp
             .path()
             .join(".ac")
             .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME)
             .is_file());
+        assert!(!tmp
+            .path()
+            .join(".ac")
+            .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+            .exists());
+
+        let mut settings = crate::config::settings::AppSettings::default();
+        crate::config::projects::register_new_project(&mut settings, &path)
+            .expect("registration repairs the partial project");
         assert!(tmp
             .path()
             .join(".ac")
@@ -3575,6 +3852,54 @@ mod tests {
         assert!(!workspace
             .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
             .exists());
+    }
+
+    #[test]
+    fn create_ac_project_creation_intent_comes_only_from_the_create_dir_winner() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().to_string_lossy().to_string();
+        let creator_path = path.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let creator = std::thread::spawn(move || {
+            create_ac_project_impl_with_hook(
+                &creator_path,
+                |workspace_dir| {
+                    crate::config::session_context::create_default_context_templates(workspace_dir)
+                },
+                move |_, created| {
+                    assert!(created, "creator must own the create_dir win");
+                    ready_tx.send(()).expect("signal visible root");
+                    release_rx
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .expect("release creator");
+                },
+            )
+        });
+
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("creator published .ac");
+        create_ac_project_impl(&path, |_| {
+            panic!("create_dir loser must not backfill context templates")
+        })
+        .expect("contending bare create");
+        assert!(!tmp
+            .path()
+            .join(".ac")
+            .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME)
+            .exists());
+
+        release_tx.send(()).expect("release creator");
+        creator
+            .join()
+            .expect("join creator")
+            .expect("creator completes");
+        assert!(tmp
+            .path()
+            .join(".ac")
+            .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME)
+            .is_file());
     }
 
     #[tokio::test]
@@ -3651,6 +3976,125 @@ mod tests {
             vec!["proj-b", "proj-c", "proj-d"],
             "B and C must not be lost"
         );
+    }
+
+    #[tokio::test]
+    async fn new_project_settings_save_failure_keeps_live_registration_and_valid_root() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let settings_path = temp.path().join("settings.json");
+        let project = temp.path().join("project");
+        let project_text = project.to_string_lossy().to_string();
+        let state: SettingsState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(AppSettings::default()));
+        let hooks = NewProjectTransactionHooks {
+            fail_settings_save: true,
+            ..NewProjectTransactionHooks::default()
+        };
+
+        let error = new_project_inner_with_settings_path_and_hooks(
+            &state,
+            &project_text,
+            Some(&settings_path),
+            hooks,
+        )
+        .await
+        .expect_err("injected save failure must surface");
+
+        assert!(error.contains("injected new-project settings save failure"));
+        assert_eq!(state.read().await.project_paths, vec![project_text]);
+        assert!(!settings_path.exists());
+        assert!(project
+            .join(".ac")
+            .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME)
+            .is_file());
+        assert!(project
+            .join(".ac")
+            .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+            .is_file());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn new_project_replacement_after_save_rolls_back_registration_and_is_retryable() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let settings_path = temp.path().join("settings.json");
+        let project = temp.path().join("project");
+        let project_text = project.to_string_lossy().to_string();
+        let state: SettingsState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(AppSettings::default()));
+        let hooks = NewProjectTransactionHooks {
+            before_final_revalidation: Some(std::sync::Arc::new(|workspace_dir| {
+                let detached = workspace_dir.with_extension("ac-detached-after-save");
+                std::fs::rename(workspace_dir, &detached).expect("detach prepared root");
+                std::fs::create_dir(workspace_dir).expect("install replacement root");
+                std::fs::write(workspace_dir.join("foreign.txt"), b"FOREIGN")
+                    .expect("write replacement marker");
+            })),
+            ..NewProjectTransactionHooks::default()
+        };
+
+        let error = new_project_inner_with_settings_path_and_hooks(
+            &state,
+            &project_text,
+            Some(&settings_path),
+            hooks,
+        )
+        .await
+        .expect_err("replacement must reject registration");
+
+        assert!(error.contains("retry the operation"));
+        assert!(state.read().await.project_paths.is_empty());
+        let disk: AppSettings =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        assert!(disk.project_paths.is_empty());
+        assert_eq!(
+            std::fs::read(project.join(".ac").join("foreign.txt")).unwrap(),
+            b"FOREIGN"
+        );
+        assert!(!project
+            .join(".ac")
+            .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME)
+            .exists());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn new_project_lock_replacement_after_save_rolls_back_registration_and_is_retryable() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let settings_path = temp.path().join("settings.json");
+        let project = temp.path().join("project");
+        let project_text = project.to_string_lossy().to_string();
+        let state: SettingsState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(AppSettings::default()));
+        let hooks = NewProjectTransactionHooks {
+            before_final_revalidation: Some(std::sync::Arc::new(|workspace_dir| {
+                let lock =
+                    workspace_dir.join(crate::config::seed_manifest::SEED_MANIFEST_LOCK_FILENAME);
+                let detached = workspace_dir.join(".seed-manifest.lock-detached-after-save");
+                std::fs::rename(&lock, &detached).expect("detach held lock identity");
+                std::fs::write(&lock, b"").expect("install replacement lock identity");
+            })),
+            ..NewProjectTransactionHooks::default()
+        };
+
+        let error = new_project_inner_with_settings_path_and_hooks(
+            &state,
+            &project_text,
+            Some(&settings_path),
+            hooks,
+        )
+        .await
+        .expect_err("lock replacement must reject registration");
+
+        assert!(error.contains("retry the operation"));
+        assert!(state.read().await.project_paths.is_empty());
+        let disk: AppSettings =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        assert!(disk.project_paths.is_empty());
+        assert!(project
+            .join(".ac")
+            .join(".seed-manifest.lock-detached-after-save")
+            .is_file());
     }
 
     #[tokio::test]

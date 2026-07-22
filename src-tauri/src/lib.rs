@@ -2483,20 +2483,25 @@ pub fn run(
                     log::info!("[shutdown] Triggering background task shutdown (async, not awaited)...");
                     shutdown_for_exit.trigger();
 
-                    // #1056 joins the alert delivery slot and actor before selection or PTY
-                    // teardown, so no notice task is intentionally detached.
-                    if let Some(monitor) = app_handle.try_state::<
-                        Arc<crate::session::context_alerts::ContextAlertMonitor>,
-                    >() {
-                        if let Err(error) = tauri::async_runtime::block_on(monitor.close_and_join()) {
-                            log::warn!("[shutdown] context alert monitor join failed: {}", error);
-                        }
+                    let context_alert_monitor = app_handle
+                        .try_state::<Arc<crate::session::context_alerts::ContextAlertMonitor>>()
+                        .map(|monitor| Arc::clone(monitor.inner()));
+                    if let Some(monitor) = context_alert_monitor.as_ref() {
+                        monitor.request_close();
                     }
 
                     let selection_shutdown = tauri::async_runtime::block_on(
                         selection_coordinator_for_exit.close_and_join(),
                     );
                     log::info!("[shutdown] selection coordinator joined before global cleanup");
+
+                    // Selection shutdown seals and accounts for session preparation before
+                    // the alert actor consumes its sole join handle.
+                    if let Some(monitor) = context_alert_monitor {
+                        if let Err(error) = tauri::async_runtime::block_on(monitor.close_and_join()) {
+                            log::warn!("[shutdown] context alert monitor join failed: {}", error);
+                        }
+                    }
 
                     // #632 A - kill every agent's Job Object: atomically terminates
                     // each jobbed session's whole descendant tree via the job handle.

@@ -15,6 +15,8 @@ use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use uuid::Uuid;
@@ -28,9 +30,9 @@ const MANAGED_HEADER: &str =
 const SCHEMA_VERSION: u32 = 1;
 const COVERAGE_VERSION: u32 = 1;
 const COVERAGE: [&str; 2] = ["project_context_templates", "replica_config_folders"];
-const MAX_MANIFEST_BYTES: u64 = 128 * 1024 * 1024;
-const MAX_MANIFEST_ROWS: usize = 250_000;
-const MAX_FIELD_BYTES: usize = 256 * 1024;
+pub(crate) const MAX_MANIFEST_BYTES: u64 = 128 * 1024 * 1024;
+pub(crate) const MAX_MANIFEST_ROWS: usize = 250_000;
+pub(crate) const MAX_FIELD_BYTES: usize = 256 * 1024;
 const RAW_COMPARE_BUFFER_BYTES: usize = 64 * 1024;
 const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_LOCK_POLL: Duration = Duration::from_millis(50);
@@ -1315,6 +1317,51 @@ fn toml_basic_string_escaped_len(value: &str) -> Result<usize, SeedManifestError
     Ok(length)
 }
 
+/// Exact serialized contribution of one config row in the fixed v1 wire
+/// layout. Config staging uses this before retaining another path identity so a
+/// successful physical copy never requires an unbounded metadata allocation.
+pub(crate) fn exact_config_row_serialized_len(
+    project_relative_path: &Path,
+    scope: &str,
+    source: ManifestSource,
+) -> Result<usize, SeedManifestError> {
+    let path = ManifestPathIdentity::from_relative_path(project_relative_path)?;
+    parse_config_scope(scope)?;
+    let mut length = "\n[[files]]\n".len();
+    checked_add(&mut length, "path = \"\"\n".len())?;
+    checked_add(
+        &mut length,
+        toml_basic_string_escaped_len(&path.serialized)?,
+    )?;
+    checked_add(&mut length, "path_encoding = \"\"\n".len())?;
+    checked_add(
+        &mut length,
+        toml_basic_string_escaped_len(path.encoding.as_str())?,
+    )?;
+    checked_add(&mut length, "kind = \"\"\n".len())?;
+    checked_add(
+        &mut length,
+        toml_basic_string_escaped_len(ManifestFileKind::ReplicaConfigFile.as_str())?,
+    )?;
+    checked_add(&mut length, "scope = \"\"\n".len())?;
+    checked_add(&mut length, toml_basic_string_escaped_len(scope)?)?;
+    checked_add(&mut length, "source = \"\"\n".len())?;
+    checked_add(&mut length, toml_basic_string_escaped_len(source.as_str())?)?;
+    checked_add(&mut length, "last_seeded_at = \"\"\n".len())?;
+    checked_add(
+        &mut length,
+        toml_basic_string_escaped_len("1970-01-01T00:00:00.000Z")?,
+    )?;
+    Ok(length)
+}
+
+pub(crate) fn config_batch_base_serialized_len() -> usize {
+    MANAGED_HEADER.len()
+        + "schema_version = 1\n".len()
+        + "coverage_version = 1\n".len()
+        + "coverage = [\"project_context_templates\", \"replica_config_folders\"]\n".len()
+}
+
 fn exact_serialized_len(state: &ManifestState) -> Result<usize, SeedManifestError> {
     exact_serialized_len_with_limit(state, MAX_MANIFEST_BYTES)
 }
@@ -1507,14 +1554,14 @@ struct HandleFacts {
 }
 
 #[derive(Debug)]
-struct PinnedDirectory {
+pub(crate) struct PinnedDirectory {
     path: PathBuf,
     file: File,
     identity: FileIdentity,
 }
 
 impl PinnedDirectory {
-    fn open(path: &Path) -> Result<Self, SeedManifestError> {
+    pub(crate) fn open(path: &Path) -> Result<Self, SeedManifestError> {
         let file = open_directory_no_follow(path).map_err(|source| {
             classify_open_error(path, source, "open directory without following links", true)
         })?;
@@ -1536,11 +1583,15 @@ impl PinnedDirectory {
         })
     }
 
-    fn revalidate(&self) -> Result<(), SeedManifestError> {
-        let reopened = Self::open(&self.path)?;
+    pub(crate) fn revalidate(&self) -> Result<(), SeedManifestError> {
+        self.revalidate_at(&self.path)
+    }
+
+    pub(crate) fn revalidate_at(&self, path: &Path) -> Result<(), SeedManifestError> {
+        let reopened = Self::open(path)?;
         if reopened.identity != self.identity {
             return Err(SeedManifestError::UnsafePath {
-                path: self.path.clone(),
+                path: path.to_path_buf(),
                 reason: "directory identity changed while the project gate was held".to_string(),
             });
         }
@@ -2842,11 +2893,104 @@ pub(crate) struct ManifestActivationToken {
 
 impl ManifestActivationToken {
     #[cfg(test)]
-    fn for_test() -> Self {
+    pub(crate) fn for_test() -> Self {
         Self { _private: () }
     }
 
     fn authorize(&self) {}
+}
+
+const BLOCKING_WORK_QUEUED: u8 = 0;
+const BLOCKING_WORK_STARTED: u8 = 1;
+const BLOCKING_WORK_CANCELED: u8 = 2;
+
+#[derive(Debug, Error)]
+pub(crate) enum BlockingTaskError {
+    #[error("blocking task canceled before start")]
+    CanceledBeforeStart,
+    #[error("blocking task join failed: {0}")]
+    Join(#[source] tokio::task::JoinError),
+}
+
+enum BlockingWorkResult<T> {
+    Completed(T),
+    CanceledBeforeStart,
+}
+
+struct BlockingWaiterGuard {
+    state: Arc<AtomicU8>,
+    abort: tokio::task::AbortHandle,
+    armed: bool,
+}
+
+impl BlockingWaiterGuard {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for BlockingWaiterGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        if self
+            .state
+            .compare_exchange(
+                BLOCKING_WORK_QUEUED,
+                BLOCKING_WORK_CANCELED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            self.abort.abort();
+        }
+    }
+}
+
+/// Runs blocking work with explicit ownership of the queued-to-start boundary.
+/// Dropping an unpolled future schedules nothing. Dropping a polled waiter
+/// cancels work that is still queued, while already-started work remains owned
+/// by the blocking worker and runs to completion.
+pub(crate) async fn run_blocking_owned<F, T>(work: F) -> Result<T, BlockingTaskError>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let state = Arc::new(AtomicU8::new(BLOCKING_WORK_QUEUED));
+    let worker_state = Arc::clone(&state);
+    let handle = tokio::task::spawn_blocking(move || {
+        if worker_state
+            .compare_exchange(
+                BLOCKING_WORK_QUEUED,
+                BLOCKING_WORK_STARTED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return BlockingWorkResult::CanceledBeforeStart;
+        }
+        BlockingWorkResult::Completed(work())
+    });
+    let mut waiter = BlockingWaiterGuard {
+        state: Arc::clone(&state),
+        abort: handle.abort_handle(),
+        armed: true,
+    };
+    let joined = handle.await;
+    waiter.disarm();
+    match joined {
+        Ok(BlockingWorkResult::Completed(result)) => Ok(result),
+        Ok(BlockingWorkResult::CanceledBeforeStart) => Err(BlockingTaskError::CanceledBeforeStart),
+        Err(error)
+            if error.is_cancelled() && state.load(Ordering::Acquire) == BLOCKING_WORK_CANCELED =>
+        {
+            Err(BlockingTaskError::CanceledBeforeStart)
+        }
+        Err(error) => Err(BlockingTaskError::Join(error)),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -3210,7 +3354,112 @@ fn log_record_failure(scope: &str, error: &SeedManifestError) {
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
     use std::sync::Arc;
+
+    #[tokio::test]
+    async fn blocking_owned_drop_before_first_poll_schedules_nothing() {
+        struct DropProbe(Arc<AtomicBool>);
+
+        impl Drop for DropProbe {
+            fn drop(&mut self) {
+                self.0.store(true, AtomicOrdering::Release);
+            }
+        }
+
+        let ran = Arc::new(AtomicBool::new(false));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let drop_probe = DropProbe(Arc::clone(&dropped));
+        let future = run_blocking_owned({
+            let ran = Arc::clone(&ran);
+            move || {
+                let _drop_probe = drop_probe;
+                ran.store(true, AtomicOrdering::Release);
+            }
+        });
+        drop(future);
+        tokio::task::yield_now().await;
+        assert!(!ran.load(AtomicOrdering::Acquire));
+        assert!(dropped.load(AtomicOrdering::Acquire));
+    }
+
+    #[test]
+    fn blocking_owned_drop_while_queued_suppresses_user_work() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            let (blocker_started_tx, blocker_started_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let blocker = tokio::task::spawn_blocking(move || {
+                blocker_started_tx.send(()).expect("signal blocker");
+                release_rx.recv().expect("release blocker");
+            });
+            blocker_started_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("blocking pool occupied");
+
+            let ran = Arc::new(AtomicBool::new(false));
+            let waiter = tokio::spawn(run_blocking_owned({
+                let ran = Arc::clone(&ran);
+                move || ran.store(true, AtomicOrdering::Release)
+            }));
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
+            waiter.abort();
+            let _ = waiter.await;
+            release_tx.send(()).expect("release blocking pool");
+            blocker.await.expect("join blocker");
+            tokio::task::yield_now().await;
+            assert!(!ran.load(AtomicOrdering::Acquire));
+        });
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn blocking_owned_started_work_finishes_after_waiter_drop() {
+        let started = Arc::new(AtomicBool::new(false));
+        let completed = Arc::new(AtomicBool::new(false));
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let waiter = tokio::spawn(run_blocking_owned({
+            let started = Arc::clone(&started);
+            let completed = Arc::clone(&completed);
+            move || {
+                started.store(true, AtomicOrdering::Release);
+                release_rx.recv().expect("release started work");
+                completed.store(true, AtomicOrdering::Release);
+            }
+        }));
+        while !started.load(AtomicOrdering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+        waiter.abort();
+        let _ = waiter.await;
+        release_tx.send(()).expect("release worker");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !completed.load(AtomicOrdering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("started work must remain self-owned");
+    }
+
+    #[tokio::test]
+    async fn blocking_owned_surfaces_worker_panic_as_join_error() {
+        let error = run_blocking_owned(|| -> () { panic!("injected blocking panic") })
+            .await
+            .expect_err("panic must surface as a join error");
+        let BlockingTaskError::Join(join_error) = &error else {
+            panic!("expected typed join error, got {error:?}");
+        };
+        assert!(join_error.is_panic());
+        let source = std::error::Error::source(&error).expect("join error remains the source");
+        assert!(source.downcast_ref::<tokio::task::JoinError>().is_some());
+    }
 
     fn timestamp(value: &str) -> DateTime<Utc> {
         DateTime::parse_from_rfc3339(value)
