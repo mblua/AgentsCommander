@@ -88,6 +88,18 @@ pub trait ContextSampleSink: Send + Sync {
     fn observe(&self, sample: ContextSample);
 }
 
+/// #1088 - where a tick's changed readings go to be written onto their sessions
+/// and persisted to `sessions.json` so the disk-reading CLI can surface them.
+///
+/// Like the other sinks, the scraper holds ONLY this narrow trait: the concrete
+/// impl (`lib.rs`) owns the `SessionManager` handle, so the scraper never gains
+/// the ability to route, inject, wake, or destroy - preserving the module's
+/// stated capability boundary. `BoxFuture` (like `ContextPatternSource`) because
+/// `commit` must `await` the manager lock and the sessions save path.
+pub trait ContextPersistSink: Send + Sync {
+    fn commit(&self, changed: Vec<(Uuid, Option<u8>)>) -> BoxFuture<'_, ()>;
+}
+
 /// The IPC contract, normative for #1033.
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -153,6 +165,10 @@ pub struct ContextScraper {
     patterns: Arc<dyn ContextPatternSource>,
     sink: Arc<dyn ContextEventSink>,
     samples: Arc<dyn ContextSampleSink>,
+    /// #1088 - the fifth narrow sink: commits a tick's changed readings onto
+    /// their sessions and triggers the whole-file persist. The concrete impl
+    /// (`lib.rs`) owns the `SessionManager` handle; the scraper holds only this.
+    persist: Arc<dyn ContextPersistSink>,
     registered: Mutex<HashMap<Uuid, Registered>>,
     compiled: Mutex<HashMap<String, Cached>>,
     /// Rotates the sorted producer order so partial saturation cannot starve a fixed tail.
@@ -168,12 +184,14 @@ impl ContextScraper {
         patterns: Arc<dyn ContextPatternSource>,
         sink: Arc<dyn ContextEventSink>,
         samples: Arc<dyn ContextSampleSink>,
+        persist: Arc<dyn ContextPersistSink>,
     ) -> Arc<Self> {
         Arc::new(Self {
             rows,
             patterns,
             sink,
             samples,
+            persist,
             registered: Mutex::new(HashMap::new()),
             compiled: Mutex::new(HashMap::new()),
             sample_cursor: AtomicUsize::new(0),
@@ -304,6 +322,10 @@ impl ContextScraper {
         }
 
         let mut over: Vec<Uuid> = Vec::new();
+        // #1088 - accumulate this tick's changed readings, handed to the persist
+        // sink exactly once after the loop (coalesced: <=1 whole-file write per
+        // tick regardless of how many sessions changed).
+        let mut changed_readings: Vec<(Uuid, Option<u8>)> = Vec::new();
 
         for (id, agent_id) in ids {
             let usable_pattern = patterns
@@ -360,6 +382,9 @@ impl ContextScraper {
                     session_id: id.to_string(),
                     percent: reading,
                 });
+                // #1088 - same change-gate that drives the badge drives the
+                // persist, so the CLI value tracks the badge point-for-point.
+                changed_readings.push((id, reading));
             }
 
             if session_over {
@@ -371,6 +396,16 @@ impl ContextScraper {
         if !over.is_empty() {
             let mut registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
             registered.retain(|id, _| !over.contains(id));
+        }
+
+        // #1088 - hand this tick's changed readings to the persist sink exactly
+        // once. Order-independent with the `over` pruning above. The `registered`
+        // std Mutex is scoped to the loop/prune blocks and released before this
+        // `.await`, so no std guard is held across the commit. Empty vector =>
+        // no commit call, so an all-unchanged tick takes no manager lock and
+        // performs no write.
+        if !changed_readings.is_empty() {
+            self.persist.commit(changed_readings).await;
         }
     }
 
@@ -526,22 +561,49 @@ mod tests {
         }
     }
 
+    /// One recorded `commit` call: the changed `(id, percent)` pairs for one tick.
+    type CommittedTick = Vec<(Uuid, Option<u8>)>;
+
+    /// #1088 - records every `commit(changed)` the scraper hands the persist sink.
+    /// Each element is one tick's committed vector; `commits().len()` is the commit
+    /// call count (0 when a tick changed nothing).
+    #[derive(Default)]
+    struct PersistFake {
+        commits: StdMutex<Vec<CommittedTick>>,
+    }
+
+    impl PersistFake {
+        fn commits(&self) -> Vec<CommittedTick> {
+            self.commits.lock().unwrap().clone()
+        }
+    }
+
+    impl ContextPersistSink for PersistFake {
+        fn commit(&self, changed: Vec<(Uuid, Option<u8>)>) -> BoxFuture<'_, ()> {
+            self.commits.lock().unwrap().push(changed);
+            Box::pin(async {})
+        }
+    }
+
     struct Harness {
         scraper: Arc<ContextScraper>,
         rows: Arc<RowsFake>,
         patterns: Arc<PatternFake>,
         sink: Arc<SinkFake>,
         samples: Arc<SamplesFake>,
+        persist: Arc<PersistFake>,
     }
 
     fn harness(rows: Arc<RowsFake>, patterns: Arc<PatternFake>) -> Harness {
         let sink = Arc::new(SinkFake::default());
         let samples = Arc::new(SamplesFake::default());
+        let persist = Arc::new(PersistFake::default());
         let scraper = ContextScraper::new(
             Arc::clone(&rows) as Arc<dyn ScreenRowsSource>,
             Arc::clone(&patterns) as Arc<dyn ContextPatternSource>,
             Arc::clone(&sink) as Arc<dyn ContextEventSink>,
             Arc::clone(&samples) as Arc<dyn ContextSampleSink>,
+            Arc::clone(&persist) as Arc<dyn ContextPersistSink>,
         );
         Harness {
             scraper,
@@ -549,6 +611,7 @@ mod tests {
             patterns,
             sink,
             samples,
+            persist,
         }
     }
 
@@ -932,6 +995,99 @@ mod tests {
             "both sessions are new to the badge, so both emit"
         );
         assert_eq!(h.scraper.compile_count(), 1, "one agent, one compile");
+    }
+
+    // ── #1088: the coalesced per-tick persist hand-off ──
+
+    #[tokio::test]
+    async fn a_changed_reading_commits_once_and_is_independent_of_badge_and_samples() {
+        let h = harness(
+            RowsFake::scripted(vec![ScreenRowsRead::Rows(vec![row(42)])]),
+            PatternFake::with(AGENT, CLAUDE),
+        );
+        let id = Uuid::new_v4();
+        h.scraper.register_session(id, AGENT.to_string());
+
+        h.scraper.tick().await;
+
+        assert_eq!(h.persist.commits(), vec![vec![(id, Some(42))]]);
+        // The badge and sample paths still behave exactly as before.
+        assert_eq!(h.sink.emitted(), vec![Some(42)]);
+        assert_eq!(h.samples.observed().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_reading_does_not_commit_again() {
+        let h = harness(
+            RowsFake::scripted(vec![
+                ScreenRowsRead::Rows(vec![row(42)]),
+                ScreenRowsRead::Rows(vec![row(42)]),
+            ]),
+            PatternFake::with(AGENT, CLAUDE),
+        );
+        let id = Uuid::new_v4();
+        h.scraper.register_session(id, AGENT.to_string());
+
+        h.scraper.tick().await;
+        assert_eq!(
+            h.persist.commits(),
+            vec![vec![(id, Some(42))]],
+            "the first reading commits once"
+        );
+
+        // Second tick: reading unchanged => change-gate suppresses => no new commit.
+        h.scraper.tick().await;
+        assert_eq!(
+            h.persist.commits().len(),
+            1,
+            "an unchanged tick performs no commit (idle app => ~0 writes)"
+        );
+    }
+
+    #[tokio::test]
+    async fn two_sessions_changing_in_one_tick_coalesce_into_one_commit() {
+        let h = harness(
+            RowsFake::scripted(vec![
+                ScreenRowsRead::Rows(vec![row(42)]),
+                ScreenRowsRead::Rows(vec![row(42)]),
+            ]),
+            PatternFake::with(AGENT, CLAUDE),
+        );
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        h.scraper.register_session(id1, AGENT.to_string());
+        h.scraper.register_session(id2, AGENT.to_string());
+
+        h.scraper.tick().await;
+
+        let commits = h.persist.commits();
+        assert_eq!(commits.len(), 1, "coalesced: one commit for the whole tick");
+        let committed = &commits[0];
+        assert_eq!(committed.len(), 2, "both changed sessions in one commit");
+        assert!(committed.contains(&(id1, Some(42))));
+        assert!(committed.contains(&(id2, Some(42))));
+    }
+
+    #[tokio::test]
+    async fn a_cleared_reading_commits_none_once() {
+        let h = harness(
+            RowsFake::scripted(vec![
+                ScreenRowsRead::Rows(vec![row(42)]),
+                ScreenRowsRead::SessionOver,
+            ]),
+            PatternFake::with(AGENT, CLAUDE),
+        );
+        let id = Uuid::new_v4();
+        h.scraper.register_session(id, AGENT.to_string());
+
+        h.scraper.tick().await;
+        h.scraper.tick().await;
+
+        assert_eq!(
+            h.persist.commits(),
+            vec![vec![(id, Some(42))], vec![(id, None)]],
+            "Some(42) then a single (id, None) on the clearing tick"
+        );
     }
 
     #[tokio::test]

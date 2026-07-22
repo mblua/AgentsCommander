@@ -193,6 +193,13 @@ pub struct Session {
     /// `PersistedSession`; carried (off the wire) through `SessionInfo`.
     #[serde(default)]
     pub start_fresh_on_restore: bool,
+    /// Live context-usage percent (0-100) scraped for this session — the same
+    /// figure the Sidebar badge shows. Runtime-only state written by the context
+    /// scraper's change-gated tick; carried (off the wire) through `SessionInfo`
+    /// into `snapshot_sessions` so the disk-reading CLI can surface it. `None`
+    /// means no reading. Ignored on restore (serde `default`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_percent: Option<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -312,6 +319,13 @@ pub struct SessionInfo {
     /// keeps it off the IPC wire, so the frontend contract is unchanged.
     #[serde(skip)]
     pub start_fresh_on_restore: bool,
+    /// #1088 - internal carrier (NOT on the wire) of the session's live
+    /// context-usage percent, read by `snapshot_sessions` so the CLI can surface
+    /// it. Mirrors `detached_geometry` / `start_fresh_on_restore`: `#[serde(skip)]`
+    /// keeps it off the IPC wire, so the badge path and frontend contract are
+    /// unchanged.
+    #[serde(skip)]
+    pub context_percent: Option<u8>,
 }
 
 impl SessionInfo {
@@ -375,6 +389,7 @@ impl From<&Session> for SessionInfo {
             was_detached: s.was_detached,
             detached_geometry: s.detached_geometry.clone(),
             start_fresh_on_restore: s.start_fresh_on_restore,
+            context_percent: s.context_percent,
         }
     }
 }
@@ -418,6 +433,7 @@ mod tests {
             was_detached: false,
             detached_geometry: None,
             start_fresh_on_restore: false,
+            context_percent: None,
         }
     }
 
@@ -481,6 +497,29 @@ mod tests {
         let json = serde_json::to_value(SessionInfo::from(&s)).expect("serialize SessionInfo");
 
         assert!(json.get("telegramBotId").is_none());
+    }
+
+    // #1088: context_percent is an internal carrier for snapshot_sessions,
+    // mapped by From<&Session> but kept off the frontend IPC wire (badge path
+    // untouched).
+    #[test]
+    fn session_info_from_session_copies_context_percent_internally() {
+        let mut s = sample_session(None);
+        s.context_percent = Some(7);
+
+        let info = SessionInfo::from(&s);
+
+        assert_eq!(info.context_percent, Some(7));
+    }
+
+    #[test]
+    fn session_info_serialization_does_not_expose_context_percent() {
+        let mut s = sample_session(None);
+        s.context_percent = Some(55);
+
+        let json = serde_json::to_value(SessionInfo::from(&s)).expect("serialize SessionInfo");
+
+        assert!(json.get("contextPercent").is_none());
     }
 
     #[test]
