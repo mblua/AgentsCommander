@@ -645,6 +645,20 @@ pub fn is_root_agent_path(cwd: &str) -> bool {
     paths_equivalent(Path::new(cwd), Path::new(&root_dir))
 }
 
+/// Read-only proof that `path` is the existing canonical Root Agent directory.
+/// This wrapper never provisions or repairs Root state.
+pub(crate) fn verify_live_root_agent_path(
+    path: &Path,
+) -> Result<crate::path_identity::VerifiedPathIdentity, String> {
+    let configured = root_agent_dir()?;
+    let configured_identity = crate::path_identity::verify_directory(Path::new(&configured))?;
+    let supplied_identity = crate::path_identity::verify_directory(path)?;
+    if configured_identity.object_id != supplied_identity.object_id {
+        return Err("root_identity_invalid".to_string());
+    }
+    Ok(supplied_identity)
+}
+
 fn validate_root_agent_root_path(root_dir: &Path) -> Result<(), String> {
     match std::fs::symlink_metadata(root_dir) {
         Ok(metadata) => {

@@ -152,6 +152,54 @@ Matching is lexical against the trimmed direct shell's case-folded file stem. A 
 
 These actions are for conversation housekeeping, not content delivery.
 
+## Privileged PTY actuation
+
+Privileged PTY input is separate from file messaging and remote slash commands. It does not create a messaging file, does not use the standard message body or retry state, and does not call the ordinary `/api/v1/send` route. Accepted text goes only to one selected trusted coding-agent PTY. AC never supplies it to a host or container shell evaluator, argv, environment variable, command, or path.
+
+Host form:
+
+```bash
+agentscommander send \
+  --token "$AGENTSCOMMANDER_TOKEN" \
+  --root "$AGENTSCOMMANDER_ROOT" \
+  --to "<exact-name-from-list-peers-lean>" \
+  --pty-input-stdin \
+  --mode wake
+```
+
+Container coordinator form:
+
+```bash
+agentscommander-api-helper send \
+  --to "<exact-name-from-list-peers-lean>" \
+  --pty-input-stdin \
+  --mode wake
+
+agentscommander-api-helper pty-input-status --op-id "<operation-id>"
+```
+
+Authorization is narrower than ordinary messaging:
+
+| Sender | Valid PTY-input target | Plane |
+|---|---|---|
+| Live verified workgroup coordinator replica | One verified non-coordinator member in the same exact project and workgroup | Local host filesystem, or automatically bound container API credential |
+| Live canonical local Root Agent | One verified workgroup coordinator replica | Local host filesystem only |
+| Worker, origin coordinator, manual API client, stale session, or master credential without a live session | None | None |
+
+Coordinator-to-coordinator, coordinator-to-Root, Root-to-worker, cross-workgroup, cross-project, origin, self, wildcard, alias, filesystem-directory, and session-id targets are invalid. Resolve the exact canonical target with `list-peers-lean` and pass its `name` byte-for-byte.
+
+Text must be valid UTF-8 and 1 through 65,536 bytes. Spaces, LF, TAB, Unicode, leading hyphens, quotes, and shell metacharacters are preserved. Control, bidi, CR, and Unicode line-separator scalars are rejected. Prefer stdin because the caller's shell processes an argument before AC sees it.
+
+The operation holds one per-session writer permit across the exact text write and both Enter attempts, so a user write or another automated writer cannot splice bytes between phases. Target selection never fans out. Busy and unsupported live targets reject with zero writes; exited or missing targets use one verified persistent lifecycle path and wait for sustained readiness.
+
+`Queued` is not `Injected`. A stable operation ID is printed before publication and remains the only safe lookup key after a timeout or ambiguous network result. Do not create a new ID to retry uncertain work. Terminal meanings are:
+
+- `injected`: exact text and the required first Enter were accepted by the backend;
+- `rejected`: zero PTY writes occurred before the no-replay boundary;
+- `indeterminate`: the no-replay boundary committed, but complete submission cannot be proven and is never replayed automatically.
+
+Host confirmation uses metadata-only artifacts in `outbox/delivered`, `outbox/rejected`, or `outbox/indeterminate`. Container confirmation uses `GET /api/v1/pty-input/{opId}` through `pty-input-status`. Neither terminal surface contains the text, bearer token, raw nonce, path, argv, or environment. The nonterminal host request and SQLite queue remain sensitive while they still retain the exact text.
+
 ## Common errors
 
 | Error | Cause | Fix |

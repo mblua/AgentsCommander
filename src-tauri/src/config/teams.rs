@@ -256,6 +256,77 @@ fn enumerate_project_dirs(project_paths: &[String]) -> Vec<(String, PathBuf)> {
     out
 }
 
+fn strict_project_workspace(project: &Path) -> Result<Option<PathBuf>, String> {
+    let workspace = project.join(crate::config::workspace::CANONICAL_WORKSPACE_DIR);
+    if !workspace
+        .try_exists()
+        .map_err(|_| "unsafe_path".to_string())?
+    {
+        return Ok(None);
+    }
+    let identity = crate::path_identity::verify_directory(&workspace)?;
+    if identity
+        .canonical_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        != Some(crate::config::workspace::CANONICAL_WORKSPACE_DIR)
+    {
+        return Err("unsafe_path".to_string());
+    }
+    Ok(Some(workspace))
+}
+
+fn enumerate_project_dirs_strict(
+    project_paths: &[String],
+) -> Result<Vec<(String, PathBuf)>, String> {
+    if project_paths.len() > 1_024 {
+        return Err("invalid_target".to_string());
+    }
+    let mut out = Vec::new();
+    let mut scanned_entries = 0usize;
+    for configured in project_paths {
+        if configured.is_empty() || configured.contains('\0') {
+            return Err("unsafe_path".to_string());
+        }
+        let base_identity = crate::path_identity::verify_directory(Path::new(configured))?;
+        let base = base_identity.canonical_path;
+        if strict_project_workspace(&base)?.is_some() {
+            let name = base
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| "unsafe_path".to_string())?;
+            out.push((name.to_string(), base.clone()));
+        }
+        let entries = std::fs::read_dir(&base).map_err(|_| "unsafe_path".to_string())?;
+        for entry in entries {
+            let entry = entry.map_err(|_| "unsafe_path".to_string())?;
+            scanned_entries = scanned_entries.saturating_add(1);
+            if scanned_entries > 1_024 {
+                return Err("invalid_target".to_string());
+            }
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| "unsafe_path".to_string())?;
+            if name.starts_with('.') {
+                continue;
+            }
+            let metadata = entry.metadata().map_err(|_| "unsafe_path".to_string())?;
+            if !metadata.is_dir() {
+                continue;
+            }
+            let child_identity = crate::path_identity::verify_directory(&entry.path())?;
+            if strict_project_workspace(&child_identity.canonical_path)?.is_some() {
+                out.push((name, child_identity.canonical_path));
+                if out.len() > 1_024 {
+                    return Err("invalid_target".to_string());
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WgCoordinatorReplica {
     pub project: String,
@@ -450,6 +521,512 @@ pub fn verified_wg_coordinator_target(
     }
 
     None
+}
+
+// Privileged PTY-input routing is intentionally separate from broad message
+// discovery and `can_communicate`.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PtyInputAuthorityKind {
+    Coordinator,
+    Root,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedPtyInputIdentity {
+    pub canonical_fqn: String,
+    pub project: String,
+    pub workgroup: String,
+    pub agent: String,
+    pub replica_root: PathBuf,
+    pub matrix_root: PathBuf,
+    pub is_coordinator: bool,
+    pub project_identity: crate::path_identity::VerifiedPathIdentity,
+    pub workspace_identity: crate::path_identity::VerifiedPathIdentity,
+    pub workgroup_identity: crate::path_identity::VerifiedPathIdentity,
+    pub replica_identity: crate::path_identity::VerifiedPathIdentity,
+    pub matrix_identity: crate::path_identity::VerifiedPathIdentity,
+    /// Permanent physical sender incarnation. This is derived only from the
+    /// verified replica/root directory object and deliberately excludes mutable
+    /// config bytes. It keys GET and permanent idempotency history.
+    pub incarnation_fingerprint: String,
+    /// Mutable authority/config snapshot used only while an operation can still
+    /// actuate. Benign or authority-relevant config edits change this value.
+    pub authority_fingerprint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedPtyInputRoute {
+    pub sender: VerifiedPtyInputIdentity,
+    pub target: VerifiedPtyInputIdentity,
+    pub kind: PtyInputAuthorityKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StrictPtyFqn {
+    project: String,
+    workgroup: String,
+    team: String,
+    agent: String,
+}
+
+fn forbidden_identity_scalar(ch: char) -> bool {
+    ch.is_control()
+        || matches!(
+            ch,
+            '\u{061c}'
+                | '\u{200e}'
+                | '\u{200f}'
+                | '\u{202a}'..='\u{202e}'
+                | '\u{2066}'..='\u{2069}'
+        )
+}
+
+fn parse_strict_pty_fqn(value: &str) -> Result<StrictPtyFqn, String> {
+    if value.is_empty() || value.len() > 1_024 || value.matches(':').count() != 1 {
+        return Err("invalid_target".to_string());
+    }
+    let (project, local) = value
+        .split_once(':')
+        .ok_or_else(|| "invalid_target".to_string())?;
+    if project.is_empty()
+        || matches!(project, "." | "..")
+        || project.chars().any(forbidden_identity_scalar)
+        || project
+            .chars()
+            .any(|ch| matches!(ch, '/' | '\\' | '*' | '?' | '"' | '<' | '>' | '|'))
+        || local.matches('/').count() != 1
+    {
+        return Err("invalid_target".to_string());
+    }
+    let (workgroup, agent) = local
+        .split_once('/')
+        .ok_or_else(|| "invalid_target".to_string())?;
+    let rest = workgroup
+        .strip_prefix("wg-")
+        .ok_or_else(|| "invalid_target".to_string())?;
+    let (digits, team) = rest
+        .split_once('-')
+        .ok_or_else(|| "invalid_target".to_string())?;
+    if digits.is_empty()
+        || !digits.bytes().all(|byte| byte.is_ascii_digit())
+        || team.is_empty()
+        || !team
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        || agent.is_empty()
+        || !agent
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return Err("invalid_target".to_string());
+    }
+    Ok(StrictPtyFqn {
+        project: project.to_string(),
+        workgroup: workgroup.to_string(),
+        team: team.to_string(),
+        agent: agent.to_string(),
+    })
+}
+
+pub(crate) fn validate_pty_input_target_syntax(value: &str) -> Result<(), String> {
+    let parsed = parse_strict_pty_fqn(value)?;
+    let reconstructed = format!("{}:{}/{}", parsed.project, parsed.workgroup, parsed.agent);
+    if reconstructed != value {
+        return Err("invalid_target".to_string());
+    }
+    Ok(())
+}
+
+fn identity_fingerprint(identities: &[&crate::path_identity::VerifiedPathIdentity]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut digest = Sha256::new();
+    digest.update(b"ac-pty-input-identity-v1");
+    for identity in identities {
+        digest.update(identity.object_id.volume.to_be_bytes());
+        digest.update(identity.object_id.file.to_be_bytes());
+        if let Some(content) = identity.content_sha256 {
+            digest.update(content);
+        }
+    }
+    format!("{:x}", digest.finalize())
+}
+
+fn incarnation_fingerprint(anchor: &crate::path_identity::VerifiedPathIdentity) -> String {
+    use sha2::{Digest, Sha256};
+    let mut digest = Sha256::new();
+    digest.update(b"ac-pty-input-sender-incarnation-v1");
+    digest.update(anchor.object_id.volume.to_be_bytes());
+    digest.update(anchor.object_id.file.to_be_bytes());
+    format!("{:x}", digest.finalize())
+}
+
+fn read_identity_json(
+    path: &Path,
+) -> Result<
+    (
+        serde_json::Value,
+        crate::path_identity::VerifiedPathIdentity,
+    ),
+    String,
+> {
+    let (bytes, identity) = crate::path_identity::read_bounded_regular(path, 1024 * 1024)?;
+    let value = crate::path_identity::parse_json_no_duplicates(&bytes)?;
+    if !value.is_object() {
+        return Err("sender_identity_invalid".to_string());
+    }
+    Ok((value, identity))
+}
+
+fn identity_name_eq(left: &str, right: &str) -> bool {
+    crate::path_identity::paths_equivalent(Path::new(left), Path::new(right))
+}
+
+fn team_members(
+    workspace: &Path,
+    team: &str,
+) -> Result<
+    (
+        String,
+        Vec<String>,
+        crate::path_identity::VerifiedPathIdentity,
+    ),
+    String,
+> {
+    let team_dir = workspace.join(format!("_team_{team}"));
+    crate::path_identity::verify_directory(&team_dir)?;
+    let (value, config_identity) = read_identity_json(&team_dir.join("config.json"))?;
+    let coordinator = value
+        .get("coordinator")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "sender_identity_invalid".to_string())
+        .and_then(|value| {
+            agent_bare_name_from_ref(value).map_err(|_| "sender_identity_invalid".to_string())
+        })?;
+    let values = value
+        .get("agents")
+        .and_then(serde_json::Value::as_array)
+        .filter(|values| values.len() <= 1_024)
+        .ok_or_else(|| "sender_identity_invalid".to_string())?;
+    let mut members: Vec<String> = Vec::with_capacity(values.len());
+    for value in values {
+        let raw = value
+            .as_str()
+            .ok_or_else(|| "sender_identity_invalid".to_string())?;
+        let member =
+            agent_bare_name_from_ref(raw).map_err(|_| "sender_identity_invalid".to_string())?;
+        if identity_name_eq(&member, &coordinator)
+            || members
+                .iter()
+                .any(|existing| identity_name_eq(existing, &member))
+        {
+            return Err("sender_identity_invalid".to_string());
+        }
+        crate::path_identity::verify_directory(&workspace.join(format!("_agent_{member}")))?;
+        members.push(member);
+    }
+    crate::path_identity::verify_directory(&workspace.join(format!("_agent_{coordinator}")))?;
+    Ok((coordinator, members, config_identity))
+}
+
+fn verify_replica(
+    project_dir: &Path,
+    workspace: &Path,
+    parsed: &StrictPtyFqn,
+) -> Result<VerifiedPtyInputIdentity, String> {
+    let actual_project = project_dir
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "invalid_target".to_string())?;
+    if actual_project != parsed.project {
+        return Err("invalid_target".to_string());
+    }
+    let replica_root = workspace
+        .join(&parsed.workgroup)
+        .join(format!("__agent_{}", parsed.agent));
+    let project_identity = crate::path_identity::verify_directory(project_dir)?;
+    let workspace_identity = crate::path_identity::verify_directory(workspace)?;
+    let workgroup_root = workspace.join(&parsed.workgroup);
+    let workgroup_identity = crate::path_identity::verify_directory(&workgroup_root)?;
+    let replica_identity = crate::path_identity::verify_directory(&replica_root)?;
+    if workgroup_identity
+        .canonical_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        != Some(parsed.workgroup.as_str())
+        || replica_identity
+            .canonical_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            != Some(format!("__agent_{}", parsed.agent).as_str())
+    {
+        return Err("invalid_target".to_string());
+    }
+    let (replica_config, replica_config_identity) =
+        read_identity_json(&replica_root.join("config.json"))?;
+    // Use the repository's read-only identity reader, now bounded and
+    // duplicate-aware, and require it to describe the retained security snapshot.
+    let (read_only_config, resolved) =
+        crate::config::replica_identity::read_wg_replica_config_read_only(&replica_root)
+            .map_err(|_| "sender_identity_invalid".to_string())?;
+    let persisted_identity = replica_config
+        .get("identity")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "sender_identity_invalid".to_string())?;
+    if read_only_config != replica_config
+        || resolved.agent_name != parsed.agent
+        || persisted_identity != resolved.identity
+    {
+        return Err("sender_identity_invalid".to_string());
+    }
+    let matrix_root = workspace.join(format!("_agent_{}", parsed.agent));
+    let matrix_identity = crate::path_identity::verify_directory(&matrix_root)?;
+    if matrix_identity
+        .canonical_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        != Some(format!("_agent_{}", parsed.agent).as_str())
+    {
+        return Err("invalid_target".to_string());
+    }
+    let (coordinator, members, team_config_identity) = team_members(workspace, &parsed.team)?;
+    let is_coordinator = identity_name_eq(&coordinator, &parsed.agent);
+    if !is_coordinator
+        && !members
+            .iter()
+            .any(|member| identity_name_eq(member, &parsed.agent))
+    {
+        return Err("target_not_member".to_string());
+    }
+    let canonical_fqn = format!("{}:{}/{}", actual_project, parsed.workgroup, parsed.agent);
+    let authority_fingerprint = identity_fingerprint(&[
+        &project_identity,
+        &workspace_identity,
+        &workgroup_identity,
+        &replica_identity,
+        &replica_config_identity,
+        &matrix_identity,
+        &team_config_identity,
+    ]);
+    let incarnation_fingerprint = incarnation_fingerprint(&replica_identity);
+    Ok(VerifiedPtyInputIdentity {
+        canonical_fqn,
+        project: actual_project.to_string(),
+        workgroup: parsed.workgroup.clone(),
+        agent: parsed.agent.clone(),
+        replica_root,
+        matrix_root,
+        is_coordinator,
+        project_identity,
+        workspace_identity,
+        workgroup_identity,
+        replica_identity,
+        incarnation_fingerprint,
+        matrix_identity,
+        authority_fingerprint,
+    })
+}
+
+pub(crate) fn strict_wg_replica_anchor_from_cwd(cwd: &Path) -> Result<Option<PathBuf>, String> {
+    let cwd_identity = crate::path_identity::verify_directory(cwd)?;
+    for path in cwd_identity.canonical_path.ancestors() {
+        let is_replica = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|name| name.starts_with("__agent_"));
+        if !is_replica {
+            continue;
+        }
+        return crate::config::workspace::wg_replica_layout_from_agent_dir(path)
+            .map(|layout| layout.map(|_| path.to_path_buf()));
+    }
+    Ok(None)
+}
+
+/// Derive the universal create-gate key from the verified directory layout
+/// alone. Ordinary session creation must not depend on team membership,
+/// replica config, matrix config, or the privileged SQLite store being healthy.
+/// For a target that is eligible for privileged PTY input this reconstructs the
+/// exact canonical FQN, so ordinary and privileged creates contend on the same
+/// stripe and exact key. Structurally valid legacy layouts that cannot form a
+/// privileged FQN still receive a stable physical-replica key.
+pub(crate) fn pty_input_create_gate_key_from_cwd(cwd: &Path) -> Result<Option<String>, String> {
+    let Some(replica_root) = strict_wg_replica_anchor_from_cwd(cwd)? else {
+        return Ok(None);
+    };
+    let layout = crate::config::workspace::wg_replica_layout_from_agent_dir(&replica_root)?
+        .ok_or_else(|| "target_create_gate_unavailable".to_string())?;
+    let project = layout
+        .project_dir
+        .file_name()
+        .and_then(|value| value.to_str());
+    if let Some(project) = project {
+        let candidate = format!("{}:{}/{}", project, layout.wg_name, layout.agent_name);
+        if parse_strict_pty_fqn(&candidate).is_ok() {
+            return Ok(Some(candidate));
+        }
+    }
+
+    let replica = crate::path_identity::verify_directory(&replica_root)?;
+    Ok(Some(format!(
+        "physical-wg-replica:{:016x}:{:016x}",
+        replica.object_id.volume, replica.object_id.file
+    )))
+}
+
+fn replica_anchor_from_cwd(cwd: &Path) -> Result<PathBuf, String> {
+    strict_wg_replica_anchor_from_cwd(cwd)?.ok_or_else(|| "sender_identity_invalid".to_string())
+}
+
+fn verify_sender_replica(cwd: &Path) -> Result<VerifiedPtyInputIdentity, String> {
+    let replica = replica_anchor_from_cwd(cwd)?;
+    let workgroup = replica
+        .parent()
+        .ok_or_else(|| "sender_identity_invalid".to_string())?;
+    let workspace = workgroup
+        .parent()
+        .ok_or_else(|| "sender_identity_invalid".to_string())?;
+    let project = workspace
+        .parent()
+        .ok_or_else(|| "sender_identity_invalid".to_string())?;
+    let fqn = agent_fqn_from_path(
+        replica
+            .to_str()
+            .ok_or_else(|| "sender_identity_invalid".to_string())?,
+    );
+    let parsed = parse_strict_pty_fqn(&fqn)?;
+    let identity = verify_replica(project, workspace, &parsed)?;
+    let cwd_identity = crate::path_identity::verify_directory(cwd)?;
+    if !crate::path_identity::is_verified_descendant(&cwd_identity, &identity.replica_identity) {
+        return Err("sender_identity_invalid".to_string());
+    }
+    Ok(identity)
+}
+
+/// Read-only coordinator proof used while minting a container scope and while
+/// revalidating live coordinator authority.
+pub(crate) fn verify_pty_input_replica_cwd(
+    root: &Path,
+) -> Result<VerifiedPtyInputIdentity, String> {
+    verify_sender_replica(root)
+}
+
+pub fn verify_pty_input_coordinator_root(root: &Path) -> Result<VerifiedPtyInputIdentity, String> {
+    let identity = verify_sender_replica(root)?;
+    if !identity.is_coordinator {
+        return Err("sender_not_coordinator".to_string());
+    }
+    Ok(identity)
+}
+
+fn find_target_identity(
+    parsed: &StrictPtyFqn,
+    project_paths: &[String],
+) -> Result<VerifiedPtyInputIdentity, String> {
+    if project_paths.len() > 1_024 {
+        return Err("invalid_target".to_string());
+    }
+    let candidates = enumerate_project_dirs_strict(project_paths)?;
+    let mut matching_projects = Vec::new();
+    let mut seen_objects = std::collections::HashSet::new();
+    for (project_name, project_dir) in candidates {
+        if !crate::path_identity::paths_equivalent(
+            Path::new(&project_name),
+            Path::new(&parsed.project),
+        ) {
+            continue;
+        }
+        let identity = crate::path_identity::verify_directory(&project_dir)?;
+        if seen_objects.insert(identity.object_id) {
+            matching_projects.push((project_name, project_dir));
+        }
+    }
+    if matching_projects.len() != 1 || matching_projects[0].0 != parsed.project {
+        return Err("invalid_target".to_string());
+    }
+    let (_, project_dir) = matching_projects.remove(0);
+    let workspace =
+        strict_project_workspace(&project_dir)?.ok_or_else(|| "invalid_target".to_string())?;
+    crate::path_identity::verify_directory(&workspace.join(&parsed.workgroup))?;
+    let identity = verify_replica(&project_dir, &workspace, parsed)?;
+    let reconstructed = format!(
+        "{}:{}/{}",
+        identity.project, identity.workgroup, identity.agent
+    );
+    let supplied = format!("{}:{}/{}", parsed.project, parsed.workgroup, parsed.agent);
+    if reconstructed != supplied {
+        return Err("invalid_target".to_string());
+    }
+    Ok(identity)
+}
+
+pub(crate) fn resolve_pty_input_target(
+    target_fqn: &str,
+    project_paths: &[String],
+) -> Result<VerifiedPtyInputIdentity, String> {
+    let parsed = parse_strict_pty_fqn(target_fqn)?;
+    let target = find_target_identity(&parsed, project_paths)?;
+    if target.canonical_fqn != target_fqn {
+        return Err("invalid_target".to_string());
+    }
+    Ok(target)
+}
+
+/// Verify the only two privileged routes. No discovery repair or broad
+/// communication predicate is used.
+pub fn verify_pty_input_route(
+    sender_cwd: &Path,
+    sender_is_root: bool,
+    target_fqn: &str,
+    project_paths: &[String],
+) -> Result<VerifiedPtyInputRoute, String> {
+    if sender_is_root {
+        let root_identity = crate::config::root_agent::verify_live_root_agent_path(sender_cwd)?;
+        let sender = VerifiedPtyInputIdentity {
+            canonical_fqn: crate::config::root_agent::ROOT_AGENT_SENDER.to_string(),
+            project: String::new(),
+            workgroup: String::new(),
+            agent: "root-agent".to_string(),
+            replica_root: root_identity.canonical_path.clone(),
+            matrix_root: root_identity.canonical_path.clone(),
+            is_coordinator: false,
+            project_identity: root_identity.clone(),
+            workspace_identity: root_identity.clone(),
+            workgroup_identity: root_identity.clone(),
+            replica_identity: root_identity.clone(),
+            matrix_identity: root_identity.clone(),
+            incarnation_fingerprint: incarnation_fingerprint(&root_identity),
+            authority_fingerprint: identity_fingerprint(&[&root_identity]),
+        };
+        let target = resolve_pty_input_target(target_fqn, project_paths)?;
+        if !target.is_coordinator {
+            return Err("target_out_of_scope".to_string());
+        }
+        return Ok(VerifiedPtyInputRoute {
+            sender,
+            target,
+            kind: PtyInputAuthorityKind::Root,
+        });
+    }
+
+    // Prove coordinator authority before any target hierarchy lookup. Negative
+    // senders therefore cannot use this resolver as a privileged target oracle.
+    let sender = verify_pty_input_coordinator_root(sender_cwd)?;
+    let target = resolve_pty_input_target(target_fqn, project_paths)?;
+    if sender.project != target.project || sender.workgroup != target.workgroup {
+        return Err("target_out_of_scope".to_string());
+    }
+    if target.is_coordinator {
+        return Err("target_is_coordinator".to_string());
+    }
+    if sender.canonical_fqn == target.canonical_fqn {
+        return Err("target_out_of_scope".to_string());
+    }
+    Ok(VerifiedPtyInputRoute {
+        sender,
+        target,
+        kind: PtyInputAuthorityKind::Coordinator,
+    })
 }
 
 /// Resolve an agent target to a canonical FQN.
@@ -1321,6 +1898,174 @@ mod tests {
 
         let paths = vec![tmp.path().to_string_lossy().to_string()];
         (tmp, paths)
+    }
+
+    #[test]
+    fn strict_pty_target_syntax_rejects_aliases_paths_and_wildcards() {
+        assert!(validate_pty_input_target_syntax("proj-a:wg-1-dev-team/dev-rust").is_ok());
+        for invalid in [
+            "dev-rust",
+            "wg-1-dev-team/dev-rust",
+            "proj-a/dev-rust",
+            "proj-a:wg-1-dev-team/__agent_dev-rust",
+            "proj-a:wg-1-dev-team/dev_rust",
+            "proj-a:wg-x-dev-team/dev-rust",
+            "proj-a:wg-1-dev-team/dev-rust/extra",
+            "proj*:wg-1-dev-team/dev-rust",
+            "../proj:wg-1-dev-team/dev-rust",
+            "proj-a:wg-1-dev-team/dev-rust\u{202e}",
+        ] {
+            assert!(
+                validate_pty_input_target_syntax(invalid).is_err(),
+                "invalid={invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn privileged_route_is_exact_and_uses_duplicate_free_identity_snapshots() {
+        let (fixture, mut paths) = make_coordinator_fixture(false);
+        let workspace = fixture.path().join("proj-a").join(".ac");
+        let coordinator = workspace.join("wg-1-dev-team").join("__agent_tech-lead");
+        let route =
+            verify_pty_input_route(&coordinator, false, "proj-a:wg-1-dev-team/dev-rust", &paths)
+                .unwrap();
+        assert_eq!(route.sender.canonical_fqn, "proj-a:wg-1-dev-team/tech-lead");
+        assert_eq!(route.target.canonical_fqn, "proj-a:wg-1-dev-team/dev-rust");
+        assert_eq!(route.kind, PtyInputAuthorityKind::Coordinator);
+
+        paths.push(paths[0].clone());
+        assert!(verify_pty_input_route(
+            &coordinator,
+            false,
+            "proj-a:wg-1-dev-team/dev-rust",
+            &paths,
+        )
+        .is_ok());
+        assert!(verify_pty_input_route(
+            &coordinator,
+            false,
+            "Proj-a:wg-1-dev-team/dev-rust",
+            &paths,
+        )
+        .is_err());
+        assert!(verify_pty_input_route(
+            &coordinator,
+            false,
+            "proj-a:wg-1-dev-team/tech-lead",
+            &paths,
+        )
+        .is_err());
+
+        std::fs::write(
+            workspace.join("_team_dev-team").join("config.json"),
+            r#"{"agents":["../_agent_dev-rust"],"agents":[],"coordinator":"../_agent_tech-lead"}"#,
+        )
+        .unwrap();
+        assert!(verify_pty_input_route(
+            &coordinator,
+            false,
+            "proj-a:wg-1-dev-team/dev-rust",
+            &paths,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn sender_incarnation_survives_benign_config_content_changes() {
+        let (fixture, paths) = make_coordinator_fixture(false);
+        let workspace = fixture.path().join("proj-a").join(".ac");
+        let coordinator = workspace.join("wg-1-dev-team").join("__agent_tech-lead");
+        let first =
+            verify_pty_input_route(&coordinator, false, "proj-a:wg-1-dev-team/dev-rust", &paths)
+                .unwrap();
+
+        std::fs::write(
+            coordinator.join("config.json"),
+            r#"{"identity":"../../_agent_tech-lead","benign":"changed"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join("_team_dev-team").join("config.json"),
+            r#"{"agents":["../_agent_dev-rust"],"coordinator":"../_agent_tech-lead","benign":"changed"}"#,
+        )
+        .unwrap();
+        let second =
+            verify_pty_input_route(&coordinator, false, "proj-a:wg-1-dev-team/dev-rust", &paths)
+                .unwrap();
+
+        assert_eq!(
+            first.sender.incarnation_fingerprint, second.sender.incarnation_fingerprint,
+            "the permanent sender incarnation must not include mutable config bytes"
+        );
+        assert_ne!(
+            first.sender.authority_fingerprint, second.sender.authority_fingerprint,
+            "queued authority revalidation must still observe config content changes"
+        );
+    }
+
+    #[test]
+    fn privileged_route_rejects_noncanonical_identity_and_broken_project_roots() {
+        let (fixture, mut paths) = make_coordinator_fixture(false);
+        let workspace = fixture.path().join("proj-a").join(".ac");
+        let coordinator = workspace.join("wg-1-dev-team").join("__agent_tech-lead");
+        let coordinator_config = coordinator.join("config.json");
+        std::fs::write(
+            &coordinator_config,
+            r#"{"identity":"elsewhere/_agent_tech-lead"}"#,
+        )
+        .unwrap();
+        assert!(verify_pty_input_route(
+            &coordinator,
+            false,
+            "proj-a:wg-1-dev-team/dev-rust",
+            &paths,
+        )
+        .is_err());
+
+        std::fs::write(
+            &coordinator_config,
+            r#"{"identity":"../../_agent_tech-lead"}"#,
+        )
+        .unwrap();
+        paths.push(
+            fixture
+                .path()
+                .join("missing-project-root")
+                .to_string_lossy()
+                .to_string(),
+        );
+        assert!(verify_pty_input_route(
+            &coordinator,
+            false,
+            "proj-a:wg-1-dev-team/dev-rust",
+            &paths,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn privileged_route_rejects_duplicate_replica_identity_and_worker_sender() {
+        let (fixture, paths) = make_coordinator_fixture(false);
+        let workspace = fixture.path().join("proj-a").join(".ac");
+        let coordinator = workspace.join("wg-1-dev-team").join("__agent_tech-lead");
+        let worker = workspace.join("wg-1-dev-team").join("__agent_dev-rust");
+        assert!(
+            verify_pty_input_route(&worker, false, "proj-a:wg-1-dev-team/tech-lead", &paths,)
+                .is_err()
+        );
+        std::fs::write(
+            worker.join("config.json"),
+            r#"{"identity":"../../_agent_dev-rust","identity":"../../_agent_dev-rust"}"#,
+        )
+        .unwrap();
+        assert!(verify_pty_input_route(
+            &coordinator,
+            false,
+            "proj-a:wg-1-dev-team/dev-rust",
+            &paths,
+        )
+        .is_err());
     }
 
     fn make_portable_coordinator_fixture(

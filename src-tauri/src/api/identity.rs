@@ -46,6 +46,118 @@ pub fn resolve_from(client: &ApiClient) -> Result<String, ApiError> {
     Ok(fqn)
 }
 
+pub struct VerifiedApiPtyAuthority {
+    pub sender: crate::config::teams::VerifiedPtyInputIdentity,
+    pub session_id: uuid::Uuid,
+    pub client_id: String,
+    pub credential_generation: String,
+}
+
+fn pty_authority_error(code: crate::phone::types::PtyInputReasonCode) -> ApiError {
+    ApiError::PtyInput(crate::phone::types::PtyInputFailure::reject(code))
+}
+
+pub async fn verify_live_pty_input_authority(
+    state: &crate::api::ApiState,
+    guard: &crate::api::auth::ApiClientFreshGuard,
+) -> Result<VerifiedApiPtyAuthority, ApiError> {
+    let client = &guard.client;
+    let session_raw = client.bound_session_id.as_deref().ok_or_else(|| {
+        pty_authority_error(crate::phone::types::PtyInputReasonCode::ApiClientUnbound)
+    })?;
+    let generation = client.credential_generation.as_deref().ok_or_else(|| {
+        pty_authority_error(crate::phone::types::PtyInputReasonCode::ApiClientUnbound)
+    })?;
+    let session_id = crate::phone::types::parse_canonical_uuid_v4(session_raw).map_err(|_| {
+        pty_authority_error(crate::phone::types::PtyInputReasonCode::ApiClientUnbound)
+    })?;
+    crate::phone::types::parse_canonical_uuid_v4(generation).map_err(|_| {
+        pty_authority_error(crate::phone::types::PtyInputReasonCode::ApiClientUnbound)
+    })?;
+    let session = {
+        let manager = state.session_mgr.read().await;
+        manager.get_session(session_id).await
+    }
+    .ok_or_else(|| pty_authority_error(crate::phone::types::PtyInputReasonCode::ApiClientStale))?;
+    if matches!(
+        session.status,
+        crate::session::session::SessionStatus::Exited(_)
+    ) || session.backend_kind != crate::pty::backend::SessionBackendKind::ContainerTransport
+    {
+        return Err(pty_authority_error(
+            crate::phone::types::PtyInputReasonCode::ApiClientStale,
+        ));
+    }
+    let bound_root =
+        crate::path_identity::verify_directory(std::path::Path::new(&client.bound_root)).map_err(
+            |_| pty_authority_error(crate::phone::types::PtyInputReasonCode::ApiBindingMismatch),
+        )?;
+    let session_root =
+        crate::path_identity::verify_directory(std::path::Path::new(&session.working_directory))
+            .map_err(|_| {
+                pty_authority_error(crate::phone::types::PtyInputReasonCode::ApiBindingMismatch)
+            })?;
+    if bound_root.object_id != session_root.object_id {
+        return Err(pty_authority_error(
+            crate::phone::types::PtyInputReasonCode::ApiBindingMismatch,
+        ));
+    }
+    let (binding, route_backend, route_identities, route_live) = {
+        let manager = state
+            .pty_mgr
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        (
+            manager.container_backend().credential_binding(session_id),
+            manager.backend_kind(session_id),
+            manager.route_identities(session_id),
+            manager.has_session(session_id),
+        )
+    };
+    let binding = binding.ok_or_else(|| {
+        pty_authority_error(crate::phone::types::PtyInputReasonCode::ApiBindingMismatch)
+    })?;
+    if !route_live
+        || route_backend != Some(crate::pty::backend::SessionBackendKind::ContainerTransport)
+        || binding.client_id != client.client_id
+        || binding.credential_generation != generation
+        || binding.bound_session_id != session_raw
+        || binding.bound_root_object_id != bound_root.object_id
+        || !crate::api::auth::constant_time_eq(
+            &binding.credential_token_hash,
+            &guard.presented_token_hash,
+        )
+    {
+        return Err(pty_authority_error(
+            crate::phone::types::PtyInputReasonCode::ApiBindingMismatch,
+        ));
+    }
+    let sender = crate::config::teams::verify_pty_input_coordinator_root(std::path::Path::new(
+        &session.working_directory,
+    ))
+    .map_err(|_| {
+        pty_authority_error(crate::phone::types::PtyInputReasonCode::SenderNotCoordinator)
+    })?;
+    let route_matches = route_identities.is_some_and(|(cwd, replica, _)| {
+        cwd.as_ref()
+            .is_some_and(|saved| crate::path_identity::same_object(saved, &session_root))
+            && replica.as_ref().is_some_and(|saved| {
+                crate::path_identity::same_object(saved, &sender.replica_identity)
+            })
+    });
+    if !route_matches {
+        return Err(pty_authority_error(
+            crate::phone::types::PtyInputReasonCode::ApiBindingMismatch,
+        ));
+    }
+    Ok(VerifiedApiPtyAuthority {
+        sender,
+        session_id,
+        client_id: client.client_id.clone(),
+        credential_generation: generation.to_string(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -62,15 +174,14 @@ mod tests {
             issued_at: "2026-01-01T00:00:00Z".into(),
             expires_at: None,
             revoked: false,
+            bound_session_id: None,
+            credential_generation: None,
         }
     }
 
     #[test]
     fn missing_bound_root_is_401() {
-        let c = client_with_root(
-            "C:/definitely/not/a/real/replica/path/xyz",
-            "proj:wg-1/dev",
-        );
+        let c = client_with_root("C:/definitely/not/a/real/replica/path/xyz", "proj:wg-1/dev");
         let err = resolve_from(&c).unwrap_err();
         assert_eq!(err.status(), axum::http::StatusCode::UNAUTHORIZED);
     }

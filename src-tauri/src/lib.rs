@@ -6,6 +6,7 @@ pub mod errors;
 pub mod logging;
 pub mod loops;
 pub mod network;
+pub(crate) mod path_identity;
 pub mod path_utils;
 pub mod phone;
 pub mod pty;
@@ -28,8 +29,8 @@ use commands::ac_discovery::DiscoveryBranchWatcher;
 use config::sessions_persistence;
 use config::settings::SettingsState;
 use pty::context_scrape::{
-    ContextEventSink, ContextPatternSource, ContextSample, ContextSampleSink, ContextScraper,
-    ContextSessionLiveness, ContextUsagePayload, ScreenRowsRead, ScreenRowsSource,
+    ContextEventSink, ContextPatternSource, ContextPersistSink, ContextSample, ContextSampleSink,
+    ContextScraper, ContextSessionLiveness, ContextUsagePayload, ScreenRowsRead, ScreenRowsSource,
 };
 use pty::git_watcher::GitWatcher;
 use pty::idle_detector::IdleDetector;
@@ -666,6 +667,40 @@ impl ContextSampleSink for ScraperSamples {
     }
 }
 
+/// #1088 - the fifth sink's concrete impl. It owns the `SessionManager` handle
+/// so the scraper never has to: `commit` writes each changed reading onto its
+/// `Session` and triggers the same whole-file persist the idle/busy callbacks
+/// already call. It holds no `AppHandle` and no `PtyManager`, so the scraper's
+/// documented capability boundary is preserved.
+struct ScraperPersist {
+    session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+}
+
+impl ContextPersistSink for ScraperPersist {
+    fn commit(
+        &self,
+        changed: Vec<(uuid::Uuid, Option<u8>)>,
+    ) -> futures::future::BoxFuture<'_, ()> {
+        // Clone the Arc before the `async move` so the returned future is
+        // 'static + Send (it captures the Arc, not `&self`).
+        let mgr = Arc::clone(&self.session_mgr);
+        Box::pin(async move {
+            if changed.is_empty() {
+                return;
+            }
+            // One outer read guard held across the per-session writes (interior
+            // `state.write`) and the persist (interior `state.read`) - the exact
+            // lock discipline the idle/busy callbacks use (`mark_idle` + persist
+            // under one `session_mgr.read()`).
+            let guard = mgr.read().await;
+            for (id, percent) in &changed {
+                guard.set_context_percent(*id, *percent).await;
+            }
+            crate::config::sessions_persistence::persist_current_state(&guard).await;
+        })
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run(
     test_window_placement: Option<crate::testability::window_placement::TestWindowPlacement>,
@@ -803,6 +838,9 @@ pub fn run(
     let session_mgr_for_web = Arc::clone(&session_mgr);
     let session_mgr_for_api = Arc::clone(&session_mgr);
     let session_mgr_for_exit = Arc::clone(&session_mgr);
+    // #1088 - handed to `ScraperPersist` so the context scraper can persist
+    // changed readings through the same path the idle/busy callbacks use.
+    let session_mgr_for_scraper = Arc::clone(&session_mgr);
     let output_senders_for_pty = output_senders.clone();
     let idle_detector_for_pty = Arc::clone(&idle_detector);
     // #552 manage the IdleDetector so the shared user-message helper, the mailbox
@@ -875,6 +913,11 @@ pub fn run(
     let ui_automation_state_for_setup = ui_automation_state.clone();
     let ui_automation_state_for_exit = ui_automation_state.clone();
 
+    // One recovered operation store is shared by the filesystem poller and
+    // both API start paths. A failure disables only privileged PTY input.
+    let message_store_state = crate::api::message_store::MessageStoreState::initialize();
+    let pty_target_gate_state = message_store_state.target_gate_state();
+
     // #714 clipboard + global-shortcut plugins are referenced ONLY on Windows so
     // non-Windows release builds never link them (screenshot capture is
     // Windows-only for this issue). The rest of the builder chain is shared.
@@ -914,6 +957,8 @@ pub fn run(
         .manage(broadcaster.clone())
         .manage(WebServerHandle::default())
         .manage(ApiServerHandle::default())
+        .manage(message_store_state)
+        .manage(pty_target_gate_state)
         .manage(config_seed_lock)
         .manage(update_check_state)
         .manage(ui_automation_state)
@@ -1016,6 +1061,9 @@ pub fn run(
                     closed_logged: AtomicBool::new(false),
                     saturated: AtomicBool::new(false),
                     dropped: AtomicU64::new(0),
+                }),
+                Arc::new(ScraperPersist {
+                    session_mgr: session_mgr_for_scraper,
                 }),
             );
             context_scraper.start(shutdown_for_setup.clone());

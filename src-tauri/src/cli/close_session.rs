@@ -200,6 +200,7 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
         switch_profile: None,
         dry_run: None,
         quiet_period_ms: None,
+        pty_input: None,
     };
 
     // Write to outbox — use app outbox for root/master token, else agent's outbox

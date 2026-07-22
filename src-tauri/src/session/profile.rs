@@ -612,6 +612,142 @@ pub(crate) fn locate_pi_command(
     Ok(None)
 }
 
+/// Coding-agent launch kinds that are safe for privileged exact PTY input.
+/// Cursor uses the executable `agent` and therefore has no legacy
+/// `CodingAgentKind` variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PtySubmissionAgent {
+    Claude,
+    Codex,
+    Gemini,
+    CursorAgent,
+}
+
+impl PtySubmissionAgent {
+    fn from_executable(token: &str, configured_wrapper: bool) -> Option<Self> {
+        let trimmed = token.trim().trim_matches('"');
+        let basename = trimmed
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(trimmed)
+            .to_ascii_lowercase();
+        let stem = basename
+            .strip_suffix(".exe")
+            .or_else(|| basename.strip_suffix(".cmd"))
+            .or_else(|| basename.strip_suffix(".bat"))
+            .unwrap_or(&basename);
+        if stem == "claude" || (configured_wrapper && stem.starts_with("claude")) {
+            Some(Self::Claude)
+        } else if stem == "codex" || (configured_wrapper && stem.starts_with("codex")) {
+            Some(Self::Codex)
+        } else if stem == "gemini" || (configured_wrapper && stem.starts_with("gemini")) {
+            Some(Self::Gemini)
+        } else if stem == "agent" {
+            Some(Self::CursorAgent)
+        } else {
+            None
+        }
+    }
+
+    fn agrees_with_hint(self, hint: Option<CodingAgentKind>) -> bool {
+        matches!(
+            (self, hint),
+            (Self::Claude, Some(CodingAgentKind::Claude))
+                | (Self::Codex, Some(CodingAgentKind::Codex))
+                | (Self::Gemini, Some(CodingAgentKind::Gemini))
+                | (Self::CursorAgent, None)
+                | (_, None)
+        )
+    }
+}
+
+/// Prove a trusted coding-agent executable at the executable position.
+///
+/// Direct executables and conservative `cmd.exe /C` wrappers are accepted.
+/// Shell evaluators, `cmd /K`, expansion, control operators, and mere agent
+/// mentions in arbitrary arguments are rejected.
+fn detect_pty_submission_agent_with_provenance(
+    shell: &str,
+    args: &[String],
+    hint: Option<CodingAgentKind>,
+    configured_wrapper: bool,
+) -> Option<PtySubmissionAgent> {
+    let shell_name = shell
+        .trim()
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(shell.trim())
+        .to_ascii_lowercase();
+    let shell_stem = shell_name.strip_suffix(".exe").unwrap_or(&shell_name);
+
+    let detected = if shell_stem == "cmd" {
+        let mode = args.first()?;
+        if !mode.eq_ignore_ascii_case("/c") || args.len() < 2 {
+            return None;
+        }
+        let command = args[1..].join(" ");
+        if command.chars().any(|c| {
+            matches!(
+                c,
+                '\r' | '\n' | '&' | '|' | '<' | '>' | '(' | ')' | '^' | '%' | '!'
+            )
+        }) {
+            return None;
+        }
+        let mut tokens = Vec::new();
+        let mut current = String::new();
+        let mut quoted = false;
+        for ch in command.chars() {
+            match ch {
+                '"' => quoted = !quoted,
+                c if c.is_whitespace() && !quoted => {
+                    if !current.is_empty() {
+                        tokens.push(std::mem::take(&mut current));
+                    }
+                }
+                c => current.push(c),
+            }
+        }
+        if quoted {
+            return None;
+        }
+        if !current.is_empty() {
+            tokens.push(current);
+        }
+        let executable = tokens.first()?;
+        if executable.eq_ignore_ascii_case("call") || executable.eq_ignore_ascii_case("start") {
+            return None;
+        }
+        PtySubmissionAgent::from_executable(executable, configured_wrapper)?
+    } else {
+        // PowerShell, bash, sh, and other evaluators are not accepted merely
+        // because an argument names an agent.
+        PtySubmissionAgent::from_executable(shell, configured_wrapper)?
+    };
+
+    detected.agrees_with_hint(hint).then_some(detected)
+}
+
+/// Prove an exact built-in coding-agent executable at executable position.
+/// Prefix wrappers are never accepted without retained configured-spawn proof.
+pub fn detect_pty_submission_agent(
+    shell: &str,
+    args: &[String],
+    hint: Option<CodingAgentKind>,
+) -> Option<PtySubmissionAgent> {
+    detect_pty_submission_agent_with_provenance(shell, args, hint, false)
+}
+
+/// Prove a wrapper that was resolved from the verified configured-spawn path.
+/// Callers must retain that provenance and compare the current spawn recipe.
+pub(crate) fn detect_configured_pty_submission_agent(
+    shell: &str,
+    args: &[String],
+    hint: Option<CodingAgentKind>,
+) -> Option<PtySubmissionAgent> {
+    detect_pty_submission_agent_with_provenance(shell, args, hint, true)
+}
+
 impl CodingAgentKind {
     /// Detect the coding agent from a spawn command (`shell` + `args`).
     ///
@@ -1633,6 +1769,91 @@ mod tests {
             None
         );
         assert_eq!(CodingAgentKind::detect("cmd.exe", &[]), None);
+    }
+
+    #[test]
+    fn privileged_detector_requires_executable_position() {
+        assert_eq!(
+            detect_pty_submission_agent("claude.exe", &[], Some(CodingAgentKind::Claude)),
+            Some(PtySubmissionAgent::Claude)
+        );
+        assert_eq!(
+            detect_pty_submission_agent(
+                "cmd.exe",
+                &["/C".into(), "codex".into(), "--quiet".into()],
+                Some(CodingAgentKind::Codex)
+            ),
+            Some(PtySubmissionAgent::Codex)
+        );
+        assert_eq!(
+            detect_pty_submission_agent("agent.exe", &[], None),
+            Some(PtySubmissionAgent::CursorAgent)
+        );
+        assert_eq!(detect_pty_submission_agent("agentctl", &[], None), None);
+        assert_eq!(
+            detect_pty_submission_agent(
+                "bash",
+                &["-c".into(), "echo claude".into()],
+                Some(CodingAgentKind::Claude)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn privileged_detector_rejects_unconfigured_prefix_named_plain_shells() {
+        assert_eq!(
+            detect_pty_submission_agent("claudette.exe", &[], Some(CodingAgentKind::Claude),),
+            None
+        );
+        let wrapper_args = ["/C".into(), "codex-shell.exe".into()];
+        assert_eq!(
+            detect_pty_submission_agent("cmd.exe", &wrapper_args, Some(CodingAgentKind::Codex),),
+            None
+        );
+        assert_eq!(
+            detect_configured_pty_submission_agent(
+                "cmd.exe",
+                &wrapper_args,
+                Some(CodingAgentKind::Codex),
+            ),
+            Some(PtySubmissionAgent::Codex)
+        );
+    }
+
+    #[test]
+    fn privileged_detector_rejects_persistent_or_compound_cmd() {
+        for args in [
+            vec!["/K".into(), "codex".into()],
+            vec!["/C".into(), "codex && whoami".into()],
+            vec!["/C".into(), "CALL codex".into()],
+            vec!["/C".into(), "codex %EXTRA%".into()],
+        ] {
+            assert_eq!(
+                detect_pty_submission_agent("cmd.exe", &args, Some(CodingAgentKind::Codex)),
+                None,
+                "args={args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_strips_known_exe_extension() {
+        // `file_stem` drops the `.exe` suffix the basename match relies on
+        // (dev-rust R1.5).
+        assert_eq!(
+            CodingAgentKind::detect("claude.exe", &[]),
+            Some(CodingAgentKind::Claude)
+        );
+    }
+
+    #[test]
+    fn detect_space_in_shell_path_treats_shell_as_one_token() {
+        // #260 G3 — `detect` treats `shell` as a SINGLE token; it does NOT
+        // whitespace-split it the way pre-#260 `create_session_inner` split
+        // the joined command string. A space-containing shell path whose real
+        // executable is not an agent therefore resolves to `None` (the more
+        // correct result — the executable here is `runner.exe`).
         assert_eq!(
             CodingAgentKind::detect("C:\\codex tools\\runner.exe", &[]),
             None

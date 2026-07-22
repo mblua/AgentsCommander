@@ -1,4 +1,6 @@
 use clap::Args;
+use std::ffi::OsString;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -6,6 +8,13 @@ use crate::config::teams;
 use crate::phone::types::OutboxMessage;
 
 #[derive(Args)]
+#[group(skip)]
+#[command(group(
+    clap::ArgGroup::new("send_payload")
+        .required(true)
+        .multiple(false)
+        .args(["send", "command", "pty_input", "pty_input_stdin"])
+))]
 #[command(after_help = "\
 DELIVERY MODES:\n  \
   wake            File messages inject into PTY and can spawn or respawn a persistent session. Logical PTY actions are capability- and idle-gated and can be terminally rejected before spawn.\n\n\
@@ -21,6 +30,7 @@ verified WG coordinator replica names returned by list-peers-lean. \
 Coordinator --to targets may include the Root Agent canonical name \
 `agentscommander://root-agent`; only identity-verified WG coordinator \
 replicas may use it.\n\n\
+PRIVILEGED PTY INPUT: --pty-input and --pty-input-stdin submit validated exact UTF-8 text to one authorized coding-agent PTY. This never directly executes a host or container OS shell command. The caller's shell performs quoting and expansion before AC receives an argument, so prefer stdin for multiline, leading-hyphen, clipboard, process-list-sensitive, or otherwise sensitive text. `Queued` is not `Injected`; after a confirmation timeout keep the reported operation ID and do not resubmit under a new ID.\n\n\
 DELIVERY CONFIRMATION: After queuing, send blocks up to --confirm-timeout seconds (default 90) \
 waiting for the app's poller to confirm delivery. This bounds ONLY the synchronous confirmation \
 handshake, not delivery itself: on confirmation timeout the CLI exits 1, but the message remains \
@@ -40,8 +50,8 @@ pub struct SendArgs {
 
     /// Filename (not path) of a message file that already exists in
     /// <workgroup-root>/messaging/. Sender writes the file BEFORE calling send.
-    /// Cannot be combined with --command.
-    #[arg(long, conflicts_with = "command")]
+    /// Mutually exclusive with --command and the PTY input forms.
+    #[arg(long)]
     pub send: Option<String>,
 
     /// Delivery mode (see DELIVERY MODES below)
@@ -49,7 +59,7 @@ pub struct SendArgs {
     pub mode: String,
 
     /// Wait for and return the agent's response (blocks until reply or --timeout)
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["pty_input", "pty_input_stdin"])]
     pub get_output: bool,
 
     /// Logical PTY action [possible values: clear, compact]. `clear` starts a
@@ -60,6 +70,17 @@ pub struct SendArgs {
     /// Cannot be combined with --send
     #[arg(long)]
     pub command: Option<String>,
+
+    /// Submit exact validated UTF-8 text to one authorized coding-agent PTY.
+    /// The caller's shell performs quoting and expansion before AC receives the
+    /// value. Prefer --pty-input-stdin for multiline, leading-hyphen, clipboard,
+    /// process-list-sensitive, or otherwise sensitive text.
+    #[arg(long, allow_hyphen_values = true)]
+    pub pty_input: Option<OsString>,
+
+    /// Read exact PTY input from stdin with a 65,536-byte UTF-8 ceiling.
+    #[arg(long)]
+    pub pty_input_stdin: bool,
 
     /// Configured agent id to use when `wake` spawns a new persistent session for
     /// the destination. `auto` picks the session's saved `lastCodingAgent`.
@@ -77,7 +98,7 @@ pub struct SendArgs {
     /// message remains durably queued in the outbox and is typically still
     /// delivered. Exit 1 on confirmation timeout does NOT mean the message was
     /// lost; verify the outbox instead of re-sending
-    #[arg(long, default_value = "90")]
+    #[arg(long, default_value = "90", value_parser = clap::value_parser!(u64).range(0..=3600))]
     pub confirm_timeout: u64,
 
     /// Agent root directory (required). Your working directory — used to derive your agent name
@@ -85,7 +106,7 @@ pub struct SendArgs {
     pub root: Option<String>,
 
     /// Write message to a specific outbox directory instead of <root>/<local-dir>/outbox/
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["pty_input", "pty_input_stdin"])]
     pub outbox: Option<String>,
 }
 
@@ -254,6 +275,518 @@ fn notification_pty_overhead(sender_len: usize, get_output: bool) -> usize {
     overhead
 }
 
+fn read_bounded_pty_input<R: Read>(reader: R) -> Result<String, &'static str> {
+    let mut bytes = Vec::with_capacity(crate::pty::backend::PTY_INPUT_MAX_BYTES + 1);
+    reader
+        .take(crate::pty::backend::PTY_INPUT_MAX_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "invalid_text")?;
+    if bytes.len() > crate::pty::backend::PTY_INPUT_MAX_BYTES {
+        return Err("payload_too_large");
+    }
+    String::from_utf8(bytes).map_err(|_| "invalid_text")
+}
+
+fn pty_text_from_args(args: &SendArgs) -> Result<Option<String>, &'static str> {
+    if let Some(value) = args.pty_input.clone() {
+        return value.into_string().map(Some).map_err(|_| "invalid_text");
+    }
+    if args.pty_input_stdin {
+        let stdin = std::io::stdin();
+        let lock = stdin.lock();
+        return read_bounded_pty_input(lock).map(Some);
+    }
+    Ok(None)
+}
+
+struct SensitivePtyEnvelope(Vec<u8>);
+
+fn publish_pty_request(
+    outbox: &Path,
+    injection_id: &str,
+    envelope: &OutboxMessage,
+) -> Result<PathBuf, &'static str> {
+    let outbox_identity =
+        crate::path_identity::verify_directory(outbox).map_err(|_| "unsafe_path")?;
+    let bytes = serde_json::to_vec(envelope).map_err(|_| "invalid_envelope")?;
+    if bytes.len() > crate::phone::types::PTY_INPUT_HOST_ENVELOPE_MAX_BYTES {
+        return Err("invalid_envelope");
+    }
+    let sensitive = SensitivePtyEnvelope(bytes);
+    let temp = outbox.join(format!(
+        ".{injection_id}.{}.pty-input-request-tmp",
+        Uuid::new_v4()
+    ));
+    let final_path = outbox.join(format!("{injection_id}.json"));
+    match std::fs::symlink_metadata(&final_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        _ => return Err("publish_ambiguous"),
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(0x0002_0000);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+        options
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let mut file = options.open(&temp).map_err(|_| "publish_failed")?;
+    if file.write_all(&sensitive.0).is_err() || file.flush().is_err() || file.sync_all().is_err() {
+        drop(file);
+        if let Err(error) = std::fs::remove_file(&temp) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                return Err("publish_ambiguous");
+            }
+        }
+        return Err("publish_failed");
+    }
+    let temp_identity = match crate::path_identity::verify_opened_regular_file(&temp, &file, false)
+    {
+        Ok(identity) => identity,
+        Err(_) => {
+            drop(file);
+            if let Err(error) = std::fs::remove_file(&temp) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    return Err("publish_ambiguous");
+                }
+            }
+            return Err("publish_failed");
+        }
+    };
+    drop(file);
+
+    let prepublication_safe = (|| {
+        let current_outbox = crate::path_identity::verify_directory(outbox)?;
+        let current_temp = crate::path_identity::verify_regular_file(&temp)?;
+        if !crate::path_identity::same_object(&outbox_identity, &current_outbox)
+            || !crate::path_identity::same_object(&temp_identity, &current_temp)
+        {
+            return Err("unsafe_path".to_string());
+        }
+        match std::fs::symlink_metadata(&final_path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            _ => Err("unsafe_path".to_string()),
+        }
+    })();
+    if prepublication_safe.is_err() {
+        if let Err(error) = std::fs::remove_file(&temp) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                return Err("publish_ambiguous");
+            }
+        }
+        return Err("publish_ambiguous");
+    }
+    if crate::path_identity::publish_new_file_atomic(&temp, &final_path).is_err() {
+        if let Err(error) = std::fs::remove_file(&temp) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                return Err("publish_ambiguous");
+            }
+        }
+        return Err("publish_ambiguous");
+    }
+    let (published, _) = crate::path_identity::read_bounded_regular(
+        &final_path,
+        crate::phone::types::PTY_INPUT_HOST_ENVELOPE_MAX_BYTES,
+    )
+    .map_err(|_| "publish_ambiguous")?;
+    if published != sensitive.0 {
+        return Err("publish_ambiguous");
+    }
+    let published_outbox =
+        crate::path_identity::verify_directory(outbox).map_err(|_| "publish_ambiguous")?;
+    if !crate::path_identity::same_object(&outbox_identity, &published_outbox) {
+        return Err("publish_ambiguous");
+    }
+    if let Ok(parent) = std::fs::File::open(outbox) {
+        parent.sync_all().map_err(|_| "publish_ambiguous")?;
+    }
+    Ok(final_path)
+}
+
+struct ExpectedPtyArtifact<'a> {
+    injection_id: &'a str,
+    op_id: &'a str,
+    sender: &'a str,
+    target: &'a str,
+    payload_bytes: u64,
+    payload_sha256: &'a str,
+    issued_at: &'a str,
+    expires_at: &'a str,
+    confirmation_tag: &'a str,
+}
+
+fn validate_pty_artifact(
+    path: &Path,
+    expected: &ExpectedPtyArtifact<'_>,
+) -> Result<crate::phone::types::PtyInputHostArtifact, &'static str> {
+    let (bytes, _) = crate::path_identity::read_bounded_regular(
+        path,
+        crate::phone::types::PTY_INPUT_METADATA_MAX_BYTES,
+    )
+    .map_err(|_| "invalid_artifact")?;
+    let value =
+        crate::path_identity::parse_json_no_duplicates(&bytes).map_err(|_| "invalid_artifact")?;
+    let artifact: crate::phone::types::PtyInputHostArtifact =
+        serde_json::from_value(value).map_err(|_| "invalid_artifact")?;
+    let result = &artifact.result;
+    crate::phone::types::validate_enqueued_pty_input_result(result)
+        .map_err(|_| "invalid_artifact")?;
+    if artifact.confirmation_tag != expected.confirmation_tag
+        || result.version != crate::phone::types::PTY_INPUT_VERSION
+        || result.injection_id != expected.injection_id
+        || result.op_id.as_deref() != Some(expected.op_id)
+        || result.sender.as_deref() != Some(expected.sender)
+        || result.target.as_deref() != Some(expected.target)
+        || result.payload_bytes != Some(expected.payload_bytes)
+        || result.payload_sha256.as_deref() != Some(expected.payload_sha256)
+        || result.source_plane != Some(crate::phone::types::PtyInputSourcePlane::HostCli)
+        || result.issued_at.as_deref() != Some(expected.issued_at)
+        || result.expires_at.as_deref() != Some(expected.expires_at)
+        || result.terminal != result.status.is_terminal()
+    {
+        return Err("invalid_artifact");
+    }
+    Ok(artifact)
+}
+
+fn find_pty_input_terminal_artifact(
+    outbox: &Path,
+    expected: &ExpectedPtyArtifact<'_>,
+) -> Result<Option<crate::phone::types::PtyInputResult>, &'static str> {
+    let candidates = [
+        (
+            "delivered",
+            crate::phone::types::PtyInputPublicStatus::Injected,
+        ),
+        (
+            "rejected",
+            crate::phone::types::PtyInputPublicStatus::Rejected,
+        ),
+        (
+            "indeterminate",
+            crate::phone::types::PtyInputPublicStatus::Indeterminate,
+        ),
+    ];
+    for (directory, status) in candidates {
+        let path = outbox
+            .join(directory)
+            .join(format!("{}.json", expected.injection_id));
+        if path.exists() {
+            let artifact = validate_pty_artifact(&path, expected)?;
+            if artifact.result.status != status || !artifact.result.terminal {
+                return Err("invalid_artifact");
+            }
+            return Ok(Some(artifact.result));
+        }
+    }
+    Ok(None)
+}
+
+fn wait_for_pty_input_confirmation(
+    outbox: &Path,
+    expected: &ExpectedPtyArtifact<'_>,
+    timeout: std::time::Duration,
+) -> Result<crate::phone::types::PtyInputResult, &'static str> {
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(result) = find_pty_input_terminal_artifact(outbox, expected)? {
+            return Ok(result);
+        }
+        if start.elapsed() >= timeout {
+            return Err("confirmation_timeout");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+}
+
+fn pty_effective_project_paths(root: &str) -> Result<Vec<String>, String> {
+    let mut paths =
+        crate::config::settings::read_pty_input_project_paths_strict()?.unwrap_or_default();
+    if let Some(project) = derive_root_project_dir(root)? {
+        let canonical = std::fs::canonicalize(&project).ok();
+        if !paths.iter().any(|candidate| {
+            candidate == &project
+                || canonical.as_ref().is_some_and(|value| {
+                    std::fs::canonicalize(candidate).ok().as_ref() == Some(value)
+                })
+        }) {
+            paths.push(project);
+        }
+    }
+    Ok(paths)
+}
+
+fn execute_pty_input(args: SendArgs, root: String, text: String) -> i32 {
+    use crate::phone::types::{
+        canonical_pty_timestamp, pty_input_confirmation_tag, sha256_hex, PtyInputEnterMode,
+        PtyInputPublicStatus, PtyInputWirePayload, PTY_INPUT_TTL_SECS, PTY_INPUT_VERSION,
+    };
+
+    if args.mode != "wake" || args.get_output || args.outbox.is_some() {
+        eprintln!("Error: mixed_payload");
+        return 1;
+    }
+    if let Err(error) = crate::pty::inject::validate_pty_input_text(&text) {
+        eprintln!("Error: {error}");
+        return 1;
+    }
+    let requested_agent = if args.agent == "auto" {
+        None
+    } else {
+        if crate::config::coding_agent_mutations::validate_custom_agent_id(&args.agent).is_err() {
+            eprintln!("Error: unsupported_profile");
+            return 1;
+        }
+        Some(args.agent.clone())
+    };
+    let (token, master_or_root_credential) = match crate::cli::validate_cli_token(&args.token) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("{error}");
+            return 1;
+        }
+    };
+    if master_or_root_credential {
+        eprintln!("Error: session_token_required");
+        return 1;
+    }
+    let paths = match pty_effective_project_paths(&root) {
+        Ok(paths) => paths,
+        Err(_) => {
+            eprintln!("Error: sender_identity_invalid");
+            return 1;
+        }
+    };
+    let sender_is_root = crate::config::root_agent::is_root_agent_path(&root);
+    let route = match crate::config::teams::verify_pty_input_route(
+        Path::new(&root),
+        sender_is_root,
+        &args.to,
+        &paths,
+    ) {
+        Ok(route) => route,
+        Err(code) => {
+            eprintln!("Error: {code}");
+            return 1;
+        }
+    };
+    let supplied_root = match crate::path_identity::verify_directory(Path::new(&root)) {
+        Ok(identity) => identity,
+        Err(_) => {
+            eprintln!("Error: unsafe_path");
+            return 1;
+        }
+    };
+    if !crate::path_identity::same_object(&supplied_root, &route.sender.replica_identity) {
+        eprintln!("Error: sender_identity_invalid");
+        return 1;
+    }
+
+    let injection_id = Uuid::new_v4().to_string();
+    let op_id = injection_id.clone();
+    let nonce = Uuid::new_v4().to_string();
+    let issued = chrono::Utc::now();
+    let issued_at = canonical_pty_timestamp(issued);
+    let expires_at =
+        canonical_pty_timestamp(issued + chrono::Duration::seconds(PTY_INPUT_TTL_SECS));
+    let confirmation_tag = pty_input_confirmation_tag(&injection_id, &op_id, &nonce);
+    let digest = sha256_hex(text.as_bytes());
+    let payload_bytes = text.len() as u64;
+
+    crate::cli_println!("Operation ID: {injection_id}");
+    if std::io::stdout().flush().is_err() {
+        eprintln!("Error: publish_failed");
+        return 1;
+    }
+
+    let message = OutboxMessage {
+        id: injection_id.clone(),
+        token: Some(token),
+        from: route.sender.canonical_fqn.clone(),
+        to: route.target.canonical_fqn.clone(),
+        body: String::new(),
+        mode: "wake".to_string(),
+        get_output: false,
+        request_id: None,
+        sender_agent: None,
+        preferred_agent: String::new(),
+        priority: "normal".to_string(),
+        timestamp: issued_at.clone(),
+        command: None,
+        action: Some("pty-input".to_string()),
+        target: None,
+        force: None,
+        timeout_secs: None,
+        switch_coding_agent: None,
+        switch_profile: None,
+        dry_run: None,
+        quiet_period_ms: None,
+        pty_input: Some(PtyInputWirePayload {
+            version: PTY_INPUT_VERSION,
+            text,
+            enter: PtyInputEnterMode::AgentSubmit,
+            injection_id: injection_id.clone(),
+            op_id: op_id.clone(),
+            issued_at: issued_at.clone(),
+            expires_at: expires_at.clone(),
+            nonce,
+            agent_id: requested_agent,
+        }),
+    };
+
+    let expected = ExpectedPtyArtifact {
+        injection_id: &injection_id,
+        op_id: &op_id,
+        sender: &route.sender.canonical_fqn,
+        target: &route.target.canonical_fqn,
+        payload_bytes,
+        payload_sha256: &digest,
+        issued_at: &issued_at,
+        expires_at: &expires_at,
+        confirmation_tag: &confirmation_tag,
+    };
+
+    let local_dir = PathBuf::from(&root).join(crate::config::agent_local_dir_name());
+    if crate::path_identity::verify_directory(&local_dir).is_err() {
+        eprintln!("Error: unsafe_path operation={injection_id}");
+        return 1;
+    }
+    let outbox = local_dir.join("outbox");
+    if !outbox.exists() && std::fs::create_dir(&outbox).is_err() {
+        eprintln!("Error: publish_failed operation={injection_id}");
+        return 1;
+    }
+    if let Err(code) = publish_pty_request(&outbox, &injection_id, &message) {
+        let final_exists =
+            crate::path_identity::verify_regular_file(&outbox.join(format!("{injection_id}.json")))
+                .is_ok();
+        let correlated_artifact = find_pty_input_terminal_artifact(&outbox, &expected)
+            .ok()
+            .flatten()
+            .is_some();
+        eprintln!(
+            "Indeterminate: {injection_id} code={code} published={final_exists} correlatedArtifact={correlated_artifact}; do not resubmit under a new ID"
+        );
+        return 1;
+    }
+    crate::cli_println!(
+        "Queued: {injection_id} (queued is not injected; waiting for terminal status)"
+    );
+    match wait_for_pty_input_confirmation(
+        &outbox,
+        &expected,
+        std::time::Duration::from_secs(args.confirm_timeout),
+    ) {
+        Ok(result) => match result.status {
+            PtyInputPublicStatus::Injected => {
+                crate::cli_println!("Injected: {injection_id}");
+                0
+            }
+            PtyInputPublicStatus::Rejected => {
+                let code = result
+                    .reason
+                    .as_ref()
+                    .map(|reason| reason_code_for_cli(reason.code))
+                    .unwrap_or("invalid_envelope");
+                eprintln!("Rejected: {injection_id} code={code}");
+                1
+            }
+            PtyInputPublicStatus::Indeterminate => {
+                let code = result
+                    .reason
+                    .as_ref()
+                    .map(|reason| reason_code_for_cli(reason.code))
+                    .unwrap_or("terminal_store_failed");
+                eprintln!("Indeterminate: {injection_id} code={code}; do not resubmit");
+                1
+            }
+            _ => {
+                eprintln!("Indeterminate: {injection_id} code=invalid_artifact");
+                1
+            }
+        },
+        Err("confirmation_timeout") => {
+            eprintln!(
+                "Confirmation timeout: operation {injection_id} remains queued or actuating; do not resubmit under a new ID. Inspect its delivered, rejected, and indeterminate artifacts."
+            );
+            1
+        }
+        Err(code) => {
+            eprintln!("Indeterminate: {injection_id} code={code}; do not resubmit");
+            1
+        }
+    }
+}
+
+fn reason_code_for_cli(code: crate::phone::types::PtyInputReasonCode) -> &'static str {
+    use crate::phone::types::PtyInputReasonCode as C;
+    match code {
+        C::InvalidEnvelope => "invalid_envelope",
+        C::MixedPayload => "mixed_payload",
+        C::UnsupportedVersion => "unsupported_version",
+        C::InvalidEnterMode => "invalid_enter_mode",
+        C::InvalidId => "invalid_id",
+        C::InvalidNonce => "invalid_nonce",
+        C::InvalidTimestamp => "invalid_timestamp",
+        C::Expired => "expired",
+        C::InvalidTarget => "invalid_target",
+        C::InvalidText => "invalid_text",
+        C::PayloadTooLarge => "payload_too_large",
+        C::IdempotencyConflict => "idempotency_conflict",
+        C::CapacityExceeded => "capacity_exceeded",
+        C::SessionTokenRequired => "session_token_required",
+        C::InvalidSessionToken => "invalid_session_token",
+        C::AmbiguousSessionToken => "ambiguous_session_token",
+        C::SenderSessionNotLive => "sender_session_not_live",
+        C::SenderBackendNotLocal => "sender_backend_not_local",
+        C::SenderIdentityInvalid => "sender_identity_invalid",
+        C::SenderNotCoordinator => "sender_not_coordinator",
+        C::RootIdentityInvalid => "root_identity_invalid",
+        C::TargetNotMember => "target_not_member",
+        C::TargetIsCoordinator => "target_is_coordinator",
+        C::TargetOutOfScope => "target_out_of_scope",
+        C::UnsafePath => "unsafe_path",
+        C::ApiScopeRequired => "api_scope_required",
+        C::ApiClientUnbound => "api_client_unbound",
+        C::ApiClientStale => "api_client_stale",
+        C::ApiBindingMismatch => "api_binding_mismatch",
+        C::AuthorityChanged => "authority_changed",
+        C::Busy => "busy",
+        C::ResizeUnsettled => "resize_unsettled",
+        C::UntrackedReadiness => "untracked_readiness",
+        C::UnsupportedSession => "unsupported_session",
+        C::NonpersistentLiveSession => "nonpersistent_live_session",
+        C::InconsistentSession => "inconsistent_session",
+        C::UnsupportedProfile => "unsupported_profile",
+        C::ReadinessTimeout => "readiness_timeout",
+        C::StoreCorrupt => "store_corrupt",
+        C::RestoreInProgress => "restore_in_progress",
+        C::PurgeInProgress => "purge_in_progress",
+        C::SessionRace => "session_race",
+        C::LeaseLost => "lease_lost",
+        C::SpawnFailedSafe => "spawn_failed_safe",
+        C::StoreTransient => "store_transient",
+        C::FinalRevalidationFailed => "final_revalidation_failed",
+        C::TextWriteFailed => "text_write_failed",
+        C::RequiredEnterFailed => "required_enter_failed",
+        C::DaemonRestartAfterActuation => "daemon_restart_after_actuation",
+        C::RuntimeActuationOrphan => "runtime_actuation_orphan",
+        C::TerminalStoreFailed => "terminal_store_failed",
+        C::RedundantEnterFailed => "redundant_enter_failed",
+        C::BoundaryMetadataFailed => "boundary_metadata_failed",
+        C::ArtifactUnclaimed => "artifact_unclaimed",
+    }
+}
+
 pub fn execute(args: SendArgs) -> i32 {
     let root = match args.root {
         Some(ref r) => r.clone(),
@@ -262,6 +795,17 @@ pub fn execute(args: SendArgs) -> i32 {
             return 1;
         }
     };
+    let pty_text = match pty_text_from_args(&args) {
+        Ok(value) => value,
+        Err(code) => {
+            eprintln!("Error: {code}");
+            return 1;
+        }
+    };
+    if let Some(text) = pty_text {
+        return execute_pty_input(args, root, text);
+    }
+
     let root_is_root_agent = crate::config::root_agent::is_root_agent_path(&root);
     if let Err(reason) =
         validate_root_agent_delivery_kind(root_is_root_agent, args.command.as_deref())
@@ -527,6 +1071,7 @@ pub fn execute(args: SendArgs) -> i32 {
         switch_profile: None,
         dry_run: None,
         quiet_period_ms: None,
+        pty_input: None,
     };
 
     // Write to --outbox if specified, app outbox if root/master token, otherwise <root>/<local_dir>/outbox/
@@ -766,8 +1311,9 @@ mod tests {
         // Under the reverted tightening, counting the never-injected marker
         // overhead would have rejected this same body. Confirm the corrected live
         // path does not, so the tightening cannot silently return.
-        let tightened_overhead =
-            plain_overhead + crate::phone::messaging::PTY_RESPONSE_MARKER_FIXED + 2 * REQUEST_ID_LEN;
+        let tightened_overhead = plain_overhead
+            + crate::phone::messaging::PTY_RESPONSE_MARKER_FIXED
+            + 2 * REQUEST_ID_LEN;
         assert!(body_len + tightened_overhead > crate::phone::messaging::PTY_SAFE_MAX);
     }
 
@@ -964,6 +1510,150 @@ mod tests {
         }
     }
 
+    fn try_parse_payload_args(payload: &[&str]) -> Result<SendArgs, clap::Error> {
+        use clap::Parser;
+        let mut argv = vec![
+            "agentscommander",
+            "send",
+            "--token",
+            "11111111-1111-4111-8111-111111111111",
+            "--to",
+            "proj-a:wg-1-dev-team/dev-rust",
+            "--root",
+            "anything",
+        ];
+        argv.extend_from_slice(payload);
+        let parsed = crate::cli::Cli::try_parse_from(argv)?;
+        match parsed.command.expect("subcommand present") {
+            crate::cli::Commands::Send(args) => Ok(args),
+            _ => panic!("expected Send subcommand"),
+        }
+    }
+
+    #[test]
+    fn send_payload_group_accepts_four_single_forms_and_rejects_every_pair() {
+        let forms: [&[&str]; 4] = [
+            &["--send", "20260704-000000-wg1-a-to-wg1-b-x.md"],
+            &["--command", "clear"],
+            &["--pty-input", "-literal shell $(text)"],
+            &["--pty-input-stdin"],
+        ];
+        for form in forms {
+            assert!(try_parse_payload_args(form).is_ok(), "single form {form:?}");
+        }
+        assert!(try_parse_payload_args(&[]).is_err());
+        for left in 0..forms.len() {
+            for right in (left + 1)..forms.len() {
+                let args: Vec<&str> = forms[left]
+                    .iter()
+                    .chain(forms[right].iter())
+                    .copied()
+                    .collect();
+                assert!(
+                    try_parse_payload_args(&args).is_err(),
+                    "payload pair {left}/{right}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pty_input_conflicts_and_bounded_reader_are_exact() {
+        assert!(try_parse_payload_args(&["--pty-input", "x", "--get-output"]).is_err());
+        assert!(try_parse_payload_args(&["--pty-input", "x", "--outbox", "custom",]).is_err());
+        let exact = vec![b'x'; crate::pty::backend::PTY_INPUT_MAX_BYTES];
+        assert_eq!(
+            read_bounded_pty_input(exact.as_slice()).unwrap().len(),
+            exact.len()
+        );
+        let oversized = vec![b'x'; crate::pty::backend::PTY_INPUT_MAX_BYTES + 1];
+        assert_eq!(
+            read_bounded_pty_input(oversized.as_slice()),
+            Err("payload_too_large")
+        );
+        assert_eq!(read_bounded_pty_input(&[0xff][..]), Err("invalid_text"));
+    }
+
+    #[test]
+    fn host_artifact_validation_requires_every_correlation_field_and_directory() {
+        use crate::phone::types::{
+            canonical_pty_timestamp, PtyInputHostArtifact, PtyInputPublicStatus, PtyInputReason,
+            PtyInputReasonCode, PtyInputResult, PtyInputSourcePlane,
+        };
+
+        let temp = tempfile::tempdir().unwrap();
+        let injection_id = Uuid::new_v4().to_string();
+        let issued = chrono::Utc::now();
+        let issued_at = canonical_pty_timestamp(issued);
+        let expires_at = canonical_pty_timestamp(
+            issued + chrono::Duration::seconds(crate::phone::types::PTY_INPUT_TTL_SECS),
+        );
+        let payload_sha256 = crate::phone::types::sha256_hex(b"exact");
+        let expected = ExpectedPtyArtifact {
+            injection_id: &injection_id,
+            op_id: &injection_id,
+            sender: "project:wg-1-team/lead",
+            target: "project:wg-1-team/member",
+            payload_bytes: 5,
+            payload_sha256: &payload_sha256,
+            issued_at: &issued_at,
+            expires_at: &expires_at,
+            confirmation_tag: "confirmation",
+        };
+        let mut result = PtyInputResult::new(injection_id.clone(), PtyInputPublicStatus::Rejected);
+        result.op_id = Some(injection_id.clone());
+        result.sender = Some(expected.sender.to_string());
+        result.target = Some(expected.target.to_string());
+        result.payload_bytes = Some(expected.payload_bytes);
+        result.payload_sha256 = Some(payload_sha256.clone());
+        result.source_plane = Some(PtyInputSourcePlane::HostCli);
+        result.issued_at = Some(issued_at.clone());
+        result.expires_at = Some(expires_at.clone());
+        result.queued_at = Some(canonical_pty_timestamp(issued));
+        result.terminal_at = Some(canonical_pty_timestamp(issued));
+        result.reason = Some(PtyInputReason::from_code(PtyInputReasonCode::Busy));
+        let artifact = PtyInputHostArtifact {
+            result,
+            confirmation_tag: expected.confirmation_tag.to_string(),
+        };
+        let path = temp.path().join("artifact.json");
+        let artifact_bytes = serde_json::to_vec(&artifact).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&artifact_bytes)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>(),
+            ["confirmationTag".to_string(), "result".to_string()]
+                .into_iter()
+                .collect()
+        );
+        std::fs::write(&path, artifact_bytes).unwrap();
+        assert!(validate_pty_artifact(&path, &expected).is_ok());
+
+        let mut tampered = artifact.clone();
+        tampered.confirmation_tag = "copied".to_string();
+        std::fs::write(&path, serde_json::to_vec(&tampered).unwrap()).unwrap();
+        assert_eq!(
+            validate_pty_artifact(&path, &expected),
+            Err("invalid_artifact")
+        );
+
+        let delivered = temp.path().join("delivered");
+        std::fs::create_dir(&delivered).unwrap();
+        std::fs::write(
+            delivered.join(format!("{injection_id}.json")),
+            serde_json::to_vec(&artifact).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            find_pty_input_terminal_artifact(temp.path(), &expected),
+            Err("invalid_artifact")
+        );
+    }
+
     #[test]
     fn send_args_confirm_timeout_defaults_to_90() {
         let args = parse_send_args(&[]);
@@ -1042,7 +1732,10 @@ mod tests {
         assert!(help.contains("--confirm-timeout"), "{help}");
         // Queued-vs-confirmed semantics: timeout does not mean the message was lost.
         assert!(help.contains("durably queued"), "{help}");
-        assert!(help.contains("does NOT mean the message was lost"), "{help}");
+        assert!(
+            help.contains("does NOT mean the message was lost"),
+            "{help}"
+        );
         // The two timeout flags must be distinguished from each other.
         assert!(help.contains("--get-output response wait"), "{help}");
     }

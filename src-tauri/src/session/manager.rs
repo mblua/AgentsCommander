@@ -38,6 +38,12 @@ pub struct SessionManager {
     state: Arc<RwLock<SessionManagerState>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UniqueLiveTokenError {
+    NotFound,
+    Ambiguous,
+}
+
 struct SessionManagerState {
     sessions: HashMap<Uuid, Session>,
     order: Vec<Uuid>,
@@ -253,10 +259,12 @@ impl SessionManager {
             effective_codex_home: None,
             resolved_claude_projects_dir: None,
             profile_content_hash: None,
+            trusted_configured_spawn: false,
             telegram_bot_id: None,
             was_detached: false,
             detached_geometry: None,
             start_fresh_on_restore: false,
+            context_percent: None,
         };
         state.sessions.insert(id, session.clone());
         state.order.push(id);
@@ -480,6 +488,158 @@ impl SessionManager {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn prepare_pty_input_boundary<'a, F, G>(
+        &self,
+        id: Uuid,
+        expected_target: &crate::config::teams::VerifiedPtyInputIdentity,
+        expected_backend: SessionBackendKind,
+        authority_id: Uuid,
+        expected_sender: &crate::config::teams::VerifiedPtyInputIdentity,
+        authority_backend: SessionBackendKind,
+        authority_route: &'a crate::pty::manager::PtyAuthorityRouteProof,
+        permit: &'a crate::pty::manager::PtyInputPermit,
+        idle_detector: &crate::pty::idle_detector::IdleDetector,
+        settings: &crate::config::settings::SettingsState,
+        final_recipe_check: G,
+        final_external_check: F,
+    ) -> Result<
+        crate::pty::manager::PtyRouteWriteGuard<'a>,
+        crate::pty::idle_detector::PtyInputBoundaryFailure,
+    >
+    where
+        F: FnOnce() -> bool,
+        G: FnOnce(&Session, &crate::config::settings::AppSettings) -> bool,
+    {
+        use crate::pty::idle_detector::PtyInputBoundaryFailure as Failure;
+
+        let (route_guard, was_idle) = {
+            let settings_guard = Arc::clone(settings)
+                .try_read_owned()
+                .map_err(|_| Failure::RouteUnavailable)?;
+            let mut state = self.state.write().await;
+            if state.pending_create.contains_key(&id)
+                || state.pending_create.contains_key(&authority_id)
+            {
+                return Err(Failure::RouteUnavailable);
+            }
+            let authority = state
+                .sessions
+                .get(&authority_id)
+                .ok_or(Failure::RouteUnavailable)?;
+            if matches!(authority.status, SessionStatus::Exited(_))
+                || authority.backend_kind != authority_backend
+            {
+                return Err(Failure::RouteUnavailable);
+            }
+            if authority_backend == SessionBackendKind::LocalProcess {
+                let live_token_matches = state
+                    .sessions
+                    .values()
+                    .filter(|candidate| !state.pending_create.contains_key(&candidate.id))
+                    .filter(|candidate| candidate.token == authority.token)
+                    .filter(|candidate| !matches!(candidate.status, SessionStatus::Exited(_)))
+                    .count();
+                if live_token_matches != 1 {
+                    return Err(Failure::RouteUnavailable);
+                }
+            }
+            let authority_cwd = crate::path_identity::verify_directory(std::path::Path::new(
+                &authority.working_directory,
+            ))
+            .map_err(|_| Failure::RouteUnavailable)?;
+            let expected_authority_replica = if expected_sender.canonical_fqn
+                == crate::config::root_agent::ROOT_AGENT_SENDER
+            {
+                let root = crate::config::root_agent::verify_live_root_agent_path(
+                    std::path::Path::new(&authority.working_directory),
+                )
+                .map_err(|_| Failure::RouteUnavailable)?;
+                if !authority.is_root_agent
+                    || !crate::path_identity::same_object(&root, &expected_sender.replica_identity)
+                {
+                    return Err(Failure::RouteUnavailable);
+                }
+                None
+            } else {
+                let sender = crate::config::teams::verify_pty_input_replica_cwd(
+                    std::path::Path::new(&authority.working_directory),
+                )
+                .map_err(|_| Failure::RouteUnavailable)?;
+                if authority.is_root_agent
+                    || sender.canonical_fqn != expected_sender.canonical_fqn
+                    || sender.authority_fingerprint != expected_sender.authority_fingerprint
+                    || !crate::path_identity::same_object(
+                        &sender.replica_identity,
+                        &expected_sender.replica_identity,
+                    )
+                {
+                    return Err(Failure::RouteUnavailable);
+                }
+                Some(sender.replica_identity)
+            };
+            let authority_route_guard = authority_route
+                .lock_verified(
+                    authority_backend,
+                    &authority_cwd,
+                    expected_authority_replica.as_ref(),
+                )
+                .map_err(|_| Failure::RouteUnavailable)?;
+            let session = state
+                .sessions
+                .get_mut(&id)
+                .ok_or(Failure::RouteUnavailable)?;
+            if matches!(session.status, SessionStatus::Exited(_))
+                || !session.waiting_for_input
+                || session.backend_kind != expected_backend
+                || !final_recipe_check(session, &settings_guard)
+            {
+                return Err(Failure::Busy);
+            }
+            let cwd_identity = crate::path_identity::verify_directory(std::path::Path::new(
+                &session.working_directory,
+            ))
+            .map_err(|_| Failure::RouteUnavailable)?;
+            let current_target = crate::config::teams::verify_pty_input_replica_cwd(
+                std::path::Path::new(&session.working_directory),
+            )
+            .map_err(|_| Failure::RouteUnavailable)?;
+            if current_target.canonical_fqn != expected_target.canonical_fqn
+                || current_target.authority_fingerprint != expected_target.authority_fingerprint
+                || !crate::path_identity::same_object(
+                    &current_target.replica_identity,
+                    &expected_target.replica_identity,
+                )
+            {
+                return Err(Failure::RouteUnavailable);
+            }
+            let prepared = idle_detector.prepare_pty_input_boundary(id, || {
+                let route = crate::pty::manager::PtyManager::lock_route_for_verified_write(
+                    permit,
+                    expected_backend,
+                    &cwd_identity,
+                    &expected_target.replica_identity,
+                )?;
+                if !final_external_check() {
+                    return Err(crate::errors::AppError::PtyError(
+                        "pty_authority_changed".to_string(),
+                    ));
+                }
+                Ok(route)
+            })?;
+            session.waiting_for_input = false;
+            if matches!(session.status, SessionStatus::Idle) {
+                session.status = SessionStatus::Running;
+            }
+            let (mut route_guard, was_idle) = prepared;
+            route_guard.retain_authority_guard(authority_route_guard);
+            route_guard.retain_settings_guard(settings_guard);
+            (route_guard, was_idle)
+        };
+        idle_detector.notify_pty_input_busy(id, was_idle);
+        Ok(route_guard)
+    }
+
     pub async fn set_last_prompt(&self, id: Uuid, prompt: String) {
         let mut state = self.state.write().await;
         if state.pending_create.contains_key(&id) {
@@ -487,6 +647,23 @@ impl SessionManager {
         }
         if let Some(s) = state.sessions.get_mut(&id) {
             s.last_prompt = Some(prompt);
+        }
+    }
+
+    /// #1088 - write the scraper's latest context-usage percent onto one
+    /// session so it rides `Session -> SessionInfo -> snapshot_sessions` into
+    /// `sessions.json` for the disk-reading CLI. No logging (unlike
+    /// `mark_idle`/`mark_busy`) to avoid a log line up to once per 5s per
+    /// changing session. A write for an absent/pending id is a silent no-op,
+    /// matching this mutator family and the scraper's "session may have ended
+    /// between sample and commit" reality.
+    pub async fn set_context_percent(&self, id: Uuid, percent: Option<u8>) {
+        let mut state = self.state.write().await;
+        if state.pending_create.contains_key(&id) {
+            return;
+        }
+        if let Some(s) = state.sessions.get_mut(&id) {
+            s.context_percent = percent;
         }
     }
 
@@ -712,6 +889,17 @@ impl SessionManager {
     ) -> Result<(), AppError> {
         self.update_pending(binding, |session| session.agent_kind = kind)
             .await
+    }
+
+    pub(crate) async fn set_pending_trusted_configured_spawn(
+        &self,
+        binding: PendingCreateBinding,
+        trusted: bool,
+    ) -> Result<(), AppError> {
+        self.update_pending(binding, |session| {
+            session.trusted_configured_spawn = trusted;
+        })
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1012,6 +1200,25 @@ impl SessionManager {
             .filter(|s| !state.pending_create.contains_key(&s.id))
             .find(|s| s.token == token)
             .map(SessionInfo::from)
+    }
+
+    /// Privileged lookup requiring exactly one non-pending, non-exited owner.
+    pub async fn find_unique_live_by_token(
+        &self,
+        token: Uuid,
+    ) -> Result<SessionInfo, UniqueLiveTokenError> {
+        let state = self.state.read().await;
+        let mut matches = state
+            .sessions
+            .values()
+            .filter(|session| !state.pending_create.contains_key(&session.id))
+            .filter(|session| session.token == token)
+            .filter(|session| !matches!(session.status, SessionStatus::Exited(_)));
+        let first = matches.next().ok_or(UniqueLiveTokenError::NotFound)?;
+        if matches.next().is_some() {
+            return Err(UniqueLiveTokenError::Ambiguous);
+        }
+        Ok(SessionInfo::from(first))
     }
 
     pub(crate) async fn selection_payload(&self) -> SessionSelection {
@@ -1522,10 +1729,12 @@ impl SessionManager {
             effective_codex_home: None,
             resolved_claude_projects_dir: None,
             profile_content_hash: None,
+            trusted_configured_spawn: false,
             telegram_bot_id: None,
             was_detached: false,
             detached_geometry: None,
             start_fresh_on_restore: false,
+            context_percent: None,
         };
         if state.selection.mode() == SelectionMode::None {
             session.status = SessionStatus::Active;
@@ -2586,6 +2795,69 @@ mod tests {
             SessionStatus::Idle,
             "mark_idle must transition Running → Idle"
         );
+    }
+
+    // ── #1088: set_context_percent mutator ──
+
+    #[tokio::test]
+    async fn set_context_percent_round_trips_including_zero_and_clear() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "codex".into(),
+                vec![],
+                "C:\\proj".into(),
+                None,
+                None,
+                vec![],
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+
+        // Fresh session has no reading.
+        assert_eq!(
+            mgr.get_session(session.id).await.unwrap().context_percent,
+            None
+        );
+
+        mgr.set_context_percent(session.id, Some(42)).await;
+        assert_eq!(
+            mgr.get_session(session.id).await.unwrap().context_percent,
+            Some(42)
+        );
+
+        // `0` is a valid reading, stored as Some(0), never coerced to None.
+        mgr.set_context_percent(session.id, Some(0)).await;
+        assert_eq!(
+            mgr.get_session(session.id).await.unwrap().context_percent,
+            Some(0)
+        );
+
+        // None clears it.
+        mgr.set_context_percent(session.id, None).await;
+        assert_eq!(
+            mgr.get_session(session.id).await.unwrap().context_percent,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn set_context_percent_noops_on_unknown_id() {
+        let mgr = SessionManager::new();
+        // Must not panic; the id is not present, so the write is a silent no-op.
+        mgr.set_context_percent(Uuid::new_v4(), Some(5)).await;
+    }
+
+    #[tokio::test]
+    async fn set_context_percent_noops_on_pending_create_id() {
+        let mgr = SessionManager::new();
+        let (pending, _binding) = pending_fixture(&mgr, false).await;
+        // The pending guard suppresses the write; the row stays invisible and
+        // nothing panics (mirrors mark_idle's pending_create guard).
+        mgr.set_context_percent(pending.id, Some(5)).await;
+        assert!(mgr.get_session(pending.id).await.is_none());
     }
 
     // #552: a WG replica cwd that agent_fqn_from_path resolves to

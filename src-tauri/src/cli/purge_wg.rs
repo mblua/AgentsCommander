@@ -167,6 +167,7 @@ pub fn execute(args: PurgeWgArgs) -> i32 {
         switch_profile: None,
         dry_run: Some(args.dry_run),
         quiet_period_ms: Some(args.quiet_period_ms),
+        pty_input: None,
     };
 
     let ac_dir = PathBuf::from(&root).join(crate::config::agent_local_dir_name());

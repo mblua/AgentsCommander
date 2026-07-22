@@ -74,6 +74,27 @@ impl SendResponse {
     }
 }
 
+/// `POST /api/v1/pty-input` strict request envelope. Payload-bearing request
+/// types intentionally implement no `Debug`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PtyInputRequest {
+    pub api_version: String,
+    pub op_id: String,
+    pub to: String,
+    pub pty_input: PtyInputRequestPayload,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PtyInputRequestPayload {
+    pub version: u32,
+    pub text: String,
+    pub enter: crate::phone::types::PtyInputEnterMode,
+}
+
 /// `GET /api/v1/peers` response (mirrors `list-peers-lean`).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

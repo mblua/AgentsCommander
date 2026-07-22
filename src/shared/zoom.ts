@@ -90,6 +90,10 @@ export async function setUiZoom(zoom: number): Promise<void> {
   if (windowType) debouncedSave(windowType);
 }
 
+function handleZoomError(err: unknown) {
+  console.error("Failed to change zoom:", err);
+}
+
 /**
  * Initialize zoom: restore saved level and attach keyboard/wheel listeners.
  * Returns a cleanup function for onCleanup.
@@ -112,20 +116,20 @@ export async function initZoom(windowType: WindowType): Promise<() => void> {
     if (!e.ctrlKey) return;
     e.preventDefault();
     const delta = e.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP;
-    void setUiZoom(currentZoom + delta);
+    void setUiZoom(currentZoom + delta).catch(handleZoomError);
   };
 
   const onKeydown = (e: KeyboardEvent) => {
     if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
     if (e.key === "=" || e.key === "+") {
       e.preventDefault();
-      void setUiZoom(currentZoom + ZOOM_STEP);
+      void setUiZoom(currentZoom + ZOOM_STEP).catch(handleZoomError);
     } else if (e.key === "-") {
       e.preventDefault();
-      void setUiZoom(currentZoom - ZOOM_STEP);
+      void setUiZoom(currentZoom - ZOOM_STEP).catch(handleZoomError);
     } else if (e.key === "0") {
       e.preventDefault();
-      void setUiZoom(1.0);
+      void setUiZoom(1.0).catch(handleZoomError);
     }
   };
 

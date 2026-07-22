@@ -27,11 +27,93 @@ pub(crate) enum PtyRouteRemovalError {
     LockPoisoned,
 }
 
+struct RouteEntry {
+    kind: SessionBackendKind,
+    generation: u64,
+    input_gate: Arc<tokio::sync::Mutex<()>>,
+    lifecycle_gate: Arc<std::sync::Mutex<()>>,
+    canonical_cwd_identity: Option<crate::path_identity::VerifiedPathIdentity>,
+    verified_replica_anchor: Option<crate::path_identity::VerifiedPathIdentity>,
+}
+
 #[derive(Default)]
 struct SpawnRegistry {
-    routes: HashMap<Uuid, SessionBackendKind>,
+    routes: HashMap<Uuid, RouteEntry>,
     pending: HashMap<u64, PendingSpawn>,
     next_seq: u64,
+    next_route_generation: u64,
+}
+
+/// Unforgeable safe-code authority for a raw backend PTY write. Only the
+/// route-guard chokepoint can issue a production value, so adding an alias or
+/// reformatting a call cannot bypass the permit inventory.
+#[doc(hidden)]
+pub struct BackendWriteAuthority {
+    _private: (),
+}
+
+impl BackendWriteAuthority {
+    fn for_route_guard() -> Self {
+        Self { _private: () }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_backend_test() -> Self {
+        Self { _private: () }
+    }
+}
+
+/// Exclusive per-session input ownership. Holding this guard serializes a
+/// complete multi-phase submission against every other production writer.
+pub struct PtyInputPermit {
+    session_id: Uuid,
+    route_generation: u64,
+    route_registry: Arc<std::sync::Mutex<SpawnRegistry>>,
+    route_lifecycle: Arc<std::sync::Mutex<()>>,
+    backend: Arc<dyn PtyBackend>,
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+/// Generation and lifecycle ownership for final sender-route authorization.
+/// It carries no backend or credential and cannot write PTY bytes.
+pub(crate) struct PtyAuthorityRouteProof {
+    session_id: Uuid,
+    route_generation: u64,
+    route_registry: Arc<std::sync::Mutex<SpawnRegistry>>,
+    route_lifecycle: Arc<std::sync::Mutex<()>>,
+}
+
+/// A short-lived route lifecycle guard for one synchronous backend write.
+pub struct PtyRouteWriteGuard<'a> {
+    session_id: Uuid,
+    backend: Arc<dyn PtyBackend>,
+    _guard: std::sync::MutexGuard<'a, ()>,
+    _authority_guard: Option<std::sync::MutexGuard<'a, ()>>,
+    _settings_guard:
+        Option<tokio::sync::OwnedRwLockReadGuard<crate::config::settings::AppSettings>>,
+}
+
+impl<'a> PtyRouteWriteGuard<'a> {
+    pub fn write(&self, bytes: &[u8]) -> Result<(), AppError> {
+        let authority = BackendWriteAuthority::for_route_guard();
+        self.backend.write(&authority, self.session_id, bytes)
+    }
+
+    pub(crate) fn retain_authority_guard(
+        &mut self,
+        authority_guard: std::sync::MutexGuard<'a, ()>,
+    ) {
+        self._authority_guard = Some(authority_guard);
+    }
+
+    pub(crate) fn retain_settings_guard(
+        &mut self,
+        settings_guard: tokio::sync::OwnedRwLockReadGuard<
+            crate::config::settings::AppSettings,
+        >,
+    ) {
+        self._settings_guard = Some(settings_guard);
+    }
 }
 
 pub(crate) struct SpawnMark {
@@ -137,18 +219,93 @@ impl PtyManager {
     }
 
     pub fn record_route(&self, id: Uuid, kind: SessionBackendKind) {
-        self.registry
+        if let Err(error) = self.try_record_route(id, kind) {
+            log::warn!("[pty] route registration rejected session={id} code={error}");
+        }
+    }
+
+    pub fn try_record_route(&self, id: Uuid, kind: SessionBackendKind) -> Result<(), AppError> {
+        self.record_route_with_identities(id, kind, None, None)
+    }
+
+    pub(crate) fn record_route_with_identities(
+        &self,
+        id: Uuid,
+        kind: SessionBackendKind,
+        canonical_cwd_identity: Option<crate::path_identity::VerifiedPathIdentity>,
+        verified_replica_anchor: Option<crate::path_identity::VerifiedPathIdentity>,
+    ) -> Result<(), AppError> {
+        let mut registry = self
+            .registry
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .routes
-            .insert(id, kind);
+            .map_err(|_| AppError::PtyError("route_registry_poisoned".to_string()))?;
+        if registry.routes.contains_key(&id) {
+            return Err(AppError::PtyError("duplicate_pty_route".to_string()));
+        }
+        let generation = registry
+            .next_route_generation
+            .checked_add(1)
+            .ok_or_else(|| AppError::PtyError("route_generation_overflow".to_string()))?;
+        registry.next_route_generation = generation;
+        registry.routes.insert(
+            id,
+            RouteEntry {
+                kind,
+                generation,
+                input_gate: Arc::new(tokio::sync::Mutex::new(())),
+                lifecycle_gate: Arc::new(std::sync::Mutex::new(())),
+                canonical_cwd_identity,
+                verified_replica_anchor,
+            },
+        );
+        Ok(())
     }
 
     pub fn remove_route_if_kind(&self, id: Uuid, kind: SessionBackendKind) {
-        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
-        if registry.routes.get(&id).copied() == Some(kind) {
-            registry.routes.remove(&id);
-        }
+        let route = {
+            let registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+            registry
+                .routes
+                .get(&id)
+                .filter(|entry| entry.kind == kind)
+                .map(|entry| (Arc::clone(&entry.lifecycle_gate), entry.generation))
+        };
+        let Some((lifecycle, generation)) = route else {
+            return;
+        };
+        let deferred_lifecycle = Arc::clone(&lifecycle);
+        match lifecycle.try_lock() {
+            Ok(_lifecycle_guard) => {
+                let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+                if registry
+                    .routes
+                    .get(&id)
+                    .is_some_and(|entry| entry.kind == kind && entry.generation == generation)
+                {
+                    registry.routes.remove(&id);
+                }
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                log::debug!("[pty] route removal deferred for busy session {id}");
+                let registry = Arc::clone(&self.registry);
+                std::thread::spawn(move || {
+                    let _lifecycle_guard = deferred_lifecycle
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    let mut registry = registry.lock().unwrap_or_else(|error| error.into_inner());
+                    if registry
+                        .routes
+                        .get(&id)
+                        .is_some_and(|entry| entry.kind == kind && entry.generation == generation)
+                    {
+                        registry.routes.remove(&id);
+                    }
+                });
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                log::warn!("[pty] route removal failed session={id} code=route_lifecycle_poisoned");
+            }
+        };
     }
 
     pub(crate) fn try_remove_route_if_kind(
@@ -156,12 +313,34 @@ impl PtyManager {
         id: Uuid,
         kind: SessionBackendKind,
     ) -> Result<(), PtyRouteRemovalError> {
+        let route = {
+            let registry = match self.registry.try_lock() {
+                Ok(registry) => registry,
+                Err(TryLockError::Poisoned(_)) => return Err(PtyRouteRemovalError::LockPoisoned),
+                Err(TryLockError::WouldBlock) => return Err(PtyRouteRemovalError::Busy),
+            };
+            registry
+                .routes
+                .get(&id)
+                .filter(|entry| entry.kind == kind)
+                .map(|entry| (Arc::clone(&entry.lifecycle_gate), entry.generation))
+        };
+        let Some((lifecycle, generation)) = route else {
+            return Ok(());
+        };
+        let _lifecycle_guard = lifecycle
+            .try_lock()
+            .map_err(|_| PtyRouteRemovalError::Busy)?;
         let mut registry = match self.registry.try_lock() {
             Ok(registry) => registry,
             Err(TryLockError::Poisoned(_)) => return Err(PtyRouteRemovalError::LockPoisoned),
             Err(TryLockError::WouldBlock) => return Err(PtyRouteRemovalError::Busy),
         };
-        if registry.routes.get(&id).copied() == Some(kind) {
+        if registry
+            .routes
+            .get(&id)
+            .is_some_and(|entry| entry.kind == kind && entry.generation == generation)
+        {
             registry.routes.remove(&id);
         }
         Ok(())
@@ -188,7 +367,7 @@ impl PtyManager {
             .unwrap_or_else(|e| e.into_inner())
             .routes
             .get(&id)
-            .copied()
+            .map(|entry| entry.kind)
             .ok_or_else(|| AppError::SessionNotFound(id.to_string()))
     }
 
@@ -198,7 +377,38 @@ impl PtyManager {
             .unwrap_or_else(|e| e.into_inner())
             .routes
             .get(&id)
-            .copied()
+            .map(|entry| entry.kind)
+    }
+
+    pub(crate) fn route_identities(
+        &self,
+        id: Uuid,
+    ) -> Option<(
+        Option<crate::path_identity::VerifiedPathIdentity>,
+        Option<crate::path_identity::VerifiedPathIdentity>,
+        u64,
+    )> {
+        let registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = registry.routes.get(&id)?;
+        Some((
+            entry.canonical_cwd_identity.clone(),
+            entry.verified_replica_anchor.clone(),
+            entry.generation,
+        ))
+    }
+
+    pub(crate) fn has_pending_spawn_for_replica(
+        &self,
+        replica: &crate::path_identity::VerifiedPathIdentity,
+    ) -> bool {
+        let registry = self
+            .registry
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        registry.pending.values().any(|pending| {
+            crate::path_identity::verify_directory(std::path::Path::new(&pending.cwd))
+                .is_ok_and(|cwd| crate::path_identity::is_verified_descendant(&cwd, replica))
+        })
     }
 
     pub(crate) fn mark_spawning(&self, cwd: &str, label: &str) -> SpawnMark {
@@ -224,7 +434,7 @@ impl PtyManager {
             (
                 registry.pending.values().cloned().collect::<Vec<_>>(),
                 ids.iter()
-                    .map(|id| registry.routes.get(id).copied())
+                    .map(|id| registry.routes.get(id).map(|entry| entry.kind))
                     .collect::<Vec<_>>(),
             )
         };
@@ -245,18 +455,44 @@ impl PtyManager {
         spec: BackendSpawnSpec,
     ) -> Result<(), AppError> {
         let id = spec.id;
+        let cwd = spec.cwd.clone();
         let backend = {
-            let manager = manager.lock().unwrap();
+            let manager = manager
+                .lock()
+                .map_err(|_| AppError::PtyError("pty_manager_poisoned".to_string()))?;
             manager.backend_for_kind(backend_kind)
         };
         backend.spawn(spec).await?;
-        manager.lock().unwrap().record_route(id, backend_kind);
+        let cwd_identity = match crate::path_identity::verify_directory(std::path::Path::new(&cwd))
+        {
+            Ok(identity) => identity,
+            Err(_) => {
+                if backend.kill(id).is_err() {
+                    log::warn!("[pty-route] unsafe route cleanup failed session={id}");
+                }
+                return Err(AppError::PtyError("unsafe_route_cwd".to_string()));
+            }
+        };
+        let verified_replica_anchor =
+            crate::config::teams::verify_pty_input_replica_cwd(std::path::Path::new(&cwd))
+                .ok()
+                .map(|identity| identity.replica_identity);
+        let route_result = match manager.lock() {
+            Ok(manager) => manager.record_route_with_identities(
+                id,
+                backend_kind,
+                Some(cwd_identity),
+                verified_replica_anchor,
+            ),
+            Err(_) => Err(AppError::PtyError("pty_manager_poisoned".to_string())),
+        };
+        if let Err(error) = route_result {
+            if backend.kill(id).is_err() {
+                log::warn!("[pty-route] failed spawn route cleanup session={id}");
+            }
+            return Err(error);
+        }
         Ok(())
-    }
-
-    pub fn write(&self, id: Uuid, data: &[u8]) -> Result<(), AppError> {
-        let kind = self.kind_for_session(id)?;
-        self.backend_for_kind(kind).write(id, data)
     }
 
     /// Returns true if this manager holds a backend route whose backend has a
@@ -288,7 +524,7 @@ impl PtyManager {
             .unwrap_or_else(|e| e.into_inner())
             .routes
             .get(&id)
-            .copied()
+            .map(|entry| entry.kind)
             .unwrap_or(SessionBackendKind::LocalProcess);
         self.kill_for_kind(id, kind)
     }
@@ -357,11 +593,246 @@ impl PtyManager {
             .unwrap_or_else(|e| e.into_inner())
             .routes
             .get(&session_id)
-            .copied()
+            .map(|entry| entry.kind)
             .unwrap_or(SessionBackendKind::LocalProcess);
         self.backend_for_kind(kind)
             .register_response_watcher(session_id, request_id, response_dir);
     }
+
+    pub async fn acquire_input_writer(
+        manager: &Arc<std::sync::Mutex<PtyManager>>,
+        session_id: Uuid,
+    ) -> Result<PtyInputPermit, AppError> {
+        acquire_input_writer(manager, session_id).await
+    }
+
+    pub(crate) fn authority_route_proof(
+        manager: &Arc<std::sync::Mutex<PtyManager>>,
+        session_id: Uuid,
+    ) -> Result<PtyAuthorityRouteProof, AppError> {
+        authority_route_proof(manager, session_id)
+    }
+
+    pub fn lock_route_for_write(
+        permit: &PtyInputPermit,
+    ) -> Result<PtyRouteWriteGuard<'_>, AppError> {
+        lock_route_for_write(permit)
+    }
+
+    pub(crate) fn lock_route_for_verified_write<'a>(
+        permit: &'a PtyInputPermit,
+        expected_kind: SessionBackendKind,
+        expected_cwd: &crate::path_identity::VerifiedPathIdentity,
+        expected_replica: &crate::path_identity::VerifiedPathIdentity,
+    ) -> Result<PtyRouteWriteGuard<'a>, AppError> {
+        lock_route_for_verified_write(permit, expected_kind, expected_cwd, expected_replica)
+    }
+
+    pub fn write_with_permit(permit: &PtyInputPermit, bytes: &[u8]) -> Result<(), AppError> {
+        write_with_permit(permit, bytes)
+    }
+}
+
+fn authority_route_proof(
+    manager: &Arc<std::sync::Mutex<PtyManager>>,
+    session_id: Uuid,
+) -> Result<PtyAuthorityRouteProof, AppError> {
+    let manager_guard = manager
+        .lock()
+        .map_err(|_| AppError::PtyError("pty_manager_poisoned".to_string()))?;
+    let registry = manager_guard
+        .registry
+        .lock()
+        .map_err(|_| AppError::PtyError("route_registry_poisoned".to_string()))?;
+    let entry = registry
+        .routes
+        .get(&session_id)
+        .ok_or_else(|| AppError::SessionNotFound(session_id.to_string()))?;
+    Ok(PtyAuthorityRouteProof {
+        session_id,
+        route_generation: entry.generation,
+        route_registry: Arc::clone(&manager_guard.registry),
+        route_lifecycle: Arc::clone(&entry.lifecycle_gate),
+    })
+}
+
+pub async fn acquire_input_writer(
+    manager: &Arc<std::sync::Mutex<PtyManager>>,
+    session_id: Uuid,
+) -> Result<PtyInputPermit, AppError> {
+    let (route_registry, input_gate, route_lifecycle, generation, backend) = {
+        let manager_guard = manager
+            .lock()
+            .map_err(|_| AppError::PtyError("pty_manager_poisoned".to_string()))?;
+        let registry = manager_guard
+            .registry
+            .lock()
+            .map_err(|_| AppError::PtyError("route_registry_poisoned".to_string()))?;
+        let entry = registry
+            .routes
+            .get(&session_id)
+            .ok_or_else(|| AppError::SessionNotFound(session_id.to_string()))?;
+        (
+            Arc::clone(&manager_guard.registry),
+            Arc::clone(&entry.input_gate),
+            Arc::clone(&entry.lifecycle_gate),
+            entry.generation,
+            manager_guard.backend_for_kind(entry.kind),
+        )
+    };
+
+    let guard = input_gate.lock_owned().await;
+    {
+        let registry = route_registry
+            .lock()
+            .map_err(|_| AppError::PtyError("route_registry_poisoned".to_string()))?;
+        let current = registry
+            .routes
+            .get(&session_id)
+            .ok_or_else(|| AppError::SessionNotFound(session_id.to_string()))?;
+        if current.generation != generation {
+            return Err(AppError::PtyError("stale_pty_route".to_string()));
+        }
+    }
+
+    Ok(PtyInputPermit {
+        session_id,
+        route_generation: generation,
+        route_registry,
+        route_lifecycle,
+        backend,
+        _guard: guard,
+    })
+}
+
+fn acquire_route_lifecycle(
+    gate: &std::sync::Mutex<()>,
+) -> Result<std::sync::MutexGuard<'_, ()>, AppError> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(100);
+    loop {
+        match gate.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err(AppError::PtyError("pty_route_poisoned".to_string()))
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(AppError::PtyError("pty_route_busy".to_string()));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+    }
+}
+
+impl PtyAuthorityRouteProof {
+    pub(crate) fn lock_verified<'a>(
+        &'a self,
+        expected_kind: SessionBackendKind,
+        expected_cwd: &crate::path_identity::VerifiedPathIdentity,
+        expected_replica: Option<&crate::path_identity::VerifiedPathIdentity>,
+    ) -> Result<std::sync::MutexGuard<'a, ()>, AppError> {
+        let lifecycle_guard = acquire_route_lifecycle(&self.route_lifecycle)?;
+        {
+            let registry = self
+                .route_registry
+                .lock()
+                .map_err(|_| AppError::PtyError("route_registry_poisoned".to_string()))?;
+            let current = registry
+                .routes
+                .get(&self.session_id)
+                .ok_or_else(|| AppError::SessionNotFound(self.session_id.to_string()))?;
+            let cwd_matches = current
+                .canonical_cwd_identity
+                .as_ref()
+                .is_some_and(|identity| crate::path_identity::same_object(identity, expected_cwd));
+            let replica_matches = match (current.verified_replica_anchor.as_ref(), expected_replica)
+            {
+                (Some(current), Some(expected)) => {
+                    crate::path_identity::same_object(current, expected)
+                }
+                (None, None) => true,
+                _ => false,
+            };
+            if current.generation != self.route_generation
+                || current.kind != expected_kind
+                || !cwd_matches
+                || !replica_matches
+            {
+                return Err(AppError::PtyError("stale_pty_route".to_string()));
+            }
+        }
+        Ok(lifecycle_guard)
+    }
+}
+
+pub fn lock_route_for_write(permit: &PtyInputPermit) -> Result<PtyRouteWriteGuard<'_>, AppError> {
+    let lifecycle_guard = acquire_route_lifecycle(&permit.route_lifecycle)?;
+    {
+        let registry = permit
+            .route_registry
+            .lock()
+            .map_err(|_| AppError::PtyError("route_registry_poisoned".to_string()))?;
+        let current = registry
+            .routes
+            .get(&permit.session_id)
+            .ok_or_else(|| AppError::SessionNotFound(permit.session_id.to_string()))?;
+        if current.generation != permit.route_generation {
+            return Err(AppError::PtyError("stale_pty_route".to_string()));
+        }
+    }
+    Ok(PtyRouteWriteGuard {
+        session_id: permit.session_id,
+        backend: Arc::clone(&permit.backend),
+        _guard: lifecycle_guard,
+        _authority_guard: None,
+        _settings_guard: None,
+    })
+}
+
+pub(crate) fn lock_route_for_verified_write<'a>(
+    permit: &'a PtyInputPermit,
+    expected_kind: SessionBackendKind,
+    expected_cwd: &crate::path_identity::VerifiedPathIdentity,
+    expected_replica: &crate::path_identity::VerifiedPathIdentity,
+) -> Result<PtyRouteWriteGuard<'a>, AppError> {
+    let lifecycle_guard = acquire_route_lifecycle(&permit.route_lifecycle)?;
+    {
+        let registry = permit
+            .route_registry
+            .lock()
+            .map_err(|_| AppError::PtyError("route_registry_poisoned".to_string()))?;
+        let current = registry
+            .routes
+            .get(&permit.session_id)
+            .ok_or_else(|| AppError::SessionNotFound(permit.session_id.to_string()))?;
+        let cwd_matches = current
+            .canonical_cwd_identity
+            .as_ref()
+            .is_some_and(|identity| crate::path_identity::same_object(identity, expected_cwd));
+        let replica_matches = current
+            .verified_replica_anchor
+            .as_ref()
+            .is_some_and(|identity| crate::path_identity::same_object(identity, expected_replica));
+        if current.generation != permit.route_generation
+            || current.kind != expected_kind
+            || !cwd_matches
+            || !replica_matches
+        {
+            return Err(AppError::PtyError("stale_pty_route".to_string()));
+        }
+    }
+    Ok(PtyRouteWriteGuard {
+        session_id: permit.session_id,
+        backend: Arc::clone(&permit.backend),
+        _guard: lifecycle_guard,
+        _authority_guard: None,
+        _settings_guard: None,
+    })
+}
+
+pub fn write_with_permit(permit: &PtyInputPermit, bytes: &[u8]) -> Result<(), AppError> {
+    lock_route_for_write(permit)?.write(bytes)
 }
 
 #[cfg(test)]
@@ -412,7 +883,12 @@ mod tests {
             })
         }
 
-        fn write(&self, id: Uuid, data: &[u8]) -> Result<(), AppError> {
+        fn write(
+            &self,
+            _authority: &BackendWriteAuthority,
+            id: Uuid,
+            data: &[u8],
+        ) -> Result<(), AppError> {
             self.calls
                 .lock()
                 .unwrap()
@@ -518,7 +994,12 @@ mod tests {
             })
         }
 
-        fn write(&self, _id: Uuid, _data: &[u8]) -> Result<(), AppError> {
+        fn write(
+            &self,
+            _authority: &BackendWriteAuthority,
+            _id: Uuid,
+            _data: &[u8],
+        ) -> Result<(), AppError> {
             Ok(())
         }
 
@@ -589,21 +1070,33 @@ mod tests {
         }
     }
 
-    #[test]
-    fn facade_delegates_local_route_by_session_id() {
+    #[tokio::test]
+    async fn facade_delegates_local_route_by_session_id() {
         let id = Uuid::new_v4();
         let backend = Arc::new(RecordingBackend::default());
         backend.set_live(id);
-        let manager = PtyManager::new_for_test(backend.clone());
-        manager.record_route(id, SessionBackendKind::LocalProcess);
+        let manager = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
+        manager
+            .lock()
+            .unwrap()
+            .try_record_route(id, SessionBackendKind::LocalProcess)
+            .unwrap();
 
-        manager.write(id, b"abc").expect("write");
-        manager.resize(id, 120, 30).expect("resize");
-        assert!(manager.has_session(id));
-        assert_eq!(manager.get_pty_size(id), Some((30, 120)));
-        assert!(manager.terminate_job_for_session(id));
-        manager.register_response_watcher(id, "r1".to_string(), std::path::PathBuf::from("x"));
-        manager.kill(id).expect("kill");
+        let permit = PtyManager::acquire_input_writer(&manager, id)
+            .await
+            .unwrap();
+        PtyManager::write_with_permit(&permit, b"abc").expect("write");
+        drop(permit);
+        manager.lock().unwrap().resize(id, 120, 30).expect("resize");
+        assert!(manager.lock().unwrap().has_session(id));
+        assert_eq!(manager.lock().unwrap().get_pty_size(id), Some((30, 120)));
+        assert!(manager.lock().unwrap().terminate_job_for_session(id));
+        manager.lock().unwrap().register_response_watcher(
+            id,
+            "r1".to_string(),
+            std::path::PathBuf::from("x"),
+        );
+        manager.lock().unwrap().kill(id).expect("kill");
 
         assert_eq!(
             backend.calls(),
@@ -617,16 +1110,19 @@ mod tests {
                 Call::Kill(id),
             ]
         );
-        assert!(!manager.has_session(id));
+        assert!(!manager.lock().unwrap().has_session(id));
     }
 
-    #[test]
-    fn facade_write_without_route_returns_session_not_found() {
+    #[tokio::test]
+    async fn facade_write_without_route_returns_session_not_found() {
         let id = Uuid::new_v4();
         let backend = Arc::new(RecordingBackend::default());
-        let manager = PtyManager::new_for_test(backend.clone());
+        let manager = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
 
-        let err = manager.write(id, b"abc").expect_err("missing route");
+        let err = match PtyManager::acquire_input_writer(&manager, id).await {
+            Ok(_) => panic!("missing route unexpectedly acquired"),
+            Err(error) => error,
+        };
 
         assert!(matches!(err, AppError::SessionNotFound(_)));
         assert!(backend.calls().is_empty());
@@ -686,6 +1182,255 @@ mod tests {
         assert!(pending.is_empty());
         assert_eq!(live, vec![true]);
         assert_eq!(backend.calls(), vec![Call::Has(id)]);
+    }
+
+    #[tokio::test]
+    async fn input_permits_serialize_writers_for_one_session() {
+        let id = Uuid::new_v4();
+        let backend = Arc::new(RecordingBackend::default());
+        backend.set_live(id);
+        let manager = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
+        manager
+            .lock()
+            .unwrap()
+            .try_record_route(id, SessionBackendKind::LocalProcess)
+            .unwrap();
+        let first = PtyManager::acquire_input_writer(&manager, id)
+            .await
+            .unwrap();
+        let waiting_manager = Arc::clone(&manager);
+        let waiter = tokio::spawn(async move {
+            let permit = PtyManager::acquire_input_writer(&waiting_manager, id)
+                .await
+                .unwrap();
+            PtyManager::write_with_permit(&permit, b"second").unwrap();
+        });
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+        PtyManager::write_with_permit(&first, b"first").unwrap();
+        drop(first);
+        waiter.await.unwrap();
+        assert_eq!(
+            backend.calls(),
+            vec![
+                Call::Write(id, b"first".to_vec()),
+                Call::Write(id, b"second".to_vec()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn different_sessions_have_independent_input_gates() {
+        let first_id = Uuid::new_v4();
+        let second_id = Uuid::new_v4();
+        let backend = Arc::new(RecordingBackend::default());
+        let manager = Arc::new(Mutex::new(PtyManager::new_for_test(backend)));
+        {
+            let manager = manager.lock().unwrap();
+            manager
+                .try_record_route(first_id, SessionBackendKind::LocalProcess)
+                .unwrap();
+            manager
+                .try_record_route(second_id, SessionBackendKind::LocalProcess)
+                .unwrap();
+        }
+        let _first = PtyManager::acquire_input_writer(&manager, first_id)
+            .await
+            .unwrap();
+        let second = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            PtyManager::acquire_input_writer(&manager, second_id),
+        )
+        .await
+        .expect("another session must not wait on the first input gate")
+        .unwrap();
+        drop(second);
+    }
+
+    #[tokio::test]
+    async fn removed_and_recreated_route_invalidates_an_old_permit() {
+        let id = Uuid::new_v4();
+        let backend = Arc::new(RecordingBackend::default());
+        let manager = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
+        manager
+            .lock()
+            .unwrap()
+            .try_record_route(id, SessionBackendKind::LocalProcess)
+            .unwrap();
+        let old = PtyManager::acquire_input_writer(&manager, id)
+            .await
+            .unwrap();
+        {
+            let manager = manager.lock().unwrap();
+            manager.remove_route_if_kind(id, SessionBackendKind::LocalProcess);
+            manager
+                .try_record_route(id, SessionBackendKind::LocalProcess)
+                .unwrap();
+        }
+        assert!(PtyManager::write_with_permit(&old, b"stale").is_err());
+        drop(old);
+        let current = PtyManager::acquire_input_writer(&manager, id)
+            .await
+            .unwrap();
+        PtyManager::write_with_permit(&current, b"current").unwrap();
+        assert_eq!(backend.calls(), vec![Call::Write(id, b"current".to_vec())]);
+    }
+
+    #[test]
+    fn duplicate_route_and_generation_overflow_fail_without_replacement() {
+        let first_id = Uuid::new_v4();
+        let second_id = Uuid::new_v4();
+        let backend = Arc::new(RecordingBackend::default());
+        let manager = PtyManager::new_for_test(backend);
+        manager
+            .try_record_route(first_id, SessionBackendKind::LocalProcess)
+            .unwrap();
+        assert!(manager
+            .try_record_route(first_id, SessionBackendKind::ContainerTransport)
+            .is_err());
+        assert_eq!(
+            manager.backend_kind(first_id),
+            Some(SessionBackendKind::LocalProcess)
+        );
+        manager.registry.lock().unwrap().next_route_generation = u64::MAX;
+        assert!(manager
+            .try_record_route(second_id, SessionBackendKind::LocalProcess)
+            .is_err());
+        assert_eq!(manager.backend_kind(second_id), None);
+    }
+
+    #[tokio::test]
+    async fn same_spelling_directory_replacement_fails_verified_route_lock() {
+        let id = Uuid::new_v4();
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("replica");
+        let retired = temp.path().join("retired");
+        std::fs::create_dir(&path).unwrap();
+        let original = crate::path_identity::verify_directory(&path).unwrap();
+        let backend = Arc::new(RecordingBackend::default());
+        let manager = Arc::new(Mutex::new(PtyManager::new_for_test(backend)));
+        manager
+            .lock()
+            .unwrap()
+            .record_route_with_identities(
+                id,
+                SessionBackendKind::LocalProcess,
+                Some(original.clone()),
+                Some(original),
+            )
+            .unwrap();
+        let permit = PtyManager::acquire_input_writer(&manager, id)
+            .await
+            .unwrap();
+        std::fs::rename(&path, &retired).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let replacement = crate::path_identity::verify_directory(&path).unwrap();
+        assert!(PtyManager::lock_route_for_verified_write(
+            &permit,
+            SessionBackendKind::LocalProcess,
+            &replacement,
+            &replacement,
+        )
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn verified_write_guard_retains_authority_route_through_first_write() {
+        let authority_id = Uuid::new_v4();
+        let target_id = Uuid::new_v4();
+        let temp = tempfile::TempDir::new().unwrap();
+        let authority_path = temp.path().join("authority");
+        let target_path = temp.path().join("target");
+        std::fs::create_dir(&authority_path).unwrap();
+        std::fs::create_dir(&target_path).unwrap();
+        let authority_identity = crate::path_identity::verify_directory(&authority_path).unwrap();
+        let target_identity = crate::path_identity::verify_directory(&target_path).unwrap();
+        let backend = Arc::new(RecordingBackend::default());
+        let manager = Arc::new(Mutex::new(PtyManager::new_for_test(backend)));
+        {
+            let manager = manager.lock().unwrap();
+            manager
+                .record_route_with_identities(
+                    authority_id,
+                    SessionBackendKind::LocalProcess,
+                    Some(authority_identity.clone()),
+                    Some(authority_identity.clone()),
+                )
+                .unwrap();
+            manager
+                .record_route_with_identities(
+                    target_id,
+                    SessionBackendKind::LocalProcess,
+                    Some(target_identity.clone()),
+                    Some(target_identity.clone()),
+                )
+                .unwrap();
+        }
+        let authority = PtyManager::authority_route_proof(&manager, authority_id).unwrap();
+        let permit = PtyManager::acquire_input_writer(&manager, target_id)
+            .await
+            .unwrap();
+        let authority_guard = authority
+            .lock_verified(
+                SessionBackendKind::LocalProcess,
+                &authority_identity,
+                Some(&authority_identity),
+            )
+            .unwrap();
+        let mut write_guard = PtyManager::lock_route_for_verified_write(
+            &permit,
+            SessionBackendKind::LocalProcess,
+            &target_identity,
+            &target_identity,
+        )
+        .unwrap();
+        write_guard.retain_authority_guard(authority_guard);
+
+        assert_eq!(
+            manager
+                .lock()
+                .unwrap()
+                .try_remove_route_if_kind(authority_id, SessionBackendKind::LocalProcess),
+            Err(PtyRouteRemovalError::Busy)
+        );
+        drop(write_guard);
+        assert_eq!(
+            manager
+                .lock()
+                .unwrap()
+                .try_remove_route_if_kind(authority_id, SessionBackendKind::LocalProcess),
+            Ok(())
+        );
+    }
+
+    #[tokio::test]
+    async fn post_spawn_manager_poison_kills_the_unroutable_backend_session() {
+        let id = Uuid::new_v4();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let backend = Arc::new(DelayedSpawnBackend::new(started_tx, release_rx));
+        let manager = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
+        let spawn_task = {
+            let manager = manager.clone();
+            tokio::spawn(async move {
+                PtyManager::spawn(
+                    &manager,
+                    SessionBackendKind::LocalProcess,
+                    test_spawn_spec(id),
+                )
+                .await
+            })
+        };
+
+        started_rx.await.expect("spawn started");
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = manager.lock().unwrap();
+            panic!("poison manager between backend spawn and route publication");
+        }));
+        assert!(poisoned.is_err());
+        release_tx.send(()).expect("release spawn");
+        assert!(spawn_task.await.unwrap().is_err());
+        assert!(!backend.has_session(id));
     }
 
     #[tokio::test]

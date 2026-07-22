@@ -1751,6 +1751,14 @@ mod tests {
         fn observe(&self, _sample: ContextSample) {}
     }
 
+    struct GuardPersist;
+
+    impl crate::pty::context_scrape::ContextPersistSink for GuardPersist {
+        fn commit(&self, _changed: Vec<(Uuid, Option<u8>)>) -> BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+    }
+
     struct ManualClock {
         now: Mutex<Instant>,
         waiters: Mutex<Vec<(Instant, tokio::sync::oneshot::Sender<()>)>>,
@@ -2861,6 +2869,7 @@ mod tests {
             Arc::new(GuardPatterns),
             Arc::new(GuardEvents),
             Arc::new(GuardSamples),
+            Arc::new(GuardPersist),
         );
         scraper.register_session(fixture.session.id, "claude".to_string());
         let purge = Arc::new(crate::session::purge_guard::PurgeGuard::default());

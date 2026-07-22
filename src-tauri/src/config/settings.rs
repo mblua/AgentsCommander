@@ -2771,6 +2771,54 @@ pub(crate) struct DiskProjectLists {
 /// so the later `MoveFileEx` rename cannot hit a sharing violation (os 32).
 /// MUST NOT call `load_settings` (it migrates, generates root_token, and
 /// re-saves: infinite recursion + side effects).
+pub(crate) fn read_pty_input_project_paths_strict() -> Result<Option<Vec<String>>, String> {
+    let Some(path) = settings_path() else {
+        return Err("settings_unavailable".to_string());
+    };
+    read_pty_input_project_paths_strict_from_path(&path)
+}
+
+fn read_pty_input_project_paths_strict_from_path(
+    path: &Path,
+) -> Result<Option<Vec<String>>, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err("unsafe_path".to_string()),
+    }
+    let (bytes, _) = crate::path_identity::read_bounded_regular(path, 1024 * 1024)?;
+    let value = crate::path_identity::parse_json_no_duplicates(&bytes)?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "settings_invalid".to_string())?;
+    let Some(project_paths) = object.get("projectPaths") else {
+        return Ok(Some(Vec::new()));
+    };
+    if project_paths.is_null() {
+        return Ok(Some(Vec::new()));
+    }
+    let project_paths = project_paths
+        .as_array()
+        .filter(|paths| paths.len() <= 1_024)
+        .ok_or_else(|| "settings_invalid".to_string())?;
+    let mut strict = Vec::with_capacity(project_paths.len());
+    for path in project_paths {
+        let path = path
+            .as_str()
+            .filter(|path| !path.is_empty() && path.len() <= 32 * 1024 && !path.contains('\0'))
+            .ok_or_else(|| "settings_invalid".to_string())?;
+        strict.push(path.to_string());
+    }
+    Ok(Some(strict))
+}
+
+pub(crate) async fn read_pty_input_project_paths_strict_offloaded(
+) -> Result<Option<Vec<String>>, String> {
+    tokio::task::spawn_blocking(read_pty_input_project_paths_strict)
+        .await
+        .map_err(|_| "settings_unavailable".to_string())?
+}
+
 fn read_project_paths_from_disk(path: &Path) -> Result<Option<DiskProjectLists>, String> {
     // 1 initial attempt + up to 2 retries on a transient (non-NotFound) read error.
     const READ_RETRY_BACKOFFS_MS: [u64; 2] = [10, 40];
@@ -3035,6 +3083,47 @@ pub type SettingsState = Arc<RwLock<AppSettings>>;
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn privileged_project_paths_reader_rejects_duplicates_and_non_strings() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, r#"{"projectPaths":["one"],"projectPaths":["two"]}"#).unwrap();
+        assert!(super::read_pty_input_project_paths_strict_from_path(&path).is_err());
+
+        std::fs::write(&path, r#"{"projectPaths":["one",7]}"#).unwrap();
+        assert!(super::read_pty_input_project_paths_strict_from_path(&path).is_err());
+    }
+
+    #[test]
+    fn privileged_project_paths_reader_rejects_a_dangling_link_when_supported() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("settings.json");
+        let missing = temp.path().join("missing.json");
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&missing, &path).is_ok();
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(&missing, &path).is_ok();
+        #[cfg(not(any(unix, windows)))]
+        let linked = false;
+        if linked {
+            assert!(super::read_pty_input_project_paths_strict_from_path(&path).is_err());
+        }
+    }
+
+    #[test]
+    fn privileged_project_paths_reader_is_bounded_and_exact() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, r#"{"projectPaths":["one","two"]}"#).unwrap();
+        assert_eq!(
+            super::read_pty_input_project_paths_strict_from_path(&path).unwrap(),
+            Some(vec!["one".to_string(), "two".to_string()])
+        );
+
+        std::fs::write(&path, vec![b' '; 1024 * 1024 + 1]).unwrap();
+        assert!(super::read_pty_input_project_paths_strict_from_path(&path).is_err());
+    }
 
     #[test]
     fn validate_agent_commands_allows_plain_gemini() {

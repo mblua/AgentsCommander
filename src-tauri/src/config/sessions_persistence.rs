@@ -259,6 +259,12 @@ pub struct PersistedSession {
     /// ISO 8601 creation timestamp (only present in live snapshots)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
+    /// Live context-usage percent (0-100), the same figure the Sidebar badge
+    /// shows. Populated during live snapshots so the CLI (`list-peers` /
+    /// `list-peers-lean`) can read it from disk without a running daemon;
+    /// ignored on restore. `None` (absent key) means no reading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_percent: Option<u8>,
 }
 
 fn sessions_path() -> Option<PathBuf> {
@@ -1005,6 +1011,7 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
             waiting_for_input: Some(s.waiting_for_input),
             communication: s.communication.clone(),
             created_at: Some(s.created_at.clone()),
+            context_percent: s.context_percent,
         })
         .collect();
 
@@ -1891,6 +1898,75 @@ mod tests {
 
         assert_eq!(snapshot.len(), 1);
         assert_eq!(snapshot[0].telegram_bot_id.as_deref(), Some("bot-1"));
+    }
+
+    // ── #1088: context_percent rides Session -> SessionInfo -> snapshot into
+    //    PersistedSession, and serializes additively (0 explicit, None absent). ──
+
+    #[tokio::test]
+    async fn snapshot_sessions_preserves_context_percent() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create_session should succeed");
+
+        mgr.set_context_percent(session.id, Some(37)).await;
+
+        let snapshot = snapshot_sessions(&mgr).await;
+
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].context_percent, Some(37));
+    }
+
+    #[test]
+    fn context_percent_serializes_zero_and_omits_none() {
+        // Some(0) -> explicit "contextPercent": 0 (0 is a valid reading).
+        let ps = PersistedSession {
+            name: "ctx".into(),
+            shell: "codex".into(),
+            shell_args: vec![],
+            working_directory: "C:/x".into(),
+            context_percent: Some(0),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&ps).expect("serialize");
+        assert_eq!(json["contextPercent"], 0);
+        let back: PersistedSession = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back.context_percent, Some(0));
+
+        // None -> key absent (skip_serializing_if), so old files stay byte-identical.
+        let ps_none = PersistedSession {
+            name: "ctx".into(),
+            shell: "codex".into(),
+            shell_args: vec![],
+            working_directory: "C:/x".into(),
+            context_percent: None,
+            ..Default::default()
+        };
+        let json_none = serde_json::to_value(&ps_none).expect("serialize");
+        assert!(json_none.get("contextPercent").is_none());
+    }
+
+    #[test]
+    fn context_percent_defaults_none_for_legacy_json() {
+        let json = r#"{
+            "name": "legacy",
+            "shell": "cmd",
+            "shellArgs": [],
+            "workingDirectory": "C:/x"
+        }"#;
+        let back: PersistedSession = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(back.context_percent, None);
     }
 
     #[tokio::test]

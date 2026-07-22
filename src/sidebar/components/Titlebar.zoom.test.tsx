@@ -233,4 +233,30 @@ describe("Titlebar zoom stepper", () => {
       expect(byTestId<HTMLButtonElement>("titlebar.zoom.in").disabled).toBe(true);
     });
   });
+
+  it("catches a rejected zoom apply from an initZoom listener instead of leaking an unhandled rejection (#1083)", async () => {
+    const mounted = await mountTitlebar({ mainZoom: 1 });
+    await initMainZoom(mounted);
+
+    // Model applyZoom rejecting exactly as the real Tauri webview module does
+    // during the flake: the next zoom apply from a listener rejects.
+    tauriMocks.setZoom.mockRejectedValue(new Error("boom"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    document.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        metaKey: true,
+        key: "=",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+
+    // Let the rejected fire-and-forget apply settle on a macrotask tick.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(errorSpy).toHaveBeenCalledWith("Failed to change zoom:", expect.any(Error));
+
+    errorSpy.mockRestore();
+  });
 });
