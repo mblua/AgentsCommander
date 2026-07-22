@@ -6,11 +6,12 @@ use crate::cli::workgroup::{
     resolve_cli_workspace, write_refresh,
 };
 use crate::commands::entity_creation::{
-    agent_ref_bare_name, create_new_team_config_on_disk, create_or_update_replica_on_disk,
-    normalize_team_config_for_project, parse_team_from_workgroup_name, read_team_config,
+    acquire_lifecycle_project_gate, agent_ref_bare_name, create_new_team_config_on_disk,
+    create_or_update_replica_on_disk, normalize_team_config_for_project,
+    parse_team_from_workgroup_name, prune_replica_config_scope, read_team_config,
     remove_replica_dir, resolve_agent_ref, sanitize_name, validate_existing_name,
-    write_team_config_guarded, ReplicaDiskCreateArgs, RepoAssignment, TeamConfigMutationGuard,
-    TeamConfigResult,
+    write_team_config_guarded, ReplicaDiskCreateArgs, ReplicaRemovalOutcome, RepoAssignment,
+    TeamConfigMutationGuard, TeamConfigResult,
 };
 
 #[derive(Args)]
@@ -300,28 +301,78 @@ fn add_member(args: TeamAddMemberArgs) -> Result<(), String> {
 }
 
 fn remove_member(args: TeamRemoveMemberArgs) -> Result<(), String> {
+    // Production: dormant (no activation token) and no lock-order test barrier.
+    remove_member_hooked(args, None, |_| {})
+}
+
+/// CLI team-member removal with the #1063 global lock order.
+///
+/// Preflight and initial intent run outside both guards; the blocking commit
+/// then acquires the project seed-manifest gate first and the #1056
+/// `TeamConfigMutationGuard` second (plan sections 5.4/6.3), re-reads and
+/// revalidates the current team config under both, computes the mutation from
+/// that current value, and holds both across the membership commit, typed replica
+/// removal, and (dormant) manifest prune before dropping them ahead of refresh
+/// and output. `remove_member` is synchronous, so no guard ever crosses `.await`.
+///
+/// `activation` is `None` in production (dormant); tests pass
+/// `Some(ManifestActivationToken::for_test())` to exercise the real prune.
+/// `after_project_before_team` is a `#[cfg(test)]` cross-process inversion barrier
+/// that fires after the project gate is held and before the team guard; production
+/// passes a no-op.
+fn remove_member_hooked(
+    args: TeamRemoveMemberArgs,
+    activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
+    after_project_before_team: impl FnOnce(&std::path::Path),
+) -> Result<(), String> {
     validate_existing_name(&args.workgroup, "Workgroup")?;
     let project_path = resolve_cli_project(&args.project)?;
     let workspace_dir = resolve_cli_workspace(&project_path)?;
-    let guard = TeamConfigMutationGuard::acquire(&workspace_dir)?;
     let wg_dir = workspace_dir.join(&args.workgroup);
     if !wg_dir.is_dir() {
         return Err(format!("Workgroup '{}' not found", args.workgroup));
     }
     let team = parse_team_from_workgroup_name(&args.workgroup)?;
-    let config = normalize_team_config_for_project(
-        &workspace_dir,
-        &read_team_config(&workspace_dir, &team)?,
-    )?;
     let agent_ref = resolve_agent_ref(&workspace_dir, &args.agent)?;
     let agent_name = agent_ref_bare_name(&agent_ref);
     let replica_dir = wg_dir.join(format!("__agent_{}", agent_name));
     crate::cli::session_safety::ensure_no_live_sessions_under(&replica_dir)?;
+
+    // Blocking commit: project gate first, then the #1056 team-config guard.
+    let mut project_gate = acquire_lifecycle_project_gate(&project_path)?;
+    after_project_before_team(&workspace_dir);
+    let guard = TeamConfigMutationGuard::acquire(&workspace_dir)?;
+
+    // Re-read and revalidate the current team config under both guards, then
+    // recompute the mutation from that current value.
+    let config = normalize_team_config_for_project(
+        &workspace_dir,
+        &read_team_config(&workspace_dir, &team)?,
+    )?;
     let (config, removed) = remove_member_from_team_config(config, &agent_ref)?;
     write_team_config_guarded(&workspace_dir, &team, &config, &guard)?;
-    drop(guard);
 
-    remove_replica_dir(&replica_dir)?;
+    // Typed replica removal; prune only after a proven removal or explicit absence.
+    match remove_replica_dir(&replica_dir) {
+        ReplicaRemovalOutcome::Removed | ReplicaRemovalOutcome::AlreadyAbsent => {
+            prune_replica_config_scope(
+                project_gate.as_mut(),
+                activation,
+                &args.workgroup,
+                &agent_name,
+            );
+        }
+        ReplicaRemovalOutcome::Failed(error) => {
+            // The team-config mutation committed, but the replica path may still
+            // exist; preserve rows and surface the failure.
+            drop(guard);
+            drop(project_gate);
+            return Err(error);
+        }
+    }
+    drop(guard);
+    drop(project_gate);
+
     write_refresh(
         &project_path,
         &replica_dir,

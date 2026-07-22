@@ -6,10 +6,11 @@ use serde::Serialize;
 
 use crate::cli::create_agent_matrix::{write_project_refresh_request, ProjectRefreshRequest};
 use crate::commands::entity_creation::{
-    check_workgroup_repos_dirty, clone_missing_repos_for_workgroup, create_workgroup_on_disk,
-    list_workgroup_dirs, read_team_config, resolve_agent_ref, sanitize_name,
-    validate_delete_root_not_link_or_reparse, validate_existing_name, RepoAssignment,
-    TeamConfigResult, WgDeleteOutcome, WorkgroupDiskCreateArgs,
+    acquire_lifecycle_project_gate, check_workgroup_repos_dirty, clone_missing_repos_for_workgroup,
+    create_workgroup_on_disk, list_workgroup_dirs, prune_workgroup_config_scope, read_team_config,
+    resolve_agent_ref, sanitize_name, validate_delete_root_not_link_or_reparse,
+    validate_existing_name, RepoAssignment, TeamConfigResult, WgDeleteOutcome,
+    WorkgroupDiskCreateArgs,
 };
 use crate::config::projects::resolve_project_reference;
 use crate::config::workspace::existing_workspace_dir;
@@ -242,6 +243,28 @@ fn add(args: WorkgroupAddArgs) -> Result<(), String> {
 }
 
 fn remove(args: WorkgroupRemoveArgs) -> Result<(), String> {
+    // Production: dormant (no activation token) and no lock-order test barrier.
+    remove_hooked(args, None, |_| {})
+}
+
+/// CLI workgroup removal with the #1063 project-only lock order.
+///
+/// Workgroup deletion is a project-only mutation: it acquires the project
+/// seed-manifest gate before the atomic rename and NEVER acquires the
+/// `TeamConfigMutationGuard` (plan sections 5.4/6.3). It prunes `Deleted`/`Partial`
+/// logical paths while holding the gate, then releases the gate before converting
+/// the structured outcome into the CLI success/error contract or formatting an
+/// error. `remove` is synchronous, so no guard ever crosses `.await`.
+///
+/// `activation` is `None` in production (dormant); tests pass
+/// `Some(ManifestActivationToken::for_test())`. `after_project_acquired` is a
+/// `#[cfg(test)]` inversion barrier that fires after the project gate is held;
+/// production passes a no-op.
+fn remove_hooked(
+    args: WorkgroupRemoveArgs,
+    activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
+    after_project_acquired: impl FnOnce(&Path),
+) -> Result<(), String> {
     validate_existing_name(&args.workgroup, "Workgroup")?;
     let project_path = resolve_cli_project(&args.project)?;
     let workspace_dir = resolve_cli_workspace(&project_path)?;
@@ -262,9 +285,18 @@ fn remove(args: WorkgroupRemoveArgs) -> Result<(), String> {
             ));
         }
     }
-    match cli_remove_refresh_decision(crate::commands::entity_creation::try_atomic_delete_wg(
-        &wg_dir,
-    ))? {
+
+    // Project-only gate: acquire before the atomic rename, prune Deleted/Partial
+    // while held, then release before formatting the outcome. Never take the team guard.
+    let mut project_gate = acquire_lifecycle_project_gate(&project_path)?;
+    after_project_acquired(&workspace_dir);
+    let outcome = crate::commands::entity_creation::try_atomic_delete_wg(&wg_dir);
+    if outcome.logical_path_removed() {
+        prune_workgroup_config_scope(project_gate.as_mut(), activation, &args.workgroup);
+    }
+    drop(project_gate);
+
+    match cli_remove_refresh_decision(outcome)? {
         RemoveRefreshDecision::EmitWorkgroupRemoved => {}
     }
     // (#621) Drop the workgroup's coordinator_clocks keys. CLI is its own process,
