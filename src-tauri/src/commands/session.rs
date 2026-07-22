@@ -1115,6 +1115,53 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         None,
         None,
         false,
+        None,
+    )
+    .await?
+    .into_finalized()
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_session_inner_with_pty_target_ownership<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: &Arc<Mutex<PtyManager>>,
+    shell: String,
+    shell_args: Vec<String>,
+    cwd: String,
+    session_name: Option<String>,
+    agent_id: Option<String>,
+    agent_label: Option<String>,
+    skip_tooling_save: bool,
+    git_repos: Vec<SessionRepo>,
+    skip_auto_resume: bool,
+    resolved_spawn: Option<AgentSpawnCommand>,
+    viewport: Option<PtyViewport>,
+    selection_intent: CreateSelectionIntent,
+    target_ownership: &crate::api::message_store::PtyInputTargetOwnership<'_>,
+) -> Result<SessionInfo, String> {
+    create_session_inner_impl(
+        app,
+        session_mgr,
+        pty_mgr,
+        shell,
+        shell_args,
+        cwd,
+        session_name,
+        agent_id,
+        agent_label,
+        skip_tooling_save,
+        git_repos,
+        skip_auto_resume,
+        resolved_spawn,
+        viewport,
+        selection_intent,
+        None,
+        None,
+        None,
+        None,
+        false,
+        Some(target_ownership),
     )
     .await?
     .into_finalized()
@@ -1160,6 +1207,7 @@ pub(crate) async fn create_session_inner_for_restore<R: tauri::Runtime>(
         Some(transaction),
         Some(SelectionCause::Restore),
         false,
+        None,
     )
     .await?
     .into_finalized()
@@ -1187,8 +1235,53 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
     inline_transaction: Option<&SelectionTransaction<R>>,
     inline_cause: Option<SelectionCause>,
     defer_inline_finalization: bool,
+    preheld_target: Option<&crate::api::message_store::PtyInputTargetOwnership<'_>>,
 ) -> Result<CreateCompletion, String> {
     let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
+    let cwd_path = std::path::Path::new(&cwd);
+    let create_target_key = crate::config::teams::pty_input_create_gate_key_from_cwd(cwd_path)
+        .map_err(|_| "targetCreateGateUnavailable".to_string())?;
+    let create_target_replica_identity = if create_target_key.is_some() {
+        let anchor = crate::config::teams::strict_wg_replica_anchor_from_cwd(cwd_path)
+            .map_err(|_| "targetCreateGateUnavailable".to_string())?
+            .ok_or_else(|| "targetCreateGateUnavailable".to_string())?;
+        Some(
+            crate::path_identity::verify_directory(&anchor)
+                .map_err(|_| "targetCreateGateUnavailable".to_string())?,
+        )
+    } else {
+        None
+    };
+    if let Some(preheld) = preheld_target {
+        let target_key = create_target_key
+            .as_deref()
+            .ok_or_else(|| "invalidTargetCreateOwnership".to_string())?;
+        if !preheld.proves(target_key) {
+            return Err("invalidTargetCreateOwnership".to_string());
+        }
+    }
+    let _owned_target_gate = if preheld_target.is_none() {
+        if let Some(target_key) = create_target_key.as_deref() {
+            let gate = app
+                .try_state::<crate::api::message_store::PtyInputTargetGateState>()
+                .and_then(|state| state.gate.as_ref().ok().map(Arc::clone))
+                .or_else(|| {
+                    app.try_state::<crate::api::message_store::MessageStoreState>()
+                        .and_then(|state| state.target_gate.as_ref().ok().map(Arc::clone))
+                })
+                .ok_or_else(|| "targetCreateGateUnavailable".to_string())?;
+            let stripe = gate
+                .acquire_target_lock(target_key)
+                .await
+                .map_err(|_| "targetCreateGateUnavailable".to_string())?;
+            let exact = gate.acquire_exact(target_key).await;
+            Some((stripe, exact))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let session_label = session_name.as_deref().unwrap_or(&shell).to_string();
     let coordinator = app
         .try_state::<SelectionCoordinator>()
@@ -1210,10 +1303,6 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
     let inline_pending_binding = Arc::new(Mutex::new(None));
     let inline_pending_for_body = Arc::clone(&inline_pending_binding);
     let create_body = async {
-        let spawn_mark = {
-            let pty = pty_mgr.lock().unwrap_or_else(|e| e.into_inner());
-            pty.mark_spawning(&cwd, &session_label)
-        };
         crate::config::archive_gate::enforce_unarchived_for_spawn(app, &cwd, &session_label)
             .await?;
         let (agent_id, agent_label) = {
@@ -1366,6 +1455,37 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                 }
             }
             None => None,
+        };
+        if create_target_replica_identity.is_some()
+            && matches!(
+                selection_intent,
+                CreateSelectionIntent::Background | CreateSelectionIntent::Suppress
+            )
+        {
+            let target = create_target_replica_identity
+                .as_ref()
+                .ok_or_else(|| "targetCreateGateUnavailable".to_string())?;
+            let appeared_session = mgr.list_sessions().await.into_iter().any(|session| {
+                !matches!(session.status, SessionStatus::Exited(_))
+                    && crate::path_identity::verify_directory(std::path::Path::new(
+                        &session.working_directory,
+                    ))
+                    .is_ok_and(|cwd_identity| {
+                        crate::path_identity::is_verified_descendant(&cwd_identity, target)
+                    })
+            });
+            let appeared_spawn = pty_mgr
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .has_pending_spawn_for_replica(target);
+            if appeared_session || appeared_spawn {
+                release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+                return Err("sessionRace".to_string());
+            }
+        }
+        let spawn_mark = {
+            let pty = pty_mgr.lock().unwrap_or_else(|error| error.into_inner());
+            pty.mark_spawning(&cwd, &session_label)
         };
         let pending_result = if let Some(ticket) = create_ticket.as_mut() {
             mgr.create_pending_session(
@@ -1527,6 +1647,11 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             .await
             .map_err(|error| error.to_string())?;
         session.agent_kind = agent_kind;
+        let trusted_configured_spawn = resolved_spawn.is_some();
+        mgr.set_pending_trusted_configured_spawn(pending_binding, trusted_configured_spawn)
+            .await
+            .map_err(|error| error.to_string())?;
+        session.trusted_configured_spawn = trusted_configured_spawn;
 
         // #930 - resolve the host-credential copy-in plan for container coding agents
         // BEFORE the resume probe and the container env translation, so both consumers
@@ -3685,6 +3810,7 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
         Some(transaction),
         Some(SelectionCause::Restart(intent)),
         true,
+        None,
     )
     .await;
     let deferred = match completion {
@@ -4352,6 +4478,7 @@ pub(crate) async fn execute_root_transaction<R: tauri::Runtime>(
         Some(transaction),
         Some(SelectionCause::SessionCreated(request.intent)),
         false,
+        None,
     )
     .await?
     .into_finalized()?;
@@ -4437,6 +4564,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
+    use tauri::Manager;
     use uuid::Uuid;
 
     #[test]
@@ -5001,7 +5129,12 @@ mod tests {
             })
         }
 
-        fn write(&self, _id: Uuid, _data: &[u8]) -> Result<(), crate::errors::AppError> {
+        fn write(
+            &self,
+            _authority: &crate::pty::manager::BackendWriteAuthority,
+            _id: Uuid,
+            _data: &[u8],
+        ) -> Result<(), crate::errors::AppError> {
             Ok(())
         }
 
@@ -5107,7 +5240,12 @@ mod tests {
             })
         }
 
-        fn write(&self, _id: Uuid, _data: &[u8]) -> Result<(), crate::errors::AppError> {
+        fn write(
+            &self,
+            _authority: &crate::pty::manager::BackendWriteAuthority,
+            _id: Uuid,
+            _data: &[u8],
+        ) -> Result<(), crate::errors::AppError> {
             Ok(())
         }
 
@@ -5206,7 +5344,12 @@ mod tests {
             })
         }
 
-        fn write(&self, id: Uuid, _data: &[u8]) -> Result<(), crate::errors::AppError> {
+        fn write(
+            &self,
+            _authority: &crate::pty::manager::BackendWriteAuthority,
+            id: Uuid,
+            _data: &[u8],
+        ) -> Result<(), crate::errors::AppError> {
             self.live
                 .lock()
                 .unwrap()
@@ -5216,7 +5359,12 @@ mod tests {
         }
 
         fn resize(&self, id: Uuid, _cols: u16, _rows: u16) -> Result<(), crate::errors::AppError> {
-            self.write(id, &[])
+            self.live
+                .lock()
+                .unwrap()
+                .contains(&id)
+                .then_some(())
+                .ok_or_else(|| crate::errors::AppError::SessionNotFound(id.to_string()))
         }
 
         fn kill(&self, id: Uuid) -> Result<(), crate::errors::AppError> {
@@ -5327,7 +5475,12 @@ mod tests {
             })
         }
 
-        fn write(&self, id: Uuid, _data: &[u8]) -> Result<(), crate::errors::AppError> {
+        fn write(
+            &self,
+            _authority: &crate::pty::manager::BackendWriteAuthority,
+            id: Uuid,
+            _data: &[u8],
+        ) -> Result<(), crate::errors::AppError> {
             self.live
                 .lock()
                 .unwrap()
@@ -5337,7 +5490,12 @@ mod tests {
         }
 
         fn resize(&self, id: Uuid, _cols: u16, _rows: u16) -> Result<(), crate::errors::AppError> {
-            self.write(id, &[])
+            self.live
+                .lock()
+                .unwrap()
+                .contains(&id)
+                .then_some(())
+                .ok_or_else(|| crate::errors::AppError::SessionNotFound(id.to_string()))
         }
 
         fn kill(&self, id: Uuid) -> Result<(), crate::errors::AppError> {
@@ -5378,10 +5536,18 @@ mod tests {
         }
     }
 
-    fn session_test_app(
+    #[derive(Clone, Copy)]
+    enum SessionTestStoreState {
+        Ready,
+        Error,
+        Missing,
+    }
+
+    fn session_test_app_with_store(
         settings: AppSettings,
         session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
         pty_mgr: Arc<Mutex<crate::pty::manager::PtyManager>>,
+        store_state: SessionTestStoreState,
     ) -> tauri::App<tauri::test::MockRuntime> {
         let shutdown = crate::shutdown::ShutdownSignal::new();
         let coordinator = crate::session::selection::SelectionCoordinator::new(
@@ -5393,7 +5559,19 @@ mod tests {
             Arc::new(tokio::sync::Mutex::new(
                 crate::telegram::manager::TelegramBridgeManager::new(output_senders),
             ));
-        let app = tauri::test::mock_builder()
+        let store_dir = tempfile::TempDir::new().expect("create target-gate store");
+        let message_store = Arc::new(
+            crate::api::message_store::MessageStore::open(
+                store_dir
+                    .path()
+                    .join(crate::api::message_store::DB_FILENAME),
+            )
+            .expect("open target-gate store"),
+        );
+        let target_gate_state = crate::api::message_store::PtyInputTargetGateState::for_root(
+            store_dir.path().to_path_buf(),
+        );
+        let mut builder = tauri::test::mock_builder()
             .manage(Arc::new(tokio::sync::RwLock::new(settings)))
             .manage(Arc::new(
                 crate::resource_monitor::ResourceMonitorState::new(),
@@ -5404,7 +5582,25 @@ mod tests {
             .manage(telegram)
             .manage(crate::session::warnings::new_session_warning_state())
             .manage(coordinator.clone())
-            .manage(shutdown)
+            .manage(target_gate_state.clone())
+            .manage(shutdown);
+        builder = match store_state {
+            SessionTestStoreState::Ready => builder.manage(
+                crate::api::message_store::MessageStoreState::with_store_and_target_gate(
+                    Ok(message_store),
+                    target_gate_state.gate.clone(),
+                ),
+            ),
+            SessionTestStoreState::Error => builder.manage(
+                crate::api::message_store::MessageStoreState::with_store_and_target_gate(
+                    Err("store_unavailable".to_string()),
+                    target_gate_state.gate.clone(),
+                ),
+            ),
+            SessionTestStoreState::Missing => builder,
+        };
+        let app = builder
+            .manage(store_dir)
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build session test app");
         coordinator
@@ -5423,6 +5619,87 @@ mod tests {
         .join()
         .expect("join coordinator bootstrap");
         app
+    }
+
+    fn session_test_app(
+        settings: AppSettings,
+        session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+        pty_mgr: Arc<Mutex<crate::pty::manager::PtyManager>>,
+    ) -> tauri::App<tauri::test::MockRuntime> {
+        session_test_app_with_store(settings, session_mgr, pty_mgr, SessionTestStoreState::Ready)
+    }
+
+    fn strict_target_fixture() -> (tempfile::TempDir, String, String) {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        let workspace = project.join(".ac");
+        let team = workspace.join("_team_team");
+        let coordinator_matrix = workspace.join("_agent_lead");
+        let first_matrix = workspace.join("_agent_dev-one");
+        let second_matrix = workspace.join("_agent_dev-two");
+        let workgroup = workspace.join("wg-1-team");
+        let coordinator = workgroup.join("__agent_lead");
+        let first = workgroup.join("__agent_dev-one");
+        let second = workgroup.join("__agent_dev-two");
+        for directory in [
+            &team,
+            &coordinator_matrix,
+            &first_matrix,
+            &second_matrix,
+            &coordinator,
+            &first,
+            &second,
+        ] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        std::fs::write(
+            team.join("config.json"),
+            r#"{"agents":["../_agent_dev-one","../_agent_dev-two"],"coordinator":"../_agent_lead"}"#,
+        )
+        .unwrap();
+        for (replica, identity) in [
+            (&coordinator, "../../_agent_lead"),
+            (&first, "../../_agent_dev-one"),
+            (&second, "../../_agent_dev-two"),
+        ] {
+            std::fs::write(
+                replica.join("config.json"),
+                format!(r#"{{"identity":"{identity}"}}"#),
+            )
+            .unwrap();
+        }
+        (
+            temp,
+            first.to_string_lossy().into_owned(),
+            second.to_string_lossy().into_owned(),
+        )
+    }
+
+    async fn create_target_for_test(
+        app: &tauri::App<tauri::test::MockRuntime>,
+        session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+        pty_mgr: &Arc<Mutex<crate::pty::manager::PtyManager>>,
+        cwd: &str,
+        intent: CreateSelectionIntent,
+    ) -> Result<SessionInfo, String> {
+        super::create_session_inner(
+            app.handle(),
+            session_mgr,
+            pty_mgr,
+            "codex".to_string(),
+            Vec::new(),
+            cwd.to_string(),
+            Some("target gate fixture".to_string()),
+            None,
+            None,
+            true,
+            Vec::new(),
+            true,
+            None,
+            None,
+            intent,
+        )
+        .await
     }
 
     async fn create_scripted_session(
@@ -6098,6 +6375,369 @@ mod tests {
     /// at. It does not, and cannot, prove Codex stops hanging - that needs a real child in a
     /// real ConPTY inside a ~100 ms race. The harness is the proof of that.
     #[tokio::test]
+    async fn privileged_preheld_target_gate_does_not_reenter_and_rechecks_pending_or_live() {
+        let (_fixture, first_cwd, _) = strict_target_fixture();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(ScriptedSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(
+            AppSettings::default(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+        let target =
+            crate::config::teams::verify_pty_input_replica_cwd(std::path::Path::new(&first_cwd))
+                .unwrap();
+        let state = app.state::<crate::api::message_store::MessageStoreState>();
+        let gate = state.target_gate.as_ref().unwrap().clone();
+        let stripe = gate
+            .acquire_target_lock(&target.canonical_fqn)
+            .await
+            .unwrap();
+        let exact = gate.acquire_exact(&target.canonical_fqn).await;
+        let ownership = gate
+            .target_ownership(&target.canonical_fqn, &stripe, &exact)
+            .unwrap();
+
+        let pending = pty_mgr
+            .lock()
+            .unwrap()
+            .mark_spawning(&first_cwd, "pending race");
+        let pending_error = super::create_session_inner_with_pty_target_ownership(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            "codex".to_string(),
+            Vec::new(),
+            first_cwd.clone(),
+            Some("privileged target".to_string()),
+            None,
+            None,
+            true,
+            Vec::new(),
+            true,
+            None,
+            None,
+            CreateSelectionIntent::Background,
+            &ownership,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(pending_error, "sessionRace");
+        assert_eq!(backend.spawn_count.load(Ordering::SeqCst), 0);
+        drop(pending);
+
+        let created = super::create_session_inner_with_pty_target_ownership(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            "codex".to_string(),
+            Vec::new(),
+            first_cwd.clone(),
+            Some("privileged target".to_string()),
+            None,
+            None,
+            true,
+            Vec::new(),
+            true,
+            None,
+            None,
+            CreateSelectionIntent::Background,
+            &ownership,
+        )
+        .await
+        .unwrap();
+        assert_eq!(created.working_directory, first_cwd);
+        assert_eq!(backend.spawn_count.load(Ordering::SeqCst), 1);
+
+        let live_error = super::create_session_inner_with_pty_target_ownership(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            "codex".to_string(),
+            Vec::new(),
+            first_cwd,
+            Some("stale background create".to_string()),
+            None,
+            None,
+            true,
+            Vec::new(),
+            true,
+            None,
+            None,
+            CreateSelectionIntent::Background,
+            &ownership,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(live_error, "sessionRace");
+        assert_eq!(backend.spawn_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn ordinary_strict_create_is_fail_soft_when_pty_store_is_error_or_missing() {
+        for store_state in [SessionTestStoreState::Error, SessionTestStoreState::Missing] {
+            let (_fixture, first_cwd, second_cwd) = strict_target_fixture();
+            let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+            let backend = Arc::new(ScriptedSpawnBackend::default());
+            let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+                backend.clone(),
+            )));
+            let app = session_test_app_with_store(
+                AppSettings::default(),
+                Arc::clone(&session_mgr),
+                Arc::clone(&pty_mgr),
+                store_state,
+            );
+
+            let created = create_target_for_test(
+                &app,
+                &session_mgr,
+                &pty_mgr,
+                &first_cwd,
+                CreateSelectionIntent::User,
+            )
+            .await;
+
+            assert!(
+                created.is_ok(),
+                "ordinary create must not depend on the specialized PTY store: {created:?}"
+            );
+            assert_eq!(backend.spawn_count.load(Ordering::SeqCst), 1);
+
+            let restore =
+                crate::session::selection::SelectionTransaction::for_test(app.handle().clone());
+            let restored = super::create_session_inner_for_restore(
+                &restore,
+                &session_mgr,
+                &pty_mgr,
+                "codex".to_string(),
+                Vec::new(),
+                second_cwd,
+                Some("restore target".to_string()),
+                None,
+                None,
+                true,
+                Vec::new(),
+                true,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await;
+            assert!(
+                restored.is_ok(),
+                "startup restore must not depend on the specialized PTY store: {restored:?}"
+            );
+            assert_eq!(backend.spawn_count.load(Ordering::SeqCst), 2);
+            close_test_coordinator(&app).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn sequential_user_same_target_creates_remain_compatible() {
+        let (_fixture, first_cwd, _) = strict_target_fixture();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(ScriptedSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(
+            AppSettings::default(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+        create_target_for_test(
+            &app,
+            &session_mgr,
+            &pty_mgr,
+            &first_cwd,
+            CreateSelectionIntent::User,
+        )
+        .await
+        .unwrap();
+        create_target_for_test(
+            &app,
+            &session_mgr,
+            &pty_mgr,
+            &first_cwd,
+            CreateSelectionIntent::User,
+        )
+        .await
+        .unwrap();
+        assert_eq!(backend.spawn_count.load(Ordering::SeqCst), 2);
+        assert_eq!(session_mgr.read().await.list_sessions().await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn different_strict_targets_create_concurrently() {
+        let (_fixture, first_cwd, second_cwd) = strict_target_fixture();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(ScriptedSpawnBackend::default());
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        backend.gate_spawn(1, started_tx, release_rx);
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(
+            AppSettings::default(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+        let first_handle = app.handle().clone();
+        let first_sessions = Arc::clone(&session_mgr);
+        let first_pty = Arc::clone(&pty_mgr);
+        let first_task = tokio::spawn(async move {
+            super::create_session_inner(
+                &first_handle,
+                &first_sessions,
+                &first_pty,
+                "codex".to_string(),
+                Vec::new(),
+                first_cwd,
+                Some("first target".to_string()),
+                None,
+                None,
+                true,
+                Vec::new(),
+                true,
+                None,
+                None,
+                CreateSelectionIntent::User,
+            )
+            .await
+        });
+        started_rx.await.unwrap();
+        let second = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            create_target_for_test(
+                &app,
+                &session_mgr,
+                &pty_mgr,
+                &second_cwd,
+                CreateSelectionIntent::User,
+            ),
+        )
+        .await
+        .expect("a different target must not wait for the first exact gate")
+        .unwrap();
+        assert_eq!(second.working_directory, second_cwd);
+        release_tx.send(()).unwrap();
+        first_task.await.unwrap().unwrap();
+        assert_eq!(backend.spawn_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn concurrent_same_target_creates_serialize_on_the_exact_gate() {
+        let (_fixture, first_cwd, _) = strict_target_fixture();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(ScriptedSpawnBackend::default());
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        // Gate the first spawn so the winning create holds the exact target gate.
+        backend.gate_spawn(1, started_tx, release_rx);
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(
+            AppSettings::default(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+
+        // Task A wins the exact gate for the target and blocks inside its spawn.
+        let a_task = {
+            let handle = app.handle().clone();
+            let sessions = Arc::clone(&session_mgr);
+            let pty = Arc::clone(&pty_mgr);
+            let cwd = first_cwd.clone();
+            tokio::spawn(async move {
+                super::create_session_inner(
+                    &handle,
+                    &sessions,
+                    &pty,
+                    "codex".to_string(),
+                    Vec::new(),
+                    cwd,
+                    Some("first same-target".to_string()),
+                    None,
+                    None,
+                    true,
+                    Vec::new(),
+                    true,
+                    None,
+                    None,
+                    CreateSelectionIntent::Background,
+                )
+                .await
+            })
+        };
+        started_rx.await.unwrap();
+
+        // Task B is a concurrent background create for the SAME target. It must
+        // block on the exact gate that A holds, not race into the missing-target
+        // window beside A.
+        let b_task = {
+            let handle = app.handle().clone();
+            let sessions = Arc::clone(&session_mgr);
+            let pty = Arc::clone(&pty_mgr);
+            let cwd = first_cwd.clone();
+            tokio::spawn(async move {
+                super::create_session_inner(
+                    &handle,
+                    &sessions,
+                    &pty,
+                    "codex".to_string(),
+                    Vec::new(),
+                    cwd,
+                    Some("second same-target".to_string()),
+                    None,
+                    None,
+                    true,
+                    Vec::new(),
+                    true,
+                    None,
+                    None,
+                    CreateSelectionIntent::Background,
+                )
+                .await
+            })
+        };
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            !b_task.is_finished(),
+            "a second same-target create must block on the exact gate while the first holds it"
+        );
+        assert_eq!(
+            backend.spawn_count.load(Ordering::SeqCst),
+            1,
+            "no second spawn may start while the exact target gate is held"
+        );
+
+        // Release A; it finalizes a live session and drops the gate. B then wins the
+        // gate, rechecks live/pending state, and refuses to spawn a duplicate.
+        release_tx.send(()).unwrap();
+        let created = a_task.await.unwrap().unwrap();
+        assert_eq!(created.working_directory, first_cwd);
+        let raced = b_task.await.unwrap().unwrap_err();
+        assert_eq!(
+            raced, "sessionRace",
+            "the serialized loser must observe the now-live target and not create beside it"
+        );
+        assert_eq!(
+            backend.spawn_count.load(Ordering::SeqCst),
+            1,
+            "the serialized loser never spawned a duplicate"
+        );
+        assert_eq!(session_mgr.read().await.list_sessions().await.len(), 1);
+    }
+
+    #[tokio::test]
     async fn create_session_opens_the_pty_at_the_size_the_view_supplied() {
         let temp = tempfile::tempdir().unwrap();
         let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
@@ -6265,12 +6905,15 @@ mod tests {
             .next()
             .expect("production session source");
         let normalized = production.split_whitespace().collect::<String>();
-        let mark = normalized
-            .find("letspawn_mark={")
-            .expect("spawn mark before archive gate");
         let first_gate = normalized
             .find("crate::config::archive_gate::enforce_unarchived_for_spawn(app,&cwd,&session_label).await?;")
             .expect("first archive gate");
+        let mark = normalized
+            .find("letspawn_mark={")
+            .expect("spawn mark immediately before pending-session creation");
+        let pending_create = normalized
+            .find("letpending_result=ifletSome(ticket)=create_ticket.as_mut(){")
+            .expect("pending-session creation");
         let spawn = normalized
             .find(
                 "letspawn_result=PtyManager::spawn(pty_mgr,session.backend_kind,spawn_spec).await;",
@@ -6283,10 +6926,17 @@ mod tests {
             .find("ifletErr(e)=spawn_result{")
             .expect("spawn error handling");
 
-        assert!(mark < first_gate, "spawn mark must cover archive gate A");
         assert!(
-            first_gate < spawn,
-            "archive gate A must run before PTY spawn"
+            first_gate < mark,
+            "spawn mark must be created only after pre-create validation"
+        );
+        assert!(
+            mark < pending_create,
+            "spawn mark must precede pending-session creation"
+        );
+        assert!(
+            pending_create < spawn,
+            "pending-session creation must run before PTY spawn"
         );
         assert!(
             spawn < drop_mark,
@@ -6693,11 +7343,13 @@ mod tests {
             profile_fallback_applied: false,
             effective_codex_home: None,
             profile_content_hash: loaded_hash,
+            trusted_configured_spawn: false,
             profile_outdated: false,
             telegram_bot_id: None,
             was_detached: false,
             detached_geometry: None,
             start_fresh_on_restore: false,
+            context_percent: None,
         }
     }
 

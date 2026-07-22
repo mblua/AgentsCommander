@@ -316,9 +316,29 @@ async fn handle_binary_message(state: &WsState, data: &[u8]) {
     };
 
     let pty_data = &data[36..];
-    // Write FIRST (the std Mutex guard is dropped at the end of this statement,
-    // never held across the await below), then record the user message (#552).
-    let write_result = state.pty_mgr.lock().unwrap().write(uuid, pty_data);
+    let write_result =
+        match crate::pty::manager::PtyManager::acquire_input_writer(&state.pty_mgr, uuid).await {
+            Ok(permit) => {
+                if state
+                    .app_handle
+                    .try_state::<std::sync::Arc<crate::session::purge_guard::PurgeGuard>>()
+                    .is_some_and(|guard| guard.blocks_session(uuid))
+                {
+                    return;
+                }
+                let result = crate::pty::manager::PtyManager::write_with_permit(&permit, pty_data);
+                if result.is_ok() {
+                    crate::commands::pty::mark_successful_pty_write_busy(
+                        &state.app_handle,
+                        uuid,
+                        pty_data.len(),
+                    )
+                    .await;
+                }
+                result
+            }
+            Err(error) => Err(error),
+        };
     if !binary_pty_write_succeeded(write_result, uuid) {
         return;
     }

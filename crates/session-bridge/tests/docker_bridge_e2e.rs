@@ -133,6 +133,207 @@ fn docker_bridge_connects_streams_pty_output_and_exits() {
         "missing exit frame: {:?}",
         observed.text_frames
     );
+
+    run_helper_post_status_e2e(image);
+}
+
+fn run_helper_post_status_e2e(image: &str) {
+    let listener = TcpListener::bind("0.0.0.0:0").expect("bind helper HTTP listener");
+    listener
+        .set_nonblocking(true)
+        .expect("set helper listener nonblocking");
+    let port = listener.local_addr().expect("helper listener addr").port();
+    let server = thread::spawn(move || run_helper_http_server(listener));
+    let output = Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "--add-host",
+            "host.docker.internal:host-gateway",
+            "--entrypoint",
+            "agentscommander-api-helper",
+            "-e",
+            &format!("AGENTSCOMMANDER_API_URL=http://host.docker.internal:{port}"),
+            "-e",
+            &format!("AGENTSCOMMANDER_API_TOKEN={TOKEN}"),
+            image,
+            "send",
+            "--to",
+            "project:wg-1-team/member",
+            "--pty-input=helper-e2e",
+            "--confirm-timeout",
+            "5",
+        ])
+        .output()
+        .expect("run helper container");
+    let observed = server
+        .join()
+        .expect("helper server thread")
+        .expect("helper server result");
+    assert!(
+        output.status.success(),
+        "helper docker run failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Operation ID:"),
+        "missing operation id: {stdout}"
+    );
+    assert!(stdout.contains("Queued:"), "missing queued state: {stdout}");
+    assert!(
+        stdout.contains("Injected:"),
+        "missing injected state: {stdout}"
+    );
+    assert!(!stdout.contains("helper-e2e") && !stdout.contains(TOKEN));
+    assert_eq!(observed.post_text, "helper-e2e");
+    assert_eq!(observed.post_target, "project:wg-1-team/member");
+    assert_eq!(
+        observed.get_path,
+        format!("/api/v1/pty-input/{}", observed.op_id)
+    );
+    assert!(observed.authorization_ok);
+}
+
+#[derive(Debug)]
+struct HelperObservation {
+    op_id: String,
+    post_target: String,
+    post_text: String,
+    get_path: String,
+    authorization_ok: bool,
+}
+
+fn run_helper_http_server(listener: TcpListener) -> io::Result<HelperObservation> {
+    let mut post = accept_with_timeout(&listener, Duration::from_secs(30))?;
+    post.set_read_timeout(Some(Duration::from_secs(30)))?;
+    post.set_write_timeout(Some(Duration::from_secs(30)))?;
+    let (post_headers, post_body) = read_http_request(&mut post)?;
+    let post_path = post_headers
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .unwrap_or("");
+    if post_path != "/api/v1/pty-input" {
+        return Err(io::Error::other("unexpected helper POST path"));
+    }
+    let request: serde_json::Value =
+        serde_json::from_slice(&post_body).map_err(io::Error::other)?;
+    let op_id = request["opId"]
+        .as_str()
+        .ok_or_else(|| io::Error::other("missing helper op id"))?
+        .to_string();
+    let post_target = request["to"]
+        .as_str()
+        .ok_or_else(|| io::Error::other("missing helper target"))?
+        .to_string();
+    let post_text = request["ptyInput"]["text"]
+        .as_str()
+        .ok_or_else(|| io::Error::other("missing helper text"))?
+        .to_string();
+    let authorization_ok = post_headers
+        .to_ascii_lowercase()
+        .contains(&format!("authorization: bearer {TOKEN}"));
+    let digest = "1ba7dd613c255580d75c7bf597a879108449a421c0e28e86f5442dffd2738c51";
+    let injection_id = Uuid::new_v4().to_string();
+    let queued = helper_result_json(
+        &injection_id,
+        &op_id,
+        &post_target,
+        post_text.len(),
+        digest,
+        false,
+    );
+    write_http_json(&mut post, 202, &queued)?;
+
+    let mut get = accept_with_timeout(&listener, Duration::from_secs(30))?;
+    get.set_read_timeout(Some(Duration::from_secs(30)))?;
+    get.set_write_timeout(Some(Duration::from_secs(30)))?;
+    let (get_headers, _) = read_http_request(&mut get)?;
+    let get_path = get_headers
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .ok_or_else(|| io::Error::other("missing helper GET path"))?
+        .to_string();
+    let authorization_ok = authorization_ok
+        && get_headers
+            .to_ascii_lowercase()
+            .contains(&format!("authorization: bearer {TOKEN}"));
+    let injected = helper_result_json(
+        &injection_id,
+        &op_id,
+        &post_target,
+        post_text.len(),
+        digest,
+        true,
+    );
+    write_http_json(&mut get, 200, &injected)?;
+    Ok(HelperObservation {
+        op_id,
+        post_target,
+        post_text,
+        get_path,
+        authorization_ok,
+    })
+}
+
+fn helper_result_json(
+    injection_id: &str,
+    op_id: &str,
+    target: &str,
+    payload_bytes: usize,
+    payload_sha256: &str,
+    injected: bool,
+) -> Vec<u8> {
+    let mut result = serde_json::json!({
+        "version": 1,
+        "injectionId": injection_id,
+        "opId": op_id,
+        "sender": "project:wg-1-team/coordinator",
+        "target": target,
+        "status": if injected { "injected" } else { "queued" },
+        "terminal": injected,
+        "payloadBytes": payload_bytes,
+        "payloadSha256": payload_sha256,
+        "sourcePlane": "container_api",
+        "issuedAt": "2026-01-01T00:00:00.000Z",
+        "expiresAt": "2026-01-01T00:10:00.000Z",
+        "queuedAt": "2026-01-01T00:00:00.001Z"
+    });
+    if injected {
+        result["selectedSessionId"] = serde_json::json!(Uuid::new_v4().to_string());
+        result["selectedBackend"] = serde_json::json!("containerTransport");
+        result["actuatingAt"] = serde_json::json!("2026-01-01T00:00:01.000Z");
+        result["terminalAt"] = serde_json::json!("2026-01-01T00:00:02.000Z");
+    }
+    serde_json::to_vec(&result).expect("serialize helper result")
+}
+
+fn read_http_request(stream: &mut TcpStream) -> io::Result<(String, Vec<u8>)> {
+    let headers = read_http_headers(stream)?;
+    let content_length = header_value(&headers, "content-length")
+        .map(|value| value.parse::<usize>())
+        .transpose()
+        .map_err(io::Error::other)?
+        .unwrap_or(0);
+    if content_length > 128 * 1024 {
+        return Err(io::Error::other("helper request body too large"));
+    }
+    let mut body = vec![0_u8; content_length];
+    stream.read_exact(&mut body)?;
+    Ok((headers, body))
+}
+
+fn write_http_json(stream: &mut TcpStream, status: u16, body: &[u8]) -> io::Result<()> {
+    let reason = if status == 202 { "Accepted" } else { "OK" };
+    write!(
+        stream,
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )?;
+    stream.write_all(body)
 }
 
 fn repo_root() -> PathBuf {

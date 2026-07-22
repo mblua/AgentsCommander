@@ -1064,6 +1064,128 @@ fn team_add_member_creates_replica_and_peer_is_reachable() {
     );
 }
 
+// #1088: a live session whose name+cwd match a WG peer surfaces its context-usage
+// percent as `contextPercent` in both `list-peers` and `list-peers-lean` (read from
+// sessions.json on disk, no daemon), and peers without a matching reading omit it.
+#[test]
+fn list_peers_surfaces_context_percent_for_matching_live_session() {
+    let tmp = Tmp::new("cli-peer-context-percent");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    let project = project_with_agents(tmp.path(), &["architect", "dev-rust"]);
+
+    let _team = run_json(
+        &bin,
+        &[
+            "team",
+            "create",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Dev Team",
+            "--coordinator",
+            "architect",
+        ],
+    );
+    let _wg = run_json(
+        &bin,
+        &[
+            "workgroup",
+            "add",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Dev Team",
+            "--title",
+            "Build",
+        ],
+    );
+    let _added = run_json(
+        &bin,
+        &[
+            "team",
+            "add-member",
+            "--project",
+            "ProjectAlpha",
+            "--workgroup",
+            "wg-1-dev-team",
+            "--agent",
+            "dev-rust",
+        ],
+    );
+
+    let replica = project
+        .join(".ac")
+        .join("wg-1-dev-team")
+        .join("__agent_dev-rust");
+    assert!(replica.join("config.json").is_file());
+
+    // A live session whose name (`<wg>/<agent>`) and cwd match the dev-rust WG peer,
+    // carrying a context reading. `..PersistedSession::default()` leaves every other
+    // field (incl. legacy) at its default; only context_percent is set here.
+    let sessions = vec![PersistedSession {
+        name: "wg-1-dev-team/dev-rust".to_string(),
+        shell: "codex".to_string(),
+        shell_args: Vec::new(),
+        working_directory: replica.to_string_lossy().to_string(),
+        id: Some(uuid::Uuid::new_v4().to_string()),
+        status: Some(SessionStatus::Running),
+        waiting_for_input: Some(false),
+        created_at: Some("2026-07-21T00:00:00Z".to_string()),
+        context_percent: Some(63),
+        ..PersistedSession::default()
+    }];
+    std::fs::write(
+        config_dir.join("sessions.json"),
+        serde_json::to_string_pretty(&sessions).expect("sessions json"),
+    )
+    .expect("write sessions");
+
+    let sender_root = project
+        .join(".ac")
+        .join("wg-1-dev-team")
+        .join("__agent_architect");
+
+    for verb in ["list-peers", "list-peers-lean"] {
+        let out = Command::new(&bin)
+            .args([
+                verb,
+                "--root",
+                &sender_root.to_string_lossy(),
+                "--token",
+                "00000000-0000-0000-0000-000000000000",
+            ])
+            .output()
+            .expect("run peer verb");
+        assert!(
+            out.status.success(),
+            "{verb} failed\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let peers: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("peers json");
+        let mut saw_dev = false;
+        for peer in peers.as_array().expect("array") {
+            if peer["name"] == "ProjectAlpha:wg-1-dev-team/dev-rust" {
+                saw_dev = true;
+                assert_eq!(
+                    peer["contextPercent"], 63,
+                    "{verb}: matching live session must surface contextPercent: {peer}"
+                );
+            } else {
+                assert!(
+                    peer.get("contextPercent").is_none(),
+                    "{verb}: peer {} without a matching reading must omit contextPercent: {peer}",
+                    peer["name"]
+                );
+            }
+        }
+        assert!(saw_dev, "{verb}: dev-rust peer missing from output: {peers}");
+    }
+}
+
 #[test]
 fn team_create_refuses_existing_team() {
     let tmp = Tmp::new("cli-team-create-existing");

@@ -25,6 +25,7 @@ use std::time::Duration;
 use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use axum::Router;
+use tauri::Manager;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
@@ -33,7 +34,7 @@ use crate::session::manager::SessionManager;
 
 /// Hard ceiling on a buffered request body. Inline sends allow a 256 KiB
 /// semantic body plus JSON envelope overhead.
-const MAX_BODY_LIMIT_BYTES: usize = message_store::INLINE_BODY_MAX_BYTES + (16 * 1024);
+const MAX_BODY_LIMIT_BYTES: usize = crate::phone::types::PTY_INPUT_HOST_ENVELOPE_MAX_BYTES;
 const STARTUP_READY_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub struct ApiServerStart {
@@ -64,6 +65,8 @@ pub struct ApiState {
 pub fn build_router(state: ApiState) -> Router {
     Router::new()
         .route("/api/v1/send", post(handlers::send::handle))
+        .route("/api/v1/pty-input", post(handlers::pty_input::post))
+        .route("/api/v1/pty-input/{op_id}", get(handlers::pty_input::get))
         .route("/api/v1/peers", get(handlers::list_peers::handle))
         .route(
             "/api/v1/session-transport",
@@ -115,12 +118,23 @@ pub fn start_server(
             };
         }
     };
-    let message_store = match message_store::MessageStore::at_config_dir() {
-        Ok(s) => Arc::new(s),
-        Err(e) => {
-            let message = format!("Cannot initialize API DB message store: {}", e);
+    let message_store = match app_handle.try_state::<message_store::MessageStoreState>() {
+        Some(state) => match &state.store {
+            Ok(store) => Arc::clone(store),
+            Err(code) => {
+                let message = format!("Cannot initialize API DB message store: {code}");
+                log::error!("[api-server] {}; API server not started", message);
+                let _send_result = readiness_tx.send(Err(message));
+                return ApiServerStart {
+                    join_handle: tauri::async_runtime::spawn(async {}),
+                    readiness,
+                };
+            }
+        },
+        None => {
+            let message = "Managed API DB message store is unavailable".to_string();
             log::error!("[api-server] {}; API server not started", message);
-            let _ = readiness_tx.send(Err(message));
+            let _send_result = readiness_tx.send(Err(message));
             return ApiServerStart {
                 join_handle: tauri::async_runtime::spawn(async {}),
                 readiness,
@@ -129,7 +143,7 @@ pub fn start_server(
     };
 
     let state = ApiState {
-        store,
+        store: store.clone(),
         message_store: message_store.clone(),
         lockout: Arc::new(auth::FailedAuthLockout::default()),
         app_handle: app_handle.clone(),
@@ -142,6 +156,7 @@ pub fn start_server(
         let mut readiness_tx = Some(readiness_tx);
         let dispatcher_handle = dispatcher::start_dispatcher(
             message_store,
+            store,
             app_handle.clone(),
             shutdown.clone(),
             dispatcher::DispatcherConfig::default(),

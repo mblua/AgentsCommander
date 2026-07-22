@@ -25,7 +25,7 @@ use crate::session::warnings::{
     WARNING_KIND_PROTOCOL_MISMATCH,
 };
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionTransportQuery {
     session_id: Uuid,
@@ -45,7 +45,7 @@ pub async fn handle(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
-    let authorized = match authorize_transport(&state, addr.ip(), &headers, query) {
+    let authorized = match authorize_transport(&state, addr.ip(), &headers, query).await {
         Ok(authorized) => authorized,
         Err(err) => return err.into_response(),
     };
@@ -64,20 +64,65 @@ pub async fn handle(
         })
 }
 
-fn authorize_transport(
+async fn authorize_transport(
     state: &ApiState,
     ip: std::net::IpAddr,
     headers: &HeaderMap,
     query: SessionTransportQuery,
 ) -> Result<AuthorizedTransport, ApiError> {
-    let client = match handlers::authenticate(state, headers, ip, SCOPE_SESSION_TRANSPORT) {
-        Ok(client) => client,
-        Err(err) if err.status() == StatusCode::TOO_MANY_REQUESTS => return Err(err),
-        Err(_) => return Err(uniform_transport_auth_failure()),
+    state.lockout.check(ip).map_err(|error| {
+        if error.status() == StatusCode::TOO_MANY_REQUESTS {
+            error
+        } else {
+            uniform_transport_auth_failure()
+        }
+    })?;
+    let presented = match handlers::bearer_token_strict(headers) {
+        Ok(presented) => presented,
+        Err(_) => return Err(reject_transport_auth(state, ip, None, "missing_token")),
     };
-
-    if crate::api::identity::resolve_from(&client).is_err() {
-        return Err(uniform_transport_auth_failure());
+    let fresh = match classify_fresh_transport_auth(
+        state
+            .store
+            .authenticate_pty_input_fresh_offloaded(presented)
+            .await,
+    ) {
+        FreshTransportAuth::Authenticated(fresh) => *fresh,
+        FreshTransportAuth::InvalidToken => {
+            return Err(reject_transport_auth(state, ip, None, "invalid_token"))
+        }
+        FreshTransportAuth::DependencyUnavailable => return Err(transport_dependency_unavailable()),
+    };
+    let client = &fresh.client;
+    let session_id_text = query.session_id.to_string();
+    let generation = match client.credential_generation.as_deref() {
+        Some(generation) => generation,
+        None => {
+            return Err(reject_transport_auth(
+                state,
+                ip,
+                Some(client),
+                "unbound_client",
+            ));
+        }
+    };
+    if !client.has_scope(SCOPE_SESSION_TRANSPORT) {
+        return Err(reject_transport_auth(
+            state,
+            ip,
+            Some(client),
+            "forbidden_scope",
+        ));
+    }
+    if client.bound_session_id.as_deref() != Some(session_id_text.as_str())
+        || crate::api::identity::resolve_from(client).is_err()
+    {
+        return Err(reject_transport_auth(
+            state,
+            ip,
+            Some(client),
+            "binding_mismatch",
+        ));
     }
 
     let backend = {
@@ -85,22 +130,127 @@ fn authorize_transport(
         pty_mgr.container_backend()
     };
 
+    let binding = match backend.credential_binding(query.session_id) {
+        Some(binding) => binding,
+        None => {
+            return Err(reject_transport_auth(
+                state,
+                ip,
+                Some(client),
+                "binding_mismatch",
+            ));
+        }
+    };
+    let root =
+        match crate::path_identity::verify_directory(std::path::Path::new(&client.bound_root)) {
+            Ok(root) => root,
+            Err(_) => {
+                return Err(reject_transport_auth(
+                    state,
+                    ip,
+                    Some(client),
+                    "binding_mismatch",
+                ));
+            }
+        };
+    if binding.client_id != client.client_id
+        || binding.credential_generation != generation
+        || binding.bound_session_id != query.session_id.to_string()
+        || binding.bound_root_object_id != root.object_id
+        || !crate::api::auth::constant_time_eq(
+            &binding.credential_token_hash,
+            &fresh.presented_token_hash,
+        )
+    {
+        return Err(reject_transport_auth(
+            state,
+            ip,
+            Some(client),
+            "binding_mismatch",
+        ));
+    }
     if backend
         .consume_ticket(query.session_id, &client.bound_root, &query.ticket)
         .is_err()
     {
+        return Err(reject_transport_auth(
+            state,
+            ip,
+            Some(client),
+            "invalid_ticket",
+        ));
+    }
+    if state.lockout.record_success(ip).is_err() {
+        log::warn!("[container-transport] lockout success update failed code=auth_state_failed");
         return Err(uniform_transport_auth_failure());
     }
+    crate::api::audit::record(
+        &client.client_id,
+        &client.bound_fqn,
+        SCOPE_SESSION_TRANSPORT,
+        "authenticated",
+    );
 
     Ok(AuthorizedTransport {
         backend,
         session_id: query.session_id,
-        bound_root: client.bound_root,
+        bound_root: client.bound_root.clone(),
     })
+}
+
+fn reject_transport_auth(
+    state: &ApiState,
+    ip: std::net::IpAddr,
+    client: Option<&crate::api::auth::ApiClient>,
+    outcome: &'static str,
+) -> ApiError {
+    if state.lockout.record_failure(ip).is_err() {
+        log::warn!("[container-transport] lockout failure update failed code=auth_state_failed");
+    }
+    let (client_id, bound_fqn) = client
+        .map(|client| (client.client_id.as_str(), client.bound_fqn.as_str()))
+        .unwrap_or(("-", "-"));
+    crate::api::audit::record(client_id, bound_fqn, SCOPE_SESSION_TRANSPORT, outcome);
+    uniform_transport_auth_failure()
 }
 
 fn uniform_transport_auth_failure() -> ApiError {
     ApiError::Unauthorized("transport authentication failed".to_string())
+}
+
+fn transport_dependency_unavailable() -> ApiError {
+    ApiError::ServiceUnavailable("transport authentication dependency unavailable".to_string())
+}
+
+/// The transport boundary's decision over the offloaded fresh-registry lookup.
+/// A `FreshRegistryError` is a dependency failure, never evidence a credential
+/// was revoked, so contention must classify as retry-class service
+/// unavailability, not credential failure.
+enum FreshTransportAuth {
+    Authenticated(Box<crate::api::auth::ApiClientFreshGuard>),
+    InvalidToken,
+    DependencyUnavailable,
+}
+
+/// Classify the offloaded fresh-registry lookup result. Extracted from
+/// `authorize_transport` so this exact retry-class-versus-credential-failure
+/// decision is unit-testable: `ApiState` carries a concrete Tauri (`Wry`)
+/// runtime handle that cannot be built headlessly, so the handler cannot be
+/// driven directly from a test. Behavior is identical to the inline match.
+fn classify_fresh_transport_auth(
+    result: Result<
+        Option<crate::api::auth::ApiClientFreshGuard>,
+        crate::api::auth::FreshRegistryError,
+    >,
+) -> FreshTransportAuth {
+    match result {
+        Ok(Some(fresh)) => FreshTransportAuth::Authenticated(Box::new(fresh)),
+        Ok(None) => FreshTransportAuth::InvalidToken,
+        Err(
+            crate::api::auth::FreshRegistryError::Contended
+            | crate::api::auth::FreshRegistryError::Internal,
+        ) => FreshTransportAuth::DependencyUnavailable,
+    }
 }
 
 async fn handle_ws_connection(
@@ -187,8 +337,7 @@ async fn validate_hello(
         return Err(HelloRejection::FirstFrameTooLarge);
     }
 
-    let frame = parse_bridge_text_frame(text.as_str())
-        .map_err(|e| HelloRejection::InvalidHello(e.to_string()))?;
+    let frame = parse_bridge_text_frame(text.as_str()).map_err(|_| HelloRejection::InvalidHello)?;
     let BridgeToHostFrame::Hello {
         version,
         session_id: hello_session_id,
@@ -225,7 +374,7 @@ async fn validate_hello(
 enum HelloRejection {
     FirstFrameNotText,
     FirstFrameTooLarge,
-    InvalidHello(String),
+    InvalidHello,
     FirstFrameNotHello,
     ProtocolMismatch { expected: u32, reported: u32 },
     SessionIdMismatch { expected: Uuid, reported: Uuid },
@@ -242,8 +391,8 @@ impl HelloRejection {
             Self::FirstFrameTooLarge => {
                 "container transport handshake failed: first frame was too large".to_string()
             }
-            Self::InvalidHello(err) => {
-                format!("container transport handshake failed: invalid hello: {err}")
+            Self::InvalidHello => {
+                "container transport handshake failed: invalid hello".to_string()
             }
             Self::FirstFrameNotHello => {
                 "container transport handshake failed: first frame was not hello".to_string()
@@ -378,14 +527,86 @@ async fn handle_bridge_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::auth::{ApiClientStore, FreshRegistryError, REGISTRY_FILENAME};
     use crate::pty::idle_detector::IdleDetector;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     #[test]
     fn uniform_transport_auth_failure_is_generic_401() {
         let response = uniform_transport_auth_failure().into_response();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn transport_dependency_unavailable_is_retry_class_503() {
+        let response = transport_dependency_unavailable().into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn fresh_registry_dependency_failures_are_retry_class_not_credential_failures() {
+        // A dependency failure of the privileged registry lookup (contention or
+        // an internal error) must never be reported to a container bridge as a
+        // credential failure. Both classify as retry-class unavailability.
+        assert!(matches!(
+            classify_fresh_transport_auth(Err(FreshRegistryError::Contended)),
+            FreshTransportAuth::DependencyUnavailable
+        ));
+        assert!(matches!(
+            classify_fresh_transport_auth(Err(FreshRegistryError::Internal)),
+            FreshTransportAuth::DependencyUnavailable
+        ));
+        // A registry that is readable but holds no matching credential is a real
+        // credential failure.
+        assert!(matches!(
+            classify_fresh_transport_auth(Ok(None)),
+            FreshTransportAuth::InvalidToken
+        ));
+    }
+
+    #[tokio::test]
+    async fn held_registry_lock_makes_transport_auth_retry_class_with_executor_progress() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // Hold the dedicated registry lock so the offloaded fresh lookup that the
+        // transport boundary awaits observes cross-process contention.
+        let _held = crate::api::auth::hold_registry_lock_for_test(dir.path());
+        let store = Arc::new(ApiClientStore::new(dir.path().join(REGISTRY_FILENAME)));
+
+        let lookup = {
+            let store = Arc::clone(&store);
+            tokio::spawn(async move {
+                store
+                    .authenticate_pty_input_fresh_offloaded("presented-token".to_string())
+                    .await
+            })
+        };
+
+        // The async executor must keep running while the blocking registry lookup
+        // polls the held lock on the blocking pool.
+        tokio::time::timeout(Duration::from_millis(100), async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        })
+        .await
+        .expect("the async executor must progress while the registry lock is held");
+
+        let result = lookup.await.unwrap();
+        assert!(
+            matches!(&result, Err(FreshRegistryError::Contended)),
+            "a held registry lock must surface as retry-class contention, not a missing credential"
+        );
+
+        // The transport boundary classifies that contention as retry-class service
+        // unavailability (503), never credential failure (401).
+        assert!(matches!(
+            classify_fresh_transport_auth(result),
+            FreshTransportAuth::DependencyUnavailable
+        ));
+        assert_eq!(
+            transport_dependency_unavailable().into_response().status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
     }
 
     #[tokio::test]

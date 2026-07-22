@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, TryLockError};
 use std::time::{Duration, Instant};
@@ -31,7 +31,7 @@ use crate::session::selection::ContainerLifecycleSender;
 use crate::telegram::manager::OutputSenderMap;
 
 pub const TRANSPORT_PROTOCOL_VERSION: u32 = 2;
-pub const MAX_TRANSPORT_FRAME_BYTES: usize = 64 * 1024;
+pub const MAX_TRANSPORT_FRAME_BYTES: usize = crate::pty::backend::PTY_INPUT_MAX_BYTES;
 const TRANSPORT_LOST_EXIT_CODE: i32 = 1;
 const CLEANUP_TASK_TIMEOUT: Duration = Duration::from_secs(10);
 const CONTAINER_DIAGNOSTIC_LOG_TAIL_LINES: usize = 80;
@@ -103,7 +103,7 @@ impl Default for ContainerTransportTuning {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", tag = "type")]
 pub(crate) enum BridgeToHostFrame {
     Hello {
@@ -160,6 +160,7 @@ struct PendingSession {
     cols: u16,
     runtime_handle: Option<ContainerRuntimeHandle>,
     api_client_id: Option<String>,
+    credential_binding: Option<ContainerCredentialBinding>,
     logical_resource_slot: Option<ResourceLogicalAgentSlot>,
     attach_notify: Option<Arc<Notify>>,
     // #930 - dest of a copied host credential, threaded so every teardown funnel
@@ -175,6 +176,7 @@ struct AttachingSession {
     cols: u16,
     runtime_handle: Option<ContainerRuntimeHandle>,
     api_client_id: Option<String>,
+    credential_binding: Option<ContainerCredentialBinding>,
     logical_resource_slot: Option<ResourceLogicalAgentSlot>,
     attach_notify: Option<Arc<Notify>>,
     container_credential_path: Option<PathBuf>,
@@ -187,6 +189,7 @@ struct ActiveSession {
     cols: u16,
     runtime_handle: Option<ContainerRuntimeHandle>,
     api_client_id: Option<String>,
+    credential_binding: Option<ContainerCredentialBinding>,
     logical_resource_slot: Option<ResourceLogicalAgentSlot>,
     container_credential_path: Option<PathBuf>,
 }
@@ -195,6 +198,38 @@ enum ContainerSessionState {
     Pending(PendingSession),
     Attaching(AttachingSession),
     Active(ActiveSession),
+}
+
+impl ContainerSessionState {
+    fn credential_binding(&self) -> Option<&ContainerCredentialBinding> {
+        match self {
+            Self::Pending(session) => session.credential_binding.as_ref(),
+            Self::Attaching(session) => session.credential_binding.as_ref(),
+            Self::Active(session) => session.credential_binding.as_ref(),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct ContainerCredentialBinding {
+    pub client_id: String,
+    pub credential_generation: String,
+    pub bound_session_id: String,
+    pub bound_root_object_id: crate::path_identity::FileObjectId,
+    pub credential_token_hash: String,
+}
+
+impl std::fmt::Debug for ContainerCredentialBinding {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ContainerCredentialBinding")
+            .field("client_id", &self.client_id)
+            .field("credential_generation", &self.credential_generation)
+            .field("bound_session_id", &self.bound_session_id)
+            .field("bound_root_object_id", &self.bound_root_object_id)
+            .field("credential_token_hash", &"[REDACTED]")
+            .finish()
+    }
 }
 
 struct RemovedSessionResources {
@@ -1475,6 +1510,15 @@ impl ContainerTransportBackend {
         self.tuning
     }
 
+    pub fn credential_binding(&self, session_id: Uuid) -> Option<ContainerCredentialBinding> {
+        self.sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(&session_id)
+            .and_then(ContainerSessionState::credential_binding)
+            .cloned()
+    }
+
     pub(crate) fn set_route_remover(&self, remover: RouteRemover) {
         match self.route_remover.lock() {
             Ok(mut route_remover) => *route_remover = Some(remover),
@@ -1547,6 +1591,7 @@ impl ContainerTransportBackend {
             cols: pending.cols,
             runtime_handle: pending.runtime_handle,
             api_client_id: pending.api_client_id,
+            credential_binding: pending.credential_binding,
             logical_resource_slot: pending.logical_resource_slot,
             attach_notify: pending.attach_notify,
             container_credential_path: pending.container_credential_path,
@@ -1594,6 +1639,7 @@ impl ContainerTransportBackend {
                     cols,
                     runtime_handle: attach.runtime_handle,
                     api_client_id: attach.api_client_id,
+                    credential_binding: attach.credential_binding,
                     logical_resource_slot: attach.logical_resource_slot,
                     container_credential_path: attach.container_credential_path,
                 }),
@@ -1880,6 +1926,7 @@ impl ContainerTransportBackend {
             cols,
             runtime_handle: None,
             api_client_id: None,
+            credential_binding: None,
             logical_resource_slot,
             attach_notify,
             container_credential_path,
@@ -1907,17 +1954,32 @@ impl ContainerTransportBackend {
         Ok(ticket)
     }
 
-    fn install_api_client_id(&self, session_id: Uuid, client_id: String) -> Result<(), AppError> {
-        let mut sessions = self.sessions.lock().unwrap();
+    fn install_credential_binding(
+        &self,
+        session_id: Uuid,
+        binding: ContainerCredentialBinding,
+    ) -> Result<(), AppError> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let state = sessions
             .get_mut(&session_id)
             .ok_or_else(|| AppError::SessionNotFound(session_id.to_string()))?;
+        let client_id = binding.client_id.clone();
         match state {
-            ContainerSessionState::Pending(pending) => pending.api_client_id = Some(client_id),
-            ContainerSessionState::Attaching(attaching) => {
-                attaching.api_client_id = Some(client_id)
+            ContainerSessionState::Pending(pending) => {
+                pending.api_client_id = Some(client_id);
+                pending.credential_binding = Some(binding);
             }
-            ContainerSessionState::Active(active) => active.api_client_id = Some(client_id),
+            ContainerSessionState::Attaching(attaching) => {
+                attaching.api_client_id = Some(client_id);
+                attaching.credential_binding = Some(binding);
+            }
+            ContainerSessionState::Active(active) => {
+                active.api_client_id = Some(client_id);
+                active.credential_binding = Some(binding);
+            }
         }
         Ok(())
     }
@@ -2042,12 +2104,36 @@ impl ContainerTransportBackend {
                 return Err(err);
             }
         };
-        if let Err(err) = self.install_api_client_id(id, token.client_id.clone()) {
+        let root_identity = match crate::path_identity::verify_directory(Path::new(&cwd)) {
+            Ok(identity) => identity,
+            Err(_) => {
+                token_manager.revoke(&token.client_id);
+                if let Some(resources) = self.remove_session_state(id) {
+                    self.cleanup_removed_resources_offloaded_owned(
+                        resources,
+                        "install-binding-failure",
+                        cancellation_guard.shutdown_producer.as_ref(),
+                    )
+                    .await;
+                }
+                return Err(AppError::Other(
+                    "container credential binding root is unsafe".to_string(),
+                ));
+            }
+        };
+        let binding = ContainerCredentialBinding {
+            client_id: token.client_id.clone(),
+            credential_generation: token.credential_generation.clone(),
+            bound_session_id: token.bound_session_id.clone(),
+            bound_root_object_id: root_identity.object_id,
+            credential_token_hash: token.token_hash.clone(),
+        };
+        if let Err(err) = self.install_credential_binding(id, binding) {
             token_manager.revoke(&token.client_id);
             if let Some(resources) = self.remove_session_state(id) {
                 self.cleanup_removed_resources_offloaded_owned(
                     resources,
-                    "install-client-failure",
+                    "install-binding-failure",
                     cancellation_guard.shutdown_producer.as_ref(),
                 )
                 .await;
@@ -2897,6 +2983,7 @@ impl ContainerTransportBackend {
                     cols: 120,
                     runtime_handle: Some(handle),
                     api_client_id: None,
+                    credential_binding: None,
                     logical_resource_slot: None,
                     container_credential_path: None,
                 }),
@@ -3016,7 +3103,12 @@ impl PtyBackend for ContainerTransportBackend {
         })
     }
 
-    fn write(&self, id: Uuid, data: &[u8]) -> Result<(), AppError> {
+    fn write(
+        &self,
+        _authority: &crate::pty::manager::BackendWriteAuthority,
+        id: Uuid,
+        data: &[u8],
+    ) -> Result<(), AppError> {
         if data.len() > MAX_TRANSPORT_FRAME_BYTES {
             return Err(AppError::PtyError(
                 "container transport input exceeds 64 KiB".to_string(),
@@ -3642,6 +3734,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn credential_binding_is_embedded_through_pending_attach_and_active_states() {
+        let id = Uuid::new_v4();
+        let root = "C:/repo/.ac/wg-1/__agent_dev";
+        let (backend, ticket) = pending_backend(id, root).await;
+        let binding = ContainerCredentialBinding {
+            client_id: format!("container-{id}-{}", Uuid::new_v4()),
+            credential_generation: Uuid::new_v4().to_string(),
+            bound_session_id: id.to_string(),
+            bound_root_object_id: crate::path_identity::FileObjectId {
+                volume: 7,
+                file: 11,
+            },
+            credential_token_hash: crate::api::auth::hash_token("binding-secret-sentinel"),
+        };
+
+        backend
+            .install_credential_binding(id, binding.clone())
+            .expect("install binding");
+        assert_eq!(backend.credential_binding(id), Some(binding.clone()));
+
+        backend
+            .consume_ticket(id, root, &ticket)
+            .expect("consume ticket");
+        assert_eq!(backend.credential_binding(id), Some(binding.clone()));
+
+        let (sender, _receiver) = mpsc::channel(8);
+        backend.complete_hello(id, root, sender).expect("hello");
+        assert_eq!(backend.credential_binding(id), Some(binding.clone()));
+        assert!(!format!("{binding:?}").contains("binding-secret-sentinel"));
+
+        let removed = backend.remove_session_state(id).expect("remove state");
+        assert_eq!(
+            removed.api_client_id.as_deref(),
+            Some(binding.client_id.as_str())
+        );
+        assert!(backend.credential_binding(id).is_none());
+    }
+
+    #[tokio::test]
     async fn expired_pending_reaper_removes_route_and_transport_state() {
         let id_root = "C:/repo/.ac/wg-1/__agent_dev";
         let tuning = ContainerTransportTuning {
@@ -3708,6 +3839,7 @@ mod tests {
                     container_id: "container-id".to_string(),
                 }),
                 api_client_id: Some(token.client_id.clone()),
+                credential_binding: None,
                 logical_resource_slot: None,
                 container_credential_path: None,
             }),
@@ -3734,7 +3866,8 @@ mod tests {
     #[tokio::test]
     async fn canceled_blocking_runtime_start_stops_late_handle_and_removes_pending_state() {
         let id = Uuid::new_v4();
-        let root = "C:/repo/.ac/wg-1/__agent_dev";
+        let root_dir = tempfile::TempDir::new().unwrap();
+        let root = root_dir.path().to_string_lossy().into_owned();
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let stopped = Arc::new(Mutex::new(Vec::new()));
@@ -3752,7 +3885,7 @@ mod tests {
         backend.runtime_settings_override = Some(api_enabled_settings());
         let backend = Arc::new(backend);
         let task_backend = Arc::clone(&backend);
-        let mut spec = test_spec(id, root, PtyOutputTarget::noop());
+        let mut spec = test_spec(id, &root, PtyOutputTarget::noop());
         spec.container_image = Some("agentscommander/test:latest".to_string());
         let mut task = tokio::spawn(async move { task_backend.spawn(spec).await });
 
@@ -4855,7 +4988,8 @@ mod tests {
     #[tokio::test]
     async fn canceled_handshake_stops_installed_runtime_handle_and_removes_pending_state() {
         let id = Uuid::new_v4();
-        let root = "C:/repo/.ac/wg-1/__agent_dev";
+        let root_dir = tempfile::TempDir::new().unwrap();
+        let root = root_dir.path().to_string_lossy().into_owned();
         let runtime = Arc::new(RecordingRuntime::default());
         let token_dir = tempfile::TempDir::new().unwrap();
         let token_manager =
@@ -4869,7 +5003,7 @@ mod tests {
         backend.runtime_settings_override = Some(api_enabled_settings());
         let backend = Arc::new(backend);
         let task_backend = Arc::clone(&backend);
-        let mut spec = test_spec(id, root, PtyOutputTarget::noop());
+        let mut spec = test_spec(id, &root, PtyOutputTarget::noop());
         spec.container_image = Some("agentscommander/test:latest".to_string());
         let task = tokio::spawn(async move { task_backend.spawn(spec).await });
 
@@ -4928,6 +5062,7 @@ mod tests {
                 cols: 120,
                 runtime_handle: None,
                 api_client_id: None,
+                credential_binding: None,
                 logical_resource_slot: None,
                 container_credential_path: Some(dest.clone()),
             }),
@@ -4970,6 +5105,7 @@ mod tests {
                 cols: 120,
                 runtime_handle: None,
                 api_client_id: None,
+                credential_binding: None,
                 logical_resource_slot: None,
                 container_credential_path: Some(dest.clone()),
             }),
@@ -5116,7 +5252,10 @@ mod tests {
     fn token() -> ContainerApiToken {
         ContainerApiToken {
             client_id: "client".to_string(),
+            credential_generation: Uuid::new_v4().to_string(),
+            bound_session_id: Uuid::new_v4().to_string(),
             secret: "secret".to_string(),
+            token_hash: crate::api::auth::hash_token("secret"),
         }
     }
 
@@ -5309,7 +5448,13 @@ mod tests {
         let (backend, ticket) = pending_backend(id, root).await;
         let mut rx = attach(&backend, id, root, &ticket);
 
-        backend.write(id, b"abc").expect("write");
+        backend
+            .write(
+                &crate::pty::manager::BackendWriteAuthority::for_backend_test(),
+                id,
+                b"abc",
+            )
+            .expect("write");
 
         assert_eq!(
             rx.recv().await.expect("bridge frame"),
@@ -5435,12 +5580,15 @@ mod tests {
         }));
 
         let guard = pty.lock().unwrap();
+        let authority = crate::pty::manager::BackendWriteAuthority::for_backend_test();
         for _ in 0..8 {
-            backend.write(id, b"x").expect("fill outbound queue");
+            backend
+                .write(&authority, id, b"x")
+                .expect("fill outbound queue");
         }
         let started = Instant::now();
         let error = backend
-            .write(id, b"overflow")
+            .write(&authority, id, b"overflow")
             .expect_err("ninth frame must close a full queue");
         assert!(error.to_string().contains("outbound queue full"));
         assert!(started.elapsed() < Duration::from_millis(250));
@@ -5549,6 +5697,8 @@ mod tests {
                 scopes: vec![SCOPE_SEND.to_string()],
                 issued_at: (Utc::now() - ChronoDuration::hours(72)).to_rfc3339(),
                 expires_at: Some((Utc::now() - ChronoDuration::hours(48)).to_rfc3339()),
+                bound_session_id: None,
+                credential_generation: None,
             },
         )
         .unwrap();

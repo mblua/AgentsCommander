@@ -125,6 +125,7 @@ pub fn execute(args: SelfClearArgs) -> i32 {
         switch_profile: None,
         dry_run: None,
         quiet_period_ms: None,
+        pty_input: None,
     };
 
     // Outbox selection mirrors close_session::execute (is_root -> app outbox else agent outbox).

@@ -170,6 +170,11 @@ pub struct LeanPeerInfo {
     /// total (including any trailing `…`). Omitted when empty.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub role_summary: String,
+    /// #1088 - the peer's live context-usage percent (0-100), the same figure
+    /// the Sidebar badge shows. Same value as `PeerInfo.context_percent`.
+    /// Omitted when there is no reading.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_percent: Option<u8>,
 }
 
 /// Maximum length (in Unicode chars) of `roleSummary`, **including any
@@ -244,6 +249,7 @@ impl From<&PeerInfo> for LeanPeerInfo {
             reachable: p.reachable,
             teams: p.teams.clone(),
             role_summary: lean_role_summary(&p.role),
+            context_percent: p.context_percent,
         }
     }
 }
@@ -286,6 +292,12 @@ struct PeerInfo {
     /// Exit code, present iff session_status == "exited".
     #[serde(skip_serializing_if = "Option::is_none")]
     exit_code: Option<i32>,
+    /// #1088 - the peer's live context-usage percent (0-100), the same figure
+    /// the Sidebar badge shows, read from the matched session's persisted row.
+    /// Omitted when there is no reading (agent has no `context_regex`, the
+    /// session was not sampled yet, or no session matches this peer).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_percent: Option<u8>,
     // ────────────────────────────────────────────────────────────────
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     coding_agents: HashMap<String, CodingAgentEntry>,
@@ -353,6 +365,7 @@ struct CandidateSession {
     name: String,
     status: SessionStatus,
     waiting_for_input: bool,
+    context_percent: Option<u8>,
 }
 
 struct PeerStatus {
@@ -362,6 +375,7 @@ struct PeerStatus {
     session_id: Option<String>,
     waiting_for_input: bool,
     exit_code: Option<i32>,
+    context_percent: Option<u8>,
 }
 
 impl PeerStatus {
@@ -373,6 +387,7 @@ impl PeerStatus {
             session_id: None,
             waiting_for_input: false,
             exit_code: None,
+            context_percent: None,
         }
     }
 }
@@ -410,6 +425,7 @@ fn build_session_index_from(rows: &[PersistedSession]) -> HashMap<String, Vec<Ca
             name: ps.name.clone(),
             status,
             waiting_for_input: ps.waiting_for_input.unwrap_or(false),
+            context_percent: ps.context_percent,
         });
     }
     index
@@ -480,6 +496,7 @@ fn compute_peer_status(
         session_id: Some(chosen.id.clone()),
         waiting_for_input: chosen.waiting_for_input,
         exit_code,
+        context_percent: chosen.context_percent,
     }
 }
 
@@ -594,6 +611,7 @@ fn build_wg_peer(
         session_id: ps.session_id,
         waiting_for_input: ps.waiting_for_input,
         exit_code: ps.exit_code,
+        context_percent: ps.context_percent,
         coding_agents: peer_config.tooling.coding_agents,
     }
 }
@@ -824,6 +842,7 @@ fn discover_origin_peers(root: &str) -> Vec<PeerInfo> {
                 session_id: ps.session_id,
                 waiting_for_input: ps.waiting_for_input,
                 exit_code: ps.exit_code,
+                context_percent: ps.context_percent,
                 coding_agents: peer_config.tooling.coding_agents,
             });
         }
@@ -1036,6 +1055,8 @@ fn build_root_agent_synthetic_peer(
         session_id: None,
         waiting_for_input: false,
         exit_code: None,
+        // Synthetic root-agent peer: no session in this verb's cwd namespace.
+        context_percent: None,
         coding_agents: std::collections::HashMap::new(),
     })
 }
@@ -1232,6 +1253,7 @@ mod tests {
             name: name.to_string(),
             status,
             waiting_for_input: waiting,
+            context_percent: None,
         }
     }
 
@@ -1806,6 +1828,7 @@ mod tests {
             session_id: Some("11111111-1111-1111-1111-111111111111".to_string()),
             waiting_for_input: false,
             exit_code: None,
+            context_percent: None,
             coding_agents: HashMap::new(),
         }
     }
@@ -1897,6 +1920,87 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
         assert!(parsed.is_array(), "lean output must be a JSON array");
         assert_eq!(parsed.as_array().unwrap().len(), 2);
+    }
+
+    // ── #1088: contextPercent projection through the peer→session join ──
+
+    #[test]
+    fn build_session_index_copies_context_percent_from_persisted() {
+        let mut row = ps_row("Session 1", r"C:\work", Some(SessionStatus::Running), true);
+        row.context_percent = Some(42);
+        let index = build_session_index_from(&[row]);
+        let candidates = index
+            .get(&canon_or_norm(r"C:\work"))
+            .expect("row indexed by its cwd");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].context_percent, Some(42));
+    }
+
+    #[test]
+    fn build_session_index_context_percent_absent_is_none() {
+        let row = ps_row("Session 1", r"C:\work", Some(SessionStatus::Running), true);
+        let index = build_session_index_from(&[row]);
+        let candidates = index.get(&canon_or_norm(r"C:\work")).unwrap();
+        assert_eq!(candidates[0].context_percent, None);
+    }
+
+    #[test]
+    fn compute_peer_status_returns_chosen_context_percent() {
+        let mut row = ps_row("Session 1", r"C:\work", Some(SessionStatus::Running), true);
+        row.context_percent = Some(7);
+        let index = build_session_index_from(&[row]);
+        let status = compute_peer_status(r"C:\work", None, &index);
+        assert_eq!(status.context_percent, Some(7));
+    }
+
+    #[test]
+    fn compute_peer_status_context_percent_zero_is_preserved() {
+        // `0` is a valid reading, never coerced to None (mod.rs:96-102 semantic).
+        let mut row = ps_row("Session 1", r"C:\work", Some(SessionStatus::Running), true);
+        row.context_percent = Some(0);
+        let index = build_session_index_from(&[row]);
+        let status = compute_peer_status(r"C:\work", None, &index);
+        assert_eq!(status.context_percent, Some(0));
+    }
+
+    #[test]
+    fn compute_peer_status_no_match_has_none_context_percent() {
+        let index = build_session_index_from(&[]);
+        let status = compute_peer_status(r"C:\nowhere", None, &index);
+        assert_eq!(status.session_status, "none");
+        assert_eq!(status.context_percent, None);
+    }
+
+    #[test]
+    fn full_peer_json_context_percent_present_zero_and_omitted() {
+        let mut peer = sample_peer_info("p");
+        peer.context_percent = Some(42);
+        let json = serde_json::to_string(&peer).unwrap();
+        assert!(json.contains("\"contextPercent\":42"), "got {json}");
+
+        peer.context_percent = Some(0);
+        let json = serde_json::to_string(&peer).unwrap();
+        assert!(json.contains("\"contextPercent\":0"), "got {json}");
+
+        peer.context_percent = None;
+        let json = serde_json::to_string(&peer).unwrap();
+        assert!(!json.contains("contextPercent"), "None must omit the key: {json}");
+    }
+
+    #[test]
+    fn lean_peer_json_carries_context_percent_and_omits_when_none() {
+        let mut peer = sample_peer_info("p");
+        peer.context_percent = Some(88);
+        let lean = LeanPeerInfo::from(&peer);
+        assert_eq!(lean.context_percent, Some(88));
+        let json = serde_json::to_string(&lean).unwrap();
+        assert!(json.contains("\"contextPercent\":88"), "got {json}");
+
+        peer.context_percent = None;
+        let lean = LeanPeerInfo::from(&peer);
+        assert_eq!(lean.context_percent, None);
+        let json = serde_json::to_string(&lean).unwrap();
+        assert!(!json.contains("contextPercent"), "None must omit the key: {json}");
     }
 
     // §6.3 — field preservation parity

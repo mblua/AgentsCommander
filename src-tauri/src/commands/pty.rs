@@ -56,19 +56,44 @@ pub async fn pty_write(
         }
     }
 
-    // Existing behavior: write keystrokes to the PTY FIRST (no await held here)
-    // so input latency is unchanged; the #552 bookkeeping is additive and after.
-    pty_mgr
-        .lock()
-        .unwrap()
-        .write(uuid, &data)
-        .map_err(|e| e.to_string())?;
+    let permit = PtyManager::acquire_input_writer(pty_mgr.inner(), uuid)
+        .await
+        .map_err(|error| error.to_string())?;
+    // Purge may have started while this writer waited behind another complete
+    // submission. Recheck at the serialized boundary.
+    if let Some(g) = app.try_state::<std::sync::Arc<crate::session::purge_guard::PurgeGuard>>() {
+        if g.blocks_session(uuid) {
+            return Err("purge-wg in progress for this session; input rejected".to_string());
+        }
+    }
+    PtyManager::write_with_permit(&permit, &data).map_err(|error| error.to_string())?;
+    mark_successful_pty_write_busy(&app, uuid, data.len()).await;
+    drop(permit);
 
     // #552 user input -> silence touch (+ badge reset if coordinator). Resolves
     // all state from `app`, so the same helper serves Telegram and web.
     note_user_message_to_session(&app, uuid, UserInputSource::Terminal(&data)).await;
 
     Ok(())
+}
+
+pub(crate) async fn mark_successful_pty_write_busy<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+    byte_count: usize,
+) {
+    if let Some(idle) = app.try_state::<Arc<crate::pty::idle_detector::IdleDetector>>() {
+        idle.record_activity_with_bytes(session_id, byte_count);
+    }
+    if let Some(sessions) =
+        app.try_state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>()
+    {
+        let manager = {
+            let guard = sessions.read().await;
+            guard.clone()
+        };
+        manager.mark_busy(session_id).await;
+    }
 }
 
 /// #552 Record a real user message to `session_id`: always reset the auto-close
@@ -237,17 +262,36 @@ fn classify_substantive<R: tauri::Runtime>(
 /// Root-agent sessions skip the record half (the root restore path ignores the
 /// marker, #630 scope; mirrors the restart site's exclusion in
 /// commands/session.rs); the mirror half self-gates on coordinators.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BoundaryMetadataOutcome {
+    Applied,
+    Unchanged,
+    Failed,
+}
+
+fn combine_boundary_metadata(
+    first: BoundaryMetadataOutcome,
+    second: BoundaryMetadataOutcome,
+) -> BoundaryMetadataOutcome {
+    use BoundaryMetadataOutcome as O;
+    match (first, second) {
+        (O::Failed, _) | (_, O::Failed) => O::Failed,
+        (O::Applied, _) | (_, O::Applied) => O::Applied,
+        (O::Unchanged, O::Unchanged) => O::Unchanged,
+    }
+}
+
 pub(crate) async fn stamp_fresh_boundary_to_session<R: tauri::Runtime>(
     app: &AppHandle<R>,
     session_id: Uuid,
-) {
+) -> BoundaryMetadataOutcome {
     // (#756, section 19.3) MIRROR-FIRST: if the app dies between the halves,
     // the residue (mirror=Some, record=false) forces fresh on every reopen
     // path and self-heals (E3 re-propagates; typed input or injected content
     // clears both). Record-first residue (record=true, mirror=None) would let
     // a later record destroy resurrect the pre-boundary conversation: the
     // exact #756 bug.
-    write_start_fresh_mirror_for_session(app, session_id, true).await;
+    let mirror = write_start_fresh_mirror_outcome(app, session_id, true).await;
     if let Some(state) = app.try_state::<crate::pty::input_activity::SubstantiveInputState>() {
         state
             .lock()
@@ -268,24 +312,32 @@ pub(crate) async fn stamp_fresh_boundary_to_session<R: tauri::Runtime>(
             s.is_root_agent || crate::config::root_agent::is_root_agent_path(&s.working_directory)
         })
         .unwrap_or(false);
-    if !is_root {
+    let record = if is_root {
+        BoundaryMetadataOutcome::Unchanged
+    } else {
         match crate::config::sessions_persistence::set_start_fresh_and_persist_result(
             &manager, session_id,
         )
         .await
         {
-            Ok(true) => log::info!(
-                "[session-state] {} fresh-boundary stamped (record, #756)",
-                &session_id.to_string()[..8]
-            ),
-            Ok(false) => {} // already stamped or unknown id
-            Err(e) => log::error!(
-                "[session-state] fresh-boundary stamp persist failed for {}: {}",
-                session_id,
-                e
-            ),
+            Ok(true) => {
+                log::info!(
+                    "[session-state] {} fresh-boundary stamped (record, #756)",
+                    &session_id.to_string()[..8]
+                );
+                BoundaryMetadataOutcome::Applied
+            }
+            Ok(false) => BoundaryMetadataOutcome::Unchanged,
+            Err(_) => {
+                log::error!(
+                    "[session-state] fresh-boundary stamp persist failed session={} code=boundary_metadata_failed",
+                    session_id
+                );
+                BoundaryMetadataOutcome::Failed
+            }
         }
-    }
+    };
+    combine_boundary_metadata(mirror, record)
 }
 
 /// (#756) Drop the durable fresh intent after AC successfully injected message
@@ -301,33 +353,39 @@ pub(crate) async fn stamp_fresh_boundary_to_session<R: tauri::Runtime>(
 pub(crate) async fn note_post_boundary_content_to_session<R: tauri::Runtime>(
     app: &AppHandle<R>,
     session_id: Uuid,
-) {
+) -> BoundaryMetadataOutcome {
     // (#756, section 19.3) MIRROR-FIRST: the drop residue (mirror=None,
     // record=true) only mis-freshes the record-alive restore until the next
     // heal; record-first residue (record=false, mirror=Some) would wrongly
     // force-fresh BOTH reopen paths.
-    write_start_fresh_mirror_for_session(app, session_id, false).await;
+    let mirror = write_start_fresh_mirror_outcome(app, session_id, false).await;
     let manager = {
         let mgr = app.state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
         let guard = mgr.read().await;
         guard.clone()
     };
-    match crate::config::sessions_persistence::clear_start_fresh_and_persist_result(
+    let record = match crate::config::sessions_persistence::clear_start_fresh_and_persist_result(
         &manager, session_id,
     )
     .await
     {
-        Ok(true) => log::info!(
-            "[session-state] {} fresh intent dropped (post-boundary content, #756)",
-            &session_id.to_string()[..8]
-        ),
-        Ok(false) => {}
-        Err(e) => log::error!(
-            "[session-state] post-boundary-content drop persist failed for {}: {}",
-            session_id,
-            e
-        ),
-    }
+        Ok(true) => {
+            log::info!(
+                "[session-state] {} fresh intent dropped (post-boundary content, #756)",
+                &session_id.to_string()[..8]
+            );
+            BoundaryMetadataOutcome::Applied
+        }
+        Ok(false) => BoundaryMetadataOutcome::Unchanged,
+        Err(_) => {
+            log::error!(
+                "[session-state] post-boundary-content drop persist failed session={} code=boundary_metadata_failed",
+                session_id
+            );
+            BoundaryMetadataOutcome::Failed
+        }
+    };
+    combine_boundary_metadata(mirror, record)
 }
 
 /// (#756) Mirror half: write the coordinator-clocks `start_fresh_at` for the
@@ -341,15 +399,25 @@ pub(crate) async fn write_start_fresh_mirror_for_session<R: tauri::Runtime>(
     session_id: Uuid,
     on: bool,
 ) -> bool {
+    write_start_fresh_mirror_outcome(app, session_id, on).await == BoundaryMetadataOutcome::Applied
+}
+
+async fn write_start_fresh_mirror_outcome<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+    on: bool,
+) -> BoundaryMetadataOutcome {
     let cwd = {
         let mgr = app.state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
         let cwd = mgr.read().await.coordinator_cwd(session_id).await;
         cwd
     };
-    let Some(cwd) = cwd else { return false };
+    let Some(cwd) = cwd else {
+        return BoundaryMetadataOutcome::Unchanged;
+    };
     let Some(clocks) = app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
     else {
-        return false;
+        return BoundaryMetadataOutcome::Unchanged;
     };
     // agent_fqn_from_path returns String (teams.rs:80), not Option.
     let fqn = crate::config::teams::agent_fqn_from_path(&cwd);
@@ -368,11 +436,16 @@ pub(crate) async fn write_start_fresh_mirror_for_session<R: tauri::Runtime>(
             fqn
         );
         let snapshot = { clocks.lock().unwrap_or_else(|e| e.into_inner()).snapshot() };
-        if let Err(e) = crate::config::coordinator_clocks::save_map(&snapshot) {
-            log::warn!("[coordinator-clocks] start_fresh_at save failed: {}", e);
+        if crate::config::coordinator_clocks::save_map(&snapshot).is_err() {
+            log::warn!(
+                "[coordinator-clocks] start_fresh_at save failed code=boundary_metadata_failed"
+            );
+            return BoundaryMetadataOutcome::Failed;
         }
+        BoundaryMetadataOutcome::Applied
+    } else {
+        BoundaryMetadataOutcome::Unchanged
     }
-    changed
 }
 
 #[tauri::command]
@@ -583,6 +656,21 @@ mod tests {
         assert!(!record_fresh(&f).await);
         assert!(!mirror_fresh(&f));
         assert!(inject_continue_after_restore(record_fresh(&f).await));
+    }
+
+    #[test]
+    fn boundary_metadata_failure_dominates_applied_and_unchanged_outcomes() {
+        use BoundaryMetadataOutcome as O;
+        assert_eq!(
+            combine_boundary_metadata(O::Applied, O::Unchanged),
+            O::Applied
+        );
+        assert_eq!(
+            combine_boundary_metadata(O::Unchanged, O::Unchanged),
+            O::Unchanged
+        );
+        assert_eq!(combine_boundary_metadata(O::Failed, O::Applied), O::Failed);
+        assert_eq!(combine_boundary_metadata(O::Applied, O::Failed), O::Failed);
     }
 
     #[tokio::test]
