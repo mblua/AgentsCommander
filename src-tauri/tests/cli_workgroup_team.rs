@@ -1750,3 +1750,135 @@ fn workgroup_remove_prunes_recorded_config_scope() {
         "pruning the only row leaves a valid empty v1 manifest: {after}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #1065 Stage F - real-boundary activation coverage for the lifecycle and
+// config-seed boundaries (Grinch Finding 1).
+//
+// The CLI removals above are the end-to-end (a) proof for LifecycleReplicaRemoval
+// and LifecycleWorkgroupRemoval. The boundaries below cannot be driven by any
+// test: the config-seed publish and the session-spawn context/self-heal/
+// coordinator sync sit behind `create_session_inner`, which needs an `AppHandle`
+// plus SessionManager/PtyManager state and a real spawned agent session (these
+// CLI suites deliberately never spawn one), and the GUI delete commands are Tauri
+// commands taking `AppHandle` + `State` with no CLI path. They therefore get the
+// sanctioned source-scrape wiring assertion (same form as `commands/session.rs`
+// `create_session_inner_keeps_both_archive_activation_gates`): each pins the
+// boundary's production `ManifestActivationToken::production()` threading, so
+// removing the call - or flipping the gated activation to `None` while still
+// constructing the token - reds a test.
+//
+// The project-context boundaries are covered in
+// `tests/cli_project_registration.rs`.
+// ---------------------------------------------------------------------------
+
+/// Read a crate-relative source file, drop its `#[cfg(test)] mod tests` block,
+/// and collapse ALL whitespace. Dropping the test block matches the cited
+/// precedent and makes the "production only" property ENFORCED rather than
+/// assumed: a future `#[cfg(test)]` use of `production()` can no longer offset a
+/// removed production wiring. Collapsing whitespace makes assertions match token
+/// sequences irrespective of rustfmt line-wrapping.
+fn normalized_production_source(relative: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
+    let body = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    let normalized = body.split_whitespace().collect::<String>();
+    let end = normalized.find("#[cfg(test)]modtests{").unwrap_or_else(|| {
+        panic!("{relative}: no `#[cfg(test)] mod tests` block found to split off")
+    });
+    normalized[..end].to_string()
+}
+
+/// Count production activation-token constructions in a scraped production
+/// slice. The token string carries no interior whitespace, so it survives
+/// normalization.
+fn production_token_count(production: &str) -> usize {
+    production
+        .matches("ManifestActivationToken::production()")
+        .count()
+}
+
+// (b) `commands/session.rs`: the config-seed publish chokepoint
+// (ConfigExactPublish / ConfigOverBoundPublish / ConfigFailedRestore) and the
+// session-spawn context read/self-heal plus coordinator v2/v3->v4 sync
+// (ContextSelfHeal, CoordinatorStatelessV2ToV4, CoordinatorStatelessV3ToV4,
+// CoordinatorSeededV3ToV4).
+#[test]
+fn session_rs_threads_production_tokens_for_config_seed_and_context() {
+    let production = normalized_production_source("src/commands/session.rs");
+
+    // Two `#[cfg(not(test))]` activation sites. Deleting either block drops the
+    // count and reds this test.
+    assert_eq!(
+        production_token_count(&production),
+        2,
+        "session.rs must construct exactly two production activation tokens \
+         (config-seed publish + session-spawn context sync)"
+    );
+
+    // Each assertion pins the `activation.as_ref()` ARGUMENT, not just the adapter
+    // name. That catches both mutation forms: reverting to the still-present
+    // non-recording `perform_config_seed` (the adapter name disappears) AND passing
+    // `None` while still constructing the token (the count stays 2, but the pinned
+    // argument disappears).
+    assert!(
+        production
+            .contains("perform_config_seed_recorded(&seed,&id.to_string(),activation.as_ref()"),
+        "the config-seed publish (ConfigExactPublish/OverBoundPublish/FailedRestore) must call \
+         the recording adapter perform_config_seed_recorded AND thread the activation token"
+    );
+    assert!(
+        production.contains(
+            "materialize_agent_context_file_with_filename_activated(&cwd,&target_filename,\
+             &managed_filenames,is_coordinator,auto_self_clear,container_repos.as_ref(),\
+             activation.as_ref()"
+        ),
+        "the session-spawn context sync (ContextSelfHeal + Coordinator v2/v3->v4) must call the \
+         activation-threading adapter materialize_agent_context_file_with_filename_activated AND \
+         thread the activation token"
+    );
+}
+
+// (b) `commands/entity_creation.rs`: the GUI Tauri delete commands, invoked by no
+// test - delete_team (LifecycleTeamDeletion), delete_agent_matrix
+// (LifecycleAgentMatrixDeletion plus its pending-inclusive staged-rollback prune,
+// PendingInclusiveDeleteProtection), and delete_workgroup (the GUI site for
+// LifecycleWorkgroupRemoval, whose CLI site is covered end-to-end above). Each
+// OUTER command must construct and thread the token into its inner transaction.
+#[test]
+fn entity_creation_rs_threads_production_tokens_through_the_delete_commands() {
+    let production = normalized_production_source("src/commands/entity_creation.rs");
+
+    assert_eq!(
+        production_token_count(&production),
+        3,
+        "entity_creation.rs must construct exactly three production activation tokens \
+         (delete_team + delete_agent_matrix + delete_workgroup)"
+    );
+
+    // The inner-fn names also appear in unit calls and definitions, so the token
+    // argument is what pins each assertion to the production command.
+    assert!(
+        production.contains(
+            "delete_team_inner(&app,session_mgr.inner(),&project_path,&team_name,\
+             Some(ManifestActivationToken::production()),"
+        ),
+        "delete_team (LifecycleTeamDeletion) must thread Some(production()) into delete_team_inner"
+    );
+    assert!(
+        production.contains(
+            "delete_agent_matrix_inner(&app,session_mgr.inner(),settings.inner(),&project_path,\
+             &agent_path,Some(ManifestActivationToken::production()),"
+        ),
+        "delete_agent_matrix (LifecycleAgentMatrixDeletion + PendingInclusiveDeleteProtection) \
+         must thread Some(production()) into delete_agent_matrix_inner"
+    );
+    assert!(
+        production.contains(
+            "letactivation=ManifestActivationToken::production();gated_workgroup_delete_with(\
+             &project_root,&workgroup,Some(&activation),"
+        ),
+        "delete_workgroup (LifecycleWorkgroupRemoval GUI site) must construct and thread the token \
+         into gated_workgroup_delete_with"
+    );
+}
