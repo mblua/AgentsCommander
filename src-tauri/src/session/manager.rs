@@ -2044,6 +2044,85 @@ mod tests {
         );
     }
 
+    // Stage E (#1064) deletion-snapshot mutation sentinel (plan section 10.3,
+    // 10.6, acceptance item 32): the pending-inclusive workdir snapshot must
+    // include EVERY pending create (not just one) and stays workdir-only while
+    // public listing keeps every pending hidden. A mutation that mirrored
+    // `list_sessions` or filtered `pending_create` fails here.
+    #[tokio::test]
+    async fn stage_e_deletion_snapshot_includes_every_pending_and_is_workdir_only() {
+        let mgr = SessionManager::new();
+        let _live = mgr
+            .create_session(
+                "sh".to_string(),
+                Vec::new(),
+                "C:\\live".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create live");
+        let _pending_a = mgr
+            .insert_pending_session_for_test("C:\\pending-a".to_string())
+            .await;
+        let _pending_b = mgr
+            .insert_pending_session_for_test("C:\\pending-b".to_string())
+            .await;
+        let exited = mgr
+            .create_session(
+                "sh".to_string(),
+                Vec::new(),
+                "C:\\exited".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create exited");
+        mgr.state
+            .write()
+            .await
+            .sessions
+            .get_mut(&exited.id)
+            .expect("exited present")
+            .status = SessionStatus::Exited(0);
+
+        let snapshot = {
+            let mgr = mgr.clone();
+            tokio::task::spawn_blocking(move || {
+                mgr.live_working_directories_for_deletion_blocking()
+            })
+            .await
+            .unwrap()
+        };
+        for workdir in ["C:\\live", "C:\\pending-a", "C:\\pending-b"] {
+            assert!(
+                snapshot.contains(&workdir.to_string()),
+                "snapshot must include the non-exited workdir {workdir}"
+            );
+        }
+        assert!(!snapshot.contains(&"C:\\exited".to_string()));
+        assert_eq!(
+            snapshot.len(),
+            3,
+            "exactly the three non-exited workdirs, no metadata rows"
+        );
+
+        let public: Vec<String> = mgr
+            .list_sessions()
+            .await
+            .into_iter()
+            .map(|session| session.working_directory)
+            .collect();
+        assert!(!public.contains(&"C:\\pending-a".to_string()));
+        assert!(!public.contains(&"C:\\pending-b".to_string()));
+    }
+
     #[tokio::test]
     async fn set_effective_shell_args_no_op_on_missing_session() {
         let mgr = SessionManager::new();

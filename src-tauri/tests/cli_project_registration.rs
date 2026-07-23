@@ -290,3 +290,51 @@ fn new_and_open_project_emit_no_seed_manifest() {
         "project registration/open must not emit or backfill a seed manifest (dormant until Stage F)"
     );
 }
+
+fn copy_dir_recursive(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).expect("create clone dir");
+    for entry in std::fs::read_dir(from).expect("read dir") {
+        let entry = entry.expect("entry");
+        let src = entry.path();
+        let dst = to.join(entry.file_name());
+        if src.is_dir() {
+            copy_dir_recursive(&src, &dst);
+        } else {
+            std::fs::copy(&src, &dst).expect("copy file");
+        }
+    }
+}
+
+// #1064 Stage E: a cloned project (whose `.ac` was copied from an origin) is
+// registered through the public CLI without emitting or backfilling a seed
+// manifest, because production stays dormant until Stage F (plan section 10.3
+// item 7, section 5.4 clone row, acceptance items 19/38). Public-outcome only:
+// no activation token, private hook, or helper barrier is used.
+#[test]
+fn cloned_project_open_emits_no_seed_manifest() {
+    let tmp = Tmp::new("cli-project-clone-dormant");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, &[]);
+    let origin = tmp.path().join("Origin");
+    let origin_arg = origin.to_string_lossy().to_string();
+    run_success(&bin, &["new-project", &origin_arg]);
+    assert!(origin.join(".ac").is_dir());
+
+    // Clone: copy the whole project (including `.ac`) to a new location.
+    let clone = tmp.path().join("Clone");
+    copy_dir_recursive(&origin, &clone);
+    assert!(clone.join(".ac").is_dir(), "the clone carries its .ac");
+
+    let clone_arg = clone.to_string_lossy().to_string();
+    run_success(&bin, &["open-project", &clone_arg]);
+
+    assert!(
+        !clone.join(".ac").join("seed-manifest.toml").exists(),
+        "opening a clone must not backfill a seed manifest (dormant until Stage F)"
+    );
+    assert!(
+        !origin.join(".ac").join("seed-manifest.toml").exists(),
+        "the origin project also stays manifest-free"
+    );
+}

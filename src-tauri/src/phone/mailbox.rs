@@ -10873,6 +10873,23 @@ mod tests {
     use crate::pty::backend::{BackendSpawnSpec, PtyBackend};
     use crate::pty::manager::PtyManager;
 
+    // Stage E (#1064) internal-notice route sentinel (plan section 10.4 item 20,
+    // section 7.2): the internal-system target validates the replica identity from
+    // an opened handle and never routes by a spelled FQN alone, so an unreadable
+    // or non-existent replica is rejected before any wake actuation.
+    #[test]
+    fn stage_e_internal_system_target_rejects_a_nonexistent_replica_route() {
+        let missing = std::path::PathBuf::from("stage-e-replica-that-does-not-exist");
+        let result = InternalSystemTarget::for_context_alert(
+            "proj:wg-1-dev-team/__agent_member".to_string(),
+            missing,
+        );
+        assert!(
+            result.is_err(),
+            "an internal system target must reject an unreadable replica route"
+        );
+    }
+
     fn internal_target_fixture() -> (tempfile::TempDir, InternalSystemTarget) {
         let temp = tempfile::tempdir().unwrap();
         let replica = temp

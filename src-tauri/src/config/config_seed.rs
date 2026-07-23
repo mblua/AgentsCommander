@@ -1299,6 +1299,42 @@ mod tests {
         assert!(!replica.join(".claude.acseed-old-sfx1").exists());
     }
 
+    // Stage E (#1064) end-to-end config-staging scale benchmark (plan section
+    // 7.4, 10.5 item 7): config staging is the only per-file target I/O, and the
+    // collector returns exactly the installed regular-file list. `#[ignore]`
+    // (release-mode measurement; registered in test-debt.allowlist.json).
+    #[test]
+    #[ignore = "release-mode end-to-end config staging benchmark (plan 7.4/10.5 item 7)"]
+    fn bench_end_to_end_config_staging_1k_10k_100k() {
+        for &n in &[1_000usize, 10_000, 100_000] {
+            let temp = tempfile::tempdir().unwrap();
+            let workspace = temp.path().join("ws");
+            let replica = workspace.join("wg-1-team").join("__agent_x");
+            std::fs::create_dir_all(&replica).unwrap();
+            let source = workspace.join("default.claude");
+            std::fs::create_dir_all(&source).unwrap();
+            for i in 0..n {
+                std::fs::write(source.join(format!("file-{i:07}.txt")), b"seed").unwrap();
+            }
+            let ctx = ctx_with(&replica, Some(&workspace), None);
+            let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
+
+            let started = std::time::Instant::now();
+            let publication = assert_published(perform_config_seed(&resolved, "sfx"));
+            let elapsed = started.elapsed();
+
+            let count = match &publication.files {
+                CollectedSeedFiles::Exact(files) => files.len(),
+                other => panic!("expected exact collected files, got {other:?}"),
+            };
+            assert_eq!(
+                count, n,
+                "config staging must collect exactly the installed regular files"
+            );
+            eprintln!("[stage-e bench config-staging] files={n} elapsed={elapsed:?}");
+        }
+    }
+
     #[test]
     fn perform_skips_and_preserves_dest_when_no_template_present() {
         let temp = tempfile::tempdir().unwrap();

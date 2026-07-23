@@ -5582,6 +5582,96 @@ mod tests {
         );
     }
 
+    // Stage E (#1064) tracker mutation proofs (plan section 10.4 item 16): the
+    // poison-recovery and id-overflow paths were previously unexercised.
+    #[test]
+    fn blocking_seed_tracker_recovers_from_mutex_poison_and_preserves_work() {
+        use std::sync::atomic::AtomicU8;
+        let tracker = Arc::new(BlockingSeedWorkTracker::new());
+        let phase = AtomicU8::new(CoordinatorPhase::Running as u8);
+        let id = tracker.register(&phase).expect("register");
+
+        // Poison the state mutex by panicking while holding it.
+        let poisoner = Arc::clone(&tracker);
+        let joined = std::thread::spawn(move || {
+            let _guard = poisoner.state.lock().expect("lock to poison");
+            panic!("intentional poison");
+        })
+        .join();
+        assert!(joined.is_err(), "the poisoning thread must have panicked");
+
+        // lock_state recovers via into_inner and preserves the tracked work map.
+        assert!(
+            tracker.lock_state().work.contains_key(&id),
+            "poison recovery must preserve the tracked work map"
+        );
+        assert!(
+            tracker.begin(id),
+            "begin must still work after poison recovery"
+        );
+        tracker.complete_started(id);
+        assert!(tracker.lock_state().work.is_empty());
+    }
+
+    #[test]
+    fn blocking_seed_tracker_id_overflow_seals_admission_without_reuse() {
+        use std::sync::atomic::AtomicU8;
+        let tracker = BlockingSeedWorkTracker::new();
+        let phase = AtomicU8::new(CoordinatorPhase::Running as u8);
+        let first = tracker.register(&phase).expect("first register");
+
+        // Force the id space to its last value; the next register overflows.
+        tracker.lock_state().next_id = u64::MAX;
+        assert_eq!(
+            tracker.register(&phase),
+            Err(BlockingSeedTaskError::Unavailable),
+            "an exhausted id space must fail closed"
+        );
+
+        {
+            let state = tracker.lock_state();
+            assert!(!state.accepting, "overflow seals admission");
+            assert!(state.work.contains_key(&first), "prior ids remain tracked");
+            assert!(
+                !state.work.contains_key(&u64::MAX),
+                "the overflowing id is never inserted or reused"
+            );
+        }
+        assert_eq!(
+            tracker.register(&phase),
+            Err(BlockingSeedTaskError::Unavailable),
+            "after sealing, no new id is admitted"
+        );
+    }
+
+    #[test]
+    fn blocking_seed_tracker_late_attach_after_completion_is_harmless() {
+        use std::sync::atomic::AtomicU8;
+        let tracker = BlockingSeedWorkTracker::new();
+        let phase = AtomicU8::new(CoordinatorPhase::Running as u8);
+        let id = tracker.register(&phase).expect("register");
+        assert!(tracker.begin(id));
+        tracker.complete_started(id);
+        assert!(tracker.lock_state().work.is_empty());
+
+        // Attaching an abort handle for an id that already completed aborts the
+        // handle immediately outside the mutex and never re-inserts or panics.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let abort = runtime
+            .spawn(async {
+                std::future::pending::<()>().await;
+            })
+            .abort_handle();
+        tracker.attach_abort(id, abort);
+        assert!(
+            tracker.lock_state().work.is_empty(),
+            "late attach must not re-insert"
+        );
+    }
+
     #[test]
     fn exact_coordinator_error_strings_are_stable() {
         assert_eq!(

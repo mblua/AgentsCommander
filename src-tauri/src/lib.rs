@@ -2687,6 +2687,41 @@ mod tests {
         SocketAddr::from(([127, 0, 0, 1], port))
     }
 
+    // Stage E (#1064) shutdown-decision conformance (plan section 10.4 items
+    // 14/15/34). Stage E extends only lib.rs `#[cfg(test)]` coverage; the exit
+    // wiring order itself is exercised by the selection/alert/scraper shutdown
+    // tests. Persistence is allowed only when BOTH the selection tracker and the
+    // container cleanup are terminal, and retained-owner diagnostics from both
+    // shutdown halves are merged.
+    #[test]
+    fn shutdown_persistence_is_allowed_only_when_selection_and_container_are_terminal() {
+        assert!(super::shutdown_persistence_allowed(true, true));
+        assert!(!super::shutdown_persistence_allowed(false, true));
+        assert!(!super::shutdown_persistence_allowed(true, false));
+        assert!(!super::shutdown_persistence_allowed(false, false));
+    }
+
+    #[test]
+    fn combined_shutdown_diagnostics_merge_selection_and_container_owners() {
+        assert!(
+            super::combined_shutdown_retained_diagnostics(Vec::new(), Vec::new()).is_empty(),
+            "no retained owners yields no diagnostics"
+        );
+        let combined = super::combined_shutdown_retained_diagnostics(
+            vec!["reason=blocking-seed-transaction-await state=retained".to_string()],
+            vec!["reason=container-stop state=retained".to_string()],
+        );
+        assert_eq!(
+            combined.len(),
+            2,
+            "each retained shutdown owner is represented once, got {combined:?}"
+        );
+        assert!(
+            combined.iter().all(|entry| !entry.is_empty()),
+            "retained diagnostics are non-empty"
+        );
+    }
+
     fn settings_with_agent() -> AppSettings {
         AppSettings {
             agents: vec![AgentConfig {
