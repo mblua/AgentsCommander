@@ -7,10 +7,14 @@
 //! `.ac/seed-manifest.toml`. Stages A through E kept the module reachable only
 //! from `#[cfg(test)]` builds; that dormancy ends here. The coverage declaration
 //! is the exhaustive compile-time checklist; it is not by itself wiring evidence.
-//! Each boundary's activation/emission test in its owning module invokes the real
-//! production path and asserts the resulting manifest mutation or classified
-//! no-op, so removing an actual adapter call turns one of those tests red even
-//! while this list stays green.
+//! Real-boundary coverage lives in `tests/seed_manifest_activation.rs` plus the
+//! CLI integration suites: boundaries reachable from a plain entry point are
+//! driven end-to-end through the library compiled in non-test mode and assert the
+//! resulting manifest mutation, while the `#[cfg(not(test))]`-gated and GUI-only
+//! boundaries are guarded by source-scrape wiring assertions that red if a
+//! boundary's `ManifestActivationToken::production()` threading (or its recording
+//! adapter) is removed. Either way, removing an actual adapter call turns a test
+//! red while this list stays green.
 
 #![allow(dead_code)]
 
@@ -2968,11 +2972,11 @@ impl ManifestActivationToken {
 /// Every `coverage_version = 1` production publisher and lifecycle hook that
 /// threads a real [`ManifestActivationToken`] is named here exactly once, next to
 /// the module and adapter that wires it. This declaration is the compile-time
-/// checklist; it is NOT by itself wiring evidence. Each variant's activation test
-/// in the owning module invokes the real production boundary and asserts the
-/// resulting manifest mutation or classified no-op, so removing an actual adapter
-/// call turns that test red even while this list stays green (a declaration that
-/// stayed green after its adapter call was removed would be insufficient).
+/// checklist; it is NOT by itself wiring evidence. Real-boundary coverage in
+/// `tests/seed_manifest_activation.rs` and the CLI integration suites reds if any
+/// variant's production `ManifestActivationToken::production()` threading (or its
+/// recording adapter) is removed, so a declaration cannot silently stay green
+/// after its adapter call was removed (which would be insufficient).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum V1CoverageBoundary {
     /// `commands::ac_discovery::create_ac_project` fresh-root context creation.
