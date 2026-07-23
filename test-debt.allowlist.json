@@ -168,6 +168,38 @@
       "issue": 1057,
       "reason": "Real-ConPTY writer-block precondition is parallel-load sensitive: it holds deterministically when the test runs in isolation but the 65,536-byte write can drain before the detection window under the full parallel cargo test --lib run. The teardown behavior under test is sound; only the setup precondition is timing fragile, and it is a real platform boundary that cannot be simulated under automated parallel load. The frozen plan routes real-ConPTY behavior to the manual Windows matrix (section 14 acceptance item 10, section 15).",
       "resolution": "Run manually in isolation with `cargo test --lib real_blocked_conpty_writer_is_unblocked_by_session_teardown -- --ignored --test-threads=1` as part of the manual Windows ConPTY matrix."
+    },
+    {
+      "id": "rust:src-tauri/src/cli/team.rs::tests::cli_member_lock_order_inversion_child",
+      "category": "ignored-rust-test",
+      "owner": "dev-rust",
+      "issue": 1063,
+      "reason": "#1063 Stage D-owned exact ignored CLI-member cross-process lock-order CHILD HELPER. A Stage E (#1064) parent spawns it by its frozen fully-qualified name via current_exe --exact --ignored; it no-ops with no guard and no mutation unless the child-mode action, per-spawn nonce, and valid control endpoints are all supplied, so it must stay out of the standard cargo test lane (plan section 8.2 line 657, acceptance item 46).",
+      "resolution": "Stays ignored by design as a spawn-target helper. Exercised by the Stage E cross-process parent and in-process via the driven-path proof AC_STAGE_D_LOCK_ORDER_DRIVE=1 cargo test --lib -- --ignored --test-threads=1 --exact cli::team::tests::cli_member_lock_order_inversion_driver."
+    },
+    {
+      "id": "rust:src-tauri/src/cli/team.rs::tests::cli_member_lock_order_inversion_driver",
+      "category": "ignored-rust-test",
+      "owner": "dev-rust",
+      "issue": 1063,
+      "reason": "#1063 Stage D in-process driven-path proof for the CLI-member lock-order child helper (no current_exe parent; that machinery is Stage E). It mutates process-global env and pins the once-cached config dir, so it no-ops unless AC_STAGE_D_LOCK_ORDER_DRIVE is set and must run in isolation under --test-threads=1; it stays out of the standard cargo test lane.",
+      "resolution": "Run manually with AC_STAGE_D_LOCK_ORDER_DRIVE=1 cargo test --lib -- --ignored --test-threads=1 --exact cli::team::tests::cli_member_lock_order_inversion_driver."
+    },
+    {
+      "id": "rust:src-tauri/src/cli/workgroup.rs::tests::cli_workgroup_lock_order_inversion_child",
+      "category": "ignored-rust-test",
+      "owner": "dev-rust",
+      "issue": 1063,
+      "reason": "#1063 Stage D-owned exact ignored CLI-workgroup cross-process lock-order CHILD HELPER. A Stage E (#1064) parent spawns it by its frozen fully-qualified name via current_exe --exact --ignored; it no-ops with no guard and no mutation unless the child-mode action, per-spawn nonce, and valid control endpoints are all supplied, so it must stay out of the standard cargo test lane (plan section 8.2 line 657, acceptance item 46).",
+      "resolution": "Stays ignored by design as a spawn-target helper. Exercised by the Stage E cross-process parent and in-process via the driven-path proof AC_STAGE_D_LOCK_ORDER_DRIVE=1 cargo test --lib -- --ignored --test-threads=1 --exact cli::workgroup::tests::cli_workgroup_lock_order_inversion_driver."
+    },
+    {
+      "id": "rust:src-tauri/src/cli/workgroup.rs::tests::cli_workgroup_lock_order_inversion_driver",
+      "category": "ignored-rust-test",
+      "owner": "dev-rust",
+      "issue": 1063,
+      "reason": "#1063 Stage D in-process driven-path proof for the CLI-workgroup lock-order child helper (no current_exe parent; that machinery is Stage E). It mutates process-global env and pins the once-cached config dir, so it no-ops unless AC_STAGE_D_LOCK_ORDER_DRIVE is set and must run in isolation under --test-threads=1; it stays out of the standard cargo test lane.",
+      "resolution": "Run manually with AC_STAGE_D_LOCK_ORDER_DRIVE=1 cargo test --lib -- --ignored --test-threads=1 --exact cli::workgroup::tests::cli_workgroup_lock_order_inversion_driver."
     }
   ]
 }

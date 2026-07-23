@@ -14,6 +14,9 @@ use crate::config::replica_identity::{
     expected_wg_replica_identity, normalize_wg_replica_context_entries,
     repair_wg_replica_config_value, ROLE_MD_FILENAME, WG_REPLICA_REQUIRED_CONTEXT,
 };
+use crate::config::seed_manifest::{
+    ManifestActivationToken, ManifestLifecycleFilter, ProjectSeedManifestGuard, SeedManifestError,
+};
 use crate::config::settings::{AppSettings, SettingsState};
 use crate::config::workspace::existing_workspace_dir;
 use crate::pty::git_watcher::{CoordinatorChangedPayload, GitWatcher};
@@ -1265,12 +1268,202 @@ pub(crate) fn create_or_update_replica_on_disk(
     Ok(replica_dir)
 }
 
-pub(crate) fn remove_replica_dir(replica_dir: &Path) -> Result<(), String> {
-    if !replica_dir.exists() {
-        return Ok(());
+/// Typed outcome of removing one replica directory (#1063, plan section 5.4).
+///
+/// Replaces the prior bare `Ok(())` so lifecycle callers can distinguish a real
+/// removal from a proven absence and prune manifest rows only for `Removed` or an
+/// explicit `AlreadyAbsent`. `AlreadyAbsent` is constructed only from an exact
+/// `symlink_metadata`/remove `ErrorKind::NotFound`; it never uses `Path::exists`,
+/// which collapses access and other inspection errors to false. A plain
+/// discovery `NotFound` observed elsewhere never reaches this typed path and
+/// therefore never prunes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ReplicaRemovalOutcome {
+    Removed,
+    AlreadyAbsent,
+    Failed(String),
+}
+
+pub(crate) fn remove_replica_dir(replica_dir: &Path) -> ReplicaRemovalOutcome {
+    match std::fs::symlink_metadata(replica_dir) {
+        Ok(_) => match std::fs::remove_dir_all(replica_dir) {
+            Ok(()) => ReplicaRemovalOutcome::Removed,
+            // A concurrent removal between the no-follow probe and the delete is
+            // proven absent, not a failure.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                ReplicaRemovalOutcome::AlreadyAbsent
+            }
+            Err(e) => {
+                ReplicaRemovalOutcome::Failed(format!("Failed to delete replica directory: {}", e))
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => ReplicaRemovalOutcome::AlreadyAbsent,
+        Err(e) => {
+            ReplicaRemovalOutcome::Failed(format!("Failed to inspect replica directory: {}", e))
+        }
     }
-    std::fs::remove_dir_all(replica_dir)
-        .map_err(|e| format!("Failed to delete replica directory: {}", e))
+}
+
+// ===========================================================================
+// #1063 Stage D: project-gate lifecycle-removal seam (dormant recorder).
+//
+// Lifecycle deletion acquires the project seed-manifest gate so it serializes
+// against config-seed publication (plan sections 5.4/6.3): the lock ordering is
+// production-active. The manifest prune itself requires a `ManifestActivationToken`,
+// which only `#[cfg(test)]` builds can construct (`for_test`). Production deletion
+// therefore threads `None`, never compiles the recorder call, and never mutates a
+// manifest (dormant / non-emitting through Stage E; activation is F-only). Tests
+// thread `Some(for_test())` to exercise the real prune, staged-delete rollback,
+// and single final snapshot on the same lifecycle path.
+// ===========================================================================
+
+/// Acquire the project seed-manifest gate for a still-reversible lifecycle
+/// removal.
+///
+/// * `Ok(Some(guard))` holds the gate through logical removal, rollback, and the
+///   (dormant) prune.
+/// * `Ok(None)` is a pre-contention lock-capability/I-O degradation: preserve
+///   today's untracked deletion behavior and warn (plan section 6.1 lifecycle row).
+/// * `Err(msg)` is a retryable busy timeout after observed contention, or an
+///   unsafe/reparse project path that must fail closed before mutation.
+pub(crate) fn acquire_lifecycle_project_gate(
+    project_root: &Path,
+) -> Result<Option<ProjectSeedManifestGuard>, String> {
+    match ProjectSeedManifestGuard::acquire(project_root) {
+        Ok(guard) => Ok(Some(guard)),
+        Err(SeedManifestError::UnsafePath { path, reason }) => Err(format!(
+            "Refusing deletion: unsafe project seed-manifest path {}: {}",
+            path.display(),
+            reason
+        )),
+        Err(SeedManifestError::BusyTimeout { path, waited }) => Err(format!(
+            "Project is busy; retry the deletion (seed-manifest lock at {} stayed busy for {:?})",
+            path.display(),
+            waited
+        )),
+        Err(SeedManifestError::LockIo {
+            saw_contention: true,
+            path,
+            source,
+        }) => Err(format!(
+            "Project is busy; retry the deletion (seed-manifest lock I/O at {} after contention: {})",
+            path.display(),
+            source
+        )),
+        Err(other) => {
+            // Pre-contention capability or other lock-acquisition error: preserve
+            // the existing deletion behavior as untracked degradation.
+            log::warn!(
+                "[entity_creation] #1063 lifecycle removal proceeding without seed-manifest gate (untracked): {}",
+                other
+            );
+            Ok(None)
+        }
+    }
+}
+
+/// Dormant lifecycle prune (#1063). Emits only under `#[cfg(test)]` with a test
+/// activation token; production has no token and never compiles the recorder
+/// call, so lifecycle deletion stays non-emitting until Stage F activation.
+///
+/// The `gate` is `None` when the pre-contention degradation above skipped the
+/// lock. The `make_filter` closure builds the exact committed-intent
+/// `ManifestLifecycleFilter` lazily so no filter is constructed on the no-op path.
+fn prune_lifecycle_scope_if_activated(
+    gate: Option<&mut ProjectSeedManifestGuard>,
+    activation: Option<&ManifestActivationToken>,
+    make_filter: impl FnOnce() -> Result<ManifestLifecycleFilter, SeedManifestError>,
+) {
+    #[cfg(test)]
+    {
+        if let (Some(guard), Some(token)) = (gate, activation) {
+            match make_filter() {
+                Ok(filter) => {
+                    let outcome = guard
+                        .publication_permit()
+                        .apply_lifecycle_filter(token, filter);
+                    log::debug!(
+                        "[entity_creation] #1063 lifecycle prune outcome: {:?}",
+                        outcome
+                    );
+                }
+                Err(error) => log::warn!(
+                    "[entity_creation] #1063 lifecycle filter rejected before prune: {}",
+                    error
+                ),
+            }
+        }
+    }
+    #[cfg(not(test))]
+    {
+        // Production is dormant: no activation token exists, so the recorder call
+        // above is not compiled and no manifest is mutated.
+        let _ = (gate, activation, make_filter);
+    }
+}
+
+/// Dormant prune of the config scope of a single replica `.ac/<workgroup>/__agent_<name>`
+/// (#1063, plan section 5.4 "AC removes one replica"). Used by CLI team-member removal.
+pub(crate) fn prune_replica_config_scope(
+    gate: Option<&mut ProjectSeedManifestGuard>,
+    activation: Option<&ManifestActivationToken>,
+    workgroup: &str,
+    agent_name: &str,
+) {
+    let relative = Path::new(".ac")
+        .join(workgroup)
+        .join(format!("__agent_{}", agent_name));
+    prune_lifecycle_scope_if_activated(gate, activation, move || {
+        let identity =
+            crate::config::seed_manifest::ManifestPathIdentity::from_relative_path(&relative)?;
+        ManifestLifecycleFilter::config_path_prefix(identity)
+    });
+}
+
+/// Dormant prune of every replica config scope under one workgroup `.ac/<workgroup>`
+/// (#1063, plan section 5.4 "AC removes a workgroup"). Used by GUI/CLI workgroup deletion.
+pub(crate) fn prune_workgroup_config_scope(
+    gate: Option<&mut ProjectSeedManifestGuard>,
+    activation: Option<&ManifestActivationToken>,
+    workgroup: &str,
+) {
+    let relative = Path::new(".ac").join(workgroup);
+    prune_lifecycle_scope_if_activated(gate, activation, move || {
+        let identity =
+            crate::config::seed_manifest::ManifestPathIdentity::from_relative_path(&relative)?;
+        ManifestLifecycleFilter::config_path_prefix(identity)
+    });
+}
+
+/// Dormant prune of every replica config scope for a set of workgroups (#1063, plan
+/// section 5.4 "AC deletes a team"). Used by GUI team deletion for the committed
+/// intent: successfully removed workgroups plus valid matching team workgroup
+/// identities that were already absent at the explicit delete event.
+pub(crate) fn prune_team_workgroups_scope(
+    gate: Option<&mut ProjectSeedManifestGuard>,
+    activation: Option<&ManifestActivationToken>,
+    workgroups: Vec<String>,
+) {
+    if workgroups.is_empty() {
+        return;
+    }
+    prune_lifecycle_scope_if_activated(gate, activation, move || {
+        ManifestLifecycleFilter::workgroup_components(workgroups)
+    });
+}
+
+/// Dormant prune of every replica config scope for one exact agent component
+/// `__agent_<name>` across all workgroups (#1063, plan section 5.4 "AC deletes an
+/// Agent Matrix and cascaded replicas"). Used by Agent Matrix deletion.
+pub(crate) fn prune_agent_component_scope(
+    gate: Option<&mut ProjectSeedManifestGuard>,
+    activation: Option<&ManifestActivationToken>,
+    agent_name: &str,
+) {
+    let component = format!("__agent_{}", agent_name);
+    prune_lifecycle_scope_if_activated(gate, activation, move || {
+        ManifestLifecycleFilter::replica_component(component)
+    });
 }
 
 pub(crate) async fn clone_missing_repos_for_workgroup(
@@ -1371,52 +1564,479 @@ pub async fn delete_agent_matrix(
     project_path: String,
     agent_path: String,
 ) -> Result<(), String> {
-    let base = selected_workspace_dir(Path::new(&project_path))?;
-    let guard = acquire_team_config_mutation_guard_async(&base).await?;
-    let plan = collect_agent_delete_plan_guarded(&base, Path::new(&agent_path), &guard)?;
-    preflight_agent_delete(&plan, session_mgr.inner()).await?;
-
-    let metadata = prepare_agent_delete_metadata(&plan, settings.inner()).await?;
-    let staged = stage_agent_delete_targets(&plan, session_mgr.inner()).await?;
-
-    if let Err(live_err) = ensure_no_live_sessions_under_target_keys(
-        &plan.target_keys,
-        &plan.agent_name,
+    // Production: dormant (no activation token) and no lock-order test barrier.
+    delete_agent_matrix_inner(
+        &app,
         session_mgr.inner(),
+        settings.inner(),
+        &project_path,
+        &agent_path,
+        None,
+        |_| {},
     )
     .await
+}
+
+/// GUI Agent Matrix deletion with the #1063 global lock order (plan sections
+/// 5.4/6.3/11.32/11.43).
+///
+/// Async preflight collects the delete plan under a short preliminary team guard
+/// (copying exact raw config bytes and intent), then drops that guard; it runs the
+/// public live-session preflight and prepares owned settings/team metadata. The
+/// blocking transaction then acquires project → (deletion-only pending-inclusive
+/// manager snapshot, both reads dropped) → team → settings, in that order, with no
+/// synchronous guard across `.await`. It stages targets, re-reads each planned team
+/// config under the reacquired guard requiring exact prepared bytes, journals only
+/// successful writes for exact-once reverse restore, removes only the two live agent
+/// keys from settings, and on the successful metadata commit point prunes the agent
+/// component scope (dormant) before dropping both guards and removing the staged
+/// targets. A pre-commit failure rolls staged targets back and prunes only the
+/// still-staged (logically absent) targets. Blocker diagnostics run after every guard
+/// is released.
+pub(crate) async fn delete_agent_matrix_inner<H>(
+    app: &AppHandle,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    settings: &SettingsState,
+    project_path: &str,
+    agent_path: &str,
+    activation: Option<ManifestActivationToken>,
+    after_project_before_team: H,
+) -> Result<(), String>
+where
+    H: FnOnce(&Path) + Send + 'static,
+{
+    let base = selected_workspace_dir(Path::new(project_path))?;
+
+    // Preflight under a short preliminary team guard, dropped before any wait.
+    let plan = {
+        let prelim_guard = acquire_team_config_mutation_guard_async(&base).await?;
+        let plan = collect_agent_delete_plan_guarded(&base, Path::new(agent_path), &prelim_guard)?;
+        drop(prelim_guard);
+        plan
+    };
+    // Public live-session preflight + target validation (guards released).
+    preflight_agent_delete(&plan, session_mgr).await?;
+    // Owned settings/team metadata snapshot; the async settings read guard is dropped.
+    let metadata = prepare_agent_delete_metadata(&plan, settings).await?;
+
+    // Blocking transaction: project -> manager snapshot -> team -> settings.
+    let project_root = Path::new(project_path).to_path_buf();
+    let base_for_block = base.clone();
+    let plan_for_block = plan.clone();
+    let metadata_for_block = metadata.clone();
+    let settings_for_block = settings.clone();
+    let session_mgr_for_block = session_mgr.clone();
+    let agent_name = plan.agent_name.clone();
+    let outcome = crate::config::seed_manifest::run_blocking_owned(move || {
+        run_agent_delete_transaction(
+            &base_for_block,
+            &project_root,
+            &plan_for_block,
+            &metadata_for_block,
+            &settings_for_block,
+            &session_mgr_for_block,
+            &agent_name,
+            activation.as_ref(),
+            after_project_before_team,
+            crate::config::settings::save_settings,
+        )
+    })
+    .await
+    .map_err(|e| format!("Agent delete blocking preparation failed: {e}"))?;
+
+    match outcome {
+        AgentDeleteTransactionOutcome::Committed {
+            settings_changed,
+            cleanup,
+        } => {
+            // The agent was removed; a hidden cleanup-dir error still surfaces to keep
+            // the existing success/error contract.
+            cleanup?;
+            log::info!(
+                "[entity_creation] Deleted agent matrix identity '{}' at '{}' (targets={}, team_configs={})",
+                plan.agent_ref,
+                plan.origin_dir.display(),
+                plan.targets.len(),
+                metadata.team_mutations.len()
+            );
+            if settings_changed {
+                let _ = app.emit("coding_agent_profiles_updated", serde_json::json!({}));
+            }
+            emit_coordinator_refresh(app, session_mgr).await;
+            Ok(())
+        }
+        AgentDeleteTransactionOutcome::Blocked { target, raw_error } => {
+            // Blocker diagnostics run after every synchronous guard is released.
+            log::info!(
+                "[entity_creation] delete_agent_matrix: file-in-use detected for '{}' on rename probe",
+                target.label
+            );
+            let report = crate::commands::wg_delete_diagnostic::diagnose_delete_root_blockers(
+                &target.original_path,
+                &target.label,
+                &raw_error,
+                session_mgr,
+            )
+            .await;
+            let json = serde_json::to_string(&report).map_err(|se| {
+                format!(
+                    "Failed to serialize blocker report: {}; original error: {}",
+                    se, raw_error
+                )
+            })?;
+            Err(format!("BLOCKERS:{}", json))
+        }
+        AgentDeleteTransactionOutcome::Aborted { error } => Err(error),
+    }
+}
+
+/// Outcome of the Agent Matrix delete blocking transaction (#1063). `Send + 'static`
+/// so it can cross the `run_blocking_owned` boundary; the async caller formats it
+/// after every synchronous guard has been released.
+enum AgentDeleteTransactionOutcome {
+    /// Metadata persistence reached its irreversible commit point; the manifest
+    /// prune already ran under the gate. `cleanup` is the hidden staged-target
+    /// removal result (an error keeps the existing success/error contract).
+    Committed {
+        settings_changed: bool,
+        cleanup: Result<(), String>,
+    },
+    /// A rename probe was blocked by an open handle; the async caller runs the
+    /// blocker diagnostic on the still-intact tree after the gate is released.
+    Blocked {
+        target: AgentDeleteTarget,
+        raw_error: String,
+    },
+    /// Any pre-commit failure (gate/stage/live-recheck/team/metadata). Staged
+    /// targets were rolled back and only still-staged scopes were pruned already.
+    Aborted { error: String },
+}
+
+/// The Agent Matrix delete blocking transaction (#1063). Runs the project →
+/// pending-inclusive manager snapshot → team → settings sequence to completion in
+/// blocking work; production drives it inside `run_blocking_owned`, and tests call
+/// it directly with an injected `save_settings_fn` and lock-order barrier. The
+/// `after_project_before_team` barrier fires while the project gate is held and
+/// before the team guard is taken.
+#[allow(clippy::too_many_arguments)]
+fn run_agent_delete_transaction(
+    base: &Path,
+    project_root: &Path,
+    plan: &AgentDeletePlan,
+    metadata: &PreparedAgentDeleteMetadata,
+    settings: &SettingsState,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    agent_name: &str,
+    activation: Option<&ManifestActivationToken>,
+    after_project_before_team: impl FnOnce(&Path),
+    save_settings_fn: impl Fn(&AppSettings) -> Result<AppSettings, String>,
+) -> AgentDeleteTransactionOutcome {
+    let mut project_gate = match acquire_lifecycle_project_gate(project_root) {
+        Ok(gate) => gate,
+        Err(error) => return AgentDeleteTransactionOutcome::Aborted { error },
+    };
+    after_project_before_team(base);
+
+    // Stage targets; `stage_agent_delete_targets_with_rename` rolls back its own
+    // staged set on failure, so no targets remain staged on Err.
+    let staged = match stage_agent_delete_targets_with_rename(
+        plan,
+        |from: &Path, to: &Path| std::fs::rename(from, to),
+        session_mgr,
+    ) {
+        Ok(staged) => staged,
+        Err(AgentDeleteStageError::Blocked { target, raw_error }) => {
+            drop(project_gate);
+            return AgentDeleteTransactionOutcome::Blocked { target, raw_error };
+        }
+        Err(AgentDeleteStageError::Other(error))
+        | Err(AgentDeleteStageError::RollbackFailed(error)) => {
+            drop(project_gate);
+            return AgentDeleteTransactionOutcome::Aborted { error };
+        }
+    };
+
+    // Deletion-only pending-inclusive snapshot: outer manager read then one inner
+    // state read, both released before the team guard.
+    let live_workdirs = {
+        let manager = session_mgr.blocking_read();
+        manager.live_working_directories_for_deletion_blocking()
+    };
+    if live_workdirs
+        .iter()
+        .any(|workdir| workdir_blocks_delete(workdir, &plan.target_keys))
     {
-        drop(guard);
-        let rollback = rollback_staged_agent_delete_targets(&staged);
-        return Err(format_agent_delete_post_stage_live_failure(
-            live_err, rollback,
-        ));
+        let still = rollback_staged_targets_reporting(&staged);
+        prune_still_staged_targets(project_gate.as_mut(), activation, &still);
+        drop(project_gate);
+        return AgentDeleteTransactionOutcome::Aborted {
+            error: format_post_stage_live_error(&still),
+        };
     }
 
-    let persist = persist_agent_delete_metadata(&metadata, settings.inner(), &guard).await;
-    if let Err(e) = persist {
-        let restore =
-            restore_agent_delete_metadata_snapshots(&metadata, settings.inner(), &guard).await;
-        drop(guard);
-        let rollback = rollback_staged_agent_delete_targets(&staged);
-        return Err(format_agent_delete_metadata_failure(e, restore, rollback));
+    // Reacquire the #1056 team guard after the project gate and manager reads.
+    let team_guard = match TeamConfigMutationGuard::acquire(base) {
+        Ok(guard) => guard,
+        Err(error) => {
+            let still = rollback_staged_targets_reporting(&staged);
+            prune_still_staged_targets(project_gate.as_mut(), activation, &still);
+            drop(project_gate);
+            return AgentDeleteTransactionOutcome::Aborted {
+                error: format!("{}{}", error, still_staged_suffix(&still)),
+            };
+        }
+    };
+
+    match persist_agent_delete_metadata_blocking(metadata, settings, &team_guard, save_settings_fn)
+    {
+        Ok(()) => {
+            // Irreversible commit point reached. Prune the agent component scope
+            // under the gate, then release both guards and delete.
+            prune_agent_component_scope(project_gate.as_mut(), activation, agent_name);
+            drop(team_guard);
+            drop(project_gate);
+            let cleanup = remove_staged_agent_delete_targets(&staged);
+            AgentDeleteTransactionOutcome::Committed {
+                settings_changed: metadata.settings_changed.load(Ordering::SeqCst),
+                cleanup,
+            }
+        }
+        Err(persist_error) => {
+            // Metadata restore already ran inside the persist helper. Roll back
+            // staged targets and prune only the still-staged ones.
+            drop(team_guard);
+            let still = rollback_staged_targets_reporting(&staged);
+            prune_still_staged_targets(project_gate.as_mut(), activation, &still);
+            drop(project_gate);
+            AgentDeleteTransactionOutcome::Aborted {
+                error: format!("{}{}", persist_error, still_staged_suffix(&still)),
+            }
+        }
+    }
+}
+
+/// Whether a session working directory sits at or under any delete target key.
+fn workdir_blocks_delete(workdir: &str, target_keys: &[String]) -> bool {
+    let working_key = path_key_for_delete(Path::new(workdir));
+    target_keys.iter().any(|root_key| {
+        working_key == *root_key || working_key.starts_with(&(root_key.clone() + "/"))
+    })
+}
+
+/// Generic retryable post-stage delete error (#1063). It never reveals pending
+/// session ids, names, statuses, or working directories.
+fn format_post_stage_live_error(still_staged: &[StagedAgentDeleteTarget]) -> String {
+    format!(
+        "Cannot delete agent while a session is active under a delete target; retry after it exits.{}",
+        still_staged_suffix(still_staged)
+    )
+}
+
+/// Suffix describing hidden cleanup dirs that a failed rollback left staged away.
+fn still_staged_suffix(still_staged: &[StagedAgentDeleteTarget]) -> String {
+    if still_staged.is_empty() {
+        return String::new();
+    }
+    let labels = still_staged
+        .iter()
+        .map(|target| format!("{} [{}]", target.label, target.original_key))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(" Hidden cleanup dir(s) remain: {}", labels)
+}
+
+/// Roll back staged agent-delete targets in reverse order and return the targets
+/// that could NOT be restored (their `.deleting-*` rename-back failed, so the
+/// logical path is absent). The caller prunes only these still-staged scopes; a
+/// fully restored rollback returns an empty vec and prunes nothing (plan 5.4).
+fn rollback_staged_targets_reporting(
+    staged: &[StagedAgentDeleteTarget],
+) -> Vec<StagedAgentDeleteTarget> {
+    let mut still_staged = Vec::new();
+    for target in staged.iter().rev() {
+        if let Err(e) = std::fs::rename(&target.staged_path, &target.original_path) {
+            log::warn!(
+                "[entity_creation] agent-delete rollback left '{}' [{}] staged: {}",
+                target.label,
+                target.original_key,
+                e
+            );
+            still_staged.push(target.clone());
+        }
+    }
+    still_staged
+}
+
+/// Extract `(workgroup, agent)` for a replica delete target so its config scope
+/// can be pruned. Returns `None` for the origin `_agent_*` target, which has no
+/// v1 manifest row.
+fn replica_prefix_for_target(original_path: &Path) -> Option<(String, String)> {
+    let agent = original_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("__agent_"))?;
+    let workgroup = original_path
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|name| name.to_str())?;
+    Some((workgroup.to_string(), agent.to_string()))
+}
+
+/// Prune only the still-staged (logically absent) replica scopes after a pre-commit
+/// rollback (#1063). Dormant in production; the origin `_agent_*` target is skipped.
+fn prune_still_staged_targets(
+    mut gate: Option<&mut ProjectSeedManifestGuard>,
+    activation: Option<&ManifestActivationToken>,
+    still_staged: &[StagedAgentDeleteTarget],
+) {
+    for target in still_staged {
+        if let Some((workgroup, agent)) = replica_prefix_for_target(&target.original_path) {
+            prune_replica_config_scope(gate.as_deref_mut(), activation, &workgroup, &agent);
+        }
+    }
+}
+
+/// Read a team `config.json`'s exact current bytes for the #1063 pre-write precheck.
+fn read_team_config_bytes(config_path: &Path) -> Result<Vec<u8>, String> {
+    std::fs::read(config_path).map_err(|e| format!("{}: {}", config_path.display(), e))
+}
+
+/// Blocking Agent Matrix metadata commit under the reacquired project→team guards
+/// (#1063, plan sections 5.4/11.39). It runs the exact-byte precheck, writes each
+/// planned team config while journaling successes, removes only the two live agent
+/// keys under `SettingsState::blocking_write`, and on any failure restores the
+/// journaled entries once in reverse order (byte-checked) before returning.
+fn persist_agent_delete_metadata_blocking(
+    metadata: &PreparedAgentDeleteMetadata,
+    settings: &SettingsState,
+    team_guard: &TeamConfigMutationGuard,
+    save_settings_fn: impl Fn(&AppSettings) -> Result<AppSettings, String>,
+) -> Result<(), String> {
+    team_guard.require_workspace(&metadata.workspace_dir)?;
+    metadata.settings_changed.store(false, Ordering::SeqCst);
+
+    // Exact-byte precheck under the reacquired #1056 guard: require the exact
+    // prepared bytes before any write. The byte check is additional to the guard,
+    // never a substitute for it.
+    for mutation in &metadata.team_mutations {
+        let current = read_team_config_bytes(&mutation.config_path)?;
+        if current != mutation.before_json {
+            return Err(format!(
+                "Team '{}' config changed under the lock before agent delete; aborting without writes",
+                mutation.team_name
+            ));
+        }
     }
 
-    drop(guard);
-    remove_staged_agent_delete_targets(&staged)?;
-
-    log::info!(
-        "[entity_creation] Deleted agent matrix identity '{}' at '{}' (targets={}, team_configs={})",
-        plan.agent_ref,
-        plan.origin_dir.display(),
-        plan.targets.len(),
-        metadata.team_mutations.len()
-    );
-    if metadata.settings_changed.load(Ordering::SeqCst) {
-        let _ = app.emit("coding_agent_profiles_updated", serde_json::json!({}));
+    // Write each planned config, journaling only successful writes for reverse restore.
+    let mut journal: Vec<usize> = Vec::new();
+    for (index, mutation) in metadata.team_mutations.iter().enumerate() {
+        if let Err(e) = write_team_config_json_atomic(
+            &metadata.workspace_dir,
+            team_guard,
+            &mutation.config_path,
+            &mutation.after_json,
+        ) {
+            let restore = restore_journaled_team_configs(metadata, team_guard, &journal);
+            return Err(format!(
+                "Failed to write team '{}' config during agent delete: {}{}",
+                mutation.team_name,
+                e,
+                format_restore_suffix(restore)
+            ));
+        }
+        journal.push(index);
     }
-    emit_coordinator_refresh(&app, session_mgr.inner()).await;
+
+    // Settings commit: remove only the two live agent keys under blocking_write.
+    let settings_result = {
+        let mut guard = settings.blocking_write();
+        let removed_auto = guard.auto_self_clear_by_agent.remove(&metadata.agent_name);
+        let removed_default = guard
+            .coding_agent_profiles
+            .default_profile_by_agent
+            .remove(&metadata.agent_name);
+        let changed = removed_auto.is_some() || removed_default.is_some();
+        metadata.settings_changed.store(changed, Ordering::SeqCst);
+        if changed {
+            let mut candidate = guard.clone();
+            if let Err(e) = crate::config::settings::validate_and_repair_settings(&mut candidate) {
+                restore_removed_settings(
+                    &mut guard,
+                    &metadata.agent_name,
+                    removed_auto,
+                    removed_default,
+                );
+                Err(format!(
+                    "Failed to validate settings after agent delete: {}",
+                    e
+                ))
+            } else {
+                match save_settings_fn(&candidate) {
+                    Ok(written) => {
+                        *guard = written;
+                        Ok(())
+                    }
+                    Err(e) => {
+                        restore_removed_settings(
+                            &mut guard,
+                            &metadata.agent_name,
+                            removed_auto,
+                            removed_default,
+                        );
+                        Err(format!("Failed to save settings after agent delete: {}", e))
+                    }
+                }
+            }
+        } else {
+            Ok(())
+        }
+    };
+    if let Err(e) = settings_result {
+        let restore = restore_journaled_team_configs(metadata, team_guard, &journal);
+        return Err(format!("{}{}", e, format_restore_suffix(restore)));
+    }
     Ok(())
+}
+
+/// Restore journaled team configs once, in reverse order, only when the current
+/// bytes still equal our written `after_json` (else a lock-unaware writer changed
+/// it after our write; leave the newer content and report a typed conflict).
+fn restore_journaled_team_configs(
+    metadata: &PreparedAgentDeleteMetadata,
+    team_guard: &TeamConfigMutationGuard,
+    journal: &[usize],
+) -> Result<(), String> {
+    team_guard.require_workspace(&metadata.workspace_dir)?;
+    let mut errors = Vec::new();
+    for &index in journal.iter().rev() {
+        let mutation = &metadata.team_mutations[index];
+        match read_team_config_bytes(&mutation.config_path) {
+            Ok(current) if current == mutation.after_json => {
+                if let Err(e) = write_team_config_json_atomic(
+                    &metadata.workspace_dir,
+                    team_guard,
+                    &mutation.config_path,
+                    &mutation.before_json,
+                ) {
+                    errors.push(format!("{}: {}", mutation.config_path.display(), e));
+                }
+            }
+            Ok(_) => errors.push(format!(
+                "{}: restore conflict (content changed under the lock after write)",
+                mutation.config_path.display()
+            )),
+            Err(e) => errors.push(e),
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Failed to restore team config snapshot(s): {}",
+            errors.join("; ")
+        ))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1513,16 +2133,39 @@ fn collect_agent_delete_plan_guarded(
 
     for wg_dir in list_workgroup_dirs(base) {
         let replica = wg_dir.join(format!("__agent_{}", agent_name));
-        if replica.exists() {
-            let wg_name = wg_dir
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("workgroup");
-            targets.push(AgentDeleteTarget {
-                original_key: path_key_for_delete(&replica),
-                original_path: replica,
-                label: format!("{}/__agent_{}", wg_name, agent_name),
-            });
+        // #1063: exact `symlink_metadata` handling instead of `Path::exists`, which
+        // collapses access and other inspection errors to false. Exact `NotFound`
+        // means absent and adds no target (committed-intent pruning by agent
+        // component still covers any stale rows at commit); every other inspection
+        // error aborts preflight; an existing entry must pass the non-reparse
+        // directory validation before its prefix is retained as a target.
+        match std::fs::symlink_metadata(&replica) {
+            Ok(_) => {
+                validate_delete_root_not_link_or_reparse(&replica).map_err(|e| {
+                    format!(
+                        "Agent replica '{}' is not deletable: {}",
+                        replica.display(),
+                        e
+                    )
+                })?;
+                let wg_name = wg_dir
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("workgroup");
+                targets.push(AgentDeleteTarget {
+                    original_key: path_key_for_delete(&replica),
+                    original_path: replica,
+                    label: format!("{}/__agent_{}", wg_name, agent_name),
+                });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(format!(
+                    "Failed to inspect agent replica '{}': {}",
+                    replica.display(),
+                    e
+                ));
+            }
         }
     }
 
@@ -1857,20 +2500,11 @@ async fn prepare_agent_delete_metadata(
     })
 }
 
-async fn persist_agent_delete_metadata(
-    metadata: &PreparedAgentDeleteMetadata,
-    settings: &SettingsState,
-    team_guard: &TeamConfigMutationGuard,
-) -> Result<(), String> {
-    persist_agent_delete_metadata_with_saver(
-        metadata,
-        settings,
-        team_guard,
-        crate::config::settings::save_settings,
-    )
-    .await
-}
-
+// #1063: the async agent-delete metadata helpers below are superseded in
+// production by `persist_agent_delete_metadata_blocking` (run under the blocking
+// project→team→settings transaction). They are retained only as `#[cfg(test)]`
+// scaffolding for the pre-existing focused rollback/restore/format tests.
+#[cfg(test)]
 async fn persist_agent_delete_metadata_with_saver<S>(
     metadata: &PreparedAgentDeleteMetadata,
     settings: &SettingsState,
@@ -1892,6 +2526,7 @@ where
     .await
 }
 
+#[cfg(test)]
 async fn persist_agent_delete_metadata_with_writers<T, S>(
     metadata: &PreparedAgentDeleteMetadata,
     settings: &SettingsState,
@@ -1990,6 +2625,7 @@ fn restore_removed_settings(
     }
 }
 
+#[cfg(test)]
 async fn restore_agent_delete_metadata_snapshots(
     metadata: &PreparedAgentDeleteMetadata,
     _settings: &SettingsState,
@@ -1998,6 +2634,7 @@ async fn restore_agent_delete_metadata_snapshots(
     restore_team_config_snapshots(metadata, team_guard)
 }
 
+#[cfg(test)]
 fn restore_team_config_snapshots(
     metadata: &PreparedAgentDeleteMetadata,
     team_guard: &TeamConfigMutationGuard,
@@ -2042,6 +2679,7 @@ fn write_team_config_json_atomic(
     crate::config::local_config_io::write_file_atomic(config_path, json)
 }
 
+#[cfg(test)]
 fn format_agent_delete_metadata_failure(
     persist_error: String,
     restore_result: Result<(), String>,
@@ -2064,6 +2702,7 @@ fn format_agent_delete_metadata_failure(
     }
 }
 
+#[cfg(test)]
 fn format_agent_delete_post_stage_live_failure(
     live_error: String,
     dir_rollback_result: Result<(), String>,
@@ -2324,28 +2963,21 @@ pub async fn create_workgroup(
     })
 }
 
-/// Delete a team directory from {project_path}/.ac/_team_{name}/
-#[tauri::command]
-pub async fn delete_team(
-    app: AppHandle,
-    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
-    project_path: String,
-    team_name: String,
-) -> Result<(), String> {
-    validate_existing_name(&team_name, "Team")?;
-    let base = selected_workspace_dir(Path::new(&project_path))?;
-    let guard = acquire_team_config_mutation_guard_async(&base).await?;
+/// Committed-intent outcome of a team delete's workgroup cascade (#1063).
+struct TeamDeleteReport {
+    /// Workgroup names whose directory was removed or was already absent at the
+    /// explicit delete event: their config scopes are pruned and clocks cleaned.
+    removed_workgroups: Vec<String>,
+    /// Workgroup names whose removal failed and whose original path remains: rows
+    /// and clock keys are preserved.
+    failed_workgroups: Vec<String>,
+}
 
-    let team_dir = base.join(format!("_team_{}", team_name));
-    if !team_dir.exists() {
-        return Err(format!("Team '{}' not found", team_name));
-    }
-
-    // Collect associated workgroup dirs (wg-N-{team_name}/) while the team
-    // mutation guard keeps this snapshot linear with compatible config writers.
+/// Scan `base` for the present `wg-N-<team>` directories owned by `team_name`.
+fn collect_team_workgroup_dirs(base: &Path, team_name: &str) -> Vec<PathBuf> {
     let wg_suffix = format!("-{}", team_name);
     let mut wg_dirs: Vec<PathBuf> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&base) {
+    if let Ok(entries) = std::fs::read_dir(base) {
         for entry in entries.flatten() {
             if !entry.path().is_dir() {
                 continue;
@@ -2360,8 +2992,61 @@ pub async fn delete_team(
             }
         }
     }
+    wg_dirs
+}
 
-    // Check workgroup repos for dirty git state before deleting.
+/// Delete a team directory from {project_path}/.ac/_team_{name}/
+#[tauri::command]
+pub async fn delete_team(
+    app: AppHandle,
+    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
+    project_path: String,
+    team_name: String,
+) -> Result<(), String> {
+    // Production: dormant (no activation token) and no lock-order test barrier.
+    delete_team_inner(
+        &app,
+        session_mgr.inner(),
+        &project_path,
+        &team_name,
+        None,
+        |_| {},
+    )
+    .await
+}
+
+/// GUI team deletion with the #1063 global lock order (plan sections 5.4/6.3).
+///
+/// Prompts, dirty checks, and the initial owned workgroup snapshot run outside
+/// both guards. The blocking commit acquires the project gate then the #1056
+/// team-config guard, revalidates the team directory under both, deletes it, and
+/// attempts each workgroup while both are held. In the same manifest transaction
+/// it prunes the committed intent (workgroups whose removal succeeded plus those
+/// already absent at the explicit delete event) and preserves rows for any
+/// workgroup whose removal failed and whose path remains. Both guards are dropped
+/// before coordinator-clock locking/persistence and the async refresh, and no
+/// synchronous guard crosses `.await`.
+pub(crate) async fn delete_team_inner<H>(
+    app: &AppHandle,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    project_path: &str,
+    team_name: &str,
+    activation: Option<ManifestActivationToken>,
+    after_project_before_team: H,
+) -> Result<(), String>
+where
+    H: FnOnce(&Path) + Send + 'static,
+{
+    validate_existing_name(team_name, "Team")?;
+    let base = selected_workspace_dir(Path::new(project_path))?;
+    let team_dir = base.join(format!("_team_{}", team_name));
+    if !team_dir.exists() {
+        return Err(format!("Team '{}' not found", team_name));
+    }
+
+    // Initial owned snapshot outside both guards: the present workgroup dirs and a
+    // dirty-repo safety check.
+    let wg_dirs = collect_team_workgroup_dirs(&base, team_name);
     let dirty_repos = check_workgroup_repos_dirty(&wg_dirs);
     if !dirty_repos.is_empty() {
         let list = dirty_repos
@@ -2375,44 +3060,101 @@ pub async fn delete_team(
         ));
     }
 
-    // Delete the team first, then release the config guard before the
-    // best-effort workgroup and clock cascade.
-    std::fs::remove_dir_all(&team_dir)
-        .map_err(|e| format!("Failed to delete team directory: {}", e))?;
-    drop(guard);
-    log::info!("[entity_creation] Deleted team: {}", team_name);
+    // Blocking commit: project gate then the #1056 team-config guard. Neither
+    // synchronous guard crosses an await.
+    let project_root = Path::new(project_path).to_path_buf();
+    let team = team_name.to_string();
+    let base_owned = base.clone();
+    let team_dir_owned = team_dir.clone();
+    let wg_dirs_owned = wg_dirs.clone();
+    let report = crate::config::seed_manifest::run_blocking_owned(
+        move || -> Result<TeamDeleteReport, String> {
+            let mut project_gate = acquire_lifecycle_project_gate(&project_root)?;
+            after_project_before_team(&base_owned);
+            let team_guard = TeamConfigMutationGuard::acquire(&base_owned)?;
+            team_guard.require_workspace(&base_owned)?;
 
-    // (#621) Count clock keys removed across the cascade; persist once after the loop.
-    let mut team_clock_removed = 0usize;
-    // Then delete workgroups
-    for wg_dir in &wg_dirs {
-        let wg_name = wg_dir.file_name().unwrap_or_default().to_string_lossy();
-        if let Err(e) = std::fs::remove_dir_all(wg_dir) {
-            log::warn!(
-                "[entity_creation] Failed to delete workgroup {}: {}",
-                wg_name,
-                e
-            );
-        } else {
-            log::info!("[entity_creation] Deleted workgroup: {}", wg_name);
-            // (#621) Drop this workgroup's coordinator_clocks keys (in-memory only;
-            // one persist after the loop, see below).
-            if let Some(project_name) = Path::new(&project_path)
-                .file_name()
-                .and_then(|n| n.to_str())
-            {
-                if let Some(clocks) =
-                    app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
-                {
-                    team_clock_removed += clocks
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .remove_workgroup(project_name, wg_name.as_ref());
+            // Revalidate the team directory under both guards before the commit.
+            match std::fs::symlink_metadata(&team_dir_owned) {
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    drop(team_guard);
+                    drop(project_gate);
+                    return Err(format!("Team '{}' not found", team));
                 }
+                Err(e) => {
+                    drop(team_guard);
+                    drop(project_gate);
+                    return Err(format!("Failed to inspect team directory: {}", e));
+                }
+            }
+
+            // Commit: remove the team directory, then attempt each workgroup while
+            // both guards remain held.
+            std::fs::remove_dir_all(&team_dir_owned)
+                .map_err(|e| format!("Failed to delete team directory: {}", e))?;
+            let mut removed_workgroups = Vec::new();
+            let mut failed_workgroups = Vec::new();
+            for wg in &wg_dirs_owned {
+                let wg_name = wg
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                match remove_replica_dir(wg) {
+                    ReplicaRemovalOutcome::Removed | ReplicaRemovalOutcome::AlreadyAbsent => {
+                        removed_workgroups.push(wg_name);
+                    }
+                    ReplicaRemovalOutcome::Failed(error) => {
+                        log::warn!(
+                            "[entity_creation] Failed to delete workgroup {}: {}",
+                            wg_name,
+                            error
+                        );
+                        failed_workgroups.push(wg_name);
+                    }
+                }
+            }
+
+            // Prune the committed intent (removed plus already-absent) under the
+            // gate; failed workgroups keep their rows.
+            prune_team_workgroups_scope(
+                project_gate.as_mut(),
+                activation.as_ref(),
+                removed_workgroups.clone(),
+            );
+            drop(team_guard);
+            drop(project_gate);
+            Ok(TeamDeleteReport {
+                removed_workgroups,
+                failed_workgroups,
+            })
+        },
+    )
+    .await
+    .map_err(|e| format!("Team delete blocking preparation failed: {e}"))??;
+
+    log::info!(
+        "[entity_creation] Deleted team: {} (workgroups removed={}, failed={})",
+        team_name,
+        report.removed_workgroups.len(),
+        report.failed_workgroups.len()
+    );
+
+    // Post-commit (guards released): drop coordinator-clock keys for removed
+    // workgroups and persist once, then refresh.
+    let mut team_clock_removed = 0usize;
+    if let Some(project_name) = Path::new(project_path).file_name().and_then(|n| n.to_str()) {
+        if let Some(clocks) =
+            app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
+        {
+            for wg_name in &report.removed_workgroups {
+                team_clock_removed += clocks
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove_workgroup(project_name, wg_name);
             }
         }
     }
-    // (#621 MED-2) Single persist for the whole cascade (avoids N concurrent saves).
     if team_clock_removed > 0 {
         if let Some(clocks) =
             app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
@@ -2423,12 +3165,38 @@ pub async fn delete_team(
             }
         }
     }
-    emit_coordinator_refresh(&app, session_mgr.inner()).await;
+    emit_coordinator_refresh(app, session_mgr).await;
     Ok(())
 }
 
 /// Delete a single workgroup directory from {project_path}/.ac/{wg_name}/
 /// Returns dirty repo list as an Err if any repos have uncommitted/unpushed work.
+/// Project-only gated workgroup-delete primitive (#1063, plan sections 5.4/6.3).
+///
+/// Acquires the project seed-manifest gate, runs `delete` under it, prunes the
+/// workgroup config scope when the logical path was removed (`Deleted`/`Partial`),
+/// and releases the gate. It NEVER acquires the team-config guard. Blocking:
+/// production runs it inside `run_blocking_owned` with `None` activation and a
+/// no-op barrier; tests call it directly with `Some(for_test())` and/or an
+/// `after_project_acquired` cross-process inversion barrier, and may inject the
+/// `delete` outcome to cover `Partial`/`Blocked` pruning.
+pub(crate) fn gated_workgroup_delete_with(
+    project_root: &Path,
+    workgroup_name: &str,
+    activation: Option<&ManifestActivationToken>,
+    after_project_acquired: impl FnOnce(),
+    delete: impl FnOnce() -> WgDeleteOutcome,
+) -> Result<WgDeleteOutcome, String> {
+    let mut project_gate = acquire_lifecycle_project_gate(project_root)?;
+    after_project_acquired();
+    let outcome = delete();
+    if outcome.logical_path_removed() {
+        prune_workgroup_config_scope(project_gate.as_mut(), activation, workgroup_name);
+    }
+    drop(project_gate);
+    Ok(outcome)
+}
+
 /// Pass `force = true` to skip the dirty-repo safety check (user already confirmed).
 #[tauri::command]
 pub async fn delete_workgroup(
@@ -2471,7 +3239,31 @@ pub async fn delete_workgroup(
     // memory-mapped TASK.md), the rename fails atomically — no files touched —
     // and we run the diagnostic on the still-intact tree. On success the dir is
     // re-parented to a sentinel name and removed; the user-visible WG is gone.
-    delete_workgroup_dir_backend(&wg_dir, &workgroup_name, session_mgr.inner()).await?;
+    //
+    // #1063: acquire the project-only seed-manifest gate around the atomic rename
+    // and dormant prune inside blocking work, then release it before the async
+    // blocker diagnostics that `delete_workgroup_dir_backend_with_outcome` runs.
+    let project_root = Path::new(&project_path).to_path_buf();
+    let workgroup = workgroup_name.clone();
+    let wg_for_delete = wg_dir.clone();
+    let outcome = crate::config::seed_manifest::run_blocking_owned(move || {
+        gated_workgroup_delete_with(
+            &project_root,
+            &workgroup,
+            None,
+            || {},
+            || try_atomic_delete_wg(&wg_for_delete),
+        )
+    })
+    .await
+    .map_err(|e| format!("Workgroup delete blocking preparation failed: {e}"))??;
+    delete_workgroup_dir_backend_with_outcome(
+        &wg_dir,
+        &workgroup_name,
+        session_mgr.inner(),
+        outcome,
+    )
+    .await?;
     // (#621) Drop the workgroup's coordinator_clocks keys from the in-memory store
     // and persist immediately (this command is not on the auto-close flush tick).
     if let Some(project_name) = Path::new(&project_path)
@@ -2497,6 +3289,11 @@ pub async fn delete_workgroup(
     Ok(())
 }
 
+// #1063: production `delete_workgroup` now runs the delete under the project gate
+// via `gated_workgroup_delete_with` and interprets the outcome with
+// `delete_workgroup_dir_backend_with_outcome`, so this ungated convenience wrapper
+// is retained for tests only.
+#[cfg(test)]
 pub(crate) async fn delete_workgroup_dir_backend(
     wg_dir: &Path,
     workgroup_name: &str,
@@ -3062,6 +3859,20 @@ pub(crate) enum WgDeleteOutcome {
     Other(std::io::Error),
 }
 
+impl WgDeleteOutcome {
+    /// Whether the original user-visible workgroup path is gone (#1063, plan
+    /// section 5.4). `true` for `Deleted` and `Partial` (the atomic rename moved
+    /// the original path away, so its replica config rows are no longer active
+    /// even when hidden-orphan cleanup failed); `false` for `Blocked`/`Other`,
+    /// which leave the path intact and must preserve rows.
+    pub(crate) fn logical_path_removed(&self) -> bool {
+        matches!(
+            self,
+            WgDeleteOutcome::Deleted | WgDeleteOutcome::Partial { .. }
+        )
+    }
+}
+
 /// Atomically detect blockers before deleting a workgroup directory.
 ///
 /// Strategy: rename the WG dir to a unique sentinel name in the same parent
@@ -3143,6 +3954,7 @@ enum AgentDeleteStageError {
     RollbackFailed(String),
 }
 
+#[cfg(test)]
 async fn stage_agent_delete_targets(
     plan: &AgentDeletePlan,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
@@ -3244,6 +4056,7 @@ where
     Ok(staged)
 }
 
+#[cfg(test)]
 fn rollback_staged_agent_delete_targets(staged: &[StagedAgentDeleteTarget]) -> Result<(), String> {
     rollback_staged_agent_delete_targets_with_rename(staged, |from: &Path, to: &Path| {
         std::fs::rename(from, to)
@@ -5038,39 +5851,274 @@ mod tests {
         settings: &SettingsState,
         manager: &Arc<tokio::sync::RwLock<SessionManager>>,
     ) -> Result<PreparedAgentDeleteMetadata, String> {
-        let guard = TeamConfigMutationGuard::acquire(base)?;
-        let plan = collect_agent_delete_plan_guarded(base, agent_path, &guard)?;
+        run_agent_delete_for_test_with(
+            base,
+            agent_path,
+            settings,
+            manager,
+            None,
+            |_| {},
+            |candidate: &AppSettings| Ok(candidate.clone()),
+        )
+        .await
+    }
+
+    /// Drive the #1063 blocking Agent Matrix delete transaction from an async test:
+    /// async preflight/prepare, then the synchronous transaction on a blocking
+    /// thread with an injectable activation token, lock-order barrier, and settings
+    /// saver.
+    async fn run_agent_delete_for_test_with(
+        base: &Path,
+        agent_path: &Path,
+        settings: &SettingsState,
+        manager: &Arc<tokio::sync::RwLock<SessionManager>>,
+        activation: Option<ManifestActivationToken>,
+        after_project_before_team: impl FnOnce(&Path) + Send + 'static,
+        save_settings_fn: impl Fn(&AppSettings) -> Result<AppSettings, String> + Send + 'static,
+    ) -> Result<PreparedAgentDeleteMetadata, String> {
+        let plan = {
+            let prelim_guard = TeamConfigMutationGuard::acquire(base)?;
+            let plan = collect_agent_delete_plan_guarded(base, agent_path, &prelim_guard)?;
+            drop(prelim_guard);
+            plan
+        };
         preflight_agent_delete(&plan, manager).await?;
         let metadata = prepare_agent_delete_metadata(&plan, settings).await?;
-        let staged = stage_agent_delete_targets(&plan, manager).await?;
 
-        if let Err(live_err) =
-            ensure_no_live_sessions_under_target_keys(&plan.target_keys, &plan.agent_name, manager)
-                .await
-        {
-            drop(guard);
-            let rollback = rollback_staged_agent_delete_targets(&staged);
-            return Err(format_agent_delete_post_stage_live_failure(
-                live_err, rollback,
-            ));
+        let base_owned = base.to_path_buf();
+        let project_root = base.parent().unwrap_or(base).to_path_buf();
+        let plan_owned = plan.clone();
+        let metadata_owned = metadata.clone();
+        let settings_owned = settings.clone();
+        let manager_owned = manager.clone();
+        let agent_name = plan.agent_name.clone();
+        let outcome = tokio::task::spawn_blocking(move || {
+            run_agent_delete_transaction(
+                &base_owned,
+                &project_root,
+                &plan_owned,
+                &metadata_owned,
+                &settings_owned,
+                &manager_owned,
+                &agent_name,
+                activation.as_ref(),
+                after_project_before_team,
+                save_settings_fn,
+            )
+        })
+        .await
+        .map_err(|e| format!("blocking join error: {e}"))?;
+
+        match outcome {
+            AgentDeleteTransactionOutcome::Committed { cleanup, .. } => {
+                cleanup?;
+                Ok(metadata)
+            }
+            AgentDeleteTransactionOutcome::Blocked { raw_error, .. } => {
+                Err(format!("BLOCKERS:{}", raw_error))
+            }
+            AgentDeleteTransactionOutcome::Aborted { error } => Err(error),
         }
+    }
 
-        if let Err(e) =
-            persist_agent_delete_metadata_with_saver(&metadata, settings, &guard, |candidate| {
-                Ok(candidate.clone())
-            })
-            .await
+    #[test]
+    fn remove_replica_dir_reports_typed_outcomes_without_path_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let present = tmp.path().join("__agent_present");
+        std::fs::create_dir_all(&present).unwrap();
+        assert_eq!(remove_replica_dir(&present), ReplicaRemovalOutcome::Removed);
+        assert!(!present.exists());
+
+        // Absent path resolves via exact `symlink_metadata` NotFound, never `Path::exists`.
+        let absent = tmp.path().join("__agent_absent");
+        assert_eq!(
+            remove_replica_dir(&absent),
+            ReplicaRemovalOutcome::AlreadyAbsent
+        );
+        // Re-removing the just-removed directory is also proven-absent.
+        assert_eq!(
+            remove_replica_dir(&present),
+            ReplicaRemovalOutcome::AlreadyAbsent
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_delete_metadata_precondition_mismatch_aborts_without_writes() {
+        let tmp = create_test_workspace();
+        let base = test_base(&tmp);
+        let (config_path, before) = write_team_value(
+            &base,
+            "dev-team",
+            serde_json::json!({
+                "agents": ["_agent_dev-rust"],
+                "coordinator": "_agent_lead",
+                "repos": []
+            }),
+        );
+        let mut after = before.clone();
+        after.extend_from_slice(b"\n");
+        let metadata = PreparedAgentDeleteMetadata {
+            workspace_dir: base.clone(),
+            team_mutations: vec![AgentTeamMutation {
+                team_name: "dev-team".to_string(),
+                config_path: config_path.clone(),
+                before_json: before.clone(),
+                after_json: after,
+            }],
+            agent_name: "dev-rust".to_string(),
+            settings_changed: Arc::new(AtomicBool::new(false)),
+        };
+        // A lock-unaware writer changes the config after prepare but before commit.
+        std::fs::write(
+            &config_path,
+            b"{\"agents\":[],\"coordinator\":\"_agent_lead\",\"repos\":[]}\n",
+        )
+        .unwrap();
+        let changed = std::fs::read(&config_path).unwrap();
+        let settings = settings_state(AppSettings::default());
+        let base_owned = base.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let guard = TeamConfigMutationGuard::acquire(&base_owned).unwrap();
+            persist_agent_delete_metadata_blocking(
+                &metadata,
+                &settings,
+                &guard,
+                |candidate: &AppSettings| -> Result<AppSettings, String> { Ok(candidate.clone()) },
+            )
+        })
+        .await
+        .unwrap();
+        assert!(result.is_err(), "precondition mismatch must abort");
+        assert_eq!(
+            std::fs::read(&config_path).unwrap(),
+            changed,
+            "no team write may occur on a precondition mismatch"
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_create_under_agent_target_blocks_delete_and_rolls_back() {
+        let tmp = create_test_workspace();
+        let base = test_base(&tmp);
+        let agent_dir = create_test_agent(&base, "dev-rust", "Dev Rust");
+        let replica = base.join("wg-1-dev-team").join("__agent_dev-rust");
+        std::fs::create_dir_all(&replica).expect("create replica");
+        let settings = settings_state(AppSettings::default());
+        let manager = test_manager();
+
+        // Insert a pending create whose workdir sits at the replica target. Public
+        // reads hide it (so the public preflight passes), but the deletion-only
+        // snapshot must observe it and block the reversible delete.
+        let workdir = replica.to_string_lossy().into_owned();
+        let mgr = { manager.read().await.clone() };
+        mgr.insert_pending_session_for_test(workdir).await;
+
+        let result = run_agent_delete_for_test(&base, &agent_dir, &settings, &manager).await;
+        assert!(
+            result.is_err(),
+            "a pending create under a delete target must block the delete"
+        );
+        assert!(
+            agent_dir.is_dir(),
+            "agent origin must be restored after the block"
+        );
+        assert!(replica.is_dir(), "replica must be restored after the block");
+    }
+
+    // #1063: with a `#[cfg(test)]` activation token, the workgroup delete's prune
+    // actually removes the workgroup's replica config rows; production threads
+    // `None` and never mutates the manifest (dormant). Proves the recorder wiring.
+    #[test]
+    fn gated_workgroup_delete_prunes_scope_with_activation_token() {
+        use crate::config::seed_manifest::{
+            ManifestActivationToken, ManifestPathIdentity, ManifestRecordOutcome, ManifestSource,
+            ProjectSeedManifestGuard, PublishedScopeBatch,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("proj");
+        let ac = project.join(".ac");
+        std::fs::create_dir_all(ac.join("wg-1-team")).unwrap();
+
+        // Seed a replica config row under wg-1-team using the test token.
+        let token = ManifestActivationToken::for_test();
         {
-            let restore =
-                restore_agent_delete_metadata_snapshots(&metadata, settings, &guard).await;
-            drop(guard);
-            let rollback = rollback_staged_agent_delete_targets(&staged);
-            return Err(format_agent_delete_metadata_failure(e, restore, rollback));
+            let mut guard = ProjectSeedManifestGuard::acquire(&project).unwrap();
+            let files = vec![
+                ManifestPathIdentity::from_relative_path(std::path::Path::new(
+                    ".ac/wg-1-team/__agent_x/.claude/settings.json",
+                ))
+                .unwrap(),
+            ];
+            let batch = PublishedScopeBatch::new(
+                "config:.ac/wg-1-team/__agent_x/.claude".to_string(),
+                ManifestSource::WorkspaceBase,
+                files,
+                chrono::Utc::now(),
+            )
+            .unwrap();
+            assert_eq!(
+                guard.publication_permit().replace_scope(&token, batch),
+                ManifestRecordOutcome::Recorded
+            );
+            guard.release();
         }
+        let manifest_path = ac.join("seed-manifest.toml");
+        assert!(
+            std::fs::read_to_string(&manifest_path)
+                .unwrap()
+                .contains("wg-1-team"),
+            "row must be seeded before the prune"
+        );
 
-        drop(guard);
-        remove_staged_agent_delete_targets(&staged)?;
-        Ok(metadata)
+        // A Deleted logical path prunes the workgroup scope under the gate.
+        gated_workgroup_delete_with(
+            &project,
+            "wg-1-team",
+            Some(&token),
+            || {},
+            || WgDeleteOutcome::Deleted,
+        )
+        .unwrap();
+
+        let after = std::fs::read_to_string(&manifest_path).unwrap();
+        assert!(
+            !after.contains("wg-1-team"),
+            "the workgroup scope must be pruned; manifest still contains it:\n{after}"
+        );
+
+        // A Blocked outcome (logical path intact) must NOT prune.
+        {
+            let mut guard = ProjectSeedManifestGuard::acquire(&project).unwrap();
+            let files = vec![
+                ManifestPathIdentity::from_relative_path(std::path::Path::new(
+                    ".ac/wg-2-team/__agent_y/.claude/settings.json",
+                ))
+                .unwrap(),
+            ];
+            let batch = PublishedScopeBatch::new(
+                "config:.ac/wg-2-team/__agent_y/.claude".to_string(),
+                ManifestSource::WorkspaceBase,
+                files,
+                chrono::Utc::now(),
+            )
+            .unwrap();
+            guard.publication_permit().replace_scope(&token, batch);
+            guard.release();
+        }
+        gated_workgroup_delete_with(
+            &project,
+            "wg-2-team",
+            Some(&token),
+            || {},
+            || WgDeleteOutcome::Blocked(std::io::Error::other("held")),
+        )
+        .unwrap();
+        assert!(
+            std::fs::read_to_string(&manifest_path)
+                .unwrap()
+                .contains("wg-2-team"),
+            "a Blocked delete must preserve its rows"
+        );
     }
 
     #[test]
