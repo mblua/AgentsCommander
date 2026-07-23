@@ -5100,6 +5100,34 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(!out.contains("State-changing Git belongs in `repo-*`"));
     }
 
+    // Stage E (#1064) #1072 Git-scope preservation sentinel (plan section 10.6,
+    // acceptance item 47): the three current location-specific constants stay
+    // distinct and location-correct, and the frozen pre-#1072 legacy snapshots
+    // remain separate recognition inputs, never reused for current output.
+    #[test]
+    fn stage_e_git_scope_constants_are_distinct_and_location_specific() {
+        assert_ne!(ROOT_GIT_SCOPE, WORKGROUP_GIT_SCOPE);
+        assert_ne!(ROOT_GIT_SCOPE, DIRECT_MATRIX_GIT_SCOPE);
+        assert_ne!(WORKGROUP_GIT_SCOPE, DIRECT_MATRIX_GIT_SCOPE);
+        assert!(ROOT_GIT_SCOPE.contains("Root Agent"));
+        assert!(WORKGROUP_GIT_SCOPE.contains("wg-*/"));
+        assert!(DIRECT_MATRIX_GIT_SCOPE.contains("Agent Matrices"));
+        // Frozen legacy snapshots are preserved as distinct recognition inputs.
+        assert_ne!(
+            LEGACY_GIT_SCOPE_WITH_MATRIX_BEFORE_1072,
+            WORKGROUP_GIT_SCOPE
+        );
+        assert_ne!(
+            LEGACY_GIT_SCOPE_WITH_MATRIX_BEFORE_1072,
+            DIRECT_MATRIX_GIT_SCOPE
+        );
+        assert_ne!(LEGACY_GIT_SCOPE_WITHOUT_MATRIX_BEFORE_1072, ROOT_GIT_SCOPE);
+        assert_ne!(
+            LEGACY_GIT_SCOPE_WITH_MATRIX_BEFORE_1072,
+            LEGACY_GIT_SCOPE_WITHOUT_MATRIX_BEFORE_1072
+        );
+    }
+
     #[test]
     fn git_scope_copy_is_location_correct_and_compact() {
         let skills = no_skill_section();

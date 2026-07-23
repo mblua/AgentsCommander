@@ -6606,3 +6606,530 @@ fn atomic_publish_manifest(
         source,
     })
 }
+
+// ---------------------------------------------------------------------------
+// Stage E (#1064) conformance, scale, and adversarial-memory harness.
+//
+// These are dormant, test-only additions: they exercise the same DORMANT APIs
+// used by the Stage A/C unit tests (`ManifestActivationToken::for_test`,
+// `ProjectSeedManifestGuard`, `PublishedScopeBatch`) and never touch a
+// production manifest. The scale benchmarks and the adversarial parser-memory
+// case are `#[ignore]` (registered in `test-debt.allowlist.json`): they are run
+// in an isolated release-mode child as Stage F acceptance evidence (plan
+// sections 7.4, 10.1 item 4, 10.5 items 6-8). The hard 10 s / 512 MiB gates
+// (plan section 7.4) are asserted only in a release build on the reference
+// machine; a debug run records the measurements without gating.
+#[cfg(test)]
+mod stage_e_conformance {
+    use super::*;
+    use chrono::{DateTime, Utc};
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    // Plan section 7.4 hard per-operation gates for the 100k cases.
+    const HARD_ELAPSED_LIMIT: Duration = Duration::from_secs(10);
+    const HARD_WORKING_SET_LIMIT: u64 = 512 * 1024 * 1024;
+    const BENCH_SIZES: [usize; 3] = [1_000, 10_000, 100_000];
+
+    // ---- small local fixtures (kept independent of `mod tests`) ----
+
+    fn timestamp(value: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(value)
+            .expect("valid test timestamp")
+            .with_timezone(&Utc)
+    }
+
+    fn setup_project() -> (tempfile::TempDir, PathBuf) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(project.join(".ac")).expect("create project .ac");
+        (temp, project)
+    }
+
+    fn canonical_path(project: &Path) -> PathBuf {
+        project.join(".ac").join(SEED_MANIFEST_FILENAME)
+    }
+
+    fn config_scope(agent: &str, dest: &str) -> String {
+        format!("config:.ac/wg-1-dev-team/__agent_{agent}/{dest}")
+    }
+
+    fn config_file(agent: &str, dest: &str, suffix: &str) -> ManifestPathIdentity {
+        ManifestPathIdentity::parse(
+            ManifestPathEncoding::Utf8,
+            format!(".ac/wg-1-dev-team/__agent_{agent}/{dest}/{suffix}"),
+        )
+        .expect("valid config path")
+    }
+
+    fn scope_files(agent: &str, dest: &str, n: usize) -> Vec<ManifestPathIdentity> {
+        (0..n)
+            .map(|i| config_file(agent, dest, &format!("file-{i:07}")))
+            .collect()
+    }
+
+    fn parsed_row_count(project: &Path) -> usize {
+        let bytes = std::fs::read(canonical_path(project)).expect("read canonical");
+        match parse_manifest_bytes(&bytes) {
+            Ok(state) => state.rows.len(),
+            Err(error) => panic!("canonical must parse: {error}"),
+        }
+    }
+
+    fn temp_leftovers(project: &Path) -> usize {
+        let dir = project.join(".ac");
+        std::fs::read_dir(&dir)
+            .expect("read .ac")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .map(is_exact_temp_name)
+                    .unwrap_or(false)
+            })
+            .count()
+    }
+
+    /// Write an N-row manifest directly (fixture generation is outside the
+    /// measured interval per plan section 7.4). Rows spread across
+    /// `rows_per_scope`-sized config scopes so the small-scope benchmark can
+    /// mutate one scope inside a whole N-row file.
+    fn seed_whole_manifest(project: &Path, total_rows: usize, rows_per_scope: usize) {
+        let mut state = ManifestState::default();
+        let scopes = total_rows.div_ceil(rows_per_scope);
+        let mut remaining = total_rows;
+        for s in 0..scopes {
+            let agent = format!("a{s:06}");
+            let scope = config_scope(&agent, ".claude");
+            let count = remaining.min(rows_per_scope);
+            remaining -= count;
+            for i in 0..count {
+                let row = PublishedManifestRow::replica_config(
+                    config_file(&agent, ".claude", &format!("file-{i:05}")),
+                    scope.clone(),
+                    ManifestSource::WorkspaceBase,
+                    timestamp("2026-07-16T19:41:12.456Z"),
+                )
+                .expect("config row");
+                let _ = state.upsert(row);
+            }
+        }
+        let bytes = serialize_state(&state).expect("serialize whole manifest");
+        std::fs::write(canonical_path(project), bytes).expect("write whole manifest");
+    }
+
+    // ---- working-set sampling (plan section 7.4 additional-working-set) ----
+
+    #[cfg(windows)]
+    fn working_set_bytes() -> u64 {
+        use windows_sys::Win32::System::ProcessStatus::{
+            K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+        };
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        let mut counters = unsafe { std::mem::zeroed::<PROCESS_MEMORY_COUNTERS>() };
+        counters.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+        let ok =
+            unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) };
+        if ok == 0 {
+            0
+        } else {
+            counters.WorkingSetSize as u64
+        }
+    }
+
+    #[cfg(all(unix, target_os = "linux"))]
+    fn working_set_bytes() -> u64 {
+        // Resident pages from /proc/self/statm (field 1) times the page size.
+        std::fs::read_to_string("/proc/self/statm")
+            .ok()
+            .and_then(|s| s.split_whitespace().nth(1).map(str::to_string))
+            .and_then(|pages| pages.parse::<u64>().ok())
+            .map(|pages| pages.saturating_mul(4096))
+            .unwrap_or(0)
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    fn working_set_bytes() -> u64 {
+        0
+    }
+
+    /// Background sampler that tracks the peak working set during an operation.
+    struct WorkingSetSampler {
+        stop: Arc<AtomicBool>,
+        peak: Arc<AtomicU64>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl WorkingSetSampler {
+        fn start() -> Self {
+            let stop = Arc::new(AtomicBool::new(false));
+            let peak = Arc::new(AtomicU64::new(working_set_bytes()));
+            let (stop_t, peak_t) = (Arc::clone(&stop), Arc::clone(&peak));
+            let handle = std::thread::spawn(move || {
+                while !stop_t.load(Ordering::Relaxed) {
+                    peak_t.fetch_max(working_set_bytes(), Ordering::Relaxed);
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                peak_t.fetch_max(working_set_bytes(), Ordering::Relaxed);
+            });
+            Self {
+                stop,
+                peak,
+                handle: Some(handle),
+            }
+        }
+
+        fn finish(mut self) -> u64 {
+            self.stop.store(true, Ordering::Relaxed);
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+            self.peak.load(Ordering::Relaxed)
+        }
+    }
+
+    fn enforce_hard_gate(label: &str, rows: usize, elapsed: Duration, working_set_delta: u64) {
+        // The 10 s / 512 MiB gate is a release-mode reference-machine contract
+        // (plan section 7.4). A debug run records only; it never gates.
+        if rows == 100_000 && !cfg!(debug_assertions) {
+            assert!(
+                elapsed <= HARD_ELAPSED_LIMIT,
+                "{label}: 100k op took {elapsed:?}, over the 10 s gate"
+            );
+            assert!(
+                working_set_delta <= HARD_WORKING_SET_LIMIT,
+                "{label}: 100k op used {working_set_delta} bytes additional working set, over 512 MiB"
+            );
+        }
+    }
+
+    // -- plan section 10.5 item 6: whole-scope replacement at 1k/10k/100k --
+    #[test]
+    #[ignore = "release-mode scale benchmark (plan 7.4/10.5); run manually or as Stage F acceptance"]
+    fn bench_whole_scope_replacement_1k_10k_100k() {
+        for &n in &BENCH_SIZES {
+            let (_temp, project) = setup_project();
+            let activation = ManifestActivationToken::for_test();
+            let scope = config_scope("alpha", ".claude");
+            {
+                let mut guard = ProjectSeedManifestGuard::acquire(&project).expect("acquire");
+                let batch = PublishedScopeBatch::new(
+                    scope.clone(),
+                    ManifestSource::WorkspaceBase,
+                    scope_files("alpha", ".claude", n),
+                    timestamp("2026-07-16T19:41:12.456Z"),
+                )
+                .expect("seed batch");
+                assert_eq!(
+                    guard.publication_permit().replace_scope(&activation, batch),
+                    ManifestRecordOutcome::Recorded
+                );
+                guard.release();
+            }
+
+            let baseline = working_set_bytes();
+            let sampler = WorkingSetSampler::start();
+            let started = Instant::now();
+            {
+                let mut guard = ProjectSeedManifestGuard::acquire(&project).expect("acquire");
+                let batch = PublishedScopeBatch::new(
+                    scope.clone(),
+                    ManifestSource::MatrixBase,
+                    scope_files("alpha", ".claude", n),
+                    timestamp("2026-07-16T19:42:12.456Z"),
+                )
+                .expect("replacement batch");
+                assert_eq!(
+                    guard.publication_permit().replace_scope(&activation, batch),
+                    ManifestRecordOutcome::Recorded
+                );
+                guard.release();
+            }
+            let elapsed = started.elapsed();
+            let peak = sampler.finish();
+            let delta = peak.saturating_sub(baseline);
+            let canonical_bytes = std::fs::metadata(canonical_path(&project))
+                .map(|m| m.len())
+                .unwrap_or(0);
+
+            // One transaction produced the whole N-row result: no leftover temp
+            // and exactly N rows on disk (plan section 10.5 item 5, observational).
+            assert_eq!(
+                temp_leftovers(&project),
+                0,
+                "one transaction, no leftover temp"
+            );
+            assert_eq!(
+                parsed_row_count(&project),
+                n,
+                "whole scope replaced to N rows"
+            );
+            eprintln!(
+                "[stage-e bench whole-scope] rows={n} elapsed={elapsed:?} \
+                 working_set_delta_bytes={delta} canonical_bytes={canonical_bytes}"
+            );
+            enforce_hard_gate("whole-scope replacement", n, elapsed, delta);
+        }
+    }
+
+    // -- plan section 10.5 item 6: small-scope mutation inside a whole N-row manifest --
+    #[test]
+    #[ignore = "release-mode scale benchmark (plan 7.4/10.5); run manually or as Stage F acceptance"]
+    fn bench_small_scope_mutation_in_whole_manifest_1k_10k_100k() {
+        for &n in &BENCH_SIZES {
+            let (_temp, project) = setup_project();
+            let activation = ManifestActivationToken::for_test();
+            // Whole manifest of N rows across many scopes; mutate one small scope.
+            seed_whole_manifest(&project, n, 100);
+            let target_scope = config_scope("a000000", ".claude");
+
+            let baseline = working_set_bytes();
+            let sampler = WorkingSetSampler::start();
+            let started = Instant::now();
+            {
+                let mut guard = ProjectSeedManifestGuard::acquire(&project).expect("acquire");
+                let batch = PublishedScopeBatch::new(
+                    target_scope,
+                    ManifestSource::MatrixBase,
+                    scope_files("a000000", ".claude", 2),
+                    timestamp("2026-07-16T20:00:00.000Z"),
+                )
+                .expect("small batch");
+                assert_eq!(
+                    guard.publication_permit().replace_scope(&activation, batch),
+                    ManifestRecordOutcome::Recorded
+                );
+                guard.release();
+            }
+            let elapsed = started.elapsed();
+            let peak = sampler.finish();
+            let delta = peak.saturating_sub(baseline);
+            let canonical_bytes = std::fs::metadata(canonical_path(&project))
+                .map(|m| m.len())
+                .unwrap_or(0);
+
+            assert_eq!(
+                temp_leftovers(&project),
+                0,
+                "one transaction, no leftover temp"
+            );
+            eprintln!(
+                "[stage-e bench small-scope] rows={n} elapsed={elapsed:?} \
+                 working_set_delta_bytes={delta} canonical_bytes={canonical_bytes}"
+            );
+            enforce_hard_gate("small-scope mutation", n, elapsed, delta);
+        }
+    }
+
+    // -- plan section 10.5 item 8: git diff --numstat / byte / time evidence --
+    #[test]
+    #[ignore = "release-mode scale benchmark; records git diff evidence (plan 7.4/10.5 item 8)"]
+    fn bench_git_diff_numstat_1k_10k_100k() {
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .map(|o| !o.status.success())
+            .unwrap_or(true)
+        {
+            eprintln!("[stage-e bench git-diff] git unavailable; recording skip");
+            return;
+        }
+        for &n in &BENCH_SIZES {
+            let (_temp, project) = setup_project();
+            let git = |args: &[&str]| {
+                let status = std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(&project)
+                    .output()
+                    .expect("run git");
+                assert!(
+                    status.status.success(),
+                    "git {args:?} failed: {}",
+                    String::from_utf8_lossy(&status.stderr)
+                );
+                status
+            };
+            git(&["init", "--quiet"]);
+            git(&["config", "user.email", "stage-e@example.test"]);
+            git(&["config", "user.name", "stage-e"]);
+
+            // Baseline: empty valid manifest committed.
+            let empty = serialize_state(&ManifestState::default()).expect("serialize empty");
+            std::fs::write(canonical_path(&project), empty).expect("write empty manifest");
+            git(&["add", "-A"]);
+            git(&["commit", "--quiet", "-m", "baseline"]);
+
+            // Publish an N-row scope, then measure the git diff.
+            seed_whole_manifest(&project, n, 100);
+            let canonical_bytes = std::fs::metadata(canonical_path(&project))
+                .map(|m| m.len())
+                .unwrap_or(0);
+            let started = Instant::now();
+            let numstat = std::process::Command::new("git")
+                .args(["diff", "--numstat", "--", ".ac/seed-manifest.toml"])
+                .current_dir(&project)
+                .output()
+                .expect("git diff");
+            let diff_time = started.elapsed();
+            assert!(numstat.status.success(), "git diff --numstat must succeed");
+            let numstat_text = String::from_utf8_lossy(&numstat.stdout);
+            eprintln!(
+                "[stage-e bench git-diff] rows={n} canonical_bytes={canonical_bytes} \
+                 diff_time={diff_time:?} numstat={}",
+                numstat_text.trim()
+            );
+        }
+    }
+
+    // -- plan section 10.1 item 4: adversarial parser-memory bound --
+    #[test]
+    #[ignore = "release-mode adversarial parser-memory measurement (plan 7.4/10.1 item 4)"]
+    fn bench_adversarial_parser_memory_stays_bounded() {
+        // Near the 128 MiB cap in release; a smaller shape in debug so a manual
+        // debug run is tolerable. Each shape is generated, parsed, and dropped in
+        // isolation with its own working-set sample.
+        let target: usize = if cfg!(debug_assertions) {
+            16 * 1024 * 1024
+        } else {
+            120 * 1024 * 1024
+        };
+
+        // (label, bytes, expect_ok)
+        let mut cases: Vec<(&str, String, bool)> = Vec::new();
+
+        // Valid near-cap manifest at the row cap with padded paths.
+        cases.push(("valid-near-cap", valid_near_cap_manifest(target), true));
+        // Adversarial invalid shapes: all must return a typed error, never abort.
+        cases.push(("many-tiny-tables", many_tiny_tables(target), false));
+        cases.push(("huge-escaped-string", huge_escaped_string(target), false));
+        cases.push(("deep-array", deep_array(target), false));
+        cases.push(("duplicate-headers", duplicate_headers(target), false));
+        cases.push(("early-syntax-error", early_syntax_error(target), false));
+        cases.push(("late-syntax-error", late_syntax_error(target), false));
+
+        for (label, bytes, expect_ok) in cases {
+            let input_len = bytes.len();
+            let baseline = working_set_bytes();
+            let sampler = WorkingSetSampler::start();
+            let result = parse_manifest_bytes(bytes.as_bytes());
+            drop(bytes);
+            let peak = sampler.finish();
+            let delta = peak.saturating_sub(baseline);
+            if expect_ok {
+                assert!(result.is_ok(), "{label}: valid near-cap input must parse");
+            } else {
+                assert!(
+                    result.is_err(),
+                    "{label}: adversarial input must return a typed error, not parse"
+                );
+            }
+            eprintln!(
+                "[stage-e adversarial] shape={label} input_bytes={input_len} \
+                 ok={expect_ok} working_set_delta_bytes={delta}"
+            );
+            if !cfg!(debug_assertions) {
+                assert!(
+                    delta <= HARD_WORKING_SET_LIMIT,
+                    "{label}: parser used {delta} bytes additional working set, over 512 MiB"
+                );
+            }
+        }
+    }
+
+    fn manifest_prefix() -> String {
+        let mut s = String::new();
+        s.push_str(MANAGED_HEADER);
+        s.push('\n');
+        s.push_str("schema_version = 1\n");
+        s.push_str("coverage_version = 1\n");
+        s.push_str("coverage = [\"project_context_templates\", \"replica_config_folders\"]\n");
+        s
+    }
+
+    fn valid_near_cap_manifest(target: usize) -> String {
+        // Rows in one config scope; pad the path to grow bytes without exceeding
+        // the 250k row cap. Stay comfortably under both caps.
+        let mut out = manifest_prefix();
+        let rows = 200_000usize;
+        let pad = (target / rows).clamp(8, 4096);
+        let filler = "d".repeat(pad);
+        for i in 0..rows {
+            out.push_str("\n[[files]]\n");
+            out.push_str(&format!(
+                "path = \".ac/wg-1-dev-team/__agent_alpha/.claude/{filler}-{i:07}\"\n"
+            ));
+            out.push_str("path_encoding = \"utf8\"\n");
+            out.push_str("kind = \"replica_config_file\"\n");
+            out.push_str("scope = \"config:.ac/wg-1-dev-team/__agent_alpha/.claude\"\n");
+            out.push_str("source = \"workspace_base\"\n");
+            out.push_str("last_seeded_at = \"2026-07-16T19:41:12.456Z\"\n");
+            if out.len() >= target {
+                break;
+            }
+        }
+        out
+    }
+
+    fn many_tiny_tables(target: usize) -> String {
+        // Valid-shaped tables but with a duplicate identity that is rejected.
+        let mut out = manifest_prefix();
+        while out.len() < target {
+            out.push_str("\n[[files]]\n");
+            out.push_str("path = \".ac/wg-1-dev-team/__agent_alpha/.claude/same\"\n");
+            out.push_str("path_encoding = \"utf8\"\n");
+            out.push_str("kind = \"replica_config_file\"\n");
+            out.push_str("scope = \"config:.ac/wg-1-dev-team/__agent_alpha/.claude\"\n");
+            out.push_str("source = \"workspace_base\"\n");
+            out.push_str("last_seeded_at = \"2026-07-16T19:41:12.456Z\"\n");
+        }
+        out
+    }
+
+    fn huge_escaped_string(target: usize) -> String {
+        let mut out = manifest_prefix();
+        out.push_str("\n[[files]]\npath = \"");
+        // A giant escaped-control-character string; the path decoder rejects it.
+        while out.len() < target {
+            out.push_str("\\u0000\\t\\\\");
+        }
+        out.push_str("\"\n");
+        out
+    }
+
+    fn deep_array(target: usize) -> String {
+        let mut out = manifest_prefix();
+        out.push_str("\ncoverage = [");
+        let depth = target / 2;
+        for _ in 0..depth {
+            out.push('[');
+        }
+        out
+    }
+
+    fn duplicate_headers(target: usize) -> String {
+        let mut out = manifest_prefix();
+        // Duplicate scalar top-level keys are a hard parse error.
+        while out.len() < target {
+            out.push_str("schema_version = 1\n");
+        }
+        out
+    }
+
+    fn early_syntax_error(target: usize) -> String {
+        let mut out = String::from("!!! not toml at all\n");
+        out.push_str(&manifest_prefix());
+        while out.len() < target {
+            out.push_str("padding = padding = padding\n");
+        }
+        out
+    }
+
+    fn late_syntax_error(target: usize) -> String {
+        let mut out = valid_near_cap_manifest(target);
+        out.push_str("\n[[files]\nbroken = \n");
+        out
+    }
+}
