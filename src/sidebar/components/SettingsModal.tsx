@@ -448,14 +448,31 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const railSideForIndex = (index: number): "left" | "right" =>
     index === 0 ? "left" : "right";
 
+  // #1098 - the rail a row click targets, honoring the current 1/2-rail mode.
+  // 1-rail view: every row loads into the single (left) rail. 2-rail view:
+  // index 0 targets the left rail, any later row the right/comparison rail.
+  const rowRailTarget = (index: number): "left" | "right" =>
+    railCount() === 1 ? "left" : railSideForIndex(index);
+
   type RailAction = "assign" | "swap" | "none";
   const railActionFor = (agentId: string, index: number): RailAction => {
     const pill = railPillFor(agentId);
-    if (pill === railSideForIndex(index)) return "none";
+    if (pill === rowRailTarget(index)) return "none";
     return pill === "available" ? "assign" : "swap";
   };
 
   const selectAgentRail = (agentId: string, index: number) => {
+    // #1098 - 1-rail view: every row click loads into the single (left) rail.
+    // Never populate the second rail; clear any stale rightRailId (e.g. a left
+    // per-rail select previously pointed at the right agent) so the view cannot
+    // auto-switch to 2 rails.
+    if (railCount() === 1) {
+      if (rightRailId() !== null) setRightRailId(null);
+      if (leftRailAgent()?.id !== agentId) setLeftRailId(agentId);
+      return;
+    }
+    // 2-rail view: unchanged. index 0 targets the left rail, any later row the
+    // right rail; clicking an agent that holds the other rail swaps the two.
     const left = leftRailAgent()?.id ?? null;
     const right = rightRailAgent()?.id ?? null;
     if (railSideForIndex(index) === "left") {
@@ -1849,7 +1866,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     const expanded = () => activeAgentId() === agent.id;
     const pill = () => railPillFor(agent.id);
     const railAction = () => railActionFor(agent.id, i());
-    const railSide = () => railSideForIndex(i());
+    const railSide = () => rowRailTarget(i());
     const railTitle = () => {
       switch (railAction()) {
         case "none":
