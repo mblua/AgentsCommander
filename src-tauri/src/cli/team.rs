@@ -395,6 +395,192 @@ fn print_json<T: Serialize>(value: &T) -> Result<(), String> {
     Ok(())
 }
 
+/// #1063 Stage D-owned support for the co-located exact ignored cross-process
+/// lock-order inversion CHILD HELPERS in `cli/team.rs` and `cli/workgroup.rs`.
+///
+/// A future Stage E parent spawns a child by its frozen fully-qualified name via
+/// `current_exe --exact <fqn> --ignored`, passing the child-mode action, a per-spawn
+/// nonce, and a control directory through the env vars below. Without all three, the
+/// child no-ops with no guard and no mutation, so a bare `cargo test -- --ignored`
+/// run is safe. This module and the helpers are `#[cfg(test)]`-only; production is
+/// unchanged and non-emitting. Stage D owns only the child helpers; the parent
+/// spawn/drain/watchdog machinery is Stage E.
+#[cfg(test)]
+pub(crate) mod stage_d_lock_order_child {
+    use std::path::PathBuf;
+    use std::time::{Duration, Instant};
+
+    /// Frozen env-var protocol a Stage E parent sets before spawning a child.
+    pub(crate) const ACTION_VAR: &str = "AC_STAGE_D_LOCK_ORDER_ACTION";
+    pub(crate) const NONCE_VAR: &str = "AC_STAGE_D_LOCK_ORDER_NONCE";
+    pub(crate) const CONTROL_DIR_VAR: &str = "AC_STAGE_D_LOCK_ORDER_CONTROL_DIR";
+
+    /// Frozen child-mode actions (one per helper).
+    pub(crate) const MEMBER_ACTION: &str = "cli-member-lock-order";
+    pub(crate) const WORKGROUP_ACTION: &str = "cli-workgroup-lock-order";
+
+    /// Enable flag for the in-process driven-path PROOF tests
+    /// (`*_lock_order_inversion_driver`). This is NOT part of the Stage E child-mode
+    /// protocol above: a real Stage E parent spawns the frozen-named CHILD helpers,
+    /// never the drivers. It exists so a broad `cargo test --lib -- --ignored` run
+    /// does NOT execute the in-process drivers, which set process-global env and pin
+    /// the once-cached config directory (see `config::instance_location`); doing that
+    /// in a shared, multi-threaded ignored run would corrupt other tests or risk
+    /// touching the real config dir. The drivers no-op unless this flag is present,
+    /// so they run only when enabled deliberately and in isolation under
+    /// `--test-threads=1`.
+    pub(crate) const DRIVE_VAR: &str = "AC_STAGE_D_LOCK_ORDER_DRIVE";
+
+    /// True only when the in-process driven-path proof is explicitly enabled via
+    /// `DRIVE_VAR`; a bare `--ignored` run leaves it unset so the drivers no-op.
+    pub(crate) fn driver_enabled() -> bool {
+        std::env::var_os(DRIVE_VAR).is_some()
+    }
+
+    /// A validated child-mode context: present only when the frozen action, a
+    /// non-empty nonce, and an existing control directory are all supplied.
+    pub(crate) struct ChildContext {
+        pub(crate) nonce: String,
+        pub(crate) control_dir: PathBuf,
+    }
+
+    /// Pure tuple validation, unit-testable without touching env (only a control-dir
+    /// existence probe). Returns `None` (no-op) unless all three inputs are present
+    /// and valid and the action matches `expected_action`.
+    pub(crate) fn context_from(
+        expected_action: &str,
+        action: Option<&str>,
+        nonce: Option<&str>,
+        control_dir: Option<&str>,
+    ) -> Option<ChildContext> {
+        if action? != expected_action {
+            return None;
+        }
+        let nonce = nonce?.trim();
+        if nonce.is_empty() {
+            return None;
+        }
+        let control_dir = PathBuf::from(control_dir?);
+        if !control_dir.is_dir() {
+            return None;
+        }
+        Some(ChildContext {
+            nonce: nonce.to_string(),
+            control_dir,
+        })
+    }
+
+    /// Read the child-mode tuple from the environment; `None` (no-op) when absent.
+    pub(crate) fn child_context(expected_action: &str) -> Option<ChildContext> {
+        let action = std::env::var(ACTION_VAR).ok();
+        let nonce = std::env::var(NONCE_VAR).ok();
+        let control_dir = std::env::var(CONTROL_DIR_VAR).ok();
+        context_from(
+            expected_action,
+            action.as_deref(),
+            nonce.as_deref(),
+            control_dir.as_deref(),
+        )
+    }
+
+    impl ChildContext {
+        /// The lock-order barrier body: report project-gate acquisition to the parent
+        /// over stdout and a `reached-<nonce>` marker, then wait a finite time for the
+        /// parent's `release-<nonce>` marker before returning so the deletion proceeds
+        /// to the team guard. The finite watchdog means a dead parent cannot hang it.
+        pub(crate) fn report_and_wait(&self) {
+            let _ = std::fs::write(
+                self.control_dir.join(format!("reached-{}", self.nonce)),
+                b"reached",
+            );
+            println!("STAGE_D_LOCK_ORDER_REACHED {}", self.nonce);
+            let release = self.control_dir.join(format!("release-{}", self.nonce));
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while Instant::now() < deadline {
+                if release.exists() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        }
+
+        /// Build and register an owned workgroup fixture (settings + `.ac` + team +
+        /// `wg-1-dev-team` + the `_agent_*` matrices and member replica) under the
+        /// control dir, isolating the CLI config directory via the debug
+        /// `AGENTSCOMMANDER_TEST_CONFIG_DIR` override. Returns the project folder name
+        /// to pass as `--project`. Runs only inside a driven child, never on no-op.
+        pub(crate) fn build_workgroup_fixture(&self) -> String {
+            let root = self.control_dir.join(format!("fixture-{}", self.nonce));
+            let config_dir = root.join("config");
+            let workspace = root.join("Project").join(".ac");
+            for dir in [
+                config_dir.as_path(),
+                &workspace.join("_agent_coordinator"),
+                &workspace.join("_agent_member"),
+                &workspace.join("wg-1-dev-team").join("__agent_coordinator"),
+                &workspace.join("wg-1-dev-team").join("__agent_member"),
+            ] {
+                std::fs::create_dir_all(dir).expect("fixture dir");
+            }
+            std::env::set_var("AGENTSCOMMANDER_TEST_CONFIG_DIR", &config_dir);
+            let settings = serde_json::json!({
+                "defaultShell": "powershell.exe",
+                "defaultShellArgs": [],
+                "agents": [],
+                "projectPaths": [root.to_string_lossy().to_string()],
+            });
+            std::fs::write(
+                config_dir.join("settings.json"),
+                serde_json::to_string_pretty(&settings).expect("settings json"),
+            )
+            .expect("write settings");
+            let team_config = crate::commands::entity_creation::TeamConfigResult {
+                agents: vec![
+                    "_agent_coordinator".to_string(),
+                    "_agent_member".to_string(),
+                ],
+                coordinator: "_agent_coordinator".to_string(),
+                repos: Vec::new(),
+                context_alert_percentages: Vec::new(),
+            };
+            crate::commands::entity_creation::create_new_team_config_on_disk(
+                &workspace,
+                "dev-team",
+                &team_config,
+            )
+            .expect("team config");
+            "Project".to_string()
+        }
+    }
+
+    /// Save/restore a set of env vars so an in-process driven-path test never leaks
+    /// into the parallel suite. Restores on drop, including on panic.
+    pub(crate) struct EnvGuard {
+        saved: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        pub(crate) fn capture(keys: &[&'static str]) -> Self {
+            let saved = keys
+                .iter()
+                .map(|key| (*key, std::env::var(key).ok()))
+                .collect();
+            Self { saved }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.saved {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -456,6 +642,124 @@ mod tests {
         assert_eq!(
             create_json["contextAlertPercentages"],
             serde_json::json!([])
+        );
+    }
+
+    // #1063 Stage D-owned exact ignored CHILD HELPER for the CLI team-member
+    // cross-process lock-order inversion. Frozen fully-qualified name (a Stage E
+    // parent spawns this verbatim via `current_exe --exact <name> --ignored`):
+    //   crate::cli::team::tests::cli_member_lock_order_inversion_child
+    // No-ops (no guard, no mutation) unless the child-mode action + per-spawn nonce
+    // + control dir are all supplied; when driven, it calls the real private
+    // `remove_member_hooked` and drives the `after_project_before_team` barrier to
+    // report project-gate acquisition (before the team guard) and wait for release.
+    #[test]
+    #[ignore]
+    fn cli_member_lock_order_inversion_child() {
+        let Some(ctx) = super::stage_d_lock_order_child::child_context(
+            super::stage_d_lock_order_child::MEMBER_ACTION,
+        ) else {
+            return;
+        };
+        let project = ctx.build_workgroup_fixture();
+        let args = TeamRemoveMemberArgs {
+            project,
+            workgroup: "wg-1-dev-team".to_string(),
+            agent: "member".to_string(),
+        };
+        let result = remove_member_hooked(args, None, |_workspace: &std::path::Path| {
+            ctx.report_and_wait()
+        });
+        println!(
+            "STAGE_D_LOCK_ORDER_DONE {} member ok={}",
+            ctx.nonce,
+            result.is_ok()
+        );
+    }
+
+    // Deterministic (non-ignored) proof that the child-mode tuple validation no-ops
+    // without a complete, valid tuple - so a bare ignored helper cannot act.
+    #[test]
+    fn cli_lock_order_child_context_no_ops_without_tuple() {
+        use super::stage_d_lock_order_child::{context_from, MEMBER_ACTION};
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().to_str().expect("utf8 dir");
+        assert!(context_from(MEMBER_ACTION, None, None, None).is_none());
+        assert!(context_from(MEMBER_ACTION, Some("other"), Some("n"), Some(dir)).is_none());
+        assert!(context_from(MEMBER_ACTION, Some(MEMBER_ACTION), Some(" "), Some(dir)).is_none());
+        assert!(context_from(MEMBER_ACTION, Some(MEMBER_ACTION), Some("n"), None).is_none());
+        assert!(context_from(
+            MEMBER_ACTION,
+            Some(MEMBER_ACTION),
+            Some("n"),
+            Some("no-such-dir-xyz")
+        )
+        .is_none());
+        assert!(context_from(MEMBER_ACTION, Some(MEMBER_ACTION), Some("n"), Some(dir)).is_some());
+    }
+
+    // #1063: prove the driven lock-order path in-process (no `current_exe` parent -
+    // that machinery is Stage E). Sets the child-mode tuple, drives the real
+    // `cli_member_lock_order_inversion_child`, releases the barrier from a thread,
+    // and asserts the barrier fired (project gate acquired before team) and the
+    // member replica was removed after release. `#[ignore]` + env-guarded so the
+    // parallel `--lib` regression is untouched. It also no-ops unless `DRIVE_VAR` is
+    // set, so a bare `cargo test --lib -- --ignored` run never drives it. Enable and
+    // isolate it deliberately (it pins the once-cached config dir, so it must own the
+    // process): `AC_STAGE_D_LOCK_ORDER_DRIVE=1 cargo test --lib -- --ignored
+    // --test-threads=1 --exact cli::team::tests::cli_member_lock_order_inversion_driver`.
+    #[test]
+    #[ignore]
+    fn cli_member_lock_order_inversion_driver() {
+        use super::stage_d_lock_order_child::{
+            driver_enabled, EnvGuard, ACTION_VAR, CONTROL_DIR_VAR, MEMBER_ACTION, NONCE_VAR,
+        };
+        if !driver_enabled() {
+            return;
+        }
+        let control = tempfile::tempdir().expect("tempdir");
+        let nonce = "driver-member";
+        let _guard = EnvGuard::capture(&[
+            ACTION_VAR,
+            NONCE_VAR,
+            CONTROL_DIR_VAR,
+            "AGENTSCOMMANDER_TEST_CONFIG_DIR",
+        ]);
+        std::env::set_var(ACTION_VAR, MEMBER_ACTION);
+        std::env::set_var(NONCE_VAR, nonce);
+        std::env::set_var(CONTROL_DIR_VAR, control.path());
+
+        let reached = control.path().join(format!("reached-{nonce}"));
+        let release = control.path().join(format!("release-{nonce}"));
+        let releaser = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            while std::time::Instant::now() < deadline && !reached.exists() {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert!(
+                reached.exists(),
+                "child never reported reaching the barrier"
+            );
+            std::fs::write(&release, b"go").expect("write release");
+        });
+
+        cli_member_lock_order_inversion_child();
+        releaser.join().expect("join releaser");
+
+        assert!(
+            control.path().join(format!("reached-{nonce}")).exists(),
+            "the barrier must have fired (project gate acquired before team)"
+        );
+        let replica = control
+            .path()
+            .join(format!("fixture-{nonce}"))
+            .join("Project")
+            .join(".ac")
+            .join("wg-1-dev-team")
+            .join("__agent_member");
+        assert!(
+            !replica.exists(),
+            "the member replica must be removed after the barrier releases"
         );
     }
 }

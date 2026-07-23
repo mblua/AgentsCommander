@@ -615,4 +615,97 @@ mod tests {
         );
         assert!(list_workgroup_dirs(&workspace).is_empty());
     }
+
+    // #1063 Stage D-owned exact ignored CHILD HELPER for the CLI workgroup
+    // cross-process lock-order inversion. Frozen fully-qualified name (a Stage E
+    // parent spawns this verbatim via `current_exe --exact <name> --ignored`):
+    //   crate::cli::workgroup::tests::cli_workgroup_lock_order_inversion_child
+    // No-ops (no guard, no mutation) unless the child-mode action + per-spawn nonce
+    // + control dir are all supplied; when driven, it calls the real private
+    // `remove_hooked` (project-only) and drives the `after_project_acquired` barrier.
+    #[test]
+    #[ignore]
+    fn cli_workgroup_lock_order_inversion_child() {
+        use crate::cli::team::stage_d_lock_order_child as child;
+        let Some(ctx) = child::child_context(child::WORKGROUP_ACTION) else {
+            return;
+        };
+        let project = ctx.build_workgroup_fixture();
+        let args = WorkgroupRemoveArgs {
+            project,
+            workgroup: "wg-1-dev-team".to_string(),
+            force_dirty: false,
+        };
+        let result = remove_hooked(args, None, |_workspace: &Path| ctx.report_and_wait());
+        if let Err(error) = &result {
+            println!("STAGE_D_LOCK_ORDER_ERROR {} workgroup {}", ctx.nonce, error);
+        }
+        println!(
+            "STAGE_D_LOCK_ORDER_DONE {} workgroup ok={}",
+            ctx.nonce,
+            result.is_ok()
+        );
+    }
+
+    // #1063: prove the driven project-only lock-order path in-process (no
+    // `current_exe` parent - that machinery is Stage E). Env-guarded and `#[ignore]`
+    // so the parallel `--lib` regression is untouched. Like the member driver it
+    // no-ops unless `DRIVE_VAR` is set, so a bare `cargo test --lib -- --ignored` run
+    // never drives it. Enable and isolate it deliberately (it pins the once-cached
+    // config dir, so it must own the process):
+    // `AC_STAGE_D_LOCK_ORDER_DRIVE=1 cargo test --lib -- --ignored --test-threads=1
+    // --exact cli::workgroup::tests::cli_workgroup_lock_order_inversion_driver`.
+    #[test]
+    #[ignore]
+    fn cli_workgroup_lock_order_inversion_driver() {
+        use crate::cli::team::stage_d_lock_order_child::{
+            driver_enabled, EnvGuard, ACTION_VAR, CONTROL_DIR_VAR, NONCE_VAR, WORKGROUP_ACTION,
+        };
+        if !driver_enabled() {
+            return;
+        }
+        let control = tempfile::tempdir().expect("tempdir");
+        let nonce = "driver-workgroup";
+        let _guard = EnvGuard::capture(&[
+            ACTION_VAR,
+            NONCE_VAR,
+            CONTROL_DIR_VAR,
+            "AGENTSCOMMANDER_TEST_CONFIG_DIR",
+        ]);
+        std::env::set_var(ACTION_VAR, WORKGROUP_ACTION);
+        std::env::set_var(NONCE_VAR, nonce);
+        std::env::set_var(CONTROL_DIR_VAR, control.path());
+
+        let reached = control.path().join(format!("reached-{nonce}"));
+        let release = control.path().join(format!("release-{nonce}"));
+        let releaser = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            while std::time::Instant::now() < deadline && !reached.exists() {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert!(
+                reached.exists(),
+                "child never reported reaching the barrier"
+            );
+            std::fs::write(&release, b"go").expect("write release");
+        });
+
+        cli_workgroup_lock_order_inversion_child();
+        releaser.join().expect("join releaser");
+
+        assert!(
+            control.path().join(format!("reached-{nonce}")).exists(),
+            "the barrier must have fired after the project gate was acquired"
+        );
+        let wg_dir = control
+            .path()
+            .join(format!("fixture-{nonce}"))
+            .join("Project")
+            .join(".ac")
+            .join("wg-1-dev-team");
+        assert!(
+            !wg_dir.exists(),
+            "the workgroup must be removed after the barrier releases"
+        );
+    }
 }
