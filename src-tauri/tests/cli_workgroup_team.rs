@@ -1564,3 +1564,38 @@ fn team_remove_member_emits_no_seed_manifest() {
         "production team-member removal must not emit a seed manifest (dormant until Stage F)"
     );
 }
+
+// #1064 Stage E: CLI workgroup removal produces the correct public outcome while
+// production stays dormant - no seed manifest is emitted or pruned (plan section
+// 8.2 cli_workgroup_team row, acceptance items 10/22/46). Complements the member
+// removal dormancy coverage above; public-outcome only, no token or hook.
+#[test]
+fn workgroup_removal_emits_no_seed_manifest() {
+    let tmp = Tmp::new("cli-wg-remove-dormant");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    let (project, wg_dir) = create_basic_workgroup(tmp.path(), &bin, &config_dir);
+    let manifest = project.join(".ac").join("seed-manifest.toml");
+    assert!(
+        !manifest.exists(),
+        "workgroup creation must not emit a seed manifest"
+    );
+
+    let removed = run_json_machine(
+        &bin,
+        &[
+            "workgroup",
+            "remove",
+            "--project",
+            "ProjectAlpha",
+            "--workgroup",
+            "wg-1-dev-team",
+        ],
+    );
+    assert_eq!(removed["removed"], true);
+    assert!(!wg_dir.exists(), "the workgroup directory is removed");
+    assert!(
+        !manifest.exists(),
+        "workgroup removal must not emit or prune a seed manifest (dormant until Stage F)"
+    );
+}

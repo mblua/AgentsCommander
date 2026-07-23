@@ -2415,6 +2415,35 @@ mod tests {
         assert_eq!(s.project_paths.len(), 1);
     }
 
+    // Stage E (#1064) clone/no-backfill registration sentinel (plan section 10.3
+    // item 7, section 12 item 10, acceptance item 28/38): a cloned project
+    // arrives with its `.ac` already present; registration never recreates it,
+    // and re-discovery from a fresh settings snapshot neither backfills nor
+    // duplicates the registration.
+    #[test]
+    fn stage_e_registering_a_cloned_project_preserves_ac_and_does_not_duplicate() {
+        let fix = FixtureRoot::new("proj-stage-e-clone");
+        std::fs::create_dir_all(fix.path().join(".ac")).unwrap();
+        let mut settings = AppSettings::default();
+        let first = register_new_project(&mut settings, fix.path().to_str().unwrap()).unwrap();
+        assert!(!first.created, "an existing .ac is never recreated");
+        assert!(first.registered);
+        assert!(
+            fix.path().join(".ac").is_dir(),
+            "the cloned .ac is preserved"
+        );
+
+        let mut fresh = AppSettings::default();
+        let rediscovered = register_new_project(&mut fresh, fix.path().to_str().unwrap()).unwrap();
+        assert!(!rediscovered.created);
+        assert_eq!(
+            fresh.project_paths.len(),
+            1,
+            "re-discovering a clone must not duplicate the registration"
+        );
+        assert!(fix.path().join(".ac").is_dir());
+    }
+
     #[test]
     fn new_rejects_when_path_is_a_regular_file() {
         let fix = FixtureRoot::new("proj-new-file");

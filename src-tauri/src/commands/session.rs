@@ -4688,6 +4688,27 @@ mod tests {
     use tauri::Manager;
     use uuid::Uuid;
 
+    // Stage E (#1064) selection-intent mapping sentinel (plan section 10.4 item
+    // 20, acceptance item 42, 10.6): the internal-alert background create keeps
+    // `CreateSelectionIntent::Background`, which maps to the Background trusted
+    // intent (never downgraded); Suppress finalizes nothing.
+    #[test]
+    fn stage_e_create_selection_intent_maps_background_to_trusted_background() {
+        use crate::session::selection::TrustedCreateIntent;
+        assert!(matches!(
+            CreateSelectionIntent::Background.trusted(),
+            Some(TrustedCreateIntent::Background)
+        ));
+        assert!(matches!(
+            CreateSelectionIntent::User.trusted(),
+            Some(TrustedCreateIntent::User)
+        ));
+        assert!(
+            CreateSelectionIntent::Suppress.trusted().is_none(),
+            "a suppressed create never becomes a trusted finalizing create"
+        );
+    }
+
     #[test]
     fn count_working_members_counts_live_and_busy_only() {
         // tuples are (live /*PTY-backed*/, waiting_for_input)

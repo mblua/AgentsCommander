@@ -1900,6 +1900,44 @@ mod tests {
         GLOBAL_CONTEXT_TEMPLATE_FILENAME,
     };
 
+    // Stage E (#1064) recognized-predecessor exhaustiveness sentinel (plan
+    // section 10.2 item 17, 10.6, acceptance item 31): the coordinator recognizer
+    // must accept the current default AND every frozen generated predecessor
+    // (pre-cross-workgroup v3, pre-token-minimization v2, pre-raise-hand), but not
+    // custom content; the global recognizer stays narrower (never a coordinator
+    // snapshot). A mutation that recognizes only one generation fails here.
+    #[test]
+    fn stage_e_all_recognized_coordinator_predecessors_are_generated_and_custom_is_not() {
+        assert!(is_known_generated_coordinator_template(
+            get_default_coordinator_template()
+        ));
+        assert!(is_known_generated_coordinator_template(
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE
+        ));
+        assert!(is_known_generated_coordinator_template(
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
+        ));
+        assert!(is_known_generated_coordinator_template(
+            OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND
+        ));
+        assert!(!is_known_generated_coordinator_template(
+            "custom operator-authored coordinator content"
+        ));
+
+        assert!(is_known_generated_global_template(
+            crate::config::session_context::get_default_agent_template()
+        ));
+        assert!(is_known_generated_global_template(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
+        ));
+        assert!(
+            !is_known_generated_global_template(
+                COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE
+            ),
+            "the global recognizer must not widen to a coordinator snapshot"
+        );
+    }
+
     fn hash_text(content: &str) -> String {
         sha256_hex(content.as_bytes())
     }

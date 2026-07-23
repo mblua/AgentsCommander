@@ -3284,6 +3284,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stage_e_request_close_is_idempotent_and_close_and_join_owns_the_join() {
+        // Stage E (#1064) alert-shutdown ownership sentinel (plan section 8.1,
+        // 10.4 item 20, acceptance item 34): request_close only cancels the token
+        // (never takes or awaits the actor join) and is idempotent, while
+        // close_and_join stays the sole idempotent join owner.
+        let runtime = ScriptedRuntime::new();
+        let clock = ManualClock::new(Instant::now());
+        let shutdown = CancellationToken::new();
+        let monitor = ContextAlertMonitor::start_with_runtime(
+            Arc::clone(&runtime) as Arc<dyn ContextAlertRuntime>,
+            Arc::clone(&clock) as Arc<dyn AlertClock>,
+            shutdown.clone(),
+        );
+
+        monitor.request_close();
+        monitor.request_close();
+        assert!(
+            shutdown.is_cancelled(),
+            "request_close must cancel the shared shutdown token"
+        );
+
+        monitor.close_and_join().await.unwrap();
+        monitor.close_and_join().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn actor_uses_manual_retry_clock_and_monitor_shutdown_is_idempotent() {
         let id = Uuid::new_v4();
         let runtime = ScriptedRuntime::new();

@@ -648,6 +648,34 @@ mod tests {
         }
     }
 
+    // Stage E (#1064) retirement race sentinel (plan section 10.4 item 21,
+    // acceptance item 35): retiring a session that never emitted a positive
+    // reading (last_emitted == None) emits NO final null, and repeated retirement
+    // is idempotent. A mutation that emitted a duplicate/unconditional null fails.
+    #[tokio::test]
+    async fn stage_e_retiring_a_never_emitted_session_emits_no_final_null() {
+        let h = harness(RowsFake::scripted(vec![]), Arc::new(PatternFake::default()));
+        let id = Uuid::new_v4();
+        h.scraper.register_session(id, AGENT.to_string());
+
+        // Retire before any positive reading was ever emitted.
+        h.scraper.retire_session(id);
+        assert!(
+            h.sink.emitted().is_empty(),
+            "a never-emitted session must not produce a final null"
+        );
+        // Repeated retirement stays idempotent and emits nothing.
+        h.scraper.retire_session(id);
+        assert!(
+            h.sink.emitted().is_empty(),
+            "repeated retirement must not emit a duplicate null"
+        );
+        assert!(
+            !h.scraper.is_session_registered(id),
+            "a retired session is unregistered"
+        );
+    }
+
     /// Criterion 5. Not "emits nothing", but "costs nothing": the rows fake counts calls,
     /// and an unconfigured agent must never reach it - no PTY lock, no 30-row clone.
     #[tokio::test]
