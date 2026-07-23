@@ -189,6 +189,15 @@ function expandAgentRow(index = 0): void {
   toggle.click();
 }
 
+// #1095 — the coding-agent screen now opens with one rail; reveal the second
+// via the top-right dropdown for tests that inspect the comparison rail.
+async function enterTwoRails(): Promise<void> {
+  const sel = byTestId<HTMLSelectElement>("settings.profiles.railCount");
+  sel.value = "2";
+  sel.dispatchEvent(new Event("change", { bubbles: true }));
+  await settle();
+}
+
 describe("SettingsModal automation hooks", () => {
   afterEach(() => {
     document.body.innerHTML = "";
@@ -893,6 +902,7 @@ describe("SettingsModal automation hooks", () => {
       root,
     );
     await settle();
+    await enterTwoRails();
 
     // Rail per coding agent, subtitle = binary basename (not model/sandbox).
     expect(byTestId("settings.profiles.section")).toBeTruthy();
@@ -984,6 +994,7 @@ describe("SettingsModal automation hooks", () => {
       root,
     );
     await settle();
+    await enterTwoRails();
 
     // Rail 0 = codex (primigenio), rail 1 = claude. Type a name into codex's B label.
     const codexB = byTestId<HTMLInputElement>("settings.profileCard.0.B.label");
@@ -1087,14 +1098,16 @@ describe("SettingsModal automation hooks", () => {
       root,
     );
     await settle();
+    await enterTwoRails();
 
-    // The comparison pair seeds left=codex, right=claude (second agent).
+    // The dropdown reveals the comparison pair: left=codex, right=claude (second agent).
     expect(byTestId("settings.profileRail.1").getAttribute("data-ac-agent-id")).toBe("claude");
     // #895: clearing now lives on the rail itself, not on the agent row. It still
-    // actually empties the rail (no positional re-fill).
+    // actually empties the rail (no positional re-fill). #1095: the emptied rail
+    // now unmounts entirely, collapsing back to the 1-rail view.
     byTestId<HTMLButtonElement>("settings.profileRail.1.clear").click();
     await settle();
-    expect(byTestId("settings.profileRail.1").getAttribute("data-ac-agent-id")).toBeNull();
+    expect(document.querySelector('[data-ac-testid="settings.profileRail.1"]')).toBeNull();
     // #895: Claude is available again, and the row head itself re-adds it. Neither
     // a "Use" nor a "Remove" button survives on any agent row — that per-row
     // button was what made one row taller than the rest.
@@ -1399,6 +1412,7 @@ describe("SettingsModal automation hooks", () => {
       root,
     );
     await settle();
+    await enterTwoRails();
 
     // The B card renders on both rails before deletion.
     expect(byTestId("settings.profileCard.0.B")).toBeTruthy();
@@ -1454,21 +1468,21 @@ describe("SettingsModal automation hooks", () => {
     );
     await settle();
 
-    // Pin the LEFT rail to claude (a non-first agent). The right rail was showing
-    // claude, so it empties out — left=claude (pinned), right=empty.
+    // Pin the LEFT rail to claude (a non-first agent). #1095: the right rail is
+    // empty by default — left=claude (pinned), right=empty (second rail unmounted).
     const leftSelect = byTestId<HTMLSelectElement>("settings.profileRail.0.agentSelect");
     leftSelect.value = "claude";
     leftSelect.dispatchEvent(new Event("change", { bubbles: true }));
     await settle();
     expect(byTestId("settings.profileRail.0").getAttribute("data-ac-agent-id")).toBe("claude");
-    expect(byTestId("settings.profileRail.1").getAttribute("data-ac-agent-id")).toBeNull();
+    expect(document.querySelector('[data-ac-testid="settings.profileRail.1"]')).toBeNull();
 
     // Swap with an empty right rail must be a no-op — NOT drop the left pin to the
     // positional fallback (codex). The left stays claude; the right stays empty.
     byTestId<HTMLButtonElement>("settings.agents.swapRails").click();
     await settle();
     expect(byTestId("settings.profileRail.0").getAttribute("data-ac-agent-id")).toBe("claude");
-    expect(byTestId("settings.profileRail.1").getAttribute("data-ac-agent-id")).toBeNull();
+    expect(document.querySelector('[data-ac-testid="settings.profileRail.1"]')).toBeNull();
 
     dispose();
   });
