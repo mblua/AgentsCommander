@@ -135,8 +135,10 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
     const r = renderAgents();
     try {
       await ready(r.root);
-      // Default: left=codex (agents[0]); the right rail is hidden until revealed.
-      expect(rails(r.root)).toEqual(["codex", null]);
+      await enterTwoRails(r.root);
+      // 2-rail view: left=codex (agents[0]), right=claude (agents[1]). Assigning
+      // a later row to the right rail is now a 2-rail-only behavior (#1098).
+      expect(rails(r.root)).toEqual(["codex", "claude"]);
 
       click(r.root, "settings.agentRow.2.select");
       await waitFor(() => expect(rails(r.root)).toEqual(["codex", "opencode"]));
@@ -167,20 +169,19 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
     }
   });
 
-  it("hands the left rail back to the first agent when the left-rail row swaps into an empty right rail", async () => {
+  it("keeps the single left rail when the left-rail's own row is clicked in 1-rail view", async () => {
     const r = renderAgents();
     try {
       await ready(r.root);
-      await enterTwoRails(r.root);
-      await pinLeft(r.root, "opencode");
-      click(r.root, "settings.profileRail.1.clear");
-      await waitFor(() => expect(rails(r.root)).toEqual(["opencode", null]));
+      await pinLeft(r.root, "opencode"); // left=opencode, second rail hidden (1 rail)
+      expect(rails(r.root)).toEqual(["opencode", null]);
 
-      // Row 2 holds the left rail and the right rail is empty, so there is no
-      // agent to swap in. The left falls back to agents[0] — never to opencode,
-      // which would point both rails at one agent.
+      // Row 2 (opencode) already holds the single rail; clicking it stays a no-op
+      // and must never populate a second rail (#1098).
       click(r.root, "settings.agentRow.2.select");
-      await waitFor(() => expect(rails(r.root)).toEqual(["codex", "opencode"]));
+      await waitFor(() => expect(railCountAttr(r.root)).toBe("1"));
+      expect(rails(r.root)).toEqual(["opencode", null]);
+      expect(byTestId(r.root, "settings.profileRail.1")).toBeNull();
     } finally {
       r.cleanup();
     }
@@ -416,13 +417,60 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
     }
   });
 
-  it("revealing a comparison agent from the list shows the second rail", async () => {
+  it("clicking a comparison agent row in 1-rail view loads it into the single left rail", async () => {
     const r = renderAgents();
     try {
       await ready(r.root);
+      // Default 1-rail: left=codex, second rail hidden.
       click(r.root, "settings.agentRow.2.select");
-      await waitFor(() => expect(rails(r.root)).toEqual(["codex", "opencode"]));
-      expect(railCountAttr(r.root)).toBe("2");
+      await waitFor(() => expect(rails(r.root)).toEqual(["opencode", null]));
+      // No auto-switch: still one rail, second rail absent, dropdown still "1".
+      expect(railCountAttr(r.root)).toBe("1");
+      expect(byTestId(r.root, "settings.profileRail.1")).toBeNull();
+      expect(byTestId<HTMLSelectElement>(r.root, "settings.profiles.railCount")!.value).toBe("1");
+      // The clicked row now carries the left pill.
+      expect(byTestId(r.root, "settings.agentRow.2")?.getAttribute("data-ac-rail")).toBe("left");
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  // ── #1098: repeated comparison-row clicks stay in the single left rail ──
+
+  it("keeps loading the single left rail across repeated comparison-row clicks", async () => {
+    const r = renderAgents();
+    try {
+      await ready(r.root);
+      click(r.root, "settings.agentRow.1.select"); // claude
+      await waitFor(() => expect(rails(r.root)).toEqual(["claude", null]));
+      expect(railCountAttr(r.root)).toBe("1");
+
+      click(r.root, "settings.agentRow.2.select"); // opencode
+      await waitFor(() => expect(rails(r.root)).toEqual(["opencode", null]));
+      expect(railCountAttr(r.root)).toBe("1");
+      expect(byTestId(r.root, "settings.profileRail.1")).toBeNull();
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it("does not resurrect the second rail from a stale comparison id after collapsing to 1 rail", async () => {
+    const r = renderAgents();
+    try {
+      await ready(r.root);
+      await enterTwoRails(r.root);          // left=codex, right=claude (2 rails)
+      // Collapse to 1 rail via the LEFT per-rail select pointing at the right
+      // agent: rightRailId stays "claude" (stale) while the view is 1-rail.
+      await pinLeft(r.root, "claude");
+      expect(railCountAttr(r.root)).toBe("1");
+      expect(byTestId(r.root, "settings.profileRail.1")).toBeNull();
+
+      // A comparison-row click loads the left rail AND clears the stale id; the
+      // second rail must not re-reveal.
+      click(r.root, "settings.agentRow.2.select"); // opencode
+      await waitFor(() => expect(rails(r.root)).toEqual(["opencode", null]));
+      expect(railCountAttr(r.root)).toBe("1");
+      expect(byTestId(r.root, "settings.profileRail.1")).toBeNull();
     } finally {
       r.cleanup();
     }
