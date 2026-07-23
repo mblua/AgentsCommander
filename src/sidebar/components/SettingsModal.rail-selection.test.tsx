@@ -80,6 +80,18 @@ async function pinLeft(root: HTMLElement, agentId: string): Promise<void> {
   await waitFor(() => expect(railAgent(root, 0)).toBe(agentId));
 }
 
+/** Reveal the second comparison rail via the top-right dropdown. */
+async function enterTwoRails(root: HTMLElement): Promise<void> {
+  const sel = byTestId<HTMLSelectElement>(root, "settings.profiles.railCount")!;
+  sel.value = "2";
+  sel.dispatchEvent(new Event("change", { bubbles: true }));
+  await waitFor(() => expect(railAgent(root, 1)).not.toBeNull());
+}
+
+function railCountAttr(root: HTMLElement): string | null {
+  return byTestId(root, "settings.profiles.section")?.getAttribute("data-ac-rail-count") ?? null;
+}
+
 describe("SettingsModal coding-agent rail selection (#895)", () => {
   let cleanupDom: (() => void) | null = null;
 
@@ -112,7 +124,7 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
       await pinLeft(r.root, "opencode");
 
       click(r.root, "settings.agentRow.0.select");
-      await waitFor(() => expect(rails(r.root)).toEqual(["codex", "claude"]));
+      await waitFor(() => expect(rails(r.root)).toEqual(["codex", null]));
       expect(byTestId(r.root, "settings.agentRow.0")?.getAttribute("data-ac-rail")).toBe("left");
     } finally {
       r.cleanup();
@@ -123,8 +135,8 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
     const r = renderAgents();
     try {
       await ready(r.root);
-      // Seeded pair: left=codex (agents[0]), right=claude (agents[1]).
-      expect(rails(r.root)).toEqual(["codex", "claude"]);
+      // Default: left=codex (agents[0]); the right rail is hidden until revealed.
+      expect(rails(r.root)).toEqual(["codex", null]);
 
       click(r.root, "settings.agentRow.2.select");
       await waitFor(() => expect(rails(r.root)).toEqual(["codex", "opencode"]));
@@ -140,6 +152,7 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
     const r = renderAgents();
     try {
       await ready(r.root);
+      await enterTwoRails(r.root);
       click(r.root, "settings.agents.swapRails");
       await waitFor(() => expect(rails(r.root)).toEqual(["claude", "codex"]));
       expect(pills(r.root)).toEqual(["right", "left", "available"]);
@@ -158,6 +171,7 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
     const r = renderAgents();
     try {
       await ready(r.root);
+      await enterTwoRails(r.root);
       await pinLeft(r.root, "opencode");
       click(r.root, "settings.profileRail.1.clear");
       await waitFor(() => expect(rails(r.root)).toEqual(["opencode", null]));
@@ -178,6 +192,7 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
     const r = renderAgents();
     try {
       await ready(r.root);
+      await enterTwoRails(r.root);
       click(r.root, "settings.agents.swapRails");
       await waitFor(() => expect(rails(r.root)).toEqual(["claude", "codex"]));
 
@@ -195,6 +210,7 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
     const r = renderAgents();
     try {
       await ready(r.root);
+      await enterTwoRails(r.root);
       click(r.root, "settings.agents.swapRails");
       await waitFor(() => expect(rails(r.root)).toEqual(["claude", "codex"]));
       click(r.root, "settings.agentRow.0.select");
@@ -216,6 +232,7 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
     const r = renderAgents();
     try {
       await ready(r.root);
+      await enterTwoRails(r.root);
       // Resting: row 0 is the left rail, row 1 is the right rail. Clicking either
       // does nothing, and both say so.
       expect(head(r.root, 0).getAttribute("aria-disabled")).toBe("true");
@@ -244,6 +261,7 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
     const r = renderAgents();
     try {
       await ready(r.root);
+      await enterTwoRails(r.root);
       // A per-row Remove on exactly one row widened its action column, wrapped the
       // rail pill and made that row taller — and the tall row moved on every click.
       for (const i of [0, 1, 2]) {
@@ -267,6 +285,7 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
     const r = renderAgents();
     try {
       await ready(r.root);
+      await enterTwoRails(r.root);
       const clear = byTestId<HTMLButtonElement>(r.root, "settings.profileRail.1.clear")!;
 
       // No text node names this button, so the aria-label is the only accessible
@@ -289,13 +308,13 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
     const r = renderAgents();
     try {
       await ready(r.root);
-      expect(rails(r.root)).toEqual(["codex", "claude"]);
+      expect(rails(r.root)).toEqual(["codex", null]);
 
       // Row 2 (opencode) is 'available'. Its delete must not leak into the head
       // click that would otherwise move it onto the right rail.
       click(r.root, "settings.agentRow.2.remove");
       await waitFor(() => expect(byTestId(r.root, "settings.agentRow.2")).toBeNull());
-      expect(rails(r.root)).toEqual(["codex", "claude"]);
+      expect(rails(r.root)).toEqual(["codex", null]);
     } finally {
       r.cleanup();
     }
@@ -305,6 +324,7 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
     const r = renderAgents();
     try {
       await ready(r.root);
+      await enterTwoRails(r.root);
       click(r.root, "settings.agents.swapRails");
       await waitFor(() => expect(rails(r.root)).toEqual(["claude", "codex"]));
 
@@ -326,11 +346,83 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
 
       click(r.root, "settings.agentRow.2.toggle");
       await waitFor(() => expect(byTestId(r.root, "settings.agentRow.2.editor")).toBeTruthy());
-      expect(rails(r.root)).toEqual(["codex", "claude"]);
+      expect(rails(r.root)).toEqual(["codex", null]);
 
       click(r.root, "settings.agentRow.2.toggle");
       await waitFor(() => expect(byTestId(r.root, "settings.agentRow.2.editor")).toBeNull());
+      expect(rails(r.root)).toEqual(["codex", null]);
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  // ── #1095: 1/2-rail layout toggle ──
+
+  it("defaults to a single rail with the second rail hidden", async () => {
+    const r = renderAgents();
+    try {
+      await ready(r.root);
+      expect(rails(r.root)).toEqual(["codex", null]);
+      expect(byTestId(r.root, "settings.profileRail.1")).toBeNull();
+      expect(railCountAttr(r.root)).toBe("1");
+      expect(byTestId<HTMLSelectElement>(r.root, "settings.profiles.railCount")!.value).toBe("1");
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it("dropdown reveals then hides the second rail", async () => {
+    const r = renderAgents();
+    try {
+      await ready(r.root);
+      await enterTwoRails(r.root);
       expect(rails(r.root)).toEqual(["codex", "claude"]);
+      expect(railCountAttr(r.root)).toBe("2");
+      expect(byTestId(r.root, "settings.profileRail.1")).toBeTruthy();
+
+      const sel = byTestId<HTMLSelectElement>(r.root, "settings.profiles.railCount")!;
+      sel.value = "1";
+      sel.dispatchEvent(new Event("change", { bubbles: true }));
+      await waitFor(() => expect(rails(r.root)).toEqual(["codex", null]));
+      expect(byTestId(r.root, "settings.profileRail.1")).toBeNull();
+      expect(railCountAttr(r.root)).toBe("1");
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it("right-rail Clear collapses back to one rail", async () => {
+    const r = renderAgents();
+    try {
+      await ready(r.root);
+      await enterTwoRails(r.root);
+      click(r.root, "settings.profileRail.1.clear");
+      await waitFor(() => expect(byTestId(r.root, "settings.profileRail.1")).toBeNull());
+      expect(railCountAttr(r.root)).toBe("1");
+      expect(byTestId<HTMLSelectElement>(r.root, "settings.profiles.railCount")!.value).toBe("1");
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it("disables the rail-count dropdown when fewer than two agents", async () => {
+    const r = renderAgents([agent("codex", "Codex", "codex")]);
+    try {
+      await ready(r.root);
+      expect(byTestId<HTMLSelectElement>(r.root, "settings.profiles.railCount")!.disabled).toBe(true);
+      expect(byTestId(r.root, "settings.profileRail.1")).toBeNull();
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it("revealing a comparison agent from the list shows the second rail", async () => {
+    const r = renderAgents();
+    try {
+      await ready(r.root);
+      click(r.root, "settings.agentRow.2.select");
+      await waitFor(() => expect(rails(r.root)).toEqual(["codex", "opencode"]));
+      expect(railCountAttr(r.root)).toBe("2");
     } finally {
       r.cleanup();
     }

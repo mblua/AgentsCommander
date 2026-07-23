@@ -416,6 +416,20 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     return explicit && explicit.id !== leftRailAgent()?.id ? explicit : null;
   };
 
+  const railCount = (): 1 | 2 => (rightRailAgent() ? 2 : 1);
+
+  const setRailCount = (count: 1 | 2) => {
+    if (count === 1) {
+      setRightRailId(null);
+      return;
+    }
+    // count === 2: reveal a second rail with the first agent distinct from the left.
+    if (rightRailAgent()) return; // already two rails
+    const leftId = leftRailAgent()?.id ?? null;
+    const second = agentList().find((a) => a.id !== leftId);
+    if (second) setRightRailId(second.id);
+  };
+
   const swapRails = () => {
     const left = leftRailAgent()?.id ?? null;
     const right = rightRailAgent()?.id ?? null;
@@ -482,7 +496,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       const loadedSeed = cloneSettings(loaded);
       setModalSeed(loadedSeed);
       if (leftRailId() === null && loaded.agents[0]) setLeftRailId(loaded.agents[0].id);
-      if (rightRailId() === null && loaded.agents[1]) setRightRailId(loaded.agents[1].id);
     }
   });
 
@@ -2709,6 +2722,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         class="settings-config-screen"
         data-ac-testid="settings.profiles.section"
         data-ac-role="region"
+        data-ac-rail-count={railCount()}
       >
         <aside class="settings-agents-panel">
           <div class="settings-agents-panel-header">
@@ -2774,13 +2788,33 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           </div>
         </aside>
 
-        <div
-          class="settings-compare-zone"
-          data-ac-testid="settings.profiles.rails"
-          data-ac-role="list"
-        >
-          {renderRail(leftRailAgent(), 0, "left")}
-          {renderRail(rightRailAgent(), 1, "right")}
+        <div class="settings-compare-wrap">
+          <div class="settings-compare-toolbar">
+            <select
+              class="settings-input settings-rail-count-select"
+              value={railCount() === 2 ? "2" : "1"}
+              onChange={(e) => setRailCount(e.currentTarget.value === "2" ? 2 : 1)}
+              disabled={agentList().length < 2}
+              aria-label="Number of comparison rails"
+              title="Show one config rail, or two side by side to compare"
+              data-ac-testid="settings.profiles.railCount"
+              data-ac-role="combobox"
+              data-ac-state={railCount() === 2 ? "two" : "one"}
+            >
+              <option value="1">1 rail</option>
+              <option value="2">2 rails</option>
+            </select>
+          </div>
+          <div
+            class="settings-compare-zone"
+            data-ac-testid="settings.profiles.rails"
+            data-ac-role="list"
+          >
+            {renderRail(leftRailAgent(), 0, "left")}
+            <Show when={railCount() === 2}>
+              {renderRail(rightRailAgent(), 1, "right")}
+            </Show>
+          </div>
         </div>
       </div>
     );
