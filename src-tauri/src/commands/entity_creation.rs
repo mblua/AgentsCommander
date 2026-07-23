@@ -4435,6 +4435,7 @@ async fn command_output_with_timeout(
     command.process_group(0);
 
     let mut child = command.spawn().map_err(TimedCommandError::Io)?;
+    #[cfg(unix)]
     let child_pid = child.id();
     let mut stdout = child.stdout.take().ok_or_else(|| {
         TimedCommandError::Io(std::io::Error::other("child stdout was not captured"))
