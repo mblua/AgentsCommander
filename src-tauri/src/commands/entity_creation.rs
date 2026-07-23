@@ -1479,6 +1479,18 @@ pub(crate) async fn clone_missing_repos_for_workgroup(
         let dir_name = format!("repo-{}", repo_dir_name_from_url(&repo.url));
         let target = wg_dir.join(&dir_name);
         if target.exists() {
+            if !target.join(".git").join("index").is_file() {
+                let error = format!(
+                    "Clone target already exists but is incomplete: {}. Remove the incomplete \
+                     directory and retry.",
+                    target.display()
+                );
+                log::error!("[entity_creation] Cannot clone {}: {}", repo.url, error);
+                clone_errors.push(CloneError {
+                    url: repo.url.clone(),
+                    error,
+                });
+            }
             continue;
         }
         match git_clone_async(&repo.url, &target).await {
@@ -4372,19 +4384,145 @@ pub(crate) fn determine_next_wg_number(workspace_dir: &Path) -> u32 {
     (1u32..=u32::MAX).find(|n| !taken.contains(n)).unwrap_or(1)
 }
 
-/// Async git clone with CREATE_NO_WINDOW on Windows.
+fn configure_noninteractive_git_command(command: &mut tokio::process::Command) {
+    crate::pty::credentials::scrub_credentials_from_tokio_command(command);
+    command
+        // A GUI-launched clone has nowhere safe to display or answer a terminal
+        // credential prompt. Stored credential helpers may still answer, but an
+        // unavailable credential must fail instead of blocking on `/dev/tty`.
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "never")
+        .stdin(std::process::Stdio::null());
+}
+
+#[derive(Debug)]
+enum TimedCommandError {
+    Io(std::io::Error),
+    Timeout,
+}
+
+#[cfg(unix)]
+fn kill_command_process_group(pid: Option<u32>) {
+    let Some(pid) = pid.and_then(|raw| i32::try_from(raw).ok()) else {
+        return;
+    };
+    // The command was spawned with `process_group(0)`, so its PID is also the
+    // process-group ID. A negative PID targets the complete helper tree.
+    let result = unsafe { libc::kill(-pid, libc::SIGKILL) };
+    if result != 0 {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::ESRCH) {
+            log::warn!(
+                "[entity_creation] Failed to kill timed-out command process group {}: {}",
+                pid,
+                error
+            );
+        }
+    }
+}
+
+async fn command_output_with_timeout(
+    command: &mut tokio::process::Command,
+    timeout: Duration,
+) -> Result<std::process::Output, TimedCommandError> {
+    use tokio::io::AsyncReadExt;
+
+    command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    command.process_group(0);
+
+    let mut child = command.spawn().map_err(TimedCommandError::Io)?;
+    let child_pid = child.id();
+    let mut stdout = child.stdout.take().ok_or_else(|| {
+        TimedCommandError::Io(std::io::Error::other("child stdout was not captured"))
+    })?;
+    let mut stderr = child.stderr.take().ok_or_else(|| {
+        TimedCommandError::Io(std::io::Error::other("child stderr was not captured"))
+    })?;
+    let mut stdout_bytes = Vec::new();
+    let mut stderr_bytes = Vec::new();
+
+    let captured = tokio::time::timeout(timeout, async {
+        let status = child.wait();
+        let read_stdout = stdout.read_to_end(&mut stdout_bytes);
+        let read_stderr = stderr.read_to_end(&mut stderr_bytes);
+        tokio::try_join!(status, read_stdout, read_stderr)
+    })
+    .await;
+
+    match captured {
+        Ok(Ok((status, _, _))) => Ok(std::process::Output {
+            status,
+            stdout: stdout_bytes,
+            stderr: stderr_bytes,
+        }),
+        Ok(Err(error)) => {
+            #[cfg(unix)]
+            kill_command_process_group(child_pid);
+            let _ = child.kill().await;
+            Err(TimedCommandError::Io(error))
+        }
+        Err(_) => {
+            #[cfg(unix)]
+            kill_command_process_group(child_pid);
+            // On Unix the group signal includes the direct child; on other
+            // platforms this still guarantees that at least the direct child
+            // is terminated and reaped.
+            let _ = child.kill().await;
+            Err(TimedCommandError::Timeout)
+        }
+    }
+}
+
+fn finish_failed_clone(target: &Path, target_existed_before: bool, error: String) -> String {
+    if target_existed_before || !target.exists() {
+        return error;
+    }
+
+    match std::fs::remove_dir_all(target) {
+        Ok(()) => {
+            log::info!(
+                "[entity_creation] Removed incomplete clone target {}",
+                target.display()
+            );
+            error
+        }
+        Err(cleanup_error) => {
+            log::warn!(
+                "[entity_creation] Failed to remove incomplete clone target {}: {}",
+                target.display(),
+                cleanup_error
+            );
+            format!(
+                "{}; additionally failed to remove incomplete clone target {}: {}",
+                error,
+                target.display(),
+                cleanup_error
+            )
+        }
+    }
+}
+
+/// Async, non-interactive git clone with CREATE_NO_WINDOW on Windows.
 async fn git_clone_async(url: &str, target: &Path) -> Result<(), String> {
     #[cfg(windows)]
     const CREATE_NO_WINDOW: u32 = 0x08000000;
     const GIT_CLONE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
     const GIT_RESET_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+    let target_existed_before = target.exists();
     let git_target = git_cli_path(target);
     let mut cmd = tokio::process::Command::new("git");
-    crate::pty::credentials::scrub_credentials_from_tokio_command(&mut cmd);
+    configure_noninteractive_git_command(&mut cmd);
     cmd.args(["-c", "core.longpaths=true", "clone", "--depth", "1", url])
         .arg(git_target.as_os_str());
-    cmd.kill_on_drop(true);
+    log::info!(
+        "[entity_creation] Starting non-interactive clone into {}",
+        target.display()
+    );
 
     #[cfg(windows)]
     {
@@ -4393,15 +4531,26 @@ async fn git_clone_async(url: &str, target: &Path) -> Result<(), String> {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let output = tokio::time::timeout(GIT_CLONE_TIMEOUT, cmd.output())
-        .await
-        .map_err(|_| {
-            format!(
-                "git clone timed out after {} seconds",
-                GIT_CLONE_TIMEOUT.as_secs()
-            )
-        })?
-        .map_err(|e| format!("Failed to spawn git clone: {}", e))?;
+    let output = match command_output_with_timeout(&mut cmd, GIT_CLONE_TIMEOUT).await {
+        Ok(output) => output,
+        Err(TimedCommandError::Io(e)) => {
+            return Err(finish_failed_clone(
+                target,
+                target_existed_before,
+                format!("Failed to run git clone: {}", e),
+            ));
+        }
+        Err(TimedCommandError::Timeout) => {
+            return Err(finish_failed_clone(
+                target,
+                target_existed_before,
+                format!(
+                    "git clone timed out after {} seconds",
+                    GIT_CLONE_TIMEOUT.as_secs()
+                ),
+            ));
+        }
+    };
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -4412,7 +4561,11 @@ async fn git_clone_async(url: &str, target: &Path) -> Result<(), String> {
         } else {
             trimmed
         };
-        return Err(format!("git clone failed: {}", capped));
+        return Err(finish_failed_clone(
+            target,
+            target_existed_before,
+            format!("git clone failed: {}", capped),
+        ));
     }
 
     if !target.join(".git").join("index").exists() {
@@ -4421,32 +4574,31 @@ async fn git_clone_async(url: &str, target: &Path) -> Result<(), String> {
             url
         );
         let mut reset_cmd = tokio::process::Command::new("git");
-        crate::pty::credentials::scrub_credentials_from_tokio_command(&mut reset_cmd);
+        configure_noninteractive_git_command(&mut reset_cmd);
         reset_cmd.args(["reset"]).current_dir(&git_target);
-        reset_cmd.kill_on_drop(true);
         #[cfg(windows)]
         {
             #[allow(unused_imports)]
             use std::os::windows::process::CommandExt;
             reset_cmd.creation_flags(CREATE_NO_WINDOW);
         }
-        match tokio::time::timeout(GIT_RESET_TIMEOUT, reset_cmd.output()).await {
-            Ok(Ok(output)) if output.status.success() => {}
-            Ok(Ok(output)) => {
+        match command_output_with_timeout(&mut reset_cmd, GIT_RESET_TIMEOUT).await {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => {
                 log::warn!(
                     "[entity_creation] fallback git reset failed for {}: {}",
                     url,
                     String::from_utf8_lossy(&output.stderr).trim()
                 );
             }
-            Ok(Err(e)) => {
+            Err(TimedCommandError::Io(e)) => {
                 log::warn!(
                     "[entity_creation] failed to spawn fallback git reset for {}: {}",
                     url,
                     e
                 );
             }
-            Err(_) => {
+            Err(TimedCommandError::Timeout) => {
                 log::warn!(
                     "[entity_creation] fallback git reset timed out after {} seconds for {}",
                     GIT_RESET_TIMEOUT.as_secs(),
@@ -4497,6 +4649,118 @@ mod tests {
     fn git_cli_path_preserves_non_windows_path() {
         let path = Path::new("/tmp/repo-Hello-World");
         assert_eq!(git_cli_path(path), path);
+    }
+
+    #[test]
+    fn git_clone_commands_disable_interactive_credential_prompts() {
+        let mut command = tokio::process::Command::new("git");
+        configure_noninteractive_git_command(&mut command);
+
+        let env_value = |key: &str| {
+            command
+                .as_std()
+                .get_envs()
+                .find(|(name, _)| *name == std::ffi::OsStr::new(key))
+                .and_then(|(_, value)| value)
+                .map(std::ffi::OsStr::to_os_string)
+        };
+        assert_eq!(
+            env_value("GIT_TERMINAL_PROMPT"),
+            Some(std::ffi::OsString::from("0"))
+        );
+        assert_eq!(
+            env_value("GCM_INTERACTIVE"),
+            Some(std::ffi::OsString::from("never"))
+        );
+    }
+
+    #[test]
+    fn failed_clone_removes_target_created_by_that_attempt() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("repo-private");
+        std::fs::create_dir_all(target.join(".git")).expect("partial clone");
+        std::fs::write(target.join(".git").join("HEAD"), b"partial").expect("partial HEAD");
+
+        let original = "git clone failed: authentication required".to_string();
+        let returned = finish_failed_clone(&target, false, original.clone());
+
+        assert_eq!(returned, original);
+        assert!(
+            !target.exists(),
+            "a target created by the failed attempt must be removed"
+        );
+    }
+
+    #[test]
+    fn failed_clone_preserves_a_target_that_predated_the_attempt() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("repo-private");
+        std::fs::create_dir_all(target.join(".git")).expect("pre-existing target");
+        std::fs::write(target.join("user-file"), b"keep").expect("pre-existing content");
+
+        let original = "git clone failed".to_string();
+        let returned = finish_failed_clone(&target, true, original.clone());
+
+        assert_eq!(returned, original);
+        assert!(target.join("user-file").is_file());
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn command_timeout_kills_the_complete_process_group() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let helper_pid_path = temp.path().join("helper.pid");
+        let mut command = tokio::process::Command::new("sh");
+        configure_noninteractive_git_command(&mut command);
+        command
+            .env("AC_TEST_HELPER_PID_PATH", &helper_pid_path)
+            .args([
+                "-c",
+                "sleep 30 & echo $! > \"$AC_TEST_HELPER_PID_PATH\"; wait",
+            ]);
+
+        let result = command_output_with_timeout(&mut command, Duration::from_millis(250)).await;
+
+        assert!(matches!(result, Err(TimedCommandError::Timeout)));
+        let helper_pid: i32 = std::fs::read_to_string(&helper_pid_path)
+            .expect("helper pid")
+            .trim()
+            .parse()
+            .expect("numeric helper pid");
+        let mut helper_is_gone = false;
+        for _ in 0..50 {
+            let probe = unsafe { libc::kill(helper_pid, 0) };
+            if probe != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+                helper_is_gone = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            helper_is_gone,
+            "the helper process must not survive its command's timeout"
+        );
+    }
+
+    #[tokio::test]
+    async fn clone_missing_reports_a_preexisting_incomplete_target() {
+        let workgroup = tempfile::tempdir().expect("workgroup");
+        let target = workgroup.path().join("repo-private");
+        std::fs::create_dir_all(target.join(".git")).expect("partial target");
+        let repos = vec![RepoAssignment {
+            url: "https://example.invalid/private.git".to_string(),
+            agents: Vec::new(),
+        }];
+
+        let errors = clone_missing_repos_for_workgroup(workgroup.path(), &repos).await;
+
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].url, repos[0].url);
+        assert!(errors[0].error.contains("already exists but is incomplete"));
+        assert!(
+            target.exists(),
+            "a directory from an earlier attempt must not be deleted implicitly"
+        );
     }
 
     #[test]
