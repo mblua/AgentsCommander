@@ -1055,6 +1055,74 @@ fn build_title_prompt_appendage(_cwd: &str) -> Result<Option<String>, String> {
     Ok(None)
 }
 
+/// #1063: test-only finite barriers that pause a real session create at the two
+/// points a deletion race needs: after the pending row is inserted and before the
+/// config-seed project gate (`before_project_gate`), and after the seed transaction
+/// and before PTY spawn/finalization (`after_seed_before_pty`). Barriers are keyed
+/// by the create's normalized working directory, so concurrently running create
+/// tests never take each other's barrier, and they exist only in `#[cfg(test)]`
+/// builds, so production create is unchanged and stays non-emitting.
+#[cfg(test)]
+pub(crate) mod seed_race_barriers {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::Notify;
+
+    /// A one-shot rendezvous: the create signals `reached` when it hits the barrier,
+    /// then awaits `release`. The controlling test awaits `reached`, interleaves its
+    /// deletion, and finally signals `release`.
+    #[derive(Default)]
+    pub(crate) struct SeedRaceBarrier {
+        pub(crate) reached: Notify,
+        pub(crate) release: Notify,
+    }
+
+    type BarrierMap = Mutex<Option<HashMap<String, Arc<SeedRaceBarrier>>>>;
+
+    static BEFORE_PROJECT_GATE: BarrierMap = Mutex::new(None);
+    static AFTER_SEED_BEFORE_PTY: BarrierMap = Mutex::new(None);
+
+    fn install(slot: &BarrierMap, key: &str) -> Arc<SeedRaceBarrier> {
+        let barrier = Arc::new(SeedRaceBarrier::default());
+        slot.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_or_insert_with(HashMap::new)
+            .insert(key.to_string(), barrier.clone());
+        barrier
+    }
+
+    async fn hit(slot: &BarrierMap, key: &str) {
+        let barrier = slot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+            .and_then(|map| map.remove(key));
+        if let Some(barrier) = barrier {
+            barrier.reached.notify_one();
+            barrier.release.notified().await;
+        }
+    }
+
+    /// Arm the `before_project_gate` barrier for the create whose normalized cwd is
+    /// `key`; the returned handle observes `reached` and drives `release`.
+    pub(crate) fn install_before_project_gate(key: &str) -> Arc<SeedRaceBarrier> {
+        install(&BEFORE_PROJECT_GATE, key)
+    }
+
+    /// Arm the `after_seed_before_pty` barrier for the create whose normalized cwd is `key`.
+    pub(crate) fn install_after_seed_before_pty(key: &str) -> Arc<SeedRaceBarrier> {
+        install(&AFTER_SEED_BEFORE_PTY, key)
+    }
+
+    pub(crate) async fn hit_before_project_gate(key: &str) {
+        hit(&BEFORE_PROJECT_GATE, key).await;
+    }
+
+    pub(crate) async fn hit_after_seed_before_pty(key: &str) {
+        hit(&AFTER_SEED_BEFORE_PTY, key).await;
+    }
+}
+
 /// Core session creation logic shared by the Tauri command and the restore path.
 /// Creates a session record, spawns a PTY, and emits the session_created event.
 /// Auto-detects agent from shell command if not provided, and auto-injects provider-specific
@@ -1546,6 +1614,14 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                 .await
                 .map_err(|error| error.to_string())?;
             session.communication = Some(communication);
+        }
+
+        // #1063 test-only barrier: the pending row now exists and is visible to a
+        // deletion's pending-inclusive snapshot; pause here before any config-seed
+        // project gate so a delete can interleave deterministically. No-op in production.
+        #[cfg(test)]
+        {
+            seed_race_barriers::hit_before_project_gate(&cwd).await;
         }
 
         if let Err(e) =
@@ -2073,6 +2149,15 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                     return Err(error);
                 }
             }
+        }
+
+        // #1063 test-only barrier: the seed transaction (if any) has acquired and
+        // released the project gate, but the create is still pending and unfinalized,
+        // so a deletion's pending-inclusive snapshot must still observe it. No-op in
+        // production.
+        #[cfg(test)]
+        {
+            seed_race_barriers::hit_after_seed_before_pty(&cwd).await;
         }
 
         let viewport = viewport.unwrap_or(PtyViewport::DEFAULT);
@@ -5791,6 +5876,101 @@ mod tests {
         app.state::<crate::session::selection::SelectionCoordinator>()
             .close_and_join()
             .await;
+    }
+
+    // #1063: while a real create is paused at `before_project_gate` with its pending
+    // row inserted, the deletion-only pending-inclusive snapshot must observe its
+    // working directory even though every public read hides it. This is the exact
+    // property the Agent Matrix delete recheck relies on.
+    #[tokio::test]
+    async fn before_project_gate_barrier_exposes_pending_create_to_deletion_snapshot_only() {
+        let cwd = tempfile::tempdir().unwrap();
+        let cwd_str = cwd.path().to_string_lossy().into_owned();
+        // The create normalizes its cwd; key the barriers by the same value.
+        let barrier_key = crate::path_utils::normalize_windows_verbatim_path(&cwd_str);
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let backend = Arc::new(GatedSpawnBackend::new(started_tx, release_rx, false));
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend,
+        )));
+        let app = session_test_app(
+            test_settings(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+
+        let before_gate = super::seed_race_barriers::install_before_project_gate(&barrier_key);
+        let after_seed = super::seed_race_barriers::install_after_seed_before_pty(&barrier_key);
+
+        let create = {
+            let app = app.handle().clone();
+            let session_mgr = Arc::clone(&session_mgr);
+            let pty_mgr = Arc::clone(&pty_mgr);
+            let cwd_str = cwd_str.clone();
+            tokio::spawn(async move {
+                super::create_session_inner(
+                    &app,
+                    &session_mgr,
+                    &pty_mgr,
+                    "codex".to_string(),
+                    Vec::new(),
+                    cwd_str,
+                    Some("race fixture".to_string()),
+                    None,
+                    None,
+                    true,
+                    Vec::new(),
+                    true,
+                    None,
+                    None,
+                    CreateSelectionIntent::User,
+                )
+                .await
+            })
+        };
+
+        let assert_pending_visible_to_deletion_only = || {
+            let session_mgr = Arc::clone(&session_mgr);
+            let cwd_str = cwd_str.clone();
+            async move {
+                assert!(
+                    session_mgr.read().await.list_sessions().await.is_empty(),
+                    "the pending create must stay hidden from public reads"
+                );
+                let workdirs = tokio::task::spawn_blocking(move || {
+                    session_mgr
+                        .blocking_read()
+                        .live_working_directories_for_deletion_blocking()
+                })
+                .await
+                .unwrap();
+                assert!(
+                    workdirs.iter().any(|dir| dir == &cwd_str),
+                    "the deletion-only snapshot must include the pending create workdir; got {workdirs:?}"
+                );
+            }
+        };
+
+        // Paused at before_project_gate, pending row inserted.
+        before_gate.reached.notified().await;
+        assert_pending_visible_to_deletion_only().await;
+        before_gate.release.notify_one();
+
+        // Paused at after_seed_before_pty, still pending and unfinalized.
+        after_seed.reached.notified().await;
+        assert_pending_visible_to_deletion_only().await;
+        after_seed.release.notify_one();
+
+        // Release the create and drive its PTY spawn to completion.
+        started_rx.await.unwrap();
+        release_tx.send(()).unwrap();
+        create
+            .await
+            .expect("join create")
+            .expect("create completes");
+        close_test_coordinator(&app).await;
     }
 
     async fn create_manual_cascade_fixture(

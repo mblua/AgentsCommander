@@ -305,6 +305,29 @@ impl SessionManager {
             .collect()
     }
 
+    /// Deletion-only pending-inclusive working-directory snapshot (#1063, plan
+    /// sections 5.4/6.3/11.32). The caller has already acquired the outer
+    /// `Arc<tokio::sync::RwLock<SessionManager>>::blocking_read`; this method takes
+    /// exactly one inner `SessionManagerState::blocking_read`, walks the stable
+    /// `order`, and returns cloned working directories for every non-`Exited` row.
+    ///
+    /// Unlike every public read (e.g. `list_sessions`), it deliberately does NOT
+    /// filter `pending_create`: a pending create whose workdir is reserved under a
+    /// directory being deleted must still block a reversible delete. It returns no
+    /// id, name, status, pending flag, or `SessionInfo` and never crosses IPC. It
+    /// must have exactly one production reference (Agent Matrix deletion) and must
+    /// never become a second manager lock hierarchy or a selection owner.
+    pub(crate) fn live_working_directories_for_deletion_blocking(&self) -> Vec<String> {
+        let state = self.state.blocking_read();
+        state
+            .order
+            .iter()
+            .filter_map(|id| state.sessions.get(id))
+            .filter(|session| !matches!(session.status, SessionStatus::Exited(_)))
+            .map(|session| session.working_directory.clone())
+            .collect()
+    }
+
     pub async fn set_is_root_agent(&self, id: Uuid, value: bool) {
         let mut state = self.state.write().await;
         if !state.pending_create.contains_key(&id) {
@@ -1684,6 +1707,26 @@ impl SessionManager {
         }
     }
 
+    /// #1063: insert a pending create (hidden from public reads, visible to the
+    /// deletion-only snapshot) at `working_directory`, for cross-module deletion
+    /// race tests.
+    pub(crate) async fn insert_pending_session_for_test(&self, working_directory: String) -> Uuid {
+        let (session, _binding) = self
+            .create_transaction_pending_session(
+                "sh".to_string(),
+                Vec::new(),
+                working_directory,
+                None,
+                None,
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("insert pending session for test");
+        session.id
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn create_session(
         &self,
@@ -1913,6 +1956,92 @@ mod tests {
             .await
             .expect("session should still exist");
         assert_eq!(stored.effective_shell_args, Some(effective));
+    }
+
+    // #1063: the deletion-only snapshot is pending-inclusive (unlike every public
+    // read), excludes `Exited` rows, and returns working directories only.
+    #[tokio::test]
+    async fn deletion_snapshot_is_pending_inclusive_and_excludes_exited() {
+        let mgr = SessionManager::new();
+        let _live = mgr
+            .create_session(
+                "sh".to_string(),
+                Vec::new(),
+                "C:\\live".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create live");
+        let (_pending, _binding) = mgr
+            .create_transaction_pending_session(
+                "sh".to_string(),
+                Vec::new(),
+                "C:\\pending".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create pending");
+        let exited = mgr
+            .create_session(
+                "sh".to_string(),
+                Vec::new(),
+                "C:\\exited".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create exited");
+        mgr.state
+            .write()
+            .await
+            .sessions
+            .get_mut(&exited.id)
+            .expect("exited session present")
+            .status = SessionStatus::Exited(0);
+
+        let public: Vec<String> = mgr
+            .list_sessions()
+            .await
+            .into_iter()
+            .map(|session| session.working_directory)
+            .collect();
+        assert!(public.contains(&"C:\\live".to_string()));
+        assert!(
+            !public.contains(&"C:\\pending".to_string()),
+            "public reads must hide the pending create"
+        );
+
+        let snapshot = {
+            let mgr = mgr.clone();
+            tokio::task::spawn_blocking(move || {
+                mgr.live_working_directories_for_deletion_blocking()
+            })
+            .await
+            .unwrap()
+        };
+        assert!(
+            snapshot.contains(&"C:\\live".to_string()),
+            "snapshot must include the live session"
+        );
+        assert!(
+            snapshot.contains(&"C:\\pending".to_string()),
+            "snapshot must include the pending create (deletion-only)"
+        );
+        assert!(
+            !snapshot.contains(&"C:\\exited".to_string()),
+            "snapshot must exclude exited sessions"
+        );
     }
 
     #[tokio::test]

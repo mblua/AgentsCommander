@@ -267,3 +267,26 @@ fn open_project_invalid_path_does_not_write_refresh() {
 
     assert!(project_refresh_request_paths(&config_dir).is_empty());
 }
+
+// #1063 Stage D stays dormant: project registration and re-open create no seed
+// manifest and never backfill one from an existing project, since the production
+// binary has no activation token.
+#[test]
+fn new_and_open_project_emit_no_seed_manifest() {
+    let tmp = Tmp::new("cli-project-registration-dormant");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, &[]);
+    let project = tmp.path().join("ProjectAlpha");
+    let project_arg = project.to_string_lossy().to_string();
+
+    run_success(&bin, &["new-project", &project_arg]);
+    assert!(project.join(".ac").is_dir());
+    // A subsequent open of the now-registered project is a no-op registration.
+    run_success(&bin, &["open-project", &project_arg]);
+
+    assert!(
+        !project.join(".ac").join("seed-manifest.toml").exists(),
+        "project registration/open must not emit or backfill a seed manifest (dormant until Stage F)"
+    );
+}

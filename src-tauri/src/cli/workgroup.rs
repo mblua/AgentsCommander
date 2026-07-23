@@ -6,10 +6,11 @@ use serde::Serialize;
 
 use crate::cli::create_agent_matrix::{write_project_refresh_request, ProjectRefreshRequest};
 use crate::commands::entity_creation::{
-    check_workgroup_repos_dirty, clone_missing_repos_for_workgroup, create_workgroup_on_disk,
-    list_workgroup_dirs, read_team_config, resolve_agent_ref, sanitize_name,
-    validate_delete_root_not_link_or_reparse, validate_existing_name, RepoAssignment,
-    TeamConfigResult, WgDeleteOutcome, WorkgroupDiskCreateArgs,
+    acquire_lifecycle_project_gate, check_workgroup_repos_dirty, clone_missing_repos_for_workgroup,
+    create_workgroup_on_disk, list_workgroup_dirs, prune_workgroup_config_scope, read_team_config,
+    resolve_agent_ref, sanitize_name, validate_delete_root_not_link_or_reparse,
+    validate_existing_name, RepoAssignment, TeamConfigResult, WgDeleteOutcome,
+    WorkgroupDiskCreateArgs,
 };
 use crate::config::projects::resolve_project_reference;
 use crate::config::workspace::existing_workspace_dir;
@@ -242,6 +243,28 @@ fn add(args: WorkgroupAddArgs) -> Result<(), String> {
 }
 
 fn remove(args: WorkgroupRemoveArgs) -> Result<(), String> {
+    // Production: dormant (no activation token) and no lock-order test barrier.
+    remove_hooked(args, None, |_| {})
+}
+
+/// CLI workgroup removal with the #1063 project-only lock order.
+///
+/// Workgroup deletion is a project-only mutation: it acquires the project
+/// seed-manifest gate before the atomic rename and NEVER acquires the
+/// `TeamConfigMutationGuard` (plan sections 5.4/6.3). It prunes `Deleted`/`Partial`
+/// logical paths while holding the gate, then releases the gate before converting
+/// the structured outcome into the CLI success/error contract or formatting an
+/// error. `remove` is synchronous, so no guard ever crosses `.await`.
+///
+/// `activation` is `None` in production (dormant); tests pass
+/// `Some(ManifestActivationToken::for_test())`. `after_project_acquired` is a
+/// `#[cfg(test)]` inversion barrier that fires after the project gate is held;
+/// production passes a no-op.
+fn remove_hooked(
+    args: WorkgroupRemoveArgs,
+    activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
+    after_project_acquired: impl FnOnce(&Path),
+) -> Result<(), String> {
     validate_existing_name(&args.workgroup, "Workgroup")?;
     let project_path = resolve_cli_project(&args.project)?;
     let workspace_dir = resolve_cli_workspace(&project_path)?;
@@ -262,9 +285,18 @@ fn remove(args: WorkgroupRemoveArgs) -> Result<(), String> {
             ));
         }
     }
-    match cli_remove_refresh_decision(crate::commands::entity_creation::try_atomic_delete_wg(
-        &wg_dir,
-    ))? {
+
+    // Project-only gate: acquire before the atomic rename, prune Deleted/Partial
+    // while held, then release before formatting the outcome. Never take the team guard.
+    let mut project_gate = acquire_lifecycle_project_gate(&project_path)?;
+    after_project_acquired(&workspace_dir);
+    let outcome = crate::commands::entity_creation::try_atomic_delete_wg(&wg_dir);
+    if outcome.logical_path_removed() {
+        prune_workgroup_config_scope(project_gate.as_mut(), activation, &args.workgroup);
+    }
+    drop(project_gate);
+
+    match cli_remove_refresh_decision(outcome)? {
         RemoveRefreshDecision::EmitWorkgroupRemoved => {}
     }
     // (#621) Drop the workgroup's coordinator_clocks keys. CLI is its own process,
@@ -582,5 +614,98 @@ mod tests {
             vec![75]
         );
         assert!(list_workgroup_dirs(&workspace).is_empty());
+    }
+
+    // #1063 Stage D-owned exact ignored CHILD HELPER for the CLI workgroup
+    // cross-process lock-order inversion. Frozen fully-qualified name (a Stage E
+    // parent spawns this verbatim via `current_exe --exact <name> --ignored`):
+    //   crate::cli::workgroup::tests::cli_workgroup_lock_order_inversion_child
+    // No-ops (no guard, no mutation) unless the child-mode action + per-spawn nonce
+    // + control dir are all supplied; when driven, it calls the real private
+    // `remove_hooked` (project-only) and drives the `after_project_acquired` barrier.
+    #[test]
+    #[ignore]
+    fn cli_workgroup_lock_order_inversion_child() {
+        use crate::cli::team::stage_d_lock_order_child as child;
+        let Some(ctx) = child::child_context(child::WORKGROUP_ACTION) else {
+            return;
+        };
+        let project = ctx.build_workgroup_fixture();
+        let args = WorkgroupRemoveArgs {
+            project,
+            workgroup: "wg-1-dev-team".to_string(),
+            force_dirty: false,
+        };
+        let result = remove_hooked(args, None, |_workspace: &Path| ctx.report_and_wait());
+        if let Err(error) = &result {
+            println!("STAGE_D_LOCK_ORDER_ERROR {} workgroup {}", ctx.nonce, error);
+        }
+        println!(
+            "STAGE_D_LOCK_ORDER_DONE {} workgroup ok={}",
+            ctx.nonce,
+            result.is_ok()
+        );
+    }
+
+    // #1063: prove the driven project-only lock-order path in-process (no
+    // `current_exe` parent - that machinery is Stage E). Env-guarded and `#[ignore]`
+    // so the parallel `--lib` regression is untouched. Like the member driver it
+    // no-ops unless `DRIVE_VAR` is set, so a bare `cargo test --lib -- --ignored` run
+    // never drives it. Enable and isolate it deliberately (it pins the once-cached
+    // config dir, so it must own the process):
+    // `AC_STAGE_D_LOCK_ORDER_DRIVE=1 cargo test --lib -- --ignored --test-threads=1
+    // --exact cli::workgroup::tests::cli_workgroup_lock_order_inversion_driver`.
+    #[test]
+    #[ignore]
+    fn cli_workgroup_lock_order_inversion_driver() {
+        use crate::cli::team::stage_d_lock_order_child::{
+            driver_enabled, EnvGuard, ACTION_VAR, CONTROL_DIR_VAR, NONCE_VAR, WORKGROUP_ACTION,
+        };
+        if !driver_enabled() {
+            return;
+        }
+        let control = tempfile::tempdir().expect("tempdir");
+        let nonce = "driver-workgroup";
+        let _guard = EnvGuard::capture(&[
+            ACTION_VAR,
+            NONCE_VAR,
+            CONTROL_DIR_VAR,
+            "AGENTSCOMMANDER_TEST_CONFIG_DIR",
+        ]);
+        std::env::set_var(ACTION_VAR, WORKGROUP_ACTION);
+        std::env::set_var(NONCE_VAR, nonce);
+        std::env::set_var(CONTROL_DIR_VAR, control.path());
+
+        let reached = control.path().join(format!("reached-{nonce}"));
+        let release = control.path().join(format!("release-{nonce}"));
+        let releaser = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            while std::time::Instant::now() < deadline && !reached.exists() {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert!(
+                reached.exists(),
+                "child never reported reaching the barrier"
+            );
+            std::fs::write(&release, b"go").expect("write release");
+        });
+
+        cli_workgroup_lock_order_inversion_child();
+        releaser.join().expect("join releaser");
+
+        assert!(
+            control.path().join(format!("reached-{nonce}")).exists(),
+            "the barrier must have fired after the project gate was acquired"
+        );
+        let wg_dir = control
+            .path()
+            .join(format!("fixture-{nonce}"))
+            .join("Project")
+            .join(".ac")
+            .join("wg-1-dev-team");
+        assert!(
+            !wg_dir.exists(),
+            "the workgroup must be removed after the barrier releases"
+        );
     }
 }

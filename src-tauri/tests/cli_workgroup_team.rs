@@ -1164,8 +1164,7 @@ fn list_peers_surfaces_context_percent_for_matching_live_session() {
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
-        let peers: serde_json::Value =
-            serde_json::from_slice(&out.stdout).expect("peers json");
+        let peers: serde_json::Value = serde_json::from_slice(&out.stdout).expect("peers json");
         let mut saw_dev = false;
         for peer in peers.as_array().expect("array") {
             if peer["name"] == "ProjectAlpha:wg-1-dev-team/dev-rust" {
@@ -1182,7 +1181,10 @@ fn list_peers_surfaces_context_percent_for_matching_live_session() {
                 );
             }
         }
-        assert!(saw_dev, "{verb}: dev-rust peer missing from output: {peers}");
+        assert!(
+            saw_dev,
+            "{verb}: dev-rust peer missing from output: {peers}"
+        );
     }
 }
 
@@ -1438,4 +1440,127 @@ fn workgroup_add_missing_team_without_legacy_flags_errors() {
     );
     assert!(stderr.contains("Team 'missing-team' config not found"));
     assert!(stderr.contains("Create it first with `team create`"));
+}
+
+// #1063 Stage D stays dormant: the production CLI updates the seed manifest only
+// after actual logical removal, but with no production activation token it never
+// emits one. These black-box tests assert public outcomes and the absence of a
+// seed manifest; they never expect the activation token or private hooks.
+#[test]
+fn workgroup_remove_emits_no_seed_manifest() {
+    let tmp = Tmp::new("cli-workgroup-remove-dormant");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    let project = project_with_agents(tmp.path(), &["architect"]);
+
+    run_json(
+        &bin,
+        &[
+            "workgroup",
+            "add",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Dev Team",
+            "--title",
+            "Build",
+            "--coordinator",
+            "architect",
+        ],
+    );
+    let wg_dir = project.join(".ac").join("wg-1-dev-team");
+    assert!(wg_dir.is_dir());
+
+    let removed = run_json_machine(
+        &bin,
+        &[
+            "workgroup",
+            "remove",
+            "--project",
+            "ProjectAlpha",
+            "--workgroup",
+            "wg-1-dev-team",
+        ],
+    );
+    assert_eq!(removed["removed"], true);
+    assert!(!wg_dir.exists());
+    assert!(
+        !project.join(".ac").join("seed-manifest.toml").exists(),
+        "production workgroup removal must not emit a seed manifest (dormant until Stage F)"
+    );
+}
+
+#[test]
+fn team_remove_member_emits_no_seed_manifest() {
+    let tmp = Tmp::new("cli-team-remove-member-dormant");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    let project = project_with_agents(tmp.path(), &["architect", "dev-rust"]);
+
+    run_json(
+        &bin,
+        &[
+            "team",
+            "create",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Dev Team",
+            "--coordinator",
+            "architect",
+        ],
+    );
+    run_json(
+        &bin,
+        &[
+            "workgroup",
+            "add",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Dev Team",
+            "--title",
+            "Build",
+        ],
+    );
+    run_json(
+        &bin,
+        &[
+            "team",
+            "add-member",
+            "--project",
+            "ProjectAlpha",
+            "--workgroup",
+            "wg-1-dev-team",
+            "--agent",
+            "dev-rust",
+        ],
+    );
+    let replica = project
+        .join(".ac")
+        .join("wg-1-dev-team")
+        .join("__agent_dev-rust");
+    assert!(replica.join("config.json").is_file());
+
+    let removed = run_json_machine(
+        &bin,
+        &[
+            "team",
+            "remove-member",
+            "--project",
+            "ProjectAlpha",
+            "--workgroup",
+            "wg-1-dev-team",
+            "--agent",
+            "dev-rust",
+        ],
+    );
+    assert_eq!(removed["removed"], true);
+    assert!(!replica.exists());
+    assert!(
+        !project.join(".ac").join("seed-manifest.toml").exists(),
+        "production team-member removal must not emit a seed manifest (dormant until Stage F)"
+    );
 }
