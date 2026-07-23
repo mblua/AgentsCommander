@@ -896,6 +896,16 @@ export interface AcWorkgroup {
   teamName?: string;
 }
 
+export interface WorkgroupCloneError {
+  url: string;
+  error: string;
+}
+
+export interface WorkgroupCloneResult {
+  path: string;
+  cloneErrors: WorkgroupCloneError[];
+}
+
 export interface WorkgroupGroup {
   id: string;
   name: string;
@@ -1315,5 +1325,4 @@ export interface SpecBoardChangedEvent {
   versionCount: number;
   external: boolean;
 }
-
 

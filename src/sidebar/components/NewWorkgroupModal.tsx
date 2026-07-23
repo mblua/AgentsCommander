@@ -1,7 +1,27 @@
 import { Component, createSignal, createMemo, For, Show, onCleanup } from "solid-js";
 import type { AcTeam } from "../../shared/types";
 import { EntityAPI } from "../../shared/ipc";
+import { toastStore } from "../../shared/stores/toasts";
 import { projectStore } from "../stores/project";
+
+function redactUrlCredentials(url: string): string {
+  return url.replace(/^(https?:\/\/)[^/@\s]+@/i, "$1<credentials>@");
+}
+
+function formatCloneFailureMessage(
+  workgroupPath: string,
+  errors: { url: string; error: string }[],
+): string {
+  const details = errors
+    .map((failure) => `- ${redactUrlCredentials(failure.url)}: ${failure.error}`)
+    .join("\n");
+  const repoLabel = errors.length === 1 ? "repository" : "repositories";
+  return [
+    `Workgroup created at ${workgroupPath}, but ${errors.length} ${repoLabel} failed to clone:`,
+    details,
+    "For private repositories, configure non-interactive Git credentials or use an SSH URL.",
+  ].join("\n");
+}
 
 const NewWorkgroupModal: Component<{
   projectPath: string;
@@ -22,12 +42,15 @@ const NewWorkgroupModal: Component<{
     setCreating(true);
     setError("");
     try {
-      await EntityAPI.createWorkgroup(
+      const result = await EntityAPI.createWorkgroup(
         props.projectPath,
         selectedTeam(),
         taskTitle().trim()
       );
       await projectStore.reloadProject(props.projectPath);
+      if (result.cloneErrors.length > 0) {
+        toastStore.error(formatCloneFailureMessage(result.path, result.cloneErrors));
+      }
       props.onClose();
       // intentionally do NOT clear creating() — modal unmounts; any in-flight
       // keydown event in the close transition stays guarded.

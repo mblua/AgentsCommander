@@ -75,6 +75,7 @@ import type {
   ApiClientMintRequest,
   ApiClientMintResponse,
   SessionSelection,
+  WorkgroupCloneResult,
 } from "./types";
 import { decodeSessionSelection } from "./session-selection";
 
@@ -960,7 +961,7 @@ export const EntityAPI = {
       .then(normalizeTeamConfigResult),
 
   createWorkgroup: (projectPath: string, teamName: string, taskTitle?: string) =>
-    transport.invoke<void>("create_workgroup", {
+    transport.invoke<WorkgroupCloneResult>("create_workgroup", {
       projectPath,
       teamName,
       taskTitle: taskTitle ?? null,
