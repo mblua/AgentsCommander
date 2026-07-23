@@ -1442,12 +1442,13 @@ fn workgroup_add_missing_team_without_legacy_flags_errors() {
     assert!(stderr.contains("Create it first with `team create`"));
 }
 
-// #1063 Stage D stays dormant: the production CLI updates the seed manifest only
-// after actual logical removal, but with no production activation token it never
-// emits one. These black-box tests assert public outcomes and the absence of a
-// seed manifest; they never expect the activation token or private hooks.
+// #1065 Stage F: these projects never spawn a session, so config seed never runs
+// and no config scope is recorded. CLI removal therefore prunes nothing and, by the
+// empty-transaction rule, never spuriously creates a seed manifest. The
+// `workgroup_remove_prunes_recorded_config_scope` test below proves the prune fires
+// when a scope IS recorded. Black-box: public outcomes only, no token or hook.
 #[test]
-fn workgroup_remove_emits_no_seed_manifest() {
+fn workgroup_remove_does_not_create_a_manifest_when_no_scope_was_recorded() {
     let tmp = Tmp::new("cli-workgroup-remove-dormant");
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
@@ -1487,13 +1488,13 @@ fn workgroup_remove_emits_no_seed_manifest() {
     assert!(!wg_dir.exists());
     assert!(
         !project.join(".ac").join("seed-manifest.toml").exists(),
-        "production workgroup removal must not emit a seed manifest (dormant until Stage F)"
+        "removing a workgroup with no recorded config scope must not create a seed manifest"
     );
 }
 
 #[test]
-fn team_remove_member_emits_no_seed_manifest() {
-    let tmp = Tmp::new("cli-team-remove-member-dormant");
+fn team_remove_member_does_not_create_a_manifest_when_no_scope_was_recorded() {
+    let tmp = Tmp::new("cli-team-remove-member-noop");
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
     write_settings(&config_dir, tmp.path());
@@ -1561,17 +1562,103 @@ fn team_remove_member_emits_no_seed_manifest() {
     assert!(!replica.exists());
     assert!(
         !project.join(".ac").join("seed-manifest.toml").exists(),
-        "production team-member removal must not emit a seed manifest (dormant until Stage F)"
+        "removing a team member with no recorded config scope must not create a seed manifest"
     );
 }
 
-// #1064 Stage E: CLI workgroup removal produces the correct public outcome while
-// production stays dormant - no seed manifest is emitted or pruned (plan section
-// 8.2 cli_workgroup_team row, acceptance items 10/22/46). Complements the member
-// removal dormancy coverage above; public-outcome only, no token or hook.
+// #1065 Stage F: with a pre-recorded config scope under the member's replica,
+// production CLI `team remove-member` acquires the project gate (then the
+// team-config guard), removes the replica, and prunes that scope's rows in the same
+// transaction (acceptance items 10/22/43). End-to-end proof that the sole production
+// activation token is threaded through CLI member removal. Public-outcome only.
 #[test]
-fn workgroup_removal_emits_no_seed_manifest() {
-    let tmp = Tmp::new("cli-wg-remove-dormant");
+fn team_remove_member_prunes_recorded_replica_config_scope() {
+    let tmp = Tmp::new("cli-team-remove-member-prune");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    let project = project_with_agents(tmp.path(), &["architect", "dev-rust"]);
+
+    run_json(
+        &bin,
+        &[
+            "team",
+            "create",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Dev Team",
+            "--coordinator",
+            "architect",
+        ],
+    );
+    run_json(
+        &bin,
+        &[
+            "workgroup",
+            "add",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Dev Team",
+            "--title",
+            "Build",
+        ],
+    );
+    run_json(
+        &bin,
+        &[
+            "team",
+            "add-member",
+            "--project",
+            "ProjectAlpha",
+            "--workgroup",
+            "wg-1-dev-team",
+            "--agent",
+            "dev-rust",
+        ],
+    );
+    let replica = project
+        .join(".ac")
+        .join("wg-1-dev-team")
+        .join("__agent_dev-rust");
+    assert!(replica.join("config.json").is_file());
+    let manifest = project.join(".ac").join("seed-manifest.toml");
+    write_recorded_config_manifest(&manifest, "wg-1-dev-team", "dev-rust");
+
+    let removed = run_json_machine(
+        &bin,
+        &[
+            "team",
+            "remove-member",
+            "--project",
+            "ProjectAlpha",
+            "--workgroup",
+            "wg-1-dev-team",
+            "--agent",
+            "dev-rust",
+        ],
+    );
+    assert_eq!(removed["removed"], true);
+    assert!(!replica.exists());
+    let after = std::fs::read_to_string(&manifest).expect("manifest persists after member removal");
+    assert!(
+        !after.contains("__agent_dev-rust"),
+        "the member's replica config scope must be pruned: {after}"
+    );
+    assert!(
+        after.contains("files = []"),
+        "pruning the only row leaves a valid empty v1 manifest: {after}"
+    );
+}
+
+// #1065 Stage F: creating a workgroup records no manifest (config seed runs at
+// session spawn, not at workgroup creation), and removing it with no recorded scope
+// is a byte-stable no-op (plan section 8.2 cli_workgroup_team row, acceptance items
+// 10/22/46). Public-outcome only, no token or hook.
+#[test]
+fn workgroup_creation_and_scopeless_removal_leave_no_manifest() {
+    let tmp = Tmp::new("cli-wg-remove-noop");
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
     let (project, wg_dir) = create_basic_workgroup(tmp.path(), &bin, &config_dir);
@@ -1596,6 +1683,70 @@ fn workgroup_removal_emits_no_seed_manifest() {
     assert!(!wg_dir.exists(), "the workgroup directory is removed");
     assert!(
         !manifest.exists(),
-        "workgroup removal must not emit or prune a seed manifest (dormant until Stage F)"
+        "removing a workgroup with no recorded scope must not create or prune a manifest"
+    );
+}
+
+/// Write a valid v1 seed manifest that records a single replica config-folder scope
+/// under `<workgroup>/__agent_<agent>/.claude`, exactly as a real config-seed spawn
+/// would have. Used to prove Stage F lifecycle removal prunes a recorded scope.
+fn write_recorded_config_manifest(manifest_path: &Path, workgroup: &str, agent: &str) {
+    let manifest = format!(
+        concat!(
+            "# Managed by AgentsCommander. Diagnostic only; never grants file ownership.\n",
+            "schema_version = 1\n",
+            "coverage_version = 1\n",
+            "coverage = [\"project_context_templates\", \"replica_config_folders\"]\n",
+            "\n",
+            "[[files]]\n",
+            "path = \".ac/{workgroup}/__agent_{agent}/.claude/settings.json\"\n",
+            "path_encoding = \"utf8\"\n",
+            "kind = \"replica_config_file\"\n",
+            "scope = \"config:.ac/{workgroup}/__agent_{agent}/.claude\"\n",
+            "source = \"workspace_base\"\n",
+            "last_seeded_at = \"2026-07-16T19:41:12.456Z\"\n"
+        ),
+        workgroup = workgroup,
+        agent = agent
+    );
+    std::fs::write(manifest_path, manifest).expect("write recorded config manifest");
+}
+
+// #1065 Stage F: with a pre-recorded config scope under the workgroup, production
+// CLI removal acquires the project gate, removes the workgroup, and prunes that
+// scope's rows in the same transaction. Because it was the only row, the manifest
+// becomes a valid empty v1 file. This is the end-to-end proof that the sole
+// production activation token is threaded through CLI workgroup removal (acceptance
+// items 10/22). Public-outcome only.
+#[test]
+fn workgroup_remove_prunes_recorded_config_scope() {
+    let tmp = Tmp::new("cli-wg-remove-prune");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    let (project, wg_dir) = create_basic_workgroup(tmp.path(), &bin, &config_dir);
+    let manifest = project.join(".ac").join("seed-manifest.toml");
+    write_recorded_config_manifest(&manifest, "wg-1-dev-team", "architect");
+
+    let removed = run_json_machine(
+        &bin,
+        &[
+            "workgroup",
+            "remove",
+            "--project",
+            "ProjectAlpha",
+            "--workgroup",
+            "wg-1-dev-team",
+        ],
+    );
+    assert_eq!(removed["removed"], true);
+    assert!(!wg_dir.exists(), "the workgroup directory is removed");
+    let after = std::fs::read_to_string(&manifest).expect("manifest persists after removal");
+    assert!(
+        !after.contains("wg-1-dev-team"),
+        "the workgroup's config scope must be pruned: {after}"
+    );
+    assert!(
+        after.contains("files = []"),
+        "pruning the only row leaves a valid empty v1 manifest: {after}"
     );
 }

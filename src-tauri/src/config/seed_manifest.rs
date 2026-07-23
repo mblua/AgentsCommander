@@ -1,9 +1,16 @@
-//! Dormant v1 project seed-manifest foundation.
+//! Activated v1 project seed-manifest recorder.
 //!
-//! Stage A intentionally has no production activation token constructor and no
-//! production caller. The module is complete enough for focused tests while all
-//! filesystem mutation remains unreachable from a production build until the
-//! full publisher and lifecycle coverage is activated in a later stage.
+//! Stage F introduces the sole production [`ManifestActivationToken`] constructor
+//! ([`ManifestActivationToken::production`]) and threads it through every
+//! `coverage_version = 1` publisher and lifecycle hook named in
+//! [`V1_COVERAGE_BOUNDARIES`], so a production build now emits
+//! `.ac/seed-manifest.toml`. Stages A through E kept the module reachable only
+//! from `#[cfg(test)]` builds; that dormancy ends here. The coverage declaration
+//! is the exhaustive compile-time checklist; it is not by itself wiring evidence.
+//! Each boundary's activation/emission test in its owning module invokes the real
+//! production path and asserts the resulting manifest mutation or classified
+//! no-op, so removing an actual adapter call turns one of those tests red even
+//! while this list stays green.
 
 #![allow(dead_code)]
 
@@ -2886,6 +2893,49 @@ fn atomic_publish_manifest(
     })
 }
 
+/// #1065 Stage F: soft project-gate acquisition for the automatic, fail-soft
+/// context and config publishers (discovery scan, session read/self-heal,
+/// explicit overwrite).
+///
+/// It distinguishes the three frozen degraded cases in plan sections 5.2/6.1:
+/// * `Held`: the gate is owned; publish and record under it.
+/// * `DegradedUntracked`: a pre-contention lock capability/I-O error left no
+///   guard; the target may still publish, but unrecorded.
+/// * `Unavailable`: a contention timeout, post-contention lock I/O error, or an
+///   unsafe/reparse/identity path; skip the operation rather than race a
+///   cooperating writer or follow a substituted path.
+///
+/// The classification mirrors `commands::entity_creation::acquire_lifecycle_project_gate`
+/// (which keeps its `Result<Option<_>, String>` shape for the error-returning
+/// deletion contract); this enum form suits the fail-soft automatic publishers.
+// The `Held` variant carries the full guard, so the enum is guard-sized. This is a
+// transient return value that every caller matches and destructures immediately, so
+// the disparity is a single stack move (identical in cost to returning the guard
+// itself); boxing it would only add an allocation on the per-spawn gate-acquire path.
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum SoftProjectGate {
+    Held(ProjectSeedManifestGuard),
+    DegradedUntracked,
+    Unavailable(SeedManifestError),
+}
+
+pub(crate) fn acquire_project_gate_soft(project_root: &Path) -> SoftProjectGate {
+    match ProjectSeedManifestGuard::acquire(project_root) {
+        Ok(guard) => SoftProjectGate::Held(guard),
+        Err(
+            error @ (SeedManifestError::UnsafePath { .. }
+            | SeedManifestError::BusyTimeout { .. }
+            | SeedManifestError::LockIo {
+                saw_contention: true,
+                ..
+            }),
+        ) => SoftProjectGate::Unavailable(error),
+        // Pre-contention capability or other lock-acquisition error: preserve the
+        // existing ungated behavior as untracked degradation.
+        Err(_) => SoftProjectGate::DegradedUntracked,
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct ManifestActivationToken {
     _private: (),
@@ -2897,8 +2947,91 @@ impl ManifestActivationToken {
         Self { _private: () }
     }
 
+    /// Stage F: the sole production activation constructor.
+    ///
+    /// Constructing this token is what activates v1 seed-manifest emission. Every
+    /// production publisher and lifecycle hook enumerated in
+    /// [`V1_COVERAGE_BOUNDARIES`] threads the resulting token into the recorder;
+    /// there is deliberately no other non-test way to obtain one, so a build that
+    /// never calls this constructor cannot mutate a manifest. The struct's private
+    /// unit field keeps this the only construction path.
+    pub(crate) fn production() -> Self {
+        Self { _private: () }
+    }
+
     fn authorize(&self) {}
 }
+
+/// Exhaustive Stage F v1 activation coverage (plan section 9 item 6, acceptance
+/// item 22).
+///
+/// Every `coverage_version = 1` production publisher and lifecycle hook that
+/// threads a real [`ManifestActivationToken`] is named here exactly once, next to
+/// the module and adapter that wires it. This declaration is the compile-time
+/// checklist; it is NOT by itself wiring evidence. Each variant's activation test
+/// in the owning module invokes the real production boundary and asserts the
+/// resulting manifest mutation or classified no-op, so removing an actual adapter
+/// call turns that test red even while this list stays green (a declaration that
+/// stayed green after its adapter call was removed would be insufficient).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum V1CoverageBoundary {
+    /// `commands::ac_discovery::create_ac_project` fresh-root context creation.
+    DirectCreateAcProjectFreshRoot,
+    /// `config::seeded_context_templates` create-missing project context (also the
+    /// `config::projects` new-project registration re-ensure path).
+    ContextCreate,
+    /// `config::seeded_context_templates` recognized-update project context.
+    ContextUpdate,
+    /// `config::session_context::heal_stale_global_context_template` self-heal.
+    ContextSelfHeal,
+    /// `config::seeded_context_templates::overwrite_context_template_with_default`.
+    ContextOverwrite,
+    /// Coordinator pristine v2 -> v4 recognized update.
+    CoordinatorStatelessV2ToV4,
+    /// Coordinator pristine v3 -> v4 recognized update.
+    CoordinatorStatelessV3ToV4,
+    /// Coordinator seeded v3 -> v4 recognized update with state-version bump.
+    CoordinatorSeededV3ToV4,
+    /// `config::config_seed` exact replica config publish (whole-scope replace).
+    ConfigExactPublish,
+    /// `config::config_seed` over-bound replica config publish (scope removal only).
+    ConfigOverBoundPublish,
+    /// `config::config_seed` `FailedAfterLogicalRemoval` prior-scope removal.
+    ConfigFailedRestore,
+    /// `commands::entity_creation`/`cli::team` replica removal prune.
+    LifecycleReplicaRemoval,
+    /// `commands::entity_creation`/`cli::workgroup` workgroup removal prune.
+    LifecycleWorkgroupRemoval,
+    /// `commands::entity_creation::delete_team` team-deletion prune.
+    LifecycleTeamDeletion,
+    /// `commands::entity_creation::delete_agent_matrix` Agent Matrix prune.
+    LifecycleAgentMatrixDeletion,
+    /// Agent Matrix pending-inclusive delete protection staged-rollback prune.
+    PendingInclusiveDeleteProtection,
+}
+
+/// The exhaustive, ordered v1 coverage set. Its length equals the number of
+/// [`V1CoverageBoundary`] variants; the `v1_coverage_declaration_is_exhaustive`
+/// test enforces that a new boundary is added here and matched, so a coverage
+/// entry cannot be dropped from the checklist silently.
+pub(crate) const V1_COVERAGE_BOUNDARIES: [V1CoverageBoundary; 16] = [
+    V1CoverageBoundary::DirectCreateAcProjectFreshRoot,
+    V1CoverageBoundary::ContextCreate,
+    V1CoverageBoundary::ContextUpdate,
+    V1CoverageBoundary::ContextSelfHeal,
+    V1CoverageBoundary::ContextOverwrite,
+    V1CoverageBoundary::CoordinatorStatelessV2ToV4,
+    V1CoverageBoundary::CoordinatorStatelessV3ToV4,
+    V1CoverageBoundary::CoordinatorSeededV3ToV4,
+    V1CoverageBoundary::ConfigExactPublish,
+    V1CoverageBoundary::ConfigOverBoundPublish,
+    V1CoverageBoundary::ConfigFailedRestore,
+    V1CoverageBoundary::LifecycleReplicaRemoval,
+    V1CoverageBoundary::LifecycleWorkgroupRemoval,
+    V1CoverageBoundary::LifecycleTeamDeletion,
+    V1CoverageBoundary::LifecycleAgentMatrixDeletion,
+    V1CoverageBoundary::PendingInclusiveDeleteProtection,
+];
 
 const BLOCKING_WORK_QUEUED: u8 = 0;
 const BLOCKING_WORK_STARTED: u8 = 1;
@@ -3205,6 +3338,35 @@ impl<'a> ProjectPublicationPermit<'a> {
         }
     }
 
+    /// #1065 Stage F failed-restore path (plan sections 5.3/5.4): remove an entire
+    /// config scope's rows without adding a row or timestamp. The old destination
+    /// was renamed away and not restored, so its prior rows no longer describe
+    /// reality; this is a pure removal, never a publication and never a resource
+    /// bound. Unlike `remove_unrecordable_scope` it carries no `ResourceBoundKind`.
+    pub(crate) fn remove_config_scope(
+        self,
+        activation: &ManifestActivationToken,
+        scope: String,
+    ) -> ManifestRecordOutcome {
+        activation.authorize();
+        if let Err(error) = parse_config_scope(&scope) {
+            log::warn!(
+                "[seed_manifest] rejected invalid removal scope={} error={}",
+                scope,
+                error
+            );
+            return ManifestRecordOutcome::PublishedUnrecorded(
+                ManifestDegradedReason::InvalidCanonical,
+            );
+        }
+        match self.state {
+            ProjectPublicationPermitState::Tracked(guard) => guard.remove_config_scope(&scope),
+            ProjectPublicationPermitState::DegradedUntracked { reason, .. } => {
+                ManifestRecordOutcome::PublishedUnrecorded(reason)
+            }
+        }
+    }
+
     pub(crate) fn apply_lifecycle_filter(
         self,
         activation: &ManifestActivationToken,
@@ -3314,6 +3476,30 @@ impl ProjectSeedManifestGuard {
             }
         }
         ManifestRecordOutcome::PublishedUnrecorded(ManifestDegradedReason::ResourceBound(bound))
+    }
+
+    fn remove_config_scope(&mut self, scope: &str) -> ManifestRecordOutcome {
+        let Some(state) = self.writable_state_mut() else {
+            return ManifestRecordOutcome::PublishedUnrecorded(
+                self.snapshot
+                    .reason()
+                    .unwrap_or(ManifestDegradedReason::InvalidCanonical),
+            );
+        };
+        let journal = state.remove_scope(scope);
+        if !journal.changed() {
+            return ManifestRecordOutcome::Unchanged;
+        }
+        match self.persist_current_state() {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                if let Some(state) = self.writable_state_mut() {
+                    journal.rollback(state);
+                }
+                log_record_failure(scope, &error);
+                ManifestRecordOutcome::PublishedUnrecorded(error.degraded_reason())
+            }
+        }
     }
 
     fn apply_lifecycle_filter(&mut self, filter: ManifestLifecycleFilter) -> ManifestRecordOutcome {
@@ -4730,13 +4916,13 @@ mod tests {
     }
 
     #[test]
-    fn activation_token_has_one_test_only_constructor_and_degraded_never_records() {
+    fn degraded_permit_never_records_even_with_an_activation_token() {
         let permit = ProjectPublicationPermit::degraded_without_guard(
             ManifestDegradedReason::LockUnavailable,
         );
         assert!(!permit.is_tracked());
         let outcome = permit.record_file(
-            &ManifestActivationToken::for_test(),
+            &ManifestActivationToken::production(),
             context_row(
                 "Context.AgentsCommander.md",
                 "context:agentscommander",
@@ -4748,6 +4934,65 @@ mod tests {
             outcome,
             ManifestRecordOutcome::PublishedUnrecorded(ManifestDegradedReason::LockUnavailable)
         );
+    }
+
+    #[test]
+    fn production_activation_token_records_through_a_tracked_permit() {
+        // Stage F: the production constructor is a real, non-test activation path.
+        // A tracked permit driven by it records exactly like the test token, so
+        // production emission is genuinely wired and not a dormant no-op.
+        let (_temp, project) = setup_project();
+        let mut guard = ProjectSeedManifestGuard::acquire(&project).unwrap();
+        let outcome = guard.publication_permit().record_file(
+            &ManifestActivationToken::production(),
+            context_row(
+                "Context.AgentsCommander.md",
+                "context:agentscommander",
+                "2026-07-16T19:40:07.123Z",
+            )
+            .unwrap(),
+        );
+        assert_eq!(outcome, ManifestRecordOutcome::Recorded);
+        guard.release();
+        let disk = read_disk_state(&project);
+        assert_eq!(disk.rows.len(), 1);
+    }
+
+    #[test]
+    fn v1_coverage_declaration_is_exhaustive() {
+        // The declaration must name every coverage_version = 1 boundary exactly
+        // once. The exhaustive match makes adding a `V1CoverageBoundary` variant
+        // without listing it here (or vice versa) a compile/count failure, so the
+        // Stage F coverage checklist cannot silently drop a boundary.
+        assert_eq!(V1_COVERAGE_BOUNDARIES.len(), 16);
+        for boundary in V1_COVERAGE_BOUNDARIES {
+            // Exhaustive match: a new variant forces an update here.
+            match boundary {
+                V1CoverageBoundary::DirectCreateAcProjectFreshRoot
+                | V1CoverageBoundary::ContextCreate
+                | V1CoverageBoundary::ContextUpdate
+                | V1CoverageBoundary::ContextSelfHeal
+                | V1CoverageBoundary::ContextOverwrite
+                | V1CoverageBoundary::CoordinatorStatelessV2ToV4
+                | V1CoverageBoundary::CoordinatorStatelessV3ToV4
+                | V1CoverageBoundary::CoordinatorSeededV3ToV4
+                | V1CoverageBoundary::ConfigExactPublish
+                | V1CoverageBoundary::ConfigOverBoundPublish
+                | V1CoverageBoundary::ConfigFailedRestore
+                | V1CoverageBoundary::LifecycleReplicaRemoval
+                | V1CoverageBoundary::LifecycleWorkgroupRemoval
+                | V1CoverageBoundary::LifecycleTeamDeletion
+                | V1CoverageBoundary::LifecycleAgentMatrixDeletion
+                | V1CoverageBoundary::PendingInclusiveDeleteProtection => {}
+            }
+        }
+        // No duplicates: every declared boundary is distinct.
+        for (index, boundary) in V1_COVERAGE_BOUNDARIES.iter().enumerate() {
+            assert!(
+                !V1_COVERAGE_BOUNDARIES[index + 1..].contains(boundary),
+                "duplicate coverage boundary {boundary:?}"
+            );
+        }
     }
 
     #[test]

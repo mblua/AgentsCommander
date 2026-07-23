@@ -137,7 +137,14 @@ pub fn register_new_project(
     let store = NewProjectSettingsStore::CallerOwned;
     #[cfg(not(test))]
     let store = NewProjectSettingsStore::Production;
-    register_new_project_with_store(settings, raw_path, store)
+    // #1065 Stage F: production activates seed-manifest emission for the CLI
+    // `new-project` fresh-root registration path; a `#[cfg(test)]` lib build stays
+    // non-emitting so existing unit tests keep manifest-free temp projects.
+    #[cfg(not(test))]
+    let activation = Some(crate::config::seed_manifest::ManifestActivationToken::production());
+    #[cfg(test)]
+    let activation: Option<crate::config::seed_manifest::ManifestActivationToken> = None;
+    register_new_project_with_store(settings, raw_path, store, activation.as_ref())
 }
 
 enum NewProjectSettingsStore {
@@ -189,10 +196,15 @@ fn register_new_project_with_store(
     settings: &mut AppSettings,
     raw_path: &str,
     store: NewProjectSettingsStore,
+    activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
 ) -> Result<ProjectRegistration, ProjectError> {
-    let prepared = prepare_new_project_impl(raw_path, |workspace_dir| {
-        crate::config::session_context::create_default_context_templates(workspace_dir)
-    })?;
+    let prepared =
+        prepare_new_project_impl(raw_path, activation, |workspace_dir, on_publication| {
+            crate::config::session_context::create_default_context_templates_with_publications(
+                workspace_dir,
+                on_publication,
+            )
+        })?;
     store.refresh(settings)?;
     let before_settings = settings.clone();
     let result = commit_prepared_new_project(settings, &prepared);
@@ -231,11 +243,13 @@ fn register_new_project_with_settings_path(
     settings: &mut AppSettings,
     raw_path: &str,
     settings_path: &Path,
+    activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
 ) -> Result<ProjectRegistration, ProjectError> {
     register_new_project_with_store(
         settings,
         raw_path,
         NewProjectSettingsStore::Path(settings_path.to_path_buf()),
+        activation,
     )
 }
 
@@ -263,28 +277,50 @@ impl PreparedNewProject {
 }
 
 pub(crate) fn prepare_new_project(raw_path: &str) -> Result<PreparedNewProject, ProjectError> {
-    prepare_new_project_impl(raw_path, |workspace_dir| {
-        crate::config::session_context::create_default_context_templates(workspace_dir)
-    })
+    // #1065 Stage F: the production build activates seed-manifest emission for the
+    // GUI/web fresh-root registration path; a `#[cfg(test)]` lib build stays
+    // non-emitting so existing unit tests keep manifest-free temp projects.
+    #[cfg(not(test))]
+    let activation = Some(crate::config::seed_manifest::ManifestActivationToken::production());
+    #[cfg(test)]
+    let activation: Option<crate::config::seed_manifest::ManifestActivationToken> = None;
+    prepare_new_project_impl(
+        raw_path,
+        activation.as_ref(),
+        |workspace_dir, on_publication| {
+            crate::config::session_context::create_default_context_templates_with_publications(
+                workspace_dir,
+                on_publication,
+            )
+        },
+    )
 }
 
 fn prepare_new_project_impl<F>(
     raw_path: &str,
+    activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
     create_context_templates: F,
 ) -> Result<PreparedNewProject, ProjectError>
 where
-    F: FnOnce(&Path) -> Result<(), String>,
+    F: FnOnce(
+        &Path,
+        &mut dyn FnMut(&'static str, crate::config::seeded_context_templates::ContextPublication),
+    ) -> Result<(), String>,
 {
-    prepare_new_project_impl_with_hook(raw_path, create_context_templates, |_, _| {})
+    prepare_new_project_impl_with_hook(raw_path, activation, create_context_templates, |_, _| {})
 }
 
 fn prepare_new_project_impl_with_hook<F, H>(
     raw_path: &str,
+    activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
     create_context_templates: F,
     after_create_before_gate: H,
 ) -> Result<PreparedNewProject, ProjectError>
 where
-    F: FnOnce(&Path) -> Result<(), String>,
+    F: FnOnce(
+        &Path,
+        &mut dyn FnMut(&'static str, crate::config::seeded_context_templates::ContextPublication),
+    ) -> Result<(), String>,
     H: FnOnce(&Path, bool),
 {
     let abs = absolutise(raw_path)?;
@@ -325,7 +361,7 @@ where
         .revalidate()
         .map_err(|error| ProjectError::ProjectSetupChanged(abs.clone(), error.to_string()))?;
 
-    let guard = crate::config::seed_manifest::ProjectSeedManifestGuard::acquire(&abs)
+    let mut guard = crate::config::seed_manifest::ProjectSeedManifestGuard::acquire(&abs)
         .map_err(|error| ProjectError::ProjectSetupChanged(abs.clone(), error.to_string()))?;
     pinned_project
         .revalidate()
@@ -355,11 +391,29 @@ where
         }
     }
 
-    if let Err(e) = create_context_templates(&workspace_dir) {
-        return Err(ProjectError::ContextTemplatesCreateFailed(
-            workspace_dir.clone(),
-            e,
-        ));
+    {
+        // #1065 Stage F: record each freshly created project context template into
+        // the seed manifest at its commit-point time, under the gate held since
+        // acquisition (plan sections 5.2/6.3). `activation` is `None` for a test or
+        // unactivated caller, so the closure is a no-op and setup stays manifest-free.
+        let mut on_publication =
+            |filename: &'static str,
+             publication: crate::config::seeded_context_templates::ContextPublication| {
+                if let Some(token) = activation {
+                    crate::config::session_context::record_project_context_publication(
+                        &mut guard,
+                        token,
+                        filename,
+                        publication.published_at,
+                    );
+                }
+            };
+        if let Err(e) = create_context_templates(&workspace_dir, &mut on_publication) {
+            return Err(ProjectError::ContextTemplatesCreateFailed(
+                workspace_dir.clone(),
+                e,
+            ));
+        }
     }
 
     guard
@@ -2105,8 +2159,10 @@ mod tests {
         let fix = FixtureRoot::new("proj-new-template-retry");
         let mut s = AppSettings::default();
 
-        let first_result =
-            prepare_new_project_impl(fix.path().to_str().unwrap(), |workspace_dir| {
+        let first_result = prepare_new_project_impl(
+            fix.path().to_str().unwrap(),
+            None,
+            |workspace_dir, _on_publication| {
                 std::fs::write(
                     workspace_dir
                         .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME),
@@ -2114,7 +2170,8 @@ mod tests {
                 )
                 .expect("write partial agent context");
                 Err("injected seed failure".to_string())
-            });
+            },
+        );
 
         assert!(matches!(
             first_result,
@@ -2153,7 +2210,8 @@ mod tests {
         let creator = std::thread::spawn(move || {
             let prepared = prepare_new_project_impl_with_hook(
                 &creator_path,
-                |workspace_dir| {
+                None,
+                |workspace_dir, _on_publication| {
                     crate::config::session_context::create_default_context_templates(workspace_dir)
                 },
                 move |_, created| {
@@ -2215,7 +2273,10 @@ mod tests {
             // templates must be left untouched. Reduce to a Send-safe result.
             match prepare_new_project_impl_with_hook(
                 &creator_path,
-                |_workspace_dir| Err("injected creator failure after gate".to_string()),
+                None,
+                |_workspace_dir, _on_publication| {
+                    Err("injected creator failure after gate".to_string())
+                },
                 move |_, created| {
                     assert!(created, "creator must own the create_dir win");
                     ready_tx.send(()).expect("signal visible root");
@@ -2309,7 +2370,8 @@ mod tests {
 
         let result = prepare_new_project_impl_with_hook(
             fix.path().to_str().unwrap(),
-            |workspace_dir| {
+            None,
+            |workspace_dir, _on_publication| {
                 crate::config::session_context::create_default_context_templates(workspace_dir)
             },
             |workspace_dir, created| {
@@ -2358,6 +2420,7 @@ mod tests {
             &mut disk_settings,
             project.to_str().unwrap(),
             &settings_path,
+            None,
         )
         .expect("gated synchronous registration");
 

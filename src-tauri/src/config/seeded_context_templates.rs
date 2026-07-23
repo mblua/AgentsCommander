@@ -1976,6 +1976,106 @@ mod tests {
         );
     }
 
+    // #1065 Stage F activation coverage. These tests drive the real context
+    // publication engine through a held `ProjectSeedManifestGuard` with a production
+    // recording closure, asserting the resulting manifest row. Removing the
+    // `record_project_context_publication` adapter call would leave no manifest and
+    // fail them (plan acceptance item 22).
+
+    #[test]
+    fn context_create_records_both_project_templates_under_the_gate() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path();
+        let workspace = project.join(".ac");
+        std::fs::create_dir(&workspace).expect("create workspace");
+
+        let token = crate::config::seed_manifest::ManifestActivationToken::for_test();
+        let published_at = fixed_publication_time();
+        let mut guard = crate::config::seed_manifest::ProjectSeedManifestGuard::acquire(project)
+            .expect("acquire project gate");
+        {
+            let mut clock = || published_at;
+            let mut on_publication = |filename: &'static str, publication: ContextPublication| {
+                crate::config::session_context::record_project_context_publication(
+                    &mut guard,
+                    &token,
+                    filename,
+                    publication.published_at,
+                );
+            };
+            ensure_project_context_templates_with_clock(
+                &workspace,
+                &mut clock,
+                &mut on_publication,
+            )
+            .expect("ensure project context templates");
+        }
+        guard.release();
+
+        let manifest = std::fs::read_to_string(workspace.join("seed-manifest.toml"))
+            .expect("fresh project context creation records a seed manifest");
+        assert!(
+            manifest.contains("scope = \"context:agentscommander\""),
+            "manifest: {manifest}"
+        );
+        assert!(
+            manifest.contains("scope = \"context:coordinator\""),
+            "manifest: {manifest}"
+        );
+        assert!(
+            manifest.contains("kind = \"project_context_template\""),
+            "manifest: {manifest}"
+        );
+    }
+
+    #[test]
+    fn coordinator_v3_to_v4_update_records_to_the_seed_manifest_under_the_gate() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path();
+        let workspace = project.join(".ac");
+        std::fs::create_dir(&workspace).expect("create workspace");
+        std::fs::write(
+            workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE,
+        )
+        .expect("write pristine v3 coordinator");
+
+        let token = crate::config::seed_manifest::ManifestActivationToken::for_test();
+        let published_at = fixed_publication_time();
+        let mut guard = crate::config::seed_manifest::ProjectSeedManifestGuard::acquire(project)
+            .expect("acquire project gate");
+        {
+            let mut clock = || published_at;
+            let mut on_publication = |filename: &'static str, publication: ContextPublication| {
+                crate::config::session_context::record_project_context_publication(
+                    &mut guard,
+                    &token,
+                    filename,
+                    publication.published_at,
+                );
+            };
+            sync_project_context_template_for_read_with_clock(
+                &workspace,
+                COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+                &mut clock,
+                &mut on_publication,
+            )
+            .expect("sync coordinator for read");
+        }
+        guard.release();
+
+        let manifest = std::fs::read_to_string(workspace.join("seed-manifest.toml"))
+            .expect("a recognized coordinator v3->v4 update records a seed manifest row");
+        assert!(
+            manifest.contains("scope = \"context:coordinator\""),
+            "manifest: {manifest}"
+        );
+        assert!(
+            manifest.contains("2026-07-20T10:30:45.123Z"),
+            "the commit-point publication time is recorded: {manifest}"
+        );
+    }
+
     #[test]
     fn old_coordinator_default_is_known_generated_without_raise_hand() {
         assert!(

@@ -19,19 +19,86 @@ pub(crate) enum CreateOnlyPublication {
     AlreadyPresent,
 }
 
+/// Map a managed project context-template filename to its canonical v1 seed-manifest
+/// scope, or `None` for a non-project template (the Root agent context) that carries
+/// no manifest row. The two project scopes are the closed enum in plan section 4.2.
+pub(crate) fn manifest_scope_for_project_context_filename(filename: &str) -> Option<&'static str> {
+    if filename == GLOBAL_CONTEXT_TEMPLATE_FILENAME {
+        Some("context:agentscommander")
+    } else if filename == COORDINATOR_CONTEXT_TEMPLATE_FILENAME {
+        Some("context:coordinator")
+    } else {
+        None
+    }
+}
+
+/// #1065 Stage F: record a context-template publication into the project seed
+/// manifest under an already-held gate.
+///
+/// `published_at` must be the commit-point time carried by
+/// [`crate::config::seeded_context_templates::ContextPublication`]; the recorder
+/// never samples a later clock. A non-project filename (no scope), an invalid path,
+/// or a degraded permit is a fail-soft no-op: the manifest never blocks or retracts
+/// the context operation (plan sections 5.2/6.4).
+pub(crate) fn record_project_context_publication(
+    guard: &mut crate::config::seed_manifest::ProjectSeedManifestGuard,
+    activation: &crate::config::seed_manifest::ManifestActivationToken,
+    filename: &str,
+    published_at: chrono::DateTime<chrono::Utc>,
+) {
+    let Some(scope) = manifest_scope_for_project_context_filename(filename) else {
+        return;
+    };
+    let relative = Path::new(".ac").join(filename);
+    let identity =
+        match crate::config::seed_manifest::ManifestPathIdentity::from_relative_path(&relative) {
+            Ok(identity) => identity,
+            Err(error) => {
+                log::warn!(
+                    "[session_context] seed-manifest context row rejected filename={} error={}",
+                    filename,
+                    error
+                );
+                return;
+            }
+        };
+    let row = match crate::config::seed_manifest::PublishedManifestRow::project_context(
+        identity,
+        scope,
+        published_at,
+    ) {
+        Ok(row) => row,
+        Err(error) => {
+            log::warn!(
+                "[session_context] seed-manifest context row rejected scope={} error={}",
+                scope,
+                error
+            );
+            return;
+        }
+    };
+    let outcome = guard.publication_permit().record_file(activation, row);
+    log::debug!(
+        "[session_context] seed-manifest context publication scope={} outcome={:?}",
+        scope,
+        outcome
+    );
+}
+
 /// Writes a per-agent copy of AgentsCommanderContext.md with the agent's own
 /// root path interpolated into the GOLDEN RULE. For WG replicas, also exposes
 /// the canonical Agent Matrix scope derived from config.json "identity". Uses a
 /// deterministic filename based on the agent_root to prevent races between
 /// concurrent session launches.
 pub fn ensure_session_context(agent_root: &str) -> Result<String, String> {
-    ensure_session_context_with_config(agent_root, None, None)
+    ensure_session_context_with_config(agent_root, None, None, None)
 }
 
 fn ensure_session_context_with_config(
     agent_root: &str,
     config: Option<&serde_json::Value>,
     repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
+    activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
 ) -> Result<String, String> {
     let config_dir =
         super::config_dir().ok_or_else(|| "Could not resolve app config directory".to_string())?;
@@ -81,13 +148,14 @@ fn ensure_session_context_with_config(
             repo_mounts,
         )
     } else {
-        resolve_agent_context(
+        resolve_agent_context_with_activation(
             &canonical_root,
             matrix_root.as_deref(),
             &skills_section,
             Path::new(agent_root),
             config,
             repo_mounts,
+            activation,
         )?
     };
     std::fs::write(&file_path, content)
@@ -1162,6 +1230,84 @@ where
     read_context_template(agent_root, filename)
 }
 
+/// #1065 Stage F: read/sync a managed project context template under the project
+/// seed-manifest gate, recording any create/recognized-update at its commit point
+/// (plan sections 5.2/6.3). Ordering by gate state:
+/// * held: synchronize (write) under the gate, then record the publication.
+/// * pre-contention degradation: synchronize untracked (write, no manifest row).
+/// * contention/unsafe: skip the synchronize write and never fall back to an
+///   ungated write; use the existing file, or the in-memory default for a managed
+///   template that is still absent (plan section 5.2).
+///
+/// `activation` is `None` for a test or unactivated caller, which runs the plain
+/// ungated read/sync unchanged. A path with no resolvable project workspace runs
+/// ungated too.
+fn read_or_create_context_recorded(
+    agent_root: &str,
+    filename: &str,
+    default_content: &str,
+    activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
+) -> Result<Option<String>, String> {
+    use crate::config::seed_manifest::SoftProjectGate;
+    use crate::config::seeded_context_templates::ContextPublication;
+    let Some(token) = activation else {
+        return read_or_create_context_template(agent_root, filename, default_content);
+    };
+    let Some(project_root) = resolve_workspace_context_dir(Path::new(agent_root))
+        .and_then(|context_dir| context_dir.parent().map(Path::to_path_buf))
+    else {
+        return read_or_create_context_template(agent_root, filename, default_content);
+    };
+    match crate::config::seed_manifest::acquire_project_gate_soft(&project_root) {
+        SoftProjectGate::Held(mut guard) => {
+            let result = {
+                let mut on_publication = |fname: &'static str, publication: ContextPublication| {
+                    record_project_context_publication(
+                        &mut guard,
+                        token,
+                        fname,
+                        publication.published_at,
+                    );
+                };
+                read_or_create_context_template_with_publications(
+                    agent_root,
+                    filename,
+                    default_content,
+                    &mut on_publication,
+                )
+            };
+            guard.release();
+            result
+        }
+        SoftProjectGate::DegradedUntracked => {
+            read_or_create_context_template(agent_root, filename, default_content)
+        }
+        SoftProjectGate::Unavailable(_) => {
+            read_or_create_context_template_skip_sync(agent_root, filename, default_content)
+        }
+    }
+}
+
+/// #1065 Stage F: read a managed project context template WITHOUT synchronizing it,
+/// used when the project gate is contended so the write is skipped rather than
+/// racing a cooperating writer. A managed template that is still absent yields
+/// `Ok(None)` (the caller uses the in-memory default); it is never created ungated.
+fn read_or_create_context_template_skip_sync(
+    agent_root: &str,
+    filename: &str,
+    default_content: &str,
+) -> Result<Option<String>, String> {
+    let mut on_publication =
+        |_: &'static str, _: crate::config::seeded_context_templates::ContextPublication| {};
+    read_or_create_context_template_with_sync(
+        agent_root,
+        filename,
+        default_content,
+        &mut on_publication,
+        |_context_dir, _filename, _on_publication| Ok(()),
+    )
+}
+
 fn migrate_legacy_agent_context_template(context_dir: &Path) -> Result<(), String> {
     migrate_legacy_agent_context_template_with(context_dir, |legacy_path, new_path| {
         std::fs::hard_link(legacy_path, new_path)
@@ -1560,6 +1706,14 @@ pub fn build_replica_context(
     cwd: &str,
     repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
 ) -> Result<Option<String>, String> {
+    build_replica_context_with_activation(cwd, repo_mounts, None)
+}
+
+fn build_replica_context_with_activation(
+    cwd: &str,
+    repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
+    activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
+) -> Result<Option<String>, String> {
     // #979: Root has a dedicated builder. This must stay the FIRST executable
     // line, ahead of the missing-config early return below: a Root without a
     // config.json would otherwise still get `Ok(None)` and fall back into the
@@ -1592,12 +1746,26 @@ pub fn build_replica_context(
         match identity {
             Some(identity) => (config, identity),
             None => {
-                return build_replica_context_from_config(cwd, cwd_path, config, None, repo_mounts);
+                return build_replica_context_from_config(
+                    cwd,
+                    cwd_path,
+                    config,
+                    None,
+                    repo_mounts,
+                    activation,
+                );
             }
         }
     };
 
-    build_replica_context_from_config(cwd, cwd_path, config, Some(identity), repo_mounts)
+    build_replica_context_from_config(
+        cwd,
+        cwd_path,
+        config,
+        Some(identity),
+        repo_mounts,
+        activation,
+    )
 }
 
 fn build_replica_context_from_config(
@@ -1606,6 +1774,7 @@ fn build_replica_context_from_config(
     config: serde_json::Value,
     repaired_identity: Option<crate::config::replica_identity::WgReplicaIdentity>,
     repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
+    activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
 ) -> Result<Option<String>, String> {
     // No "context" field → no replica context
     let context_array = match config.get("context").and_then(|v| v.as_array()) {
@@ -1624,7 +1793,8 @@ fn build_replica_context_from_config(
         };
 
         if raw == CONTEXT_TOKEN_GLOBAL {
-            let global_path = ensure_session_context_with_config(cwd, Some(&config), repo_mounts)?;
+            let global_path =
+                ensure_session_context_with_config(cwd, Some(&config), repo_mounts, activation)?;
             resolved_paths.push((
                 "AgentsCommanderContext.md".to_string(),
                 std::path::PathBuf::from(&global_path),
@@ -1725,7 +1895,10 @@ fn build_root_agent_context(
 
     // Unconditional and always first: this is the structural non-suppression
     // guarantee. There is no editable Root runtime template.
-    let prologue_path = ensure_session_context_with_config(cwd, config.as_ref(), repo_mounts)?;
+    // #1065 Stage F: Root has no project context template, so its `ensure` routes to
+    // `render_root_runtime_prologue` and records nothing; pass `None`.
+    let prologue_path =
+        ensure_session_context_with_config(cwd, config.as_ref(), repo_mounts, None)?;
     let mut resolved_paths: Vec<(String, std::path::PathBuf)> = vec![(
         "AgentsCommanderRootContext.md".to_string(),
         std::path::PathBuf::from(&prologue_path),
@@ -1800,6 +1973,7 @@ fn build_root_agent_context(
 fn build_direct_matrix_context(
     cwd: &str,
     repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
+    activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
 ) -> Result<String, String> {
     let cwd_path = Path::new(cwd);
     let role_path = Path::new(cwd).join(ROLE_MD_FILENAME);
@@ -1814,7 +1988,8 @@ fn build_direct_matrix_context(
     } else {
         None
     };
-    let global_context = ensure_session_context_with_config(cwd, config.as_ref(), repo_mounts)?;
+    let global_context =
+        ensure_session_context_with_config(cwd, config.as_ref(), repo_mounts, activation)?;
     let mut resolved_paths = vec![(
         "AgentsCommanderContext.md".to_string(),
         std::path::PathBuf::from(&global_context),
@@ -1894,14 +2069,31 @@ fn build_direct_matrix_context(
 
 /// Resolve the final session context content for an agent directory.
 /// Prefers replica config.json context[] and falls back to the per-agent default context.
+#[cfg(test)]
 fn resolve_session_context_content(
     cwd: &str,
     is_coordinator: bool,
     auto_self_clear: bool,
     repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
 ) -> Result<Option<String>, String> {
+    resolve_session_context_content_with_activation(
+        cwd,
+        is_coordinator,
+        auto_self_clear,
+        repo_mounts,
+        None,
+    )
+}
+
+fn resolve_session_context_content_with_activation(
+    cwd: &str,
+    is_coordinator: bool,
+    auto_self_clear: bool,
+    repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
+    activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
+) -> Result<Option<String>, String> {
     let context_path = if is_replica_agent_dir(cwd) {
-        match build_replica_context(cwd, repo_mounts) {
+        match build_replica_context_with_activation(cwd, repo_mounts, activation) {
             Ok(Some(combined_path)) => {
                 log::info!(
                     "Using replica combined context for agent session: {}",
@@ -1909,7 +2101,7 @@ fn resolve_session_context_content(
                 );
                 combined_path
             }
-            Ok(None) => ensure_session_context_with_config(cwd, None, repo_mounts)?,
+            Ok(None) => ensure_session_context_with_config(cwd, None, repo_mounts, activation)?,
             Err(e) => return Err(e),
         }
     } else if super::root_agent::is_root_agent_dir_name(cwd) {
@@ -1924,7 +2116,7 @@ fn resolve_session_context_content(
         );
         combined_path
     } else if is_canonical_agent_matrix_dir(cwd) {
-        build_direct_matrix_context(cwd, repo_mounts)?
+        build_direct_matrix_context(cwd, repo_mounts, activation)?
     } else {
         return Ok(None);
     };
@@ -1944,10 +2136,11 @@ fn resolve_session_context_content(
     // (`is_coordinator_for_cwd` derives an FQN from the cwd and checks team
     // membership, teams.rs:802-805); this guard makes a wrong caller flag harmless.
     if is_coordinator && !super::root_agent::is_root_agent_dir_name(cwd) {
-        let coordinator_body = read_or_create_context_template(
+        let coordinator_body = read_or_create_context_recorded(
             cwd,
             COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
             get_default_coordinator_template(),
+            activation,
         )?
         .unwrap_or_else(|| get_default_coordinator_template().to_string());
         if !coordinator_body.trim().is_empty() {
@@ -1994,11 +2187,41 @@ pub fn materialize_agent_context_file_with_filename(
     auto_self_clear: bool,
     repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
 ) -> Result<Option<String>, String> {
-    let content =
-        match resolve_session_context_content(cwd, is_coordinator, auto_self_clear, repo_mounts)? {
-            Some(content) => content,
-            None => return Ok(None),
-        };
+    materialize_agent_context_file_with_filename_activated(
+        cwd,
+        target_filename,
+        extra_managed_filenames,
+        is_coordinator,
+        auto_self_clear,
+        repo_mounts,
+        None,
+    )
+}
+
+/// #1065 Stage F: same as [`materialize_agent_context_file_with_filename`] but
+/// threads a production activation token so the session-spawn context read/sync
+/// and self-heal record their publications under the project gate. The session
+/// create chokepoint passes `Some(..)` from inside its blocking worker; every
+/// other caller passes `None` (unchanged, non-emitting).
+pub(crate) fn materialize_agent_context_file_with_filename_activated(
+    cwd: &str,
+    target_filename: &str,
+    extra_managed_filenames: &[String],
+    is_coordinator: bool,
+    auto_self_clear: bool,
+    repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
+    activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
+) -> Result<Option<String>, String> {
+    let content = match resolve_session_context_content_with_activation(
+        cwd,
+        is_coordinator,
+        auto_self_clear,
+        repo_mounts,
+        activation,
+    )? {
+        Some(content) => content,
+        None => return Ok(None),
+    };
 
     // String-level guard (path escape): never write outside the root, even if a
     // direct `pub` caller bypassed settings validation. The on-disk link checks
@@ -2412,6 +2635,7 @@ fn render_default_agent_context(
     )
 }
 
+#[cfg(test)]
 fn resolve_agent_context(
     agent_root: &str,
     matrix_root: Option<&str>,
@@ -2419,6 +2643,26 @@ fn resolve_agent_context(
     cwd_path: &Path,
     config: Option<&serde_json::Value>,
     repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
+) -> Result<String, String> {
+    resolve_agent_context_with_activation(
+        agent_root,
+        matrix_root,
+        skills_section,
+        cwd_path,
+        config,
+        repo_mounts,
+        None,
+    )
+}
+
+fn resolve_agent_context_with_activation(
+    agent_root: &str,
+    matrix_root: Option<&str>,
+    skills_section: &str,
+    cwd_path: &Path,
+    config: Option<&serde_json::Value>,
+    repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
+    activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
 ) -> Result<String, String> {
     // #979 load-bearing guard 2 of 2. This MUST remain the FIRST executable
     // statement of this function. It sits ahead of `read_or_create_context_template`
@@ -2441,10 +2685,11 @@ fn resolve_agent_context(
         ));
     }
 
-    let template = read_or_create_context_template(
+    let template = read_or_create_context_recorded(
         agent_root,
         GLOBAL_CONTEXT_TEMPLATE_FILENAME,
         get_default_agent_template(),
+        activation,
     )?
     .unwrap_or_else(|| get_default_agent_template().to_string());
 
@@ -2457,7 +2702,7 @@ fn resolve_agent_context(
         LegacyRenderedDefaultContext::Current => Ok(template),
         LegacyRenderedDefaultContext::StaleGenerated => {
             let execution =
-                heal_stale_global_context_template(agent_root, matrix_root, skills_section);
+                heal_stale_global_recorded(agent_root, matrix_root, skills_section, activation);
             if let Some(publication) = execution.published {
                 log::debug!(
                     "#664 self-heal: {} published at {}",
@@ -2486,6 +2731,60 @@ fn resolve_agent_context(
             config,
             repo_mounts,
         )),
+    }
+}
+
+/// #1065 Stage F: self-heal a stale generated global context template under the
+/// project seed-manifest gate, recording the resulting publication (plan sections
+/// 5.2/6.3). Ordering by gate state:
+/// * held: heal (atomic replace) under the gate, then record the publication.
+/// * pre-contention degradation: heal untracked (write, no manifest row).
+/// * contention/unsafe: skip the heal write so it never races a cooperating writer;
+///   the caller's in-memory render is already correct and the file heals on a later
+///   spawn once the gate is free.
+///
+/// `activation` is `None` for a test or unactivated caller, which runs the plain
+/// ungated heal; a path with no resolvable project workspace runs ungated too.
+fn heal_stale_global_recorded(
+    agent_root: &str,
+    matrix_root: Option<&str>,
+    skills_section: &str,
+    activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
+) -> crate::config::seeded_context_templates::ContextTemplateExecution<
+    crate::config::seeded_context_templates::TemplatePublication,
+> {
+    use crate::config::seed_manifest::SoftProjectGate;
+    let Some(token) = activation else {
+        return heal_stale_global_context_template(agent_root, matrix_root, skills_section);
+    };
+    let Some(project_root) = resolve_workspace_context_dir(Path::new(agent_root))
+        .and_then(|context_dir| context_dir.parent().map(Path::to_path_buf))
+    else {
+        return heal_stale_global_context_template(agent_root, matrix_root, skills_section);
+    };
+    match crate::config::seed_manifest::acquire_project_gate_soft(&project_root) {
+        SoftProjectGate::Held(mut guard) => {
+            let execution =
+                heal_stale_global_context_template(agent_root, matrix_root, skills_section);
+            if let Some(publication) = &execution.published {
+                record_project_context_publication(
+                    &mut guard,
+                    token,
+                    GLOBAL_CONTEXT_TEMPLATE_FILENAME,
+                    publication.published_at,
+                );
+            }
+            guard.release();
+            execution
+        }
+        SoftProjectGate::DegradedUntracked => {
+            heal_stale_global_context_template(agent_root, matrix_root, skills_section)
+        }
+        SoftProjectGate::Unavailable(_) => {
+            crate::config::seeded_context_templates::ContextTemplateExecution::failed(
+                "self-heal skipped: project seed-manifest gate unavailable".to_string(),
+            )
+        }
     }
 }
 
@@ -6256,6 +6555,54 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert_eq!(
             std::fs::read_to_string(template_path).expect("read healed target"),
             get_default_agent_template()
+        );
+    }
+
+    // #1065 Stage F activation coverage: a stale-generated global self-heal records
+    // its commit-point publication into the seed manifest under the gate. Removing the
+    // `record_project_context_publication` call from `heal_stale_global_recorded` (the
+    // adapter) would leave no manifest and fail this test (plan acceptance item 22).
+    #[test]
+    fn self_heal_records_to_the_seed_manifest_under_the_gate() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let old_matrix_root = workspace_dir.join("_agent_dev-rust");
+        let old_replica_root = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_dev-rust");
+        let new_replica_root = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_tech-lead");
+        std::fs::create_dir_all(&old_matrix_root).expect("create old matrix root");
+        std::fs::create_dir_all(&old_replica_root).expect("create old replica root");
+        std::fs::create_dir_all(&new_replica_root).expect("create new replica root");
+        let old_skills_section =
+            render_skills_section(&discover_skill_index(Some(&path_string(&old_matrix_root))));
+        let legacy = legacy_rendered_default_context_for_compat(
+            &path_string(&old_replica_root),
+            Some(&path_string(&old_matrix_root)),
+            &old_skills_section,
+        );
+        std::fs::write(workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), legacy)
+            .expect("write stale generated default");
+
+        let token = crate::config::seed_manifest::ManifestActivationToken::for_test();
+        let execution = heal_stale_global_recorded(
+            &path_string(&new_replica_root),
+            None,
+            &no_skill_section(),
+            Some(&token),
+        );
+        assert!(
+            execution.published.is_some(),
+            "the self-heal target publishes at its commit point"
+        );
+
+        let manifest = std::fs::read_to_string(workspace_dir.join("seed-manifest.toml"))
+            .expect("the self-heal publication is recorded under the gate");
+        assert!(
+            manifest.contains("scope = \"context:agentscommander\""),
+            "manifest: {manifest}"
         );
     }
 

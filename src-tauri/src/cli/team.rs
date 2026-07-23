@@ -301,8 +301,9 @@ fn add_member(args: TeamAddMemberArgs) -> Result<(), String> {
 }
 
 fn remove_member(args: TeamRemoveMemberArgs) -> Result<(), String> {
-    // Production: dormant (no activation token) and no lock-order test barrier.
-    remove_member_hooked(args, None, |_| {})
+    // #1065 Stage F: activated with the sole production token; no lock-order test barrier.
+    let activation = crate::config::seed_manifest::ManifestActivationToken::production();
+    remove_member_hooked(args, Some(&activation), |_| {})
 }
 
 /// CLI team-member removal with the #1063 global lock order.
@@ -312,11 +313,11 @@ fn remove_member(args: TeamRemoveMemberArgs) -> Result<(), String> {
 /// `TeamConfigMutationGuard` second (plan sections 5.4/6.3), re-reads and
 /// revalidates the current team config under both, computes the mutation from
 /// that current value, and holds both across the membership commit, typed replica
-/// removal, and (dormant) manifest prune before dropping them ahead of refresh
-/// and output. `remove_member` is synchronous, so no guard ever crosses `.await`.
+/// removal, and manifest prune before dropping them ahead of refresh and output.
+/// `remove_member` is synchronous, so no guard ever crosses `.await`.
 ///
-/// `activation` is `None` in production (dormant); tests pass
-/// `Some(ManifestActivationToken::for_test())` to exercise the real prune.
+/// `activation` is `Some(ManifestActivationToken::production())` in production
+/// (#1065 Stage F); tests may pass `Some(for_test())` or `None`.
 /// `after_project_before_team` is a `#[cfg(test)]` cross-process inversion barrier
 /// that fires after the project gate is held and before the team guard; production
 /// passes a no-op.

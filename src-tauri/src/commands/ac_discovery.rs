@@ -981,6 +981,63 @@ impl DiscoveryBranchWatcher {
     }
 }
 
+/// #1065 Stage F: run the project context-template scan under the seed-manifest
+/// gate, recording each recognized create/update at its commit-point time.
+///
+/// A pre-contention gate degradation runs the scan untracked (writes proceed,
+/// unrecorded); a contention/unsafe failure skips the scan so no write races a
+/// cooperating writer (plan sections 5.2/6.1). `activation` is `None` for a
+/// `#[cfg(test)]` lib build or an unactivated caller, which runs the plain scan
+/// unchanged. Runs inside the discovery `run_blocking_owned` closure so the
+/// 10-second gate poll never blocks a Tokio worker.
+fn scan_project_context_templates_recorded(
+    project_root: &Path,
+    workspace_dir: &Path,
+    activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
+) -> Result<Vec<crate::config::seeded_context_templates::ContextTemplateUpdate>, String> {
+    use crate::config::seed_manifest::SoftProjectGate;
+    use crate::config::seeded_context_templates::{
+        scan_project_context_template_updates,
+        scan_project_context_template_updates_with_publications, ContextPublication,
+    };
+    let Some(token) = activation else {
+        return scan_project_context_template_updates(project_root, workspace_dir);
+    };
+    match crate::config::seed_manifest::acquire_project_gate_soft(project_root) {
+        SoftProjectGate::Held(mut guard) => {
+            let result = {
+                let mut on_publication =
+                    |filename: &'static str, publication: ContextPublication| {
+                        crate::config::session_context::record_project_context_publication(
+                            &mut guard,
+                            token,
+                            filename,
+                            publication.published_at,
+                        );
+                    };
+                scan_project_context_template_updates_with_publications(
+                    project_root,
+                    workspace_dir,
+                    &mut on_publication,
+                )
+            };
+            guard.release();
+            result
+        }
+        SoftProjectGate::DegradedUntracked => {
+            scan_project_context_template_updates(project_root, workspace_dir)
+        }
+        SoftProjectGate::Unavailable(error) => {
+            log::warn!(
+                "[context-templates] skipping gated context scan for {}: {}",
+                workspace_dir.display(),
+                error
+            );
+            Ok(Vec::new())
+        }
+    }
+}
+
 /// Discover AC agent matrices from Project AC Root directories within configured repo paths.
 #[tauri::command]
 pub async fn discover_ac_agents(
@@ -1054,9 +1111,19 @@ pub async fn discover_ac_agents(
                 let repo_dir = repo_dir.clone();
                 let workspace_dir = workspace_dir.clone();
                 move || {
-                    crate::config::seeded_context_templates::scan_project_context_template_updates(
+                    // #1065 Stage F: production records recognized context updates
+                    // under the gate; a `#[cfg(test)]` lib build stays non-emitting.
+                    #[cfg(not(test))]
+                    let activation =
+                        Some(crate::config::seed_manifest::ManifestActivationToken::production());
+                    #[cfg(test)]
+                    let activation: Option<
+                        crate::config::seed_manifest::ManifestActivationToken,
+                    > = None;
+                    scan_project_context_templates_recorded(
                         &repo_dir,
                         &workspace_dir,
+                        activation.as_ref(),
                     )
                 }
             })
@@ -1526,28 +1593,53 @@ pub(crate) fn ensure_workspace_gitignore(workspace_dir: &Path) -> Result<(), Str
 #[tauri::command]
 pub async fn create_ac_project(path: String) -> Result<(), String> {
     crate::config::seed_manifest::run_blocking_owned(move || {
-        create_ac_project_impl(&path, |workspace_dir| {
-            crate::config::session_context::create_default_context_templates(workspace_dir)
-        })
+        // #1065 Stage F: the bare fresh-root create publishes its project context
+        // templates under the sole production token; a `#[cfg(test)]` lib build
+        // stays non-emitting so unit fixtures keep manifest-free `.ac` roots.
+        #[cfg(not(test))]
+        let activation = Some(crate::config::seed_manifest::ManifestActivationToken::production());
+        #[cfg(test)]
+        let activation: Option<crate::config::seed_manifest::ManifestActivationToken> = None;
+        create_ac_project_impl(
+            &path,
+            activation.as_ref(),
+            |workspace_dir, on_publication| {
+                crate::config::session_context::create_default_context_templates_with_publications(
+                    workspace_dir,
+                    on_publication,
+                )
+            },
+        )
     })
     .await
     .map_err(|error| format!("AC project blocking preparation failed: {error}"))?
 }
 
-fn create_ac_project_impl<F>(path: &str, create_context_templates: F) -> Result<(), String>
+fn create_ac_project_impl<F>(
+    path: &str,
+    activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
+    create_context_templates: F,
+) -> Result<(), String>
 where
-    F: FnOnce(&Path) -> Result<(), String>,
+    F: FnOnce(
+        &Path,
+        &mut dyn FnMut(&'static str, crate::config::seeded_context_templates::ContextPublication),
+    ) -> Result<(), String>,
 {
-    create_ac_project_impl_with_hook(path, create_context_templates, |_, _| {})
+    create_ac_project_impl_with_hook(path, activation, create_context_templates, |_, _| {})
 }
 
 fn create_ac_project_impl_with_hook<F, H>(
     path: &str,
+    activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
     create_context_templates: F,
     after_create_before_gate: H,
 ) -> Result<(), String>
 where
-    F: FnOnce(&Path) -> Result<(), String>,
+    F: FnOnce(
+        &Path,
+        &mut dyn FnMut(&'static str, crate::config::seeded_context_templates::ContextPublication),
+    ) -> Result<(), String>,
     H: FnOnce(&Path, bool),
 {
     let project_dir =
@@ -1623,14 +1715,14 @@ where
         )
     })?;
 
-    let guard = crate::config::seed_manifest::ProjectSeedManifestGuard::acquire(&project_dir)
+    let mut guard = crate::config::seed_manifest::ProjectSeedManifestGuard::acquire(&project_dir)
         .map_err(|error| {
-            format!(
-                "AC project setup at {} changed or is unavailable: {}; retry the operation",
-                project_dir.display(),
-                error
-            )
-        })?;
+        format!(
+            "AC project setup at {} changed or is unavailable: {}; retry the operation",
+            project_dir.display(),
+            error
+        )
+    })?;
     pinned_project.revalidate().map_err(|error| {
         format!(
             "AC project setup at {} changed before gate acquisition: {}; retry the operation",
@@ -1655,8 +1747,24 @@ where
         )
     })?;
     if created {
-        ensure_workspace_gitignore(&workspace_dir)
-            .and_then(|_| create_context_templates(&workspace_dir))?;
+        ensure_workspace_gitignore(&workspace_dir)?;
+        // #1065 Stage F: record each freshly created project context template under
+        // the held gate at its commit-point time. A pre-existing `.ac` is not
+        // backfilled (the `else` branch creates no templates), preserving the bare
+        // create's no-backfill contract (acceptance item 38).
+        let mut on_publication =
+            |filename: &'static str,
+             publication: crate::config::seeded_context_templates::ContextPublication| {
+                if let Some(token) = activation {
+                    crate::config::session_context::record_project_context_publication(
+                        &mut guard,
+                        token,
+                        filename,
+                        publication.published_at,
+                    );
+                }
+            };
+        create_context_templates(&workspace_dir, &mut on_publication)?;
     } else {
         ensure_workspace_gitignore(&workspace_dir)?;
     }
@@ -1733,10 +1841,16 @@ pub(crate) async fn discover_project_inner(
         let base = base.to_path_buf();
         let workspace_dir = workspace_dir.clone();
         move || {
-            crate::config::seeded_context_templates::scan_project_context_template_updates(
-                &base,
-                &workspace_dir,
-            )
+            // #1065 Stage F: production records recognized context updates under the
+            // gate; a `#[cfg(test)]` lib build stays non-emitting.
+            #[cfg(not(test))]
+            let activation =
+                Some(crate::config::seed_manifest::ManifestActivationToken::production());
+            #[cfg(test)]
+            let activation: Option<
+                crate::config::seed_manifest::ManifestActivationToken,
+            > = None;
+            scan_project_context_templates_recorded(&base, &workspace_dir, activation.as_ref())
         }
     })
     .await;
@@ -2121,6 +2235,70 @@ pub async fn keep_custom_context_template(
     )
 }
 
+/// #1065 Stage F: explicit context-template overwrite recorded under the gate.
+///
+/// Overwrite is a user-initiated action, so a contention/unsafe gate failure
+/// returns a retryable busy error (never a silent skip); a pre-contention gate
+/// degradation overwrites untracked. The publication is recorded at the commit
+/// point via the callback, before `persist_state_strict`, so a strict state-save
+/// error still returns an IPC error without losing the manifest attempt (plan
+/// section 5.2). `activation` is `None` for a `#[cfg(test)]` build or an
+/// unactivated caller, which runs the plain ungated overwrite unchanged.
+fn overwrite_context_template_recorded(
+    project_root: &Path,
+    workspace_dir: &Path,
+    filename: &str,
+    expected_file_sha256: &str,
+    expected_default_sha256: &str,
+    activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
+) -> Result<crate::config::seeded_context_templates::ContextTemplateOverwriteResult, String> {
+    use crate::config::seed_manifest::SoftProjectGate;
+    use crate::config::seeded_context_templates::{
+        overwrite_context_template_with_default,
+        overwrite_context_template_with_default_with_publications, ContextPublication,
+    };
+    let Some(token) = activation else {
+        return overwrite_context_template_with_default(
+            workspace_dir,
+            filename,
+            expected_file_sha256,
+            expected_default_sha256,
+        );
+    };
+    match crate::config::seed_manifest::acquire_project_gate_soft(project_root) {
+        SoftProjectGate::Held(mut guard) => {
+            let execution = {
+                let mut on_publication = |fname: &'static str, publication: ContextPublication| {
+                    crate::config::session_context::record_project_context_publication(
+                        &mut guard,
+                        token,
+                        fname,
+                        publication.published_at,
+                    );
+                };
+                overwrite_context_template_with_default_with_publications(
+                    workspace_dir,
+                    filename,
+                    expected_file_sha256,
+                    expected_default_sha256,
+                    &mut on_publication,
+                )
+            };
+            guard.release();
+            execution.completion
+        }
+        SoftProjectGate::DegradedUntracked => overwrite_context_template_with_default(
+            workspace_dir,
+            filename,
+            expected_file_sha256,
+            expected_default_sha256,
+        ),
+        SoftProjectGate::Unavailable(error) => Err(format!(
+            "Project is busy; retry the context template overwrite ({error})"
+        )),
+    }
+}
+
 #[tauri::command]
 pub async fn overwrite_context_template_with_default(
     path: String,
@@ -2131,11 +2309,19 @@ pub async fn overwrite_context_template_with_default(
     let workspace_dir = existing_workspace_dir(Path::new(&path))
         .ok_or_else(|| format!("Project AC Root not found for {}", path))?;
     crate::config::seed_manifest::run_blocking_owned(move || {
-        crate::config::seeded_context_templates::overwrite_context_template_with_default(
+        // #1065 Stage F: production records the overwrite under the gate; a
+        // `#[cfg(test)]` lib build stays non-emitting.
+        #[cfg(not(test))]
+        let activation = Some(crate::config::seed_manifest::ManifestActivationToken::production());
+        #[cfg(test)]
+        let activation: Option<crate::config::seed_manifest::ManifestActivationToken> = None;
+        overwrite_context_template_recorded(
+            Path::new(&path),
             &workspace_dir,
             &filename,
             &current_file_sha256,
             &current_default_sha256,
+            activation.as_ref(),
         )
     })
     .await
@@ -3790,12 +3976,89 @@ mod tests {
         assert!(!tmp.path().join(".ac").join("templates").exists());
     }
 
+    // #1065 Stage F activation coverage: the direct fresh-root `create_ac_project`
+    // path records its two project context templates into the seed manifest under the
+    // gate held since acquisition. Removing the recording closure (the adapter) would
+    // leave no manifest and fail this test (plan acceptance items 22/38).
+    #[test]
+    fn create_ac_project_fresh_root_records_context_templates() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("Proj");
+        let token = crate::config::seed_manifest::ManifestActivationToken::for_test();
+        create_ac_project_impl(
+            &project.to_string_lossy(),
+            Some(&token),
+            |workspace_dir, on_publication| {
+                crate::config::session_context::create_default_context_templates_with_publications(
+                    workspace_dir,
+                    on_publication,
+                )
+            },
+        )
+        .expect("create_ac_project fresh root");
+        let manifest = std::fs::read_to_string(project.join(".ac").join("seed-manifest.toml"))
+            .expect("fresh create_ac_project records the project context templates");
+        assert!(
+            manifest.contains("scope = \"context:agentscommander\""),
+            "manifest: {manifest}"
+        );
+        assert!(
+            manifest.contains("scope = \"context:coordinator\""),
+            "manifest: {manifest}"
+        );
+        assert!(
+            manifest.contains("kind = \"project_context_template\""),
+            "manifest: {manifest}"
+        );
+    }
+
+    // #1065 Stage F activation coverage: an explicit context-template overwrite
+    // records its commit-point publication into the seed manifest under the gate.
+    // Removing the `record_project_context_publication` call from
+    // `overwrite_context_template_recorded` (the adapter) would leave no manifest and
+    // fail this test (plan acceptance item 22).
+    #[test]
+    fn overwrite_context_template_records_under_the_gate() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path();
+        let workspace = project.join(".ac");
+        std::fs::create_dir(&workspace).expect("create workspace");
+        let filename = crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME;
+        std::fs::write(workspace.join(filename), "custom coordinator guidance")
+            .expect("write custom coordinator");
+        let update =
+            crate::config::seeded_context_templates::scan_project_context_template_updates(
+                project, &workspace,
+            )
+            .expect("scan updates")
+            .pop()
+            .expect("pending overwrite update");
+
+        let token = crate::config::seed_manifest::ManifestActivationToken::for_test();
+        overwrite_context_template_recorded(
+            project,
+            &workspace,
+            &update.filename,
+            &update.current_file_sha256,
+            &update.current_default_sha256,
+            Some(&token),
+        )
+        .expect("overwrite context template");
+
+        let manifest = std::fs::read_to_string(workspace.join("seed-manifest.toml"))
+            .expect("an explicit overwrite records a manifest row under the gate");
+        assert!(
+            manifest.contains("scope = \"context:coordinator\""),
+            "manifest: {manifest}"
+        );
+    }
+
     #[tokio::test]
     async fn create_ac_project_preserves_partial_root_for_registration_repair() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().to_string_lossy().to_string();
 
-        let first_result = create_ac_project_impl(&path, |workspace_dir| {
+        let first_result = create_ac_project_impl(&path, None, |workspace_dir, _on_publication| {
             std::fs::write(
                 workspace_dir
                     .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME),
@@ -3864,7 +4127,8 @@ mod tests {
         let creator = std::thread::spawn(move || {
             create_ac_project_impl_with_hook(
                 &creator_path,
-                |workspace_dir| {
+                None,
+                |workspace_dir, _on_publication| {
                     crate::config::session_context::create_default_context_templates(workspace_dir)
                 },
                 move |_, created| {
@@ -3880,7 +4144,7 @@ mod tests {
         ready_rx
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("creator published .ac");
-        create_ac_project_impl(&path, |_| {
+        create_ac_project_impl(&path, None, |_, _on_publication| {
             panic!("create_dir loser must not backfill context templates")
         })
         .expect("contending bare create");

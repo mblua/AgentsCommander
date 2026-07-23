@@ -268,12 +268,15 @@ fn open_project_invalid_path_does_not_write_refresh() {
     assert!(project_refresh_request_paths(&config_dir).is_empty());
 }
 
-// #1063 Stage D stays dormant: project registration and re-open create no seed
-// manifest and never backfill one from an existing project, since the production
-// binary has no activation token.
+// #1065 Stage F ACTIVATED: registering a fresh project publishes its two project
+// context templates, so `new-project` emits `.ac/seed-manifest.toml` with one
+// `project_context_template` row each for `context:agentscommander` and
+// `context:coordinator`. A subsequent open of the already-registered project is a
+// no-op registration that must not backfill or rewrite the manifest (acceptance
+// items 22/38). Public-outcome only: no activation token or private hook.
 #[test]
-fn new_and_open_project_emit_no_seed_manifest() {
-    let tmp = Tmp::new("cli-project-registration-dormant");
+fn new_project_emits_seed_manifest_and_open_does_not_backfill() {
+    let tmp = Tmp::new("cli-project-registration-activated");
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
     write_settings(&config_dir, &[]);
@@ -282,12 +285,41 @@ fn new_and_open_project_emit_no_seed_manifest() {
 
     run_success(&bin, &["new-project", &project_arg]);
     assert!(project.join(".ac").is_dir());
-    // A subsequent open of the now-registered project is a no-op registration.
-    run_success(&bin, &["open-project", &project_arg]);
-
+    let manifest_path = project.join(".ac").join("seed-manifest.toml");
+    let manifest = std::fs::read_to_string(&manifest_path)
+        .expect("fresh new-project must emit a seed manifest once Stage F is activated");
     assert!(
-        !project.join(".ac").join("seed-manifest.toml").exists(),
-        "project registration/open must not emit or backfill a seed manifest (dormant until Stage F)"
+        manifest.contains("schema_version = 1"),
+        "manifest: {manifest}"
+    );
+    assert!(
+        manifest.contains("coverage_version = 1"),
+        "manifest: {manifest}"
+    );
+    assert!(
+        manifest.contains("scope = \"context:agentscommander\""),
+        "manifest must record the project context template: {manifest}"
+    );
+    assert!(
+        manifest.contains("scope = \"context:coordinator\""),
+        "manifest must record the coordinator context template: {manifest}"
+    );
+    assert!(
+        manifest.contains("kind = \"project_context_template\""),
+        "manifest: {manifest}"
+    );
+    assert!(
+        !manifest.contains("replica_config_file"),
+        "registration publishes no config-folder rows: {manifest}"
+    );
+
+    // A subsequent open of the now-registered project is a no-op registration: the
+    // templates already exist, so nothing is published and the manifest is unchanged.
+    run_success(&bin, &["open-project", &project_arg]);
+    let after_open = std::fs::read_to_string(&manifest_path).expect("manifest persists");
+    assert_eq!(
+        manifest, after_open,
+        "open of an already-registered project must not rewrite or backfill the manifest"
     );
 }
 
@@ -305,36 +337,47 @@ fn copy_dir_recursive(from: &Path, to: &Path) {
     }
 }
 
-// #1064 Stage E: a cloned project (whose `.ac` was copied from an origin) is
-// registered through the public CLI without emitting or backfilling a seed
-// manifest, because production stays dormant until Stage F (plan section 10.3
-// item 7, section 5.4 clone row, acceptance items 19/38). Public-outcome only:
-// no activation token, private hook, or helper barrier is used.
+// #1065 Stage F: a cloned project (whose `.ac` was copied from an origin that a
+// fresh `new-project` seeded) carries the origin's committed seed manifest
+// byte-for-byte, and opening the clone (a no-op registration of an existing `.ac`)
+// preserves it without backfilling, re-timestamping, or pruning (plan section 5.4
+// clone row, acceptance items 19/38). Public-outcome only: no activation token,
+// private hook, or helper barrier is used.
 #[test]
-fn cloned_project_open_emits_no_seed_manifest() {
-    let tmp = Tmp::new("cli-project-clone-dormant");
+fn cloned_project_open_preserves_the_manifest_byte_for_byte() {
+    let tmp = Tmp::new("cli-project-clone-activated");
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
     write_settings(&config_dir, &[]);
     let origin = tmp.path().join("Origin");
     let origin_arg = origin.to_string_lossy().to_string();
     run_success(&bin, &["new-project", &origin_arg]);
-    assert!(origin.join(".ac").is_dir());
+    let origin_manifest = origin.join(".ac").join("seed-manifest.toml");
+    let origin_bytes = std::fs::read(&origin_manifest)
+        .expect("origin new-project emits a seed manifest once Stage F is activated");
 
-    // Clone: copy the whole project (including `.ac`) to a new location.
+    // Clone: copy the whole project (including `.ac` and its manifest) to a new
+    // location.
     let clone = tmp.path().join("Clone");
     copy_dir_recursive(&origin, &clone);
-    assert!(clone.join(".ac").is_dir(), "the clone carries its .ac");
+    let clone_manifest = clone.join(".ac").join("seed-manifest.toml");
+    assert_eq!(
+        std::fs::read(&clone_manifest).expect("the clone carries its manifest"),
+        origin_bytes,
+        "the clone starts with the origin's manifest bytes"
+    );
 
     let clone_arg = clone.to_string_lossy().to_string();
     run_success(&bin, &["open-project", &clone_arg]);
 
-    assert!(
-        !clone.join(".ac").join("seed-manifest.toml").exists(),
-        "opening a clone must not backfill a seed manifest (dormant until Stage F)"
+    assert_eq!(
+        std::fs::read(&clone_manifest).expect("clone manifest persists"),
+        origin_bytes,
+        "opening a clone preserves the manifest byte-for-byte (no backfill, reprune, or re-timestamp)"
     );
-    assert!(
-        !origin.join(".ac").join("seed-manifest.toml").exists(),
-        "the origin project also stays manifest-free"
+    assert_eq!(
+        std::fs::read(&origin_manifest).expect("origin manifest persists"),
+        origin_bytes,
+        "the origin manifest is untouched by opening the clone"
     );
 }

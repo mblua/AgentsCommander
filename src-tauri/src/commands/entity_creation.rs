@@ -1305,16 +1305,19 @@ pub(crate) fn remove_replica_dir(replica_dir: &Path) -> ReplicaRemovalOutcome {
 }
 
 // ===========================================================================
-// #1063 Stage D: project-gate lifecycle-removal seam (dormant recorder).
+// #1063 lifecycle-removal seam (#1065 Stage F: activated recorder).
 //
 // Lifecycle deletion acquires the project seed-manifest gate so it serializes
 // against config-seed publication (plan sections 5.4/6.3): the lock ordering is
-// production-active. The manifest prune itself requires a `ManifestActivationToken`,
-// which only `#[cfg(test)]` builds can construct (`for_test`). Production deletion
-// therefore threads `None`, never compiles the recorder call, and never mutates a
-// manifest (dormant / non-emitting through Stage E; activation is F-only). Tests
-// thread `Some(for_test())` to exercise the real prune, staged-delete rollback,
-// and single final snapshot on the same lifecycle path.
+// production-active. The manifest prune requires a `ManifestActivationToken`;
+// Stage F adds the sole production constructor (`ManifestActivationToken::production`)
+// and each production deletion entry point now threads `Some(&token)`, so the
+// recorder call is compiled and reached in a production build and the manifest is
+// pruned after the logical removal commits. Emission still stays a no-op when the
+// gate degraded before contention (`None` gate) or a caller intentionally passes
+// no token (`None`), preserving the fail-soft deletion contract. Tests thread a
+// token to exercise the real prune, staged-delete rollback, and single final
+// snapshot on the same lifecycle path.
 // ===========================================================================
 
 /// Acquire the project seed-manifest gate for a still-reversible lifecycle
@@ -1362,9 +1365,10 @@ pub(crate) fn acquire_lifecycle_project_gate(
     }
 }
 
-/// Dormant lifecycle prune (#1063). Emits only under `#[cfg(test)]` with a test
-/// activation token; production has no token and never compiles the recorder
-/// call, so lifecycle deletion stays non-emitting until Stage F activation.
+/// Lifecycle prune (#1063, #1065 Stage F activated). The recorder call is compiled
+/// in production; it runs only when a gate is held and an activation token was
+/// threaded, so a pre-contention gate degradation or an unactivated caller stays a
+/// no-op.
 ///
 /// The `gate` is `None` when the pre-contention degradation above skipped the
 /// lock. The `make_filter` closure builds the exact committed-intent
@@ -1374,31 +1378,22 @@ fn prune_lifecycle_scope_if_activated(
     activation: Option<&ManifestActivationToken>,
     make_filter: impl FnOnce() -> Result<ManifestLifecycleFilter, SeedManifestError>,
 ) {
-    #[cfg(test)]
-    {
-        if let (Some(guard), Some(token)) = (gate, activation) {
-            match make_filter() {
-                Ok(filter) => {
-                    let outcome = guard
-                        .publication_permit()
-                        .apply_lifecycle_filter(token, filter);
-                    log::debug!(
-                        "[entity_creation] #1063 lifecycle prune outcome: {:?}",
-                        outcome
-                    );
-                }
-                Err(error) => log::warn!(
-                    "[entity_creation] #1063 lifecycle filter rejected before prune: {}",
-                    error
-                ),
+    if let (Some(guard), Some(token)) = (gate, activation) {
+        match make_filter() {
+            Ok(filter) => {
+                let outcome = guard
+                    .publication_permit()
+                    .apply_lifecycle_filter(token, filter);
+                log::debug!(
+                    "[entity_creation] #1063 lifecycle prune outcome: {:?}",
+                    outcome
+                );
             }
+            Err(error) => log::warn!(
+                "[entity_creation] #1063 lifecycle filter rejected before prune: {}",
+                error
+            ),
         }
-    }
-    #[cfg(not(test))]
-    {
-        // Production is dormant: no activation token exists, so the recorder call
-        // above is not compiled and no manifest is mutated.
-        let _ = (gate, activation, make_filter);
     }
 }
 
@@ -1564,14 +1559,14 @@ pub async fn delete_agent_matrix(
     project_path: String,
     agent_path: String,
 ) -> Result<(), String> {
-    // Production: dormant (no activation token) and no lock-order test barrier.
+    // #1065 Stage F: activated with the sole production token; no lock-order test barrier.
     delete_agent_matrix_inner(
         &app,
         session_mgr.inner(),
         settings.inner(),
         &project_path,
         &agent_path,
-        None,
+        Some(ManifestActivationToken::production()),
         |_| {},
     )
     .await
@@ -3003,13 +2998,13 @@ pub async fn delete_team(
     project_path: String,
     team_name: String,
 ) -> Result<(), String> {
-    // Production: dormant (no activation token) and no lock-order test barrier.
+    // #1065 Stage F: activated with the sole production token; no lock-order test barrier.
     delete_team_inner(
         &app,
         session_mgr.inner(),
         &project_path,
         &team_name,
-        None,
+        Some(ManifestActivationToken::production()),
         |_| {},
     )
     .await
@@ -3241,16 +3236,18 @@ pub async fn delete_workgroup(
     // re-parented to a sentinel name and removed; the user-visible WG is gone.
     //
     // #1063: acquire the project-only seed-manifest gate around the atomic rename
-    // and dormant prune inside blocking work, then release it before the async
-    // blocker diagnostics that `delete_workgroup_dir_backend_with_outcome` runs.
+    // and (#1065 Stage F) activated prune inside blocking work, then release it
+    // before the async blocker diagnostics that
+    // `delete_workgroup_dir_backend_with_outcome` runs.
     let project_root = Path::new(&project_path).to_path_buf();
     let workgroup = workgroup_name.clone();
     let wg_for_delete = wg_dir.clone();
     let outcome = crate::config::seed_manifest::run_blocking_owned(move || {
+        let activation = ManifestActivationToken::production();
         gated_workgroup_delete_with(
             &project_root,
             &workgroup,
-            None,
+            Some(&activation),
             || {},
             || try_atomic_delete_wg(&wg_for_delete),
         )
