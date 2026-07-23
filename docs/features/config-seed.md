@@ -126,6 +126,33 @@ A successful seed logs one `info`-level line. With `logLevel` at `info` (the def
 
 The tier in the message (`WorkspaceProfile`, `WorkspaceBase`, `MatrixProfile`, `MatrixBase`, or `CatalogDefault` for the factory default) tells you which source won. If you see no `[config-seed]` line at all, the seed did not run; see [Troubleshooting](#troubleshooting). See [Log filtering](../reference/log-filtering.md#where-logs-go) for where `app.log` lives and how to raise the log level.
 
+## Recording in the seed manifest
+
+A **successful** config-seed publication is recorded in the project's
+[seed manifest](seed-manifest.md), `<project>/.ac/seed-manifest.toml`: the whole
+`config:<dest>` scope is replaced with one row per installed regular file, all
+sharing the single UTC time captured at the install. A few things follow from that:
+
+- **Every-spawn churn is normal.** Tiers 1 through 4 replace the destination on
+  every spawn, so the manifest rows get a fresh timestamp each launch even when the
+  copied bytes are identical. Two spawns inside the same millisecond can serialize
+  to the same value and produce no Git diff.
+- **Only real publications record.** A skip (no source, destination in use, or a
+  stale replica whose owner changed while AC waited for the project lock) and an
+  ordinary staging/install failure leave the manifest untouched.
+- **Install-and-restore failure prunes, never publishes.** If AC renames the old
+  destination aside, the new install fails, and the restore also fails while the
+  process survives, AC removes that config scope's now-stale rows without adding a
+  row or time - the failed install is never recorded as published.
+- **Tracking is fail-soft.** A busy project lock, an unsupported filesystem, or a
+  manifest write error never aborts the spawn: the PTY still launches, and the seed
+  is simply left unrecorded (or skipped when the lock is contended) rather than
+  racing a cooperating writer. Config seed into a Root Agent or another unowned
+  launch root is not recorded at all.
+
+See [Seed manifest](seed-manifest.md) for the schema, time semantics, and Git
+behavior.
+
 ## What it does not do
 
 Config seed copies the template. That is all. In particular:
@@ -143,6 +170,7 @@ Config seed copies the template. That is all. In particular:
 
 ## See also
 
+- [Seed manifest](seed-manifest.md) - where successful replica publications are recorded
 - [Settings reference](../reference/settings.md#coding-agents) - the `configSeed` field on a coding agent
 - [Coding Agent Profiles](coding-agent-profiles.md) - how the profile letter is resolved
 - [Portable instances](portable-instances.md#config-directory-rule) - where `<config_dir>` lives

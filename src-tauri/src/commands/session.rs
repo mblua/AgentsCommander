@@ -1977,13 +1977,26 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                     let managed_filenames = managed_filenames.clone();
                     let container_repos = container_repos.clone();
                     move || {
-                        crate::config::session_context::materialize_agent_context_file_with_filename(
+                        // #1065 Stage F: production records the session-spawn context
+                        // read/sync and self-heal under the per-project gate (acquired
+                        // inside the blocking worker so the 10-second poll never blocks a
+                        // Tokio worker); a `#[cfg(test)]` lib build stays non-emitting.
+                        #[cfg(not(test))]
+                        let activation = Some(
+                            crate::config::seed_manifest::ManifestActivationToken::production(),
+                        );
+                        #[cfg(test)]
+                        let activation: Option<
+                            crate::config::seed_manifest::ManifestActivationToken,
+                        > = None;
+                        crate::config::session_context::materialize_agent_context_file_with_filename_activated(
                             &cwd,
                             &target_filename,
                             &managed_filenames,
                             is_coordinator,
                             auto_self_clear,
                             container_repos.as_ref(),
+                            activation.as_ref(),
                         )
                     }
                 })
@@ -2145,7 +2158,22 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             let seed_result = coordinator
                 .run_blocking_seed_work(move || {
                     let _seed_guard = lock.blocking_lock_owned();
-                    crate::config::config_seed::perform_config_seed(&seed, &id.to_string())
+                    // #1065 Stage F: production records the config-seed publication
+                    // under the per-project gate, acquired AFTER this global lock
+                    // (plan section 6.3 lock order) and dropped before returning; a
+                    // `#[cfg(test)]` lib build stays non-emitting.
+                    #[cfg(not(test))]
+                    let activation =
+                        Some(crate::config::seed_manifest::ManifestActivationToken::production());
+                    #[cfg(test)]
+                    let activation: Option<
+                        crate::config::seed_manifest::ManifestActivationToken,
+                    > = None;
+                    crate::config::config_seed::perform_config_seed_recorded(
+                        &seed,
+                        &id.to_string(),
+                        activation.as_ref(),
+                    )
                 })
                 .await;
             match seed_result {

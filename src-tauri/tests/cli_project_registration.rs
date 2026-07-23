@@ -268,12 +268,15 @@ fn open_project_invalid_path_does_not_write_refresh() {
     assert!(project_refresh_request_paths(&config_dir).is_empty());
 }
 
-// #1063 Stage D stays dormant: project registration and re-open create no seed
-// manifest and never backfill one from an existing project, since the production
-// binary has no activation token.
+// #1065 Stage F ACTIVATED: registering a fresh project publishes its two project
+// context templates, so `new-project` emits `.ac/seed-manifest.toml` with one
+// `project_context_template` row each for `context:agentscommander` and
+// `context:coordinator`. A subsequent open of the already-registered project is a
+// no-op registration that must not backfill or rewrite the manifest (acceptance
+// items 22/38). Public-outcome only: no activation token or private hook.
 #[test]
-fn new_and_open_project_emit_no_seed_manifest() {
-    let tmp = Tmp::new("cli-project-registration-dormant");
+fn new_project_emits_seed_manifest_and_open_does_not_backfill() {
+    let tmp = Tmp::new("cli-project-registration-activated");
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
     write_settings(&config_dir, &[]);
@@ -282,12 +285,41 @@ fn new_and_open_project_emit_no_seed_manifest() {
 
     run_success(&bin, &["new-project", &project_arg]);
     assert!(project.join(".ac").is_dir());
-    // A subsequent open of the now-registered project is a no-op registration.
-    run_success(&bin, &["open-project", &project_arg]);
-
+    let manifest_path = project.join(".ac").join("seed-manifest.toml");
+    let manifest = std::fs::read_to_string(&manifest_path)
+        .expect("fresh new-project must emit a seed manifest once Stage F is activated");
     assert!(
-        !project.join(".ac").join("seed-manifest.toml").exists(),
-        "project registration/open must not emit or backfill a seed manifest (dormant until Stage F)"
+        manifest.contains("schema_version = 1"),
+        "manifest: {manifest}"
+    );
+    assert!(
+        manifest.contains("coverage_version = 1"),
+        "manifest: {manifest}"
+    );
+    assert!(
+        manifest.contains("scope = \"context:agentscommander\""),
+        "manifest must record the project context template: {manifest}"
+    );
+    assert!(
+        manifest.contains("scope = \"context:coordinator\""),
+        "manifest must record the coordinator context template: {manifest}"
+    );
+    assert!(
+        manifest.contains("kind = \"project_context_template\""),
+        "manifest: {manifest}"
+    );
+    assert!(
+        !manifest.contains("replica_config_file"),
+        "registration publishes no config-folder rows: {manifest}"
+    );
+
+    // A subsequent open of the now-registered project is a no-op registration: the
+    // templates already exist, so nothing is published and the manifest is unchanged.
+    run_success(&bin, &["open-project", &project_arg]);
+    let after_open = std::fs::read_to_string(&manifest_path).expect("manifest persists");
+    assert_eq!(
+        manifest, after_open,
+        "open of an already-registered project must not rewrite or backfill the manifest"
     );
 }
 
@@ -305,36 +337,273 @@ fn copy_dir_recursive(from: &Path, to: &Path) {
     }
 }
 
-// #1064 Stage E: a cloned project (whose `.ac` was copied from an origin) is
-// registered through the public CLI without emitting or backfilling a seed
-// manifest, because production stays dormant until Stage F (plan section 10.3
-// item 7, section 5.4 clone row, acceptance items 19/38). Public-outcome only:
-// no activation token, private hook, or helper barrier is used.
+// #1065 Stage F: a cloned project (whose `.ac` was copied from an origin that a
+// fresh `new-project` seeded) carries the origin's committed seed manifest
+// byte-for-byte, and opening the clone (a no-op registration of an existing `.ac`)
+// preserves it without backfilling, re-timestamping, or pruning (plan section 5.4
+// clone row, acceptance items 19/38). Public-outcome only: no activation token,
+// private hook, or helper barrier is used.
 #[test]
-fn cloned_project_open_emits_no_seed_manifest() {
-    let tmp = Tmp::new("cli-project-clone-dormant");
+fn cloned_project_open_preserves_the_manifest_byte_for_byte() {
+    let tmp = Tmp::new("cli-project-clone-activated");
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
     write_settings(&config_dir, &[]);
     let origin = tmp.path().join("Origin");
     let origin_arg = origin.to_string_lossy().to_string();
     run_success(&bin, &["new-project", &origin_arg]);
-    assert!(origin.join(".ac").is_dir());
+    let origin_manifest = origin.join(".ac").join("seed-manifest.toml");
+    let origin_bytes = std::fs::read(&origin_manifest)
+        .expect("origin new-project emits a seed manifest once Stage F is activated");
 
-    // Clone: copy the whole project (including `.ac`) to a new location.
+    // Clone: copy the whole project (including `.ac` and its manifest) to a new
+    // location.
     let clone = tmp.path().join("Clone");
     copy_dir_recursive(&origin, &clone);
-    assert!(clone.join(".ac").is_dir(), "the clone carries its .ac");
+    let clone_manifest = clone.join(".ac").join("seed-manifest.toml");
+    assert_eq!(
+        std::fs::read(&clone_manifest).expect("the clone carries its manifest"),
+        origin_bytes,
+        "the clone starts with the origin's manifest bytes"
+    );
 
     let clone_arg = clone.to_string_lossy().to_string();
     run_success(&bin, &["open-project", &clone_arg]);
 
+    assert_eq!(
+        std::fs::read(&clone_manifest).expect("clone manifest persists"),
+        origin_bytes,
+        "opening a clone preserves the manifest byte-for-byte (no backfill, reprune, or re-timestamp)"
+    );
+    assert_eq!(
+        std::fs::read(&origin_manifest).expect("origin manifest persists"),
+        origin_bytes,
+        "the origin manifest is untouched by opening the clone"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #1065 Stage F - real-boundary activation coverage for the project-context
+// boundaries (Grinch Finding 1).
+//
+// The per-module unit tests drive each boundary's INNER `*_recorded` / `*_impl`
+// helper with a `#[cfg(test)] for_test()` token. That proves the recorder logic
+// but NOT that the production entry point constructs a real
+// `ManifestActivationToken::production()` and threads it, because the outer
+// wiring is `#[cfg(not(test))]`-gated and is compiled OUT of every unit-test
+// build. This integration binary links the library in NON-test mode, so those
+// gates are live and `production()` tokens are real. Two mechanisms, both of
+// which red when a real adapter call is removed:
+//
+// (a) BEHAVIORAL - drive the real production entry point and assert the
+//     resulting `.ac/seed-manifest.toml` mutation. Used wherever the boundary is
+//     reachable from a plain `pub` entry point that takes no `AppHandle`/`State`.
+// (b) SOURCE-SCRAPE WIRING ASSERTION - the sanctioned fallback (same form as
+//     `commands/session.rs` `create_session_inner_keeps_both_archive_activation_gates`)
+//     for boundaries no test can practically drive. Each pins the boundary's
+//     production `ManifestActivationToken::production()` threading, so removing
+//     the call (or flipping the gated activation to `None`) reds a test.
+//
+// The lifecycle and config-seed boundaries are covered in
+// `tests/cli_workgroup_team.rs`.
+// ---------------------------------------------------------------------------
+
+/// Read a crate-relative source file, drop its `#[cfg(test)] mod tests` block,
+/// and collapse ALL whitespace. Dropping the test block matches the cited
+/// precedent and makes the "production only" property ENFORCED rather than
+/// assumed: a future `#[cfg(test)]` use of `production()` can no longer offset a
+/// removed production wiring. Collapsing whitespace makes assertions match token
+/// sequences irrespective of rustfmt line-wrapping.
+fn normalized_production_source(relative: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
+    let body = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    let normalized = body.split_whitespace().collect::<String>();
+    let end = normalized.find("#[cfg(test)]modtests{").unwrap_or_else(|| {
+        panic!("{relative}: no `#[cfg(test)] mod tests` block found to split off")
+    });
+    normalized[..end].to_string()
+}
+
+/// Count production activation-token constructions in a scraped production
+/// slice. The token string carries no interior whitespace, so it survives
+/// normalization.
+fn production_token_count(production: &str) -> usize {
+    production
+        .matches("ManifestActivationToken::production()")
+        .count()
+}
+
+// (a) V1CoverageBoundary::DirectCreateAcProjectFreshRoot, prod wiring
+// `commands/ac_discovery.rs` `create_ac_project` -> Some(production()).
+// A bare fresh-root create publishes its two project context templates, so
+// `.ac/seed-manifest.toml` is emitted with one `project_context_template` row
+// for `context:agentscommander` and one for `context:coordinator`. Removing the
+// `Some(...production())` at the boundary (activation -> None) stops emission
+// and reds this test.
+#[tokio::test]
+async fn create_ac_project_fresh_root_emits_seed_manifest_in_production_build() {
+    let tmp = Tmp::new("activation-create-ac-project");
+    let root = tmp.path().join("FreshProject");
+    let root_arg = root.to_string_lossy().to_string();
+
+    agentscommander_lib::commands::ac_discovery::create_ac_project(root_arg)
+        .await
+        .expect("create_ac_project on a fresh root succeeds");
+
+    assert!(root.join(".ac").is_dir(), "the fresh root gains an .ac");
+    let manifest = std::fs::read_to_string(root.join(".ac").join("seed-manifest.toml")).expect(
+        "a fresh-root create_ac_project must emit .ac/seed-manifest.toml in a production build; \
+         if this fails, the DirectCreateAcProjectFreshRoot production token was removed",
+    );
+
     assert!(
-        !clone.join(".ac").join("seed-manifest.toml").exists(),
-        "opening a clone must not backfill a seed manifest (dormant until Stage F)"
+        manifest.contains("schema_version = 1"),
+        "manifest: {manifest}"
     );
     assert!(
-        !origin.join(".ac").join("seed-manifest.toml").exists(),
-        "the origin project also stays manifest-free"
+        manifest.contains("coverage_version = 1"),
+        "manifest: {manifest}"
+    );
+    assert!(
+        manifest.contains("kind = \"project_context_template\""),
+        "the create must record project context templates: {manifest}"
+    );
+    assert!(
+        manifest.contains("scope = \"context:agentscommander\""),
+        "manifest must record the agentscommander project context template: {manifest}"
+    );
+    assert!(
+        manifest.contains("scope = \"context:coordinator\""),
+        "manifest must record the coordinator project context template: {manifest}"
+    );
+}
+
+// (a) V1CoverageBoundary::ContextOverwrite, prod wiring
+// `commands/ac_discovery.rs` `overwrite_context_template_with_default` ->
+// Some(production()). The command takes four plain `String` params (no
+// `AppHandle`, no `State`), so the real outer command is callable here.
+//
+// The workspace deliberately starts BARE (an `.ac` created directly, with only a
+// customised coordinator template and NO manifest) rather than via
+// `create_ac_project`: a fresh-root create would itself publish a
+// `context:coordinator` row, which would keep a "manifest contains
+// context:coordinator" assertion green even with the overwrite boundary
+// un-wired. Starting with no manifest makes the emission attributable ONLY to
+// the overwrite, so flipping that boundary's activation to `None` reds this test.
+#[tokio::test]
+async fn overwrite_context_template_with_default_records_the_overwrite_in_production_build() {
+    let tmp = Tmp::new("activation-context-overwrite");
+    let project = tmp.path().join("OverwriteProject");
+    let workspace = project.join(".ac");
+    std::fs::create_dir_all(&workspace).expect("create the bare workspace");
+
+    let filename =
+        agentscommander_lib::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME;
+    std::fs::write(workspace.join(filename), "custom coordinator guidance")
+        .expect("write a customised coordinator template");
+
+    let manifest_path = workspace.join("seed-manifest.toml");
+    assert!(
+        !manifest_path.exists(),
+        "the bare workspace must start with no manifest, so only the overwrite can create one"
+    );
+
+    let update =
+        agentscommander_lib::config::seeded_context_templates::scan_project_context_template_updates(
+            &project, &workspace,
+        )
+        .expect("scan project context template updates")
+        .into_iter()
+        .find(|update| update.filename == filename)
+        .expect("a pending coordinator overwrite update");
+
+    agentscommander_lib::commands::ac_discovery::overwrite_context_template_with_default(
+        project.to_string_lossy().to_string(),
+        update.filename.clone(),
+        update.current_file_sha256.clone(),
+        update.current_default_sha256.clone(),
+    )
+    .await
+    .expect("overwrite_context_template_with_default succeeds");
+
+    let manifest = std::fs::read_to_string(&manifest_path).expect(
+        "an explicit overwrite must create .ac/seed-manifest.toml in a production build; \
+         if this fails, the ContextOverwrite production token was removed",
+    );
+    assert!(
+        manifest.contains("scope = \"context:coordinator\""),
+        "the overwrite must record the coordinator context template: {manifest}"
+    );
+    assert!(
+        manifest.contains("kind = \"project_context_template\""),
+        "manifest: {manifest}"
+    );
+}
+
+// (b) `commands/ac_discovery.rs`: the fresh-root create (also covered by (a)
+// above), the two discovery context-update scans (ContextUpdate), and the
+// overwrite command (ContextOverwrite, also covered by (a) above). The two scans
+// sit behind `discover_ac_agents` / `discover_project`, which each require an
+// `AppHandle` plus four `State<'_, ...>` params, so they are not drivable here.
+#[test]
+fn ac_discovery_rs_threads_production_tokens_for_context_boundaries() {
+    let production = normalized_production_source("src/commands/ac_discovery.rs");
+
+    assert_eq!(
+        production_token_count(&production),
+        4,
+        "ac_discovery.rs must construct exactly four production activation tokens \
+         (create_ac_project + two context-update scans + overwrite)"
+    );
+
+    // The `activation.as_ref()` argument pins each assertion to its cfg-gated
+    // production site; a unit call threading a `for_test()` token cannot satisfy it.
+    assert!(
+        production.contains(
+            "scan_project_context_templates_recorded(&repo_dir,&workspace_dir,activation.as_ref()"
+        ),
+        "the per-repo discovery context-update (ContextUpdate) must thread the activation token"
+    );
+    assert!(
+        production.contains(
+            "scan_project_context_templates_recorded(&base,&workspace_dir,activation.as_ref()"
+        ),
+        "the workgroup discovery context-update (ContextUpdate) must thread the activation token"
+    );
+    assert!(
+        production.contains(
+            "overwrite_context_template_recorded(Path::new(&path),&workspace_dir,&filename,\
+             &current_file_sha256,&current_default_sha256,activation.as_ref()"
+        ),
+        "the overwrite command (ContextOverwrite) must thread the activation token"
+    );
+}
+
+// (b) `config/projects.rs`: new-project registration ContextCreate. The CLI path
+// (`register_new_project`) is additionally covered end-to-end by
+// `new_project_emits_seed_manifest_and_open_does_not_backfill` above; the GUI/web
+// path (`prepare_new_project`) is `pub(crate)` and unreachable from an
+// integration binary.
+#[test]
+fn projects_rs_threads_production_tokens_for_new_project_registration() {
+    let production = normalized_production_source("src/config/projects.rs");
+
+    assert_eq!(
+        production_token_count(&production),
+        2,
+        "projects.rs must construct exactly two production activation tokens \
+         (CLI register_new_project + GUI prepare_new_project)"
+    );
+
+    assert!(
+        production.contains(
+            "register_new_project_with_store(settings,raw_path,store,activation.as_ref())"
+        ),
+        "the CLI new-project registration (ContextCreate) must thread the activation token"
+    );
+    assert!(
+        production.contains("prepare_new_project_impl(raw_path,activation.as_ref(),"),
+        "the GUI/web new-project registration (ContextCreate GUI) must thread the activation token"
     );
 }

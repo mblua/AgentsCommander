@@ -1442,12 +1442,13 @@ fn workgroup_add_missing_team_without_legacy_flags_errors() {
     assert!(stderr.contains("Create it first with `team create`"));
 }
 
-// #1063 Stage D stays dormant: the production CLI updates the seed manifest only
-// after actual logical removal, but with no production activation token it never
-// emits one. These black-box tests assert public outcomes and the absence of a
-// seed manifest; they never expect the activation token or private hooks.
+// #1065 Stage F: these projects never spawn a session, so config seed never runs
+// and no config scope is recorded. CLI removal therefore prunes nothing and, by the
+// empty-transaction rule, never spuriously creates a seed manifest. The
+// `workgroup_remove_prunes_recorded_config_scope` test below proves the prune fires
+// when a scope IS recorded. Black-box: public outcomes only, no token or hook.
 #[test]
-fn workgroup_remove_emits_no_seed_manifest() {
+fn workgroup_remove_does_not_create_a_manifest_when_no_scope_was_recorded() {
     let tmp = Tmp::new("cli-workgroup-remove-dormant");
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
@@ -1487,13 +1488,13 @@ fn workgroup_remove_emits_no_seed_manifest() {
     assert!(!wg_dir.exists());
     assert!(
         !project.join(".ac").join("seed-manifest.toml").exists(),
-        "production workgroup removal must not emit a seed manifest (dormant until Stage F)"
+        "removing a workgroup with no recorded config scope must not create a seed manifest"
     );
 }
 
 #[test]
-fn team_remove_member_emits_no_seed_manifest() {
-    let tmp = Tmp::new("cli-team-remove-member-dormant");
+fn team_remove_member_does_not_create_a_manifest_when_no_scope_was_recorded() {
+    let tmp = Tmp::new("cli-team-remove-member-noop");
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
     write_settings(&config_dir, tmp.path());
@@ -1561,17 +1562,103 @@ fn team_remove_member_emits_no_seed_manifest() {
     assert!(!replica.exists());
     assert!(
         !project.join(".ac").join("seed-manifest.toml").exists(),
-        "production team-member removal must not emit a seed manifest (dormant until Stage F)"
+        "removing a team member with no recorded config scope must not create a seed manifest"
     );
 }
 
-// #1064 Stage E: CLI workgroup removal produces the correct public outcome while
-// production stays dormant - no seed manifest is emitted or pruned (plan section
-// 8.2 cli_workgroup_team row, acceptance items 10/22/46). Complements the member
-// removal dormancy coverage above; public-outcome only, no token or hook.
+// #1065 Stage F: with a pre-recorded config scope under the member's replica,
+// production CLI `team remove-member` acquires the project gate (then the
+// team-config guard), removes the replica, and prunes that scope's rows in the same
+// transaction (acceptance items 10/22/43). End-to-end proof that the sole production
+// activation token is threaded through CLI member removal. Public-outcome only.
 #[test]
-fn workgroup_removal_emits_no_seed_manifest() {
-    let tmp = Tmp::new("cli-wg-remove-dormant");
+fn team_remove_member_prunes_recorded_replica_config_scope() {
+    let tmp = Tmp::new("cli-team-remove-member-prune");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    let project = project_with_agents(tmp.path(), &["architect", "dev-rust"]);
+
+    run_json(
+        &bin,
+        &[
+            "team",
+            "create",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Dev Team",
+            "--coordinator",
+            "architect",
+        ],
+    );
+    run_json(
+        &bin,
+        &[
+            "workgroup",
+            "add",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Dev Team",
+            "--title",
+            "Build",
+        ],
+    );
+    run_json(
+        &bin,
+        &[
+            "team",
+            "add-member",
+            "--project",
+            "ProjectAlpha",
+            "--workgroup",
+            "wg-1-dev-team",
+            "--agent",
+            "dev-rust",
+        ],
+    );
+    let replica = project
+        .join(".ac")
+        .join("wg-1-dev-team")
+        .join("__agent_dev-rust");
+    assert!(replica.join("config.json").is_file());
+    let manifest = project.join(".ac").join("seed-manifest.toml");
+    write_recorded_config_manifest(&manifest, "wg-1-dev-team", "dev-rust");
+
+    let removed = run_json_machine(
+        &bin,
+        &[
+            "team",
+            "remove-member",
+            "--project",
+            "ProjectAlpha",
+            "--workgroup",
+            "wg-1-dev-team",
+            "--agent",
+            "dev-rust",
+        ],
+    );
+    assert_eq!(removed["removed"], true);
+    assert!(!replica.exists());
+    let after = std::fs::read_to_string(&manifest).expect("manifest persists after member removal");
+    assert!(
+        !after.contains("__agent_dev-rust"),
+        "the member's replica config scope must be pruned: {after}"
+    );
+    assert!(
+        after.contains("files = []"),
+        "pruning the only row leaves a valid empty v1 manifest: {after}"
+    );
+}
+
+// #1065 Stage F: creating a workgroup records no manifest (config seed runs at
+// session spawn, not at workgroup creation), and removing it with no recorded scope
+// is a byte-stable no-op (plan section 8.2 cli_workgroup_team row, acceptance items
+// 10/22/46). Public-outcome only, no token or hook.
+#[test]
+fn workgroup_creation_and_scopeless_removal_leave_no_manifest() {
+    let tmp = Tmp::new("cli-wg-remove-noop");
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
     let (project, wg_dir) = create_basic_workgroup(tmp.path(), &bin, &config_dir);
@@ -1596,6 +1683,202 @@ fn workgroup_removal_emits_no_seed_manifest() {
     assert!(!wg_dir.exists(), "the workgroup directory is removed");
     assert!(
         !manifest.exists(),
-        "workgroup removal must not emit or prune a seed manifest (dormant until Stage F)"
+        "removing a workgroup with no recorded scope must not create or prune a manifest"
+    );
+}
+
+/// Write a valid v1 seed manifest that records a single replica config-folder scope
+/// under `<workgroup>/__agent_<agent>/.claude`, exactly as a real config-seed spawn
+/// would have. Used to prove Stage F lifecycle removal prunes a recorded scope.
+fn write_recorded_config_manifest(manifest_path: &Path, workgroup: &str, agent: &str) {
+    let manifest = format!(
+        concat!(
+            "# Managed by AgentsCommander. Diagnostic only; never grants file ownership.\n",
+            "schema_version = 1\n",
+            "coverage_version = 1\n",
+            "coverage = [\"project_context_templates\", \"replica_config_folders\"]\n",
+            "\n",
+            "[[files]]\n",
+            "path = \".ac/{workgroup}/__agent_{agent}/.claude/settings.json\"\n",
+            "path_encoding = \"utf8\"\n",
+            "kind = \"replica_config_file\"\n",
+            "scope = \"config:.ac/{workgroup}/__agent_{agent}/.claude\"\n",
+            "source = \"workspace_base\"\n",
+            "last_seeded_at = \"2026-07-16T19:41:12.456Z\"\n"
+        ),
+        workgroup = workgroup,
+        agent = agent
+    );
+    std::fs::write(manifest_path, manifest).expect("write recorded config manifest");
+}
+
+// #1065 Stage F: with a pre-recorded config scope under the workgroup, production
+// CLI removal acquires the project gate, removes the workgroup, and prunes that
+// scope's rows in the same transaction. Because it was the only row, the manifest
+// becomes a valid empty v1 file. This is the end-to-end proof that the sole
+// production activation token is threaded through CLI workgroup removal (acceptance
+// items 10/22). Public-outcome only.
+#[test]
+fn workgroup_remove_prunes_recorded_config_scope() {
+    let tmp = Tmp::new("cli-wg-remove-prune");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    let (project, wg_dir) = create_basic_workgroup(tmp.path(), &bin, &config_dir);
+    let manifest = project.join(".ac").join("seed-manifest.toml");
+    write_recorded_config_manifest(&manifest, "wg-1-dev-team", "architect");
+
+    let removed = run_json_machine(
+        &bin,
+        &[
+            "workgroup",
+            "remove",
+            "--project",
+            "ProjectAlpha",
+            "--workgroup",
+            "wg-1-dev-team",
+        ],
+    );
+    assert_eq!(removed["removed"], true);
+    assert!(!wg_dir.exists(), "the workgroup directory is removed");
+    let after = std::fs::read_to_string(&manifest).expect("manifest persists after removal");
+    assert!(
+        !after.contains("wg-1-dev-team"),
+        "the workgroup's config scope must be pruned: {after}"
+    );
+    assert!(
+        after.contains("files = []"),
+        "pruning the only row leaves a valid empty v1 manifest: {after}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #1065 Stage F - real-boundary activation coverage for the lifecycle and
+// config-seed boundaries (Grinch Finding 1).
+//
+// The CLI removals above are the end-to-end (a) proof for LifecycleReplicaRemoval
+// and LifecycleWorkgroupRemoval. The boundaries below cannot be driven by any
+// test: the config-seed publish and the session-spawn context/self-heal/
+// coordinator sync sit behind `create_session_inner`, which needs an `AppHandle`
+// plus SessionManager/PtyManager state and a real spawned agent session (these
+// CLI suites deliberately never spawn one), and the GUI delete commands are Tauri
+// commands taking `AppHandle` + `State` with no CLI path. They therefore get the
+// sanctioned source-scrape wiring assertion (same form as `commands/session.rs`
+// `create_session_inner_keeps_both_archive_activation_gates`): each pins the
+// boundary's production `ManifestActivationToken::production()` threading, so
+// removing the call - or flipping the gated activation to `None` while still
+// constructing the token - reds a test.
+//
+// The project-context boundaries are covered in
+// `tests/cli_project_registration.rs`.
+// ---------------------------------------------------------------------------
+
+/// Read a crate-relative source file, drop its `#[cfg(test)] mod tests` block,
+/// and collapse ALL whitespace. Dropping the test block matches the cited
+/// precedent and makes the "production only" property ENFORCED rather than
+/// assumed: a future `#[cfg(test)]` use of `production()` can no longer offset a
+/// removed production wiring. Collapsing whitespace makes assertions match token
+/// sequences irrespective of rustfmt line-wrapping.
+fn normalized_production_source(relative: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
+    let body = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    let normalized = body.split_whitespace().collect::<String>();
+    let end = normalized.find("#[cfg(test)]modtests{").unwrap_or_else(|| {
+        panic!("{relative}: no `#[cfg(test)] mod tests` block found to split off")
+    });
+    normalized[..end].to_string()
+}
+
+/// Count production activation-token constructions in a scraped production
+/// slice. The token string carries no interior whitespace, so it survives
+/// normalization.
+fn production_token_count(production: &str) -> usize {
+    production
+        .matches("ManifestActivationToken::production()")
+        .count()
+}
+
+// (b) `commands/session.rs`: the config-seed publish chokepoint
+// (ConfigExactPublish / ConfigOverBoundPublish / ConfigFailedRestore) and the
+// session-spawn context read/self-heal plus coordinator v2/v3->v4 sync
+// (ContextSelfHeal, CoordinatorStatelessV2ToV4, CoordinatorStatelessV3ToV4,
+// CoordinatorSeededV3ToV4).
+#[test]
+fn session_rs_threads_production_tokens_for_config_seed_and_context() {
+    let production = normalized_production_source("src/commands/session.rs");
+
+    // Two `#[cfg(not(test))]` activation sites. Deleting either block drops the
+    // count and reds this test.
+    assert_eq!(
+        production_token_count(&production),
+        2,
+        "session.rs must construct exactly two production activation tokens \
+         (config-seed publish + session-spawn context sync)"
+    );
+
+    // Each assertion pins the `activation.as_ref()` ARGUMENT, not just the adapter
+    // name. That catches both mutation forms: reverting to the still-present
+    // non-recording `perform_config_seed` (the adapter name disappears) AND passing
+    // `None` while still constructing the token (the count stays 2, but the pinned
+    // argument disappears).
+    assert!(
+        production
+            .contains("perform_config_seed_recorded(&seed,&id.to_string(),activation.as_ref()"),
+        "the config-seed publish (ConfigExactPublish/OverBoundPublish/FailedRestore) must call \
+         the recording adapter perform_config_seed_recorded AND thread the activation token"
+    );
+    assert!(
+        production.contains(
+            "materialize_agent_context_file_with_filename_activated(&cwd,&target_filename,\
+             &managed_filenames,is_coordinator,auto_self_clear,container_repos.as_ref(),\
+             activation.as_ref()"
+        ),
+        "the session-spawn context sync (ContextSelfHeal + Coordinator v2/v3->v4) must call the \
+         activation-threading adapter materialize_agent_context_file_with_filename_activated AND \
+         thread the activation token"
+    );
+}
+
+// (b) `commands/entity_creation.rs`: the GUI Tauri delete commands, invoked by no
+// test - delete_team (LifecycleTeamDeletion), delete_agent_matrix
+// (LifecycleAgentMatrixDeletion plus its pending-inclusive staged-rollback prune,
+// PendingInclusiveDeleteProtection), and delete_workgroup (the GUI site for
+// LifecycleWorkgroupRemoval, whose CLI site is covered end-to-end above). Each
+// OUTER command must construct and thread the token into its inner transaction.
+#[test]
+fn entity_creation_rs_threads_production_tokens_through_the_delete_commands() {
+    let production = normalized_production_source("src/commands/entity_creation.rs");
+
+    assert_eq!(
+        production_token_count(&production),
+        3,
+        "entity_creation.rs must construct exactly three production activation tokens \
+         (delete_team + delete_agent_matrix + delete_workgroup)"
+    );
+
+    // The inner-fn names also appear in unit calls and definitions, so the token
+    // argument is what pins each assertion to the production command.
+    assert!(
+        production.contains(
+            "delete_team_inner(&app,session_mgr.inner(),&project_path,&team_name,\
+             Some(ManifestActivationToken::production()),"
+        ),
+        "delete_team (LifecycleTeamDeletion) must thread Some(production()) into delete_team_inner"
+    );
+    assert!(
+        production.contains(
+            "delete_agent_matrix_inner(&app,session_mgr.inner(),settings.inner(),&project_path,\
+             &agent_path,Some(ManifestActivationToken::production()),"
+        ),
+        "delete_agent_matrix (LifecycleAgentMatrixDeletion + PendingInclusiveDeleteProtection) \
+         must thread Some(production()) into delete_agent_matrix_inner"
+    );
+    assert!(
+        production.contains(
+            "letactivation=ManifestActivationToken::production();gated_workgroup_delete_with(\
+             &project_root,&workgroup,Some(&activation),"
+        ),
+        "delete_workgroup (LifecycleWorkgroupRemoval GUI site) must construct and thread the token \
+         into gated_workgroup_delete_with"
     );
 }
