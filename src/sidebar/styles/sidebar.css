@@ -2022,6 +2022,13 @@ html.light-theme .settings-api-client-warning {
   gap: var(--spacing-md);
 }
 
+/* #1095 - 1-rail view: drop the fixed 250px pin so the freed width is shared by
+   BOTH columns. The agents list keeps a 250px floor (never narrower than the
+   2-rail view) but may now grow; the single config rail takes the larger share. */
+.settings-config-screen[data-ac-rail-count="1"] {
+  grid-template-columns: minmax(250px, 1fr) minmax(0, 2fr);
+}
+
 /* left agent-list panel */
 .settings-agents-panel {
   min-height: 0;
@@ -2313,6 +2320,36 @@ html.light-theme .settings-api-client-warning {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--spacing-md);
   overflow: hidden;
+  flex: 1 1 auto;
+}
+
+/* #1095 - wraps the top-right rail-count dropdown above the rails. */
+.settings-compare-wrap {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+.settings-compare-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--spacing-xs);
+}
+
+.settings-rail-count-select {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 0;
+  max-width: 140px;
+}
+
+/* #1095 - 1-rail view collapses the rails grid to one full-width column. */
+.settings-config-screen[data-ac-rail-count="1"] .settings-compare-zone {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .settings-config-screen .settings-profile-rail {

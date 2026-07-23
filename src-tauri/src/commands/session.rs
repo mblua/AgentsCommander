@@ -1524,11 +1524,22 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             }
             None => None,
         };
+        // #1101: the restart replacement create runs while `teardown_old_for_restart`
+        // has released the old PTY but RETAINED its canonical manager row (removed only
+        // at the atomic commit's `mutations.remove(uuid)`, which runs after this gate).
+        // For a live-session restart that row is non-Exited, so `appeared_session` is a
+        // false positive and would refuse every restart of a live WG replica session.
+        // Restart passes `preheld_target = None` and acquires its own exact target lock
+        // (`_owned_target_gate`), so it is already serialized and is the authoritative
+        // replacement; this cold-spawn dedup heuristic is redundant and wrong for it.
+        // Skip the gate only for the restart cause. The wake path (inline_cause = None)
+        // is unchanged and keeps its dedup.
         if create_target_replica_identity.is_some()
             && matches!(
                 selection_intent,
                 CreateSelectionIntent::Background | CreateSelectionIntent::Suppress
             )
+            && !matches!(inline_cause, Some(SelectionCause::Restart(_)))
         {
             let target = create_target_replica_identity
                 .as_ref()
@@ -6254,6 +6265,64 @@ mod tests {
         assert_eq!(selection_payload["id"], replacement.id);
         assert_eq!(selection_payload["source"], "restart");
         assert_eq!(selection_payload["userInitiated"], true);
+        close_test_coordinator(&app).await;
+    }
+
+    #[tokio::test]
+    async fn restart_of_live_wg_replica_session_does_not_sessionrace() {
+        // #1101: `teardown_old_for_restart` retains the old canonical row (non-Exited)
+        // until the atomic commit's `mutations.remove(uuid)`, which runs AFTER the
+        // create-gate. For a live WG replica restart (Suppress intent + replica cwd) the
+        // gate saw `appeared_session == true` and returned Err("sessionRace"). The gate
+        // must be skipped for the restart replacement create. The existing restart tests
+        // use a plain tempdir (not a WG replica), so they never entered this gate.
+        let (_fixture, first_cwd, _second) = strict_target_fixture();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(ScriptedSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(
+            test_settings(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+
+        // Seed a LIVE session at the strict WG replica cwd. User intent bypasses the
+        // create-gate on create and establishes a non-Exited canonical row.
+        let old = create_target_for_test(
+            &app,
+            &session_mgr,
+            &pty_mgr,
+            &first_cwd,
+            CreateSelectionIntent::User,
+        )
+        .await
+        .expect("seed live WG replica session");
+        let old_id = Uuid::parse_str(&old.id).unwrap();
+
+        let settings = app.state::<crate::config::settings::SettingsState>();
+        let replacement = super::restart_session_inner_with_activation(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            settings.inner(),
+            old_id,
+            None,        // agent_id
+            None,        // requested_profile
+            Some(false), // skip_auto_resume
+            true,        // activate_after
+        )
+        .await
+        .unwrap_or_else(|e| {
+            panic!("restart of a live WG replica session must not fail; got Err({e})")
+        });
+
+        let replacement_id = Uuid::parse_str(&replacement.id).unwrap();
+        assert_ne!(replacement_id, old_id, "restart must replace the old row");
+        let rows = session_mgr.read().await.list_sessions().await;
+        assert_eq!(rows.len(), 1, "old row replaced, not duplicated");
+        assert_eq!(rows[0].id, replacement.id);
         close_test_coordinator(&app).await;
     }
 

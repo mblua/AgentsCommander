@@ -58,6 +58,125 @@ interface MountedTitlebar {
 
 const cleanups: Array<() => void> = [];
 
+// --- #1093: always-on leaked zoom-listener tracking (plan §4) -----------------
+// initZoom (src/shared/zoom.ts:136-137) attaches its wheel/keydown listeners on the
+// shared jsdom `document` only after two awaits. A test truncated mid-initZoom can
+// let that continuation resume later and attach an ORPHAN document listener whose
+// cleanup was never captured into `cleanups`. jsdom builds one `document` per file,
+// so that orphan would survive into a sibling test. To make the leak deterministically
+// removable we wrap `document`'s add/removeEventListener once — file-wide, never
+// restored (plan §4.1) — track every live wheel/keydown listener, and scrub survivors
+// at each test boundary.
+//
+// Single source of truth: this tracked-type set is tied to initZoom's own registration
+// (zoom.ts:136-137). If initZoom ever registers another document event type, extend
+// this list so the scrub and the registry-empty checks keep covering it (plan §4.3/§10, G6).
+const TRACKED_ZOOM_EVENT_TYPES = ["wheel", "keydown"] as const;
+type TrackedZoomEventType = (typeof TRACKED_ZOOM_EVENT_TYPES)[number];
+
+interface TrackedZoomListener {
+  type: TrackedZoomEventType;
+  handler: EventListenerOrEventListenerObject;
+  capture: boolean;
+}
+
+const trackedZoomListeners = new Set<TrackedZoomListener>();
+let zoomListenerTrackingInstalled = false;
+
+function isTrackedZoomType(type: string): type is TrackedZoomEventType {
+  return (TRACKED_ZOOM_EVENT_TYPES as readonly string[]).includes(type);
+}
+
+// removeEventListener matches on (type, handler, capture) only; passive/once are
+// irrelevant to removal. initZoom attaches wheel with `{ passive: false }` and keydown
+// with no options — both capture false — so the scrub detaches with `{ capture }` (plan §4.4).
+function normalizeCapture(
+  options?: boolean | AddEventListenerOptions | EventListenerOptions,
+): boolean {
+  return typeof options === "boolean" ? options : options?.capture ?? false;
+}
+
+// Plain save-native + assignment swap with an idempotent guard. NOT vi.spyOn: both
+// hooks call vi.clearAllMocks(), and a future switch to mockReset/restoreAllMocks/
+// { restore: true } could strip a spy-based wrapper mid-file and disable tracking,
+// making the registry-empty check pass vacuously (plan §4.4, G7).
+function installZoomListenerTracking(): void {
+  if (zoomListenerTrackingInstalled) return;
+  zoomListenerTrackingInstalled = true;
+
+  const nativeAdd = document.addEventListener.bind(document) as (
+    type: string,
+    handler: EventListenerOrEventListenerObject | null,
+    options?: boolean | AddEventListenerOptions,
+  ) => void;
+  const nativeRemove = document.removeEventListener.bind(document) as (
+    type: string,
+    handler: EventListenerOrEventListenerObject | null,
+    options?: boolean | EventListenerOptions,
+  ) => void;
+
+  const wrappedAdd = (
+    type: string,
+    handler: EventListenerOrEventListenerObject | null,
+    options?: boolean | AddEventListenerOptions,
+  ): void => {
+    if (handler && isTrackedZoomType(type)) {
+      trackedZoomListeners.add({ type, handler, capture: normalizeCapture(options) });
+    }
+    nativeAdd(type, handler, options);
+  };
+
+  // Wrapping remove too lets the normal-path `cleanups` drain unrecord its owned
+  // entries, so in non-timeout runs the registry is already empty when the scrub runs
+  // and the scrub only ever removes a genuine orphan (plan §4.4).
+  const wrappedRemove = (
+    type: string,
+    handler: EventListenerOrEventListenerObject | null,
+    options?: boolean | EventListenerOptions,
+  ): void => {
+    if (handler && isTrackedZoomType(type)) {
+      const capture = normalizeCapture(options);
+      for (const entry of Array.from(trackedZoomListeners)) {
+        if (entry.type === type && entry.handler === handler && entry.capture === capture) {
+          trackedZoomListeners.delete(entry);
+        }
+      }
+    }
+    nativeRemove(type, handler, options);
+  };
+
+  document.addEventListener = wrappedAdd as unknown as typeof document.addEventListener;
+  document.removeEventListener = wrappedRemove as unknown as typeof document.removeEventListener;
+}
+
+// SolidJS delegates keydown (solid-js/web DelegatedEvents), storing the delegated set on
+// the stable `document["_$DX_DELEGATE"]` key that survives vi.resetModules(). The scrub
+// removes only the initZoom handler identities it tracked, never SolidJS's delegated
+// handler — collateral-free ONLY while no component in the mounted tree renders onKeyDown.
+// Fail loudly if a future change ever violates that invariant (plan §4.3, G2).
+function assertNoKeydownDelegation(): void {
+  const delegated = (document as unknown as { _$DX_DELEGATE?: Set<string> })._$DX_DELEGATE;
+  if (delegated?.has("keydown")) {
+    throw new Error(
+      'SolidJS keydown delegation is active on document (_$DX_DELEGATE contains "keydown"): a ' +
+        "component in the mounted tree now renders onKeyDown, so the zoom-listener scrub can no " +
+        "longer assume the only document keydown listener is initZoom's. Revisit plan §4.3 before " +
+        "relying on this scrub.",
+    );
+  }
+}
+
+// Boundary scrub: remove every still-tracked wheel/keydown listener by its recorded
+// identity (never a blanket "remove all keydown" — plan §4.3), then clear the registry.
+function scrubZoomListeners(): void {
+  assertNoKeydownDelegation();
+  for (const entry of Array.from(trackedZoomListeners)) {
+    document.removeEventListener(entry.type, entry.handler, { capture: entry.capture });
+  }
+  trackedZoomListeners.clear();
+}
+// -----------------------------------------------------------------------------
+
 const stoppedStatus = (port = 8765): WebServerOwnedStatus => ({
   listening: false,
   owned: false,
@@ -125,8 +244,19 @@ async function initMainZoom(mounted: MountedTitlebar): Promise<void> {
   cleanups.push(cleanupZoom);
 }
 
+// Model a test that timed out / was interrupted mid-initZoom: a live document listener
+// on the SAME module instance whose returned cleanup is never captured into `cleanups`.
+// Only the boundary scrub can remove it. Per plan §2.6 this is equivalent to a real
+// 5000ms mid-initZoom timeout for the isolation question.
+async function leakInitZoomOrphan(mounted: MountedTitlebar): Promise<void> {
+  await mounted.modules.initZoom("main");
+}
+
 describe("Titlebar zoom stepper", () => {
   beforeEach(() => {
+    // Install the always-on document listener tracking once, before any mount, so every
+    // orphan attach is visible whenever its continuation runs (plan §4.1). Idempotent.
+    installZoomListenerTracking();
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       configurable: true,
       value: {},
@@ -134,11 +264,18 @@ describe("Titlebar zoom stepper", () => {
     vi.resetModules();
     vi.clearAllMocks();
     tauriMocks.setZoom.mockResolvedValue(undefined);
+    // Belt-and-suspenders re-scrub for anything a prior test's orphan continuation
+    // attached in the inter-test gap (plan §4.5).
+    scrubZoomListeners();
   });
 
   afterEach(() => {
     while (cleanups.length > 0) cleanups.pop()?.();
     document.body.innerHTML = "";
+    // Deterministically remove any leaked wheel/keydown listener whose cleanup was never
+    // captured, independent of whether initZoom's async cleanup ever reached `cleanups`
+    // (plan §4.5). The native methods are intentionally NOT restored here (plan §4.1).
+    scrubZoomListeners();
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
     vi.useRealTimers();
     vi.clearAllMocks();
@@ -258,5 +395,90 @@ describe("Titlebar zoom stepper", () => {
     expect(errorSpy).toHaveBeenCalledWith("Failed to change zoom:", expect.any(Error));
 
     errorSpy.mockRestore();
+  });
+
+  // #1093 — within-test deterministic gate (plan §9.1). Instance-agnostic, so it does
+  // not depend on cross-test timing. Reproduce the 120% compounding with two
+  // same-instance listeners, prove the full teardown scrubs the tracked orphan to an
+  // empty registry, then show a freshly re-established single listener reads 110%. With
+  // the scrub reduced to a no-op, step 3 reads 120% and the test fails (before/after gate).
+  it("scrubs a same-instance leaked zoom listener so a re-init reads 110%, not 120% (#1093)", async () => {
+    // Step 1: two live listeners on the SAME module instance (one owned, one orphaned).
+    // A single ctrl+wheel compounds 1.0 -> 1.1 -> 1.2 synchronously (plan §2.5).
+    const mounted = await mountTitlebar({ mainZoom: 1 });
+    await initMainZoom(mounted); // owned listener, cleanup captured
+    await leakInitZoomOrphan(mounted); // second listener on the same instance, cleanup dropped
+
+    document.dispatchEvent(
+      new WheelEvent("wheel", { ctrlKey: true, deltaY: -1, bubbles: true, cancelable: true }),
+    );
+
+    await mounted.modules.waitFor(() => {
+      expect(byTestId("titlebar.zoom.value").textContent).toBe("120%");
+    });
+
+    // Step 2: full teardown. The drain removes the owned cleanup; the scrub removes the
+    // remaining tracked orphan. A full type-scoped scrub leaves ZERO listeners (plan §9.1, G4).
+    while (cleanups.length > 0) cleanups.pop()?.();
+    document.body.innerHTML = "";
+    scrubZoomListeners();
+    expect(trackedZoomListeners.size).toBe(0);
+
+    // Step 3: re-establish exactly one owned listener. Its restore path resets currentZoom
+    // to 1.0, so a single ctrl+wheel now reads 110% — not a leaked-orphan 120%.
+    const remounted = await mountTitlebar({ mainZoom: 1 });
+    await initMainZoom(remounted);
+
+    document.dispatchEvent(
+      new WheelEvent("wheel", { ctrlKey: true, deltaY: -1, bubbles: true, cancelable: true }),
+    );
+
+    await remounted.modules.waitFor(() => {
+      expect(byTestId("titlebar.zoom.value").textContent).toBe("110%");
+    });
+  });
+
+  // #1093 — cross-test boundary regression, part 1 of 2 (plan §9.2): this test leaks an
+  // orphan whose cleanup is never captured, modelling a test that timed out mid-initZoom.
+  // The boundary scrub must remove it before the sibling test below runs.
+  it("leaves a leaked initZoom listener for the boundary scrub to remove (#1093)", async () => {
+    const mounted = await mountTitlebar({ mainZoom: 1 });
+    await leakInitZoomOrphan(mounted);
+
+    // The orphan is live on the shared document and tracked; afterEach must scrub it.
+    expect(trackedZoomListeners.size).toBeGreaterThan(0);
+  });
+
+  // #1093 — cross-test boundary regression, part 2 of 2 (plan §9.2). Runs immediately
+  // after the leaking test above.
+  it("does not carry a leaked initZoom listener into the next test (#1093)", async () => {
+    // Deterministic discriminator: the prior test's orphan must have been scrubbed at the
+    // boundary. Sound only because the tracking wrapper is always-on (plan §4.1, §9.2).
+    expect(trackedZoomListeners.size).toBe(0);
+
+    const mounted = await mountTitlebar({ mainZoom: 1 });
+    await initMainZoom(mounted);
+
+    // initMainZoom's restore path already produced a setZoom(1); clear AFTER it so the count
+    // reflects only the discriminating dispatch (plan §9.2, G5).
+    tauriMocks.setZoom.mockClear();
+
+    document.dispatchEvent(
+      new WheelEvent("wheel", { ctrlKey: true, deltaY: -1, bubbles: true, cancelable: true }),
+    );
+
+    // Exactly ONE dispatch-driven setZoom when clean; a surviving orphan would add a second
+    // on the shared hoisted mock. The extra call lands async after its dynamic import, so
+    // assert inside an awaited waitFor (plan §9.2, G5).
+    await mounted.modules.waitFor(() => {
+      expect(tauriMocks.setZoom).toHaveBeenCalledTimes(1);
+    });
+
+    // Sanity only, NOT the discriminator: under module isolation the sibling display reads
+    // 110% whether or not a leak occurred, so it cannot distinguish leaked from clean
+    // (plan §9.2, §12 E1/P2).
+    await mounted.modules.waitFor(() => {
+      expect(byTestId("titlebar.zoom.value").textContent).toBe("110%");
+    });
   });
 });
