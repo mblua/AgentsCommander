@@ -132,6 +132,21 @@ pub struct PtyManager {
     container_backend: Arc<ContainerTransportBackend>,
 }
 
+#[derive(Clone)]
+pub(crate) struct PtyShutdownOwner {
+    local_backend: Arc<dyn PtyBackend>,
+}
+
+impl PtyShutdownOwner {
+    pub(crate) fn kill_all_until(&self, deadline: std::time::Instant) -> PtyShutdownReport {
+        self.local_backend.kill_all_jobs_until(deadline)
+    }
+
+    pub(crate) fn diagnostics(&self, operation: &str) -> Vec<String> {
+        self.local_backend.ownership_diagnostics(operation)
+    }
+}
+
 fn rollback_failed_spawn(backend: &Arc<dyn PtyBackend>, id: Uuid, primary: AppError) -> AppError {
     match backend.kill(id) {
         Ok(()) => primary,
@@ -207,6 +222,12 @@ impl PtyManager {
 
     pub fn container_backend(&self) -> Arc<ContainerTransportBackend> {
         self.container_backend.clone()
+    }
+
+    pub(crate) fn shutdown_owner(&self) -> PtyShutdownOwner {
+        PtyShutdownOwner {
+            local_backend: Arc::clone(&self.local_backend),
+        }
     }
 
     pub fn start_container_pending_reaper(
@@ -611,6 +632,11 @@ impl PtyManager {
     pub fn kill_all_jobs_with_budget(&self, budget: std::time::Duration) -> PtyShutdownReport {
         self.backend_for_kind(SessionBackendKind::LocalProcess)
             .kill_all_jobs_with_budget(budget)
+    }
+
+    pub fn kill_all_jobs_until(&self, deadline: std::time::Instant) -> PtyShutdownReport {
+        self.backend_for_kind(SessionBackendKind::LocalProcess)
+            .kill_all_jobs_until(deadline)
     }
 
     pub fn get_screen_snapshot(&self, id: Uuid) -> Option<PtyScreenSnapshot> {

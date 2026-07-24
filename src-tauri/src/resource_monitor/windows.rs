@@ -1,4 +1,4 @@
-use super::registry::{ProcessTreeBackend, ResourceError};
+use super::registry::{require_backend_time, ProcessTreeBackend, ResourceError};
 use super::types::{
     ObservedProcess, ObservedProcessTree, ProcessIdentity, ProcessMemory, TerminateOutcome,
 };
@@ -68,54 +68,42 @@ mod platform {
             observe_identity(pid)
         }
 
+        fn observe_tree_until(
+            &self,
+            root: ProcessIdentity,
+            deadline: std::time::Instant,
+        ) -> Result<ObservedProcessTree, ResourceError> {
+            require_backend_time(deadline, "observe_tree", root.pid)?;
+            let tree = self.observe_tree(root)?;
+            require_backend_time(deadline, "observe_tree", root.pid)?;
+            Ok(tree)
+        }
+
+        fn observe_identity_until(
+            &self,
+            pid: u32,
+            deadline: std::time::Instant,
+        ) -> Result<Option<ProcessIdentity>, ResourceError> {
+            require_backend_time(deadline, "observe_identity", pid)?;
+            let identity = self.observe_identity(pid)?;
+            require_backend_time(deadline, "observe_identity", pid)?;
+            Ok(identity)
+        }
+
         fn terminate_verified(
             &self,
             process: &ObservedProcess,
         ) -> Result<TerminateOutcome, ResourceError> {
-            let Some(current) = observe_identity(process.identity.pid)? else {
-                return Ok(TerminateOutcome::AlreadyGone);
-            };
-            if current != process.identity {
-                return Ok(TerminateOutcome::AlreadyGone);
-            }
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            terminate_verified_before(process, deadline)
+        }
 
-            let handle = match open_process(
-                process.identity.pid,
-                PROCESS_TERMINATE | PROCESS_SYNCHRONIZE | PROCESS_QUERY_INFORMATION,
-            ) {
-                Ok(handle) => handle,
-                Err(err) => return verify_identity_exited(process.identity, err.to_string()),
-            };
-            let ok = unsafe { TerminateProcess(handle.raw(), 1) };
-            if ok == 0 {
-                return verify_identity_exited(
-                    process.identity,
-                    last_error("TerminateProcess failed").to_string(),
-                );
-            }
-            let wait_result = unsafe { WaitForSingleObject(handle.raw(), 2_000) };
-            let failure = match wait_result {
-                WAIT_OBJECT_0 => None,
-                WAIT_TIMEOUT => Some(format!(
-                    "timed out waiting for pid {} to exit",
-                    process.identity.pid
-                )),
-                WAIT_FAILED => Some(last_error("WaitForSingleObject failed").to_string()),
-                other => Some(format!(
-                    "unexpected WaitForSingleObject result {other} for pid {}",
-                    process.identity.pid
-                )),
-            };
-            if let Some(failure) = failure {
-                return verify_identity_exited(process.identity, failure);
-            }
-            verify_identity_exited(
-                process.identity,
-                format!(
-                    "pid {} is still alive after termination",
-                    process.identity.pid
-                ),
-            )
+        fn terminate_verified_until(
+            &self,
+            process: &ObservedProcess,
+            deadline: std::time::Instant,
+        ) -> Result<TerminateOutcome, ResourceError> {
+            terminate_verified_before(process, deadline)
         }
 
         fn current_process_memory(&self) -> Result<ProcessMemory, ResourceError> {
@@ -136,6 +124,71 @@ mod platform {
                 working_set_bytes: Some(counters.WorkingSetSize as u64),
             })
         }
+    }
+
+    fn terminate_verified_before(
+        process: &ObservedProcess,
+        deadline: std::time::Instant,
+    ) -> Result<TerminateOutcome, ResourceError> {
+        let Some(current) = observe_identity(process.identity.pid)? else {
+            return Ok(TerminateOutcome::AlreadyGone);
+        };
+        if current != process.identity {
+            return Ok(TerminateOutcome::AlreadyGone);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(ResourceError::Message(format!(
+                "terminate_verified deadline expired for pid {}",
+                process.identity.pid
+            )));
+        }
+
+        let handle = match open_process(
+            process.identity.pid,
+            PROCESS_TERMINATE | PROCESS_SYNCHRONIZE | PROCESS_QUERY_INFORMATION,
+        ) {
+            Ok(handle) => handle,
+            Err(err) => return verify_identity_exited(process.identity, err.to_string()),
+        };
+        let ok = unsafe { TerminateProcess(handle.raw(), 1) };
+        if ok == 0 {
+            return verify_identity_exited(
+                process.identity,
+                last_error("TerminateProcess failed").to_string(),
+            );
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let wait_ms =
+            u32::try_from(remaining.as_millis().min(u128::from(u32::MAX))).unwrap_or(u32::MAX);
+        if wait_ms == 0 {
+            return Err(ResourceError::Message(format!(
+                "WaitForSingleObject deadline expired for pid {}",
+                process.identity.pid
+            )));
+        }
+        let wait_result = unsafe { WaitForSingleObject(handle.raw(), wait_ms) };
+        let failure = match wait_result {
+            WAIT_OBJECT_0 => None,
+            WAIT_TIMEOUT => Some(format!(
+                "timed out waiting for pid {} to exit before absolute deadline",
+                process.identity.pid
+            )),
+            WAIT_FAILED => Some(last_error("WaitForSingleObject failed").to_string()),
+            other => Some(format!(
+                "unexpected WaitForSingleObject result {other} for pid {}",
+                process.identity.pid
+            )),
+        };
+        if let Some(failure) = failure {
+            return verify_identity_exited(process.identity, failure);
+        }
+        verify_identity_exited(
+            process.identity,
+            format!(
+                "pid {} is still alive after termination",
+                process.identity.pid
+            ),
+        )
     }
 
     /// Walk the process snapshot from `root`, returning the observed subtree.
@@ -610,6 +663,24 @@ mod platform {
             observe_identity(pid)
         }
 
+        fn observe_tree_until(
+            &self,
+            root: ProcessIdentity,
+            deadline: std::time::Instant,
+        ) -> Result<ObservedProcessTree, ResourceError> {
+            require_backend_time(deadline, "observe_tree", root.pid)?;
+            self.observe_tree(root)
+        }
+
+        fn observe_identity_until(
+            &self,
+            pid: u32,
+            deadline: std::time::Instant,
+        ) -> Result<Option<ProcessIdentity>, ResourceError> {
+            require_backend_time(deadline, "observe_identity", pid)?;
+            self.observe_identity(pid)
+        }
+
         fn terminate_verified(
             &self,
             process: &ObservedProcess,
@@ -621,6 +692,15 @@ mod platform {
                 "process termination unavailable on this platform for verified pid {}",
                 process.identity.pid
             )))
+        }
+
+        fn terminate_verified_until(
+            &self,
+            process: &ObservedProcess,
+            deadline: std::time::Instant,
+        ) -> Result<TerminateOutcome, ResourceError> {
+            require_backend_time(deadline, "terminate_verified", process.identity.pid)?;
+            self.terminate_verified(process)
         }
 
         fn current_process_memory(&self) -> Result<ProcessMemory, ResourceError> {
@@ -821,6 +901,24 @@ mod platform {
             observe_identity(pid)
         }
 
+        fn observe_tree_until(
+            &self,
+            root: ProcessIdentity,
+            deadline: std::time::Instant,
+        ) -> Result<ObservedProcessTree, ResourceError> {
+            require_backend_time(deadline, "observe_tree", root.pid)?;
+            self.observe_tree(root)
+        }
+
+        fn observe_identity_until(
+            &self,
+            pid: u32,
+            deadline: std::time::Instant,
+        ) -> Result<Option<ProcessIdentity>, ResourceError> {
+            require_backend_time(deadline, "observe_identity", pid)?;
+            self.observe_identity(pid)
+        }
+
         fn terminate_verified(
             &self,
             process: &ObservedProcess,
@@ -832,6 +930,15 @@ mod platform {
                 "process termination unavailable on this platform for verified pid {}",
                 process.identity.pid
             )))
+        }
+
+        fn terminate_verified_until(
+            &self,
+            process: &ObservedProcess,
+            deadline: std::time::Instant,
+        ) -> Result<TerminateOutcome, ResourceError> {
+            require_backend_time(deadline, "terminate_verified", process.identity.pid)?;
+            self.terminate_verified(process)
         }
 
         fn current_process_memory(&self) -> Result<ProcessMemory, ResourceError> {
@@ -930,11 +1037,38 @@ mod platform {
             Err(stable_identity_unavailable(pid))
         }
 
+        fn observe_tree_until(
+            &self,
+            root: ProcessIdentity,
+            deadline: std::time::Instant,
+        ) -> Result<ObservedProcessTree, ResourceError> {
+            require_backend_time(deadline, "observe_tree", root.pid)?;
+            self.observe_tree(root)
+        }
+
+        fn observe_identity_until(
+            &self,
+            pid: u32,
+            deadline: std::time::Instant,
+        ) -> Result<Option<ProcessIdentity>, ResourceError> {
+            require_backend_time(deadline, "observe_identity", pid)?;
+            self.observe_identity(pid)
+        }
+
         fn terminate_verified(
             &self,
             process: &ObservedProcess,
         ) -> Result<TerminateOutcome, ResourceError> {
             Err(stable_identity_unavailable(process.identity.pid))
+        }
+
+        fn terminate_verified_until(
+            &self,
+            process: &ObservedProcess,
+            deadline: std::time::Instant,
+        ) -> Result<TerminateOutcome, ResourceError> {
+            require_backend_time(deadline, "terminate_verified", process.identity.pid)?;
+            self.terminate_verified(process)
         }
 
         fn current_process_memory(&self) -> Result<ProcessMemory, ResourceError> {

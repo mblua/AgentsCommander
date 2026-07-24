@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
@@ -39,12 +39,66 @@ pub trait ProcessTreeBackend: Send + Sync + 'static {
         process: &ObservedProcess,
     ) -> Result<TerminateOutcome, ResourceError>;
     fn current_process_memory(&self) -> Result<ProcessMemory, ResourceError>;
+
+    #[cfg(not(test))]
+    fn observe_tree_until(
+        &self,
+        root: ProcessIdentity,
+        deadline: Instant,
+    ) -> Result<ObservedProcessTree, ResourceError>;
+    #[cfg(test)]
+    fn observe_tree_until(
+        &self,
+        root: ProcessIdentity,
+        deadline: Instant,
+    ) -> Result<ObservedProcessTree, ResourceError> {
+        require_backend_time(deadline, "observe_tree", root.pid)?;
+        self.observe_tree(root)
+    }
+
+    #[cfg(not(test))]
+    fn observe_identity_until(
+        &self,
+        pid: u32,
+        deadline: Instant,
+    ) -> Result<Option<ProcessIdentity>, ResourceError>;
+    #[cfg(test)]
+    fn observe_identity_until(
+        &self,
+        pid: u32,
+        deadline: Instant,
+    ) -> Result<Option<ProcessIdentity>, ResourceError> {
+        require_backend_time(deadline, "observe_identity", pid)?;
+        self.observe_identity(pid)
+    }
+
+    #[cfg(not(test))]
+    fn terminate_verified_until(
+        &self,
+        process: &ObservedProcess,
+        deadline: Instant,
+    ) -> Result<TerminateOutcome, ResourceError>;
+    #[cfg(test)]
+    fn terminate_verified_until(
+        &self,
+        process: &ObservedProcess,
+        deadline: Instant,
+    ) -> Result<TerminateOutcome, ResourceError> {
+        require_backend_time(deadline, "terminate_verified", process.identity.pid)?;
+        self.terminate_verified(process)
+    }
 }
 
 #[derive(Clone)]
 pub struct ResourceMonitorState {
     inner: Arc<Mutex<ResourceMonitorInner>>,
     backend: Arc<dyn ProcessTreeBackend>,
+    deferred_permit_releases: Arc<DeferredPermitReleases>,
+}
+
+struct DeferredPermitReleases {
+    sender: mpsc::Sender<u64>,
+    receiver: Mutex<mpsc::Receiver<u64>>,
 }
 
 struct ResourceMonitorInner {
@@ -56,6 +110,7 @@ struct ResourceMonitorInner {
 
 struct ResourceAgentGroup {
     session_id: Uuid,
+    owner_generation: u64,
     name: String,
     agent_id: Option<String>,
     agent_label: Option<String>,
@@ -78,17 +133,21 @@ struct ResourceAgentGroup {
     /// #559 - when this group entered Terminated, used to bound retained
     /// terminated rows (prune oldest first) without unbounded map growth.
     terminated_at: Option<Instant>,
+    cleanup_deadline: Option<Instant>,
 }
 
 #[derive(Debug)]
 pub struct AgentLaunchPermit {
     generation: u64,
+    owner_generation: u64,
 }
 
 pub struct ResourceLaunchRegistration {
     monitor: ResourceMonitorState,
     permit: Option<AgentLaunchPermit>,
     metadata: ResourceLaunchMetadata,
+    owner_generation: u64,
+    registered_identity: Option<ProcessIdentity>,
     registered: bool,
 }
 
@@ -119,12 +178,26 @@ impl ResourceLaunchRegistration {
         permit: AgentLaunchPermit,
         metadata: ResourceLaunchMetadata,
     ) -> Self {
+        let owner_generation = permit.generation;
         Self {
             monitor,
             permit: Some(permit),
             metadata,
+            owner_generation,
+            registered_identity: None,
             registered: false,
         }
+    }
+
+    pub fn bind_owner_generation(&mut self, generation: u64) -> Result<(), String> {
+        if self.registered {
+            return Err("resource monitor registration is already active".to_string());
+        }
+        if generation == 0 {
+            return Err("resource monitor owner generation must be nonzero".to_string());
+        }
+        self.owner_generation = generation;
+        Ok(())
     }
 
     pub fn register_root_pid(&mut self, pid: u32) -> Result<ProcessIdentity, String> {
@@ -132,10 +205,11 @@ impl ResourceLaunchRegistration {
             .monitor
             .observe_identity(pid)?
             .ok_or_else(|| format!("resource monitor could not observe spawned pid {pid}"))?;
-        let permit = self
+        let mut permit = self
             .permit
             .take()
             .ok_or_else(|| "resource monitor launch permit already consumed".to_string())?;
+        permit.owner_generation = self.owner_generation;
         self.monitor.register_group(
             permit,
             self.metadata.session_id,
@@ -147,16 +221,65 @@ impl ResourceLaunchRegistration {
             self.metadata.project.clone(),
             identity,
         )?;
+        self.registered_identity = Some(identity);
         self.registered = true;
         Ok(identity)
     }
 
-    pub fn rollback_registered(&self) -> Result<Option<ResourceKillResult>, String> {
+    pub fn rollback_registered(&mut self) -> Result<Option<ResourceKillResult>, String> {
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(5))
+            .unwrap_or_else(Instant::now);
+        self.rollback_registered_until(deadline)
+    }
+
+    pub fn rollback_registered_until(
+        &mut self,
+        deadline: Instant,
+    ) -> Result<Option<ResourceKillResult>, String> {
         if !self.registered {
+            let Some(permit) = self.permit.take() else {
+                return Ok(None);
+            };
+            let permit_generation = permit.generation;
+            match lock_resource_map_until(
+                &self.monitor.inner,
+                Some(deadline),
+                self.metadata.session_id,
+                Some(self.owner_generation),
+                "Mutex::try_lock(resource-monitor-permit-release)",
+            ) {
+                Ok(mut inner) => {
+                    self.monitor.drain_deferred_permit_releases(&mut inner);
+                    inner.pending_permits.remove(&permit_generation);
+                }
+                Err(error) => {
+                    self.permit = Some(permit);
+                    return Err(format!(
+                        "session {} generation {} root_pid=unregistered syscall=resource-permit-release: {error}",
+                        self.metadata.session_id, self.owner_generation
+                    ));
+                }
+            }
             return Ok(None);
         }
         self.monitor
-            .kill_group(self.metadata.session_id, ResourceKillReason::SpawnRollback)
+            .kill_group_generation_until(
+                self.metadata.session_id,
+                self.owner_generation,
+                ResourceKillReason::SpawnRollback,
+                deadline,
+            )
+            .map_err(|error| {
+                format!(
+                    "session {} generation {} root_pid={} syscall=resource-registration-rollback: {error}",
+                    self.metadata.session_id,
+                    self.owner_generation,
+                    self.registered_identity
+                        .map(|identity| identity.pid.to_string())
+                        .unwrap_or_else(|| "unregistered".to_string())
+                )
+            })
             .map(Some)
     }
 }
@@ -167,6 +290,7 @@ impl ResourceMonitorState {
     }
 
     pub fn with_backend(backend: Arc<dyn ProcessTreeBackend>) -> Self {
+        let (sender, receiver) = mpsc::channel();
         Self {
             inner: Arc::new(Mutex::new(ResourceMonitorInner {
                 groups: HashMap::new(),
@@ -175,6 +299,19 @@ impl ResourceMonitorState {
                 last_snapshot: None,
             })),
             backend,
+            deferred_permit_releases: Arc::new(DeferredPermitReleases {
+                sender,
+                receiver: Mutex::new(receiver),
+            }),
+        }
+    }
+
+    fn drain_deferred_permit_releases(&self, inner: &mut ResourceMonitorInner) {
+        let Ok(receiver) = self.deferred_permit_releases.receiver.try_lock() else {
+            return;
+        };
+        while let Ok(generation) = receiver.try_recv() {
+            inner.pending_permits.remove(&generation);
         }
     }
 
@@ -189,6 +326,7 @@ impl ResourceMonitorState {
             .inner
             .lock()
             .map_err(|_| "resource monitor lock poisoned")?;
+        self.drain_deferred_permit_releases(&mut inner);
         let active = active_count(&inner);
         if active >= limits.max_concurrent_agent_processes as usize {
             return Err(format!(
@@ -199,12 +337,31 @@ impl ResourceMonitorState {
         let generation = inner.next_generation;
         inner.next_generation = inner.next_generation.saturating_add(1);
         inner.pending_permits.insert(generation);
-        Ok(Some(AgentLaunchPermit { generation }))
+        Ok(Some(AgentLaunchPermit {
+            generation,
+            owner_generation: generation,
+        }))
     }
 
     pub fn release_unregistered_permit(&self, permit: AgentLaunchPermit) {
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.pending_permits.remove(&permit.generation);
+        match self.inner.try_lock() {
+            Ok(mut inner) => {
+                self.drain_deferred_permit_releases(&mut inner);
+                inner.pending_permits.remove(&permit.generation);
+            }
+            Err(std::sync::TryLockError::Poisoned(error)) => {
+                let mut inner = error.into_inner();
+                self.drain_deferred_permit_releases(&mut inner);
+                inner.pending_permits.remove(&permit.generation);
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                if let Err(error) = self.deferred_permit_releases.sender.send(permit.generation) {
+                    log::error!(
+                        "[resource-monitor] failed to defer release of launch permit {}: {error}",
+                        permit.generation
+                    );
+                }
+            }
         }
     }
 
@@ -228,6 +385,7 @@ impl ResourceMonitorState {
         project: Option<String>,
         root_identity: ProcessIdentity,
     ) -> Result<(), String> {
+        let owner_generation = permit.owner_generation;
         let observed = self.backend.observe_tree(root_identity);
         let mut observed_processes = BTreeMap::new();
         let last_error = match observed {
@@ -247,8 +405,20 @@ impl ResourceMonitorState {
             .inner
             .lock()
             .map_err(|_| "resource monitor lock poisoned")?;
+        self.drain_deferred_permit_releases(&mut inner);
         if !inner.pending_permits.remove(&permit.generation) {
             return Err("resource monitor launch permit was not pending".to_string());
+        }
+        if let Some(existing) = inner.groups.get(&session_id) {
+            if !matches!(existing.state, ResourceGroupState::Terminated)
+                || !existing.permit_released
+            {
+                return Err(format!(
+                    "resource monitor session {session_id} generation {owner_generation} cannot replace live generation {} rooted at pid {}",
+                    existing.owner_generation, existing.root_identity.pid
+                ));
+            }
+            inner.groups.remove(&session_id);
         }
         // #559 (H3) - a relaunch of the same wg/role must not leave its prior
         // Terminated row behind as a duplicate. Only dedup concrete identities so
@@ -269,6 +439,7 @@ impl ResourceMonitorState {
             session_id,
             ResourceAgentGroup {
                 session_id,
+                owner_generation,
                 name,
                 agent_id,
                 agent_label,
@@ -284,6 +455,7 @@ impl ResourceMonitorState {
                 permit_released: false,
                 missing_root_strikes: 0,
                 terminated_at: None,
+                cleanup_deadline: None,
             },
         );
         Ok(())
@@ -303,10 +475,22 @@ impl ResourceMonitorState {
     }
 
     pub fn active_agent_groups(&self) -> usize {
-        self.inner
-            .lock()
-            .map(|inner| active_count(&inner))
-            .unwrap_or(0)
+        let Ok(mut inner) = self.inner.lock() else {
+            return 0;
+        };
+        self.drain_deferred_permit_releases(&mut inner);
+        active_count(&inner)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hold_registry_for_test(
+        &self,
+        entered: std::sync::mpsc::SyncSender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        let _inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        entered.send(()).expect("signal held resource registry");
+        release.recv().expect("release held resource registry");
     }
 
     /// #559 (H2) - true if a quarantined group is eligible for another cleanup retry
@@ -379,7 +563,8 @@ impl ResourceMonitorState {
         self.prune_terminated_groups();
 
         let mut snapshot = {
-            let inner = self.inner.lock().expect("resource monitor lock poisoned");
+            let mut inner = self.inner.lock().expect("resource monitor lock poisoned");
+            self.drain_deferred_permit_releases(&mut inner);
             build_snapshot(&inner, limits, app_memory, warnings)
         };
         if let Ok(mut inner) = self.inner.lock() {
@@ -398,7 +583,23 @@ impl ResourceMonitorState {
         session_id: Uuid,
         reason: ResourceKillReason,
     ) -> Result<ResourceKillResult, String> {
-        self.kill_group_inner(session_id, reason, false)
+        self.kill_group_inner(session_id, None, reason, false, None)
+    }
+
+    pub fn kill_group_generation_until(
+        &self,
+        session_id: Uuid,
+        owner_generation: u64,
+        reason: ResourceKillReason,
+        deadline: Instant,
+    ) -> Result<ResourceKillResult, String> {
+        self.kill_group_inner(
+            session_id,
+            Some(owner_generation),
+            reason,
+            false,
+            Some(deadline),
+        )
     }
 
     /// #632 B2a - shared kill implementation. `fresh_targets_only` controls only the
@@ -410,15 +611,20 @@ impl ResourceMonitorState {
     fn kill_group_inner(
         &self,
         session_id: Uuid,
+        expected_generation: Option<u64>,
         reason: ResourceKillReason,
         fresh_targets_only: bool,
+        deadline: Option<Instant>,
     ) -> Result<ResourceKillResult, String> {
         let kill_started = Instant::now();
-        let (root_identity, previous_targets) = {
-            let mut inner = self
-                .inner
-                .lock()
-                .map_err(|_| "resource monitor lock poisoned")?;
+        let (root_identity, owner_generation, previous_targets) = {
+            let mut inner = lock_resource_map_until(
+                &self.inner,
+                deadline,
+                session_id,
+                expected_generation,
+                "Mutex::try_lock(resource-monitor-start)",
+            )?;
             let Some(group) = inner.groups.get_mut(&session_id) else {
                 return Ok(ResourceKillResult {
                     session_id: session_id.to_string(),
@@ -430,17 +636,39 @@ impl ResourceMonitorState {
                     finalized: false,
                 });
             };
+            if expected_generation.is_some_and(|expected| expected != group.owner_generation) {
+                return Ok(ResourceKillResult {
+                    session_id: session_id.to_string(),
+                    state: ResourceGroupState::Terminated,
+                    killed_processes: Vec::new(),
+                    quarantined: false,
+                    message: format!(
+                        "resource group generation {} was not registered; current generation is {}",
+                        expected_generation.unwrap_or_default(),
+                        group.owner_generation
+                    ),
+                    blocked_by_security: false,
+                    finalized: false,
+                });
+            }
             match group.state {
                 ResourceGroupState::Terminating => {
-                    return Ok(ResourceKillResult {
-                        session_id: session_id.to_string(),
-                        state: ResourceGroupState::Terminating,
-                        killed_processes: Vec::new(),
-                        quarantined: false,
-                        message: "resource group is already terminating".to_string(),
-                        blocked_by_security: false,
-                        finalized: false,
-                    });
+                    if group
+                        .cleanup_deadline
+                        .is_some_and(|prior_deadline| Instant::now() >= prior_deadline)
+                    {
+                        group.state = ResourceGroupState::Quarantined;
+                    } else {
+                        return Ok(ResourceKillResult {
+                            session_id: session_id.to_string(),
+                            state: ResourceGroupState::Terminating,
+                            killed_processes: Vec::new(),
+                            quarantined: false,
+                            message: "resource group is already terminating".to_string(),
+                            blocked_by_security: false,
+                            finalized: false,
+                        });
+                    }
                 }
                 ResourceGroupState::Terminated => {
                     return Ok(ResourceKillResult {
@@ -457,8 +685,10 @@ impl ResourceMonitorState {
             }
             group.state = ResourceGroupState::Terminating;
             group.kill_started_at = Some(Instant::now());
+            group.cleanup_deadline = deadline;
             (
                 group.root_identity,
+                group.owner_generation,
                 if fresh_targets_only {
                     // #632 B2a - at shutdown, ignore the accumulated set entirely;
                     // target only the fresh live tree captured below. The Job Object
@@ -487,7 +717,10 @@ impl ResourceMonitorState {
         let mut pending_identity_errors = Vec::new();
         let mut errors = Vec::new();
         let observe_started = Instant::now();
-        let observed_tree = self.backend.observe_tree(root_identity);
+        let observed_tree = match deadline {
+            Some(deadline) => self.backend.observe_tree_until(root_identity, deadline),
+            None => self.backend.observe_tree(root_identity),
+        };
         let observe_ms = observe_started.elapsed().as_millis();
         match observed_tree {
             Ok(tree) => {
@@ -525,7 +758,12 @@ impl ResourceMonitorState {
                     );
                 }
                 targets.extend(current_processes);
-                let _ = self.merge_tree(session_id, tree);
+                let _ = self.merge_tree_for_generation_until(
+                    session_id,
+                    owner_generation,
+                    tree,
+                    deadline,
+                )?;
             }
             Err(err) => {
                 errors.push(err.to_string());
@@ -555,7 +793,13 @@ impl ResourceMonitorState {
                     );
                     continue;
                 }
-                match self.backend.observe_identity(process.identity.pid) {
+                let observed = match deadline {
+                    Some(deadline) => self
+                        .backend
+                        .observe_identity_until(process.identity.pid, deadline),
+                    None => self.backend.observe_identity(process.identity.pid),
+                };
+                match observed {
                     Ok(None) => {}
                     Ok(Some(identity))
                         if !is_placeholder_identity(process.identity)
@@ -573,7 +817,11 @@ impl ResourceMonitorState {
                 }
                 continue;
             }
-            match self.backend.terminate_verified(process) {
+            let terminated = match deadline {
+                Some(deadline) => self.backend.terminate_verified_until(process, deadline),
+                None => self.backend.terminate_verified(process),
+            };
+            match terminated {
                 Ok(TerminateOutcome::Terminated) => {
                     killed.push(process.identity);
                     log::info!(
@@ -593,7 +841,11 @@ impl ResourceMonitorState {
         }
 
         for (identity, error) in pending_identity_errors {
-            match self.backend.observe_identity(identity.pid) {
+            let observed = match deadline {
+                Some(deadline) => self.backend.observe_identity_until(identity.pid, deadline),
+                None => self.backend.observe_identity(identity.pid),
+            };
+            match observed {
                 Ok(None) => {
                     log::debug!(
                         "[resource-monitor] ignored cleanup identity error for gone pid={} session={}",
@@ -632,18 +884,30 @@ impl ResourceMonitorState {
             ResourceGroupState::Terminated
         };
         let message = if quarantined {
-            format!("resource group cleanup incomplete: {}", errors.join("; "))
+            format!(
+                "resource group cleanup incomplete for session {session_id} generation {owner_generation} root_pid={}: {}",
+                root_identity.pid,
+                errors.join("; ")
+            )
         } else {
             "resource group terminated and verified".to_string()
         };
 
         {
-            let mut inner = self
-                .inner
-                .lock()
-                .map_err(|_| "resource monitor lock poisoned")?;
-            if let Some(group) = inner.groups.get_mut(&session_id) {
+            let mut inner = lock_resource_map_until(
+                &self.inner,
+                deadline,
+                session_id,
+                Some(owner_generation),
+                "Mutex::try_lock(resource-monitor-outcome)",
+            )?;
+            if let Some(group) = inner
+                .groups
+                .get_mut(&session_id)
+                .filter(|group| group.owner_generation == owner_generation)
+            {
                 group.state = state;
+                group.cleanup_deadline = None;
                 group.last_error = if quarantined {
                     Some(message.clone())
                 } else {
@@ -693,7 +957,39 @@ impl ResourceMonitorState {
             .map(|inner| inner.groups.keys().copied().collect::<Vec<_>>())
             .unwrap_or_default();
         ids.into_iter()
-            .filter_map(|id| self.kill_group_inner(id, reason, true).ok())
+            .filter_map(|id| self.kill_group_inner(id, None, reason, true, None).ok())
+            .collect()
+    }
+
+    pub fn kill_all_owned_groups_until(
+        &self,
+        reason: ResourceKillReason,
+        deadline: Instant,
+    ) -> Vec<ResourceKillResult> {
+        let ids = match lock_resource_map_until(
+            &self.inner,
+            Some(deadline),
+            Uuid::nil(),
+            None,
+            "Mutex::try_lock(resource-monitor-bulk-snapshot)",
+        ) {
+            Ok(inner) => inner.groups.keys().copied().collect::<Vec<_>>(),
+            Err(error) => {
+                log::error!("[resource-monitor] {error}");
+                return Vec::new();
+            }
+        };
+        ids.into_iter()
+            .filter_map(|id| {
+                if Instant::now() >= deadline {
+                    return None;
+                }
+                self.kill_group_inner(id, None, reason, true, Some(deadline))
+                    .map_err(|error| {
+                        log::error!("[resource-monitor] {error}");
+                    })
+                    .ok()
+            })
             .collect()
     }
 
@@ -743,16 +1039,34 @@ impl ResourceMonitorState {
             .collect()
     }
 
-    fn merge_tree(&self, session_id: Uuid, tree: ObservedProcessTree) -> Option<String> {
-        let mut inner = self.inner.lock().ok()?;
-        let group = inner.groups.get_mut(&session_id)?;
+    fn merge_tree_for_generation_until(
+        &self,
+        session_id: Uuid,
+        owner_generation: u64,
+        tree: ObservedProcessTree,
+        deadline: Option<Instant>,
+    ) -> Result<Option<String>, String> {
+        let mut inner = lock_resource_map_until(
+            &self.inner,
+            deadline,
+            session_id,
+            Some(owner_generation),
+            "Mutex::try_lock(resource-monitor-merge)",
+        )?;
+        let Some(group) = inner
+            .groups
+            .get_mut(&session_id)
+            .filter(|group| group.owner_generation == owner_generation)
+        else {
+            return Ok(None);
+        };
         group.descendants_observed |= tree.processes.len() > 1;
         merge_observed(&mut group.observed_processes, tree.processes);
         let joined = join_errors(tree.errors);
         if joined.is_some() {
             group.last_error = joined.clone();
         }
-        joined
+        Ok(joined)
     }
 
     /// #559 (H1) - snapshot-path merge. Advances the missing-root strike counter and,
@@ -905,6 +1219,51 @@ impl ResourceMonitorState {
         if let Ok(mut inner) = self.inner.lock() {
             if let Some(group) = inner.groups.get_mut(&session_id) {
                 group.last_error = Some(error);
+            }
+        }
+    }
+}
+
+pub(super) fn require_backend_time(
+    deadline: Instant,
+    operation: &str,
+    pid: u32,
+) -> Result<(), ResourceError> {
+    if Instant::now() >= deadline {
+        return Err(ResourceError::Message(format!(
+            "syscall={operation} deadline expired for pid {pid}"
+        )));
+    }
+    Ok(())
+}
+
+fn lock_resource_map_until<'a>(
+    inner: &'a Mutex<ResourceMonitorInner>,
+    deadline: Option<Instant>,
+    session_id: Uuid,
+    generation: Option<u64>,
+    operation: &str,
+) -> Result<std::sync::MutexGuard<'a, ResourceMonitorInner>, String> {
+    let Some(deadline) = deadline else {
+        return inner
+            .lock()
+            .map_err(|_| "resource monitor lock poisoned".to_string());
+    };
+    loop {
+        match inner.try_lock() {
+            Ok(inner) => return Ok(inner),
+            Err(std::sync::TryLockError::Poisoned(error)) => return Ok(error.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                std::thread::sleep(Duration::from_millis(2).min(remaining));
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(format!(
+                    "session {session_id} generation {} root_pid=preserved-in-registration syscall={operation} deadline expired",
+                    generation
+                        .map(|generation| generation.to_string())
+                        .unwrap_or_else(|| "all".to_string())
+                ));
             }
         }
     }
@@ -1270,6 +1629,24 @@ mod tests {
             Ok(current)
         }
 
+        fn observe_tree_until(
+            &self,
+            root: ProcessIdentity,
+            deadline: Instant,
+        ) -> Result<ObservedProcessTree, ResourceError> {
+            require_backend_time(deadline, "observe_tree", root.pid)?;
+            self.observe_tree(root)
+        }
+
+        fn observe_identity_until(
+            &self,
+            pid: u32,
+            deadline: Instant,
+        ) -> Result<Option<ProcessIdentity>, ResourceError> {
+            require_backend_time(deadline, "observe_identity", pid)?;
+            self.observe_identity(pid)
+        }
+
         fn terminate_verified(
             &self,
             process: &ObservedProcess,
@@ -1332,6 +1709,15 @@ mod tests {
             Ok(TerminateOutcome::Terminated)
         }
 
+        fn terminate_verified_until(
+            &self,
+            process: &ObservedProcess,
+            deadline: Instant,
+        ) -> Result<TerminateOutcome, ResourceError> {
+            require_backend_time(deadline, "terminate_verified", process.identity.pid)?;
+            self.terminate_verified(process)
+        }
+
         fn current_process_memory(&self) -> Result<ProcessMemory, ResourceError> {
             Ok(ProcessMemory::default())
         }
@@ -1383,6 +1769,86 @@ mod tests {
         )
     }
 
+    struct DeadlineBlockingBackend {
+        root: ProcessIdentity,
+        block_deadline_calls: std::sync::atomic::AtomicBool,
+    }
+
+    impl DeadlineBlockingBackend {
+        fn new(root: ProcessIdentity) -> Self {
+            Self {
+                root,
+                block_deadline_calls: std::sync::atomic::AtomicBool::new(false),
+            }
+        }
+    }
+
+    impl ProcessTreeBackend for DeadlineBlockingBackend {
+        fn observe_tree(
+            &self,
+            root: ProcessIdentity,
+        ) -> Result<ObservedProcessTree, ResourceError> {
+            Ok(ObservedProcessTree {
+                processes: vec![observed(root.pid, root.creation_time_100ns, None, 0)],
+                errors: Vec::new(),
+            })
+        }
+
+        fn observe_identity(&self, pid: u32) -> Result<Option<ProcessIdentity>, ResourceError> {
+            Ok((pid == self.root.pid).then_some(self.root))
+        }
+
+        fn terminate_verified(
+            &self,
+            _process: &ObservedProcess,
+        ) -> Result<TerminateOutcome, ResourceError> {
+            Ok(TerminateOutcome::AlreadyGone)
+        }
+
+        fn current_process_memory(&self) -> Result<ProcessMemory, ResourceError> {
+            Ok(ProcessMemory::default())
+        }
+
+        fn observe_tree_until(
+            &self,
+            root: ProcessIdentity,
+            deadline: Instant,
+        ) -> Result<ObservedProcessTree, ResourceError> {
+            if !self
+                .block_deadline_calls
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return self.observe_tree(root);
+            }
+            while Instant::now() < deadline {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                std::thread::sleep(Duration::from_millis(2).min(remaining));
+            }
+            Err(ResourceError::Message(format!(
+                "syscall=observe_tree backend remained blocked through deadline for pid {}",
+                root.pid
+            )))
+        }
+
+        fn observe_identity_until(
+            &self,
+            pid: u32,
+            deadline: Instant,
+        ) -> Result<Option<ProcessIdentity>, ResourceError> {
+            require_backend_time(deadline, "observe_identity", pid)?;
+            self.observe_identity(pid)
+        }
+
+        fn terminate_verified_until(
+            &self,
+            process: &ObservedProcess,
+            deadline: Instant,
+        ) -> Result<TerminateOutcome, ResourceError> {
+            require_backend_time(deadline, "terminate_verified", process.identity.pid)?;
+            self.terminate_verified(process)
+        }
+    }
+
     fn limits(max: u32) -> ResourceLimits {
         ResourceLimits {
             monitor_enabled: true,
@@ -1399,6 +1865,204 @@ mod tests {
         let _permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let err = state.try_reserve_agent_slot(limits(1)).unwrap_err();
         assert!(err.contains("cap reached"));
+    }
+
+    #[test]
+    fn duplicate_registration_cannot_replace_a_live_generation() {
+        let (state, backend) = state_with_fake();
+        let id = Uuid::new_v4();
+        let first_root = identity(7_001, 71);
+        let second_root = identity(7_002, 72);
+        backend.add_tree(first_root, vec![observed(7_001, 71, None, 0)]);
+        backend.add_tree(second_root, vec![observed(7_002, 72, None, 0)]);
+        let metadata = ResourceLaunchMetadata {
+            session_id: id,
+            name: "generation".to_string(),
+            agent_id: None,
+            agent_label: None,
+            workgroup: None,
+            agent: None,
+            project: None,
+        };
+
+        let first_permit = state.try_reserve_agent_slot(limits(3)).unwrap().unwrap();
+        let mut first =
+            ResourceLaunchRegistration::new(state.clone(), first_permit, metadata.clone());
+        first.bind_owner_generation(41).unwrap();
+        first.register_root_pid(first_root.pid).unwrap();
+
+        let second_permit = state.try_reserve_agent_slot(limits(3)).unwrap().unwrap();
+        let mut second = ResourceLaunchRegistration::new(state.clone(), second_permit, metadata);
+        second.bind_owner_generation(42).unwrap();
+        let error = second
+            .register_root_pid(second_root.pid)
+            .expect_err("duplicate UUID registration must fail");
+        assert!(error.contains("generation 42"));
+        assert!(error.contains("live generation 41"));
+        assert!(error.contains("pid 7001"));
+        {
+            let inner = state.inner.lock().unwrap();
+            let row = inner.groups.get(&id).expect("first row is retained");
+            assert_eq!(row.owner_generation, 41);
+            assert_eq!(row.root_identity, first_root);
+            assert_eq!(row.state, ResourceGroupState::Running);
+        }
+        assert_eq!(state.active_agent_groups(), 1);
+        assert!(second.rollback_registered().unwrap().is_none());
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let result = first
+            .rollback_registered_until(deadline)
+            .unwrap()
+            .expect("first generation owns the resource row");
+        assert_eq!(result.state, ResourceGroupState::Terminated);
+        assert_eq!(state.active_agent_groups(), 0);
+    }
+
+    #[test]
+    fn registered_generation_returns_at_resource_lock_deadline_with_exact_identity() {
+        let (state, backend) = state_with_fake();
+        let id = Uuid::new_v4();
+        let root = identity(7_101, 711);
+        backend.add_tree(root, vec![observed(7_101, 711, None, 0)]);
+        let permit = state.try_reserve_agent_slot(limits(2)).unwrap().unwrap();
+        let mut registration = ResourceLaunchRegistration::new(
+            state.clone(),
+            permit,
+            ResourceLaunchMetadata {
+                session_id: id,
+                name: "locked resource generation".to_string(),
+                agent_id: None,
+                agent_label: None,
+                workgroup: None,
+                agent: None,
+                project: None,
+            },
+        );
+        registration.bind_owner_generation(81).unwrap();
+        registration.register_root_pid(root.pid).unwrap();
+
+        let held = state.inner.lock().unwrap();
+        let started = Instant::now();
+        let deadline = started + Duration::from_millis(40);
+        let worker = std::thread::spawn(move || registration.rollback_registered_until(deadline));
+        let error = worker
+            .join()
+            .expect("join bounded resource-lock cleanup")
+            .expect_err("held resource lock retains the generation");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "resource lock escaped its absolute deadline"
+        );
+        assert!(error.contains(&id.to_string()), "{error}");
+        assert!(error.contains("generation 81"), "{error}");
+        assert!(error.contains("root_pid=7101"), "{error}");
+        assert!(
+            error.contains("Mutex::try_lock(resource-monitor-start)"),
+            "{error}"
+        );
+        drop(held);
+    }
+
+    #[test]
+    fn unregistered_permit_drop_defers_without_waiting_for_the_resource_lock() {
+        let (state, _backend) = state_with_fake();
+        let permit = state.try_reserve_agent_slot(limits(2)).unwrap().unwrap();
+        let registration = ResourceLaunchRegistration::new(
+            state.clone(),
+            permit,
+            ResourceLaunchMetadata {
+                session_id: Uuid::new_v4(),
+                name: "deferred permit".to_string(),
+                agent_id: None,
+                agent_label: None,
+                workgroup: None,
+                agent: None,
+                project: None,
+            },
+        );
+        let held = state.inner.lock().unwrap();
+        let started = Instant::now();
+        drop(registration);
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "unregistered permit drop blocked on the resource registry"
+        );
+        assert_eq!(held.pending_permits.len(), 1);
+        drop(held);
+        assert_eq!(
+            state.active_agent_groups(),
+            0,
+            "the next registry acquisition drains the deferred permit"
+        );
+    }
+
+    #[test]
+    fn registered_generation_returns_at_blocked_backend_deadline_with_exact_identity() {
+        let id = Uuid::new_v4();
+        let root = identity(7_201, 721);
+        let backend = Arc::new(DeadlineBlockingBackend::new(root));
+        let state =
+            ResourceMonitorState::with_backend(backend.clone() as Arc<dyn ProcessTreeBackend>);
+        let permit = state.try_reserve_agent_slot(limits(2)).unwrap().unwrap();
+        let mut registration = ResourceLaunchRegistration::new(
+            state.clone(),
+            permit,
+            ResourceLaunchMetadata {
+                session_id: id,
+                name: "blocked backend generation".to_string(),
+                agent_id: None,
+                agent_label: None,
+                workgroup: None,
+                agent: None,
+                project: None,
+            },
+        );
+        registration.bind_owner_generation(82).unwrap();
+        registration.register_root_pid(root.pid).unwrap();
+        backend
+            .block_deadline_calls
+            .store(true, std::sync::atomic::Ordering::Release);
+
+        let started = Instant::now();
+        let deadline = started + Duration::from_millis(40);
+        let result = registration
+            .rollback_registered_until(deadline)
+            .expect("blocked backend returns its retained accounting outcome")
+            .expect("registered generation has an accounting outcome");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "blocked backend escaped its absolute deadline"
+        );
+        assert_eq!(result.state, ResourceGroupState::Quarantined);
+        assert!(
+            result.message.contains(&id.to_string()),
+            "{}",
+            result.message
+        );
+        assert!(
+            result.message.contains("generation 82"),
+            "{}",
+            result.message
+        );
+        assert!(
+            result.message.contains("root_pid=7201"),
+            "{}",
+            result.message
+        );
+        assert!(
+            result.message.contains("syscall=observe_tree"),
+            "{}",
+            result.message
+        );
+        let inner = state.inner.lock().unwrap();
+        let retained = inner
+            .groups
+            .get(&id)
+            .expect("resource owner stays reachable");
+        assert_eq!(retained.owner_generation, 82);
+        assert_eq!(retained.root_identity, root);
+        assert_eq!(retained.state, ResourceGroupState::Quarantined);
     }
 
     #[test]

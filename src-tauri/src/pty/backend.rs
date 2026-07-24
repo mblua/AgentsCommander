@@ -206,6 +206,16 @@ pub trait PtyBackend: Any + Send + Sync {
                 .collect(),
         }
     }
+
+    fn kill_all_jobs_until(&self, deadline: std::time::Instant) -> PtyShutdownReport {
+        self.kill_all_jobs_with_budget(
+            deadline.saturating_duration_since(std::time::Instant::now()),
+        )
+    }
+
+    fn ownership_diagnostics(&self, _operation: &str) -> Vec<String> {
+        Vec::new()
+    }
 }
 #[cfg(test)]
 mod pty_viewport_tests {

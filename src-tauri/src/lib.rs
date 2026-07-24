@@ -483,6 +483,7 @@ struct StartupRuntimeRegistry {
     selection: Option<crate::session::selection::SelectionCoordinator>,
     context_alert: Option<Arc<crate::session::context_alerts::ContextAlertMonitor>>,
     pty_manager: Option<Arc<Mutex<PtyManager>>>,
+    pty_shutdown_owner: Option<crate::pty::manager::PtyShutdownOwner>,
     container_backend: Option<Arc<crate::pty::container_backend::ContainerTransportBackend>>,
     resource_monitor: Option<Arc<resource_monitor::ResourceMonitorState>>,
     telegram_bridges: Option<TelegramBridgeState>,
@@ -911,12 +912,19 @@ fn register_startup_pty_manager(
     pty_manager: Arc<Mutex<PtyManager>>,
     container_backend: Arc<crate::pty::container_backend::ContainerTransportBackend>,
 ) -> Result<(), errors::StartupError> {
+    let shutdown_owner = pty_manager
+        .lock()
+        .map_err(|_| errors::StartupError::TauriSetup {
+            message: "PTY manager lock poisoned while registering shutdown ownership".to_string(),
+        })?
+        .shutdown_owner();
     with_startup_runtime(
         lifecycle,
         "register startup PTY and container owners",
         |runtime| {
             runtime.record("PTY manager");
             runtime.pty_manager = Some(pty_manager);
+            runtime.pty_shutdown_owner = Some(shutdown_owner);
             runtime.record("container backend");
             runtime.container_backend = Some(container_backend);
         },
@@ -1131,10 +1139,9 @@ enum BoundedOwnerAccess<T> {
 
 fn with_bounded_startup_owner<T, R>(
     owner: &Arc<Mutex<T>>,
-    budget: std::time::Duration,
+    deadline: std::time::Instant,
     action: impl FnOnce(&mut T) -> R,
 ) -> BoundedOwnerAccess<R> {
-    let deadline = std::time::Instant::now() + budget;
     let mut action = Some(action);
     loop {
         match owner.try_lock() {
@@ -1158,6 +1165,42 @@ fn with_bounded_startup_owner<T, R>(
             Err(std::sync::TryLockError::WouldBlock) => return BoundedOwnerAccess::Busy,
         }
     }
+}
+
+#[cfg(test)]
+#[test]
+fn bounded_startup_owner_preserves_the_near_deadline_remaining_budget() {
+    let owner = Arc::new(Mutex::new(()));
+    let held = owner.lock().unwrap();
+    let started = std::time::Instant::now();
+    let deadline = started + std::time::Duration::from_millis(500);
+    let owner_for_worker = Arc::clone(&owner);
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+    let worker = std::thread::spawn(move || {
+        ready_tx.send(()).expect("signal owner acquisition attempt");
+        with_bounded_startup_owner(&owner_for_worker, deadline, |_| {
+            deadline.saturating_duration_since(std::time::Instant::now())
+        })
+    });
+    ready_rx.recv().expect("wait for owner acquisition attempt");
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    drop(held);
+
+    let remaining = match worker.join().expect("join bounded owner acquisition") {
+        BoundedOwnerAccess::Acquired(remaining)
+        | BoundedOwnerAccess::RecoveredPoison(remaining) => remaining,
+        BoundedOwnerAccess::Busy => {
+            panic!("owner released before the absolute deadline was not acquired")
+        }
+    };
+    assert!(
+        remaining <= std::time::Duration::from_millis(150),
+        "near-deadline acquisition received a fresh cleanup budget: {remaining:?}"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "near-deadline owner acquisition escaped its absolute deadline"
+    );
 }
 
 fn append_startup_pty_retained_diagnostics(
@@ -1305,9 +1348,15 @@ fn teardown_uncommitted_runtime(
     }
 
     let cleanup_budget = std::time::Duration::from_secs(SHUTDOWN_CLEANUP_BUDGET_SECS);
+    let cleanup_started = std::time::Instant::now();
+    let cleanup_deadline = cleanup_started
+        .checked_add(cleanup_budget)
+        .unwrap_or(cleanup_started);
     let container_backend = runtime.container_backend.take();
     if let Some(container_backend) = container_backend {
-        let report = container_backend.stop_all_started_containers_blocking(cleanup_budget);
+        let report = container_backend.stop_all_started_containers_blocking(
+            cleanup_deadline.saturating_duration_since(std::time::Instant::now()),
+        );
         if !report.terminal {
             diagnostics.extend(report.retained);
         }
@@ -1316,15 +1365,21 @@ fn teardown_uncommitted_runtime(
             .push("startup container backend owner was unavailable during teardown".to_string());
     }
 
+    let pty_shutdown_owner = runtime.pty_shutdown_owner.take();
     let pty_manager = runtime.pty_manager.take().or_else(|| {
         app.and_then(|app| {
             app.try_state::<Arc<Mutex<PtyManager>>>()
                 .map(|state| Arc::clone(state.inner()))
         })
     });
-    if let Some(pty_manager) = pty_manager {
-        match with_bounded_startup_owner(&pty_manager, cleanup_budget, |manager| {
-            manager.kill_all_jobs_with_budget(cleanup_budget)
+    if let Some(shutdown_owner) = pty_shutdown_owner {
+        append_startup_pty_retained_diagnostics(
+            &mut diagnostics,
+            shutdown_owner.kill_all_until(cleanup_deadline),
+        );
+    } else if let Some(pty_manager) = pty_manager {
+        match with_bounded_startup_owner(&pty_manager, cleanup_deadline, |manager| {
+            manager.kill_all_jobs_until(cleanup_deadline)
         }) {
             BoundedOwnerAccess::Acquired(report) => {
                 append_startup_pty_retained_diagnostics(&mut diagnostics, report);
@@ -1337,10 +1392,23 @@ fn teardown_uncommitted_runtime(
                 append_startup_pty_retained_diagnostics(&mut diagnostics, report);
             }
             BoundedOwnerAccess::Busy => {
-                diagnostics.push(
-                    "startup PTY manager remained busy through the bounded teardown budget; process-group ownership retained"
-                        .to_string(),
-                );
+                let detail = pty_manager
+                    .try_lock()
+                    .ok()
+                    .map(|manager| {
+                        manager
+                            .shutdown_owner()
+                            .diagnostics("startup PTY manager lock deadline")
+                    })
+                    .unwrap_or_default();
+                if detail.is_empty() {
+                    diagnostics.push(
+                        "startup PTY manager remained busy through the bounded teardown budget; no pre-registered shutdown owner was available"
+                            .to_string(),
+                    );
+                } else {
+                    diagnostics.extend(detail);
+                }
             }
         }
     } else if expected_pty_owner {
@@ -3845,29 +3913,28 @@ pub fn run(
                     // #632 A - kill every agent's Job Object: atomically terminates
                     // each jobbed session's whole descendant tree via the job handle.
                     // This is the durable, orphan-free guarantee for jobbed sessions.
-                    let pty_mgr = app_handle.state::<Arc<Mutex<PtyManager>>>();
                     let pty_lock_budget =
                         std::time::Duration::from_secs(SHUTDOWN_CLEANUP_BUDGET_SECS);
-                    let container_backend = {
-                        let deadline = std::time::Instant::now() + pty_lock_budget;
-                        loop {
-                            match pty_mgr.try_lock() {
-                                Ok(guard) => break Some(guard.container_backend()),
-                                Err(std::sync::TryLockError::Poisoned(error)) => {
-                                    break Some(error.into_inner().container_backend());
-                                }
-                                Err(std::sync::TryLockError::WouldBlock)
-                                    if std::time::Instant::now() < deadline =>
-                                {
-                                    std::thread::sleep(std::time::Duration::from_millis(2));
-                                }
-                                Err(std::sync::TryLockError::WouldBlock) => break None,
-                            }
-                        }
-                    };
+                    let cleanup_started = std::time::Instant::now();
+                    let cleanup_deadline = cleanup_started
+                        .checked_add(pty_lock_budget)
+                        .unwrap_or(cleanup_started);
+                    let (container_backend, pty_shutdown_owner) = lifecycle_for_exit
+                        .lock()
+                        .map(|lifecycle| {
+                            (
+                                lifecycle.runtime.container_backend.clone(),
+                                lifecycle.runtime.pty_shutdown_owner.clone(),
+                            )
+                        })
+                        .unwrap_or((None, None));
                     let mut container_shutdown = match container_backend {
-                        Some(container_backend) => container_backend
-                            .stop_all_started_containers_blocking(pty_lock_budget),
+                        Some(container_backend) => {
+                            container_backend.stop_all_started_containers_blocking(
+                                cleanup_deadline
+                                    .saturating_duration_since(std::time::Instant::now()),
+                            )
+                        }
                         None => {
                             log::error!(
                                 "[shutdown] PTY owner lock reached the global cleanup deadline before container ownership transfer"
@@ -3880,31 +3947,9 @@ pub fn run(
                             }
                         }
                     };
-                    let jobs = {
-                        let deadline = std::time::Instant::now() + pty_lock_budget;
-                        loop {
-                            match pty_mgr.try_lock() {
-                                Ok(guard) => {
-                                    break Some(
-                                        guard.kill_all_jobs_with_budget(pty_lock_budget),
-                                    );
-                                }
-                                Err(std::sync::TryLockError::Poisoned(error)) => {
-                                    break Some(
-                                        error
-                                            .into_inner()
-                                            .kill_all_jobs_with_budget(pty_lock_budget),
-                                    );
-                                }
-                                Err(std::sync::TryLockError::WouldBlock)
-                                    if std::time::Instant::now() < deadline =>
-                                {
-                                    std::thread::sleep(std::time::Duration::from_millis(2));
-                                }
-                                Err(std::sync::TryLockError::WouldBlock) => break None,
-                            }
-                        }
-                    };
+                    let jobs = pty_shutdown_owner
+                        .as_ref()
+                        .map(|owner| owner.kill_all_until(cleanup_deadline));
                     let (terminated_owners, retained_sessions) = match jobs {
                         Some(report) => {
                             for retained in &report.retained {
@@ -3914,7 +3959,7 @@ pub fn run(
                         }
                         None => {
                             log::error!(
-                                "[shutdown] PTY owner lock reached the job cleanup deadline state=retained"
+                                "[shutdown] pre-registered PTY shutdown owner was unavailable state=retained"
                             );
                             container_shutdown.terminal = false;
                             container_shutdown
@@ -3937,37 +3982,28 @@ pub fn run(
                     // (B2a) make it near-instant for jobbed sessions (their live tree is
                     // already dead). Abandoning it on timeout is safe for jobbed
                     // sessions; the job-less warning below covers the MED-2 residual.
-                    let rm_for_cleanup = resource_monitor_for_exit.clone();
-                    let cleanup = crate::shutdown::run_time_boxed(
-                        std::time::Duration::from_secs(SHUTDOWN_CLEANUP_BUDGET_SECS),
-                        move || {
-                            rm_for_cleanup.kill_all_owned_groups(
-                                resource_monitor::ResourceKillReason::AppShutdown,
-                            )
-                        },
+                    let cleanup = resource_monitor_for_exit.kill_all_owned_groups_until(
+                        resource_monitor::ResourceKillReason::AppShutdown,
+                        cleanup_deadline,
                     );
-                    match &cleanup {
-                        Ok(results) => {
-                            for result in results {
-                                if result.quarantined {
-                                    log::warn!(
-                                        "[shutdown] resource group {} quarantined during cleanup: {}",
-                                        result.session_id,
-                                        result.message
-                                    );
-                                }
-                            }
+                    for result in &cleanup {
+                        if result.quarantined {
+                            log::warn!(
+                                "[shutdown] resource group {} quarantined during cleanup: {}",
+                                result.session_id,
+                                result.message
+                            );
                         }
-                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => log::warn!(
-                            "[shutdown] resource cleanup exceeded {SHUTDOWN_CLEANUP_BUDGET_SECS}s budget; proceeding to exit (job objects already terminated jobbed trees)"
-                        ),
-                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => log::error!(
-                            "[shutdown] resource cleanup thread panicked before completing; jobbed trees were still terminated by the job kill"
-                        ),
+                    }
+                    let cleanup_timed_out = std::time::Instant::now() >= cleanup_deadline;
+                    if cleanup_timed_out {
+                        log::warn!(
+                            "[shutdown] resource cleanup reached the shared {SHUTDOWN_CLEANUP_BUDGET_SECS}s absolute deadline; proceeding to exit"
+                        );
                     }
                     // #632 MED-2 - job-less sessions are reaper-only; if the reaper did
                     // not finish, their trees may be orphaned. Make it visible.
-                    if cleanup.is_err() && retained_sessions > 0 {
+                    if cleanup_timed_out && retained_sessions > 0 {
                         #[cfg(windows)]
                         log::warn!(
                             "[shutdown] {retained_sessions} session(s) had no Job Object and the reaper did not finish in budget; their process trees may be orphaned"
@@ -4562,7 +4598,7 @@ mod tests {
         spec.cmd = "/bin/sh".to_string();
         spec.args = vec![
             "-c".to_string(),
-            "trap '' HUP; sh -c 'trap \"\" HUP; exec sleep 60' & child=$!; printf '%s %s\\n' \"$$\" \"$child\" > \"$AC_PTY_OWNER_MARKER\"; wait \"$child\"".to_string(),
+            "trap '' HUP; child_ready=\"${AC_PTY_OWNER_MARKER}.child\"; sh -c 'trap \"\" HUP; tmp=\"${AC_PTY_OWNER_MARKER}.child.$$\"; printf \"%s\\n\" \"$$\" > \"$tmp\"; mv \"$tmp\" \"${AC_PTY_OWNER_MARKER}.child\"; exec sleep 60' & child=$!; attempts=0; while [ ! -s \"$child_ready\" ]; do kill -0 \"$child\" 2>/dev/null || exit 91; attempts=$((attempts + 1)); [ \"$attempts\" -lt 300 ] || exit 92; sleep 0.01; done; ready_child=$(cat \"$child_ready\"); [ \"$ready_child\" = \"$child\" ] || exit 93; tmp=\"${AC_PTY_OWNER_MARKER}.tmp.$$\"; printf '%s %s\\n' \"$$\" \"$child\" > \"$tmp\"; mv \"$tmp\" \"$AC_PTY_OWNER_MARKER\"; wait \"$child\"".to_string(),
         ];
         spec.configured_env = vec![(
             "AC_PTY_OWNER_MARKER".to_string(),
@@ -4659,22 +4695,30 @@ mod tests {
             match std::fs::read_to_string(path) {
                 Ok(value) => {
                     let mut fields = value.split_whitespace();
-                    let root = fields
+                    let parsed = fields
                         .next()
-                        .expect("marker root pid")
-                        .parse()
-                        .expect("parse marker root pid");
-                    let child = fields
-                        .next()
-                        .expect("marker child pid")
-                        .parse()
-                        .expect("parse marker child pid");
-                    assert!(fields.next().is_none(), "marker has exactly two pids");
-                    return (root, child);
+                        .and_then(|root| root.parse::<u32>().ok())
+                        .zip(fields.next().and_then(|child| child.parse::<u32>().ok()))
+                        .filter(|(root, child)| {
+                            *root != 0 && *child != 0 && fields.next().is_none()
+                        });
+                    if let Some(marker) = parsed {
+                        return marker;
+                    }
+                    if std::time::Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+                    panic!(
+                        "process-group marker {} remained incomplete: {value:?}",
+                        path.display()
+                    );
                 }
                 Err(error)
-                    if error.kind() == std::io::ErrorKind::NotFound
-                        && std::time::Instant::now() < deadline =>
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::UnexpectedEof
+                    ) && std::time::Instant::now() < deadline =>
                 {
                     std::thread::sleep(Duration::from_millis(10));
                 }
@@ -5070,6 +5114,539 @@ mod tests {
         cleanup.disarm();
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn production_reservation_and_duplicate_rejection_preserve_exact_ownership() {
+        let temp = tempfile::tempdir().expect("reservation and duplicate tempdir");
+        let (_app, manager) = production_local_pty_manager();
+        let mut cleanup = StartupPtyCleanupGuard::new(manager.clone());
+        let monitor = Arc::new(crate::resource_monitor::ResourceMonitorState::new());
+        let backend = manager
+            .lock()
+            .unwrap()
+            .backend_for_kind(crate::pty::backend::SessionBackendKind::LocalProcess);
+        let local = backend
+            .as_any()
+            .downcast_ref::<
+                crate::pty::local_backend::LocalProcessBackend<tauri::test::MockRuntime>,
+            >()
+            .expect("production local backend");
+        let limits = crate::resource_monitor::ResourceLimits::from(&AppSettings {
+            resource_monitor_enabled: true,
+            ..AppSettings::default()
+        });
+
+        let failed_id = uuid::Uuid::new_v4();
+        let failed_marker = temp.path().join("reservation-failure.txt");
+        crate::pty::local_backend::inject_reservation_failure_once(failed_id);
+        let error = tauri::async_runtime::block_on(crate::pty::manager::PtyManager::spawn(
+            &manager,
+            crate::pty::backend::SessionBackendKind::LocalProcess,
+            startup_process_group_spec(
+                failed_id,
+                temp.path(),
+                &failed_marker,
+                Some(startup_resource_registration(&monitor, failed_id)),
+            ),
+        ))
+        .expect_err("injected reservation failure rejects the spawn");
+        assert!(
+            error
+                .to_string()
+                .contains("injected local owner reservation failure"),
+            "{error}"
+        );
+        assert!(!failed_marker.exists());
+        assert_eq!(local.owner_generation_count_for_test(failed_id), 0);
+        assert!(manager.lock().unwrap().backend_kind(failed_id).is_none());
+        assert_eq!(monitor.active_agent_groups(), 0);
+
+        let id = uuid::Uuid::new_v4();
+        let active_marker = temp.path().join("duplicate-existing.txt");
+        tauri::async_runtime::block_on(crate::pty::manager::PtyManager::spawn(
+            &manager,
+            crate::pty::backend::SessionBackendKind::LocalProcess,
+            startup_process_group_spec(
+                id,
+                temp.path(),
+                &active_marker,
+                Some(startup_resource_registration(&monitor, id)),
+            ),
+        ))
+        .expect("spawn existing generation");
+        let (active_root, active_descendant) = read_startup_process_group_marker(&active_marker);
+        cleanup.record_group(active_root);
+        let before = monitor.snapshot(limits);
+        let before_row = before
+            .groups
+            .iter()
+            .find(|group| group.session_id == id.to_string())
+            .expect("existing generation resource row")
+            .clone();
+
+        let duplicate_marker = temp.path().join("duplicate-rejected.txt");
+        let error = tauri::async_runtime::block_on(crate::pty::manager::PtyManager::spawn(
+            &manager,
+            crate::pty::backend::SessionBackendKind::LocalProcess,
+            startup_process_group_spec(
+                id,
+                temp.path(),
+                &duplicate_marker,
+                Some(startup_resource_registration(&monitor, id)),
+            ),
+        ))
+        .expect_err("duplicate reservation is rejected before child publication");
+        assert!(error.to_string().contains("already owns"), "{error}");
+        assert!(!duplicate_marker.exists());
+        assert_eq!(local.owner_generation_count_for_test(id), 1);
+        assert!(
+            linux_process_exists(active_root) && linux_process_exists(active_descendant),
+            "duplicate rejection must preserve the existing process group"
+        );
+        {
+            let manager = manager.lock().unwrap();
+            assert!(manager.has_session(id));
+            assert_eq!(
+                manager.backend_kind(id),
+                Some(crate::pty::backend::SessionBackendKind::LocalProcess)
+            );
+        }
+        let after = monitor.snapshot(limits);
+        let after_row = after
+            .groups
+            .iter()
+            .find(|group| group.session_id == id.to_string())
+            .expect("existing resource row survives duplicate rejection");
+        assert_eq!(after.active_agent_groups, 1);
+        assert_eq!(after_row.root_pid, active_root);
+        assert_eq!(after_row.root_identity, before_row.root_identity);
+        assert_eq!(
+            after_row.state,
+            crate::resource_monitor::types::ResourceGroupState::Running
+        );
+
+        manager
+            .lock()
+            .unwrap()
+            .kill(id)
+            .expect("cleanup preserved existing generation");
+        assert_startup_process_group_absent(active_root, active_descendant);
+        wait_for_startup_process_group_exit(active_root, active_descendant);
+        assert_eq!(local.owner_generation_count_for_test(id), 0);
+        assert!(manager.lock().unwrap().backend_kind(id).is_none());
+        let terminal = monitor.snapshot(limits);
+        let row = terminal
+            .groups
+            .iter()
+            .find(|group| group.session_id == id.to_string())
+            .expect("resource row remains terminal");
+        assert_eq!(
+            row.state,
+            crate::resource_monitor::types::ResourceGroupState::Terminated
+        );
+        assert_eq!(terminal.active_agent_groups, 0);
+        cleanup.disarm();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn production_local_kill_drains_active_and_detached_generations_together() {
+        let temp = tempfile::tempdir().expect("active and detached owner tempdir");
+        let (_app, manager) = production_local_pty_manager();
+        let mut cleanup = StartupPtyCleanupGuard::new(manager.clone());
+        let monitor = Arc::new(crate::resource_monitor::ResourceMonitorState::new());
+        let id = uuid::Uuid::new_v4();
+        let active_marker = temp.path().join("active-generation.txt");
+        tauri::async_runtime::block_on(crate::pty::manager::PtyManager::spawn(
+            &manager,
+            crate::pty::backend::SessionBackendKind::LocalProcess,
+            startup_process_group_spec(
+                id,
+                temp.path(),
+                &active_marker,
+                Some(startup_resource_registration(&monitor, id)),
+            ),
+        ))
+        .expect("spawn routed active generation");
+        let (active_root, active_descendant) = read_startup_process_group_marker(&active_marker);
+        cleanup.record_group(active_root);
+
+        let backend = manager
+            .lock()
+            .unwrap()
+            .backend_for_kind(crate::pty::backend::SessionBackendKind::LocalProcess);
+        let local = backend
+            .as_any()
+            .downcast_ref::<
+                crate::pty::local_backend::LocalProcessBackend<tauri::test::MockRuntime>,
+            >()
+            .expect("production local backend");
+        let detached_marker = temp.path().join("detached-generation.txt");
+        let detached_generation = local
+            .spawn_additional_detached_for_test(startup_process_group_spec(
+                id,
+                temp.path(),
+                &detached_marker,
+                None,
+            ))
+            .expect("inject a production-spawned detached generation");
+        assert_ne!(detached_generation, 0);
+        let (detached_root, detached_descendant) =
+            read_startup_process_group_marker(&detached_marker);
+        cleanup.record_group(detached_root);
+        assert_eq!(local.owner_generation_count_for_test(id), 2);
+
+        manager
+            .lock()
+            .unwrap()
+            .kill(id)
+            .expect("one kill drains every generation");
+        for (root, descendant) in [
+            (active_root, active_descendant),
+            (detached_root, detached_descendant),
+        ] {
+            assert_startup_process_group_absent(root, descendant);
+            wait_for_startup_process_group_exit(root, descendant);
+        }
+        assert_eq!(local.owner_generation_count_for_test(id), 0);
+        let manager = manager.lock().unwrap();
+        assert!(!manager.has_session(id));
+        assert!(manager.backend_kind(id).is_none(), "route is terminal");
+        drop(manager);
+        let limits = crate::resource_monitor::ResourceLimits::from(&AppSettings {
+            resource_monitor_enabled: true,
+            ..AppSettings::default()
+        });
+        let snapshot = monitor.snapshot(limits);
+        let row = snapshot
+            .groups
+            .iter()
+            .find(|group| group.session_id == id.to_string())
+            .expect("active generation resource row remains visible");
+        assert_eq!(
+            row.state,
+            crate::resource_monitor::types::ResourceGroupState::Terminated
+        );
+        assert_eq!(snapshot.active_agent_groups, 0);
+        cleanup.disarm();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn production_concurrent_kills_share_one_tombstone_and_both_observe_terminal_state() {
+        let temp = tempfile::tempdir().expect("concurrent kill tempdir");
+        let (_app, manager) = production_local_pty_manager();
+        let mut cleanup = StartupPtyCleanupGuard::new(manager.clone());
+        let monitor = Arc::new(crate::resource_monitor::ResourceMonitorState::new());
+        let id = uuid::Uuid::new_v4();
+        let marker = temp.path().join("concurrent-kill.txt");
+        tauri::async_runtime::block_on(crate::pty::manager::PtyManager::spawn(
+            &manager,
+            crate::pty::backend::SessionBackendKind::LocalProcess,
+            startup_process_group_spec(
+                id,
+                temp.path(),
+                &marker,
+                Some(startup_resource_registration(&monitor, id)),
+            ),
+        ))
+        .expect("spawn concurrent-kill generation");
+        let (root, descendant) = read_startup_process_group_marker(&marker);
+        cleanup.record_group(root);
+
+        let backend = manager
+            .lock()
+            .unwrap()
+            .backend_for_kind(crate::pty::backend::SessionBackendKind::LocalProcess);
+        let (resource_held_tx, resource_held_rx) = std::sync::mpsc::sync_channel(1);
+        let (resource_release_tx, resource_release_rx) = std::sync::mpsc::sync_channel(1);
+        let monitor_for_holder = Arc::clone(&monitor);
+        let resource_holder = std::thread::spawn(move || {
+            monitor_for_holder.hold_registry_for_test(resource_held_tx, resource_release_rx);
+        });
+        resource_held_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("hold resource registry while the first kill owns its tombstone");
+        let (waiter_entered_tx, waiter_entered_rx) = std::sync::mpsc::sync_channel(1);
+        crate::pty::local_backend::observe_next_concurrent_kill_wait(id, waiter_entered_tx);
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let manager_for_kill = manager.clone();
+        let manager_barrier = Arc::clone(&barrier);
+        let manager_kill = std::thread::spawn(move || {
+            manager_barrier.wait();
+            manager_for_kill.lock().unwrap().kill(id)
+        });
+        let backend_for_kill = Arc::clone(&backend);
+        let backend_barrier = Arc::clone(&barrier);
+        let backend_kill = std::thread::spawn(move || {
+            backend_barrier.wait();
+            backend_for_kill.kill(id)
+        });
+        barrier.wait();
+        waiter_entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the second kill observed the in-progress tombstone");
+        resource_release_tx
+            .send(())
+            .expect("release resource registry after both kills overlap");
+        resource_holder
+            .join()
+            .expect("join concurrent-kill resource holder");
+        manager_kill
+            .join()
+            .expect("manager killer joined")
+            .expect("manager killer observed terminal ownership");
+        backend_kill
+            .join()
+            .expect("backend killer joined")
+            .expect("backend killer observed terminal ownership");
+
+        assert_startup_process_group_absent(root, descendant);
+        wait_for_startup_process_group_exit(root, descendant);
+        let manager = manager.lock().unwrap();
+        assert!(!manager.has_session(id));
+        assert!(manager.backend_kind(id).is_none(), "route is terminal");
+        drop(manager);
+        let limits = crate::resource_monitor::ResourceLimits::from(&AppSettings {
+            resource_monitor_enabled: true,
+            ..AppSettings::default()
+        });
+        let snapshot = monitor.snapshot(limits);
+        let row = snapshot
+            .groups
+            .iter()
+            .find(|group| group.session_id == id.to_string())
+            .expect("concurrent kill resource row remains visible");
+        assert_eq!(
+            row.state,
+            crate::resource_monitor::types::ResourceGroupState::Terminated
+        );
+        assert_eq!(snapshot.active_agent_groups, 0);
+        cleanup.disarm();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn production_cancellation_is_generation_scoped_at_every_spawn_boundary() {
+        let temp = tempfile::tempdir().expect("generation cancellation tempdir");
+        let (_app, manager) = production_local_pty_manager();
+        let mut cleanup = StartupPtyCleanupGuard::new(manager.clone());
+        let backend = manager
+            .lock()
+            .unwrap()
+            .backend_for_kind(crate::pty::backend::SessionBackendKind::LocalProcess);
+        let local = backend
+            .as_any()
+            .downcast_ref::<
+                crate::pty::local_backend::LocalProcessBackend<tauri::test::MockRuntime>,
+            >()
+            .expect("production local backend");
+        let monitor = Arc::new(crate::resource_monitor::ResourceMonitorState::new());
+
+        for (point, label, has_child, was_registered) in [
+            (
+                crate::pty::local_backend::SpawnPausePoint::BeforeSpawn,
+                "before-spawn",
+                false,
+                false,
+            ),
+            (
+                crate::pty::local_backend::SpawnPausePoint::AfterChildCreation,
+                "after-child",
+                true,
+                false,
+            ),
+            (
+                crate::pty::local_backend::SpawnPausePoint::AfterRegistration,
+                "after-registration",
+                true,
+                true,
+            ),
+        ] {
+            let id = uuid::Uuid::new_v4();
+            let marker = temp.path().join(format!("{label}.txt"));
+            let (reached_tx, reached_rx) = std::sync::mpsc::sync_channel(1);
+            let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+            crate::pty::local_backend::inject_spawn_pause(id, point, reached_tx, release_rx);
+            let manager_for_spawn = manager.clone();
+            let spec = startup_process_group_spec(
+                id,
+                temp.path(),
+                &marker,
+                Some(startup_resource_registration(&monitor, id)),
+            );
+            let task = tauri::async_runtime::spawn(async move {
+                crate::pty::manager::PtyManager::spawn(
+                    &manager_for_spawn,
+                    crate::pty::backend::SessionBackendKind::LocalProcess,
+                    spec,
+                )
+                .await
+            });
+            reached_rx
+                .recv_timeout(Duration::from_secs(3))
+                .expect("spawn reached injected cancellation boundary");
+            let process_ids = has_child.then(|| read_startup_process_group_marker(&marker));
+            if let Some((root, _)) = process_ids {
+                cleanup.record_group(root);
+            }
+            task.abort();
+            let cancelled = tauri::async_runtime::block_on(task)
+                .expect_err("spawn waiter is cancelled at the injected boundary");
+            assert!(matches!(
+                cancelled,
+                tauri::Error::JoinError(ref error) if error.is_cancelled()
+            ));
+            release_tx.send(()).expect("release paused spawn worker");
+
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while local.owner_generation_count_for_test(id) != 0
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert_eq!(
+                local.owner_generation_count_for_test(id),
+                0,
+                "{label} cancellation committed terminal generation ownership"
+            );
+            if let Some((root, descendant)) = process_ids {
+                assert_startup_process_group_absent(root, descendant);
+                wait_for_startup_process_group_exit(root, descendant);
+            }
+            let manager_guard = manager.lock().unwrap();
+            assert!(
+                manager_guard.backend_kind(id).is_none(),
+                "{label} never published a route"
+            );
+            drop(manager_guard);
+            assert_eq!(
+                monitor.active_agent_groups(),
+                0,
+                "{label} released or reconciled resource ownership"
+            );
+            if was_registered {
+                let limits = crate::resource_monitor::ResourceLimits::from(&AppSettings {
+                    resource_monitor_enabled: true,
+                    ..AppSettings::default()
+                });
+                let snapshot = monitor.snapshot(limits);
+                let row = snapshot
+                    .groups
+                    .iter()
+                    .find(|group| group.session_id == id.to_string())
+                    .expect("registered cancelled generation keeps terminal row");
+                assert_eq!(
+                    row.state,
+                    crate::resource_monitor::types::ResourceGroupState::Terminated
+                );
+            }
+        }
+
+        let id = uuid::Uuid::new_v4();
+        let existing_marker = temp.path().join("existing-generation.txt");
+        tauri::async_runtime::block_on(crate::pty::manager::PtyManager::spawn(
+            &manager,
+            crate::pty::backend::SessionBackendKind::LocalProcess,
+            startup_process_group_spec(
+                id,
+                temp.path(),
+                &existing_marker,
+                Some(startup_resource_registration(&monitor, id)),
+            ),
+        ))
+        .expect("spawn unrelated existing generation");
+        let (existing_root, existing_descendant) =
+            read_startup_process_group_marker(&existing_marker);
+        cleanup.record_group(existing_root);
+
+        crate::pty::local_backend::allow_duplicate_reservation_once(id);
+        let cancelled_marker = temp.path().join("cancelled-published-generation.txt");
+        let (reached_tx, reached_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        crate::pty::local_backend::inject_spawn_pause(
+            id,
+            crate::pty::local_backend::SpawnPausePoint::AfterPublication,
+            reached_tx,
+            release_rx,
+        );
+        let backend_for_spawn = Arc::clone(&backend);
+        let spec = startup_process_group_spec(id, temp.path(), &cancelled_marker, None);
+        let task = tauri::async_runtime::spawn(async move { backend_for_spawn.spawn(spec).await });
+        reached_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("duplicate generation reached publication boundary");
+        let (cancelled_root, cancelled_descendant) =
+            read_startup_process_group_marker(&cancelled_marker);
+        cleanup.record_group(cancelled_root);
+        assert_eq!(local.owner_generation_count_for_test(id), 2);
+        task.abort();
+        let cancelled = tauri::async_runtime::block_on(task)
+            .expect_err("duplicate generation waiter is cancelled");
+        assert!(matches!(
+            cancelled,
+            tauri::Error::JoinError(ref error) if error.is_cancelled()
+        ));
+        release_tx
+            .send(())
+            .expect("release cancelled duplicate generation");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while local.owner_generation_count_for_test(id) != 1 && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(local.owner_generation_count_for_test(id), 1);
+        assert_startup_process_group_absent(cancelled_root, cancelled_descendant);
+        wait_for_startup_process_group_exit(cancelled_root, cancelled_descendant);
+        assert!(
+            linux_process_exists(existing_root) && linux_process_exists(existing_descendant),
+            "cancelling one generation must not kill the unrelated established owner"
+        );
+        {
+            let manager = manager.lock().unwrap();
+            assert!(manager.has_session(id));
+            assert_eq!(
+                manager.backend_kind(id),
+                Some(crate::pty::backend::SessionBackendKind::LocalProcess)
+            );
+        }
+        let limits = crate::resource_monitor::ResourceLimits::from(&AppSettings {
+            resource_monitor_enabled: true,
+            ..AppSettings::default()
+        });
+        let preserved = monitor.snapshot(limits);
+        let preserved_row = preserved
+            .groups
+            .iter()
+            .find(|group| group.session_id == id.to_string())
+            .expect("unrelated generation keeps its resource row");
+        assert_eq!(preserved.active_agent_groups, 1);
+        assert_eq!(preserved_row.root_pid, existing_root);
+        assert_eq!(
+            preserved_row.state,
+            crate::resource_monitor::types::ResourceGroupState::Running
+        );
+        manager
+            .lock()
+            .unwrap()
+            .kill(id)
+            .expect("cleanup unrelated established generation");
+        wait_for_startup_process_group_exit(existing_root, existing_descendant);
+        assert!(manager.lock().unwrap().backend_kind(id).is_none());
+        let terminal = monitor.snapshot(limits);
+        let terminal_row = terminal
+            .groups
+            .iter()
+            .find(|group| group.session_id == id.to_string())
+            .expect("unrelated generation keeps a terminal resource row");
+        assert_eq!(terminal.active_agent_groups, 0);
+        assert_eq!(
+            terminal_row.state,
+            crate::resource_monitor::types::ResourceGroupState::Terminated
+        );
+        cleanup.disarm();
+    }
+
     #[cfg(unix)]
     #[test]
     fn production_lifecycle_reaps_restored_container_owner() {
@@ -5186,7 +5763,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn production_lifecycle_recovers_poisoned_pty_owner_with_exact_diagnostic() {
+    fn production_lifecycle_uses_preregistered_owner_when_pty_manager_is_poisoned() {
         let temp = tempfile::tempdir().expect("poisoned PTY owner tempdir");
         let (_app, manager) = production_local_pty_manager();
         let container = manager.lock().unwrap().container_backend();
@@ -5217,25 +5794,10 @@ mod tests {
                 message: "injected failure with poisoned PTY owner".to_string(),
             },
         );
-        match error {
-            crate::errors::StartupError::Rollback {
-                primary,
-                diagnostics,
-            } => {
-                assert_eq!(
-                    primary.to_string(),
-                    "Tauri setup failed: injected failure with poisoned PTY owner"
-                );
-                assert_eq!(
-                    diagnostics,
-                    vec![
-                        "startup PTY manager lock was poisoned; recovered its cleanup owner"
-                            .to_string()
-                    ]
-                );
-            }
-            other => panic!("unexpected poisoned-owner error: {other}"),
-        }
+        assert_eq!(
+            error.to_string(),
+            "Tauri setup failed: injected failure with poisoned PTY owner"
+        );
         assert!(!manager
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -5243,19 +5805,23 @@ mod tests {
         manager.clear_poison();
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
-    fn production_lifecycle_bounds_busy_pty_owner_and_reports_retained_process() {
+    fn production_lifecycle_bypasses_busy_manager_with_preregistered_shutdown_owner() {
         let temp = tempfile::tempdir().expect("busy PTY owner tempdir");
         let (_app, manager) = production_local_pty_manager();
+        let mut cleanup = StartupPtyCleanupGuard::new(manager.clone());
         let container = manager.lock().unwrap().container_backend();
         let local_id = uuid::Uuid::new_v4();
+        let marker = temp.path().join("busy-manager-owner.txt");
         tauri::async_runtime::block_on(crate::pty::manager::PtyManager::spawn(
             &manager,
             crate::pty::backend::SessionBackendKind::LocalProcess,
-            startup_process_spec(local_id, temp.path()),
+            startup_process_group_spec(local_id, temp.path(), &marker, None),
         ))
         .expect("spawn process before busy PTY owner fixture");
+        let (root, descendant) = read_startup_process_group_marker(&marker);
+        cleanup.record_group(root);
 
         let shutdown = crate::shutdown::ShutdownSignal::new_startup_gated();
         let lifecycle = empty_startup_lifecycle(shutdown.clone());
@@ -5279,31 +5845,124 @@ mod tests {
                 message: "injected failure with busy PTY owner".to_string(),
             },
         );
-        assert!(started.elapsed() <= Duration::from_secs(super::SHUTDOWN_CLEANUP_BUDGET_SECS + 1));
-        match error {
-            crate::errors::StartupError::Rollback {
-                primary,
-                diagnostics,
-            } => {
-                assert_eq!(
-                    primary.to_string(),
-                    "Tauri setup failed: injected failure with busy PTY owner"
-                );
-                assert_eq!(
-                    diagnostics,
-                    vec![
-                        "startup PTY manager remained busy through the bounded teardown budget; process-group ownership retained"
-                            .to_string()
-                    ]
-                );
-            }
-            other => panic!("unexpected busy-owner error: {other}"),
-        }
+        let elapsed = started.elapsed();
         release_tx.send(()).expect("release real PTY owner");
         holder.join().expect("join real PTY owner holder");
-        assert!(manager.lock().unwrap().has_session(local_id));
-        assert_eq!(manager.lock().unwrap().kill_all_jobs(), (1, 0));
+        assert_eq!(
+            error.to_string(),
+            "Tauri setup failed: injected failure with busy PTY owner"
+        );
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "pre-registered shutdown owner waited on the busy manager for {elapsed:?}"
+        );
+        assert_startup_process_group_absent(root, descendant);
+        wait_for_startup_process_group_exit(root, descendant);
         assert!(!manager.lock().unwrap().has_session(local_id));
+        cleanup.disarm();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn production_shutdown_retains_exact_owner_at_resource_lock_deadline_and_retries() {
+        let temp = tempfile::tempdir().expect("resource-lock shutdown tempdir");
+        let (_app, manager) = production_local_pty_manager();
+        let mut cleanup = StartupPtyCleanupGuard::new(manager.clone());
+        let monitor = Arc::new(crate::resource_monitor::ResourceMonitorState::new());
+        let id = uuid::Uuid::new_v4();
+        let marker = temp.path().join("resource-lock-shutdown.txt");
+        tauri::async_runtime::block_on(crate::pty::manager::PtyManager::spawn(
+            &manager,
+            crate::pty::backend::SessionBackendKind::LocalProcess,
+            startup_process_group_spec(
+                id,
+                temp.path(),
+                &marker,
+                Some(startup_resource_registration(&monitor, id)),
+            ),
+        ))
+        .expect("spawn resource-lock shutdown owner");
+        let (root, descendant) = read_startup_process_group_marker(&marker);
+        cleanup.record_group(root);
+        let (shutdown_owner, local_backend) = {
+            let manager = manager.lock().unwrap();
+            (
+                manager.shutdown_owner(),
+                manager.backend_for_kind(crate::pty::backend::SessionBackendKind::LocalProcess),
+            )
+        };
+        let local = local_backend
+            .as_any()
+            .downcast_ref::<
+                crate::pty::local_backend::LocalProcessBackend<tauri::test::MockRuntime>,
+            >()
+            .expect("production local backend");
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let monitor_for_holder = Arc::clone(&monitor);
+        let holder = std::thread::spawn(move || {
+            monitor_for_holder.hold_registry_for_test(entered_tx, release_rx);
+        });
+        entered_rx.recv().expect("wait for held resource registry");
+
+        let started = std::time::Instant::now();
+        let deadline = started + Duration::from_millis(75);
+        let retained = shutdown_owner.kill_all_until(deadline);
+        let elapsed = started.elapsed();
+        assert_eq!(retained.terminal, 0);
+        assert_eq!(retained.retained.len(), 1);
+        let diagnostic = &retained.retained[0];
+        assert!(diagnostic.contains(&id.to_string()), "{diagnostic}");
+        assert!(diagnostic.contains("generation 1"), "{diagnostic}");
+        assert!(
+            diagnostic.contains(&format!("root_pid=Some({root})")),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.contains(&format!("group_owner={root}@start=")),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.contains("resource-monitor-start"),
+            "{diagnostic}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "resource-lock shutdown escaped its deadline: {elapsed:?}"
+        );
+        assert_startup_process_group_absent(root, descendant);
+        wait_for_startup_process_group_exit(root, descendant);
+        assert_eq!(local.owner_generation_count_for_test(id), 1);
+
+        release_tx.send(()).expect("release resource registry");
+        holder.join().expect("join resource registry holder");
+        let retry =
+            shutdown_owner.kill_all_until(std::time::Instant::now() + Duration::from_secs(2));
+        assert_eq!(retry.counts(), (1, 0), "{:?}", retry.retained);
+        assert_eq!(local.owner_generation_count_for_test(id), 0);
+        let limits = crate::resource_monitor::ResourceLimits::from(&AppSettings {
+            resource_monitor_enabled: true,
+            ..AppSettings::default()
+        });
+        let snapshot = monitor.snapshot(limits);
+        let row = snapshot
+            .groups
+            .iter()
+            .find(|group| group.session_id == id.to_string())
+            .expect("retried resource row remains visible");
+        assert_eq!(
+            row.state,
+            crate::resource_monitor::types::ResourceGroupState::Terminated
+        );
+        assert_eq!(snapshot.active_agent_groups, 0);
+        manager
+            .lock()
+            .unwrap()
+            .kill(id)
+            .expect("remove terminal manager route");
+        assert!(manager.lock().unwrap().backend_kind(id).is_none());
+        cleanup.disarm();
     }
 
     #[cfg(target_os = "linux")]
