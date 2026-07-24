@@ -21,7 +21,52 @@ use crate::pty::git_watcher::GitWatcher;
 use crate::pty::idle_detector::IdleDetector;
 use crate::pty::output::{PtyScreenSnapshot, SessionIoFanout};
 use crate::pty::spawn_diagnostics::{self, ChildLiveness, ExitCause, SpawnRecord, SpawnRecordInit};
+#[cfg(target_os = "linux")]
+use crate::session::profile::CodingAgentKind;
 use crate::telegram::manager::OutputSenderMap;
+
+#[cfg(target_os = "linux")]
+fn should_synthesize_local_codex_path(
+    coding_agent: Option<CodingAgentKind>,
+    configured_env: &[(String, String)],
+    env_remove_keys: &[String],
+) -> bool {
+    coding_agent == Some(CodingAgentKind::Codex)
+        && !crate::pty::child_path::has_explicit_linux_path(configured_env, env_remove_keys)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_codex_path_tests {
+    use super::should_synthesize_local_codex_path;
+    use crate::session::profile::CodingAgentKind;
+
+    #[test]
+    fn synthesis_is_identity_gated_and_explicit_path_wins() {
+        assert!(should_synthesize_local_codex_path(
+            Some(CodingAgentKind::Codex),
+            &[],
+            &[]
+        ));
+        for identity in [
+            None,
+            Some(CodingAgentKind::Claude),
+            Some(CodingAgentKind::Gemini),
+            Some(CodingAgentKind::Pi),
+        ] {
+            assert!(!should_synthesize_local_codex_path(identity, &[], &[]));
+        }
+        assert!(!should_synthesize_local_codex_path(
+            Some(CodingAgentKind::Codex),
+            &[("PATH".to_string(), String::new())],
+            &[]
+        ));
+        assert!(!should_synthesize_local_codex_path(
+            Some(CodingAgentKind::Codex),
+            &[],
+            &["PATH".to_string()]
+        ));
+    }
+}
 
 struct PtyInstance {
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
@@ -792,6 +837,20 @@ impl LocalProcessBackend {
                 env_remove_keys.len(),
                 id
             );
+        }
+        #[cfg(target_os = "linux")]
+        {
+            if should_synthesize_local_codex_path(coding_agent, &configured_env, &env_remove_keys) {
+                let child_path = crate::pty::child_path::local_codex_child_path();
+                for skipped in &child_path.skipped {
+                    log::warn!(
+                        "[pty] Skipping local Codex PATH candidate {}: {}",
+                        skipped.path.display(),
+                        skipped.reason
+                    );
+                }
+                command.env("PATH", &child_path.value);
+            }
         }
         crate::pty::credentials::apply_credential_env_to_pty_command(&mut command, &extra_env);
         command.env("TERM", "xterm-256color");

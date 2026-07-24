@@ -64,12 +64,15 @@ This creates a **draft release** with:
 - Windows raw executables:
   - `target/release/agentscommander.exe`
   - `target/release/agentscommander_testeable.exe`
-- Linux `.AppImage`
+- Linux `.deb` and `.AppImage`
 - macOS `.dmg` (Apple Silicon + Intel) — unsigned today
 
 The workflow file is `.github/workflows/release.yml`.
 Every release matrix row passes `--config src-tauri/tauri.prod.conf.json`;
 the macOS rows add their `--target` after the production config.
+Before any release asset is published, the Linux DEB preflight installs the
+built package on Ubuntu and exercises its XDG state, single-instance locks,
+permissions, and local Codex PTY launch.
 
 ## 5. Verify and publish
 

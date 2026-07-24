@@ -104,7 +104,7 @@ mod tests {
     use super::*;
 
     fn exe(name: &str) -> std::path::PathBuf {
-        std::path::PathBuf::from(format!(r"C:\tmp\{name}"))
+        std::path::PathBuf::from("test-bin").join(name)
     }
 
     #[test]

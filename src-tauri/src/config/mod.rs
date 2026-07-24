@@ -8,6 +8,8 @@ pub mod coding_agents_catalog;
 pub mod config_seed;
 pub mod coordinator_clocks;
 pub mod daemon_pid;
+#[cfg(target_os = "linux")]
+pub mod linux_state;
 pub mod local_config_io;
 pub mod loops;
 pub mod placeholders;
@@ -16,6 +18,7 @@ pub mod project_settings;
 pub mod projects;
 pub mod replica_identity;
 pub mod root_agent;
+pub mod runtime_files;
 pub mod seed_manifest;
 pub mod seeded_context_templates;
 pub mod session_context;
@@ -26,6 +29,22 @@ pub mod workspace;
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TargetPlatform {
+    Linux,
+    Other,
+}
+
+impl TargetPlatform {
+    fn current() -> Self {
+        if cfg!(target_os = "linux") {
+            Self::Linux
+        } else {
+            Self::Other
+        }
+    }
+}
 
 /// #1077: authoritative, once-resolved location of the running AgentsCommander
 /// instance. Centralizes the executable-derived facts that `config_dir()`,
@@ -38,11 +57,15 @@ use std::sync::OnceLock;
 /// depend on the test-runner executable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InstanceLocation {
+    /// The single captured `current_exe()` result, retained for startup
+    /// diagnostics. The package classifier, stem, portable base, and missing
+    /// config error all derive from this same value.
+    pub executable: Option<PathBuf>,
     /// The app config directory. Honors the debug `AGENTSCOMMANDER_TEST_CONFIG_DIR`
-    /// override verbatim, then the portable `<exe-parent>/.<exe-stem>` form, then
-    /// the `$HOME/<profile::config_dir_name()>` fallback. `None` only when every
-    /// source is unavailable (no override, no usable `current_exe()` parent/stem,
-    /// and no home directory).
+    /// override verbatim, then the exact Linux DEB XDG identity, then the
+    /// portable `<exe-parent>/.<exe-stem>` form, then the
+    /// `$HOME/<profile::config_dir_name()>` fallback. `None` only when every
+    /// applicable source is unavailable.
     pub config_dir: Option<PathBuf>,
     /// Local agent directory stem derived from the running executable
     /// (`current_exe().file_stem()`), falling back to `"agentscommander"`. This
@@ -69,11 +92,19 @@ pub(crate) struct InstanceLocation {
 ///   portable base (never absolutized through CWD).
 /// - `current_exe_result`: the outcome of `std::env::current_exe()`.
 /// - `home_dir`: `dirs::home_dir()` for the legacy fallback.
+/// - `target_platform`: compile-time target identity injected for conformance
+///   tests. It never changes host `Path` parsing.
+/// - `platform_config_dir`: `dirs::config_dir()` for the exact Linux package
+///   identity.
 pub(crate) fn resolve_instance_location(
     test_override: Option<String>,
     current_exe_result: Result<PathBuf, std::io::Error>,
     home_dir: Option<PathBuf>,
+    target_platform: TargetPlatform,
+    platform_config_dir: Option<PathBuf>,
 ) -> InstanceLocation {
+    let executable = current_exe_result.as_ref().ok().cloned();
+
     // Local agent dir stem: from the running executable only. Independent of the
     // debug override so `agent_local_dir_name()` keeps naming replica dirs after
     // the real binary, and falls back to "agentscommander" when unavailable.
@@ -95,6 +126,7 @@ pub(crate) fn resolve_instance_location(
                 None
             };
             return InstanceLocation {
+                executable,
                 config_dir: Some(override_path),
                 local_dir_stem,
                 instance_base,
@@ -102,8 +134,22 @@ pub(crate) fn resolve_instance_location(
         }
     }
 
-    // Primary: portable config directory next to the native executable.
-    if let Ok(exe_path) = current_exe_result {
+    // The supported Linux DEB is the sole packaged identity in this issue.
+    // Compare the raw current_exe result exactly. Do not canonicalize or
+    // broaden this classifier.
+    if target_platform == TargetPlatform::Linux
+        && executable.as_deref() == Some(Path::new("/usr/bin/agentscommander"))
+    {
+        return InstanceLocation {
+            executable,
+            config_dir: platform_config_dir.map(|base| base.join("agentscommander")),
+            local_dir_stem,
+            instance_base: None,
+        };
+    }
+
+    // Portable binaries keep state next to the native executable.
+    if let Some(exe_path) = executable.as_ref() {
         match (exe_path.parent(), exe_path.file_stem()) {
             (Some(parent), Some(stem)) => {
                 let config_dir = parent.join(format!(".{}", stem.to_string_lossy()));
@@ -117,6 +163,7 @@ pub(crate) fn resolve_instance_location(
                     None
                 };
                 return InstanceLocation {
+                    executable,
                     config_dir: Some(config_dir),
                     local_dir_stem,
                     instance_base,
@@ -133,6 +180,7 @@ pub(crate) fn resolve_instance_location(
 
     // Fallback: legacy $HOME-based config. No portable instance base.
     InstanceLocation {
+        executable,
         config_dir: home_dir.map(|home| home.join(profile::config_dir_name())),
         local_dir_stem,
         instance_base: None,
@@ -148,7 +196,14 @@ fn instance_location() -> &'static InstanceLocation {
         let test_override = std::env::var("AGENTSCOMMANDER_TEST_CONFIG_DIR").ok();
         #[cfg(not(debug_assertions))]
         let test_override: Option<String> = None;
-        resolve_instance_location(test_override, std::env::current_exe(), dirs::home_dir())
+        let current_exe = std::env::current_exe();
+        resolve_instance_location(
+            test_override,
+            current_exe,
+            dirs::home_dir(),
+            TargetPlatform::current(),
+            dirs::config_dir(),
+        )
     })
 }
 
@@ -163,13 +218,19 @@ pub fn agent_local_dir_name() -> String {
     format!(".{}", instance_location().local_dir_stem)
 }
 
-/// Returns the app config directory — portable, next to the binary.
-/// Pattern: `<binary_parent_dir>/.<binary_file_stem>/`
-/// E.g., `C:\tools\agentscommander_standalone.exe` → `C:\tools\.agentscommander_standalone\`
-/// Fallback: `$HOME/<profile::config_dir_name()>` if current_exe() fails.
-/// Cached via the shared [`InstanceLocation`] — resolved once at first call.
+/// Returns the authoritative app config directory.
+///
+/// The exact supported Linux DEB executable `/usr/bin/agentscommander` uses
+/// `$XDG_CONFIG_HOME/agentscommander`, with the `dirs` HOME fallback. Raw
+/// binaries on every platform remain portable beside the executable as
+/// `<binary_parent_dir>/.<binary_file_stem>/`. If executable resolution fails,
+/// the legacy `$HOME/<profile::config_dir_name()>` fallback remains.
 pub fn config_dir() -> Option<PathBuf> {
     instance_location().config_dir.clone()
+}
+
+pub(crate) fn current_executable() -> Option<PathBuf> {
+    instance_location().executable.clone()
 }
 
 /// #1077: the authoritative ABSOLUTE instance base for portable project-path
@@ -189,6 +250,125 @@ mod tests {
         Err(Error::new(ErrorKind::NotFound, "no current_exe"))
     }
 
+    fn resolve_other(
+        test_override: Option<String>,
+        current_exe_result: Result<PathBuf, Error>,
+        home_dir: Option<PathBuf>,
+    ) -> InstanceLocation {
+        resolve_instance_location(
+            test_override,
+            current_exe_result,
+            home_dir,
+            TargetPlatform::Other,
+            None,
+        )
+    }
+
+    #[test]
+    fn exact_linux_package_uses_injected_xdg_config_and_no_instance_base() {
+        let loc = resolve_instance_location(
+            None,
+            Ok(PathBuf::from("/usr/bin/agentscommander")),
+            Some(PathBuf::from("/home/u")),
+            TargetPlatform::Linux,
+            Some(PathBuf::from("/tmp/xdg")),
+        );
+        assert_eq!(
+            loc.config_dir.as_deref(),
+            Some(Path::new("/tmp/xdg/agentscommander"))
+        );
+        assert_eq!(loc.local_dir_stem, "agentscommander");
+        assert_eq!(loc.instance_base, None);
+        assert_eq!(
+            loc.executable.as_deref(),
+            Some(Path::new("/usr/bin/agentscommander"))
+        );
+    }
+
+    #[test]
+    fn exact_linux_package_without_config_source_stays_unresolved() {
+        let loc = resolve_instance_location(
+            None,
+            Ok(PathBuf::from("/usr/bin/agentscommander")),
+            Some(PathBuf::from("/home/u")),
+            TargetPlatform::Linux,
+            None,
+        );
+        assert_eq!(loc.config_dir, None);
+        assert_eq!(loc.instance_base, None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_dirs_config_dir_uses_home_fallback_for_unset_empty_or_relative_xdg() {
+        const SENTINEL: &str = "AC_TEST_1111_DIRS_CONFIG_CHILD";
+        if std::env::var_os(SENTINEL).is_some() {
+            let home = PathBuf::from(std::env::var_os("HOME").expect("child HOME"));
+            assert_eq!(dirs::config_dir(), Some(home.join(".config")));
+            return;
+        }
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("home");
+        std::fs::create_dir(&home).expect("create child HOME");
+        let test_binary = std::env::current_exe().expect("test binary");
+        for xdg in [None, Some(""), Some("relative-config")] {
+            let mut command = std::process::Command::new(&test_binary);
+            command
+                .arg("--exact")
+                .arg(
+                    "config::tests::linux_dirs_config_dir_uses_home_fallback_for_unset_empty_or_relative_xdg",
+                )
+                .arg("--nocapture")
+                .env(SENTINEL, "1")
+                .env("HOME", &home)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            match xdg {
+                Some(value) => {
+                    command.env("XDG_CONFIG_HOME", value);
+                }
+                None => {
+                    command.env_remove("XDG_CONFIG_HOME");
+                }
+            }
+            let mut child = command.spawn().expect("spawn exact child test");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let status = loop {
+                if let Some(status) = child.try_wait().expect("poll child") {
+                    break status;
+                }
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("exact child test timed out for XDG_CONFIG_HOME={xdg:?}");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            };
+            assert!(
+                status.success(),
+                "exact child test failed for XDG_CONFIG_HOME={xdg:?}"
+            );
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn non_linux_discriminator_does_not_classify_linux_package_text() {
+        let loc = resolve_instance_location(
+            None,
+            Ok(PathBuf::from("/usr/bin/agentscommander")),
+            Some(PathBuf::from("/home/u")),
+            TargetPlatform::Other,
+            Some(PathBuf::from("/tmp/xdg")),
+        );
+        assert_eq!(
+            loc.config_dir.as_deref(),
+            Some(Path::new("/usr/bin/.agentscommander"))
+        );
+        assert_eq!(loc.instance_base.as_deref(), Some(Path::new("/usr/bin")));
+    }
+
     #[test]
     fn packaged_absolute_executable_yields_portable_config_and_base() {
         let exe = if cfg!(windows) {
@@ -196,7 +376,7 @@ mod tests {
         } else {
             PathBuf::from("/opt/bundle/agentscommander")
         };
-        let loc = resolve_instance_location(None, Ok(exe), Some(PathBuf::from("/home/u")));
+        let loc = resolve_other(None, Ok(exe), Some(PathBuf::from("/home/u")));
         let expected_config = if cfg!(windows) {
             PathBuf::from(r"C:\bundle\.agentscommander")
         } else {
@@ -219,7 +399,7 @@ mod tests {
         } else {
             PathBuf::from("/tools/agentscommander_standalone")
         };
-        let loc = resolve_instance_location(None, Ok(exe), Some(PathBuf::from("/home/u")));
+        let loc = resolve_other(None, Ok(exe), Some(PathBuf::from("/home/u")));
         let expected_config = if cfg!(windows) {
             PathBuf::from(r"C:\tools\.agentscommander_standalone")
         } else {
@@ -242,7 +422,7 @@ mod tests {
         } else {
             PathBuf::from("/somewhere/else/ac")
         };
-        let loc = resolve_instance_location(
+        let loc = resolve_other(
             Some(override_dir.to_string()),
             Ok(exe),
             Some(PathBuf::from("/home/u")),
@@ -260,7 +440,7 @@ mod tests {
 
     #[test]
     fn relative_debug_override_sets_config_but_no_base() {
-        let loc = resolve_instance_location(
+        let loc = resolve_other(
             Some("relative/.acdir".to_string()),
             exe_err(),
             Some(PathBuf::from("/home/u")),
@@ -280,7 +460,7 @@ mod tests {
         } else {
             PathBuf::from("/opt/bundle/ac")
         };
-        let loc = resolve_instance_location(
+        let loc = resolve_other(
             Some("   ".to_string()),
             Ok(exe),
             Some(PathBuf::from("/home/u")),
@@ -297,7 +477,7 @@ mod tests {
 
     #[test]
     fn relative_executable_keeps_relative_config_but_no_base() {
-        let loc = resolve_instance_location(
+        let loc = resolve_other(
             None,
             Ok(PathBuf::from("bin/agentscommander")),
             Some(PathBuf::from("/home/u")),
@@ -321,7 +501,7 @@ mod tests {
         } else {
             PathBuf::from("/")
         };
-        let loc = resolve_instance_location(None, Ok(root), Some(PathBuf::from("/home/u")));
+        let loc = resolve_other(None, Ok(root), Some(PathBuf::from("/home/u")));
         let expected = PathBuf::from("/home/u").join(profile::config_dir_name());
         assert_eq!(loc.config_dir.as_deref(), Some(expected.as_path()));
         assert_eq!(loc.instance_base, None);
@@ -329,7 +509,7 @@ mod tests {
 
     #[test]
     fn current_exe_failure_uses_home_fallback_and_default_stem() {
-        let loc = resolve_instance_location(None, exe_err(), Some(PathBuf::from("/home/u")));
+        let loc = resolve_other(None, exe_err(), Some(PathBuf::from("/home/u")));
         let expected = PathBuf::from("/home/u").join(profile::config_dir_name());
         assert_eq!(loc.config_dir.as_deref(), Some(expected.as_path()));
         assert_eq!(loc.instance_base, None);
@@ -338,7 +518,7 @@ mod tests {
 
     #[test]
     fn current_exe_failure_and_no_home_yields_none_config() {
-        let loc = resolve_instance_location(None, exe_err(), None);
+        let loc = resolve_other(None, exe_err(), None);
         assert_eq!(loc.config_dir, None);
         assert_eq!(loc.instance_base, None);
     }

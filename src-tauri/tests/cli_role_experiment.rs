@@ -5,6 +5,8 @@ use std::process::Command;
 
 const FAKE_EXECUTOR_TEST_ENV: &str = "AGENTSCOMMANDER_ROLE_EXPERIMENT_TEST_FAKE_EXECUTOR";
 
+mod support;
+
 struct Tmp(PathBuf);
 
 impl Drop for Tmp {
@@ -18,6 +20,12 @@ impl Tmp {
         let path =
             std::env::temp_dir().join(format!("ac-{}-{}", prefix, uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&path).expect("create tmp dir");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+                .expect("make tmp dir private");
+        }
         Self(path)
     }
 
@@ -29,7 +37,7 @@ impl Tmp {
 fn copy_binary_into(tmp: &Path) -> PathBuf {
     let src = Path::new(env!("CARGO_BIN_EXE_agentscommander-new"));
     let dst = tmp.join(src.file_name().expect("binary file name"));
-    std::fs::copy(src, &dst).expect("copy binary");
+    support::copy_executable(src, &dst);
     dst
 }
 
@@ -40,6 +48,20 @@ fn config_dir_for_bin(bin: &Path) -> PathBuf {
         .to_string_lossy()
         .to_string();
     bin.parent().expect("bin parent").join(format!(".{}", stem))
+}
+
+fn output_with_exec_retry(command: &mut Command) -> std::io::Result<std::process::Output> {
+    let mut attempts = 0;
+    loop {
+        match command.output() {
+            #[cfg(target_os = "linux")]
+            Err(error) if error.raw_os_error() == Some(26) && attempts < 20 => {
+                attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            result => return result,
+        }
+    }
 }
 
 fn write_settings(config_dir: &Path, project_parent: &Path) {
@@ -77,7 +99,7 @@ fn project_with_source(tmp: &Path) -> PathBuf {
 }
 
 fn run(bin: &Path, args: &[&str]) -> (i32, serde_json::Value, String) {
-    let out = Command::new(bin).args(args).output().expect("spawn");
+    let out = output_with_exec_retry(Command::new(bin).args(args)).expect("spawn");
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let json: serde_json::Value = serde_json::from_slice(&out.stdout)
         .unwrap_or_else(|e| panic!("stdout json: {}\n{}", e, stdout));
@@ -96,11 +118,12 @@ fn run_ok(bin: &Path, args: &[&str]) -> serde_json::Value {
 }
 
 fn run_fake(bin: &Path, args: &[&str]) -> (i32, serde_json::Value, String) {
-    let out = Command::new(bin)
-        .env(FAKE_EXECUTOR_TEST_ENV, "1")
-        .args(args)
-        .output()
-        .expect("spawn");
+    let out = output_with_exec_retry(
+        Command::new(bin)
+            .env(FAKE_EXECUTOR_TEST_ENV, "1")
+            .args(args),
+    )
+    .expect("spawn");
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let json: serde_json::Value = serde_json::from_slice(&out.stdout)
         .unwrap_or_else(|e| panic!("stdout json: {}\n{}", e, stdout));

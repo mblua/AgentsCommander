@@ -17,6 +17,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod support;
+
 struct Tmp(PathBuf);
 
 impl Drop for Tmp {
@@ -41,6 +43,12 @@ impl Tmp {
             h.finish()
         ));
         std::fs::create_dir_all(&path).expect("create tmp dir");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+                .expect("make tmp dir private");
+        }
         Self(path)
     }
 
@@ -55,7 +63,7 @@ fn copy_binary_into(tmp: &Path) -> PathBuf {
     let src = Path::new(env!("CARGO_BIN_EXE_agentscommander-new"));
     let file_name = src.file_name().expect("binary has a file name");
     let dst = tmp.join(file_name);
-    std::fs::copy(src, &dst).expect("copy binary under test into tmp dir");
+    support::copy_executable(src, &dst);
     dst
 }
 

@@ -28,12 +28,12 @@ use crate::config::settings::{
 PURPOSE: Register an existing AC project so it appears in the GUI sidebar on \
 next launch. The folder must already contain `.ac/` (use `new-project` to \
 create one).\n\n\
-PATH: Absolute or relative — relative paths are resolved against the current \
-working directory. The registration is persisted in two forms: the canonical \
-absolute path, plus a portable path relative to the AgentsCommander \
-executable's directory (used to relocate the project when the whole install \
-folder moves). A project on a different drive or share has no portable form and \
-is stored absolute-only.\n\n\
+PATH: Absolute or relative; relative paths are resolved against the current \
+working directory. The registration is always persisted as the canonical \
+absolute path. When the location resolver supplies a portable instance base, \
+as it does for raw portable binaries, a companion path relative to that base \
+is also persisted. The canonical Linux DEB at /usr/bin/agentscommander has no \
+portable instance base, so its project registrations are absolute-only.\n\n\
 IDEMPOTENCY: Re-registering the same path is a no-op; the verb prints \
 \"Project already registered\" and exits 0.")]
 pub struct OpenProjectArgs {

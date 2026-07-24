@@ -350,7 +350,11 @@ where
 
     // Write the text block through the held permit.
     PtyManager::write_with_permit(&permit, text.as_bytes()).map_err(|error| {
-        log::error!("[inject] PTY write FAILED session={}: {}", session_id, error);
+        log::error!(
+            "[inject] PTY write FAILED session={}: {}",
+            session_id,
+            error
+        );
         format!("PTY write failed: {}", error)
     })?;
     log::info!(
@@ -457,14 +461,17 @@ mod tests {
 
     #[test]
     fn agent_clis_require_explicit_enter() {
-        for shell in [
+        let mut shells = vec![
             "codex",
             "codex.exe",
-            "C:\\Users\\maria\\.codex\\codex.exe",
             "/usr/local/bin/claude",
             "gemini.cmd",
             "agent.exe",
-        ] {
+        ];
+        if cfg!(windows) {
+            shells.push("C:\\Users\\maria\\.codex\\codex.exe");
+        }
+        for shell in shells {
             assert!(needs_explicit_enter(shell), "shell={shell:?}");
         }
     }
@@ -722,18 +729,22 @@ mod tests {
 
     #[test]
     fn direct_shell_capability_matrix() {
-        let pi_positive = [
+        let mut pi_positive = vec![
             "pi",
             "PI",
             "pi.exe",
             "Pi.CMD",
             "pi.ps1",
-            r"C:\Tools\pi.exe",
-            r"\\server\share\pi.cmd",
-            r"\\?\C:\Tools\pi.exe",
             "/usr/local/bin/pi",
             "  pi  ",
         ];
+        if cfg!(windows) {
+            pi_positive.extend([
+                r"C:\Tools\pi.exe",
+                r"\\server\share\pi.cmd",
+                r"\\?\C:\Tools\pi.exe",
+            ]);
+        }
         for shell in pi_positive {
             assert!(needs_explicit_enter(shell), "Pi positive: {shell:?}");
             assert_eq!(
@@ -747,7 +758,10 @@ mod tests {
                 "Pi compact remains unsupported: {shell:?}"
             );
             assert!(supports_auto_self_maintenance(shell));
-            assert!(supports_self_handoff_switch(shell), "Pi switch source: {shell:?}");
+            assert!(
+                supports_self_handoff_switch(shell),
+                "Pi switch source: {shell:?}"
+            );
         }
 
         let unsupported = [
@@ -798,7 +812,11 @@ mod tests {
             assert!(supports_self_handoff_switch(shell));
         }
 
-        for shell in ["agent", "agent.exe", r"C:\Cursor\agent.cmd"] {
+        let mut agent_positive = vec!["agent", "agent.exe"];
+        if cfg!(windows) {
+            agent_positive.push(r"C:\Cursor\agent.cmd");
+        }
+        for shell in agent_positive {
             assert!(needs_explicit_enter(shell));
             assert_eq!(
                 resolve_logical_command_text(shell, LogicalPtyCommand::Clear),

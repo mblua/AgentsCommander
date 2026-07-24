@@ -277,17 +277,17 @@ pub fn validate_cli_token(token: &Option<String>) -> Result<(String, bool), Stri
     };
 
     // Accept root_token from settings
-    let settings = crate::config::settings::load_settings();
+    let settings = crate::config::settings::load_settings_for_cli_strict()?;
     if settings.root_token.as_deref() == Some(&token) {
         return Ok((token, true));
     }
 
     // Accept master token from persisted file
-    if let Some(master_path) = crate::config::config_dir().map(|d| d.join("master-token.txt")) {
-        if let Ok(master) = std::fs::read_to_string(&master_path) {
-            if master.trim() == token {
-                return Ok((token, true));
-            }
+    if let Some(master) =
+        crate::config::runtime_files::read_master_token().map_err(|error| error.to_string())?
+    {
+        if master.trim() == token {
+            return Ok((token, true));
         }
     }
 
@@ -302,6 +302,23 @@ pub fn validate_cli_token(token: &Option<String>) -> Result<(String, bool), Stri
     }
 
     Ok((token, false))
+}
+
+pub(crate) fn current_app_outbox() -> Result<Option<std::path::PathBuf>, String> {
+    let Some(path) =
+        crate::config::runtime_files::read_app_outbox_path().map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    let metadata = std::fs::metadata(&path)
+        .map_err(|error| format!("Cannot use app outbox {}: {}", path.display(), error))?;
+    if !metadata.is_dir() {
+        return Err(format!(
+            "Cannot use app outbox {}: pointer target is not a directory",
+            path.display()
+        ));
+    }
+    Ok(Some(path))
 }
 
 /// Dispatch CLI subcommands. Returns exit code.
@@ -372,6 +389,13 @@ mod tests {
 
     #[test]
     fn validate_cli_token_does_not_echo_invalid_input() {
+        #[cfg(target_os = "linux")]
+        if crate::config::linux_state::rerun_exact_test_with_prepared_root(
+            "cli::tests::validate_cli_token_does_not_echo_invalid_input",
+        ) {
+            return;
+        }
+
         let supplied = "super-secret-token-with-hidden-garbage";
         let err = validate_cli_token(&Some(supplied.to_string())).unwrap_err();
 
@@ -382,6 +406,40 @@ mod tests {
         assert!(!err.contains(&legacy_phrase));
         assert!(!err.to_ascii_lowercase().contains("fallback"));
         assert!(!err.to_ascii_lowercase().contains("visible"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn validate_cli_token_surfaces_unsafe_settings_before_uuid_fallback() {
+        const TEST_NAME: &str =
+            "cli::tests::validate_cli_token_surfaces_unsafe_settings_before_uuid_fallback";
+        if crate::config::linux_state::rerun_exact_test_with_prepared_root(TEST_NAME) {
+            return;
+        }
+
+        let config_dir = crate::config::config_dir().expect("child config directory");
+        let settings_path = config_dir.join("settings.json");
+        let sentinel_path = config_dir
+            .parent()
+            .expect("config directory parent")
+            .join("cli-token-settings-sentinel");
+        std::fs::write(
+            &sentinel_path,
+            br#"{"rootToken":"11111111-1111-1111-1111-111111111111"}"#,
+        )
+        .expect("write CLI token sentinel");
+        std::os::unix::fs::symlink(&sentinel_path, &settings_path)
+            .expect("create unsafe CLI settings leaf");
+
+        let token = Some("22222222-2222-4222-8222-222222222222".to_string());
+        let error =
+            validate_cli_token(&token).expect_err("unsafe settings must precede UUID shape");
+        assert!(error.contains("refused unsafe path"));
+        assert!(error.contains(&settings_path.display().to_string()));
+        assert_eq!(
+            std::fs::read(&sentinel_path).expect("read CLI token sentinel"),
+            br#"{"rootToken":"11111111-1111-1111-1111-111111111111"}"#
+        );
     }
 
     #[test]

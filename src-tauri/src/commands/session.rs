@@ -2052,7 +2052,7 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
         session.effective_shell_args = Some(effective);
 
         let extra_env = if agent_id.is_some() {
-            crate::pty::credentials::build_credentials_env(&session.token, &cwd)
+            crate::pty::credentials::build_credentials_env(&session.token, &cwd)?
         } else {
             Vec::new()
         };
@@ -8922,6 +8922,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn resolve_claude_projects_dir_uses_home_for_direct_claude_exe_path() {
         // Direct executable path with file_stem == "claude" → still default base.
         let cwd = "C:\\Users\\Test\\repo";
@@ -8998,6 +8999,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn resolve_claude_projects_dir_falls_back_when_wrapper_missing() {
         let resolved = super::resolve_claude_projects_dir(
             "C:\\definitely\\not\\there\\claude-mb.cmd",

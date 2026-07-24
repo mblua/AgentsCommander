@@ -6,6 +6,7 @@
 //!
 //! Credentials are never formatted as visible PTY text.
 
+use std::path::PathBuf;
 use uuid::Uuid;
 
 pub const ENV_AGENTSCOMMANDER_TOKEN: &str = "AGENTSCOMMANDER_TOKEN";
@@ -39,8 +40,22 @@ fn fallback_binary_path() -> &'static str {
     }
 }
 
-pub fn build_credential_values(token: &Uuid, cwd: &str) -> CredentialValues {
-    let exe = std::env::current_exe().ok();
+fn lossless_path_string(path: &std::path::Path, field: &str) -> Result<String, String> {
+    let raw = path.to_str().ok_or_else(|| {
+        format!(
+            "{field} path cannot be represented losslessly in the child environment: {:?}",
+            path
+        )
+    })?;
+    Ok(raw.strip_prefix(r"\\?\").unwrap_or(raw).to_string())
+}
+
+pub(crate) fn build_credential_values_from(
+    token: &Uuid,
+    cwd: &str,
+    exe: Option<PathBuf>,
+    authoritative_config_dir: Option<PathBuf>,
+) -> Result<CredentialValues, String> {
     if exe.is_none() {
         log::warn!(
             "[credentials] current_exe() unavailable; credential env will use fallback \
@@ -61,32 +76,41 @@ pub fn build_credential_values(token: &Uuid, cwd: &str) -> CredentialValues {
         raw.strip_prefix(r"\\?\").unwrap_or(&raw).to_string()
     };
 
-    let local_dir = exe
-        .as_ref()
-        .and_then(|p| p.parent())
-        .map(|parent| {
-            parent
-                .join(format!(".{}", binary))
-                .to_string_lossy()
-                .to_string()
-        })
-        .unwrap_or_else(|| format!(".{}", binary));
+    let local_dir_path = if let Some(config_dir) = authoritative_config_dir {
+        config_dir
+    } else {
+        log::warn!(
+            "[credentials] authoritative config directory unavailable; falling back to \
+             executable-adjacent AGENTSCOMMANDER_LOCAL_DIR"
+        );
+        exe.as_ref()
+            .and_then(|path| path.parent())
+            .map(|parent| parent.join(format!(".{}", binary)))
+            .unwrap_or_else(|| PathBuf::from(format!(".{}", binary)))
+    };
+    let local_dir = lossless_path_string(&local_dir_path, "AGENTSCOMMANDER_LOCAL_DIR")?;
 
-    CredentialValues {
+    Ok(CredentialValues {
         token: token.to_string(),
         root: cwd.to_string(),
         binary,
         binary_path,
-        local_dir: local_dir
-            .strip_prefix(r"\\?\")
-            .unwrap_or(&local_dir)
-            .to_string(),
-    }
+        local_dir,
+    })
 }
 
-pub fn build_credentials_env(token: &Uuid, cwd: &str) -> Vec<(String, String)> {
-    let values = build_credential_values(token, cwd);
-    vec![
+pub fn build_credential_values(token: &Uuid, cwd: &str) -> Result<CredentialValues, String> {
+    build_credential_values_from(
+        token,
+        cwd,
+        std::env::current_exe().ok(),
+        crate::config::config_dir(),
+    )
+}
+
+pub fn build_credentials_env(token: &Uuid, cwd: &str) -> Result<Vec<(String, String)>, String> {
+    let values = build_credential_values(token, cwd)?;
+    Ok(vec![
         (ENV_AGENTSCOMMANDER_TOKEN.to_string(), values.token),
         (ENV_AGENTSCOMMANDER_ROOT.to_string(), values.root),
         (ENV_AGENTSCOMMANDER_BINARY.to_string(), values.binary),
@@ -95,7 +119,7 @@ pub fn build_credentials_env(token: &Uuid, cwd: &str) -> Vec<(String, String)> {
             values.binary_path,
         ),
         (ENV_AGENTSCOMMANDER_LOCAL_DIR.to_string(), values.local_dir),
-    ]
+    ])
 }
 
 pub fn apply_credential_env_to_pty_command(
@@ -137,9 +161,59 @@ mod tests {
     }
 
     #[test]
+    fn authoritative_config_directory_is_exported_exactly() {
+        let token = Uuid::nil();
+        let values = build_credential_values_from(
+            &token,
+            "/work",
+            Some(PathBuf::from("/usr/bin/agentscommander")),
+            Some(PathBuf::from("/tmp/xdg/agentscommander")),
+        )
+        .expect("credential values");
+        assert_eq!(values.binary, "agentscommander");
+        assert_eq!(values.binary_path, "/usr/bin/agentscommander");
+        assert_eq!(values.local_dir, "/tmp/xdg/agentscommander");
+    }
+
+    #[test]
+    fn missing_authoritative_config_retains_executable_adjacent_fallback() {
+        let token = Uuid::nil();
+        let values = build_credential_values_from(
+            &token,
+            "/work",
+            Some(PathBuf::from("/opt/ac/agentscommander")),
+            None,
+        )
+        .expect("credential values");
+        assert_eq!(values.local_dir, "/opt/ac/.agentscommander");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_authoritative_config_is_rejected_without_replacement() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let token = Uuid::nil();
+        let config = PathBuf::from(std::ffi::OsString::from_vec(
+            b"/tmp/xdg-\xff/agentscommander".to_vec(),
+        ));
+        let error = match build_credential_values_from(
+            &token,
+            "/work",
+            Some(PathBuf::from("/usr/bin/agentscommander")),
+            Some(config),
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("non-UTF-8 config path must be visible"),
+        };
+        assert!(error.contains("cannot be represented losslessly"));
+        assert!(!error.contains('\u{fffd}'));
+    }
+
+    #[test]
     fn env_contains_expected_keys_and_values() {
         let token = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
-        let env = build_credentials_env(&token, r"C:\example\root");
+        let env = build_credentials_env(&token, r"C:\example\root").unwrap();
         let map: std::collections::HashMap<_, _> = env.into_iter().collect();
 
         assert_eq!(map.len(), 5);
@@ -182,7 +256,7 @@ mod tests {
     #[test]
     fn pty_apply_helper_overrides_stale_credentials_when_extra_env_present() {
         let token = Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap();
-        let extra_env = build_credentials_env(&token, r"C:\fresh\root");
+        let extra_env = build_credentials_env(&token, r"C:\fresh\root").unwrap();
         let mut command = portable_pty::CommandBuilder::new("agent.exe");
 
         for key in CREDENTIAL_ENV_KEYS {

@@ -490,6 +490,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn workgroup_root_ok_windows_style() {
         let p = Path::new(r"C:\foo\wg-42-team-x\__agent_a");
         let wg = workgroup_root(p).unwrap();
@@ -831,7 +832,11 @@ mod tests {
         assert_eq!(rendered.matches(rid).count(), 2);
         assert_eq!(
             rendered.len(),
-            PTY_WRAP_FIXED + "wg7-me".len() + "hi".len() + PTY_RESPONSE_MARKER_FIXED + 2 * rid.len()
+            PTY_WRAP_FIXED
+                + "wg7-me".len()
+                + "hi".len()
+                + PTY_RESPONSE_MARKER_FIXED
+                + 2 * rid.len()
         );
         assert!(rendered.starts_with('\n'));
         assert!(rendered.ends_with("\n\r"));

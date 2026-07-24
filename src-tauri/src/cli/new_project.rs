@@ -20,12 +20,13 @@ use crate::config::settings::{
 #[command(after_help = "\
 PURPOSE: Create an AC project at PATH (mkdir-p `.ac/` and write its \
 `.gitignore` if no Project AC Root exists) and register it in the GUI sidebar's project list.\n\n\
-PATH: Absolute or relative — relative paths are resolved against the current \
+PATH: Absolute or relative; relative paths are resolved against the current \
 working directory. The folder is created if it does not yet exist. The \
-registration is persisted both as the canonical absolute path and as a portable \
-path relative to the AgentsCommander executable's directory (so the project \
-relocates with the install folder); a project on a different drive or share is \
-stored absolute-only.\n\n\
+registration is always persisted as the canonical absolute path. When the \
+location resolver supplies a portable instance base, as it does for raw \
+portable binaries, a companion path relative to that base is also persisted. \
+The canonical Linux DEB at /usr/bin/agentscommander has no portable instance \
+base, so its project registrations are absolute-only.\n\n\
 IDEMPOTENCY: Re-running on a folder that already has `.ac/` is safe; \
 the selected Project AC Root gitignore is swept (missing patterns appended), and the registration step \
 deduplicates against any prior entry.")]

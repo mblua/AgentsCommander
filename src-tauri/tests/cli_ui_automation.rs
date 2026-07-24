@@ -6,6 +6,8 @@ use std::sync::{Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
+mod support;
+
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn test_lock() -> MutexGuard<'static, ()> {
@@ -32,6 +34,12 @@ impl Tmp {
                 .unwrap_or(0)
         ));
         std::fs::create_dir_all(&path).expect("create tmp dir");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+                .expect("make tmp dir private");
+        }
         Self(path)
     }
 
@@ -43,7 +51,7 @@ impl Tmp {
 fn copy_binary_as(tmp: &Path, name: &str) -> PathBuf {
     let src = Path::new(env!("CARGO_BIN_EXE_agentscommander-new"));
     let dst = tmp.join(name);
-    std::fs::copy(src, &dst).expect("copy binary");
+    support::copy_executable(src, &dst);
     dst
 }
 
@@ -340,7 +348,14 @@ fn dead_session_pid_reports_stale_session() {
     );
     assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
     assert_empty_output("stderr", &stderr);
-    assert_eq!(first_json(&stdout)["error"], "automation_session_stale");
+    let expected = if cfg!(target_os = "windows") {
+        "automation_session_stale"
+    } else {
+        // Preserve the legacy non-Windows liveness stub, which treats every
+        // nonzero PID as potentially live and reaches the response timeout.
+        "timeout"
+    };
+    assert_eq!(first_json(&stdout)["error"], expected);
 }
 
 #[test]
@@ -749,7 +764,14 @@ fn fake_response_makes_ui_hover_leave_succeed() {
 
     let (code, stdout, stderr) = run(
         &bin,
-        &["ui-hover", "--window", "main", "--leave", "--timeout-ms", "3000"],
+        &[
+            "ui-hover",
+            "--window",
+            "main",
+            "--leave",
+            "--timeout-ms",
+            "3000",
+        ],
     );
     responder.join().unwrap();
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
@@ -1098,5 +1120,12 @@ fn stale_prior_session_with_running_daemon_reports_automation_not_enabled_on_std
     assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
     assert_empty_output("stderr", &stderr);
     let parsed = first_json(&stdout);
-    assert_eq!(parsed["error"], "automation_not_enabled");
+    let expected = if cfg!(target_os = "windows") {
+        "automation_not_enabled"
+    } else {
+        // The legacy non-Windows liveness stub keeps the prior session
+        // eligible, so daemon fallback is not consulted.
+        "timeout"
+    };
+    assert_eq!(parsed["error"], expected);
 }

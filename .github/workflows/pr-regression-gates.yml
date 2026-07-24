@@ -84,6 +84,93 @@ jobs:
         working-directory: src-tauri
         run: cargo test --lib --bins --tests
 
+  linux-deb-regression:
+    name: linux-deb-regression
+    # Skip branch-deletion push events while still requiring pull request validation.
+    if: github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Linux native and smoke dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            xvfb \
+            xauth \
+            dbus-daemon
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Pin npm version
+        run: npm install -g npm@11.6.2
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend assets for Tauri
+        run: npm run build
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: cargo check
+        working-directory: src-tauri
+        run: cargo check --all-targets
+
+      - name: cargo clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test --lib --bins --tests
+
+      - name: Build production DEB
+        run: npm run tauri -- build --config src-tauri/tauri.prod.conf.json --bundles deb
+
+      - name: Resolve the exact DEB
+        id: deb
+        shell: bash
+        run: |
+          mapfile -d '' -t debs < <(
+            find target/release/bundle/deb \
+              -maxdepth 1 -type f -name '*.deb' -print0 | sort -z
+          )
+          if [[ ${#debs[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one production DEB, found ${#debs[@]}."
+            exit 1
+          fi
+          echo "path=${debs[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Run installed-DEB smoke
+        env:
+          SMOKE_ARTIFACT_DIR: ${{ github.workspace }}/artifacts/linux-deb-smoke
+        run: bash scripts/smoke-linux-deb.sh "${{ steps.deb.outputs.path }}"
+
+      - name: Upload Linux DEB smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb-smoke-diagnostics
+          path: artifacts/linux-deb-smoke
+          if-no-files-found: ignore
+
   windows-release-cli-smoke:
     name: windows-release-cli-smoke
     # Skip branch-deletion push events while still requiring pull request validation.

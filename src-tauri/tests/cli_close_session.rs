@@ -15,6 +15,8 @@ use std::sync::mpsc;
 #[cfg(not(target_os = "windows"))]
 use std::time::{Duration, Instant};
 
+mod support;
+
 struct Tmp(PathBuf);
 impl Drop for Tmp {
     fn drop(&mut self) {
@@ -37,6 +39,12 @@ impl Tmp {
             h.finish()
         ));
         std::fs::create_dir_all(&path).expect("create tmp dir");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+                .expect("make tmp dir private");
+        }
         Self(path)
     }
     fn path(&self) -> &Path {
@@ -47,7 +55,7 @@ impl Tmp {
 fn copy_binary_into(tmp: &Path) -> PathBuf {
     let src = Path::new(env!("CARGO_BIN_EXE_agentscommander-new"));
     let dst = tmp.join(src.file_name().expect("binary file name"));
-    std::fs::copy(src, &dst).expect("copy binary");
+    support::copy_executable(src, &dst);
     dst
 }
 
@@ -113,6 +121,7 @@ fn close_response(
     .to_string()
 }
 
+#[cfg(target_os = "windows")]
 const WINDOWS_SIMULATOR_PS1: &str = r#"
 param(
   [Parameter(Mandatory=$true)][string]$OutboxDir,
@@ -269,7 +278,7 @@ impl SimulatorHandle {
 }
 
 fn spawn_daemon_simulator(
-    tmp: &Path,
+    _tmp: &Path,
     outbox_dir: &Path,
     responses_dir: &Path,
     response_body: &str,
@@ -278,9 +287,9 @@ fn spawn_daemon_simulator(
 ) -> SimulatorHandle {
     #[cfg(target_os = "windows")]
     {
-        let response_body_path = tmp.join("response-body.json");
+        let response_body_path = _tmp.join("response-body.json");
         std::fs::write(&response_body_path, response_body).expect("write response body");
-        let script = write_windows_simulator_script(tmp);
+        let script = write_windows_simulator_script(_tmp);
 
         let child = Command::new("powershell.exe")
             .args([
@@ -418,7 +427,9 @@ fn simulate_daemon_response(
             continue;
         };
 
-        break (path, body, msg, msg_id.to_string(), request_id.to_string());
+        let msg_id = msg_id.to_string();
+        let request_id = request_id.to_string();
+        break (path, body, msg, msg_id, request_id);
     };
 
     validate_close_session_message(&msg, expected_target, expected_timeout_secs)

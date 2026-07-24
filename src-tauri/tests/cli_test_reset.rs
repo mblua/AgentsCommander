@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, MutexGuard};
 
+mod support;
+
 static TESTABLE_RESET_IDENTITY_LOCK: Mutex<()> = Mutex::new(());
 
 struct Tmp(PathBuf);
@@ -25,6 +27,12 @@ impl Tmp {
                 .unwrap_or(0)
         ));
         std::fs::create_dir_all(&path).expect("create tmp dir");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+                .expect("make tmp dir private");
+        }
         Self(path)
     }
 
@@ -36,7 +44,7 @@ impl Tmp {
 fn copy_binary_as(tmp: &Path, name: &str) -> PathBuf {
     let src = Path::new(env!("CARGO_BIN_EXE_agentscommander-new"));
     let dst = tmp.join(name);
-    std::fs::copy(src, &dst).expect("copy binary");
+    support::copy_executable(src, &dst);
     dst
 }
 
@@ -46,8 +54,22 @@ fn testable_reset_identity_lock() -> MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+fn output_with_exec_retry(command: &mut Command) -> std::io::Result<std::process::Output> {
+    let mut attempts = 0;
+    loop {
+        match command.output() {
+            #[cfg(target_os = "linux")]
+            Err(error) if error.raw_os_error() == Some(26) && attempts < 20 => {
+                attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            result => return result,
+        }
+    }
+}
+
 fn run(bin: &Path, args: &[&str]) -> (Option<i32>, String, String) {
-    let out = Command::new(bin).args(args).output().expect("spawn binary");
+    let out = output_with_exec_retry(Command::new(bin).args(args)).expect("spawn binary");
     (
         out.status.code(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -163,6 +185,15 @@ fn file_target_refuses_and_deletes_nothing() {
 
     let (code, stdout, stderr) = run(&bin, &["test-reset", "--confirm-testeable"]);
     assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    #[cfg(target_os = "linux")]
+    {
+        assert!(stdout.trim().is_empty(), "stdout: {stdout}");
+        assert!(
+            stderr.contains("prepare Linux config root refused unsafe path"),
+            "stderr: {stderr}"
+        );
+    }
+    #[cfg(not(target_os = "linux"))]
     assert_eq!(
         stderr_json(&stderr)["error"],
         "reset_candidate_not_directory"
@@ -224,8 +255,10 @@ fn long_path_target_deletes_only_allowed_directories() {
     let _guard = testable_reset_identity_lock();
     let tmp = Tmp::new("reset-long-path");
     let mut base = tmp.path().to_path_buf();
+    let mut nested_parents = Vec::new();
     for idx in 0..10 {
         base = base.join(format!("long-segment-{idx:02}-abcdef"));
+        nested_parents.push(base.clone());
     }
     if let Err(e) = std::fs::create_dir_all(&base) {
         println!(
@@ -234,8 +267,16 @@ fn long_path_target_deletes_only_allowed_directories() {
         );
         return;
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for path in &nested_parents {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+                .expect("make long-path parent private");
+        }
+    }
     let bin = copy_binary_as(&base, "agentscommander_testeable.exe");
-    if let Err(e) = Command::new(&bin).arg("--help").output() {
+    if let Err(e) = output_with_exec_retry(Command::new(&bin).arg("--help")) {
         println!(
             "skipping long path reset regression; see docs/testing/destructive-filesystem-regression.md#reset-long-path-check: {}",
             e
@@ -285,6 +326,15 @@ fn symlink_target_refuses_and_deletes_nothing() {
 
     let (code, stdout, stderr) = run(&bin, &["test-reset", "--confirm-testeable"]);
     assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    #[cfg(target_os = "linux")]
+    {
+        assert!(stdout.trim().is_empty(), "stdout: {stdout}");
+        assert!(
+            stderr.contains("prepare Linux config root refused unsafe path"),
+            "stderr: {stderr}"
+        );
+    }
+    #[cfg(not(target_os = "linux"))]
     assert_eq!(stderr_json(&stderr)["error"], "reset_candidate_is_symlink");
     assert!(link.exists(), "symlink should remain");
     assert!(real.exists(), "symlink target should remain");

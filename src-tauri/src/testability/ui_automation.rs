@@ -1335,13 +1335,27 @@ fn load_session_for_cli(path: &Path, requested_window: &str) -> Result<UiAutomat
         Ok(raw) => raw,
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             let (error, message) = match crate::config::daemon_pid::detect_daemon_state() {
-                crate::config::daemon_pid::DaemonState::Running { .. } => {
+                Ok(crate::config::daemon_pid::DaemonState::Running { .. }) => {
                     return Err(automation_not_enabled_error());
                 }
-                _ => (
+                Ok(_) => (
                     "automation_session_missing",
                     "No UI automation session file exists for this testable binary.",
                 ),
+                Err(error) => {
+                    let daemon_path = crate::config::config_dir()
+                        .map(|dir| dir.join("daemon.pid"))
+                        .unwrap_or_else(|| PathBuf::from("daemon.pid"));
+                    return Err(preflight_error(
+                        "automation_filesystem_error",
+                        "Failed to verify the AgentsCommander daemon state.",
+                        Some(json!({
+                            "operation": "read_daemon_state",
+                            "path": daemon_path.to_string_lossy(),
+                            "message": error.to_string(),
+                        })),
+                    ));
+                }
             };
             return Err(preflight_error(error, message, None));
         }
@@ -1367,12 +1381,26 @@ fn load_session_for_cli(path: &Path, requested_window: &str) -> Result<UiAutomat
     })?;
 
     if let Err(e) = validate_session_liveness(&session) {
-        if matches!(
-            crate::config::daemon_pid::detect_daemon_state(),
-            crate::config::daemon_pid::DaemonState::Running { .. }
-        ) {
-            let _ = retry_remove_file(path);
-            return Err(automation_not_enabled_error());
+        match crate::config::daemon_pid::detect_daemon_state() {
+            Ok(crate::config::daemon_pid::DaemonState::Running { .. }) => {
+                let _ = retry_remove_file(path);
+                return Err(automation_not_enabled_error());
+            }
+            Ok(_) => {}
+            Err(error) => {
+                let daemon_path = crate::config::config_dir()
+                    .map(|dir| dir.join("daemon.pid"))
+                    .unwrap_or_else(|| PathBuf::from("daemon.pid"));
+                return Err(preflight_error(
+                    "automation_filesystem_error",
+                    "Failed to verify the AgentsCommander daemon state.",
+                    Some(json!({
+                        "operation": "read_daemon_state",
+                        "path": daemon_path.to_string_lossy(),
+                        "message": error.to_string(),
+                    })),
+                ));
+            }
         }
         return Err(e);
     }

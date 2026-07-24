@@ -516,6 +516,7 @@ fn path_compare_key(path: &Path) -> String {
     }
 }
 
+#[cfg_attr(target_os = "linux", allow(dead_code, unused_imports))]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -559,6 +560,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "linux"))]
     fn make_inject_test_app(session_mgr: Arc<tokio::sync::RwLock<SessionManager>>) -> tauri::App {
         let app = tauri::Builder::default()
             .any_thread()
@@ -637,6 +639,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(target_os = "linux"))]
     async fn pre_write_revalidation_blocks_stale_loop_after_inject_shell_lookup() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let config = sample_config();

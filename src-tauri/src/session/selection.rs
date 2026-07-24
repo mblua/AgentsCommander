@@ -214,11 +214,13 @@ impl SessionSelection {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn live_for_test(id: Uuid) -> Self {
         Self::live(Uuid::new_v4(), 1, SelectionCause::UserSwitch, id)
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn dormant_for_test(id: Uuid, exit_code: i32) -> Self {
         Self::dormant(
             Uuid::new_v4(),
@@ -231,6 +233,7 @@ impl SessionSelection {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn none_for_test() -> Self {
         Self::none(Uuid::new_v4(), 1, SelectionCause::AutoClose)
     }

@@ -40,7 +40,7 @@ graph TB
         SHELL["Shell / Agent Process<br/>(PowerShell, Claude, Codex)"]
         TGAPI["Telegram Bot API"]
         GEMINI["Google Gemini API"]
-        FS["Filesystem<br/>~/.agentscommander/"]
+        FS["Filesystem<br/>&lt;config-dir&gt; + project roots"]
     end
 
     SB <-->|"invoke() / events"| CMD
@@ -99,6 +99,7 @@ graph LR
 
     subgraph "pty/"
         P_MGR["manager.rs<br/>PtyManager<br/>spawn, write, resize, kill<br/>PTY read loop (std::thread)"]
+        P_PATH["child_path.rs<br/>Linux local Codex<br/>child-only PATH"]
         P_IDLE["idle_detector.rs<br/>700ms silence → idle<br/>200ms poll (std::thread)"]
         P_GIT["git_watcher.rs<br/>5s branch poll<br/>(std::thread + inner tokio)"]
     end
@@ -119,7 +120,9 @@ graph LR
         CFG_SET["settings.rs<br/>AppSettings<br/>load/save JSON"]
         CFG_DF["dark_factory.rs<br/>DarkFactoryConfig<br/>Teams + sync_agent_configs"]
         CFG_PERSIST["sessions_persistence.rs<br/>Session snapshot/restore"]
-        CFG_MOD["mod.rs<br/>config_dir()<br/>-dev suffix in debug"]
+        CFG_MOD["mod.rs<br/>authoritative location resolver"]
+        CFG_LINUX["linux_state.rs<br/>secure descriptors + locks"]
+        CFG_RUNTIME["runtime_files.rs<br/>bounded marker reads"]
     end
 
     BOOTSTRAP --> C_SESSION
@@ -148,6 +151,7 @@ graph LR
     T_MGR --> T_BRIDGE
     T_BRIDGE --> T_API
     P_MGR --> P_IDLE
+    P_MGR --> P_PATH
     P_MGR --> T_MGR
 
     style BOOTSTRAP fill:#e94560,stroke:#fff,color:#fff
@@ -604,12 +608,15 @@ graph TD
 
 ```mermaid
 graph TD
-    subgraph "~/.agentscommander/ (prod)<br/>~/.agentscommander-dev/ (debug)"
+    subgraph "&lt;config-dir&gt;<br/>DEB: $XDG_CONFIG_HOME/agentscommander<br/>raw: executable-relative"
         SETTINGS["settings.json<br/>Shell, agents, bots,<br/>voice config, window prefs"]
         SESSIONS["sessions.json<br/>Persisted sessions<br/>for restore on startup"]
         TEAMS["teams.json<br/>Dark Factory teams<br/>+ coordinators"]
         CONVDIR["conversations/<br/>NNNN-from_to.json<br/>Phone messages"]
         DEBUG["debug-logs.txt<br/>Console capture export"]
+        LOCKS["coding-agent-mutation.lock<br/>gui-instance.lock"]
+        INSTANCES["instances/&lt;uuid&gt;/outbox<br/>live GUI mailbox"]
+        MARKERS["master-token.txt<br/>web-token.txt<br/>app-outbox-path.txt<br/>daemon.pid"]
     end
 
     subgraph "Per-agent repo"
@@ -623,6 +630,45 @@ graph TD
     style CONVDIR fill:#e94560,stroke:#fff,color:#fff
     style AGENTCFG fill:#533483,stroke:#fff,color:#fff
 ```
+
+For the canonical Linux DEB, `<config-dir>` is
+`$XDG_CONFIG_HOME/agentscommander`, with `$HOME/.config/agentscommander` as the
+fallback. Raw binaries retain executable-relative state.
+
+### 8.1 Linux bootstrap and publication
+
+```mermaid
+sequenceDiagram
+    participant Main as main.rs
+    participant Secure as linux_state.rs
+    participant Setup as lib.rs setup
+    participant Disk as config directory
+
+    Main->>Secure: resolve and validate root
+    Main->>Secure: acquire mutation lock, then GUI lock
+    Secure-->>Main: already running, or retained guards
+    Main->>Secure: preflight and remove safe stale publications
+    Main->>Setup: logger active; strict settings and runtime build
+    Setup->>Disk: create instance directory and outbox
+    Setup->>Setup: start managed owners
+    Setup->>Disk: publish tokens and outbox pointer
+    Setup->>Disk: publish daemon.pid last
+    Note over Main,Disk: Locks remain held for the GUI lifetime
+```
+
+Linux security-bearing paths are opened relative to retained directory
+descriptors and checked for owner, type, link count, mode, and object identity.
+Startup failures before the final publication boundary cancel registered
+runtime work and roll back only the objects owned by that attempt.
+
+### 8.2 Local Linux Codex child PATH
+
+`LocalProcessBackend` identifies Codex from the configured coding-agent kind,
+not from command text. If the caller did not explicitly set or remove `PATH`,
+the child path helper prepends existing `$HOME/.local/bin`, `$HOME/bin`, and
+`$HOME/.cargo/bin` entries, preserves the inherited order, and applies the
+result only to the Codex `CommandBuilder`. AgentsCommander and its internal Git
+commands keep the unchanged parent PATH.
 
 ---
 
@@ -670,13 +716,14 @@ graph TD
 
 | File | Purpose |
 |------|---------|
-| `main.rs` | Thin shim → `lib::run()` |
-| `lib.rs` | App bootstrap, state init, window creation, session restore, command registration |
-| `errors.rs` | `AppError` enum (thiserror) |
+| `main.rs` | CLI/GUI dispatch, secure Linux preflight, lifetime GUI guards, typed startup reporting |
+| `lib.rs` | Fallible app bootstrap, state init, setup-time publication, rollback, and exit-code propagation |
+| `errors.rs` | `AppError`, `StartupError`, and unsafe-path reasons |
 | `session/session.rs` | `Session`, `SessionInfo`, `SessionStatus` structs |
 | `session/manager.rs` | `SessionManagerState`: records, stable order, pending creates, and canonical selection state |
 | `session/selection.rs` | Selection contract, coordinator, eligibility policy, process epoch, revision, and publication |
 | `pty/manager.rs` | `PtyManager`: spawn, read loop, write, resize, kill |
+| `pty/child_path.rs` | Lossless child-only PATH construction for local Linux Codex |
 | `pty/idle_detector.rs` | 700ms silence detection, idle/busy events |
 | `pty/git_watcher.rs` | 5s branch polling via `git rev-parse` |
 | `telegram/types.rs` | `TelegramBotConfig`, `BridgeInfo`, `BridgeStatus` |
@@ -685,7 +732,9 @@ graph TD
 | `telegram/bridge.rs` | vt100 pipeline, `RowTracker`, `ClaudeCodeFilter`, output/poll tasks |
 | `phone/types.rs` | `PhoneMessage`, `Conversation`, `AgentInfo` |
 | `phone/manager.rs` | `can_communicate()`, `send_message()`, `get_inbox()`, `ack_messages()` |
-| `config/mod.rs` | `config_dir()`: `-dev` suffix in debug |
+| `config/mod.rs` | Authoritative package-versus-portable location resolver |
+| `config/linux_state.rs` | Descriptor-relative Linux validation, private files, atomic publication, locks, and cleanup |
+| `config/runtime_files.rs` | Bounded validated reads of fixed runtime markers |
 | `config/settings.rs` | `AppSettings`, `AgentConfig`, load/save JSON |
 | `config/dark_factory.rs` | `DarkFactoryConfig`, `Team`, `TeamMember`, `sync_agent_configs()` |
 | `config/sessions_persistence.rs` | `PersistedSession`, snapshot/restore |

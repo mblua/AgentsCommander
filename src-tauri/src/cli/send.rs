@@ -1079,13 +1079,13 @@ pub fn execute(args: SendArgs) -> i32 {
         PathBuf::from(outbox_path)
     } else if is_root {
         // Root/master token: use the app outbox so the MailboxPoller always finds it
-        let app_outbox = crate::config::config_dir()
-            .map(|d| d.join("app-outbox-path.txt"))
-            .and_then(|p| std::fs::read_to_string(&p).ok())
-            .map(|s| PathBuf::from(s.trim()));
-        match app_outbox {
-            Some(p) if p.is_dir() => p,
-            _ => ac_dir.join("outbox"),
+        match crate::cli::current_app_outbox() {
+            Ok(Some(path)) => path,
+            Ok(None) => ac_dir.join("outbox"),
+            Err(error) => {
+                eprintln!("Error: {error}");
+                return 1;
+            }
         }
     } else {
         ac_dir.join("outbox")

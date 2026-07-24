@@ -77,6 +77,7 @@ pub struct NonStopWatchdogState {
     alarms: Arc<Mutex<HashMap<String, CancellationToken>>>,
     /// (G3) Serializes beeps so two simultaneous project fires do not overlap
     /// into a garbled tone.
+    #[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
     beep_serialize: Arc<Mutex<()>>,
 }
 
@@ -400,7 +401,13 @@ mod tests {
     }
 
     async fn disparity_since(state: &NonStopWatchdogState, project: &str) -> Option<Instant> {
-        state.inner.lock().await.get(project).unwrap().disparity_since
+        state
+            .inner
+            .lock()
+            .await
+            .get(project)
+            .unwrap()
+            .disparity_since
     }
 
     async fn is_fired(state: &NonStopWatchdogState, project: &str) -> bool {
@@ -492,7 +499,12 @@ mod tests {
         state.ingest(vec![report("p", true, 30)]).await;
         backdate_disparity(&state, "p", Duration::from_secs(31)).await;
         // Frontend went silent well past the ceiling.
-        backdate_last_seen(&state, "p", REPORT_STALENESS_CEILING + Duration::from_secs(1)).await;
+        backdate_last_seen(
+            &state,
+            "p",
+            REPORT_STALENESS_CEILING + Duration::from_secs(1),
+        )
+        .await;
 
         // One collection disarms instead of firing.
         assert!(fireable(&state).await.is_empty());

@@ -135,6 +135,51 @@ pub fn gui_instance_running() -> bool {
     false
 }
 
+pub enum GuiMutationRoute {
+    QueueToRunningGui,
+    DirectWithGuard(MutationGuard),
+}
+
+pub struct MutationGuard {
+    #[cfg(target_os = "linux")]
+    inner: crate::config::linux_state::MutationGuard,
+}
+
+impl MutationGuard {
+    #[cfg(target_os = "linux")]
+    pub fn validate(&self) -> Result<(), crate::errors::StartupError> {
+        self.inner.validate()
+    }
+}
+
+pub fn coding_agent_mutation_route() -> Result<GuiMutationRoute, crate::errors::StartupError> {
+    #[cfg(target_os = "linux")]
+    {
+        match crate::config::linux_state::coding_agent_mutation_route()? {
+            crate::config::linux_state::LinuxMutationRoute::QueueToRunningGui => {
+                Ok(GuiMutationRoute::QueueToRunningGui)
+            }
+            crate::config::linux_state::LinuxMutationRoute::DirectWithGuard(inner) => {
+                Ok(GuiMutationRoute::DirectWithGuard(MutationGuard { inner }))
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if gui_instance_running() {
+            Ok(GuiMutationRoute::QueueToRunningGui)
+        } else {
+            Ok(GuiMutationRoute::DirectWithGuard(MutationGuard {}))
+        }
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        Ok(GuiMutationRoute::DirectWithGuard(MutationGuard {}))
+    }
+}
+
 /// Executable name — actual binary filename from current_exe().
 /// Falls back to BUILD_PROFILE mapping if current_exe() fails.
 pub fn exe_name() -> &'static str {

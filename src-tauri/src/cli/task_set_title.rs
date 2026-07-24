@@ -77,11 +77,14 @@ pub fn execute(args: TaskSetTitleArgs) -> i32 {
     // Coordinator gate (skipped for root/master token; mirrors close_session.rs:89-101).
     let is_master = is_root || {
         if let Some(ref token_str) = args.token {
-            crate::config::config_dir()
-                .map(|d| d.join("master-token.txt"))
-                .and_then(|p| std::fs::read_to_string(&p).ok())
-                .map(|m| m.trim() == token_str)
-                .unwrap_or(false)
+            match crate::config::runtime_files::read_master_token() {
+                Ok(Some(master)) => master.trim() == token_str,
+                Ok(None) => false,
+                Err(error) => {
+                    eprintln!("Error: {error}");
+                    return 1;
+                }
+            }
         } else {
             false
         }

@@ -1,4 +1,5 @@
 pub mod backend;
+pub mod child_path;
 pub mod container_backend;
 pub mod container_credentials;
 pub mod container_paths;

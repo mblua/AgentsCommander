@@ -20,7 +20,11 @@ No. AgentsCommander is a Rust + SolidJS Tauri app. There is no Python runtime re
 
 ## Where is the data stored?
 
-Locally, in `~/.agentscommander/` (or the portable instance's directory). Plain JSON, TOML, and markdown — every file is human-readable and `git diff`-able. See [`PRIVACY.md`](../PRIVACY.md).
+Locally. The canonical Linux DEB uses
+`$XDG_CONFIG_HOME/agentscommander`, falling back to
+`$HOME/.config/agentscommander`. Raw portable binaries use their
+executable-relative config directory. The files are plain JSON, TOML, and
+markdown. See [`PRIVACY.md`](../PRIVACY.md).
 
 ## Does AC send telemetry?
 
@@ -28,7 +32,11 @@ No telemetry, no analytics, no crash reports, no automatic update checks. Option
 
 ## Can I run multiple AC instances side by side?
 
-Yes — that is what [portable instances](features/portable-instances.md) are for. Copy the `.exe`, rename it with a `_<suffix>`, and run. Each copy gets its own config directory, mutex, and web port.
+Yes. Raw portable binaries with different config roots can run side by side;
+renamed Windows copies are one example. On Linux, the lock is config-scoped:
+two launches using the same canonical DEB config cannot run together, while
+separate absolute XDG config roots can. See
+[Portable instances](features/portable-instances.md).
 
 ## How do agents coordinate?
 

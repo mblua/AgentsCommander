@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 
 const VALID_TOKEN: &str = "11111111-1111-1111-1111-111111111111";
 
+mod support;
+
 struct Tmp(PathBuf);
 
 impl Drop for Tmp {
@@ -23,6 +25,12 @@ impl Tmp {
         let path =
             std::env::temp_dir().join(format!("ac-{}-{}", prefix, uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&path).expect("create tmp dir");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+                .expect("make tmp dir private");
+        }
         Self(path)
     }
 
@@ -34,7 +42,7 @@ impl Tmp {
 fn copy_binary_into(tmp: &Path) -> PathBuf {
     let src = Path::new(env!("CARGO_BIN_EXE_agentscommander-new"));
     let dst = tmp.join(src.file_name().expect("binary file name"));
-    std::fs::copy(src, &dst).expect("copy binary");
+    support::copy_executable(src, &dst);
     dst
 }
 
@@ -328,7 +336,9 @@ fn simulate_daemon_response(
             continue;
         };
 
-        break (path, body, msg, msg_id.to_string(), request_id.to_string());
+        let msg_id = msg_id.to_string();
+        let request_id = request_id.to_string();
+        break (path, body, msg, msg_id, request_id);
     };
 
     validate_raise_hand_message(&msg).map_err(|e| format!("contract violation: {}", e))?;

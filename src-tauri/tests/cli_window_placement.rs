@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod support;
+
 struct Tmp(PathBuf);
 
 impl Drop for Tmp {
@@ -32,7 +34,7 @@ impl Tmp {
 fn copy_binary_as(tmp: &Path, name: &str) -> PathBuf {
     let src = Path::new(env!("CARGO_BIN_EXE_agentscommander-new"));
     let dst = tmp.join(name);
-    std::fs::copy(src, &dst).expect("copy binary");
+    support::copy_executable(src, &dst);
     dst
 }
 

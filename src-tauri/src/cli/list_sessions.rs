@@ -112,8 +112,12 @@ pub fn execute(args: ListSessionsArgs) -> i32 {
         .unwrap_or(false);
     if !suppress_stale_warning {
         match crate::config::daemon_pid::detect_daemon_state() {
-            crate::config::daemon_pid::DaemonState::Running { .. } => {}
-            crate::config::daemon_pid::DaemonState::NoPidFile => {
+            Err(error) => {
+                eprintln!("Error: {error}");
+                return 1;
+            }
+            Ok(crate::config::daemon_pid::DaemonState::Running { .. }) => {}
+            Ok(crate::config::daemon_pid::DaemonState::NoPidFile) => {
                 if std::env::var("AC_MACHINE_OUTPUT").is_err() {
                     eprintln!(
                         "[WARN] sessions.json may be stale — no AgentsCommander daemon detected \
@@ -128,7 +132,7 @@ pub fn execute(args: ListSessionsArgs) -> i32 {
                     );
                 }
             }
-            crate::config::daemon_pid::DaemonState::StalePidFile { pid } => {
+            Ok(crate::config::daemon_pid::DaemonState::StalePidFile { pid }) => {
                 if std::env::var("AC_MACHINE_OUTPUT").is_err() {
                     eprintln!(
                         "[WARN] sessions.json may be stale — AgentsCommander daemon pid {} is not \
@@ -145,7 +149,7 @@ pub fn execute(args: ListSessionsArgs) -> i32 {
                     );
                 }
             }
-            crate::config::daemon_pid::DaemonState::MalformedPidFile => {
+            Ok(crate::config::daemon_pid::DaemonState::MalformedPidFile) => {
                 if std::env::var("AC_MACHINE_OUTPUT").is_err() {
                     eprintln!(
                         "[WARN] sessions.json may be stale — daemon.pid file is malformed. \

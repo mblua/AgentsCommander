@@ -129,8 +129,7 @@ pub fn copy_in(plan: &ContainerCredentialPlan) -> std::io::Result<CopyOutcome> {
         use std::os::unix::fs::PermissionsExt;
         // F4 - do not silently swallow a perms failure; a token left broadly
         // readable must at least be observable in the log.
-        if let Err(e) =
-            std::fs::set_permissions(&plan.dest, std::fs::Permissions::from_mode(0o600))
+        if let Err(e) = std::fs::set_permissions(&plan.dest, std::fs::Permissions::from_mode(0o600))
         {
             log::warn!(
                 "[container-cred] failed to set 0o600 on {}: {}",
@@ -159,7 +158,10 @@ pub fn remove_copied(dest: &Path) {
         return;
     }
     match std::fs::remove_file(dest) {
-        Ok(()) => log::info!("[container-cred] removed copied credential {}", dest.display()),
+        Ok(()) => log::info!(
+            "[container-cred] removed copied credential {}",
+            dest.display()
+        ),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => log::warn!(
             "[container-cred] failed to remove copied credential {}: {}",
@@ -508,7 +510,10 @@ mod tests {
         );
         // Untouched: pre-existing keys and unrelated project entries.
         assert_eq!(v["userID"], serde_json::json!("abc"));
-        assert_eq!(v["oauthAccount"]["emailAddress"], serde_json::json!("x@y.z"));
+        assert_eq!(
+            v["oauthAccount"]["emailAddress"],
+            serde_json::json!("x@y.z")
+        );
         assert_eq!(
             v["projects"]["/other"]["hasTrustDialogAccepted"],
             serde_json::json!(false)

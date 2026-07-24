@@ -4,15 +4,22 @@ For developers editing `settings.json` by hand, or scripting AgentsCommander con
 
 ## File location
 
-`settings.json` lives **next to the binary** in the per-instance config directory:
+`settings.json` lives in the authoritative config directory:
 
 | Binary | Config directory | Settings file |
 |---|---|---|
+| `/usr/bin/agentscommander` (canonical Linux DEB) | `$XDG_CONFIG_HOME/agentscommander`, or `$HOME/.config/agentscommander` | `<config-dir>/settings.json` |
 | `C:\tools\agentscommander.exe` | `C:\tools\.agentscommander\` | `C:\tools\.agentscommander\settings.json` |
 | `C:\work\agentscommander_team-a.exe` | `C:\work\.agentscommander_team-a\` | `C:\work\.agentscommander_team-a\settings.json` |
 | (debug build) | adds `-dev` suffix | `…\.agentscommander-dev\settings.json` |
 
-See [Portable instances](../features/portable-instances.md) for the rule.
+Raw Linux binaries and AppImages retain the same executable-relative portable
+rule as other raw binaries. On Linux, startup requires the config root and
+private directories to have mode `0700`; it creates or repairs
+`settings.json` and other security-bearing regular files to mode `0600`.
+Symlinks, hard-linked mutable files, special files, ownership mismatches, and
+identity changes are rejected before settings are used. See
+[Portable instances](../features/portable-instances.md) for the full rule.
 
 ## Editing rules
 

@@ -5,6 +5,8 @@ use std::process::Command;
 const VALID_TOKEN: &str = "00000000-0000-0000-0000-000000000487";
 const LEAK_PROBE_TOKEN: &str = "zzzz-leakprobe-487-not-a-token";
 
+mod support;
+
 struct Tmp(PathBuf);
 
 impl Drop for Tmp {
@@ -18,6 +20,12 @@ impl Tmp {
         let path =
             std::env::temp_dir().join(format!("ac-{}-{}", prefix, uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&path).expect("create tmp dir");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+                .expect("make tmp dir private");
+        }
         Self(path)
     }
 
@@ -29,14 +37,14 @@ impl Tmp {
 fn copy_binary_into(tmp: &Path) -> PathBuf {
     let src = Path::new(env!("CARGO_BIN_EXE_agentscommander-new"));
     let dst = tmp.join(src.file_name().expect("binary file name"));
-    std::fs::copy(src, &dst).expect("copy binary");
+    support::copy_executable(src, &dst);
     dst
 }
 
 fn copy_binary_as(tmp: &Path, name: &str) -> PathBuf {
     let src = Path::new(env!("CARGO_BIN_EXE_agentscommander-new"));
     let dst = tmp.join(name);
-    std::fs::copy(src, &dst).expect("copy binary");
+    support::copy_executable(src, &dst);
     dst
 }
 
@@ -49,8 +57,22 @@ fn config_dir_for_bin(bin: &Path) -> PathBuf {
     bin.parent().expect("bin parent").join(format!(".{}", stem))
 }
 
+fn output_with_exec_retry(command: &mut Command) -> std::io::Result<std::process::Output> {
+    let mut attempts = 0;
+    loop {
+        match command.output() {
+            #[cfg(target_os = "linux")]
+            Err(error) if error.raw_os_error() == Some(26) && attempts < 20 => {
+                attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            result => return result,
+        }
+    }
+}
+
 fn run(bin: &Path, args: &[&str]) -> (Option<i32>, String, String) {
-    let out = Command::new(bin).args(args).output().expect("spawn");
+    let out = output_with_exec_retry(Command::new(bin).args(args)).expect("spawn");
     (
         out.status.code(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -860,19 +882,20 @@ fn run_task_title(
     master: &str,
     title: &str,
 ) -> (Option<i32>, String, String) {
-    let out = Command::new(bin)
-        .args([
-            "task-set-title",
-            "--token",
-            master,
-            "--root",
-            &agent_root.to_string_lossy(),
-            "--title",
-            title,
-        ])
-        .env("RUST_LOG", "agentscommander=info")
-        .output()
-        .expect("spawn task-set-title");
+    let out = output_with_exec_retry(
+        Command::new(bin)
+            .args([
+                "task-set-title",
+                "--token",
+                master,
+                "--root",
+                &agent_root.to_string_lossy(),
+                "--title",
+                title,
+            ])
+            .env("RUST_LOG", "agentscommander=info"),
+    )
+    .expect("spawn task-set-title");
     (
         out.status.code(),
         String::from_utf8_lossy(&out.stdout).into_owned(),

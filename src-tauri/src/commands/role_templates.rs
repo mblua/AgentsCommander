@@ -205,8 +205,11 @@ the template is selected.
 - This folder is created automatically. You may delete it; it is recreated
   (empty, with this README) on the next launch.
 - To use a different folder, set `agentTemplatesPath` in `settings.json`, which
-  lives in the application's config folder next to the app executable. A relative
-  value is resolved against that config folder; an absolute value is used as-is.
+  lives in the authoritative config directory. The canonical Linux DEB uses
+  `$XDG_CONFIG_HOME/agentscommander` (or `$HOME/.config/agentscommander` when
+  XDG_CONFIG_HOME is unavailable); raw portable binaries use their
+  executable-relative config directory. A relative value is resolved against
+  that authoritative directory; an absolute value is used as-is.
 - Agency templates are available only after the explicit CLI cache is downloaded.
 "#;
 

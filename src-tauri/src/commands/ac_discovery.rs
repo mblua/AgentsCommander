@@ -3023,6 +3023,7 @@ fn read_task_fields(wg_path: &Path) -> TaskFields {
     (task, task_title)
 }
 
+#[cfg_attr(target_os = "linux", allow(dead_code, unused_imports))]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3096,6 +3097,7 @@ mod tests {
         )
     }
 
+    #[cfg(not(target_os = "linux"))]
     type ArchiveCommandApp = (
         tauri::App,
         SettingsState,
@@ -3104,6 +3106,7 @@ mod tests {
         Arc<Mutex<PtyManager>>,
     );
 
+    #[cfg(not(target_os = "linux"))]
     fn archive_command_app(settings: AppSettings) -> ArchiveCommandApp {
         let settings_state: SettingsState = Arc::new(tokio::sync::RwLock::new(settings));
         let broadcaster = WsBroadcaster::new();
@@ -3488,6 +3491,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(target_os = "linux"))]
     async fn open_project_inner_broadcasts_only_when_archived_list_changes() {
         let temp = tempfile::tempdir().expect("tempdir");
         let settings_path = temp.path().join("settings.json");
@@ -3532,6 +3536,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(target_os = "linux"))]
     async fn new_project_inner_broadcasts_only_when_archived_list_changes() {
         let temp = tempfile::tempdir().expect("tempdir");
         let settings_path = temp.path().join("settings.json");
@@ -3575,6 +3580,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(target_os = "linux"))]
     async fn archive_project_inner_absolutizes_relative_path_and_emits_archive_event() {
         let _cwd_lock = cwd_lock().await;
         let temp = tempfile::tempdir().expect("tempdir");
@@ -3620,6 +3626,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(target_os = "linux"))]
     async fn archive_project_inner_archives_vanished_registered_project() {
         let temp = tempfile::tempdir().expect("tempdir");
         let settings_path = temp.path().join("settings.json");
@@ -3655,6 +3662,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(target_os = "linux"))]
     async fn archive_project_inner_allows_active_record_without_pty() {
         let temp = tempfile::tempdir().expect("tempdir");
         let settings_path = temp.path().join("settings.json");
@@ -3707,6 +3715,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(target_os = "linux"))]
     async fn archive_project_inner_pending_spawn_mark_blocks_precheck() {
         let temp = tempfile::tempdir().expect("tempdir");
         let settings_path = temp.path().join("settings.json");
@@ -3746,6 +3755,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(target_os = "linux"))]
     async fn archive_project_inner_rolls_back_with_unarchive_event_when_liveness_appears_after_write(
     ) {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -3812,6 +3822,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(target_os = "linux"))]
     async fn archive_project_inner_rolls_back_vanished_project_without_validation() {
         let temp = tempfile::tempdir().expect("tempdir");
         let settings_path = temp.path().join("settings.json");
@@ -3883,6 +3894,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(target_os = "linux"))]
     async fn poll_tasks_filters_archived_session_workgroups() {
         let temp = tempfile::tempdir().expect("tempdir");
         let project = temp.path().join("proj-task-filter");

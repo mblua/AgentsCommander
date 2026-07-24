@@ -748,10 +748,13 @@ pub(crate) enum RelDecodeError {
     /// Parent traversal that would walk above the filesystem root.
     EscapesRoot,
     /// A Windows-illegal character (`< > : " | ? *` or a control char).
+    #[cfg_attr(not(windows), allow(dead_code))]
     IllegalWindowsChar,
     /// A reserved DOS device basename (CON, PRN, AUX, NUL, COM1-9, LPT1-9).
+    #[cfg_attr(not(windows), allow(dead_code))]
     ReservedDosName,
     /// A component ending in a space or dot (Win32 strips these).
+    #[cfg_attr(not(windows), allow(dead_code))]
     TrailingDotOrSpace,
     /// The instance base handed in was not absolute.
     BaseNotAbsolute,
@@ -2060,6 +2063,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn open_dedup_is_case_insensitive_and_slash_agnostic() {
         let fix = FixtureRoot::new("proj-open-norm");
         std::fs::create_dir_all(fix.path().join(".ac")).unwrap();

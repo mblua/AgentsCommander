@@ -15,10 +15,10 @@
 use std::collections::VecDeque;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-static INIT: OnceLock<()> = OnceLock::new();
+static INIT: Mutex<bool> = Mutex::new(false);
 
 /// #612 runtime-adjustable verbosity for our own targets (`agentscommander*`),
 /// stored as `log::Level as u8` (Error=1 .. Trace=5). Installed ONLY on the
@@ -138,9 +138,29 @@ fn machine_output_enabled() -> bool {
 /// counter, not a synchronization primitive. A small over-shoot at the
 /// rotation boundary is acceptable.
 struct AppLogFile {
-    file: Mutex<std::fs::File>,
+    file: Mutex<AppLogHandle>,
     bytes: AtomicU64,
     path: PathBuf,
+    #[cfg(target_os = "linux")]
+    secure_root: Option<Arc<crate::config::linux_state::SecureConfigRoot>>,
+}
+
+enum AppLogHandle {
+    Standard(std::fs::File),
+    #[cfg(target_os = "linux")]
+    Secure(crate::config::linux_state::PrivateFile),
+}
+
+impl AppLogHandle {
+    fn write_all(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        match self {
+            Self::Standard(file) => file.write_all(bytes),
+            #[cfg(target_os = "linux")]
+            Self::Secure(file) => file
+                .write_all(bytes, "append app log")
+                .map_err(std::io::Error::other),
+        }
+    }
 }
 
 /// #280 §2 — rotate `path` → `path.1` and shift existing `path.<i>` to
@@ -155,6 +175,20 @@ struct AppLogFile {
 /// would re-enter the format closure) and continue. Worst case: the file
 /// grows somewhat past the cap before a successful rotation.
 fn rotate(state: &AppLogFile) {
+    #[cfg(target_os = "linux")]
+    if state.secure_root.is_some() {
+        if let Err(error) = rotate_secure(state) {
+            if !machine_output_enabled() {
+                eprintln!(
+                    "[log] secure rotation failed for {}: {}",
+                    state.path.display(),
+                    error
+                );
+            }
+        }
+        return;
+    }
+
     let mut file_guard = match state.file.lock() {
         Ok(g) => g,
         Err(e) => e.into_inner(),
@@ -272,7 +306,7 @@ fn rotate(state: &AppLogFile) {
 
     match fresh {
         Ok(f) => {
-            *file_guard = f;
+            *file_guard = AppLogHandle::Standard(f);
             state.bytes.store(0, Ordering::Relaxed);
         }
         Err(e) => {
@@ -296,6 +330,57 @@ fn rotate(state: &AppLogFile) {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn rotate_secure(state: &AppLogFile) -> Result<(), crate::errors::StartupError> {
+    let Some(root) = state.secure_root.as_ref() else {
+        return Ok(());
+    };
+    let mut file_guard =
+        state
+            .file
+            .lock()
+            .map_err(|_| crate::errors::StartupError::Initialization {
+                component: "Linux app-log rotation",
+                message: "app-log handle mutex is poisoned".to_string(),
+            })?;
+    if state.bytes.load(Ordering::Relaxed) < APP_LOG_MAX_BYTES {
+        return Ok(());
+    }
+    match &*file_guard {
+        AppLogHandle::Secure(file) => file.validate("validate active app log before rotation")?,
+        AppLogHandle::Standard(_) => {
+            return Err(crate::errors::StartupError::Initialization {
+                component: "Linux app-log rotation",
+                message: "secure root retained a non-secure app-log handle".to_string(),
+            })
+        }
+    }
+
+    for index in 1..=APP_LOG_KEEP {
+        root.validate_optional_private_file(
+            std::ffi::OsStr::new(&format!("app.log.{index}")),
+            "validate Linux rotated app log",
+        )?;
+    }
+    for index in (1..APP_LOG_KEEP).rev() {
+        root.rename_private_file(
+            std::ffi::OsStr::new(&format!("app.log.{index}")),
+            std::ffi::OsStr::new(&format!("app.log.{}", index + 1)),
+            "rotate Linux numbered app log",
+        )?;
+    }
+    root.rename_private_file(
+        std::ffi::OsStr::new("app.log"),
+        std::ffi::OsStr::new("app.log.1"),
+        "rotate Linux active app log",
+    )?;
+    let fresh =
+        root.open_append_private_file(std::ffi::OsStr::new("app.log"), "open fresh Linux app log")?;
+    *file_guard = AppLogHandle::Secure(fresh);
+    state.bytes.store(0, Ordering::Relaxed);
+    Ok(())
+}
+
 /// Install the global `log` backend. Safe to call from any entry point and
 /// safe to call multiple times.
 ///
@@ -307,8 +392,19 @@ fn rotate(state: &AppLogFile) {
 /// Sink: stderr + `<config_dir>/app.log` (append-mode; per-line writes are
 /// serialized through a `Mutex` so concurrent log calls within one process
 /// do not interleave bytes mid-line).
-pub fn init_logger() {
-    INIT.get_or_init(init_logger_inner);
+pub fn init_logger() -> Result<(), crate::errors::StartupError> {
+    let mut initialized = INIT
+        .lock()
+        .map_err(|_| crate::errors::StartupError::Initialization {
+            component: "logger initialization",
+            message: "logger initialization mutex is poisoned".to_string(),
+        })?;
+    if *initialized {
+        return Ok(());
+    }
+    init_logger_inner()?;
+    *initialized = true;
+    Ok(())
 }
 
 /// #612 apply the shared format closure (timestamp + universal secret scrub +
@@ -349,8 +445,8 @@ fn install_format(builder: &mut env_logger::Builder, log_state: Arc<Option<Arc<A
             if let Ok(mut f) = state.file.lock() {
                 let _ = f.write_all(line.as_bytes());
             }
-            let new_total = state.bytes.fetch_add(line.len() as u64, Ordering::Relaxed)
-                + line.len() as u64;
+            let new_total =
+                state.bytes.fetch_add(line.len() as u64, Ordering::Relaxed) + line.len() as u64;
             if new_total >= APP_LOG_MAX_BYTES {
                 rotate(state);
             }
@@ -359,33 +455,64 @@ fn install_format(builder: &mut env_logger::Builder, log_state: Arc<Option<Arc<A
     });
 }
 
-fn init_logger_inner() {
-    let log_state: Option<Arc<AppLogFile>> = crate::config::config_dir().and_then(|dir| {
-        let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("app.log");
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .ok()
-            .map(|f| {
-                if !machine_output_enabled() {
-                    eprintln!("[log] file logging to {}", path.display());
-                }
-                let initial_bytes = f.metadata().map(|m| m.len()).unwrap_or(0);
-                Arc::new(AppLogFile {
-                    file: Mutex::new(f),
-                    bytes: AtomicU64::new(initial_bytes),
-                    path,
-                })
-            })
-    });
+fn init_logger_inner() -> Result<(), crate::errors::StartupError> {
+    #[cfg(target_os = "linux")]
+    let log_state: Option<Arc<AppLogFile>> = {
+        let root =
+            crate::config::linux_state::prepared_secure_config_root("initialize Linux logger")?;
+        let path = root.display_path().join("app.log");
+        let file =
+            root.open_append_private_file(std::ffi::OsStr::new("app.log"), "open Linux app log")?;
+        let initial_bytes = file.metadata_len("inspect Linux app log")?;
+        if !machine_output_enabled() {
+            eprintln!("[log] file logging to {}", path.display());
+        }
+        Some(Arc::new(AppLogFile {
+            file: Mutex::new(AppLogHandle::Secure(file)),
+            bytes: AtomicU64::new(initial_bytes),
+            path,
+            secure_root: Some(root),
+        }))
+    };
+
+    #[cfg(not(target_os = "linux"))]
+    let log_state: Option<Arc<AppLogFile>> = match crate::config::config_dir() {
+        Some(dir) => {
+            std::fs::create_dir_all(&dir).map_err(|source| {
+                crate::errors::StartupError::io("create logger config directory", &dir, source)
+            })?;
+            let path = dir.join("app.log");
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .map_err(|source| crate::errors::StartupError::io("open app log", &path, source))?;
+            if !machine_output_enabled() {
+                eprintln!("[log] file logging to {}", path.display());
+            }
+            let initial_bytes = file
+                .metadata()
+                .map_err(|source| {
+                    crate::errors::StartupError::io("inspect app log", &path, source)
+                })?
+                .len();
+            Some(Arc::new(AppLogFile {
+                file: Mutex::new(AppLogHandle::Standard(file)),
+                bytes: AtomicU64::new(initial_bytes),
+                path,
+            }))
+        }
+        None => None,
+    };
 
     // #280 §2.6 — first-time migration. Existing users may have multi-GB
     // app.log from before the rotation rollout; rotate immediately so this
     // run starts on a fresh file instead of appending to it.
     if let Some(ref state) = log_state {
         if state.bytes.load(Ordering::Relaxed) >= APP_LOG_MAX_BYTES {
+            #[cfg(target_os = "linux")]
+            rotate_secure(state)?;
+            #[cfg(not(target_os = "linux"))]
             rotate(state);
         }
     }
@@ -404,8 +531,15 @@ fn init_logger_inner() {
         let mut builder = env_logger::Builder::from_env(env_logger::Env::default());
         builder.parse_filters(&rust_log);
         install_format(&mut builder, Arc::clone(&log_state));
-        builder.init();
-        return;
+        let logger = builder.build();
+        let max_level = logger.filter();
+        log::set_boxed_logger(Box::new(logger)).map_err(|error| {
+            crate::errors::StartupError::LoggerInstall {
+                message: error.to_string(),
+            }
+        })?;
+        log::set_max_level(max_level);
+        return Ok(());
     }
 
     // No RUST_LOG: install the runtime-gated logger. The initial level comes
@@ -415,13 +549,12 @@ fn init_logger_inner() {
     // RUST_LOG_STYLE color handling, matching the prior behavior; the fixed
     // GATE_INNER_FILTER then pins third-party crates at warn and opens our own
     // targets to trace so the runtime atomic is the sole gate for them.
-    let initial = level_from_str(
-        crate::config::settings::read_log_level_only()
-            .as_deref()
-            .unwrap_or("info"),
-    );
+    #[cfg(target_os = "linux")]
+    let configured_level = crate::config::settings::read_log_level_for_startup()?;
+    #[cfg(not(target_os = "linux"))]
+    let configured_level = crate::config::settings::read_log_level_only();
+    let initial = level_from_str(configured_level.as_deref().unwrap_or("info"));
     let atomic = Arc::new(AtomicU8::new(initial as u8));
-    let _ = RUNTIME_LEVEL.set(Arc::clone(&atomic));
 
     let mut builder = env_logger::Builder::from_env(env_logger::Env::default());
     builder.parse_filters(GATE_INNER_FILTER);
@@ -430,11 +563,16 @@ fn init_logger_inner() {
 
     let gate = LevelGateLogger {
         inner,
-        level: atomic,
+        level: Arc::clone(&atomic),
     };
-    if log::set_boxed_logger(Box::new(gate)).is_ok() {
-        log::set_max_level(max_filter_for(initial));
-    }
+    log::set_boxed_logger(Box::new(gate)).map_err(|error| {
+        crate::errors::StartupError::LoggerInstall {
+            message: error.to_string(),
+        }
+    })?;
+    let _ = RUNTIME_LEVEL.set(Arc::clone(&atomic));
+    log::set_max_level(max_filter_for(initial));
+    Ok(())
 }
 
 // ===========================================================================
@@ -560,7 +698,7 @@ pub fn error_sink() -> &'static ErrorEventSink {
 /// time `capture()` signals. Running the emit HERE — outside the `env_logger`
 /// format closure — keeps the logging hot path minimal and isolates any panic
 /// inside `emit()` from the arbitrary `log::error!` call site. See §3.7.
-pub fn spawn_error_emit_task(app: tauri::AppHandle) {
+pub fn spawn_error_emit_task(app: tauri::AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     tauri::async_runtime::spawn(async move {
         loop {
             error_sink().wait_for_capture().await;
@@ -569,7 +707,7 @@ pub fn spawn_error_emit_task(app: tauri::AppHandle) {
             // transitive log calls (if any) cannot re-enter the format closure.
             let _ = tauri::Emitter::emit(&app, "error_log_event", ());
         }
-    });
+    })
 }
 
 #[cfg(test)]
@@ -578,6 +716,190 @@ mod tests {
     // #612 the gate's enabled()/log() are `log::Log` trait methods; bring the
     // trait into scope so the tests can call them on a `LevelGateLogger` value.
     use log::Log;
+
+    #[cfg(target_os = "linux")]
+    fn run_linux_logging_child(test_name: &str, sentinel: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{Duration, Instant};
+
+        let temp = tempfile::tempdir().expect("Linux logging tempdir");
+        std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("chmod Linux logging tempdir");
+        let config_dir = temp.path().join("config");
+        let mut child = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .arg("--exact")
+            .arg(test_name)
+            .arg("--nocapture")
+            .env(sentinel, "1")
+            .env("AGENTSCOMMANDER_TEST_CONFIG_DIR", &config_dir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn Linux logging child");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let status = loop {
+            if let Some(status) = child.try_wait().expect("poll Linux logging child") {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("Linux logging child timed out");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(status.success(), "Linux logging child failed");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_logger_open_failure_is_typed_and_publishes_nothing() {
+        const SENTINEL: &str = "AC_TEST_1111_LOGGER_OPEN_FAILURE_CHILD";
+        const TEST_NAME: &str =
+            "logging::tests::linux_logger_open_failure_is_typed_and_publishes_nothing";
+
+        if std::env::var_os(SENTINEL).is_some() {
+            use crate::errors::{StartupError, UnsafePathReason};
+
+            crate::config::linux_state::prepare_secure_config_root()
+                .expect("prepare secure config root");
+            let config_dir = crate::config::config_dir().expect("child config directory");
+            let sentinel_path = config_dir
+                .parent()
+                .expect("config directory parent")
+                .join("log-sentinel");
+            std::fs::write(&sentinel_path, b"unchanged").expect("write log sentinel");
+            let log_path = config_dir.join("app.log");
+            std::os::unix::fs::symlink(&sentinel_path, &log_path).expect("create app.log symlink");
+
+            match init_logger().expect_err("unsafe app.log must fail") {
+                StartupError::UnsafePath {
+                    path,
+                    reason: UnsafePathReason::Symlink,
+                    ..
+                } => assert_eq!(path, log_path),
+                other => panic!("expected typed unsafe-path error, got {other:?}"),
+            }
+            assert_eq!(
+                std::fs::read(&sentinel_path).expect("read log sentinel"),
+                b"unchanged"
+            );
+            assert_eq!(
+                std::fs::read_link(&log_path).expect("read unchanged app.log symlink"),
+                sentinel_path
+            );
+            for basename in [
+                "web-token.txt",
+                "master-token.txt",
+                "app-outbox-path.txt",
+                "daemon.pid",
+            ] {
+                assert!(!config_dir.join(basename).exists());
+            }
+            return;
+        }
+
+        run_linux_logging_child(TEST_NAME, SENTINEL);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_log_rotation_repairs_modes_and_rejects_unsafe_numbered_entry() {
+        const SENTINEL: &str = "AC_TEST_1111_SECURE_LOG_ROTATION_CHILD";
+        const TEST_NAME: &str =
+            "logging::tests::linux_log_rotation_repairs_modes_and_rejects_unsafe_numbered_entry";
+
+        if std::env::var_os(SENTINEL).is_some() {
+            use crate::errors::{StartupError, UnsafePathReason};
+            use std::os::unix::fs::PermissionsExt;
+
+            let root = crate::config::linux_state::prepare_secure_config_root()
+                .expect("prepare secure config root");
+            let config_dir = crate::config::config_dir().expect("child config directory");
+            let active_path = config_dir.join("app.log");
+            let first_path = config_dir.join("app.log.1");
+            std::fs::write(&active_path, b"ACTIVE").expect("seed active log");
+            std::fs::write(&first_path, b"ONE").expect("seed first rotated log");
+            std::fs::set_permissions(&active_path, std::fs::Permissions::from_mode(0o644))
+                .expect("chmod active log");
+            std::fs::set_permissions(&first_path, std::fs::Permissions::from_mode(0o644))
+                .expect("chmod first rotated log");
+
+            let file = root
+                .open_append_private_file(std::ffi::OsStr::new("app.log"), "open test app log")
+                .expect("open secure active log");
+            assert_eq!(
+                std::fs::symlink_metadata(&active_path)
+                    .expect("active metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+            let state = AppLogFile {
+                file: Mutex::new(AppLogHandle::Secure(file)),
+                bytes: AtomicU64::new(APP_LOG_MAX_BYTES),
+                path: active_path.clone(),
+                secure_root: Some(Arc::clone(&root)),
+            };
+
+            let sentinel_path = config_dir
+                .parent()
+                .expect("config directory parent")
+                .join("rotation-sentinel");
+            std::fs::write(&sentinel_path, b"unchanged").expect("write rotation sentinel");
+            let unsafe_path = config_dir.join("app.log.3");
+            std::os::unix::fs::symlink(&sentinel_path, &unsafe_path)
+                .expect("create unsafe rotated entry");
+            match rotate_secure(&state).expect_err("unsafe rotated entry must fail") {
+                StartupError::UnsafePath {
+                    path,
+                    reason: UnsafePathReason::Symlink,
+                    ..
+                } => assert_eq!(path, unsafe_path),
+                other => panic!("expected typed unsafe-path error, got {other:?}"),
+            }
+            assert_eq!(
+                std::fs::read(&active_path).expect("read active log"),
+                b"ACTIVE"
+            );
+            assert_eq!(std::fs::read(&first_path).expect("read first log"), b"ONE");
+            assert_eq!(
+                std::fs::read(&sentinel_path).expect("read rotation sentinel"),
+                b"unchanged"
+            );
+            std::fs::remove_file(&unsafe_path).expect("remove test symlink");
+
+            rotate_secure(&state).expect("rotate secure logs");
+            assert_eq!(
+                std::fs::read(config_dir.join("app.log.1")).expect("read rotated active"),
+                b"ACTIVE"
+            );
+            assert_eq!(
+                std::fs::read(config_dir.join("app.log.2")).expect("read shifted log"),
+                b"ONE"
+            );
+            for path in [
+                config_dir.join("app.log"),
+                config_dir.join("app.log.1"),
+                config_dir.join("app.log.2"),
+            ] {
+                assert_eq!(
+                    std::fs::symlink_metadata(&path)
+                        .expect("secure log metadata")
+                        .permissions()
+                        .mode()
+                        & 0o777,
+                    0o600,
+                    "unexpected mode for {}",
+                    path.display()
+                );
+            }
+            return;
+        }
+
+        run_linux_logging_child(TEST_NAME, SENTINEL);
+    }
 
     /// Build an `ErrorLogEntry` carrying `message`; the other fields are fixed.
     fn entry(message: &str) -> ErrorLogEntry {
@@ -765,9 +1087,11 @@ mod tests {
             .open(&path)
             .expect("open active log");
         Arc::new(AppLogFile {
-            file: Mutex::new(f),
+            file: Mutex::new(AppLogHandle::Standard(f)),
             bytes: AtomicU64::new(bytes),
             path,
+            #[cfg(target_os = "linux")]
+            secure_root: None,
         })
     }
 

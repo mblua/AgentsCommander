@@ -7,13 +7,15 @@
 //! Safe-write routing. `list`/`show`/`catalog` always read disk and print JSON.
 //! Mutations (`add`/`update`/`remove`) NEVER direct-write while a GUI for this
 //! binary identity is running:
-//!   - GUI running (probe via the single-instance mutex): the mutation is queued
-//!     as a file the GUI's `MailboxPoller` drains against its authoritative
-//!     in-memory settings, writing a result this CLI waits on. The poller claims
-//!     each request with an atomic `.processing` rename, so a timeout-cancel can
-//!     never be reported as "cancelled" for a mutation that actually applied.
-//!   - GUI not running: a strict load (refuses to modify a present-but-unparseable
-//!     settings.json rather than silently defaulting) then apply then save.
+//!   - GUI running (selected by the platform mutation route): the mutation is
+//!     queued as a file the GUI's `MailboxPoller` drains against its
+//!     authoritative in-memory settings, writing a result this CLI waits on.
+//!     The poller claims each request with an atomic `.processing` rename, so a
+//!     timeout-cancel can never be reported as "cancelled" for a mutation that
+//!     actually applied.
+//!   - GUI not running: the direct-write route stays held through a strict load
+//!     (which refuses to modify a present-but-unparseable settings.json rather
+//!     than silently defaulting), apply, and save.
 //!
 //! Known limitation (documented for scripts): a SettingsModal already open with
 //! an unsaved draft can, on its next Save, revert a concurrent CLI mutation. The
@@ -52,8 +54,9 @@ clobber). While it is closed, they write settings.json directly.\n\n\
 EXIT 1 is either terminal (validation) or retryable (GUI busy). Only a \
 \"cancelled (safe to retry)\" message is blind-retry-safe; a \"may or may not have \
 applied\" message is NOT - run `coding-agent show --id <id>` first.\n\n\
-PLATFORM: GUI detection is Windows-only; off-Windows a running GUI is not \
-detected and the direct write path is always used.")]
+PLATFORM: Linux uses config-scoped locks to route mutations to the running GUI \
+or report a safe-to-retry busy state. Windows retains its single-instance \
+probe. Other platforms use the direct write path.")]
 pub struct CodingAgentArgs {
     #[command(subcommand)]
     pub cmd: CodingAgentCmd,
@@ -197,19 +200,17 @@ pub struct RemoveArgs {
 }
 
 pub fn execute(args: CodingAgentArgs) -> i32 {
-    run(args, crate::config::profile::gui_instance_running())
+    run(args)
 }
 
-/// Split from `execute` so the direct/daemon branch selection is unit-testable
-/// with an injected `gui_running` bool (no live mutex needed).
-fn run(args: CodingAgentArgs, gui_running: bool) -> i32 {
+fn run(args: CodingAgentArgs) -> i32 {
     let result = match args.cmd {
         CodingAgentCmd::List => cmd_list(),
         CodingAgentCmd::Show(a) => cmd_show(a),
         CodingAgentCmd::Catalog => cmd_catalog(),
-        CodingAgentCmd::Add(a) => cmd_add(a, gui_running),
-        CodingAgentCmd::Update(a) => cmd_update(a, gui_running),
-        CodingAgentCmd::Remove(a) => cmd_remove(a, gui_running),
+        CodingAgentCmd::Add(a) => cmd_add(a),
+        CodingAgentCmd::Update(a) => cmd_update(a),
+        CodingAgentCmd::Remove(a) => cmd_remove(a),
     };
     match result {
         Ok(()) => 0,
@@ -245,7 +246,7 @@ fn cmd_catalog() -> Result<(), String> {
 
 // ---- mutation verbs --------------------------------------------------------
 
-fn cmd_add(a: AddArgs, gui_running: bool) -> Result<(), String> {
+fn cmd_add(a: AddArgs) -> Result<(), String> {
     // R6: strict color/label checks apply ONLY to explicitly typed flags.
     if let Some(color) = &a.color {
         ops::validate_agent_color(color)?;
@@ -310,10 +311,10 @@ fn cmd_add(a: AddArgs, gui_running: bool) -> Result<(), String> {
         None => ops::mint_agent_id(),
     };
 
-    dispatch_mutation(CodingAgentOp::Add { agent }, gui_running, confirm_timeout)
+    dispatch_mutation(CodingAgentOp::Add { agent }, confirm_timeout)
 }
 
-fn cmd_update(a: UpdateArgs, gui_running: bool) -> Result<(), String> {
+fn cmd_update(a: UpdateArgs) -> Result<(), String> {
     // Flag-conflict checks first (fast feedback, before any disk / routing).
     if a.clear_envs && !a.env.is_empty() {
         return Err("--clear-envs conflicts with --env".to_string());
@@ -369,33 +370,30 @@ fn cmd_update(a: UpdateArgs, gui_running: bool) -> Result<(), String> {
         container_image,
         clear_container_image,
     };
-    dispatch_mutation(
-        CodingAgentOp::Update { id: a.id, patch },
-        gui_running,
-        a.confirm_timeout,
-    )
+    dispatch_mutation(CodingAgentOp::Update { id: a.id, patch }, a.confirm_timeout)
 }
 
-fn cmd_remove(a: RemoveArgs, gui_running: bool) -> Result<(), String> {
-    dispatch_mutation(
-        CodingAgentOp::Remove { id: a.id },
-        gui_running,
-        a.confirm_timeout,
-    )
+fn cmd_remove(a: RemoveArgs) -> Result<(), String> {
+    dispatch_mutation(CodingAgentOp::Remove { id: a.id }, a.confirm_timeout)
 }
 
 // ---- routing ---------------------------------------------------------------
 
-fn dispatch_mutation(
-    op: CodingAgentOp,
-    gui_running: bool,
-    confirm_timeout: u64,
-) -> Result<(), String> {
-    if gui_running {
-        let config_dir = crate::config::config_dir().ok_or("Could not resolve config dir")?;
-        dispatch_via_daemon(&config_dir, op, confirm_timeout)
-    } else {
-        dispatch_direct(op)
+fn dispatch_mutation(op: CodingAgentOp, confirm_timeout: u64) -> Result<(), String> {
+    match crate::config::profile::coding_agent_mutation_route()
+        .map_err(|error| error.to_string())?
+    {
+        crate::config::profile::GuiMutationRoute::QueueToRunningGui => {
+            let config_dir = crate::config::config_dir().ok_or("Could not resolve config dir")?;
+            dispatch_via_daemon(&config_dir, op, confirm_timeout)
+        }
+        crate::config::profile::GuiMutationRoute::DirectWithGuard(direct_guard) => {
+            #[cfg(target_os = "linux")]
+            direct_guard.validate().map_err(|error| error.to_string())?;
+            let outcome = dispatch_direct(op);
+            drop(direct_guard);
+            outcome
+        }
     }
 }
 
@@ -687,12 +685,9 @@ mod tests {
     #[test]
     fn add_custom_requires_label_and_command() {
         // No from-catalog, no label/command -> error before minting/dispatch.
-        let code = run(
-            CodingAgentArgs {
-                cmd: CodingAgentCmd::Add(add_args()),
-            },
-            false,
-        );
+        let code = run(CodingAgentArgs {
+            cmd: CodingAgentCmd::Add(add_args()),
+        });
         assert_eq!(code, 1);
     }
 
@@ -702,7 +697,7 @@ mod tests {
         a.label = Some("L".into());
         a.command = Some("claude".into());
         a.color = Some("#fff".into());
-        assert!(cmd_add(a, false).is_err());
+        assert!(cmd_add(a).is_err());
     }
 
     #[test]
@@ -710,7 +705,7 @@ mod tests {
         let mut a = update_args("x");
         a.clear_envs = true;
         a.env = vec!["FOO=bar".into()];
-        assert!(cmd_update(a, false).is_err());
+        assert!(cmd_update(a).is_err());
     }
 
     #[test]
@@ -718,7 +713,7 @@ mod tests {
         let mut a = update_args("x");
         a.clear_instructions_filename = true;
         a.instructions_filename = Some("AGENTS.md".into());
-        assert!(cmd_update(a, false).is_err());
+        assert!(cmd_update(a).is_err());
     }
 
     #[test]
@@ -726,7 +721,7 @@ mod tests {
         let mut a = update_args("x");
         a.clear_config_seed = true;
         a.config_seed_dest = Some(".claude".into());
-        assert!(cmd_update(a, false).is_err());
+        assert!(cmd_update(a).is_err());
     }
 
     #[test]
@@ -734,7 +729,7 @@ mod tests {
         let mut a = update_args("x");
         a.clear_container_image = true;
         a.container_image = Some("image:tag".into());
-        assert!(cmd_update(a, false).is_err());
+        assert!(cmd_update(a).is_err());
     }
 
     #[test]
@@ -810,6 +805,143 @@ mod tests {
         // and settings.json was NEVER written by the daemon path.
         assert!(dir.path().join(ops::CODING_AGENT_REQUESTS_DIR).is_dir());
         assert!(!dir.path().join("settings.json").exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_gui_route_queues_and_never_direct_writes_settings() {
+        const TEST_NAME: &str =
+            "cli::coding_agent::tests::linux_gui_route_queues_and_never_direct_writes_settings";
+        if crate::config::linux_state::rerun_exact_test_with_prepared_root(TEST_NAME) {
+            return;
+        }
+
+        let mut gui_guard =
+            match crate::config::linux_state::acquire_gui_instance().expect("acquire GUI locks") {
+                crate::config::linux_state::GuiLockOutcome::Acquired(guard) => guard,
+                crate::config::linux_state::GuiLockOutcome::AlreadyRunning => {
+                    panic!("isolated GUI lock unexpectedly contended")
+                }
+            };
+        let error = dispatch_mutation(
+            CodingAgentOp::Remove {
+                id: "queue-only".to_string(),
+            },
+            0,
+        )
+        .expect_err("no poller must cancel the queued request");
+        assert!(error.contains("request cancelled"));
+
+        let config_dir = crate::config::config_dir().expect("child config directory");
+        assert!(
+            config_dir.join(ops::CODING_AGENT_REQUESTS_DIR).is_dir(),
+            "queue route must create its request directory"
+        );
+        assert!(
+            !config_dir.join("settings.json").exists(),
+            "queue route must not direct-write settings"
+        );
+        assert!(gui_guard.release().is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_direct_writer_contention_is_retryable_without_queue_or_save() {
+        const TEST_NAME: &str =
+            "cli::coding_agent::tests::linux_direct_writer_contention_is_retryable_without_queue_or_save";
+        if crate::config::linux_state::rerun_exact_test_with_prepared_root(TEST_NAME) {
+            return;
+        }
+
+        let _direct_guard = match crate::config::profile::coding_agent_mutation_route()
+            .expect("acquire first direct mutation guard")
+        {
+            crate::config::profile::GuiMutationRoute::DirectWithGuard(guard) => guard,
+            crate::config::profile::GuiMutationRoute::QueueToRunningGui => {
+                panic!("isolated direct route unexpectedly queued")
+            }
+        };
+        let started = Instant::now();
+        let error = dispatch_mutation(
+            CodingAgentOp::Remove {
+                id: "busy-only".to_string(),
+            },
+            30,
+        )
+        .expect_err("second direct writer must be busy");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(error.contains("busy"));
+        assert!(error.contains("retry"));
+
+        let config_dir = crate::config::config_dir().expect("child config directory");
+        assert!(!config_dir.join(ops::CODING_AGENT_REQUESTS_DIR).exists());
+        assert!(!config_dir.join("settings.json").exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_lock_validation_error_refuses_queue_and_direct_save() {
+        const TEST_NAME: &str =
+            "cli::coding_agent::tests::linux_lock_validation_error_refuses_queue_and_direct_save";
+        if crate::config::linux_state::rerun_exact_test_with_prepared_root(TEST_NAME) {
+            return;
+        }
+
+        let config_dir = crate::config::config_dir().expect("child config directory");
+        let sentinel = config_dir
+            .parent()
+            .expect("config directory parent")
+            .join("coding-agent-lock-sentinel");
+        std::fs::write(&sentinel, b"unchanged").expect("write lock sentinel");
+        let mutation_lock = config_dir.join("coding-agent-mutation.lock");
+        std::os::unix::fs::symlink(&sentinel, &mutation_lock).expect("create unsafe mutation lock");
+
+        let error = dispatch_mutation(
+            CodingAgentOp::Remove {
+                id: "unsafe-lock".to_string(),
+            },
+            0,
+        )
+        .expect_err("unsafe lock must fail closed");
+        assert!(error.contains("refused unsafe path"));
+        assert!(error.contains(&mutation_lock.display().to_string()));
+        assert!(!config_dir.join(ops::CODING_AGENT_REQUESTS_DIR).exists());
+        assert!(!config_dir.join("settings.json").exists());
+        assert_eq!(
+            std::fs::read(&sentinel).expect("read lock sentinel"),
+            b"unchanged"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_read_verbs_do_not_acquire_the_mutation_lock() {
+        const TEST_NAME: &str =
+            "cli::coding_agent::tests::linux_read_verbs_do_not_acquire_the_mutation_lock";
+        if crate::config::linux_state::rerun_exact_test_with_prepared_root(TEST_NAME) {
+            return;
+        }
+
+        let _direct_guard = match crate::config::profile::coding_agent_mutation_route()
+            .expect("acquire direct mutation guard")
+        {
+            crate::config::profile::GuiMutationRoute::DirectWithGuard(guard) => guard,
+            crate::config::profile::GuiMutationRoute::QueueToRunningGui => {
+                panic!("isolated direct route unexpectedly queued")
+            }
+        };
+        let mut settings = crate::config::settings::AppSettings::default();
+        let mut agent = blank_agent();
+        agent.id = "read-only-agent".to_string();
+        agent.label = "Read Only Agent".to_string();
+        agent.command = "codex".to_string();
+        let first_id = agent.id.clone();
+        settings.agents.push(agent);
+        save_settings(&settings).expect("seed settings while direct guard is held");
+
+        cmd_list().expect("list must not acquire the mutation lock");
+        cmd_show(ShowArgs { id: first_id }).expect("show must not acquire the mutation lock");
+        cmd_catalog().expect("catalog must not acquire the mutation lock");
     }
 
     // ---- help text ---------------------------------------------------------

@@ -80,8 +80,8 @@ pub fn execute(args: ApiClientArgs) -> i32 {
 /// True only for the master/root token. `validate_cli_token` returns `is_root`
 /// for both the persisted `root_token` and `master-token.txt`; a session UUID
 /// passes shape validation but returns `is_root = false`, so it is rejected.
-fn host_authority_ok(token: &Option<String>) -> bool {
-    matches!(crate::cli::validate_cli_token(token), Ok((_, true)))
+fn host_authority_ok(token: &Option<String>) -> Result<bool, String> {
+    crate::cli::validate_cli_token(token).map(|(_, is_root)| is_root)
 }
 
 fn registry_path() -> Result<std::path::PathBuf, i32> {
@@ -95,7 +95,14 @@ fn registry_path() -> Result<std::path::PathBuf, i32> {
 }
 
 fn mint(a: MintArgs) -> i32 {
-    if !host_authority_ok(&a.token) {
+    let authority = match host_authority_ok(&a.token) {
+        Ok(authority) => authority,
+        Err(error) => {
+            eprintln!("{error}");
+            return 1;
+        }
+    };
+    if !authority {
         eprintln!(
             "Error: `api-client mint` requires the master/root token (host authority). A container cannot self-mint."
         );
@@ -173,7 +180,14 @@ fn mint(a: MintArgs) -> i32 {
 }
 
 fn revoke(a: RevokeArgs) -> i32 {
-    if !host_authority_ok(&a.token) {
+    let authority = match host_authority_ok(&a.token) {
+        Ok(authority) => authority,
+        Err(error) => {
+            eprintln!("{error}");
+            return 1;
+        }
+    };
+    if !authority {
         eprintln!("Error: `api-client revoke` requires the master/root token (host authority).");
         return 1;
     }
@@ -199,7 +213,14 @@ fn revoke(a: RevokeArgs) -> i32 {
 }
 
 fn list(a: ListArgs) -> i32 {
-    if !host_authority_ok(&a.token) {
+    let authority = match host_authority_ok(&a.token) {
+        Ok(authority) => authority,
+        Err(error) => {
+            eprintln!("{error}");
+            return 1;
+        }
+    };
+    if !authority {
         eprintln!("Error: `api-client list` requires the master/root token (host authority).");
         return 1;
     }
@@ -308,6 +329,39 @@ mod tests {
             })) => assert_eq!(a.client_id, "abc"),
             _ => panic!("expected api-client revoke"),
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn host_authority_preserves_unsafe_settings_error() {
+        const TEST_NAME: &str =
+            "cli::api_client::tests::host_authority_preserves_unsafe_settings_error";
+        if crate::config::linux_state::rerun_exact_test_with_prepared_root(TEST_NAME) {
+            return;
+        }
+
+        let config_dir = crate::config::config_dir().expect("child config directory");
+        let settings_path = config_dir.join("settings.json");
+        let sentinel_path = config_dir
+            .parent()
+            .expect("config directory parent")
+            .join("api-authority-settings-sentinel");
+        std::fs::write(
+            &sentinel_path,
+            br#"{"rootToken":"11111111-1111-1111-1111-111111111111"}"#,
+        )
+        .expect("write API authority sentinel");
+        std::os::unix::fs::symlink(&sentinel_path, &settings_path)
+            .expect("create unsafe API settings leaf");
+
+        let token = Some("22222222-2222-4222-8222-222222222222".to_string());
+        let error = host_authority_ok(&token).expect_err("host authority must preserve read error");
+        assert!(error.contains("refused unsafe path"));
+        assert!(error.contains(&settings_path.display().to_string()));
+        assert_eq!(
+            std::fs::read(&sentinel_path).expect("read API authority sentinel"),
+            br#"{"rootToken":"11111111-1111-1111-1111-111111111111"}"#
+        );
     }
 
     #[test]

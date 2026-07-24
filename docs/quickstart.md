@@ -34,7 +34,7 @@ If you prefer a desktop installer or manual download, get the latest asset for y
 | Platform | Asset |
 |---|---|
 | Windows 10 1809+ | `Agents Commander_X.Y.Z_x64-setup.exe` or the portable `agentscommander.exe` |
-| Linux | `agentscommander_*_amd64.AppImage` |
+| Linux | `Agents Commander_<version>_amd64.deb` or `agentscommander_*_amd64.AppImage` |
 | macOS | `Agents Commander_*.dmg` (Apple Silicon + Intel) |
 
 Windows code signing is planned through SignPath and pending setup. Current Windows artifacts may be unsigned until [epic #717](https://github.com/mblua/AgentsCommander/issues/717) is complete. Verify downloads with the release `SHASUMS256.txt`; on Windows you can inspect signature status with:
@@ -43,7 +43,18 @@ Windows code signing is planned through SignPath and pending setup. Current Wind
 Get-AuthenticodeSignature "Agents Commander_X.Y.Z_x64-setup.exe"
 ```
 
-Run the installer, or drop the portable `.exe` into any folder and double-click. On first launch AC creates its config directory next to the binary (e.g. `.agentscommander/` on Windows). See [Portable instances](features/portable-instances.md) for the rules.
+On Debian or Ubuntu, install the downloaded DEB and launch it:
+
+```bash
+sudo apt install "./Agents Commander_<version>_amd64.deb"
+agentscommander
+```
+
+The canonical DEB executable at `/usr/bin/agentscommander` stores its config in
+`$XDG_CONFIG_HOME/agentscommander`, or `$HOME/.config/agentscommander` when
+`XDG_CONFIG_HOME` is unavailable. A raw Linux binary, AppImage, or portable
+Windows executable retains executable-relative config. See
+[Portable instances](features/portable-instances.md) for the exact rules.
 
 ## 2. Open or create an AC project
 

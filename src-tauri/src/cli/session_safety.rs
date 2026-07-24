@@ -12,12 +12,14 @@ pub(crate) struct LiveSessionBlocker {
     pub stale_state: bool,
 }
 
-pub(crate) fn find_live_sessions_under(root: &Path) -> Vec<LiveSessionBlocker> {
+pub(crate) fn find_live_sessions_under(
+    root: &Path,
+) -> Result<Vec<LiveSessionBlocker>, crate::errors::StartupError> {
     let root = canonicalize_for_compare(root);
-    let daemon_state = daemon_pid::detect_daemon_state();
+    let daemon_state = daemon_pid::detect_daemon_state()?;
     let stale_state = !matches!(daemon_state, DaemonState::Running { .. });
 
-    crate::config::sessions_persistence::load_sessions_raw()
+    Ok(crate::config::sessions_persistence::load_sessions_raw()
         .into_iter()
         .filter(|session| is_live_session_record(session.id.is_some(), session.status.as_ref()))
         .filter_map(|session| {
@@ -35,11 +37,11 @@ pub(crate) fn find_live_sessions_under(root: &Path) -> Vec<LiveSessionBlocker> {
                 stale_state,
             })
         })
-        .collect()
+        .collect())
 }
 
 pub(crate) fn ensure_no_live_sessions_under(root: &Path) -> Result<(), String> {
-    let blockers = find_live_sessions_under(root);
+    let blockers = find_live_sessions_under(root).map_err(|error| error.to_string())?;
     if blockers.is_empty() {
         return Ok(());
     }

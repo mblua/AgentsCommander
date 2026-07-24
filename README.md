@@ -50,7 +50,10 @@ agentscommander new-project /path/to/project
 
 The npm package is `@mblua/agentscommander`. The installed command is still `agentscommander`.
 
-Prefer a desktop installer or a manual download? Get the Windows installer, Linux AppImage, macOS dmg, or portable assets from [GitHub Releases](https://github.com/mblua/AgentsCommander/releases/latest).
+Prefer a desktop installer or a manual download? Get the Windows installer,
+Linux `Agents Commander_<version>_amd64.deb` or AppImage, macOS dmg, or portable
+assets from [GitHub Releases](https://github.com/mblua/AgentsCommander/releases/latest).
+Install the DEB with `sudo apt install "./Agents Commander_<version>_amd64.deb"`.
 
 ## The 30-second pitch
 
@@ -60,7 +63,12 @@ Prefer a desktop installer or a manual download? Get the Windows installer, Linu
 - **Direct multiple workgroups from the Root Agent.** The Agent Commander / Root Agent gives you one place to steer work across teams. Ask it to talk to workgroup coordinators, send work to different teams, and keep initiatives aligned across parallel workgroups.
 - **Multi-agent Teams that coordinate through files.** Agents exchange markdown messages in a `messaging/` folder you can `cat`, `git diff`, and audit. The whole org fits in `ls`.
 - **Phone-ready updates with images.** The Telegram bridge can stream session output and send photos or screenshots captured by agents, so remote status can include the actual screen or report.
-- **Local state, no telemetry.** All state lives in plain JSON, TOML, and markdown next to the binary. Portable: copy the `.exe` to any drive and it carries its own config.
+- **Local state, no telemetry.** All state lives in plain JSON, TOML, and
+  markdown. The canonical Linux DEB stores application state under
+  `$XDG_CONFIG_HOME/agentscommander`, falling back to
+  `$HOME/.config/agentscommander`. Raw portable binaries keep
+  executable-relative config, so copying the binary and its config directory
+  preserves that instance.
 
 You bring the coding agents. AgentsCommander coordinates them.
 
@@ -145,7 +153,7 @@ These are not accidents.
 | Platform | Status |
 |---|---|
 | **Windows** | Primary version where most development happens. |
-| **Linux** | Testing is beginning. |
+| **Linux** | DEB and AppImage releases; the DEB is exercised by an installed-package smoke gate. |
 | **macOS** | Untested. |
 
 ## Trust

@@ -3291,6 +3291,7 @@ pub async fn delete_workgroup(
 // `delete_workgroup_dir_backend_with_outcome`, so this ungated convenience wrapper
 // is retained for tests only.
 #[cfg(test)]
+#[allow(dead_code)]
 pub(crate) async fn delete_workgroup_dir_backend(
     wg_dir: &Path,
     workgroup_name: &str,
@@ -4294,6 +4295,7 @@ pub(crate) fn is_rename_blocked_by_handle(e: &std::io::Error) -> bool {
 ///
 /// `pub(crate)` so the unit test in `wg_delete_diagnostic::tests` can exercise it
 /// without moving the test into this module.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
 pub(crate) fn is_file_in_use_error(e: &std::io::Error) -> bool {
     #[cfg(windows)]
     {

@@ -1,12 +1,23 @@
 # Portable instances
 
-For developers who want isolated AgentsCommander instances on the same machine — for example a `prod` config and a `team-a` config side by side.
+For developers who want isolated AgentsCommander instances on the same machine,
+for example a `prod` config and a `team-a` config side by side.
 
-AgentsCommander is fully portable. The binary carries everything it needs; no installation is required. Two copies of the binary in different folders, or with different filenames, run as completely independent applications.
+Raw AgentsCommander binaries remain portable. The canonical Linux DEB is the
+exception: `/usr/bin/agentscommander` uses the user's XDG config directory and
+has no executable-relative instance base.
 
 ## Config directory rule
 
-The config directory lives **next to the binary**, named after it:
+The config directory depends on how AgentsCommander is launched:
+
+- The canonical Linux DEB executable `/usr/bin/agentscommander` uses
+  `$XDG_CONFIG_HOME/agentscommander`, or
+  `$HOME/.config/agentscommander` when `XDG_CONFIG_HOME` is unavailable.
+- Raw portable binaries, including renamed Linux binaries, retain the
+  executable-relative config directory named after that binary.
+
+Portable Windows examples:
 
 ```
 C:\tools\agentscommander.exe          ->  C:\tools\.agentscommander\
@@ -14,7 +25,12 @@ C:\tools\agentscommander_stage.exe    ->  C:\tools\.agentscommander_stage\
 C:\work\agentscommander_team-a.exe    ->  C:\work\.agentscommander_team-a\
 ```
 
-Each config directory contains `settings.json`, `sessions.json`, the web token, conversation logs, and every other piece of per-instance state. Two binaries in different folders (or with different names) are **fully isolated**: separate settings, separate sessions, separate ports, separate mutex.
+Each config directory contains `settings.json`, `sessions.json`, the web token,
+conversation logs, and every other piece of per-instance state. Config roots
+are the isolation boundary. Two portable binaries with different config roots
+have separate settings, sessions, ports, and instance locks. On Linux, two
+launches that resolve to the same config root cannot run together; the second
+exits successfully without modifying the live instance.
 
 ## Instance labels via underscore suffix
 
@@ -51,7 +67,15 @@ That's it. The instance creates its own config directory on first launch, gets a
 
 ## Portable project paths
 
-Every project you register is stored two ways in `settings.json`: the usual absolute path, and a portable path **relative to the folder that holds the running binary** (the same folder the config directory sits next to). Move the whole tree together (the binary, its `.agentscommander_<suffix>/` directory, and the project folders) to a new location, and each project whose relative form still resolves is picked up at its new absolute path automatically. AC reconciles `settings.json` to the new absolute path on the next load.
+Every project registration contains its canonical absolute path. When the
+location resolver supplies a portable instance base, it also stores a companion
+path relative to the folder holding the running binary. Move that raw binary,
+its config directory, and the project tree together, and each companion that
+still resolves is picked up at its new absolute path. AC reconciles
+`settings.json` on the next load.
+
+The canonical Linux DEB has no portable instance base. Its project
+registrations are absolute-only.
 
 The relative form is anchored to the executable's own directory, never the process working directory, so it does not matter which shell or folder you launch AC from.
 
@@ -62,7 +86,12 @@ Relocation carries a project across the move when:
 
 It does not help when only one side moves, or when the project lives on a different drive or share than the binary. A project on a different drive/share has no relative form at all: its companion value is stored as `null`, it keeps working in place through the absolute path, and it is simply not portable if you later move the install folder.
 
-**Packaging layout.** The anchor is the directory of the real native executable, not a wrapper or an app root. On Windows that is the folder containing `agentscommander*.exe`. On macOS it is `Foo.app/Contents/MacOS` inside the bundle, not the `.app` root. On Linux it is the directory of the raw binary or the running AppImage. A project stored relative to `Contents/MacOS` relocates correctly only when it keeps that relationship to the bundle.
+**Packaging layout.** When a portable base exists, its anchor is the directory
+of the real native executable, not a wrapper or app root. On Windows that is
+the folder containing `agentscommander*.exe`. On macOS it is
+`Foo.app/Contents/MacOS` inside the bundle. On Linux it is the directory of the
+raw binary or running AppImage. `/usr/bin/agentscommander` is classified as the
+canonical DEB executable and deliberately supplies no anchor.
 
 **Conflict handling.** Both stored forms are resolved and validated on every load. If they point at the same directory (symlinks and Windows aliases included), the project loads once. If they resolve to two different real directories, that registration is a conflict: AC loads neither side, writes nothing to disk for it, and the sidebar shows one sticky red error toast listing both resolved paths. Other, non-conflicting projects still load normally. Dismiss the toast, then fix the registration (remove it, then re-open the folder you want) to clear the conflict.
 
@@ -72,7 +101,10 @@ It does not help when only one side moves, or when the project lives on a differ
 
 A portable instance still shares:
 
-- The user's `PATH` (and therefore which coding-agent binaries it can find).
+- The parent process environment. On Linux, a local Codex child additionally
+  gets existing `$HOME/.local/bin`, `$HOME/bin`, and `$HOME/.cargo/bin`
+  candidates prepended to its own PATH. This child-only adjustment does not
+  alter AgentsCommander's PATH.
 - The user account's filesystem permissions.
 - API keys exported in the environment.
 
@@ -80,7 +112,10 @@ If you need hard isolation, run AC inside a VM or container.
 
 ## Cleaning up an instance
 
-Delete the binary and its `.agentscommander_<suffix>/` directory. AC keeps no global state outside that directory.
+For a raw portable instance, delete the binary and its
+`.agentscommander_<suffix>/` directory. The canonical DEB's package files and
+XDG config are separate: uninstall the package with the system package manager,
+then remove its config directory only if you also want to discard user state.
 
 ## See also
 

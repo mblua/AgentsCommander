@@ -11,9 +11,8 @@ use sha2::{Digest, Sha256};
 use crate::cli::session_safety::{find_live_sessions_under, LiveSessionBlocker};
 use crate::cli::workgroup;
 use crate::commands::entity_creation::{
-    agent_ref_bare_name, create_agent_matrix_from_role,
-    resolve_agent_ref, sanitize_name, validate_existing_name,
-    CreateAgentMatrixFromRoleArgs,
+    agent_ref_bare_name, create_agent_matrix_from_role, resolve_agent_ref, sanitize_name,
+    validate_existing_name, CreateAgentMatrixFromRoleArgs,
 };
 
 #[derive(Args)]
@@ -832,7 +831,14 @@ fn variant_set(args: VariantSetArgs) -> Result<CommandOutput, Vec<CliError>> {
         )]);
     }
 
-    let blockers = find_live_sessions_for_variant(&loaded.workspace_dir, &variant.agent_name);
+    let blockers = find_live_sessions_for_variant(&loaded.workspace_dir, &variant.agent_name)
+        .map_err(|error| {
+            vec![err(
+                "daemon_state_unavailable",
+                error.to_string(),
+                Some(args.variant.as_str()),
+            )]
+        })?;
     if !blockers.is_empty() {
         return Err(vec![err(
             "active_variant_session",
@@ -1790,17 +1796,26 @@ fn collect_experiment_validation(loaded: &LoadedExperiment) -> ExperimentValidat
             Ok(meta) => {
                 errors.extend(validate_variant_metadata_paths(loaded, variant, &meta));
                 validate_variant_files(loaded, &meta, &mut errors);
-                for blocker in
-                    find_live_sessions_for_variant(&loaded.workspace_dir, &meta.agent_name)
-                {
-                    errors.push(err(
-                        "active_variant_session",
-                        format!(
-                            "Active session '{}' at {}",
-                            blocker.name, blocker.working_directory
-                        ),
-                        Some(meta.name.as_str()),
-                    ));
+                match find_live_sessions_for_variant(&loaded.workspace_dir, &meta.agent_name) {
+                    Ok(blockers) => {
+                        for blocker in blockers {
+                            errors.push(err(
+                                "active_variant_session",
+                                format!(
+                                    "Active session '{}' at {}",
+                                    blocker.name, blocker.working_directory
+                                ),
+                                Some(meta.name.as_str()),
+                            ));
+                        }
+                    }
+                    Err(error) => {
+                        errors.push(err(
+                            "daemon_state_unavailable",
+                            error.to_string(),
+                            Some(meta.name.as_str()),
+                        ));
+                    }
                 }
                 if replica_role_overrides(&loaded.workspace_dir, &meta.agent_name)
                     .into_iter()
@@ -3187,9 +3202,9 @@ fn is_link_or_reparse(meta: &std::fs::Metadata) -> bool {
 fn find_live_sessions_for_variant(
     workspace_dir: &Path,
     variant_agent_name: &str,
-) -> Vec<LiveSessionBlocker> {
+) -> Result<Vec<LiveSessionBlocker>, crate::errors::StartupError> {
     let mut out =
-        find_live_sessions_under(&workspace_dir.join(format!("_agent_{}", variant_agent_name)));
+        find_live_sessions_under(&workspace_dir.join(format!("_agent_{}", variant_agent_name)))?;
     if let Ok(entries) = std::fs::read_dir(workspace_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -3199,12 +3214,12 @@ fn find_live_sessions_for_variant(
             if name.starts_with("wg-") && path.is_dir() {
                 let replica = path.join(format!("__agent_{}", variant_agent_name));
                 if replica.is_dir() {
-                    out.extend(find_live_sessions_under(&replica));
+                    out.extend(find_live_sessions_under(&replica)?);
                 }
             }
         }
     }
-    out
+    Ok(out)
 }
 
 fn replica_role_overrides(workspace_dir: &Path, variant_agent_name: &str) -> Vec<PathBuf> {

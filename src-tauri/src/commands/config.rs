@@ -419,18 +419,19 @@ pub(crate) async fn settings_snapshot_helper(
                 && (state.active_reconcile_eligible || state.archived_reconcile_eligible)
         };
         if pending {
-            if let Some(path) = settings_path
-                .clone()
-                .or_else(|| crate::config::config_dir().map(|d| d.join("settings.json")))
+            let refresh_result = match settings_path.as_ref() {
+                Some(path) => crate::config::settings::refresh_and_decode_project_paths_from_path(
+                    &mut guard, path,
+                ),
+                None => crate::config::settings::refresh_and_decode_project_paths(&mut guard),
+            };
             {
                 // §4.3 step 2: re-decode all six project fields from disk and
                 // re-resolve BEFORE reconciling, so a CLI registration that
                 // happened after startup is authoritative and not clobbered. On a
                 // disk read/parse failure, retain the previously validated state,
                 // perform no write, and report stage `read`.
-                match crate::config::settings::refresh_and_decode_project_paths_from_path(
-                    &mut guard, &path,
-                ) {
+                match refresh_result {
                     Err(message) => {
                         reconciliation_error = Some(ProjectPathReconciliationError {
                             stage: ReconciliationStage::Read,
@@ -444,12 +445,22 @@ pub(crate) async fn settings_snapshot_helper(
                             && (fresh.active_reconcile_eligible
                                 || fresh.archived_reconcile_eligible);
                         if still_eligible {
-                            match crate::config::settings::reconcile_project_state_to_path(
-                                &guard,
-                                &path,
-                                fresh.active_reconcile_eligible,
-                                fresh.archived_reconcile_eligible,
-                            ) {
+                            let reconcile_result = match settings_path.as_ref() {
+                                Some(path) => {
+                                    crate::config::settings::reconcile_project_state_to_path(
+                                        &guard,
+                                        path,
+                                        fresh.active_reconcile_eligible,
+                                        fresh.archived_reconcile_eligible,
+                                    )
+                                }
+                                None => crate::config::settings::reconcile_project_state(
+                                    &guard,
+                                    fresh.active_reconcile_eligible,
+                                    fresh.archived_reconcile_eligible,
+                                ),
+                            };
+                            match reconcile_result {
                                 Ok(written) => *guard = written,
                                 Err(message) => {
                                     reconciliation_error = Some(ProjectPathReconciliationError {
@@ -1631,12 +1642,9 @@ pub async fn open_web_remote(ws_handle: State<'_, WebServerHandle>) -> Result<()
     let settings = load_settings();
     ensure_web_remote_open_allowed(&settings, &ws_handle)?;
 
-    let token_path = crate::config::config_dir()
-        .ok_or("No config dir")?
-        .join("web-token.txt");
-
-    let token = std::fs::read_to_string(&token_path)
-        .map_err(|e| format!("Cannot read web token: {}", e))?;
+    let token = crate::config::runtime_files::read_web_token()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Cannot read web token: token file is missing".to_string())?;
 
     let url = format!(
         "http://{}:{}/?window=browser&remoteToken={}",
@@ -2216,6 +2224,7 @@ pub async fn fetch_home_markdown(network: State<'_, OutboundNetwork>) -> Result<
     String::from_utf8(trimmed.to_vec()).map_err(|_| "Response is not valid UTF-8".to_string())
 }
 
+#[cfg_attr(target_os = "linux", allow(dead_code, unused_imports))]
 #[cfg(test)]
 mod tests {
     use super::{
@@ -2561,6 +2570,7 @@ mod tests {
         .expect("write settings.json");
     }
 
+    #[cfg(not(target_os = "linux"))]
     fn api_server_command_test_app(settings: AppSettings) -> tauri::App {
         let session_mgr = Arc::new(RwLock::new(SessionManager::new()));
         let store_dir = tempfile::tempdir().expect("create API store directory");
@@ -2635,6 +2645,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(target_os = "linux"))]
     async fn api_server_status_reports_running_for_managed_wildcard_server() {
         let listener = tokio::net::TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0))
             .await
@@ -2675,6 +2686,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(target_os = "linux"))]
     async fn start_api_server_bind_failure_returns_err_and_status_false() {
         let settings = AppSettings {
             api_server_bind: "192.0.2.1".to_string(),

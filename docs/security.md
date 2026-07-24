@@ -11,7 +11,11 @@ AgentsCommander is a **local desktop application** that spawns coding-agent CLIs
 1. **The user.** Operates the GUI, picks coding agents, accepts the actions agents propose. Fully trusted.
 2. **The coding agents.** Claude Code, Codex, Gemini, and Pi. They run in real PTYs as full user-level processes and are trusted with the user's local file system to the same degree the user trusts them when launched directly.
 3. **The optional network endpoints.** Telegram Bot API and the Google Gemini API for voice-to-text. Only contacted when the user explicitly enables those features.
-4. **The disk.** Configuration, sessions, teams, conversations, and messages all live as plain files under `~/.agentscommander/` (or the portable instance's `.agentscommander_<suffix>/`).
+4. **The disk.** Configuration, sessions, teams, conversations, and messages
+   live as plain files under the authoritative config directory. The canonical
+   Linux DEB uses `$XDG_CONFIG_HOME/agentscommander`, with
+   `$HOME/.config/agentscommander` as fallback. Raw portable binaries use their
+   executable-relative instance directory.
 
 AC does not:
 
@@ -24,7 +28,7 @@ AC does not:
 When you launch a session, the coding agent inherits:
 
 - The session's working directory and everything reachable from it.
-- The environment variables of the AC process (including `PATH`, `HOME`, and any keys you may have exported).
+- The environment variables of the AC process (including `PATH`, `HOME`, and any keys you may have exported). A local Linux Codex child may receive existing user binary directories prepended to its child-only PATH; AC and its internal Git commands keep the parent PATH.
 - The user-level filesystem and network permissions you yourself have.
 
 This is the same surface area the coding agent has when you launch it from your own terminal. AC adds visibility and coordination; it does **not** add a sandbox. If the underlying agent can `rm -rf ~/`, AC will let it.
@@ -32,6 +36,31 @@ This is the same surface area the coding agent has when you launch it from your 
 Pi auto-resume does not add a state-reading boundary. AC does not inspect or copy `~/.pi/agent/`, `PI_CODING_AGENT_SESSION_DIR`, or `--session-dir` paths, and a Pi option that names Claude does not trigger AC's Claude projects-directory probe. AC does not provision Pi credentials or map Pi state into containers. It only adds `--continue` to an eligible configured known-state launch; [Pi remains responsible for session lookup and errors](integrations/coding-agents.md#no-ac-side-pi-state-probe-or-fallback).
 
 If you need stricter isolation, run AC inside a virtualized environment (WSL2, Linux VM, devcontainer) and limit the VM's network and filesystem access there.
+
+## Linux config-state boundary
+
+Before opening settings or logs, the Linux GUI resolves the authoritative
+config root and validates it through retained directory descriptors. The final
+root may not be a symlink, and security-bearing files must be owned regular
+files with one link. Private directories are `0700`; private files and
+persistent locks are `0600`. AC rechecks device and inode identity around
+operations so a replaced directory entry fails closed.
+
+The GUI acquires the config-scoped coding-agent mutation lock before the GUI
+instance lock and retains both for its lifetime. This prevents two GUIs from
+publishing the same token, outbox, or PID state. A direct `coding-agent`
+mutation uses the same protocol; while a GUI is live it queues through that
+GUI, and transient contention reports a safe-to-retry busy result.
+
+Runtime token, pointer, and PID files are published only after setup succeeds,
+with the PID marker last. Failed uncommitted startup removes publications and
+owned instance state. Safe stale instance cleanup never follows links or
+removes non-canonical entries.
+
+These checks protect against unsafe filesystem shapes and accidental
+cross-instance state reuse. They do not isolate processes running as the same
+OS user: such a process can still read owner-accessible plaintext or inspect
+process memory.
 
 ## Inter-agent routing
 
@@ -112,7 +141,10 @@ Linux and macOS builds are not signed today.
 - **Windows code signing** is pending SignPath setup and approval ([#717](https://github.com/mblua/AgentsCommander/issues/717)).
 - **`--root` is unverified** at the CLI boundary. A malicious local process with shell access can spoof its own root. Mitigated by the daemon-side per-session token check, but not eliminated.
 - **No sandbox between agents.** Two agents in the same workgroup share filesystem access. If you need hard isolation, run each agent in its own VM or container.
-- **API keys live in plaintext** at `~/.agentscommander/settings.json`. Protect your user account; if your account is compromised, the keys are.
+- **API keys live in plaintext** at `<config-dir>/settings.json`. Linux
+  owner-only modes reduce cross-user exposure but do not protect against
+  another process running as the same user. Protect your user account; if it is
+  compromised, the keys are.
 - **Copied container credentials get no owner-only ACL on Windows** ([#933](https://github.com/mblua/AgentsCommander/issues/933)). The copy inherits the workspace tree's ACL, which for a user-chosen repo path can be broader than `~/.claude` (shared drives, `Everyone:R`). Unix gets `0o600`.
 - **An unclean host crash can leave a copied container credential on disk** ([#933](https://github.com/mblua/AgentsCommander/issues/933)). Teardown deletes it and the next same-agent launch overwrites it, but there is no boot-time sweep, so a replica you never relaunch keeps a live refresh token indefinitely.
 

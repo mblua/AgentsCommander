@@ -12,29 +12,71 @@ fn pid_path() -> Option<PathBuf> {
 
 /// Write the current process PID to `daemon.pid`. Idempotent (overwrites).
 /// Called once at daemon startup, after `config_dir` has been resolved.
-pub fn write_pid_file() {
-    if let Some(path) = pid_path() {
-        // Best-effort write. If the daemon can't write the pid file (perms?),
-        // log it but do not abort startup — the CLI just won't get its warning.
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Err(e) = std::fs::write(&path, std::process::id().to_string()) {
-            log::warn!("[daemon-pid] Failed to write pid file at {:?}: {}", path, e);
-        } else {
-            log::info!(
-                "[daemon-pid] Wrote pid {} to {:?}",
-                std::process::id(),
-                path
-            );
-        }
+pub fn write_pid_file() -> Result<(), crate::errors::StartupError> {
+    let path = pid_path().ok_or_else(|| crate::errors::StartupError::MissingConfigDir {
+        executable: super::current_executable(),
+    })?;
+    let payload = std::process::id().to_string();
+
+    #[cfg(target_os = "linux")]
+    {
+        let root = super::linux_state::prepared_secure_config_root("write daemon PID")?;
+        root.atomic_publish(
+            std::ffi::OsStr::new("daemon.pid"),
+            payload.as_bytes(),
+            "write daemon PID",
+        )?;
     }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| {
+                crate::errors::StartupError::io("create daemon PID directory", parent, source)
+            })?;
+        }
+        std::fs::write(&path, payload.as_bytes())
+            .map_err(|source| crate::errors::StartupError::io("write daemon PID", &path, source))?;
+    }
+    log::info!(
+        "[daemon-pid] Wrote pid {} to {:?}",
+        std::process::id(),
+        path
+    );
+    Ok(())
 }
 
 /// Remove the pid file on graceful shutdown. Best-effort.
 pub fn remove_pid_file() {
-    if let Some(path) = pid_path() {
-        let _ = std::fs::remove_file(&path);
+    let Some(path) = pid_path() else {
+        return;
+    };
+    #[cfg(target_os = "linux")]
+    let result = super::linux_state::prepared_secure_config_root("remove daemon PID")
+        .and_then(|root| {
+            root.unlink_private_file_if_present(
+                std::ffi::OsStr::new("daemon.pid"),
+                "remove daemon PID",
+            )
+            .map(|_| ())
+        })
+        .map_err(|error| error.to_string());
+    #[cfg(not(target_os = "linux"))]
+    let result = std::fs::remove_file(&path)
+        .or_else(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        })
+        .map_err(|error| error.to_string());
+    if let Err(error) = result {
+        log::warn!(
+            "[daemon-pid] Failed to remove pid file at {}: {}",
+            path.display(),
+            error
+        );
     }
 }
 
@@ -55,14 +97,14 @@ pub enum DaemonState {
     MalformedPidFile,
 }
 
-/// Public entry point — resolves the pid path from `config_dir()` and
-/// delegates to `detect_daemon_state_at`. Returns `NoPidFile` if `config_dir`
-/// is unavailable (no home dir).
-pub fn detect_daemon_state() -> DaemonState {
-    match pid_path() {
-        Some(p) => detect_daemon_state_at(&p),
-        None => DaemonState::NoPidFile,
-    }
+/// Public entry point: resolves and validates the production PID marker.
+/// True absence returns `NoPidFile`; Linux config-resolution or marker-safety
+/// failures stay typed, while non-Linux keeps the legacy missing-config result.
+pub fn detect_daemon_state() -> Result<DaemonState, crate::errors::StartupError> {
+    let Some(contents) = super::runtime_files::read_daemon_pid()? else {
+        return Ok(DaemonState::NoPidFile);
+    };
+    Ok(detect_daemon_state_from_contents(&contents))
 }
 
 /// Path-parameterized inner detector. Test against this with a `tempfile::TempDir`
@@ -75,6 +117,10 @@ pub fn detect_daemon_state_at(path: &Path) -> DaemonState {
         Ok(s) => s,
         Err(_) => return DaemonState::NoPidFile,
     };
+    detect_daemon_state_from_contents(&contents)
+}
+
+fn detect_daemon_state_from_contents(contents: &str) -> DaemonState {
     let pid: u32 = match contents.trim().parse() {
         Ok(n) => n,
         Err(_) => return DaemonState::MalformedPidFile,
@@ -123,15 +169,9 @@ fn is_pid_alive(pid: u32) -> bool {
 
 #[cfg(not(target_os = "windows"))]
 fn is_pid_alive(_pid: u32) -> bool {
-    // Windows-first stub (plan D4-b). AgentsCommander is Windows-first; the
-    // daemon-pid warning is a stderr quality-of-life signal, not a
-    // correctness-critical check. Returning `true` here means the CLI never
-    // warns about a stale snapshot on Linux/macOS — acceptable until/unless
-    // we ship for those platforms. Avoids adding a `libc` direct dep
-    // (`src-tauri/Cargo.toml` does NOT currently list libc) just for platform
-    // parity. If we later need real Unix coverage, add `libc = "0.2"` under
-    // `[target.'cfg(not(target_os = "windows"))'.dependencies]` and replace
-    // this body with `unsafe { libc::kill(_pid as libc::pid_t, 0) == 0 }`.
+    // Preserve the pre-#1111 non-Windows behavior. PID liveness is only a
+    // quality-of-life warning and is not part of the Linux secure-state
+    // authority decision.
     true
 }
 

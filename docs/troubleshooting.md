@@ -14,6 +14,20 @@ Get-AuthenticodeSignature "Agents Commander_X.Y.Z_x64-setup.exe"
 
 Until Windows signing is active, `Status` may read `NotSigned`. Once SignPath signing is active, `Status` should read `Valid`. See [`CODE_SIGNING_POLICY.md`](../CODE_SIGNING_POLICY.md).
 
+### Linux: install or repair the DEB
+
+Download `Agents Commander_<version>_amd64.deb` and let APT install the exact
+file so its WebKit and desktop runtime dependencies are resolved:
+
+```bash
+sudo apt install "./Agents Commander_<version>_amd64.deb"
+```
+
+The installed executable must be the regular, non-symlink file
+`/usr/bin/agentscommander`. If a partial manual install omitted runtime
+dependencies, rerun the APT command rather than copying the binary out of the
+package.
+
 ### Linux: `.AppImage` will not execute
 
 ```bash
@@ -55,7 +69,18 @@ command -v gemini
 command -v pi
 ```
 
-Each successful command prints an executable path. If the binary is installed but no path appears, add it to `PATH` or point the matching `agents[]` entry's `command` at the full path. See [Installing the coding-agent CLIs](integrations/coding-agents.md#installing-the-clis) and the [Settings reference](reference/settings.md).
+Each successful command prints an executable path. If the binary is installed
+but no path appears, add it to `PATH` or point the matching `agents[]` entry's
+`command` at the full path.
+
+On Linux, local Codex launches have one additional child-only lookup rule. If
+the coding-agent entry neither sets nor removes exact key `PATH`, AC prepends
+existing `$HOME/.local/bin`, `$HOME/bin`, and `$HOME/.cargo/bin` directories in
+that order, then preserves the inherited PATH. An explicitly configured PATH,
+including an empty value, wins; an explicit removal also wins. This does not
+change AC's own PATH or the PATH used by its internal Git commands. See
+[Installing the coding-agent CLIs](integrations/coding-agents.md#installing-the-clis)
+and the [Settings reference](reference/settings.md).
 
 ### A coding-agent wrapper is not detected
 
@@ -83,6 +108,33 @@ If the line is absent, check these conditions:
 If the log line appears but Pi opens a new conversation, Pi found no matching session for the current working directory and effective session directory. That is Pi's normal `--continue` behavior. AC does not inspect Pi storage or retry without the flag. Use the accepted separated spelling `--session-dir <dir>` when selecting custom state; Pi 0.80.10 rejects `--session-dir=<dir>`. See [Pi resume behavior](integrations/coding-agents.md#pi-resume-behavior).
 
 ## Sessions
+
+### Linux reports an unsafe config path
+
+The canonical DEB stores config at
+`$XDG_CONFIG_HOME/agentscommander`, falling back to
+`$HOME/.config/agentscommander`. At startup AC requires that root to be an
+owned real directory, not a final symlink or special file, and validates its
+security-bearing children without following links. It repairs safe owned modes
+to `0700` for private directories and `0600` for private files.
+
+Do not replace the config root with a symlink. If you intentionally moved it,
+restore a real directory at the authoritative path, copy only files you trust,
+and verify ownership before relaunching. The typed error names the path and
+failed operation. Errors that occur before logging is available appear in the
+launch terminal or a native startup dialog.
+
+### A second Linux launch exits immediately
+
+One GUI owns `coding-agent-mutation.lock` and `gui-instance.lock` for the
+lifetime of a config root. A second launch for the same root exits successfully
+without cleanup or publication. Separate absolute `XDG_CONFIG_HOME` values, or
+separate raw portable binaries, can run together.
+
+To reset the canonical DEB after the GUI is fully stopped, back up and then
+remove `$XDG_CONFIG_HOME/agentscommander`, or its
+`$HOME/.config/agentscommander` fallback. Never delete that directory while a
+GUI or coding-agent mutation is active.
 
 ### Session is "running" but the agent looks idle
 
@@ -149,7 +201,7 @@ The Gemini transcription model is `gemini-2.5-flash` by default. Switch to `gemi
 If something fails and you cannot tell why, raise the log level. Pick a level in **Settings -> General -> Logging** (it applies live, no restart), set `logLevel` in `settings.json`, or set `RUST_LOG` before launching for per-module filtering from a terminal:
 
 ```bash
-RUST_LOG=agentscommander=trace agentscommander.exe
+RUST_LOG=agentscommander=trace agentscommander
 ```
 
 See [Log filtering](reference/log-filtering.md) for the five levels, the live selector, and precedence rules.
@@ -160,4 +212,4 @@ Still stuck? Open an [issue](https://github.com/mblua/AgentsCommander/issues) wi
 
 - Your platform and version (`agentscommander --version`)
 - The exact error message
-- A copy of `<config-dir>/app.log` (the persistent log next to the binary; see [Log filtering](reference/log-filtering.md#where-logs-go))
+- A reviewed copy of `<config-dir>/app.log` (see [Log filtering](reference/log-filtering.md#where-logs-go))

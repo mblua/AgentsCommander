@@ -496,7 +496,15 @@ Subcommands:
 
 `remove` leaves any `profilesByAgent[id]` / `profileLabelsByAgent[id]` entries in place (matching the GUI and settings repair), so a same-id re-add resurrects the old profile cells.
 
-**GUI-running routing.** While an AgentsCommander GUI for this binary identity is running (detected via the single-instance mutex), mutations are NOT written to `settings.json` directly. They are queued and applied by the running GUI against its authoritative in-memory state, then a result is returned to the CLI. While the GUI is closed, mutations load `settings.json` strictly (a present-but-unparseable file is refused, not silently defaulted) then apply and save. GUI detection is Windows-only; off-Windows a running GUI is not detected and the direct write path is always used.
+**GUI-running routing.** While an AgentsCommander GUI for this config identity
+is running on Windows or Linux, mutations are not written to `settings.json`
+directly. They are queued and applied by the running GUI against its
+authoritative in-memory state, then a result is returned to the CLI. While the
+GUI is closed, mutations load `settings.json` strictly (a
+present-but-unparseable file is refused, not silently defaulted), then apply
+and save. Linux also serializes direct writers with a config-scoped mutation
+lock. Contention from another direct writer returns an immediate safe-to-retry
+busy error. macOS retains direct mutation routing.
 
 **Known limitation (documented for scripts).** The CLI does not clobber the GUI, but the reverse remains possible: a Settings dialog that is already open with an unsaved draft can, on its next Save, revert a concurrent CLI mutation (it writes a full snapshot). Run `--launch` (or re-`show`) right after `add` so consumption happens before a Settings Save can revert.
 
@@ -612,7 +620,14 @@ Idempotent — re-registering the same path is a no-op (`Project already registe
 
 If the folder does not contain `.ac/`, the CLI suggests `new-project` instead.
 
-**Persisted forms.** Relative `PATH` still resolves against your CWD, but the registration records two paths: the canonical absolute path and a portable companion relative to the AC binary's own directory (not your CWD). See [Portable instances](../features/portable-instances.md#portable-project-paths) and the [`projectPaths` schema](settings.md#projects). A project on a different drive or UNC share than the binary records a `null` companion and remains absolute-only.
+**Persisted forms.** Relative `PATH` still resolves against your CWD. A raw
+portable binary records the canonical absolute path and, when possible, a
+portable companion relative to the binary's own directory (not your CWD). A
+project on a different drive or UNC share records a `null` companion and
+remains absolute-only. The canonical Linux DEB has no portable instance base,
+so its registrations are absolute-only. See
+[Portable instances](../features/portable-instances.md#portable-project-paths)
+and the [`projectPaths` schema](settings.md#projects).
 
 **Strict settings write.** `open-project` loads `settings.json` strictly before writing: a present-but-unparseable file, or structurally malformed project metadata, is refused with an error and no changes, rather than being silently overwritten.
 
@@ -636,7 +651,8 @@ agentscommander new-project /path/to/project
 
 Idempotent: re-running on a folder that already has `.ac/` only sweeps the Project AC Root gitignore and deduplicates the registration.
 
-Registration records both the absolute path and the instance-relative companion, and uses the same strict settings-write behavior as [`open-project`](#open-project).
+Registration uses the same package-versus-portable path contract and strict
+settings-write behavior as [`open-project`](#open-project).
 
 **No token required** — same reasoning as `open-project`.
 

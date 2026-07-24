@@ -1350,6 +1350,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn ac_root_command_expands_after_parse_for_replica_launch_root() {
         let temp = tempfile::tempdir().unwrap();
         let replica = temp
@@ -1817,6 +1818,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn command_runs_opencode_matches_basename_and_wrapper() {
         assert!(command_runs_opencode("opencode", &[]));
         assert!(command_runs_opencode("opencode.exe", &[]));

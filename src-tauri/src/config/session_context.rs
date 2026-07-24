@@ -3235,7 +3235,7 @@ Your AgentsCommander credentials are in these environment variables:
 - `AGENTSCOMMANDER_ROOT`: agent root
 - `AGENTSCOMMANDER_BINARY`: binary name
 - `AGENTSCOMMANDER_BINARY_PATH`: full CLI path to invoke
-- `AGENTSCOMMANDER_LOCAL_DIR`: config directory name for this instance
+- `AGENTSCOMMANDER_LOCAL_DIR`: authoritative host config-directory path for this instance (normally an absolute full path, never merely a basename)
 
 Always invoke the CLI through `AGENTSCOMMANDER_BINARY_PATH`; never hardcode or guess another binary.
 
@@ -3669,6 +3669,12 @@ enum LegacyGitScopeGeneration {
     Before1072,
 }
 
+#[derive(Clone, Copy)]
+enum LocalDirWordingGeneration {
+    Before1111,
+    Corrected,
+}
+
 fn legacy_rendered_default_context_for_compat(
     agent_root: &str,
     matrix_root: Option<&str>,
@@ -3679,6 +3685,21 @@ fn legacy_rendered_default_context_for_compat(
         matrix_root,
         skills_section,
         LegacyGitScopeGeneration::Current,
+        LocalDirWordingGeneration::Before1111,
+    )
+}
+
+fn corrected_legacy_rendered_default_context_for_compat(
+    agent_root: &str,
+    matrix_root: Option<&str>,
+    skills_section: &str,
+) -> String {
+    legacy_rendered_default_context_for_generation(
+        agent_root,
+        matrix_root,
+        skills_section,
+        LegacyGitScopeGeneration::Current,
+        LocalDirWordingGeneration::Corrected,
     )
 }
 
@@ -3692,6 +3713,21 @@ fn pre_1072_legacy_rendered_default_context_for_compat(
         matrix_root,
         skills_section,
         LegacyGitScopeGeneration::Before1072,
+        LocalDirWordingGeneration::Before1111,
+    )
+}
+
+fn corrected_pre_1072_legacy_rendered_default_context_for_compat(
+    agent_root: &str,
+    matrix_root: Option<&str>,
+    skills_section: &str,
+) -> String {
+    legacy_rendered_default_context_for_generation(
+        agent_root,
+        matrix_root,
+        skills_section,
+        LegacyGitScopeGeneration::Before1072,
+        LocalDirWordingGeneration::Corrected,
     )
 }
 
@@ -3700,6 +3736,7 @@ fn legacy_rendered_default_context_for_generation(
     matrix_root: Option<&str>,
     skills_section: &str,
     git_scope_generation: LegacyGitScopeGeneration,
+    local_dir_wording_generation: LocalDirWordingGeneration,
 ) -> String {
     enum MessagingContextMode {
         None,
@@ -3793,6 +3830,14 @@ fn legacy_rendered_default_context_for_generation(
             LEGACY_GIT_SCOPE_WITHOUT_MATRIX_BEFORE_1072
         }
     };
+    let local_dir_description = match local_dir_wording_generation {
+        LocalDirWordingGeneration::Before1111 => {
+            "the config directory name for this instance"
+        }
+        LocalDirWordingGeneration::Corrected => {
+            "the authoritative host config-directory path for this instance (normally an absolute full path, never merely a basename)"
+        }
+    };
     let agency_cache_guidance = root_agency_cache_guidance(agent_root);
     let peer_name_format = match &messaging_mode {
         MessagingContextMode::Root(_) => "- **Root Agent sessions**: verified WG coordinator replicas only, shaped `<project>:<workgroup>/<agent>` — e.g. `agentscommander:wg-15-dev-team/tech-lead`.\n\nOrigin coordinators and non-coordinator WG replicas are not valid Root Agent targets in #277.".to_string(),
@@ -3880,7 +3925,7 @@ Your AgentsCommander session credentials are available as environment variables:
 - `AGENTSCOMMANDER_ROOT`: your working directory (agent root)
 - `AGENTSCOMMANDER_BINARY`: the CLI binary name
 - `AGENTSCOMMANDER_BINARY_PATH`: the full path to the CLI executable you must use
-- `AGENTSCOMMANDER_LOCAL_DIR`: the config directory name for this instance
+- `AGENTSCOMMANDER_LOCAL_DIR`: {local_dir_description}
 
 Use `AGENTSCOMMANDER_BINARY_PATH` when invoking the CLI. This ensures you use the correct binary for your instance, whether it is the installed version or a dev/WG build.
 
@@ -3988,7 +4033,7 @@ fn current_legacy_rendered_default_context(
     matrix_root: Option<&str>,
     skills_section: &str,
 ) -> String {
-    legacy_rendered_default_context_for_compat(agent_root, matrix_root, skills_section)
+    corrected_legacy_rendered_default_context_for_compat(agent_root, matrix_root, skills_section)
 }
 
 fn looks_like_generated_legacy_default_context(normalized: &str) -> bool {
@@ -4008,7 +4053,7 @@ fn looks_like_generated_legacy_default_context(normalized: &str) -> bool {
         .any(|expected| normalize_context_for_compat(expected) == normalized)
 }
 
-fn reconstruct_legacy_rendered_default_context(normalized: &str) -> Option<[String; 2]> {
+fn reconstruct_legacy_rendered_default_context(normalized: &str) -> Option<Vec<String>> {
     let required_once = [
         "# AgentsCommander Context",
         "## GOLDEN RULE",
@@ -4071,7 +4116,7 @@ fn reconstruct_legacy_rendered_default_context(normalized: &str) -> Option<[Stri
         return None;
     }
 
-    Some([
+    let mut candidates = vec![
         legacy_rendered_default_context_for_compat(
             &agent_root,
             matrix_root.as_deref(),
@@ -4082,7 +4127,19 @@ fn reconstruct_legacy_rendered_default_context(normalized: &str) -> Option<[Stri
             matrix_root.as_deref(),
             &skills_section,
         ),
-    ])
+        corrected_legacy_rendered_default_context_for_compat(
+            &agent_root,
+            matrix_root.as_deref(),
+            &skills_section,
+        ),
+        corrected_pre_1072_legacy_rendered_default_context_for_compat(
+            &agent_root,
+            matrix_root.as_deref(),
+            &skills_section,
+        ),
+    ];
+    candidates.dedup();
+    Some(candidates)
 }
 
 fn extract_legacy_code_block_after(value: &str, marker: &str) -> Option<String> {
@@ -5994,7 +6051,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     }
 
     #[test]
-    fn legacy_rendered_default_template_is_not_fallback_appended() {
+    fn legacy_rendered_default_template_heals_without_fallback_appending() {
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace_dir = temp.path().join(".ac");
         let matrix_root = workspace_dir.join("_agent_dev-rust");
@@ -6006,11 +6063,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
 
         let agent_root = path_string(&replica_root);
         let matrix_root = path_string(&matrix_root);
-        let legacy = legacy_rendered_default_context_for_compat(
-            &agent_root,
-            Some(&matrix_root),
-            &no_skill_section(),
-        );
+        let skills = render_skills_section(&discover_skill_index(Some(&matrix_root)));
+        let legacy =
+            legacy_rendered_default_context_for_compat(&agent_root, Some(&matrix_root), &skills);
         std::fs::write(
             workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
             &legacy,
@@ -6020,15 +6075,34 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let rendered = resolve_agent_context(
             &agent_root,
             Some(&matrix_root),
-            &no_skill_section(),
+            &skills,
             &replica_root,
             None,
             None,
         )
         .expect("resolve context");
 
-        assert_eq!(rendered, legacy);
+        let expected = render_default_agent_context(
+            &agent_root,
+            Some(&matrix_root),
+            &skills,
+            &replica_root,
+            None,
+            None,
+        );
+        assert_eq!(rendered, expected);
         assert_eq!(count_context_occurrences(&rendered, "## GOLDEN RULE"), 1);
+        assert_eq!(
+            rendered
+                .matches("authoritative host config-directory path for this instance")
+                .count(),
+            1
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read healed template"),
+            get_default_agent_template()
+        );
     }
 
     #[test]
@@ -7069,6 +7143,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             Some(&path_string(&new_matrix)),
             &no_skill_section(),
             &new_replica,
+            None,
             None,
         );
 
@@ -9478,6 +9553,82 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             on_disk, legacy,
             "edited legacy file must be preserved, never healed"
         );
+    }
+
+    #[test]
+    fn local_dir_wording_and_git_generations_remain_compatible() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join(".ac");
+        let agent_root_path = workspace.join("wg-1-team").join("__agent_dev");
+        let matrix_root_path = workspace.join("_agent_dev");
+        std::fs::create_dir_all(&agent_root_path).expect("create replica");
+        std::fs::create_dir_all(&matrix_root_path).expect("create matrix");
+        let agent_root = path_string(&agent_root_path);
+        let matrix_root = path_string(&matrix_root_path);
+        let skills = render_skills_section(&discover_skill_index(Some(&matrix_root)));
+        let before_current =
+            legacy_rendered_default_context_for_compat(&agent_root, Some(&matrix_root), &skills);
+        let before_pre_1072 = pre_1072_legacy_rendered_default_context_for_compat(
+            &agent_root,
+            Some(&matrix_root),
+            &skills,
+        );
+        let corrected_current = corrected_legacy_rendered_default_context_for_compat(
+            &agent_root,
+            Some(&matrix_root),
+            &skills,
+        );
+        let corrected_pre_1072 = corrected_pre_1072_legacy_rendered_default_context_for_compat(
+            &agent_root,
+            Some(&matrix_root),
+            &skills,
+        );
+
+        let candidates = reconstruct_legacy_rendered_default_context(
+            &normalize_context_for_compat(&before_current),
+        )
+        .expect("reconstruct generated context candidates");
+        assert_eq!(candidates.len(), 4);
+        for expected in [
+            before_current.clone(),
+            before_pre_1072.clone(),
+            corrected_current.clone(),
+            corrected_pre_1072.clone(),
+        ] {
+            assert!(candidates.contains(&expected));
+        }
+
+        for (label, rendered) in [
+            ("before-current", &before_current),
+            ("before-pre-1072", &before_pre_1072),
+            ("corrected-pre-1072", &corrected_pre_1072),
+        ] {
+            assert!(
+                matches!(
+                    classify_legacy_rendered_default_context(
+                        rendered,
+                        &agent_root,
+                        Some(&matrix_root),
+                        &skills,
+                    ),
+                    LegacyRenderedDefaultContext::StaleGenerated
+                ),
+                "{label} generation was not recognized"
+            );
+        }
+        assert!(matches!(
+            classify_legacy_rendered_default_context(
+                &corrected_current,
+                &agent_root,
+                Some(&matrix_root),
+                &skills,
+            ),
+            LegacyRenderedDefaultContext::Current
+        ));
+
+        let corrected_phrase = "authoritative host config-directory path for this instance (normally an absolute full path, never merely a basename)";
+        assert_eq!(DEFAULT_CLI_CONTEXT.matches(corrected_phrase).count(), 1);
+        assert!(!DEFAULT_CLI_CONTEXT.contains("config directory name for this instance"));
     }
 }
 

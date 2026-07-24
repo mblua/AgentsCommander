@@ -507,6 +507,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn find_session_file_matches_forward_slash_ac_input_against_backslash_codex_input() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();

@@ -146,11 +146,14 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
     // Check master token from LocalDir as additional bypass (independent of validate_cli_token).
     let is_master = is_root || {
         if let Some(ref token_str) = args.token {
-            crate::config::config_dir()
-                .map(|d| d.join("master-token.txt"))
-                .and_then(|p| std::fs::read_to_string(&p).ok())
-                .map(|m| m.trim() == token_str)
-                .unwrap_or(false)
+            match crate::config::runtime_files::read_master_token() {
+                Ok(Some(master)) => master.trim() == token_str,
+                Ok(None) => false,
+                Err(error) => {
+                    eprintln!("Error: {error}");
+                    return 1;
+                }
+            }
         } else {
             false
         }
@@ -206,13 +209,13 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
     // Write to outbox — use app outbox for root/master token, else agent's outbox
     let ac_dir = PathBuf::from(&root).join(crate::config::agent_local_dir_name());
     let outbox_dir = if is_root {
-        let app_outbox = crate::config::config_dir()
-            .map(|d| d.join("app-outbox-path.txt"))
-            .and_then(|p| std::fs::read_to_string(&p).ok())
-            .map(|s| PathBuf::from(s.trim()));
-        match app_outbox {
-            Some(p) if p.is_dir() => p,
-            _ => ac_dir.join("outbox"),
+        match crate::cli::current_app_outbox() {
+            Ok(Some(path)) => path,
+            Ok(None) => ac_dir.join("outbox"),
+            Err(error) => {
+                eprintln!("Error: {error}");
+                return 1;
+            }
         }
     } else {
         ac_dir.join("outbox")

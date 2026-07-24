@@ -1627,9 +1627,137 @@ fn settings_path() -> Option<PathBuf> {
     super::config_dir().map(|d| d.join("settings.json"))
 }
 
+#[derive(Debug, Clone)]
+enum SettingsIoTarget {
+    Production,
+    Injected(PathBuf),
+}
+
+#[derive(Debug, thiserror::Error)]
+enum SettingsIoError {
+    #[cfg(target_os = "linux")]
+    #[error(transparent)]
+    Startup(#[from] crate::errors::StartupError),
+
+    #[error("{0}")]
+    Message(String),
+}
+
+impl SettingsIoError {
+    #[cfg(target_os = "linux")]
+    fn into_startup(self) -> crate::errors::StartupError {
+        match self {
+            Self::Startup(error) => error,
+            Self::Message(message) => crate::errors::StartupError::Initialization {
+                component: "startup settings",
+                message,
+            },
+        }
+    }
+}
+
+impl From<String> for SettingsIoError {
+    fn from(message: String) -> Self {
+        Self::Message(message)
+    }
+}
+
+impl From<SettingsIoError> for String {
+    fn from(error: SettingsIoError) -> Self {
+        error.to_string()
+    }
+}
+
+impl SettingsIoTarget {
+    fn path(&self) -> Result<PathBuf, SettingsIoError> {
+        match self {
+            Self::Production => {
+                #[cfg(target_os = "linux")]
+                {
+                    settings_path().ok_or_else(|| {
+                        crate::errors::StartupError::MissingConfigDir {
+                            executable: super::current_executable(),
+                        }
+                        .into()
+                    })
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    settings_path().ok_or_else(|| {
+                        SettingsIoError::Message("Could not determine home directory".to_string())
+                    })
+                }
+            }
+            Self::Injected(path) => Ok(path.clone()),
+        }
+    }
+
+    fn read_bytes(
+        &self,
+        limit: usize,
+        operation: &'static str,
+    ) -> Result<Option<Vec<u8>>, SettingsIoError> {
+        let path = self.path()?;
+        #[cfg(target_os = "linux")]
+        if matches!(self, Self::Production) {
+            let root = super::linux_state::prepared_secure_config_root(operation)?;
+            return root
+                .read_private_file(std::ffi::OsStr::new("settings.json"), limit, operation)
+                .map_err(SettingsIoError::from);
+        }
+
+        match std::fs::read(&path) {
+            Ok(bytes) if bytes.len() <= limit => Ok(Some(bytes)),
+            Ok(_) => Err(SettingsIoError::Message(format!(
+                "{} exceeds the {}-byte settings read limit",
+                path.display(),
+                limit
+            ))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(SettingsIoError::Message(format!(
+                "Failed to read {}: {}",
+                path.display(),
+                error
+            ))),
+        }
+    }
+
+    fn atomic_write(&self, value: &Value) -> Result<(), SettingsIoError> {
+        let path = self.path()?;
+        let json = serde_json::to_string_pretty(value)
+            .map_err(|error| format!("Failed to serialize settings: {error}"))?;
+
+        #[cfg(target_os = "linux")]
+        if matches!(self, Self::Production) {
+            let root = super::linux_state::prepared_secure_config_root("publish Linux settings")?;
+            return root
+                .atomic_publish(
+                    std::ffi::OsStr::new("settings.json"),
+                    json.as_bytes(),
+                    "publish Linux settings",
+                )
+                .map_err(SettingsIoError::from);
+        }
+
+        write_value_atomic_injected(value, &path).map_err(SettingsIoError::from)
+    }
+}
+
 /// Load settings from the app config directory (see config_dir()), falling back to defaults.
 /// Auto-generates a root_token if missing and persists it.
 pub fn load_settings() -> AppSettings {
+    #[cfg(target_os = "linux")]
+    {
+        match load_settings_from_production(false) {
+            Ok(settings) => settings,
+            Err(error) => {
+                log::error!("Failed to load secure Linux settings: {error}");
+                AppSettings::default()
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
     let path = match settings_path() {
         Some(p) => p,
         None => {
@@ -1638,9 +1766,125 @@ pub fn load_settings() -> AppSettings {
         }
     };
 
-    load_settings_from_path(&path)
+    #[cfg(not(target_os = "linux"))]
+    {
+        load_settings_from_path(&path)
+    }
 }
 
+pub fn load_settings_for_startup() -> Result<AppSettings, crate::errors::StartupError> {
+    #[cfg(target_os = "linux")]
+    {
+        load_settings_from_production(true).map_err(SettingsIoError::into_startup)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(load_settings())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn load_settings_from_production(strict: bool) -> Result<AppSettings, SettingsIoError> {
+    let target = SettingsIoTarget::Production;
+    let path = target.path()?;
+    let bytes = target.read_bytes(16 * 1024 * 1024, "read Linux settings")?;
+    let mut profile_migrated_to_v2 = false;
+    let mut pre_migration_contents: Option<String> = None;
+    let mut settings = match bytes {
+        None => {
+            log::info!("No settings file found at {:?}, using defaults", path);
+            AppSettings::default()
+        }
+        Some(bytes) => {
+            let contents = String::from_utf8(bytes).map_err(|error| {
+                format!(
+                    "settings.json at {} is not valid UTF-8: {}",
+                    path.display(),
+                    error
+                )
+            })?;
+            match parse_settings_json(&contents, &path.to_string_lossy()) {
+                Ok((settings, migrated)) => {
+                    if migrated {
+                        profile_migrated_to_v2 = true;
+                        pre_migration_contents = Some(contents);
+                    }
+                    settings
+                }
+                Err(error) if strict => {
+                    return Err(format!(
+                        "settings.json at {} is malformed and was left unchanged: {}",
+                        path.display(),
+                        error
+                    )
+                    .into())
+                }
+                Err(error) => {
+                    log::error!("{error}");
+                    AppSettings::default()
+                }
+            }
+        }
+    };
+
+    apply_common_in_memory_migrations(&mut settings);
+    let issue_248_migrated = settings.legacy_start_only_coordinators.is_some();
+    apply_issue_248_migration(&mut settings);
+
+    let mut needs_save = issue_248_migrated || profile_migrated_to_v2;
+    if repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents) {
+        log::info!("[settings-migration] repaired codingAgentProfiles invariants");
+        needs_save = true;
+    }
+    if settings.root_token.is_none() {
+        settings.root_token = Some(uuid::Uuid::new_v4().to_string());
+        log::info!("Generated new root token");
+        needs_save = true;
+    }
+
+    if needs_save {
+        if profile_migrated_to_v2 {
+            if let Some(contents) = pre_migration_contents.as_deref() {
+                let root = super::linux_state::prepared_secure_config_root(
+                    "write Linux settings migration backup",
+                )?;
+                root.create_if_absent(
+                    std::ffi::OsStr::new("settings.pre-384-v1.json"),
+                    contents.as_bytes(),
+                    "write Linux settings migration backup",
+                )?;
+            }
+        }
+        match save_settings_value_target(&settings, &target, ProjectWriteMode::Preserve) {
+            Ok(written) => settings = written,
+            Err(error) if strict => return Err(error),
+            Err(error) => log::error!(
+                "Failed to persist settings (root_token gen and/or settings migration): {error}"
+            ),
+        }
+    }
+    Ok(settings)
+}
+
+fn apply_common_in_memory_migrations(settings: &mut AppSettings) {
+    if settings.main_geometry.is_none() {
+        if let Some(ref geometry) = settings.terminal_geometry {
+            settings.main_geometry = Some(geometry.clone());
+            log::info!("[settings-migration] seeded main_geometry from legacy terminal_geometry");
+        }
+    }
+    if (settings.main_zoom - default_zoom()).abs() < f64::EPSILON
+        && (settings.sidebar_zoom - default_zoom()).abs() > f64::EPSILON
+    {
+        settings.main_zoom = settings.sidebar_zoom;
+    }
+    if !settings.main_always_on_top && settings.sidebar_always_on_top {
+        settings.main_always_on_top = true;
+    }
+}
+
+#[cfg_attr(all(target_os = "linux", not(test)), allow(dead_code))]
 fn load_settings_from_path(path: &Path) -> AppSettings {
     let mut profile_migrated_to_v2 = false;
     let mut pre_migration_contents: Option<String> = None;
@@ -1753,6 +1997,7 @@ fn load_settings_from_path(path: &Path) -> AppSettings {
     settings
 }
 
+#[cfg_attr(all(target_os = "linux", not(test)), allow(dead_code))]
 fn write_pre_384_v1_backup(settings_path: &Path, contents: &str) -> Result<(), String> {
     let backup_path = settings_path.with_file_name("settings.pre-384-v1.json");
     if backup_path.exists() {
@@ -1785,62 +2030,76 @@ fn write_pre_384_v1_backup(settings_path: &Path, contents: &str) -> Result<(), S
 /// then; if you add a new in-memory migration to `load_settings`, mirror
 /// it here too.
 pub fn load_settings_for_cli() -> AppSettings {
-    let path = match settings_path() {
-        Some(p) => p,
-        None => {
-            log::warn!("[cli] Could not determine home directory, using defaults");
-            return AppSettings::default();
-        }
-    };
-
-    let mut settings = if !path.exists() {
-        log::info!("[cli] No settings file found at {:?}, using defaults", path);
-        AppSettings::default()
-    } else {
-        match std::fs::read_to_string(&path) {
-            Ok(contents) => match parse_settings_json(&contents, &path.to_string_lossy()) {
-                Ok((s, _migrated)) => {
-                    log::debug!("[cli] Loaded settings from {:?}", path);
-                    s
-                }
-                Err(e) => {
-                    log::error!("[cli] {}", e);
-                    AppSettings::default()
-                }
-            },
-            Err(e) => {
-                log::error!("[cli] Failed to read settings file: {}", e);
+    #[cfg(target_os = "linux")]
+    {
+        match load_settings_for_cli_from_production(false) {
+            Ok(settings) => settings,
+            Err(error) => {
+                log::error!("[cli] {error}");
                 AppSettings::default()
             }
         }
-    };
-
-    // 0.8.0 unified-window migration — must mirror `load_settings` exactly,
-    // EXCEPT for the root_token auto-gen + save_settings call.
-    if settings.main_geometry.is_none() {
-        if let Some(ref g) = settings.terminal_geometry {
-            settings.main_geometry = Some(g.clone());
-        }
     }
-    if (settings.main_zoom - default_zoom()).abs() < f64::EPSILON
-        && (settings.sidebar_zoom - default_zoom()).abs() > f64::EPSILON
+
+    #[cfg(not(target_os = "linux"))]
     {
-        settings.main_zoom = settings.sidebar_zoom;
-    }
-    if !settings.main_always_on_top && settings.sidebar_always_on_top {
-        settings.main_always_on_top = true;
-    }
+        let path = match settings_path() {
+            Some(p) => p,
+            None => {
+                log::warn!("[cli] Could not determine home directory, using defaults");
+                return AppSettings::default();
+            }
+        };
 
-    // #248 migration — translate in-memory only. The CLI loader is forbidden
-    // from writing settings.json per the §463 contract (load_settings_for_cli
-    // is the read-only variant used by mutating verbs like `open-project` and
-    // `new-project`; it must not race with the GUI's settings writes). The
-    // next GUI launch finalizes the migration to disk via load_settings.
-    apply_issue_248_migration(&mut settings);
-    repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
+        let mut settings = if !path.exists() {
+            log::info!("[cli] No settings file found at {:?}, using defaults", path);
+            AppSettings::default()
+        } else {
+            match std::fs::read_to_string(&path) {
+                Ok(contents) => match parse_settings_json(&contents, &path.to_string_lossy()) {
+                    Ok((s, _migrated)) => {
+                        log::debug!("[cli] Loaded settings from {:?}", path);
+                        s
+                    }
+                    Err(e) => {
+                        log::error!("[cli] {}", e);
+                        AppSettings::default()
+                    }
+                },
+                Err(e) => {
+                    log::error!("[cli] Failed to read settings file: {}", e);
+                    AppSettings::default()
+                }
+            }
+        };
 
-    // NO root_token auto-gen, NO save_settings call.
-    settings
+        // 0.8.0 unified-window migration - must mirror `load_settings` exactly,
+        // EXCEPT for the root_token auto-gen + save_settings call.
+        if settings.main_geometry.is_none() {
+            if let Some(ref g) = settings.terminal_geometry {
+                settings.main_geometry = Some(g.clone());
+            }
+        }
+        if (settings.main_zoom - default_zoom()).abs() < f64::EPSILON
+            && (settings.sidebar_zoom - default_zoom()).abs() > f64::EPSILON
+        {
+            settings.main_zoom = settings.sidebar_zoom;
+        }
+        if !settings.main_always_on_top && settings.sidebar_always_on_top {
+            settings.main_always_on_top = true;
+        }
+
+        // #248 migration - translate in-memory only. The CLI loader is forbidden
+        // from writing settings.json per the §463 contract (load_settings_for_cli
+        // is the read-only variant used by mutating verbs like `open-project` and
+        // `new-project`; it must not race with the GUI's settings writes). The
+        // next GUI launch finalizes the migration to disk via load_settings.
+        apply_issue_248_migration(&mut settings);
+        repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
+
+        // NO root_token auto-gen, NO save_settings call.
+        settings
+    }
 }
 
 /// #786 R1: strict CLI loader for MUTATING paths and `list`/`show`. Identical to
@@ -1855,45 +2114,89 @@ pub fn load_settings_for_cli() -> AppSettings {
 /// Keep the in-memory migration tail in lockstep with `load_settings_for_cli`
 /// (see the note above that function).
 pub fn load_settings_for_cli_strict() -> Result<AppSettings, String> {
-    let mut settings = match settings_path() {
-        // No home dir to locate settings.json: nothing to protect, and a later
-        // save would fail to resolve the dir anyway. Start from default.
+    #[cfg(target_os = "linux")]
+    {
+        load_settings_for_cli_from_production(true)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let mut settings = match settings_path() {
+            // No home dir to locate settings.json: nothing to protect, and a later
+            // save would fail to resolve the dir anyway. Start from default.
+            None => AppSettings::default(),
+            Some(path) if !path.exists() => AppSettings::default(),
+            Some(path) => {
+                let contents = std::fs::read_to_string(&path).map_err(|e| {
+                    format!(
+                        "settings.json exists at {} but could not be read ({e}); refusing to modify it - fix or remove the file first",
+                        path.display()
+                    )
+                })?;
+                let (s, _migrated) =
+                    parse_settings_json(&contents, &path.to_string_lossy()).map_err(|e| {
+                        format!(
+                            "settings.json exists but could not be parsed ({e}); refusing to modify it - fix or remove the file first"
+                        )
+                    })?;
+                s
+            }
+        };
+
+        // Mirror `load_settings_for_cli`'s in-memory migrations (no disk write).
+        if settings.main_geometry.is_none() {
+            if let Some(ref g) = settings.terminal_geometry {
+                settings.main_geometry = Some(g.clone());
+            }
+        }
+        if (settings.main_zoom - default_zoom()).abs() < f64::EPSILON
+            && (settings.sidebar_zoom - default_zoom()).abs() > f64::EPSILON
+        {
+            settings.main_zoom = settings.sidebar_zoom;
+        }
+        if !settings.main_always_on_top && settings.sidebar_always_on_top {
+            settings.main_always_on_top = true;
+        }
+        apply_issue_248_migration(&mut settings);
+        repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
+
+        Ok(settings)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn load_settings_for_cli_from_production(strict: bool) -> Result<AppSettings, String> {
+    let target = SettingsIoTarget::Production;
+    let path = target.path().map_err(String::from)?;
+    let mut settings = match target
+        .read_bytes(16 * 1024 * 1024, "read Linux CLI settings")
+        .map_err(String::from)?
+    {
         None => AppSettings::default(),
-        Some(path) if !path.exists() => AppSettings::default(),
-        Some(path) => {
-            let contents = std::fs::read_to_string(&path).map_err(|e| {
+        Some(bytes) => {
+            let contents = String::from_utf8(bytes).map_err(|error| {
                 format!(
-                    "settings.json exists at {} but could not be read ({e}); refusing to modify it - fix or remove the file first",
+                    "settings.json exists at {} but is not valid UTF-8 ({error}); refusing to modify it",
                     path.display()
                 )
             })?;
-            let (s, _migrated) =
-                parse_settings_json(&contents, &path.to_string_lossy()).map_err(|e| {
-                    format!(
-                        "settings.json exists but could not be parsed ({e}); refusing to modify it - fix or remove the file first"
-                    )
-                })?;
-            s
+            match parse_settings_json(&contents, &path.to_string_lossy()) {
+                Ok((settings, _)) => settings,
+                Err(error) if strict => {
+                    return Err(format!(
+                        "settings.json exists but could not be parsed ({error}); refusing to modify it - fix or remove the file first"
+                    ))
+                }
+                Err(error) => {
+                    log::error!("[cli] {error}");
+                    AppSettings::default()
+                }
+            }
         }
     };
-
-    // Mirror `load_settings_for_cli`'s in-memory migrations (no disk write).
-    if settings.main_geometry.is_none() {
-        if let Some(ref g) = settings.terminal_geometry {
-            settings.main_geometry = Some(g.clone());
-        }
-    }
-    if (settings.main_zoom - default_zoom()).abs() < f64::EPSILON
-        && (settings.sidebar_zoom - default_zoom()).abs() > f64::EPSILON
-    {
-        settings.main_zoom = settings.sidebar_zoom;
-    }
-    if !settings.main_always_on_top && settings.sidebar_always_on_top {
-        settings.main_always_on_top = true;
-    }
+    apply_common_in_memory_migrations(&mut settings);
     apply_issue_248_migration(&mut settings);
     repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
-
     Ok(settings)
 }
 
@@ -1935,6 +2238,7 @@ fn apply_issue_248_migration(settings: &mut AppSettings) {
 ///
 /// Returns `None` on missing file, missing field, malformed JSON, unreadable filesystem,
 /// or any other read error — fully read-only and side-effect-free.
+#[cfg_attr(all(target_os = "linux", not(test)), allow(dead_code))]
 fn read_log_level_from_path(path: &std::path::Path) -> Option<String> {
     let contents = std::fs::read_to_string(path).ok()?;
     let v: serde_json::Value = serde_json::from_str(&contents).ok()?;
@@ -1943,7 +2247,48 @@ fn read_log_level_from_path(path: &std::path::Path) -> Option<String> {
 
 /// See `read_log_level_from_path`. Resolves the canonical settings path and delegates.
 pub fn read_log_level_only() -> Option<String> {
-    read_log_level_from_path(&settings_path()?)
+    #[cfg(target_os = "linux")]
+    {
+        match read_log_level_for_startup() {
+            Ok(level) => level,
+            Err(error) => {
+                eprintln!("[settings] failed to read secure log level: {error}");
+                None
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        read_log_level_from_path(&settings_path()?)
+    }
+}
+
+pub fn read_log_level_for_startup() -> Result<Option<String>, crate::errors::StartupError> {
+    #[cfg(target_os = "linux")]
+    {
+        let root = super::linux_state::prepared_secure_config_root("read startup log level")?;
+        let Some(bytes) = root.read_private_file(
+            std::ffi::OsStr::new("settings.json"),
+            16 * 1024 * 1024,
+            "read startup log level",
+        )?
+        else {
+            return Ok(None);
+        };
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            return Ok(None);
+        };
+        Ok(value
+            .get("logLevel")
+            .and_then(serde_json::Value::as_str)
+            .map(String::from))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(read_log_level_only())
+    }
 }
 
 /// #774: counter feeding the per-call unique temp filename for settings saves.
@@ -2562,15 +2907,14 @@ fn reconcile_group_with_retained(
 /// `None` = absent (materialize). `Err` = present-but-unreadable/invalid JSON,
 /// non-object root, or non-project settings that fail to deserialize — in which
 /// case the caller must NOT write (§4.1). A valid object is returned for reuse.
-fn read_disk_object_for_write(path: &Path) -> Result<Option<Map<String, Value>>, String> {
-    match std::fs::read_to_string(path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!(
-            "Failed to read {} for a project-preserving save (aborting to avoid dropping a project): {e}",
-            path.display()
-        )),
-        Ok(contents) => {
-            let value: Value = serde_json::from_str(&contents).map_err(|e| {
+fn read_disk_object_for_write_target(
+    target: &SettingsIoTarget,
+) -> Result<Option<Map<String, Value>>, SettingsIoError> {
+    let path = target.path()?;
+    match target.read_bytes(16 * 1024 * 1024, "read settings for preserving save")? {
+        None => Ok(None),
+        Some(contents) => {
+            let value: Value = serde_json::from_slice(&contents).map_err(|e| {
                 format!(
                     "Refusing to overwrite {}: the existing settings file is not valid JSON ({e})",
                     path.display()
@@ -2584,7 +2928,8 @@ fn read_disk_object_for_write(path: &Path) -> Result<Option<Map<String, Value>>,
                 _ => Err(format!(
                     "Refusing to overwrite {}: the existing settings root is not a JSON object",
                     path.display()
-                )),
+                )
+                .into()),
             }
         }
     }
@@ -2630,6 +2975,19 @@ pub(crate) fn reconcile_project_state_to_path(
     )
 }
 
+pub(crate) fn reconcile_project_state(
+    settings: &AppSettings,
+    active: bool,
+    archived: bool,
+) -> Result<AppSettings, String> {
+    save_settings_value_target(
+        settings,
+        &SettingsIoTarget::Production,
+        ProjectWriteMode::Reconcile { active, archived },
+    )
+    .map_err(String::from)
+}
+
 /// The #1077 project-aware atomic writer. Builds the output object per `mode`,
 /// writes it atomically, then re-decodes the exact written value so the returned
 /// `AppSettings` carries fresh runtime projections + hidden state (never the
@@ -2639,8 +2997,21 @@ fn save_settings_value(
     path: &Path,
     mode: ProjectWriteMode,
 ) -> Result<AppSettings, String> {
+    save_settings_value_target(
+        settings,
+        &SettingsIoTarget::Injected(path.to_path_buf()),
+        mode,
+    )
+    .map_err(String::from)
+}
+
+fn save_settings_value_target(
+    settings: &AppSettings,
+    target: &SettingsIoTarget,
+    mode: ProjectWriteMode,
+) -> Result<AppSettings, SettingsIoError> {
     let base = production_instance_base();
-    let disk = read_disk_object_for_write(path)?;
+    let disk = read_disk_object_for_write_target(target)?;
     let state = hidden_state_for_write(settings);
 
     let serialize_object = || -> Result<Map<String, Value>, String> {
@@ -2725,7 +3096,7 @@ fn save_settings_value(
     // repair, so the eligible branches above never fire for it; its groups are
     // written verbatim from the live settings/disk, matching pre-#1077 behavior.
     let value = Value::Object(out);
-    write_value_atomic(&value, path)?;
+    target.atomic_write(&value)?;
 
     let mut written_value = value;
     let fresh_state = apply_project_decode_to_value(
@@ -2772,12 +3143,28 @@ pub(crate) struct DiskProjectLists {
 /// MUST NOT call `load_settings` (it migrates, generates root_token, and
 /// re-saves: infinite recursion + side effects).
 pub(crate) fn read_pty_input_project_paths_strict() -> Result<Option<Vec<String>>, String> {
+    #[cfg(target_os = "linux")]
+    {
+        let bytes = SettingsIoTarget::Production
+            .read_bytes(1024 * 1024, "read privileged Linux project paths")
+            .map_err(String::from)?;
+        match bytes {
+            Some(bytes) => read_pty_input_project_paths_strict_from_bytes(&bytes),
+            None => Ok(None),
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
     let Some(path) = settings_path() else {
         return Err("settings_unavailable".to_string());
     };
-    read_pty_input_project_paths_strict_from_path(&path)
+    #[cfg(not(target_os = "linux"))]
+    {
+        read_pty_input_project_paths_strict_from_path(&path)
+    }
 }
 
+#[cfg_attr(all(target_os = "linux", not(test)), allow(dead_code))]
 fn read_pty_input_project_paths_strict_from_path(
     path: &Path,
 ) -> Result<Option<Vec<String>>, String> {
@@ -2787,7 +3174,13 @@ fn read_pty_input_project_paths_strict_from_path(
         Err(_) => return Err("unsafe_path".to_string()),
     }
     let (bytes, _) = crate::path_identity::read_bounded_regular(path, 1024 * 1024)?;
-    let value = crate::path_identity::parse_json_no_duplicates(&bytes)?;
+    read_pty_input_project_paths_strict_from_bytes(&bytes)
+}
+
+fn read_pty_input_project_paths_strict_from_bytes(
+    bytes: &[u8],
+) -> Result<Option<Vec<String>>, String> {
+    let value = crate::path_identity::parse_json_no_duplicates(bytes)?;
     let object = value
         .as_object()
         .ok_or_else(|| "settings_invalid".to_string())?;
@@ -2846,7 +3239,34 @@ fn read_project_paths_from_disk(path: &Path) -> Result<Option<DiskProjectLists>,
             }
         }
     };
-    let value: serde_json::Value = serde_json::from_str(&contents).map_err(|e| {
+    parse_project_paths_from_contents(&contents, path)
+}
+
+fn read_project_paths_from_target(
+    target: &SettingsIoTarget,
+) -> Result<Option<DiskProjectLists>, String> {
+    let path = target.path().map_err(String::from)?;
+    let Some(bytes) = target
+        .read_bytes(16 * 1024 * 1024, "read Linux project paths")
+        .map_err(String::from)?
+    else {
+        return Ok(None);
+    };
+    let contents = String::from_utf8(bytes).map_err(|error| {
+        format!(
+            "Failed to decode {} to preserve project_paths: {}",
+            path.display(),
+            error
+        )
+    })?;
+    parse_project_paths_from_contents(&contents, &path)
+}
+
+fn parse_project_paths_from_contents(
+    contents: &str,
+    path: &Path,
+) -> Result<Option<DiskProjectLists>, String> {
+    let value: serde_json::Value = serde_json::from_str(contents).map_err(|e| {
         format!(
             "Failed to parse {} to preserve project_paths (aborting save to avoid dropping a project): {}",
             path.display(),
@@ -2919,10 +3339,26 @@ fn read_project_paths_from_disk(path: &Path) -> Result<Option<DiskProjectLists>,
 /// following verbatim write. Aborts (propagates `Err`) on a non-`NotFound` read
 /// error per G2; a missing home dir is a no-op (the following save surfaces it).
 pub fn refresh_project_paths_from_disk(settings: &mut AppSettings) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(lists) = read_project_paths_from_target(&SettingsIoTarget::Production)? {
+            settings.project_paths = lists.project_paths;
+            settings.project_path = lists.project_path;
+            if let Some(archived) = lists.archived_project_paths {
+                settings.archived_project_paths = archived;
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "linux"))]
     let Some(path) = settings_path() else {
         return Ok(());
     };
-    refresh_project_paths_from_path(settings, &path)
+    #[cfg(not(target_os = "linux"))]
+    {
+        refresh_project_paths_from_path(settings, &path)
+    }
 }
 
 pub(crate) fn refresh_project_paths_from_path(
@@ -2948,7 +3384,21 @@ pub(crate) fn refresh_and_decode_project_paths_from_path(
     settings: &mut AppSettings,
     path: &Path,
 ) -> Result<(), String> {
-    if let Some(map) = read_disk_object_for_write(path)? {
+    refresh_and_decode_project_paths_target(
+        settings,
+        &SettingsIoTarget::Injected(path.to_path_buf()),
+    )
+}
+
+pub(crate) fn refresh_and_decode_project_paths(settings: &mut AppSettings) -> Result<(), String> {
+    refresh_and_decode_project_paths_target(settings, &SettingsIoTarget::Production)
+}
+
+fn refresh_and_decode_project_paths_target(
+    settings: &mut AppSettings,
+    target: &SettingsIoTarget,
+) -> Result<(), String> {
+    if let Some(map) = read_disk_object_for_write_target(target)? {
         let base = production_instance_base();
         let state = decode_project_state(&map, base.as_deref(), &projects::FsCandidateResolver);
         settings.project_paths = state.active_selected();
@@ -2988,15 +3438,18 @@ pub(crate) fn project_state_has_structural(settings: &AppSettings) -> bool {
 /// snapshot-age window. Airtight cross-process safety would need an advisory
 /// file lock (tracked separately), deliberately not added here.
 pub fn save_settings(settings: &AppSettings) -> Result<AppSettings, String> {
-    let dir = super::config_dir().ok_or("Could not determine home directory")?;
-    let path = dir.join("settings.json");
-    save_settings_to_path_preserving_project_paths(settings, &path)
+    save_settings_value_target(
+        settings,
+        &SettingsIoTarget::Production,
+        ProjectWriteMode::Preserve,
+    )
+    .map_err(String::from)
 }
 
 /// #1077: atomic tmp+rename writer over an already-built JSON `Value`. Shared by
 /// the raw and the project-aware writers. Preserves the #774 unique-temp +
 /// `rename_with_retry` behavior; still not fsynced.
-fn write_value_atomic(value: &Value, path: &Path) -> Result<(), String> {
+fn write_value_atomic_injected(value: &Value, path: &Path) -> Result<(), String> {
     let dir = path
         .parent()
         .ok_or_else(|| format!("Settings path {} has no parent", path.display()))?;
@@ -3034,11 +3487,19 @@ fn write_value_atomic(value: &Value, path: &Path) -> Result<(), String> {
 /// CLI verbs (which load fresh disk via `load_settings_for_cli`), and the startup
 /// root_token/migration save (whose `project_paths` was just loaded from disk).
 pub fn save_settings_with_project_paths(settings: &AppSettings) -> Result<(), String> {
-    let dir = super::config_dir().ok_or("Could not determine home directory")?;
-    let path = dir.join("settings.json");
-    save_settings_with_project_paths_to_path(settings, &path)
+    save_settings_value_target(
+        settings,
+        &SettingsIoTarget::Production,
+        ProjectWriteMode::Reconcile {
+            active: true,
+            archived: true,
+        },
+    )
+    .map(|_| ())
+    .map_err(String::from)
 }
 
+#[cfg_attr(all(target_os = "linux", not(test)), allow(dead_code))]
 pub(crate) fn save_settings_with_project_paths_to_path(
     settings: &AppSettings,
     path: &Path,
@@ -3061,6 +3522,7 @@ pub(crate) fn save_settings_with_project_paths_to_path(
 /// `save_settings`. Preserves all six on-disk project fields (materializing a
 /// group only when disk has no truth), then hands off to the #774-hardened
 /// atomic writer and returns the fresh-decoded settings.
+#[cfg_attr(all(target_os = "linux", not(test)), allow(dead_code))]
 pub(crate) fn save_settings_to_path_preserving_project_paths(
     settings: &AppSettings,
     path: &Path,
@@ -3076,13 +3538,264 @@ pub(crate) fn save_settings_to_path_preserving_project_paths(
 fn save_settings_to_path(settings: &AppSettings, path: &Path) -> Result<(), String> {
     let value = serde_json::to_value(settings)
         .map_err(|e| format!("Failed to serialize settings: {}", e))?;
-    write_value_atomic(&value, path)
+    write_value_atomic_injected(&value, path)
 }
 
 pub type SettingsState = Arc<RwLock<AppSettings>>;
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    fn run_linux_startup_settings_child(test_name: &str, sentinel: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{Duration, Instant};
+
+        let temp = tempfile::tempdir().expect("Linux startup settings tempdir");
+        std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("chmod Linux startup settings tempdir");
+        let config_dir = temp.path().join("config");
+        let mut child = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .arg("--exact")
+            .arg(test_name)
+            .arg("--nocapture")
+            .env(sentinel, "1")
+            .env("AGENTSCOMMANDER_TEST_CONFIG_DIR", &config_dir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn Linux startup settings child");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let status = loop {
+            if let Some(status) = child.try_wait().expect("poll Linux settings child") {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("Linux startup settings child timed out");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(status.success(), "Linux startup settings child failed");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn startup_settings_preserve_typed_unsafe_path_and_leave_symlink_unchanged() {
+        const SENTINEL: &str = "AC_TEST_1111_UNSAFE_STARTUP_SETTINGS_CHILD";
+        const TEST_NAME: &str =
+            "config::settings::tests::startup_settings_preserve_typed_unsafe_path_and_leave_symlink_unchanged";
+
+        if std::env::var_os(SENTINEL).is_some() {
+            use crate::errors::{StartupError, UnsafePathReason};
+
+            crate::config::linux_state::prepare_secure_config_root()
+                .expect("prepare secure config root");
+            let config_dir = crate::config::config_dir().expect("child config directory");
+            let settings_path = config_dir.join("settings.json");
+            let sentinel_path = config_dir
+                .parent()
+                .expect("config directory parent")
+                .join("settings-sentinel.json");
+            let sentinel_contents = br#"{"sentinel":"unchanged"}"#;
+            std::fs::write(&sentinel_path, sentinel_contents).expect("write settings sentinel");
+            std::os::unix::fs::symlink(&sentinel_path, &settings_path)
+                .expect("create settings symlink");
+
+            match super::load_settings_for_startup().expect_err("unsafe settings must fail") {
+                StartupError::UnsafePath {
+                    path,
+                    reason: UnsafePathReason::Symlink,
+                    ..
+                } => assert_eq!(path, settings_path),
+                other => panic!("expected typed unsafe-path error, got {other:?}"),
+            }
+            assert_eq!(
+                std::fs::read(&sentinel_path).expect("read settings sentinel"),
+                sentinel_contents
+            );
+            assert_eq!(
+                std::fs::read_link(&settings_path).expect("read unchanged settings symlink"),
+                sentinel_path
+            );
+            std::fs::remove_file(&settings_path).expect("remove settings symlink");
+            std::fs::hard_link(&sentinel_path, &settings_path).expect("create settings hard link");
+            match super::load_settings_for_startup().expect_err("hard-linked settings must fail") {
+                StartupError::UnsafePath {
+                    path,
+                    reason: UnsafePathReason::HardLinked { observed: 2 },
+                    ..
+                } => assert_eq!(path, settings_path),
+                other => panic!("expected typed hard-link error, got {other:?}"),
+            }
+            assert_eq!(
+                std::fs::read(&sentinel_path).expect("read hard-link sentinel"),
+                sentinel_contents
+            );
+            return;
+        }
+
+        run_linux_startup_settings_child(TEST_NAME, SENTINEL);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn malformed_startup_settings_fail_without_content_or_readiness_mutation() {
+        const SENTINEL: &str = "AC_TEST_1111_MALFORMED_STARTUP_SETTINGS_CHILD";
+        const TEST_NAME: &str =
+            "config::settings::tests::malformed_startup_settings_fail_without_content_or_readiness_mutation";
+
+        if std::env::var_os(SENTINEL).is_some() {
+            use crate::errors::StartupError;
+
+            crate::config::linux_state::prepare_secure_config_root()
+                .expect("prepare secure config root");
+            let config_dir = crate::config::config_dir().expect("child config directory");
+            let settings_path = config_dir.join("settings.json");
+            let malformed = br#"{"rootToken":"11111111-1111-1111-1111-111111111111""#;
+            std::fs::write(&settings_path, malformed).expect("write malformed settings");
+
+            match super::load_settings_for_startup().expect_err("malformed settings must fail") {
+                StartupError::Initialization { component, message } => {
+                    assert_eq!(component, "startup settings");
+                    assert!(message.contains(&settings_path.display().to_string()));
+                    assert!(message.contains("malformed"));
+                }
+                other => panic!("expected typed startup-settings error, got {other:?}"),
+            }
+            assert_eq!(
+                std::fs::read(&settings_path).expect("read unchanged malformed settings"),
+                malformed
+            );
+            for basename in [
+                "web-token.txt",
+                "master-token.txt",
+                "app-outbox-path.txt",
+                "daemon.pid",
+            ] {
+                assert!(!config_dir.join(basename).exists());
+            }
+            return;
+        }
+
+        run_linux_startup_settings_child(TEST_NAME, SENTINEL);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unsafe_migration_backup_fails_before_settings_or_target_mutation() {
+        const SENTINEL: &str = "AC_TEST_1111_UNSAFE_SETTINGS_BACKUP_CHILD";
+        const TEST_NAME: &str =
+            "config::settings::tests::unsafe_migration_backup_fails_before_settings_or_target_mutation";
+        const V1_SETTINGS: &str = r##"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "rootToken": "existing-token",
+            "agents": [{
+                "id": "codex",
+                "label": "Codex",
+                "command": "codex",
+                "color": "#000000"
+            }],
+            "codingAgentProfiles": {
+                "schemaVersion": 1,
+                "letters": { "A": { "name": "Baseline" } },
+                "matrix": {
+                    "codex": {
+                        "A": {
+                            "enabled": true,
+                            "argv": ["--model", "gpt-5"],
+                            "env": {},
+                            "notes": "legacy"
+                        }
+                    }
+                }
+            }
+        }"##;
+
+        if std::env::var_os(SENTINEL).is_some() {
+            use crate::errors::{StartupError, UnsafePathReason};
+
+            crate::config::linux_state::prepare_secure_config_root()
+                .expect("prepare secure config root");
+            let config_dir = crate::config::config_dir().expect("child config directory");
+            let settings_path = config_dir.join("settings.json");
+            std::fs::write(&settings_path, V1_SETTINGS).expect("write v1 settings");
+            let sentinel_path = config_dir
+                .parent()
+                .expect("config directory parent")
+                .join("backup-sentinel");
+            std::fs::write(&sentinel_path, b"unchanged").expect("write backup sentinel");
+            let backup_path = config_dir.join("settings.pre-384-v1.json");
+            std::os::unix::fs::symlink(&sentinel_path, &backup_path)
+                .expect("create unsafe migration backup");
+
+            match super::load_settings_for_startup().expect_err("unsafe migration backup must fail")
+            {
+                StartupError::UnsafePath {
+                    path,
+                    reason: UnsafePathReason::Symlink,
+                    ..
+                } => assert_eq!(path, backup_path),
+                other => panic!("expected typed backup unsafe-path error, got {other:?}"),
+            }
+            assert_eq!(
+                std::fs::read(&settings_path).expect("read unchanged v1 settings"),
+                V1_SETTINGS.as_bytes()
+            );
+            assert_eq!(
+                std::fs::read(&sentinel_path).expect("read backup sentinel"),
+                b"unchanged"
+            );
+            assert_eq!(
+                std::fs::read_link(&backup_path).expect("read unchanged backup symlink"),
+                sentinel_path
+            );
+            return;
+        }
+
+        run_linux_startup_settings_child(TEST_NAME, SENTINEL);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn startup_settings_generate_and_publish_private_root_token() {
+        const SENTINEL: &str = "AC_TEST_1111_ROOT_TOKEN_STARTUP_SETTINGS_CHILD";
+        const TEST_NAME: &str =
+            "config::settings::tests::startup_settings_generate_and_publish_private_root_token";
+
+        if std::env::var_os(SENTINEL).is_some() {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+            crate::config::linux_state::prepare_secure_config_root()
+                .expect("prepare secure config root");
+            let settings = super::load_settings_for_startup().expect("load fresh startup settings");
+            let root_token = settings.root_token.expect("generated root token");
+            uuid::Uuid::parse_str(&root_token).expect("root token UUID");
+
+            let settings_path = crate::config::config_dir()
+                .expect("child config directory")
+                .join("settings.json");
+            let metadata =
+                std::fs::symlink_metadata(&settings_path).expect("published settings metadata");
+            assert!(metadata.file_type().is_file());
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+            assert_eq!(metadata.nlink(), 1);
+            assert_eq!(metadata.uid(), unsafe { libc::geteuid() });
+
+            let value: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(&settings_path).expect("read published settings"),
+            )
+            .expect("parse published settings");
+            assert_eq!(
+                value.get("rootToken").and_then(serde_json::Value::as_str),
+                Some(root_token.as_str())
+            );
+            return;
+        }
+
+        run_linux_startup_settings_child(TEST_NAME, SENTINEL);
+    }
 
     #[test]
     fn privileged_project_paths_reader_rejects_duplicates_and_non_strings() {

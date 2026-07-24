@@ -47,14 +47,22 @@ fn main() {
                         ) {
                             std::env::set_var("AC_MACHINE_OUTPUT", "1");
                         }
-                        // Install the same logger backend the GUI uses so
+                        #[cfg(target_os = "linux")]
+                        if let Err(error) =
+                            agentscommander_lib::config::linux_state::prepare_secure_config_root()
+                        {
+                            report_startup_error(error, false);
+                        }
 
+                        // Install the same logger backend the GUI uses so
                         // every `log::*` call from CLI verbs (the `[task]`
                         // audit lines in particular — plan #137 §3a HIGH-1
                         // mitigation) reaches stderr + <config_dir>/app.log.
                         // GATED on `cli.command.is_some()` so the GUI branch
                         // below initializes via `lib::run()` exactly once.
-                        agentscommander_lib::logging::init_logger();
+                        if let Err(error) = agentscommander_lib::logging::init_logger() {
+                            report_startup_error(error, false);
+                        }
 
                         // Issue #609 Phase 2 - one-line "update available" notice for
                         // terminal runs. Cache-only (no network, no blocking). M1: gate
@@ -108,23 +116,75 @@ fn main() {
                             }
                         };
 
-                        if !try_acquire_single_instance() {
-                            if ui_automation_enabled {
-                                if agentscommander_lib::testability::ui_automation::existing_enabled_session_for_current_config() {
-                                    std::process::exit(0);
-                                }
-                                agentscommander_lib::cli::attach_parent_console();
-                                eprintln!(
-                                    "{}",
-                                    agentscommander_lib::testability::ui_automation::automation_not_enabled_json()
-                                );
-                                agentscommander_lib::cli::flush_outputs();
-                                std::process::exit(1);
-                            }
-                            // Another GUI instance is already running; exit silently
-                            std::process::exit(0);
+                        #[cfg(target_os = "linux")]
+                        if let Err(error) =
+                            agentscommander_lib::config::linux_state::prepare_secure_config_root()
+                        {
+                            report_startup_error(error, true);
                         }
-                        agentscommander_lib::run(placement, ui_automation_enabled);
+
+                        #[cfg(target_os = "linux")]
+                        let mut linux_instance_guard =
+                            match agentscommander_lib::config::linux_state::acquire_gui_instance() {
+                                Ok(
+                                    agentscommander_lib::config::linux_state::GuiLockOutcome::Acquired(
+                                        guard,
+                                    ),
+                                ) => guard,
+                                Ok(
+                                    agentscommander_lib::config::linux_state::GuiLockOutcome::AlreadyRunning,
+                                ) => {
+                                    handle_already_running(ui_automation_enabled);
+                                }
+                                Err(error) => report_startup_error(error, true),
+                            };
+
+                        #[cfg(target_os = "linux")]
+                        if let Err(error) =
+                            agentscommander_lib::config::linux_state::prepare_secure_gui_state(
+                                &linux_instance_guard,
+                            )
+                        {
+                            let diagnostics = linux_instance_guard.release();
+                            report_startup_error(
+                                error.with_rollback_diagnostics(diagnostics),
+                                true,
+                            );
+                        }
+
+                        #[cfg(not(target_os = "linux"))]
+                        if !try_acquire_single_instance() {
+                            handle_already_running(ui_automation_enabled);
+                        }
+
+                        if let Err(error) = agentscommander_lib::logging::init_logger() {
+                            #[cfg(target_os = "linux")]
+                            let error =
+                                error.with_rollback_diagnostics(linux_instance_guard.release());
+                            report_startup_error(error, true);
+                        }
+
+                        let result = agentscommander_lib::run(placement, ui_automation_enabled);
+
+                        #[cfg(target_os = "linux")]
+                        let release_diagnostics = linux_instance_guard.release();
+                        #[cfg(not(target_os = "linux"))]
+                        let release_diagnostics: Vec<String> = Vec::new();
+
+                        match result {
+                            Ok(code) => {
+                                for diagnostic in release_diagnostics {
+                                    log::warn!("[linux-instance-lock] {diagnostic}");
+                                }
+                                std::process::exit(code);
+                            }
+                            Err(error) => {
+                                report_startup_error(
+                                    error.with_rollback_diagnostics(release_diagnostics),
+                                    true,
+                                );
+                            }
+                        }
                     }
                 },
                 Err(e) => {
@@ -143,6 +203,39 @@ fn main() {
             std::process::exit(if e.use_stderr() { 1 } else { 0 });
         }
     }
+}
+
+fn handle_already_running(ui_automation_enabled: bool) -> ! {
+    if ui_automation_enabled {
+        if agentscommander_lib::testability::ui_automation::existing_enabled_session_for_current_config()
+        {
+            std::process::exit(0);
+        }
+        agentscommander_lib::cli::attach_parent_console();
+        eprintln!(
+            "{}",
+            agentscommander_lib::testability::ui_automation::automation_not_enabled_json()
+        );
+        agentscommander_lib::cli::flush_outputs();
+        std::process::exit(1);
+    }
+    std::process::exit(0);
+}
+
+fn report_startup_error(error: agentscommander_lib::errors::StartupError, gui: bool) -> ! {
+    agentscommander_lib::cli::attach_parent_console();
+    let message = format!("Error: {error}");
+    eprintln!("{message}");
+    agentscommander_lib::cli::flush_outputs();
+    if gui {
+        let _ = rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Error)
+            .set_title("Agents Commander startup error")
+            .set_description(message)
+            .set_buttons(rfd::MessageButtons::Ok)
+            .show();
+    }
+    std::process::exit(1);
 }
 
 /// Try to acquire a system-wide named mutex.
@@ -169,7 +262,7 @@ fn try_acquire_single_instance() -> bool {
     // for the lifetime of the process to hold the mutex.
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(not(target_os = "windows"), not(target_os = "linux")))]
 fn try_acquire_single_instance() -> bool {
     true // No single-instance enforcement on non-Windows
 }

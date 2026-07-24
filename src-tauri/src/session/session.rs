@@ -541,6 +541,7 @@ mod tests {
     // ── find_workgroup_task_path_for_cwd — issue #107 ──
 
     #[test]
+    #[cfg(windows)]
     fn find_workgroup_task_path_returns_path_when_cwd_is_workgroup_root() {
         let p = find_workgroup_task_path_for_cwd(r"C:\proj\.ac\wg-3-team");
         assert_eq!(
@@ -550,6 +551,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn find_workgroup_task_path_walks_up_from_replica_dir() {
         let p = find_workgroup_task_path_for_cwd(r"C:\proj\.ac\wg-3-team\__agent_dev-rust");
         assert_eq!(
@@ -564,6 +566,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn find_workgroup_task_path_handles_unc_prefix_input() {
         // The helper is a pure path walk; it does not strip `\\?\` itself —
         // §9.4 strips the prefix downstream when embedding into the prompt.

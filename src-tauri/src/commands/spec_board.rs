@@ -1562,6 +1562,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(windows)]
     async fn path_validation_accepts_repo_specs_mermaid() {
         let tmp = TempDir::new().unwrap();
         let tmp_root = std::fs::canonicalize(tmp.path()).unwrap();
@@ -1581,6 +1582,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(windows)]
     async fn path_validation_preserves_missing_intermediate_dirs() {
         let tmp = TempDir::new().unwrap();
         let tmp_root = std::fs::canonicalize(tmp.path()).unwrap();

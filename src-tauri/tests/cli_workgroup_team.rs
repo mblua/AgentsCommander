@@ -6,6 +6,8 @@ use agentscommander_lib::config::sessions_persistence::{
 };
 use agentscommander_lib::session::session::SessionStatus;
 
+mod support;
+
 struct Tmp(PathBuf);
 
 impl Drop for Tmp {
@@ -19,6 +21,12 @@ impl Tmp {
         let path =
             std::env::temp_dir().join(format!("ac-{}-{}", prefix, uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&path).expect("create tmp dir");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+                .expect("make tmp dir private");
+        }
         Self(path)
     }
 
@@ -30,7 +38,7 @@ impl Tmp {
 fn copy_binary_into(tmp: &Path) -> PathBuf {
     let src = Path::new(env!("CARGO_BIN_EXE_agentscommander-new"));
     let dst = tmp.join(src.file_name().expect("binary file name"));
-    std::fs::copy(src, &dst).expect("copy binary");
+    support::copy_executable(src, &dst);
     dst
 }
 
@@ -171,8 +179,22 @@ fn project_with_agents(tmp: &Path, agents: &[&str]) -> PathBuf {
     project
 }
 
+fn output_with_exec_retry(command: &mut Command) -> std::io::Result<std::process::Output> {
+    let mut attempts = 0;
+    loop {
+        match command.output() {
+            #[cfg(target_os = "linux")]
+            Err(error) if error.raw_os_error() == Some(26) && attempts < 20 => {
+                attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            result => return result,
+        }
+    }
+}
+
 fn run_json(bin: &Path, args: &[&str]) -> serde_json::Value {
-    let out = Command::new(bin).args(args).output().expect("spawn");
+    let out = output_with_exec_retry(Command::new(bin).args(args)).expect("spawn");
     assert!(
         out.status.success(),
         "exit {:?}\nstdout: {}\nstderr: {}",
@@ -184,10 +206,7 @@ fn run_json(bin: &Path, args: &[&str]) -> serde_json::Value {
 }
 
 fn run_json_machine(bin: &Path, args: &[&str]) -> serde_json::Value {
-    let out = Command::new(bin)
-        .env("AC_MACHINE_OUTPUT", "1")
-        .args(args)
-        .output()
+    let out = output_with_exec_retry(Command::new(bin).env("AC_MACHINE_OUTPUT", "1").args(args))
         .expect("spawn");
     assert!(
         out.status.success(),
@@ -200,7 +219,7 @@ fn run_json_machine(bin: &Path, args: &[&str]) -> serde_json::Value {
 }
 
 fn run_fail(bin: &Path, args: &[&str]) -> String {
-    let out = Command::new(bin).args(args).output().expect("spawn");
+    let out = output_with_exec_retry(Command::new(bin).args(args)).expect("spawn");
     assert!(
         !out.status.success(),
         "expected failure\nstdout: {}\nstderr: {}",
@@ -210,8 +229,9 @@ fn run_fail(bin: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stderr).to_string()
 }
 
+#[cfg(target_os = "windows")]
 fn run_fail_output(bin: &Path, args: &[&str]) -> (String, String) {
-    let out = Command::new(bin).args(args).output().expect("spawn");
+    let out = output_with_exec_retry(Command::new(bin).args(args)).expect("spawn");
     assert!(
         !out.status.success(),
         "expected failure\nstdout: {}\nstderr: {}",
@@ -225,7 +245,7 @@ fn run_fail_output(bin: &Path, args: &[&str]) -> (String, String) {
 }
 
 fn run_stdout(bin: &Path, args: &[&str]) -> String {
-    let out = Command::new(bin).args(args).output().expect("spawn");
+    let out = output_with_exec_retry(Command::new(bin).args(args)).expect("spawn");
     assert!(
         out.status.success(),
         "exit {:?}\nstdout: {}\nstderr: {}",
@@ -1007,16 +1027,14 @@ fn team_add_member_creates_replica_and_peer_is_reachable() {
         .join(".ac")
         .join("wg-1-dev-team")
         .join("__agent_architect");
-    let out = Command::new(&bin)
-        .args([
-            "list-peers-lean",
-            "--root",
-            &sender_root.to_string_lossy(),
-            "--token",
-            "00000000-0000-0000-0000-000000000000",
-        ])
-        .output()
-        .expect("list peers");
+    let out = output_with_exec_retry(Command::new(&bin).args([
+        "list-peers-lean",
+        "--root",
+        &sender_root.to_string_lossy(),
+        "--token",
+        "00000000-0000-0000-0000-000000000000",
+    ]))
+    .expect("list peers");
     assert!(
         out.status.success(),
         "stdout: {}\nstderr: {}",
@@ -1148,16 +1166,14 @@ fn list_peers_surfaces_context_percent_for_matching_live_session() {
         .join("__agent_architect");
 
     for verb in ["list-peers", "list-peers-lean"] {
-        let out = Command::new(&bin)
-            .args([
-                verb,
-                "--root",
-                &sender_root.to_string_lossy(),
-                "--token",
-                "00000000-0000-0000-0000-000000000000",
-            ])
-            .output()
-            .expect("run peer verb");
+        let out = output_with_exec_retry(Command::new(&bin).args([
+            verb,
+            "--root",
+            &sender_root.to_string_lossy(),
+            "--token",
+            "00000000-0000-0000-0000-000000000000",
+        ]))
+        .expect("run peer verb");
         assert!(
             out.status.success(),
             "{verb} failed\nstdout: {}\nstderr: {}",
@@ -1384,23 +1400,21 @@ fn workgroup_add_legacy_missing_team_still_bootstraps_with_warning() {
     write_settings(&config_dir, tmp.path());
     let project = project_with_agents(tmp.path(), &["architect", "dev-rust"]);
 
-    let out = Command::new(&bin)
-        .args([
-            "workgroup",
-            "add",
-            "--project",
-            "ProjectAlpha",
-            "--team",
-            "Dev Team",
-            "--title",
-            "Build",
-            "--coordinator",
-            "architect",
-            "--agent",
-            "dev-rust",
-        ])
-        .output()
-        .expect("spawn");
+    let out = output_with_exec_retry(Command::new(&bin).args([
+        "workgroup",
+        "add",
+        "--project",
+        "ProjectAlpha",
+        "--team",
+        "Dev Team",
+        "--title",
+        "Build",
+        "--coordinator",
+        "architect",
+        "--agent",
+        "dev-rust",
+    ]))
+    .expect("spawn");
     assert!(
         out.status.success(),
         "stdout: {}\nstderr: {}",

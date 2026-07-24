@@ -86,7 +86,18 @@ set RUST_LOG=info,agentscommander_lib::pty=trace && agentscommander.exe
 | In-app console capture | The DevTools console plus a rolling 500-entry in-memory buffer |
 | Voice failure dump | `<config-dir>/debug-logs.txt`, written automatically when voice-to-text fails. A one-off console snapshot, not a user action. |
 
-`<config-dir>` is the per-instance config directory next to the binary, the same directory as `settings.json` (see the [settings reference](settings.md#file-location)). Attach `app.log` to any bug report.
+For the canonical Linux DEB, `<config-dir>` is
+`$XDG_CONFIG_HOME/agentscommander`, or `$HOME/.config/agentscommander` when
+`XDG_CONFIG_HOME` is unavailable, so the log is
+`$XDG_CONFIG_HOME/agentscommander/app.log` or its HOME fallback. Raw portable
+binaries use their executable-relative config directory.
+
+On Linux, the config root is `0700`; `app.log` and each rotated log are regular
+owner-only files with mode `0600`. Rotation preserves that protection. Secure
+root validation and the initial strict settings read happen before the logger
+is installed. If either fails, the typed startup error appears in the launch
+terminal or native startup dialog instead of `app.log`. Attach `app.log` to a
+bug report only after reviewing it for sensitive local details.
 
 ## See also
 

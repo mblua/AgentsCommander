@@ -102,10 +102,12 @@ struct ExternalProcessScan {
     cwd_scan_error: Option<DiagnosticError>,
 }
 
+#[allow(dead_code)]
 const MAX_FILES_PER_PROCESS: usize = 5;
 #[cfg(windows)]
 const MAX_FILES_TO_PROBE: usize = 200;
 
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
 fn win32_meaning(code: u32) -> &'static str {
     match code {
         2 => "File not found",
@@ -119,6 +121,7 @@ fn win32_meaning(code: u32) -> &'static str {
     }
 }
 
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
 fn win32_error(context: &str, code: u32) -> DiagnosticError {
     let meaning = win32_meaning(code);
     DiagnosticError {
@@ -128,6 +131,7 @@ fn win32_error(context: &str, code: u32) -> DiagnosticError {
     }
 }
 
+#[allow(dead_code)]
 fn diagnostic_error(message: impl Into<String>) -> DiagnosticError {
     DiagnosticError {
         message: message.into(),

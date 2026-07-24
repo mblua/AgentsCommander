@@ -12093,6 +12093,13 @@ mod tests {
 
     #[tokio::test]
     async fn shared_pty_engine_injects_exact_text_and_enters_for_verified_idle_target() {
+        #[cfg(target_os = "linux")]
+        if crate::config::linux_state::rerun_exact_test_with_prepared_root(
+            "phone::mailbox::tests::shared_pty_engine_injects_exact_text_and_enters_for_verified_idle_target",
+        ) {
+            return;
+        }
+
         let fixture = make_mailbox_fixture();
         let app = fixture.app.handle().clone();
         let (route, sender_id, target_id) =
@@ -12140,6 +12147,13 @@ mod tests {
 
     #[tokio::test]
     async fn shared_pty_engine_rejects_busy_target_without_any_write() {
+        #[cfg(target_os = "linux")]
+        if crate::config::linux_state::rerun_exact_test_with_prepared_root(
+            "phone::mailbox::tests::shared_pty_engine_rejects_busy_target_without_any_write",
+        ) {
+            return;
+        }
+
         let fixture = make_mailbox_fixture();
         let app = fixture.app.handle().clone();
         let (route, sender_id, target_id) =
@@ -12181,6 +12195,13 @@ mod tests {
 
     #[tokio::test]
     async fn shared_pty_engine_bounds_held_permit_wait_by_expiry_then_next_target_progresses() {
+        #[cfg(target_os = "linux")]
+        if crate::config::linux_state::rerun_exact_test_with_prepared_root(
+            "phone::mailbox::tests::shared_pty_engine_bounds_held_permit_wait_by_expiry_then_next_target_progresses",
+        ) {
+            return;
+        }
+
         let fixture = make_mailbox_fixture();
         let app = fixture.app.handle().clone();
         let (route, sender_id, target_id) =
@@ -12285,6 +12306,13 @@ mod tests {
 
     #[tokio::test]
     async fn shared_pty_engine_worker_drains_promptly_on_shutdown_without_writing() {
+        #[cfg(target_os = "linux")]
+        if crate::config::linux_state::rerun_exact_test_with_prepared_root(
+            "phone::mailbox::tests::shared_pty_engine_worker_drains_promptly_on_shutdown_without_writing",
+        ) {
+            return;
+        }
+
         let fixture = make_mailbox_fixture();
         let app = fixture.app.handle().clone();
         // Inject a controllable shutdown signal that the real engine will observe
@@ -12797,6 +12825,13 @@ mod tests {
 
     #[tokio::test]
     async fn unavailable_store_rejects_a_valid_host_request_with_its_correlated_id() {
+        #[cfg(target_os = "linux")]
+        if crate::config::linux_state::rerun_exact_test_with_prepared_root(
+            "phone::mailbox::tests::unavailable_store_rejects_a_valid_host_request_with_its_correlated_id",
+        ) {
+            return;
+        }
+
         use crate::phone::types::{
             canonical_pty_timestamp, PtyInputEnterMode, PtyInputHostEnvelope, PtyInputPublicStatus,
             PtyInputReasonCode, PtyInputWirePayload,
@@ -12864,6 +12899,13 @@ mod tests {
 
     #[tokio::test]
     async fn live_sender_token_host_request_authenticates_and_injects_end_to_end() {
+        #[cfg(target_os = "linux")]
+        if crate::config::linux_state::rerun_exact_test_with_prepared_root(
+            "phone::mailbox::tests::live_sender_token_host_request_authenticates_and_injects_end_to_end",
+        ) {
+            return;
+        }
+
         use crate::phone::types::{
             canonical_pty_timestamp, PtyInputEnterMode, PtyInputHostArtifact, PtyInputHostEnvelope,
             PtyInputPublicStatus, PtyInputWirePayload,
