@@ -374,17 +374,24 @@ struct StartupRuntimeRegistry {
     selection: Option<crate::session::selection::SelectionCoordinator>,
     context_alert: Option<Arc<crate::session::context_alerts::ContextAlertMonitor>>,
     pty_manager: Option<Arc<Mutex<PtyManager>>>,
+    container_backend: Option<Arc<crate::pty::container_backend::ContainerTransportBackend>>,
     resource_monitor: Option<Arc<resource_monitor::ResourceMonitorState>>,
     telegram_bridges: Option<TelegramBridgeState>,
     web_server: Option<WebServerHandle>,
     api_server: Option<ApiServerHandle>,
     ui_automation: Option<crate::testability::ui_automation::UiAutomationState>,
     joins: Vec<StartupJoinHandle>,
+    threads: Vec<StartupThreadHandle>,
 }
 
 struct StartupJoinHandle {
     owner: &'static str,
     handle: tauri::async_runtime::JoinHandle<()>,
+}
+
+struct StartupThreadHandle {
+    owner: &'static str,
+    handle: std::thread::JoinHandle<()>,
 }
 
 impl StartupRuntimeRegistry {
@@ -394,13 +401,14 @@ impl StartupRuntimeRegistry {
         }
     }
 
-    fn register_cancellation_only(&mut self, owner: &'static str) {
-        self.record(owner);
-    }
-
     fn register_join(&mut self, owner: &'static str, handle: tauri::async_runtime::JoinHandle<()>) {
         self.record(owner);
         self.joins.push(StartupJoinHandle { owner, handle });
+    }
+
+    fn register_thread(&mut self, owner: &'static str, handle: std::thread::JoinHandle<()>) {
+        self.record(owner);
+        self.threads.push(StartupThreadHandle { owner, handle });
     }
 }
 
@@ -586,15 +594,17 @@ struct StartupLifecycle {
     state: StartupCommitState,
     setup_error: Option<errors::StartupError>,
     publication: Option<StartupPublicationRollback>,
+    shutdown: ShutdownSignal,
     runtime: StartupRuntimeRegistry,
 }
 
 impl StartupLifecycle {
-    fn new(publication: StartupPublicationRollback) -> Self {
+    fn new(publication: StartupPublicationRollback, shutdown: ShutdownSignal) -> Self {
         Self {
             state: StartupCommitState::Uncommitted,
             setup_error: None,
             publication: Some(publication),
+            shutdown,
             runtime: StartupRuntimeRegistry::default(),
         }
     }
@@ -658,27 +668,43 @@ fn with_startup_runtime(
     Ok(())
 }
 
-fn register_startup_cancellation_owner(
-    lifecycle: &Arc<Mutex<StartupLifecycle>>,
-    owner: &'static str,
-) -> Result<(), errors::StartupError> {
-    with_startup_runtime(
-        lifecycle,
-        "register cancellation-only startup owner",
-        |runtime| {
-            runtime.register_cancellation_only(owner);
-        },
-    )
-}
-
 fn spawn_and_register_startup_join(
     lifecycle: &Arc<Mutex<StartupLifecycle>>,
     owner: &'static str,
     spawn: impl FnOnce() -> tauri::async_runtime::JoinHandle<()>,
 ) -> Result<(), errors::StartupError> {
     let mut guard = lock_startup_lifecycle(lifecycle, "spawn and register startup owner")?;
+    guard.runtime.record(owner);
     let handle = spawn();
     guard.runtime.register_join(owner, handle);
+    Ok(())
+}
+
+fn start_and_register_startup_join(
+    lifecycle: &Arc<Mutex<StartupLifecycle>>,
+    owner: &'static str,
+    start: impl FnOnce() -> Result<Option<tauri::async_runtime::JoinHandle<()>>, errors::StartupError>,
+) -> Result<(), errors::StartupError> {
+    let mut guard = lock_startup_lifecycle(lifecycle, "start and register startup task")?;
+    guard.runtime.record(owner);
+    if let Some(handle) = start()? {
+        guard.runtime.register_join(owner, handle);
+    }
+    Ok(())
+}
+
+fn start_and_register_startup_thread(
+    lifecycle: &Arc<Mutex<StartupLifecycle>>,
+    owner: &'static str,
+    start: impl FnOnce() -> std::io::Result<Option<std::thread::JoinHandle<()>>>,
+) -> Result<(), errors::StartupError> {
+    let mut guard = lock_startup_lifecycle(lifecycle, "start and register startup thread")?;
+    guard.runtime.record(owner);
+    if let Some(handle) = start().map_err(|error| errors::StartupError::TauriSetup {
+        message: format!("failed to start {owner}: {error}"),
+    })? {
+        guard.runtime.register_thread(owner, handle);
+    }
     Ok(())
 }
 
@@ -718,11 +744,18 @@ fn register_startup_core_owners(
 fn register_startup_pty_manager(
     lifecycle: &Arc<Mutex<StartupLifecycle>>,
     pty_manager: Arc<Mutex<PtyManager>>,
+    container_backend: Arc<crate::pty::container_backend::ContainerTransportBackend>,
 ) -> Result<(), errors::StartupError> {
-    with_startup_runtime(lifecycle, "register startup PTY manager", |runtime| {
-        runtime.record("PTY manager");
-        runtime.pty_manager = Some(pty_manager);
-    })
+    with_startup_runtime(
+        lifecycle,
+        "register startup PTY and container owners",
+        |runtime| {
+            runtime.record("PTY manager");
+            runtime.pty_manager = Some(pty_manager);
+            runtime.record("container backend");
+            runtime.container_backend = Some(container_backend);
+        },
+    )
 }
 
 fn start_and_register_context_alert(
@@ -730,8 +763,8 @@ fn start_and_register_context_alert(
     start: impl FnOnce() -> Arc<crate::session::context_alerts::ContextAlertMonitor>,
 ) -> Result<Arc<crate::session::context_alerts::ContextAlertMonitor>, errors::StartupError> {
     let mut guard = lock_startup_lifecycle(lifecycle, "start and register context-alert monitor")?;
-    let context_alert = start();
     guard.runtime.record("context alert monitor");
+    let context_alert = start();
     guard.runtime.context_alert = Some(Arc::clone(&context_alert));
     Ok(context_alert)
 }
@@ -763,43 +796,58 @@ fn publish_startup_readiness(
     app_outbox: &str,
 ) -> Result<(), errors::StartupError> {
     let mut publication = take_startup_publication(lifecycle, "publish startup readiness")?;
-    let result = (|| {
-        publication.publish_file(
-            "web-token.txt",
-            web_token.as_bytes(),
-            "publish web access token",
-        )?;
-        publication.publish_file(
-            "master-token.txt",
-            master_token.as_bytes(),
-            "publish master token",
-        )?;
-        publication.publish_file(
-            "app-outbox-path.txt",
-            app_outbox.as_bytes(),
-            "publish app outbox path",
-        )?;
-        publication.publish_file(
-            "daemon.pid",
-            std::process::id().to_string().as_bytes(),
-            "publish daemon PID",
-        )?;
-        Ok(())
-    })();
+    let pid = std::process::id().to_string();
+    let result = publish_startup_readiness_in_order(
+        web_token,
+        master_token,
+        app_outbox,
+        &pid,
+        |basename, payload, operation| publication.publish_file(basename, payload, operation),
+    );
     restore_startup_publication(lifecycle, publication, "retain startup publication")?;
     result
 }
 
+fn publish_startup_readiness_in_order(
+    web_token: &str,
+    master_token: &str,
+    app_outbox: &str,
+    pid: &str,
+    mut publish: impl FnMut(&'static str, &[u8], &'static str) -> Result<(), errors::StartupError>,
+) -> Result<(), errors::StartupError> {
+    publish(
+        "web-token.txt",
+        web_token.as_bytes(),
+        "publish web access token",
+    )?;
+    publish(
+        "master-token.txt",
+        master_token.as_bytes(),
+        "publish master token",
+    )?;
+    publish(
+        "app-outbox-path.txt",
+        app_outbox.as_bytes(),
+        "publish app outbox path",
+    )?;
+    publish("daemon.pid", pid.as_bytes(), "publish daemon PID")
+}
+
 fn commit_startup(lifecycle: &Arc<Mutex<StartupLifecycle>>) -> Result<(), errors::StartupError> {
     let mut guard = lock_startup_lifecycle(lifecycle, "commit startup")?;
-    let publication =
-        guard
-            .publication
-            .as_mut()
-            .ok_or_else(|| errors::StartupError::TauriSetup {
-                message: "commit startup: publication guard is unavailable".to_string(),
-            })?;
-    publication.disarm();
+    if guard.publication.is_none() {
+        return Err(errors::StartupError::TauriSetup {
+            message: "commit startup: publication guard is unavailable".to_string(),
+        });
+    }
+    if !guard.shutdown.commit_startup() {
+        return Err(errors::StartupError::TauriSetup {
+            message: "startup commit gate was already cancelled".to_string(),
+        });
+    }
+    if let Some(publication) = guard.publication.as_mut() {
+        publication.disarm();
+    }
     guard.state = StartupCommitState::Committed;
     Ok(())
 }
@@ -820,14 +868,83 @@ fn run_setup(
     body()
 }
 
+fn apply_saved_always_on_top<E>(
+    enabled: bool,
+    apply: impl FnOnce() -> Result<(), E>,
+) -> Result<(), errors::StartupError>
+where
+    E: std::fmt::Display,
+{
+    if enabled {
+        apply().map_err(|error| errors::StartupError::TauriSetup {
+            message: format!("failed to apply saved always-on-top window setting: {error}"),
+        })?;
+    }
+    Ok(())
+}
+
 fn startup_lifecycle_state(
     lifecycle: &Arc<Mutex<StartupLifecycle>>,
 ) -> Result<StartupCommitState, errors::StartupError> {
     Ok(lock_startup_lifecycle(lifecycle, "inspect startup lifecycle")?.state)
 }
 
+fn finish_event_loop_result(
+    setup_error: Option<errors::StartupError>,
+    state: StartupCommitState,
+    exit_code: i32,
+) -> Result<i32, errors::StartupError> {
+    if let Some(error) = setup_error {
+        return Err(error);
+    }
+    if state == StartupCommitState::Uncommitted {
+        return Err(errors::StartupError::TauriSetup {
+            message: "event loop returned before startup committed".to_string(),
+        });
+    }
+    Ok(exit_code)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum BoundedOwnerAccess<T> {
+    Acquired(T),
+    RecoveredPoison(T),
+    Busy,
+}
+
+fn with_bounded_startup_owner<T, R>(
+    owner: &Arc<Mutex<T>>,
+    budget: std::time::Duration,
+    action: impl FnOnce(&mut T) -> R,
+) -> BoundedOwnerAccess<R> {
+    let deadline = std::time::Instant::now() + budget;
+    let mut action = Some(action);
+    loop {
+        match owner.try_lock() {
+            Ok(mut guard) => {
+                let Some(action) = action.take() else {
+                    return BoundedOwnerAccess::Busy;
+                };
+                return BoundedOwnerAccess::Acquired(action(&mut guard));
+            }
+            Err(std::sync::TryLockError::Poisoned(error)) => {
+                let mut guard = error.into_inner();
+                let Some(action) = action.take() else {
+                    return BoundedOwnerAccess::Busy;
+                };
+                return BoundedOwnerAccess::RecoveredPoison(action(&mut guard));
+            }
+            Err(std::sync::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                std::thread::sleep(std::time::Duration::from_millis(2).min(remaining));
+            }
+            Err(std::sync::TryLockError::WouldBlock) => return BoundedOwnerAccess::Busy,
+        }
+    }
+}
+
 fn teardown_uncommitted_runtime(
-    app: &tauri::AppHandle,
+    app: Option<&tauri::AppHandle>,
     lifecycle: &Arc<Mutex<StartupLifecycle>>,
 ) -> Vec<String> {
     let mut diagnostics = Vec::new();
@@ -844,18 +961,24 @@ fn teardown_uncommitted_runtime(
             runtime.owners.join(", ")
         );
     }
+    let expected_container_owner = runtime.owners.contains(&"container backend");
+    let expected_pty_owner = runtime.owners.contains(&"PTY manager");
 
     let shutdown = runtime.shutdown.take().or_else(|| {
-        app.try_state::<ShutdownSignal>()
-            .map(|state| state.inner().clone())
+        app.and_then(|app| {
+            app.try_state::<ShutdownSignal>()
+                .map(|state| state.inner().clone())
+        })
     });
-    if let Some(shutdown) = shutdown {
+    if let Some(shutdown) = shutdown.as_ref() {
         shutdown.trigger();
     }
 
     let bridges = runtime.telegram_bridges.take().or_else(|| {
-        app.try_state::<TelegramBridgeState>()
-            .map(|state| state.inner().clone())
+        app.and_then(|app| {
+            app.try_state::<TelegramBridgeState>()
+                .map(|state| state.inner().clone())
+        })
     });
     if let Some(bridges) = bridges {
         let bridge_shutdowns = {
@@ -868,15 +991,19 @@ fn teardown_uncommitted_runtime(
     }
 
     let web_server = runtime.web_server.take().or_else(|| {
-        app.try_state::<WebServerHandle>()
-            .map(|state| state.inner().clone())
+        app.and_then(|app| {
+            app.try_state::<WebServerHandle>()
+                .map(|state| state.inner().clone())
+        })
     });
     if let Some(web_server) = web_server {
         web_server.abort_running();
     }
     let api_server = runtime.api_server.take().or_else(|| {
-        app.try_state::<ApiServerHandle>()
-            .map(|state| state.inner().clone())
+        app.and_then(|app| {
+            app.try_state::<ApiServerHandle>()
+                .map(|state| state.inner().clone())
+        })
     });
     if let Some(api_server) = api_server {
         if let Err(error) = tauri::async_runtime::block_on(
@@ -900,17 +1027,41 @@ fn teardown_uncommitted_runtime(
         }
     }
 
+    let thread_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    for thread in runtime.threads.drain(..) {
+        while !thread.handle.is_finished() && std::time::Instant::now() < thread_deadline {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        if thread.handle.is_finished() {
+            if thread.handle.join().is_err() {
+                diagnostics.push(format!(
+                    "startup thread '{}' panicked during teardown",
+                    thread.owner
+                ));
+            }
+        } else {
+            diagnostics.push(format!(
+                "startup thread '{}' did not join within the teardown budget",
+                thread.owner
+            ));
+        }
+    }
+
     let context_monitor = runtime.context_alert.take().or_else(|| {
-        app.try_state::<Arc<crate::session::context_alerts::ContextAlertMonitor>>()
-            .map(|monitor| Arc::clone(monitor.inner()))
+        app.and_then(|app| {
+            app.try_state::<Arc<crate::session::context_alerts::ContextAlertMonitor>>()
+                .map(|monitor| Arc::clone(monitor.inner()))
+        })
     });
     if let Some(monitor) = context_monitor.as_ref() {
         monitor.request_close();
     }
 
     let selection = runtime.selection.take().or_else(|| {
-        app.try_state::<crate::session::selection::SelectionCoordinator>()
-            .map(|state| state.inner().clone())
+        app.and_then(|app| {
+            app.try_state::<crate::session::selection::SelectionCoordinator>()
+                .map(|state| state.inner().clone())
+        })
     });
     if let Some(selection) = selection {
         let report = tauri::async_runtime::block_on(selection.close_and_join());
@@ -925,38 +1076,71 @@ fn teardown_uncommitted_runtime(
         }
     }
 
+    let cleanup_budget = std::time::Duration::from_secs(SHUTDOWN_CLEANUP_BUDGET_SECS);
+    let container_backend = runtime.container_backend.take();
+    if let Some(container_backend) = container_backend {
+        let report = container_backend.stop_all_started_containers_blocking(cleanup_budget);
+        if !report.terminal {
+            diagnostics.extend(report.retained);
+        }
+    } else if expected_container_owner {
+        diagnostics
+            .push("startup container backend owner was unavailable during teardown".to_string());
+    }
+
     let pty_manager = runtime.pty_manager.take().or_else(|| {
-        app.try_state::<Arc<Mutex<PtyManager>>>()
-            .map(|state| Arc::clone(state.inner()))
+        app.and_then(|app| {
+            app.try_state::<Arc<Mutex<PtyManager>>>()
+                .map(|state| Arc::clone(state.inner()))
+        })
     });
     if let Some(pty_manager) = pty_manager {
-        match pty_manager.try_lock() {
-            Ok(manager) => {
-                let container_report = manager.stop_all_started_containers_blocking(
-                    std::time::Duration::from_secs(SHUTDOWN_CLEANUP_BUDGET_SECS),
-                );
-                if !container_report.terminal {
-                    diagnostics.extend(container_report.retained);
-                }
-                let (_, jobless) = manager.kill_all_jobs();
+        match with_bounded_startup_owner(&pty_manager, cleanup_budget, |manager| {
+            manager.kill_all_jobs()
+        }) {
+            BoundedOwnerAccess::Acquired((_, jobless)) => {
                 if jobless > 0 {
                     diagnostics.push(format!(
                         "{jobless} startup PTY session(s) had no process-group owner"
                     ));
                 }
             }
-            Err(std::sync::TryLockError::Poisoned(_)) => {
-                diagnostics.push("startup PTY manager lock is poisoned".to_string())
+            BoundedOwnerAccess::RecoveredPoison((_, jobless)) => {
+                diagnostics.push(
+                    "startup PTY manager lock was poisoned; recovered its cleanup owner"
+                        .to_string(),
+                );
+                if jobless > 0 {
+                    diagnostics.push(format!(
+                        "{jobless} startup PTY session(s) had no process-group owner"
+                    ));
+                }
             }
-            Err(std::sync::TryLockError::WouldBlock) => {
-                diagnostics.push("startup PTY manager remained busy during teardown".to_string())
+            BoundedOwnerAccess::Busy => {
+                diagnostics.push(
+                    "startup PTY manager remained busy through the bounded teardown budget; process-group ownership retained"
+                        .to_string(),
+                );
             }
+        }
+    } else if expected_pty_owner {
+        diagnostics.push("startup PTY manager owner was unavailable during teardown".to_string());
+    }
+
+    if let Some(shutdown) = shutdown.as_ref() {
+        if !shutdown.wait_for_durable_writes(std::time::Duration::from_secs(2)) {
+            diagnostics.push(
+                "startup durable-write producers did not quiesce within the teardown budget"
+                    .to_string(),
+            );
         }
     }
 
     let resource_monitor = runtime.resource_monitor.take().or_else(|| {
-        app.try_state::<Arc<resource_monitor::ResourceMonitorState>>()
-            .map(|state| Arc::clone(state.inner()))
+        app.and_then(|app| {
+            app.try_state::<Arc<resource_monitor::ResourceMonitorState>>()
+                .map(|state| Arc::clone(state.inner()))
+        })
     });
     if let Some(resource_monitor) = resource_monitor {
         let state = Arc::clone(&resource_monitor);
@@ -979,8 +1163,10 @@ fn teardown_uncommitted_runtime(
     }
 
     let ui_automation = runtime.ui_automation.take().or_else(|| {
-        app.try_state::<crate::testability::ui_automation::UiAutomationState>()
-            .map(|state| state.inner().clone())
+        app.and_then(|app| {
+            app.try_state::<crate::testability::ui_automation::UiAutomationState>()
+                .map(|state| state.inner().clone())
+        })
     });
     if let Some(ui_automation) = ui_automation {
         ui_automation.cleanup_session_file();
@@ -994,7 +1180,7 @@ fn handle_setup_failure(
     lifecycle: &Arc<Mutex<StartupLifecycle>>,
     primary: errors::StartupError,
 ) {
-    let mut diagnostics = teardown_uncommitted_runtime(app, lifecycle);
+    let mut diagnostics = teardown_uncommitted_runtime(Some(app), lifecycle);
     diagnostics.extend(rollback_startup(lifecycle));
     let error = primary.with_rollback_diagnostics(diagnostics);
     match lifecycle.lock() {
@@ -1007,6 +1193,18 @@ fn handle_setup_failure(
         }
     }
     app.exit(1);
+}
+
+fn finish_build_failure(
+    lifecycle: &Arc<Mutex<StartupLifecycle>>,
+    primary: errors::StartupError,
+) -> errors::StartupError {
+    let mut diagnostics = teardown_uncommitted_runtime(None, lifecycle);
+    diagnostics.extend(rollback_startup(lifecycle));
+    if let Ok(mut guard) = lifecycle.lock() {
+        guard.state = StartupCommitState::TeardownComplete;
+    }
+    primary.with_rollback_diagnostics(diagnostics)
 }
 
 /// Decide whether a persisted session should be restored with a live PTY
@@ -1114,14 +1312,16 @@ impl RestoreObserverStartBarrier {
             .map_err(|phase| format!("restore observer barrier completion from phase {phase}"))
     }
 
-    fn start(&self, producer: &str, start: impl FnOnce()) -> Result<(), String> {
+    fn start<T, E>(&self, producer: &str, start: impl FnOnce() -> Result<T, E>) -> Result<T, String>
+    where
+        E: std::fmt::Display,
+    {
         if self.phase.load(Ordering::Acquire) != 2 {
             return Err(format!(
                 "startup producer {producer} attempted before restore completion"
             ));
         }
-        start();
-        Ok(())
+        start().map_err(|error| format!("startup producer {producer} failed: {error}"))
     }
 }
 
@@ -1324,6 +1524,7 @@ impl ContextSampleSink for ScraperSamples {
 /// documented capability boundary is preserved.
 struct ScraperPersist {
     session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+    shutdown: ShutdownSignal,
 }
 
 impl ContextPersistSink for ScraperPersist {
@@ -1331,10 +1532,15 @@ impl ContextPersistSink for ScraperPersist {
         // Clone the Arc before the `async move` so the returned future is
         // 'static + Send (it captures the Arc, not `&self`).
         let mgr = Arc::clone(&self.session_mgr);
+        let shutdown = self.shutdown.clone();
         Box::pin(async move {
             if changed.is_empty() {
                 return;
             }
+            let Some(_write_permit) = shutdown.try_durable_write() else {
+                log::debug!("[context] skipped persistence because startup is not committed");
+                return;
+            };
             // One outer read guard held across the per-session writes (interior
             // `state.write`) and the persist (interior `state.read`) - the exact
             // lock discipline the idle/busy callbacks use (`mark_idle` + persist
@@ -1391,8 +1597,12 @@ pub fn run(
     // Settings re-seed button.
     config::coding_agents_catalog::ensure_seeded_masters(&config_dir);
 
+    let shutdown_signal = ShutdownSignal::new_startup_gated();
     let publication = StartupPublicationRollback::new(&config_dir)?;
-    let startup_lifecycle = Arc::new(Mutex::new(StartupLifecycle::new(publication)));
+    let startup_lifecycle = Arc::new(Mutex::new(StartupLifecycle::new(
+        publication,
+        shutdown_signal.clone(),
+    )));
     let instance_id = uuid::Uuid::new_v4();
     let app_outbox_path = create_startup_instance(&startup_lifecycle, &instance_id)?;
     let app_outbox_text = app_outbox_path
@@ -1422,7 +1632,6 @@ pub fn run(
     let broadcaster = WsBroadcaster::new();
 
     let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
-    let shutdown_signal = ShutdownSignal::new();
     let selection_coordinator = crate::session::selection::SelectionCoordinator::new(
         Arc::clone(&session_mgr),
         shutdown_signal.token().clone(),
@@ -1437,6 +1646,8 @@ pub fn run(
     let app_handle_lock: Arc<OnceLock<tauri::AppHandle>> = Arc::new(OnceLock::new());
     let handle_for_idle = Arc::clone(&app_handle_lock);
     let handle_for_busy = Arc::clone(&app_handle_lock);
+    let shutdown_for_idle_write = shutdown_signal.clone();
+    let shutdown_for_busy_write = shutdown_signal.clone();
     let idle_detector = IdleDetector::new(
         move |id| {
             log::debug!("[idle] >>> EMIT session_idle for {}", &id.to_string()[..8]);
@@ -1449,7 +1660,11 @@ pub fn run(
                 let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
                 let mgr_clone = session_mgr.inner().clone();
                 let app_for_idle = app.clone();
+                let shutdown = shutdown_for_idle_write.clone();
                 tauri::async_runtime::spawn(async move {
+                    let Some(_write_permit) = shutdown.try_durable_write() else {
+                        return;
+                    };
                     let mgr = mgr_clone.read().await;
                     mgr.mark_idle(id).await;
                     crate::config::sessions_persistence::persist_current_state(&mgr).await;
@@ -1474,7 +1689,11 @@ pub fn run(
                 );
                 let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
                 let mgr_clone = session_mgr.inner().clone();
+                let shutdown = shutdown_for_busy_write.clone();
                 tauri::async_runtime::spawn(async move {
+                    let Some(_write_permit) = shutdown.try_durable_write() else {
+                        return;
+                    };
                     let mgr = mgr_clone.read().await;
                     mgr.mark_busy(id).await;
                     crate::config::sessions_persistence::persist_current_state(&mgr).await;
@@ -1680,21 +1899,29 @@ pub fn run(
             app.manage(Arc::clone(&discovery_branch_watcher));
 
             // PtyManager needs GitWatcher for cleanup on session kill
-            let pty_mgr = Arc::new(Mutex::new(PtyManager::new(
+            let pty_manager = PtyManager::new(
                 output_senders_for_pty,
                 idle_detector_for_pty,
                 Arc::clone(&git_watcher),
                 Some(broadcaster_for_pty),
                 Some(selection_coordinator_for_setup.container_lifecycle_sender()),
-            )));
-            register_startup_pty_manager(&lifecycle_for_setup, Arc::clone(&pty_mgr))?;
+            );
+            let container_backend = pty_manager.container_backend();
+            let pty_mgr = Arc::new(Mutex::new(pty_manager));
+            register_startup_pty_manager(
+                &lifecycle_for_setup,
+                Arc::clone(&pty_mgr),
+                Arc::clone(&container_backend),
+            )?;
             install_container_route_remover(&pty_mgr);
-            pty_mgr
-                .lock()
-                .map_err(|_| errors::StartupError::TauriSetup {
-                    message: "PTY manager lock was poisoned during startup cleanup".to_string(),
-                })?
-                .cleanup_container_orphans_on_startup();
+            start_and_register_startup_thread(
+                &lifecycle_for_setup,
+                "container startup orphan sweep",
+                || {
+                    container_backend
+                        .cleanup_labeled_orphans_on_startup(shutdown_for_setup.clone())
+                },
+            )?;
             app.manage(pty_mgr.clone());
 
             selection_coordinator_for_setup
@@ -1755,10 +1982,18 @@ pub fn run(
                 }),
                 Arc::new(ScraperPersist {
                     session_mgr: session_mgr_for_scraper,
+                    shutdown: shutdown_for_setup.clone(),
                 }),
             );
-            register_startup_cancellation_owner(&lifecycle_for_setup, "context scraper")?;
-            context_scraper.start(shutdown_for_setup.clone());
+            start_and_register_startup_thread(
+                &lifecycle_for_setup,
+                "context scraper",
+                || {
+                    context_scraper
+                        .start(shutdown_for_setup.clone())
+                        .map(Some)
+                },
+            )?;
             app.manage(Arc::clone(&context_scraper));
 
             // Start web server if enabled in settings
@@ -2286,9 +2521,9 @@ pub fn run(
                 log_main_window_info(&main_win);
             }
 
-            if saved_settings.main_always_on_top {
-                let _ = main_win.set_always_on_top(true);
-            }
+            apply_saved_always_on_top(saved_settings.main_always_on_top, || {
+                main_win.set_always_on_top(true)
+            })?;
 
             // Suppress unused variable warning
             let _ = &main_win;
@@ -2922,64 +3157,93 @@ pub fn run(
             // These observers mutate session metadata or persistence directly.
             // Start them only after restore has completed, which is stricter than
             // merely placing restore first and prevents an intermediate snapshot.
-            register_startup_cancellation_owner(&lifecycle_for_setup, "idle detector")?;
-            restore_observer_barrier.start("idle", || {
-                idle_detector_for_setup.start(shutdown_for_setup.clone());
-            })
-            .map_err(|error| errors::StartupError::TauriSetup {
-                message: error.to_string(),
-            })?;
-            register_startup_cancellation_owner(&lifecycle_for_setup, "Git watcher")?;
-            restore_observer_barrier.start("git", || {
-                git_watcher.start(shutdown_for_setup.clone());
-            })
-            .map_err(|error| errors::StartupError::TauriSetup {
-                message: error.to_string(),
-            })?;
-            register_startup_cancellation_owner(&lifecycle_for_setup, "discovery watcher")?;
-            restore_observer_barrier.start("discovery", || {
-                discovery_branch_watcher.start(shutdown_for_setup.clone());
-            })
-            .map_err(|error| errors::StartupError::TauriSetup {
-                message: error.to_string(),
-            })?;
+            start_and_register_startup_thread(
+                &lifecycle_for_setup,
+                "idle detector",
+                || {
+                    restore_observer_barrier
+                        .start("idle", || {
+                            idle_detector_for_setup.start(shutdown_for_setup.clone())
+                        })
+                        .map(Some)
+                        .map_err(std::io::Error::other)
+                },
+            )?;
+            start_and_register_startup_thread(
+                &lifecycle_for_setup,
+                "Git watcher",
+                || {
+                    restore_observer_barrier
+                        .start("git", || git_watcher.start(shutdown_for_setup.clone()))
+                        .map(Some)
+                        .map_err(std::io::Error::other)
+                },
+            )?;
+            start_and_register_startup_thread(
+                &lifecycle_for_setup,
+                "discovery watcher",
+                || {
+                    restore_observer_barrier
+                        .start("discovery", || {
+                            discovery_branch_watcher.start(shutdown_for_setup.clone())
+                        })
+                        .map(Some)
+                        .map_err(std::io::Error::other)
+                },
+            )?;
 
-            register_startup_cancellation_owner(&lifecycle_for_setup, "resource watchdog")?;
-            resource_monitor::watchdog::start(
-                (*resource_monitor_for_setup).clone(),
-                app.state::<SettingsState>().inner().clone(),
-                selection_coordinator_for_setup.clone(),
-                shutdown_for_setup.clone(),
-            );
-            register_startup_cancellation_owner(
+            start_and_register_startup_join(
+                &lifecycle_for_setup,
+                "resource watchdog",
+                || {
+                    Ok(Some(resource_monitor::watchdog::start(
+                        (*resource_monitor_for_setup).clone(),
+                        app.state::<SettingsState>().inner().clone(),
+                        selection_coordinator_for_setup.clone(),
+                        shutdown_for_setup.clone(),
+                    )))
+                },
+            )?;
+            start_and_register_startup_join(
                 &lifecycle_for_setup,
                 "container pending reaper",
+                || {
+                    Ok(Some(
+                        container_backend.start_pending_reaper(shutdown_for_setup.clone()),
+                    ))
+                },
             )?;
-            pty_mgr
-                .lock()
-                .map_err(|_| errors::StartupError::TauriSetup {
-                    message: "PTY manager lock was poisoned while starting container reaper"
-                        .to_string(),
-                })?
-                .start_container_pending_reaper(shutdown_for_setup.clone());
 
             let mailbox_poller = phone::mailbox::MailboxPoller::new();
-            register_startup_cancellation_owner(&lifecycle_for_setup, "mailbox poller")?;
-            mailbox_poller.start(app.handle().clone(), shutdown_for_setup.clone());
-            register_startup_cancellation_owner(&lifecycle_for_setup, "loop scheduler")?;
-            loop_scheduler_for_setup
-                .clone()
-                .start(app.handle().clone(), shutdown_for_setup.clone());
-            register_startup_cancellation_owner(&lifecycle_for_setup, "session auto-close")?;
-            crate::session::auto_close::start(app.handle().clone(), shutdown_for_setup.clone());
-            register_startup_cancellation_owner(&lifecycle_for_setup, "non-stop watchdog")?;
-            crate::loops::non_stop_watchdog::start(
-                app.handle().clone(),
-                non_stop_state_for_setup.clone(),
-                shutdown_for_setup.clone(),
-            );
-            register_startup_cancellation_owner(&lifecycle_for_setup, "UI automation")?;
-            ui_automation_state_for_setup.start(app.handle().clone(), shutdown_for_setup.clone());
+            start_and_register_startup_join(&lifecycle_for_setup, "mailbox poller", || {
+                Ok(Some(
+                    mailbox_poller.start(app.handle().clone(), shutdown_for_setup.clone()),
+                ))
+            })?;
+            start_and_register_startup_join(&lifecycle_for_setup, "loop scheduler", || {
+                Ok(Some(loop_scheduler_for_setup.clone().start(
+                    app.handle().clone(),
+                    shutdown_for_setup.clone(),
+                )))
+            })?;
+            start_and_register_startup_join(&lifecycle_for_setup, "session auto-close", || {
+                Ok(Some(crate::session::auto_close::start(
+                    app.handle().clone(),
+                    shutdown_for_setup.clone(),
+                )))
+            })?;
+            start_and_register_startup_join(&lifecycle_for_setup, "non-stop watchdog", || {
+                Ok(Some(crate::loops::non_stop_watchdog::start(
+                    app.handle().clone(),
+                    non_stop_state_for_setup.clone(),
+                    shutdown_for_setup.clone(),
+                )))
+            })?;
+            start_and_register_startup_join(&lifecycle_for_setup, "UI automation", || {
+                ui_automation_state_for_setup
+                    .start(app.handle().clone(), shutdown_for_setup.clone())
+                    .map_err(|error| errors::StartupError::TauriSetup { message: error })
+            })?;
 
             let screenshot_hotkey = {
                 let settings = app.state::<SettingsState>();
@@ -3173,7 +3437,7 @@ pub fn run(
         Ok(app) => app,
         Err(source) => {
             let error = errors::StartupError::TauriBuild { source };
-            return Err(error.with_rollback_diagnostics(rollback_startup(&startup_lifecycle)));
+            return Err(finish_build_failure(&startup_lifecycle, error));
         }
     };
 
@@ -3262,13 +3526,19 @@ pub fn run(
                         Ok(StartupCommitState::TeardownComplete) => return,
                         Ok(StartupCommitState::Uncommitted) => {
                             let mut diagnostics =
-                                teardown_uncommitted_runtime(app_handle, &lifecycle_for_exit);
+                                teardown_uncommitted_runtime(Some(app_handle), &lifecycle_for_exit);
                             diagnostics.extend(rollback_startup(&lifecycle_for_exit));
-                            for diagnostic in diagnostics {
-                                log::warn!("[startup-teardown] {diagnostic}");
+                            let error = errors::StartupError::TauriSetup {
+                                message: "event loop exited before startup committed".to_string(),
                             }
+                            .with_rollback_diagnostics(diagnostics);
                             if let Ok(mut lifecycle) = lifecycle_for_exit.lock() {
+                                lifecycle.setup_error = Some(error);
                                 lifecycle.state = StartupCommitState::TeardownComplete;
+                            } else {
+                                log::error!(
+                                    "[startup-teardown] lifecycle lock poisoned after early exit"
+                                );
                             }
                             return;
                         }
@@ -3276,7 +3546,7 @@ pub fn run(
                         Err(error) => {
                             log::error!("[startup-teardown] {error}");
                             for diagnostic in
-                                teardown_uncommitted_runtime(app_handle, &lifecycle_for_exit)
+                                teardown_uncommitted_runtime(Some(app_handle), &lifecycle_for_exit)
                             {
                                 log::warn!("[startup-teardown] {diagnostic}");
                             }
@@ -3487,19 +3757,18 @@ pub fn run(
         let mut lifecycle = lock_startup_lifecycle(&startup_lifecycle, "finish Tauri event loop")?;
         lifecycle.setup_error.take()
     };
-    if let Some(error) = setup_error {
-        return Err(error);
-    }
-    if startup_lifecycle_state(&startup_lifecycle)? == StartupCommitState::Uncommitted {
+    let state = startup_lifecycle_state(&startup_lifecycle)?;
+    if setup_error.is_none() && state == StartupCommitState::Uncommitted {
+        let mut diagnostics =
+            teardown_uncommitted_runtime(Some(&app_handle_after_run), &startup_lifecycle);
+        diagnostics.extend(rollback_startup(&startup_lifecycle));
         let error = errors::StartupError::TauriSetup {
             message: "event loop returned before startup committed".to_string(),
-        };
-        let mut diagnostics =
-            teardown_uncommitted_runtime(&app_handle_after_run, &startup_lifecycle);
-        diagnostics.extend(rollback_startup(&startup_lifecycle));
-        return Err(error.with_rollback_diagnostics(diagnostics));
+        }
+        .with_rollback_diagnostics(diagnostics);
+        return finish_event_loop_result(Some(error), state, exit_code);
     }
-    Ok(exit_code)
+    finish_event_loop_result(setup_error, state, exit_code)
 }
 
 #[cfg(test)]
@@ -3564,8 +3833,8 @@ mod tests {
     #[test]
     fn startup_runtime_registry_retains_and_aborts_joinable_owners() {
         let mut registry = super::StartupRuntimeRegistry::default();
-        registry.register_cancellation_only("shared cancellation task");
-        registry.register_cancellation_only("shared cancellation task");
+        registry.record("shared cancellation task");
+        registry.record("shared cancellation task");
         let handle = tauri::async_runtime::spawn(async {
             std::future::pending::<()>().await;
         });
@@ -3582,6 +3851,639 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(2), &mut owner.handle).await
         });
         assert!(joined.is_ok(), "aborted startup owner must join in budget");
+    }
+
+    #[test]
+    fn required_always_on_top_failure_propagates_as_tauri_setup() {
+        let error = super::apply_saved_always_on_top(true, || {
+            Err::<(), _>("injected compositor rejection")
+        })
+        .expect_err("required window configuration must fail setup");
+        match error {
+            crate::errors::StartupError::TauriSetup { message } => assert_eq!(
+                message,
+                "failed to apply saved always-on-top window setting: injected compositor rejection"
+            ),
+            other => panic!("unexpected startup error: {other}"),
+        }
+    }
+
+    #[test]
+    fn disabled_always_on_top_does_not_call_window_configuration() {
+        let called = AtomicBool::new(false);
+        super::apply_saved_always_on_top(false, || {
+            called.store(true, Ordering::SeqCst);
+            Ok::<(), String>(())
+        })
+        .expect("disabled setting is a no-op");
+        assert!(!called.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn build_failure_without_app_runs_registered_lifecycle_teardown() {
+        let shutdown = crate::shutdown::ShutdownSignal::new_startup_gated();
+        let lifecycle = Arc::new(Mutex::new(super::StartupLifecycle {
+            state: super::StartupCommitState::Uncommitted,
+            setup_error: None,
+            publication: None,
+            shutdown: shutdown.clone(),
+            runtime: super::StartupRuntimeRegistry::default(),
+        }));
+        super::with_startup_runtime(&lifecycle, "register build fixture shutdown", |runtime| {
+            runtime.record("shared shutdown signal");
+            runtime.shutdown = Some(shutdown.clone());
+        })
+        .expect("register build fixture shutdown");
+        let stopped = Arc::new(AtomicBool::new(false));
+        let stopped_for_thread = Arc::clone(&stopped);
+        let shutdown_for_thread = shutdown.clone();
+        super::start_and_register_startup_thread(&lifecycle, "build fixture actor", || {
+            crate::shutdown::spawn_acknowledged_thread("build-fixture-actor", move || {
+                assert!(!shutdown_for_thread.wait_for_startup_commit_blocking());
+                stopped_for_thread.store(true, Ordering::SeqCst);
+            })
+            .map(Some)
+        })
+        .expect("start build fixture actor");
+
+        let primary = crate::errors::StartupError::TauriSetup {
+            message: "injected Tauri build boundary".to_string(),
+        };
+        let returned = super::finish_build_failure(&lifecycle, primary);
+        assert_eq!(
+            returned.to_string(),
+            "Tauri setup failed: injected Tauri build boundary"
+        );
+        assert!(shutdown.is_cancelled());
+        assert!(stopped.load(Ordering::SeqCst));
+        assert_eq!(
+            super::startup_lifecycle_state(&lifecycle).expect("inspect build fixture"),
+            super::StartupCommitState::TeardownComplete
+        );
+    }
+
+    #[test]
+    fn every_raw_startup_actor_failure_is_typed_and_pre_registered() {
+        for owner in [
+            "container startup orphan sweep",
+            "context scraper",
+            "idle detector",
+            "Git watcher",
+            "discovery watcher",
+        ] {
+            let lifecycle = Arc::new(Mutex::new(super::StartupLifecycle {
+                state: super::StartupCommitState::Uncommitted,
+                setup_error: None,
+                publication: None,
+                shutdown: crate::shutdown::ShutdownSignal::new_startup_gated(),
+                runtime: super::StartupRuntimeRegistry::default(),
+            }));
+            let error = super::start_and_register_startup_thread(&lifecycle, owner, || {
+                Err(std::io::Error::other("injected actor start failure"))
+            })
+            .expect_err("actor start failure must propagate");
+            match error {
+                crate::errors::StartupError::TauriSetup { message } => assert_eq!(
+                    message,
+                    format!("failed to start {owner}: injected actor start failure")
+                ),
+                other => panic!("unexpected startup error for {owner}: {other}"),
+            }
+            assert_eq!(
+                lifecycle
+                    .lock()
+                    .expect("inspect failed actor registration")
+                    .runtime
+                    .owners,
+                vec![owner],
+                "{owner} must be registered before its fallible start seam"
+            );
+        }
+    }
+
+    #[test]
+    fn event_loop_result_preserves_exact_nonzero_exit_code() {
+        assert_eq!(
+            super::finish_event_loop_result(None, super::StartupCommitState::TeardownComplete, 37,)
+                .expect("committed normal exit"),
+            37
+        );
+    }
+
+    #[test]
+    fn setup_failure_overrides_run_return_code_and_early_exit_is_an_error() {
+        let setup_error = crate::errors::StartupError::TauriSetup {
+            message: "injected setup action".to_string(),
+        };
+        assert_eq!(
+            super::finish_event_loop_result(
+                Some(setup_error),
+                super::StartupCommitState::TeardownComplete,
+                37,
+            )
+            .expect_err("setup error must override run_return")
+            .to_string(),
+            "Tauri setup failed: injected setup action"
+        );
+        assert_eq!(
+            super::finish_event_loop_result(None, super::StartupCommitState::Uncommitted, 0)
+                .expect_err("early event-loop return must fail")
+                .to_string(),
+            "Tauri setup failed: event loop returned before startup committed"
+        );
+    }
+
+    #[test]
+    fn every_startup_publication_boundary_is_injected_and_pid_is_last() {
+        let basenames = [
+            "web-token.txt",
+            "master-token.txt",
+            "app-outbox-path.txt",
+            "daemon.pid",
+        ];
+        for (fail_index, failed_basename) in basenames.iter().enumerate() {
+            let mut calls = Vec::new();
+            let error = super::publish_startup_readiness_in_order(
+                "web",
+                "master",
+                "/config/instances/id/outbox",
+                "123",
+                |basename, _, _| {
+                    calls.push(basename);
+                    if basename == *failed_basename {
+                        Err(crate::errors::StartupError::TauriSetup {
+                            message: format!("injected publication failure at {basename}"),
+                        })
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+            .expect_err("injected publication boundary must fail");
+            assert_eq!(
+                error.to_string(),
+                format!("Tauri setup failed: injected publication failure at {failed_basename}")
+            );
+            assert_eq!(calls, basenames[..=fail_index]);
+            if *failed_basename != "daemon.pid" {
+                assert!(
+                    !calls.contains(&"daemon.pid"),
+                    "PID must remain invisible when an earlier publication fails"
+                );
+            }
+        }
+
+        let mut successful_order = Vec::new();
+        super::publish_startup_readiness_in_order(
+            "web",
+            "master",
+            "/config/instances/id/outbox",
+            "123",
+            |basename, _, _| {
+                successful_order.push(basename);
+                Ok(())
+            },
+        )
+        .expect("all publication boundaries succeed");
+        assert_eq!(successful_order, basenames);
+    }
+
+    #[test]
+    fn injected_teardown_failure_retains_primary_startup_error() {
+        let error = crate::errors::StartupError::TauriSetup {
+            message: "injected actor start failure".to_string(),
+        }
+        .with_rollback_diagnostics(vec![
+            "reason=external-process-owner state=retained".to_string()
+        ]);
+        match error {
+            crate::errors::StartupError::Rollback {
+                primary,
+                diagnostics,
+            } => {
+                assert_eq!(
+                    primary.to_string(),
+                    "Tauri setup failed: injected actor start failure"
+                );
+                assert_eq!(
+                    diagnostics,
+                    vec!["reason=external-process-owner state=retained"]
+                );
+            }
+            other => panic!("unexpected teardown error shape: {other}"),
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum RequiredStartupBoundary {
+        StrictSettingsPersistence,
+        StaleInstanceCleanup,
+        InstanceCreate,
+        InstanceOwnerRegistration,
+        OutboxCreate,
+        OutboxPathEncoding,
+        ManagedStateConstruction,
+        TauriBuild,
+        ErrorEmitterStart,
+        PtyManagerRegistration,
+        ContainerOrphanSweepStart,
+        SelectionCoordinatorStart,
+        RestoreAdmission,
+        ContextAlertStart,
+        ContextScraperStart,
+        WebServerStart,
+        ApiServerStart,
+        UpdateCheckStart,
+        AppIconDecode,
+        MainWindowIconConfiguration,
+        MainWindowCreate,
+        AlwaysOnTopConfiguration,
+        RestoredLocalPtyStart,
+        RestoredContainerStart,
+        RestoreObserverCompletion,
+        IdleDetectorStart,
+        GitWatcherStart,
+        DiscoveryWatcherStart,
+        ResourceWatchdogStart,
+        ContainerPendingReaperStart,
+        MailboxPollerStart,
+        LoopSchedulerStart,
+        SessionAutoCloseStart,
+        NonStopWatchdogStart,
+        UiAutomationStart,
+        WebTokenPublication,
+        MasterTokenPublication,
+        OutboxPointerPublication,
+        DaemonPidPublication,
+        EarlyEventLoopExit,
+        TeardownFailure,
+        RunReturn,
+    }
+
+    const REQUIRED_STARTUP_BOUNDARIES: &[RequiredStartupBoundary] = &[
+        RequiredStartupBoundary::StrictSettingsPersistence,
+        RequiredStartupBoundary::StaleInstanceCleanup,
+        RequiredStartupBoundary::InstanceCreate,
+        RequiredStartupBoundary::InstanceOwnerRegistration,
+        RequiredStartupBoundary::OutboxCreate,
+        RequiredStartupBoundary::OutboxPathEncoding,
+        RequiredStartupBoundary::ManagedStateConstruction,
+        RequiredStartupBoundary::TauriBuild,
+        RequiredStartupBoundary::ErrorEmitterStart,
+        RequiredStartupBoundary::PtyManagerRegistration,
+        RequiredStartupBoundary::ContainerOrphanSweepStart,
+        RequiredStartupBoundary::SelectionCoordinatorStart,
+        RequiredStartupBoundary::RestoreAdmission,
+        RequiredStartupBoundary::ContextAlertStart,
+        RequiredStartupBoundary::ContextScraperStart,
+        RequiredStartupBoundary::WebServerStart,
+        RequiredStartupBoundary::ApiServerStart,
+        RequiredStartupBoundary::UpdateCheckStart,
+        RequiredStartupBoundary::AppIconDecode,
+        RequiredStartupBoundary::MainWindowIconConfiguration,
+        RequiredStartupBoundary::MainWindowCreate,
+        RequiredStartupBoundary::AlwaysOnTopConfiguration,
+        RequiredStartupBoundary::RestoredLocalPtyStart,
+        RequiredStartupBoundary::RestoredContainerStart,
+        RequiredStartupBoundary::RestoreObserverCompletion,
+        RequiredStartupBoundary::IdleDetectorStart,
+        RequiredStartupBoundary::GitWatcherStart,
+        RequiredStartupBoundary::DiscoveryWatcherStart,
+        RequiredStartupBoundary::ResourceWatchdogStart,
+        RequiredStartupBoundary::ContainerPendingReaperStart,
+        RequiredStartupBoundary::MailboxPollerStart,
+        RequiredStartupBoundary::LoopSchedulerStart,
+        RequiredStartupBoundary::SessionAutoCloseStart,
+        RequiredStartupBoundary::NonStopWatchdogStart,
+        RequiredStartupBoundary::UiAutomationStart,
+        RequiredStartupBoundary::WebTokenPublication,
+        RequiredStartupBoundary::MasterTokenPublication,
+        RequiredStartupBoundary::OutboxPointerPublication,
+        RequiredStartupBoundary::DaemonPidPublication,
+        RequiredStartupBoundary::EarlyEventLoopExit,
+        RequiredStartupBoundary::TeardownFailure,
+        RequiredStartupBoundary::RunReturn,
+    ];
+
+    impl RequiredStartupBoundary {
+        fn name(self) -> &'static str {
+            match self {
+                Self::StrictSettingsPersistence => "strict settings persistence",
+                Self::StaleInstanceCleanup => "stale instance cleanup",
+                Self::InstanceCreate => "instance create",
+                Self::InstanceOwnerRegistration => "instance owner registration",
+                Self::OutboxCreate => "outbox create",
+                Self::OutboxPathEncoding => "outbox path encoding",
+                Self::ManagedStateConstruction => "managed-state construction",
+                Self::TauriBuild => "Tauri build",
+                Self::ErrorEmitterStart => "error emitter start",
+                Self::PtyManagerRegistration => "PTY manager registration",
+                Self::ContainerOrphanSweepStart => "container orphan sweep start",
+                Self::SelectionCoordinatorStart => "selection coordinator start",
+                Self::RestoreAdmission => "restore admission",
+                Self::ContextAlertStart => "context alert start",
+                Self::ContextScraperStart => "context scraper start",
+                Self::WebServerStart => "web server start",
+                Self::ApiServerStart => "API server start",
+                Self::UpdateCheckStart => "update check start",
+                Self::AppIconDecode => "app icon decode",
+                Self::MainWindowIconConfiguration => "main window icon configuration",
+                Self::MainWindowCreate => "main window create",
+                Self::AlwaysOnTopConfiguration => "always-on-top configuration",
+                Self::RestoredLocalPtyStart => "restored local PTY start",
+                Self::RestoredContainerStart => "restored container start",
+                Self::RestoreObserverCompletion => "restore observer completion",
+                Self::IdleDetectorStart => "idle detector start",
+                Self::GitWatcherStart => "Git watcher start",
+                Self::DiscoveryWatcherStart => "discovery watcher start",
+                Self::ResourceWatchdogStart => "resource watchdog start",
+                Self::ContainerPendingReaperStart => "container pending reaper start",
+                Self::MailboxPollerStart => "mailbox poller start",
+                Self::LoopSchedulerStart => "loop scheduler start",
+                Self::SessionAutoCloseStart => "session auto-close start",
+                Self::NonStopWatchdogStart => "non-stop watchdog start",
+                Self::UiAutomationStart => "UI automation start",
+                Self::WebTokenPublication => "web token publication",
+                Self::MasterTokenPublication => "master token publication",
+                Self::OutboxPointerPublication => "outbox pointer publication",
+                Self::DaemonPidPublication => "daemon PID publication",
+                Self::EarlyEventLoopExit => "early event-loop exit",
+                Self::TeardownFailure => "teardown failure",
+                Self::RunReturn => "run_return",
+            }
+        }
+
+        fn owns_actor(self) -> bool {
+            matches!(
+                self,
+                Self::ErrorEmitterStart
+                    | Self::ContainerOrphanSweepStart
+                    | Self::SelectionCoordinatorStart
+                    | Self::ContextAlertStart
+                    | Self::ContextScraperStart
+                    | Self::WebServerStart
+                    | Self::ApiServerStart
+                    | Self::UpdateCheckStart
+                    | Self::IdleDetectorStart
+                    | Self::GitWatcherStart
+                    | Self::DiscoveryWatcherStart
+                    | Self::ResourceWatchdogStart
+                    | Self::ContainerPendingReaperStart
+                    | Self::MailboxPollerStart
+                    | Self::LoopSchedulerStart
+                    | Self::SessionAutoCloseStart
+                    | Self::NonStopWatchdogStart
+                    | Self::UiAutomationStart
+            )
+        }
+
+        fn owns_raw_thread(self) -> bool {
+            matches!(
+                self,
+                Self::ContainerOrphanSweepStart
+                    | Self::ContextScraperStart
+                    | Self::IdleDetectorStart
+                    | Self::GitWatcherStart
+                    | Self::DiscoveryWatcherStart
+            )
+        }
+
+        fn owns_external_process(self) -> bool {
+            matches!(
+                self,
+                Self::RestoredLocalPtyStart | Self::RestoredContainerStart
+            )
+        }
+
+        fn publishes(self) -> bool {
+            matches!(
+                self,
+                Self::WebTokenPublication
+                    | Self::MasterTokenPublication
+                    | Self::OutboxPointerPublication
+                    | Self::DaemonPidPublication
+            )
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum InjectionSide {
+        Before,
+        After,
+    }
+
+    #[test]
+    fn complete_startup_failure_injection_matrix_closes_every_uncommitted_owner() {
+        struct ActorDropFlag(Arc<AtomicBool>);
+
+        impl Drop for ActorDropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let mut names = std::collections::BTreeSet::new();
+        for boundary in REQUIRED_STARTUP_BOUNDARIES {
+            assert!(
+                names.insert(boundary.name()),
+                "duplicate startup boundary {}",
+                boundary.name()
+            );
+            for side in [InjectionSide::Before, InjectionSide::After] {
+                let shutdown = crate::shutdown::ShutdownSignal::new_startup_gated();
+                let lifecycle = Arc::new(Mutex::new(super::StartupLifecycle {
+                    state: super::StartupCommitState::Uncommitted,
+                    setup_error: None,
+                    publication: None,
+                    shutdown: shutdown.clone(),
+                    runtime: super::StartupRuntimeRegistry::default(),
+                }));
+                super::with_startup_runtime(
+                    &lifecycle,
+                    "register matrix shutdown owner",
+                    |runtime| {
+                        runtime.record("shared shutdown signal");
+                        runtime.shutdown = Some(shutdown.clone());
+                    },
+                )
+                .expect("register matrix shutdown owner");
+
+                let actor_stopped = Arc::new(AtomicBool::new(false));
+                if matches!(side, InjectionSide::After) && boundary.owns_actor() {
+                    if boundary.owns_raw_thread() {
+                        let shutdown_for_actor = shutdown.clone();
+                        let stopped_for_actor = Arc::clone(&actor_stopped);
+                        super::start_and_register_startup_thread(
+                            &lifecycle,
+                            boundary.name(),
+                            || {
+                                crate::shutdown::spawn_acknowledged_thread(
+                                    "startup-matrix-native-actor",
+                                    move || {
+                                        assert!(
+                                            !shutdown_for_actor.wait_for_startup_commit_blocking()
+                                        );
+                                        stopped_for_actor.store(true, Ordering::SeqCst);
+                                    },
+                                )
+                                .map(Some)
+                            },
+                        )
+                        .expect("start matrix native actor");
+                    } else {
+                        let stopped_for_actor = Arc::clone(&actor_stopped);
+                        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+                        super::spawn_and_register_startup_join(&lifecycle, boundary.name(), || {
+                            tauri::async_runtime::spawn(async move {
+                                let _drop_flag = ActorDropFlag(stopped_for_actor);
+                                ready_tx.send(()).expect("acknowledge matrix Tokio actor");
+                                std::future::pending::<()>().await;
+                            })
+                        })
+                        .expect("start matrix Tokio actor");
+                        ready_rx
+                            .recv_timeout(Duration::from_secs(2))
+                            .expect("matrix Tokio actor must acknowledge");
+                    }
+                }
+
+                let primary = crate::errors::StartupError::TauriSetup {
+                    message: format!("injected {:?} {}", side, boundary.name()),
+                };
+                let returned = super::finish_build_failure(&lifecycle, primary);
+
+                assert!(shutdown.is_cancelled());
+                assert!(
+                    shutdown.try_durable_write().is_none(),
+                    "{} {:?} left the durable-write gate open",
+                    boundary.name(),
+                    side
+                );
+                if matches!(side, InjectionSide::After) && boundary.owns_actor() {
+                    assert!(
+                        actor_stopped.load(Ordering::SeqCst),
+                        "{} did not stop its registered actor",
+                        boundary.name()
+                    );
+                } else {
+                    assert!(!actor_stopped.load(Ordering::SeqCst));
+                }
+                assert_eq!(
+                    returned.to_string(),
+                    format!(
+                        "Tauri setup failed: injected {:?} {}",
+                        side,
+                        boundary.name()
+                    )
+                );
+                let lifecycle = lifecycle.lock().expect("inspect matrix lifecycle");
+                assert_eq!(lifecycle.state, super::StartupCommitState::TeardownComplete);
+                assert!(
+                    lifecycle.runtime.owners.is_empty()
+                        && lifecycle.runtime.joins.is_empty()
+                        && lifecycle.runtime.threads.is_empty(),
+                    "{} {:?} retained a startup registry owner",
+                    boundary.name(),
+                    side
+                );
+            }
+        }
+        assert_eq!(names.len(), REQUIRED_STARTUP_BOUNDARIES.len());
+        assert_eq!(
+            REQUIRED_STARTUP_BOUNDARIES
+                .iter()
+                .filter(|boundary| boundary.owns_raw_thread())
+                .count(),
+            5
+        );
+        assert_eq!(
+            REQUIRED_STARTUP_BOUNDARIES
+                .iter()
+                .filter(|boundary| boundary.owns_external_process())
+                .count(),
+            2
+        );
+        assert_eq!(
+            REQUIRED_STARTUP_BOUNDARIES
+                .iter()
+                .filter(|boundary| boundary.publishes())
+                .count(),
+            4
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_startup_owner_waits_for_busy_lock_and_reaps_live_process() {
+        let child = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .expect("spawn live startup process");
+        let owner = Arc::new(Mutex::new(child));
+        let owner_for_holder = Arc::clone(&owner);
+        let (held_tx, held_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let holder = std::thread::spawn(move || {
+            let _guard = owner_for_holder.lock().expect("lock live process owner");
+            held_tx.send(()).expect("signal held owner");
+            release_rx.recv().expect("release live process owner");
+        });
+        held_rx.recv().expect("wait for busy owner");
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(40));
+            release_tx.send(()).expect("release busy owner");
+        });
+
+        let outcome = super::with_bounded_startup_owner(&owner, Duration::from_secs(1), |child| {
+            child.kill().expect("kill live startup process");
+            child.wait().expect("reap live startup process")
+        });
+        assert!(matches!(outcome, super::BoundedOwnerAccess::Acquired(_)));
+        releaser.join().expect("join owner releaser");
+        holder.join().expect("join owner holder");
+        assert!(
+            owner
+                .lock()
+                .expect("inspect reaped process")
+                .try_wait()
+                .expect("poll reaped process")
+                .is_some(),
+            "the transiently busy owner must not leave its external process alive"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_startup_owner_recovers_poison_and_reaps_live_process() {
+        let child = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .expect("spawn poisoned-owner process");
+        let owner = Arc::new(Mutex::new(child));
+        let owner_for_poison = Arc::clone(&owner);
+        let poison = std::thread::spawn(move || {
+            let _guard = owner_for_poison.lock().expect("lock process before poison");
+            panic!("inject startup owner poison");
+        });
+        assert!(poison.join().is_err());
+
+        let outcome = super::with_bounded_startup_owner(&owner, Duration::from_secs(1), |child| {
+            child.kill().expect("kill poison-owned process");
+            child.wait().expect("reap poison-owned process")
+        });
+        assert!(matches!(
+            outcome,
+            super::BoundedOwnerAccess::RecoveredPoison(_)
+        ));
+        assert!(
+            owner
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .try_wait()
+                .expect("poll poison-owned process")
+                .is_some(),
+            "poison recovery must not leave its external process alive"
+        );
     }
 
     #[cfg(target_os = "linux")]
@@ -3607,7 +4509,10 @@ mod tests {
                 .expect("prepare child GUI state");
             let publication =
                 super::StartupPublicationRollback::new(&config_dir).expect("create rollback");
-            let lifecycle = Arc::new(Mutex::new(super::StartupLifecycle::new(publication)));
+            let lifecycle = Arc::new(Mutex::new(super::StartupLifecycle::new(
+                publication,
+                crate::shutdown::ShutdownSignal::new_startup_gated(),
+            )));
             let instance_id = uuid::Uuid::new_v4();
             let outbox =
                 super::create_startup_instance(&lifecycle, &instance_id).expect("create outbox");
@@ -3912,7 +4817,10 @@ mod tests {
         let starts = std::sync::Mutex::new(Vec::new());
         for producer in ["idle", "git", "discovery"] {
             assert!(barrier
-                .start(producer, || starts.lock().unwrap().push(producer))
+                .start(producer, || {
+                    starts.lock().unwrap().push(producer);
+                    Ok::<(), String>(())
+                })
                 .is_err());
         }
         assert!(starts.lock().unwrap().is_empty());
@@ -3920,7 +4828,10 @@ mod tests {
         barrier.mark_restore_admitted().unwrap();
         for producer in ["idle", "git", "discovery"] {
             assert!(barrier
-                .start(producer, || starts.lock().unwrap().push(producer))
+                .start(producer, || {
+                    starts.lock().unwrap().push(producer);
+                    Ok::<(), String>(())
+                })
                 .is_err());
         }
         assert!(starts.lock().unwrap().is_empty());
@@ -3928,7 +4839,10 @@ mod tests {
         barrier.mark_restore_complete().unwrap();
         for producer in ["idle", "git", "discovery"] {
             barrier
-                .start(producer, || starts.lock().unwrap().push(producer))
+                .start(producer, || {
+                    starts.lock().unwrap().push(producer);
+                    Ok::<(), String>(())
+                })
                 .unwrap();
         }
         assert_eq!(*starts.lock().unwrap(), ["idle", "git", "discovery"]);

@@ -597,32 +597,34 @@ impl DiscoveryBranchWatcher {
     }
 
     /// Start the polling loop on a dedicated thread.
-    pub fn start(self: &Arc<Self>, shutdown: crate::shutdown::ShutdownSignal) {
+    pub fn start(
+        self: &Arc<Self>,
+        shutdown: crate::shutdown::ShutdownSignal,
+    ) -> std::io::Result<std::thread::JoinHandle<()>> {
         let watcher = Arc::clone(self);
-        std::thread::spawn(move || {
+        crate::shutdown::spawn_acknowledged_tokio_thread("discovery-branch-watcher", async move {
+            if !shutdown.wait_for_startup_commit().await {
+                return;
+            }
             log::info!(
                 "[DiscoveryBranchWatcher] thread started, polling every {}s",
                 BRANCH_POLL_INTERVAL.as_secs()
             );
-            let rt = tokio::runtime::Runtime::new()
-                .expect("Failed to create tokio runtime for DiscoveryBranchWatcher");
-            rt.block_on(async move {
-                loop {
-                    tokio::select! {
-                        biased;
-                        _ = shutdown.token().cancelled() => {
-                            log::info!("[DiscoveryBranchWatcher] Shutdown signal received, stopping");
-                            break;
-                        }
-                        _ = tokio::time::sleep(BRANCH_POLL_INTERVAL) => {
-                            if let Err(e) = watcher.poll().await {
-                                log::warn!("[DiscoveryBranchWatcher] poll failed: {}", e);
-                            }
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = shutdown.token().cancelled() => {
+                        log::info!("[DiscoveryBranchWatcher] Shutdown signal received, stopping");
+                        break;
+                    }
+                    _ = tokio::time::sleep(BRANCH_POLL_INTERVAL) => {
+                        if let Err(e) = watcher.poll().await {
+                            log::warn!("[DiscoveryBranchWatcher] poll failed: {}", e);
                         }
                     }
                 }
-            });
-        });
+            }
+        })
     }
 
     async fn poll(&self) -> Result<(), String> {

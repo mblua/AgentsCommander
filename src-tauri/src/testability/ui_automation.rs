@@ -280,22 +280,28 @@ impl UiAutomationState {
         self.inner.enabled && self.inner.available.load(Ordering::SeqCst)
     }
 
-    pub fn start(&self, app: AppHandle, shutdown: ShutdownSignal) {
+    pub fn start(
+        &self,
+        app: AppHandle,
+        shutdown: ShutdownSignal,
+    ) -> Result<Option<tauri::async_runtime::JoinHandle<()>>, String> {
         if !self.inner.enabled {
             self.cleanup_session_file_unchecked();
-            return;
+            return Ok(None);
         }
 
         if let Err(e) = self.initialize_files() {
             self.mark_unavailable();
-            log::error!("[ui-automation] failed to initialize files: {}", e);
-            return;
+            return Err(format!("failed to initialize UI automation files: {e}"));
         }
         self.inner.available.store(true, Ordering::SeqCst);
 
         let state = self.clone();
-        let shutdown = shutdown.token().clone();
-        tauri::async_runtime::spawn(async move {
+        let handle = tauri::async_runtime::spawn(async move {
+            if !shutdown.wait_for_startup_commit().await {
+                return;
+            }
+            let shutdown = shutdown.token().clone();
             let mut interval = tokio::time::interval(Duration::from_millis(POLL_MS));
             loop {
                 tokio::select! {
@@ -304,6 +310,7 @@ impl UiAutomationState {
                 }
             }
         });
+        Ok(Some(handle))
     }
 
     pub fn cleanup_session_file(&self) {

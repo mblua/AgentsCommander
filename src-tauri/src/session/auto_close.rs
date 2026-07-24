@@ -26,8 +26,14 @@ const WAKE_GRACE: Duration = Duration::from_secs(30);
 
 /// Spawn the auto-close watcher. Mirrors MailboxPoller/LoopScheduler::start
 /// (lib.rs): a tokio task with a `select!` on the shutdown token.
-pub fn start(app: AppHandle, shutdown: crate::shutdown::ShutdownSignal) {
+pub fn start(
+    app: AppHandle,
+    shutdown: crate::shutdown::ShutdownSignal,
+) -> tauri::async_runtime::JoinHandle<()> {
     tauri::async_runtime::spawn(async move {
+        if !shutdown.wait_for_startup_commit().await {
+            return;
+        }
         // (#580) per-team last-emitted anchor (seconds) for the badge dedup;
         // task-local, self-bounded via `retain` in `tick`.
         let mut last_emitted: HashMap<String, i64> = HashMap::new();
@@ -41,7 +47,7 @@ pub fn start(app: AppHandle, shutdown: crate::shutdown::ShutdownSignal) {
                 }
             }
         }
-    });
+    })
 }
 
 /// (#580) Effective "post-repaint" silence for ONE live member, or None if the

@@ -462,9 +462,15 @@ impl IdleDetector {
     }
 
     /// Start the watcher thread that polls for idle transitions.
-    pub fn start(self: &Arc<Self>, shutdown: crate::shutdown::ShutdownSignal) {
+    pub fn start(
+        self: &Arc<Self>,
+        shutdown: crate::shutdown::ShutdownSignal,
+    ) -> std::io::Result<std::thread::JoinHandle<()>> {
         let detector = Arc::clone(self);
-        std::thread::spawn(move || {
+        crate::shutdown::spawn_acknowledged_thread("idle-detector", move || {
+            if !shutdown.wait_for_startup_commit_blocking() {
+                return;
+            }
             loop {
                 std::thread::sleep(CHECK_INTERVAL);
 
@@ -494,7 +500,7 @@ impl IdleDetector {
                     (detector.on_idle)(session_id);
                 }
             }
-        });
+        })
     }
 }
 

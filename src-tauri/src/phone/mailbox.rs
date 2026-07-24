@@ -2628,8 +2628,15 @@ impl MailboxPoller {
     }
 
     /// Start the poller as a background task.
-    pub fn start(mut self, app: tauri::AppHandle, shutdown: crate::shutdown::ShutdownSignal) {
+    pub fn start(
+        mut self,
+        app: tauri::AppHandle,
+        shutdown: crate::shutdown::ShutdownSignal,
+    ) -> tauri::async_runtime::JoinHandle<()> {
         tauri::async_runtime::spawn(async move {
+            if !shutdown.wait_for_startup_commit().await {
+                return;
+            }
             // Initial poll without delay (matches original behavior)
             if let Err(e) = self.poll(&app).await {
                 log::warn!("MailboxPoller error: {}", e);
@@ -2648,7 +2655,7 @@ impl MailboxPoller {
                     }
                 }
             }
-        });
+        })
     }
 
     fn scrub_stale_pty_input_temps(

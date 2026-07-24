@@ -204,26 +204,28 @@ impl ContextScraper {
     }
 
     /// Own thread, own runtime, shutdown token: `GitWatcher`'s shape.
-    pub fn start(self: &Arc<Self>, shutdown: crate::shutdown::ShutdownSignal) {
+    pub fn start(
+        self: &Arc<Self>,
+        shutdown: crate::shutdown::ShutdownSignal,
+    ) -> std::io::Result<std::thread::JoinHandle<()>> {
         let scraper = Arc::clone(self);
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new()
-                .expect("Failed to create tokio runtime for ContextScraper");
-            rt.block_on(async move {
-                loop {
-                    tokio::select! {
-                        biased;
-                        _ = shutdown.token().cancelled() => {
-                            log::info!("[context] Shutdown signal received, stopping");
-                            break;
-                        }
-                        _ = tokio::time::sleep(SAMPLE_INTERVAL) => {
-                            scraper.tick().await;
-                        }
+        crate::shutdown::spawn_acknowledged_tokio_thread("context-scraper", async move {
+            if !shutdown.wait_for_startup_commit().await {
+                return;
+            }
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = shutdown.token().cancelled() => {
+                        log::info!("[context] Shutdown signal received, stopping");
+                        break;
+                    }
+                    _ = tokio::time::sleep(SAMPLE_INTERVAL) => {
+                        scraper.tick().await;
                     }
                 }
-            });
-        });
+            }
+        })
     }
 
     /// Start sampling a session. Called once per agent session at the spawn chokepoint;

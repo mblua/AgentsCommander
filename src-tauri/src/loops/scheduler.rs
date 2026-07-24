@@ -40,8 +40,15 @@ impl LoopScheduler {
         self.scan_lock.lock().await
     }
 
-    pub fn start(self: Arc<Self>, app: AppHandle, shutdown: ShutdownSignal) {
+    pub fn start(
+        self: Arc<Self>,
+        app: AppHandle,
+        shutdown: ShutdownSignal,
+    ) -> tauri::async_runtime::JoinHandle<()> {
         tauri::async_runtime::spawn(async move {
+            if !shutdown.wait_for_startup_commit().await {
+                return;
+            }
             self.scan_once(app.clone(), true, false).await;
             let mut interval = tokio::time::interval(Duration::from_secs(30));
             loop {
@@ -51,7 +58,7 @@ impl LoopScheduler {
                     _ = self.notify.notified() => self.scan_once(app.clone(), false, false).await,
                 }
             }
-        });
+        })
     }
 
     pub async fn on_session_idle(&self, app: AppHandle, _session_id: Uuid) {

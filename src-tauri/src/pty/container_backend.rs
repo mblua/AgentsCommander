@@ -2529,9 +2529,15 @@ impl ContainerTransportBackend {
         reaped
     }
 
-    pub fn start_pending_reaper(self: &Arc<Self>, shutdown: crate::shutdown::ShutdownSignal) {
+    pub fn start_pending_reaper(
+        self: &Arc<Self>,
+        shutdown: crate::shutdown::ShutdownSignal,
+    ) -> tauri::async_runtime::JoinHandle<()> {
         let backend = Arc::clone(self);
         tauri::async_runtime::spawn(async move {
+            if !shutdown.wait_for_startup_commit().await {
+                return;
+            }
             let mut interval = tokio::time::interval(Duration::from_secs(5));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
@@ -2548,7 +2554,7 @@ impl ContainerTransportBackend {
                     }
                 }
             }
-        });
+        })
     }
 
     /// #992 - Is the startup sweep load-bearing for THIS config dir, or a courtesy
@@ -2577,80 +2583,90 @@ impl ContainerTransportBackend {
         }
     }
 
-    pub fn cleanup_labeled_orphans_on_startup(&self) {
+    pub fn cleanup_labeled_orphans_on_startup(
+        &self,
+        shutdown: crate::shutdown::ShutdownSignal,
+    ) -> std::io::Result<Option<std::thread::JoinHandle<()>>> {
         let Some(runtime) = self.runtime.clone() else {
-            return;
+            return Ok(None);
         };
         let token_manager = self.token_manager.clone();
-        std::thread::spawn(move || {
-            // #992 - the registry read happens INSIDE the thread on purpose: the
-            // caller is the Tauri setup hook and must not pay a file read.
-            let load_bearing = Self::sweep_is_load_bearing(token_manager.as_ref());
-            // #992 - one line per start, at info, so the posture is observable. A
-            // design whose correct behavior is indistinguishable from its failure
-            // mode in the log is not verifiable. Do not lower this to debug.
-            log::info!(
-                "[container-transport] startup orphan sweep: {}",
-                if load_bearing {
-                    "load-bearing (this install has created containers)"
-                } else {
-                    "opportunistic (no container clients on record)"
+        let handle = crate::shutdown::spawn_acknowledged_thread(
+            "container-startup-orphan-sweep",
+            move || {
+                if !shutdown.wait_for_startup_commit_blocking() {
+                    return;
                 }
-            );
+                // #992 - the registry read happens INSIDE the thread on purpose: the
+                // caller is the Tauri setup hook and must not pay a file read.
+                let load_bearing = Self::sweep_is_load_bearing(token_manager.as_ref());
+                // #992 - one line per start, at info, so the posture is observable. A
+                // design whose correct behavior is indistinguishable from its failure
+                // mode in the log is not verifiable. Do not lower this to debug.
+                log::info!(
+                    "[container-transport] startup orphan sweep: {}",
+                    if load_bearing {
+                        "load-bearing (this install has created containers)"
+                    } else {
+                        "opportunistic (no container clients on record)"
+                    }
+                );
 
-            match runtime.cleanup_labeled_orphans(&HashSet::new(), CONTAINER_STOP_TIMEOUT) {
-                Ok(report) => {
-                    if !report.stopped.is_empty() {
-                        log::warn!(
+                match runtime.cleanup_labeled_orphans(&HashSet::new(), CONTAINER_STOP_TIMEOUT) {
+                    Ok(report) => {
+                        if !report.stopped.is_empty() {
+                            log::warn!(
                             "[container-transport] stopped {} labeled orphan container(s) on startup",
                             report.stopped.len()
                         );
-                    }
-                    if !report.invalid_labels.is_empty() {
-                        log::warn!(
+                        }
+                        if !report.invalid_labels.is_empty() {
+                            log::warn!(
                             "[container-transport] ignored {} labeled container(s) with invalid session labels",
                             report.invalid_labels.len()
                         );
+                        }
                     }
-                }
-                Err(err) => {
-                    if load_bearing {
-                        log::warn!(
-                            "[container-transport] startup orphan cleanup failed: {}",
-                            err
-                        );
-                    } else {
-                        // #992 - this install never created a container, so this
-                        // failure means only that a courtesy pass over someone
-                        // else's leftovers did not happen. That is not the user's
-                        // problem and must not warn on every start: it is exactly
-                        // the log noise #992 was reported from.
-                        log::debug!(
+                    Err(err) => {
+                        if load_bearing {
+                            log::warn!(
+                                "[container-transport] startup orphan cleanup failed: {}",
+                                err
+                            );
+                        } else {
+                            // #992 - this install never created a container, so this
+                            // failure means only that a courtesy pass over someone
+                            // else's leftovers did not happen. That is not the user's
+                            // problem and must not warn on every start: it is exactly
+                            // the log noise #992 was reported from.
+                            log::debug!(
                             "[container-transport] opportunistic startup orphan sweep failed: {}",
                             err
                         );
+                        }
                     }
                 }
-            }
 
-            if let Some(manager) = token_manager {
-                match manager.revoke_all_container_clients() {
-                    Ok(count) if count > 0 => {
-                        log::warn!(
+                if let Some(manager) = token_manager {
+                    match manager.revoke_all_container_clients() {
+                        Ok(count) if count > 0 => {
+                            log::warn!(
                             "[container-transport] revoked {} container API client(s) on startup cleanup",
                             count
                         );
-                    }
-                    Ok(_) => {}
-                    Err(err) => {
-                        log::warn!(
-                            "[container-transport] startup container token cleanup failed: {}",
-                            err
-                        );
+                        }
+                        Ok(_) => {}
+                        Err(err) => {
+                            log::warn!(
+                                "[container-transport] startup container token cleanup failed: {}",
+                                err
+                            );
+                        }
                     }
                 }
-            }
-        });
+            },
+        )?;
+        Ok(Some(handle))
     }
 
     pub fn stop_all_started_containers_blocking(

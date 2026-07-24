@@ -200,12 +200,19 @@ impl PtyManager {
         self.container_backend.clone()
     }
 
-    pub fn start_container_pending_reaper(&self, shutdown: crate::shutdown::ShutdownSignal) {
-        self.container_backend.start_pending_reaper(shutdown);
+    pub fn start_container_pending_reaper(
+        &self,
+        shutdown: crate::shutdown::ShutdownSignal,
+    ) -> tauri::async_runtime::JoinHandle<()> {
+        self.container_backend.start_pending_reaper(shutdown)
     }
 
-    pub fn cleanup_container_orphans_on_startup(&self) {
-        self.container_backend.cleanup_labeled_orphans_on_startup();
+    pub fn cleanup_container_orphans_on_startup(
+        &self,
+        shutdown: crate::shutdown::ShutdownSignal,
+    ) -> std::io::Result<Option<std::thread::JoinHandle<()>>> {
+        self.container_backend
+            .cleanup_labeled_orphans_on_startup(shutdown)
     }
 
     pub fn stop_all_started_containers_blocking(

@@ -30,8 +30,11 @@ pub fn start(
     settings: SettingsState,
     coordinator: SelectionCoordinator,
     shutdown: ShutdownSignal,
-) {
+) -> tauri::async_runtime::JoinHandle<()> {
     tauri::async_runtime::spawn(async move {
+        if !shutdown.wait_for_startup_commit().await {
+            return;
+        }
         loop {
             tokio::select! {
                 _ = shutdown.token().cancelled() => break,
@@ -40,7 +43,7 @@ pub fn start(
                 }
             }
         }
-    });
+    })
 }
 
 async fn next_delay(monitor: &ResourceMonitorState, settings: &SettingsState) -> Duration {

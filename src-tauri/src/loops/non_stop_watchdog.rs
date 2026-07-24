@@ -199,8 +199,15 @@ fn resolve_bot<'a>(
     }
 }
 
-pub fn start(app: AppHandle, state: NonStopWatchdogState, shutdown: ShutdownSignal) {
+pub fn start(
+    app: AppHandle,
+    state: NonStopWatchdogState,
+    shutdown: ShutdownSignal,
+) -> tauri::async_runtime::JoinHandle<()> {
     tauri::async_runtime::spawn(async move {
+        if !shutdown.wait_for_startup_commit().await {
+            return;
+        }
         let mut interval = tokio::time::interval(TICK_INTERVAL);
         loop {
             tokio::select! {
@@ -208,7 +215,7 @@ pub fn start(app: AppHandle, state: NonStopWatchdogState, shutdown: ShutdownSign
                 _ = interval.tick() => tick(&app, &state).await,
             }
         }
-    });
+    })
 }
 
 async fn tick(app: &AppHandle, state: &NonStopWatchdogState) {
