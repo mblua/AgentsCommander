@@ -5,7 +5,10 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::AsyncReadExt;
 use uuid::Uuid;
 
-use crate::config::sessions_persistence::persist_current_state_result;
+use crate::config::sessions_persistence::{
+    persist_current_state_for_startup_result, persist_current_state_result,
+    StartupPersistenceOutcome,
+};
 use crate::config::settings::SettingsState;
 use crate::network::OutboundNetwork;
 use crate::pty::backend::SessionBackendKind;
@@ -191,7 +194,7 @@ pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
 
         mgr.set_telegram_bot_id(session_id, Some(bot.id.clone()))
             .await;
-        if let Err(e) = persist_current_state_result(&mgr).await {
+        if let Err(e) = persist_current_state_for_app(app, &mgr).await {
             mgr.set_telegram_bot_id(session_id, None).await;
             let shutdown = tg.detach(session_id).ok();
             let err_msg = format!(
@@ -218,6 +221,19 @@ pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
 
     let _ = app.emit("telegram_bridge_attached", info.clone());
     Ok(info)
+}
+
+async fn persist_current_state_for_app<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    manager: &SessionManager,
+) -> Result<StartupPersistenceOutcome, String> {
+    match app.try_state::<crate::shutdown::ShutdownSignal>() {
+        Some(shutdown) => persist_current_state_for_startup_result(manager, shutdown.inner()).await,
+        None => {
+            persist_current_state_result(manager).await?;
+            Ok(StartupPersistenceOutcome::Persisted)
+        }
+    }
 }
 
 #[tauri::command]
@@ -250,7 +266,7 @@ pub async fn telegram_detach(
         let mgr = session_mgr.read().await;
 
         mgr.set_telegram_bot_id(uuid, None).await;
-        if let Err(e) = persist_current_state_result(&mgr).await {
+        if let Err(e) = persist_current_state_for_app(&app, &mgr).await {
             let err_msg = format!(
                 "Telegram bridge detached live, but sessions.json could not be persisted for session {}: {}",
                 uuid, e

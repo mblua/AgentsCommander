@@ -291,9 +291,9 @@ pub(crate) async fn detect_git_status(working_dir: &str) -> Option<GitStatus> {
     }
 }
 
-pub struct GitWatcher {
+pub struct GitWatcher<R: tauri::Runtime = tauri::Wry> {
     session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
-    app_handle: AppHandle,
+    app_handle: AppHandle<R>,
     /// Last-emitted per-repo state keyed by session id. Equality gate for `session_git_repos`.
     /// `Vec` equality is order-sensitive; callers preserve replica config.json `repos` order.
     cache: Mutex<HashMap<Uuid, Vec<SessionRepo>>>,
@@ -313,10 +313,10 @@ pub(crate) struct CoordinatorChangedPayload {
     pub is_coordinator: bool,
 }
 
-impl GitWatcher {
+impl<R: tauri::Runtime> GitWatcher<R> {
     pub fn new(
         session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
-        app_handle: AppHandle,
+        app_handle: AppHandle<R>,
     ) -> Arc<Self> {
         Arc::new(Self {
             session_manager,
@@ -475,6 +475,32 @@ impl GitWatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn production_git_watcher_propagates_injected_acknowledged_start_failure() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build Git watcher test app");
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let watcher = GitWatcher::new(manager, app.handle().clone());
+        let lifecycle = crate::uncommitted_startup_lifecycle_for_test();
+        let error = crate::shutdown::with_injected_actor_start_failure("git-watcher", || {
+            crate::start_and_register_startup_thread(&lifecycle, "Git watcher", || {
+                watcher
+                    .start(crate::shutdown::ShutdownSignal::new_startup_gated())
+                    .map(Some)
+            })
+        })
+        .expect_err("real Git watcher start must propagate its acknowledged failure");
+        assert_eq!(
+            error.to_string(),
+            "Tauri setup failed: failed to start Git watcher: injected acknowledged actor start failure: git-watcher"
+        );
+        assert_eq!(
+            crate::startup_runtime_owners_for_test(&lifecycle),
+            vec!["Git watcher"]
+        );
+    }
 
     /// CAS semantic guard (validation #18): a stale `expected_gen` must fail and leave state untouched.
     #[tokio::test]

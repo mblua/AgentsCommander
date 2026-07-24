@@ -2734,7 +2734,7 @@ pub(crate) async fn attach_persisted_telegram_if_configured<R: tauri::Runtime>(
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let mgr = session_mgr.read().await;
         mgr.set_telegram_bot_id(session_id, None).await;
-        persist_current_state(&mgr).await;
+        persist_current_state_for_app(app, &mgr).await;
         return;
     }
 
@@ -2758,7 +2758,7 @@ pub(crate) async fn attach_persisted_telegram_if_configured<R: tauri::Runtime>(
             );
             mgr.set_telegram_bot_id(session_id, None).await;
         }
-        persist_current_state(&mgr).await;
+        persist_current_state_for_app(app, &mgr).await;
         return;
     }
 
@@ -2774,7 +2774,30 @@ pub(crate) async fn attach_persisted_telegram_if_configured<R: tauri::Runtime>(
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let mgr = session_mgr.read().await;
         mgr.set_telegram_bot_id(session_id, None).await;
-        persist_current_state(&mgr).await;
+        persist_current_state_for_app(app, &mgr).await;
+    }
+}
+
+async fn persist_current_state_for_app<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    manager: &SessionManager,
+) {
+    match app.try_state::<crate::shutdown::ShutdownSignal>() {
+        Some(shutdown) => {
+            match crate::config::sessions_persistence::persist_current_state_for_startup_result(
+                manager,
+                shutdown.inner(),
+            )
+            .await
+            {
+                Ok(crate::config::sessions_persistence::StartupPersistenceOutcome::Persisted) => {}
+                Ok(crate::config::sessions_persistence::StartupPersistenceOutcome::Deferred) => {
+                    log::debug!("[sessions] deferred app-bound persistence until startup commit");
+                }
+                Err(error) => log::error!("Failed to persist sessions: {error}"),
+            }
+        }
+        None => persist_current_state(manager).await,
     }
 }
 

@@ -650,6 +650,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn production_context_scraper_propagates_injected_acknowledged_start_failure() {
+        let harness = harness(
+            RowsFake::scripted(Vec::new()),
+            Arc::new(PatternFake::default()),
+        );
+        let lifecycle = crate::uncommitted_startup_lifecycle_for_test();
+        let error = crate::shutdown::with_injected_actor_start_failure("context-scraper", || {
+            crate::start_and_register_startup_thread(&lifecycle, "context scraper", || {
+                harness
+                    .scraper
+                    .start(crate::shutdown::ShutdownSignal::new_startup_gated())
+                    .map(Some)
+            })
+        })
+        .expect_err("real context scraper start must propagate its acknowledged failure");
+        assert_eq!(
+            error.to_string(),
+            "Tauri setup failed: failed to start context scraper: injected acknowledged actor start failure: context-scraper"
+        );
+        assert_eq!(
+            crate::startup_runtime_owners_for_test(&lifecycle),
+            vec!["context scraper"]
+        );
+    }
+
     // Stage E (#1064) retirement race sentinel (plan section 10.4 item 21,
     // acceptance item 35): retiring a session that never emitted a positive
     // reading (last_emitted == None) emits NO final null, and repeated retirement

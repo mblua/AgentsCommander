@@ -62,11 +62,26 @@ fn read_cache() -> Option<UpdateCache> {
     serde_json::from_slice::<UpdateCache>(&bytes).ok()
 }
 
-fn write_cache(cache: &UpdateCache) {
+fn write_cache(cache: &UpdateCache, shutdown: &crate::shutdown::ShutdownSignal) {
     let Some(path) = cache_path() else { return };
     let Ok(json) = serde_json::to_string_pretty(cache) else {
         return;
     };
+    let _ = write_cache_to_path_at_sink(&path, json.as_bytes(), shutdown, || {});
+}
+
+fn write_cache_to_path_at_sink(
+    path: &std::path::Path,
+    json: &[u8],
+    shutdown: &crate::shutdown::ShutdownSignal,
+    before_sink: impl FnOnce(),
+) -> bool {
+    before_sink();
+    let Some(_write_permit) = shutdown.try_durable_write() else {
+        log::debug!("[update-check] skipped cache write because startup is not committed");
+        return false;
+    };
+
     // Atomic write (L3/E1): write a sibling temp file, then rename over the
     // target so a concurrent reader (the Phase-2 CLI) never observes a
     // half-written file. On Windows, std::fs::rename maps to MoveFileExW with
@@ -75,8 +90,9 @@ fn write_cache(cache: &UpdateCache) {
     // sooner.
     let tmp = path.with_extension("json.tmp"); // -> update-check.json.tmp (same dir)
     if std::fs::write(&tmp, json).is_ok() {
-        let _ = std::fs::rename(&tmp, &path);
+        return std::fs::rename(&tmp, path).is_ok();
     }
+    false
 }
 
 /// True when we should hit the network now: no cache, stale cache (older than
@@ -183,7 +199,11 @@ fn upgrade_command() -> String {
 /// caller: own no-ops log at debug; a registry that responds with a bad/
 /// unparseable body logs at warn (see `fetch_latest`, H1); everything is
 /// swallowed so startup is never affected.
-pub async fn run_startup_check(app: AppHandle, cache_state: Arc<OnceLock<UpdateInfo>>) {
+pub async fn run_startup_check(
+    app: AppHandle,
+    cache_state: Arc<OnceLock<UpdateInfo>>,
+    shutdown: crate::shutdown::ShutdownSignal,
+) {
     // 1. Read the settings toggle (default ON) once.
     let enabled = {
         let settings_state = app.state::<crate::config::settings::SettingsState>();
@@ -217,10 +237,13 @@ pub async fn run_startup_check(app: AppHandle, cache_state: Arc<OnceLock<UpdateI
     let (latest, write_back) = resolve_latest(plan, fetched, &cache);
     if write_back {
         if let Some(ref v) = latest {
-            write_cache(&UpdateCache {
-                last_checked_at: now,
-                latest_version: v.clone(),
-            });
+            write_cache(
+                &UpdateCache {
+                    last_checked_at: now,
+                    latest_version: v.clone(),
+                },
+                &shutdown,
+            );
         }
     }
 
@@ -486,5 +509,64 @@ mod tests {
     fn resolve_latest_fetch_fail_no_cache() {
         // Fetch fail with no cache -> nothing known, no write (no false toast).
         assert_eq!(resolve_latest(CheckPlan::Fetch, None, &None), (None, false));
+    }
+
+    #[test]
+    fn update_cache_sink_rechecks_commit_after_uncommitted_failure() {
+        let temp = tempfile::tempdir().expect("update cache sink tempdir");
+        let path = temp.path().join(CACHE_FILE_NAME);
+        std::fs::write(&path, b"original-cache").expect("seed cache destination");
+        let shutdown = crate::shutdown::ShutdownSignal::new_startup_gated();
+        let shutdown_for_writer = shutdown.clone();
+        let path_for_writer = path.clone();
+        let (at_sink_tx, at_sink_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+
+        let writer = std::thread::spawn(move || {
+            write_cache_to_path_at_sink(
+                &path_for_writer,
+                br#"{"latestVersion":"1.2.3"}"#,
+                &shutdown_for_writer,
+                || {
+                    at_sink_tx
+                        .send(())
+                        .expect("signal update cache mutation sink");
+                    release_rx.recv().expect("release update cache sink");
+                },
+            )
+        });
+
+        at_sink_rx
+            .recv()
+            .expect("wait for real update cache mutation sink");
+        shutdown.trigger();
+        release_tx
+            .send(())
+            .expect("release cancelled update cache sink");
+        assert!(!writer.join().expect("join update cache writer"));
+        assert_eq!(
+            std::fs::read(&path).expect("read unchanged cache"),
+            b"original-cache"
+        );
+        assert!(!path.with_extension("json.tmp").exists());
+    }
+
+    #[test]
+    fn update_cache_sink_writes_only_with_committed_permit() {
+        let temp = tempfile::tempdir().expect("committed update cache tempdir");
+        let path = temp.path().join(CACHE_FILE_NAME);
+        let shutdown = crate::shutdown::ShutdownSignal::new_startup_gated();
+        assert!(shutdown.commit_startup());
+
+        assert!(write_cache_to_path_at_sink(
+            &path,
+            br#"{"latestVersion":"1.2.3"}"#,
+            &shutdown,
+            || {},
+        ));
+        assert_eq!(
+            std::fs::read(&path).expect("read committed cache"),
+            br#"{"latestVersion":"1.2.3"}"#
+        );
     }
 }

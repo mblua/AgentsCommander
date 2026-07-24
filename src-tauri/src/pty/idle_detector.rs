@@ -509,6 +509,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn production_idle_actor_propagates_injected_acknowledged_start_failure() {
+        let detector = IdleDetector::new(|_| {}, |_| {});
+        let lifecycle = crate::uncommitted_startup_lifecycle_for_test();
+        let error = crate::shutdown::with_injected_actor_start_failure("idle-detector", || {
+            crate::start_and_register_startup_thread(&lifecycle, "idle detector", || {
+                detector
+                    .start(crate::shutdown::ShutdownSignal::new_startup_gated())
+                    .map(Some)
+            })
+        })
+        .expect_err("real idle actor start must propagate its acknowledged failure");
+        assert_eq!(
+            error.to_string(),
+            "Tauri setup failed: failed to start idle detector: injected acknowledged actor start failure: idle-detector"
+        );
+        assert_eq!(
+            crate::startup_runtime_owners_for_test(&lifecycle),
+            vec!["idle detector"]
+        );
+    }
+
+    #[test]
     fn register_session_seeds_activity_when_profile_opts_in() {
         let detector = IdleDetector::new(|_| {}, |_| {});
         let id = Uuid::new_v4();

@@ -782,6 +782,44 @@ pub async fn load_sessions_purging_outside_project_paths(
     load_sessions_purging_outside_project_paths_in_dir(&dir, project_paths).await
 }
 
+pub(crate) async fn load_sessions_for_startup_restore(
+    project_paths: &[String],
+    shutdown: &crate::shutdown::ShutdownSignal,
+) -> Vec<PersistedSession> {
+    let dir = match super::config_dir() {
+        Some(dir) => dir,
+        None => {
+            log::warn!("Could not determine home directory for session restore");
+            return Vec::new();
+        }
+    };
+
+    let _guard = sessions_save_lock().lock().await;
+    let before = load_sessions_from_dir(&dir);
+    let before_len = before.len();
+    let filtered = match filter_sessions_for_project_paths_blocking(before, project_paths).await {
+        Ok(filtered) => filtered,
+        Err(error) => {
+            log::error!("Failed to filter sessions for startup restore: {error}");
+            return load_sessions_from_dir(&dir);
+        }
+    };
+    if filtered.len() < before_len {
+        match save_sessions_to_dir_at_startup_sink(&dir, &filtered, shutdown, || {}) {
+            Ok(StartupPersistenceOutcome::Persisted) => {}
+            Ok(StartupPersistenceOutcome::Deferred) => {
+                log::debug!(
+                    "[sessions] startup orphan purge remains in memory until startup commit"
+                );
+            }
+            Err(error) => {
+                log::error!("Failed to rewrite sessions.json after startup orphan purge: {error}");
+            }
+        }
+    }
+    filtered
+}
+
 async fn load_sessions_purging_outside_project_paths_in_dir(
     dir: &Path,
     project_paths: &[String],
@@ -883,9 +921,30 @@ pub fn save_sessions(sessions: &[PersistedSession]) -> Result<(), String> {
     save_sessions_to_config_dir(sessions)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StartupPersistenceOutcome {
+    Persisted,
+    Deferred,
+}
+
 fn save_sessions_to_config_dir(sessions: &[PersistedSession]) -> Result<(), String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
     save_sessions_to_dir(&dir, sessions)
+}
+
+fn save_sessions_to_dir_at_startup_sink(
+    dir: &Path,
+    sessions: &[PersistedSession],
+    shutdown: &crate::shutdown::ShutdownSignal,
+    before_sink: impl FnOnce(),
+) -> Result<StartupPersistenceOutcome, String> {
+    before_sink();
+    let Some(_write_permit) = shutdown.try_durable_write() else {
+        log::debug!("[sessions] deferred persistence because startup is not committed");
+        return Ok(StartupPersistenceOutcome::Deferred);
+    };
+    save_sessions_to_dir(dir, sessions)?;
+    Ok(StartupPersistenceOutcome::Persisted)
 }
 
 /// Path-injected core of `save_sessions`. Same concurrency guarantees as
@@ -1361,12 +1420,41 @@ pub async fn persist_merging_failed(mgr: &SessionManager, failed: &[PersistedSes
     }
 }
 
+pub(crate) async fn persist_merging_failed_for_startup_result(
+    mgr: &SessionManager,
+    failed: &[PersistedSession],
+    shutdown: &crate::shutdown::ShutdownSignal,
+) -> Result<StartupPersistenceOutcome, String> {
+    let dir = super::config_dir().ok_or("Could not determine home directory")?;
+    let settings = crate::config::settings::load_settings_for_cli();
+    let project_paths = session_retention_project_paths(&settings);
+    let _guard = sessions_save_lock().lock().await;
+    let mut snapshot = snapshot_sessions(mgr).await;
+    snapshot.extend(failed.iter().map(sanitize_failed_recoverable));
+    let snapshot = deduplicate(snapshot);
+    let snapshot = filter_sessions_for_project_paths_blocking(snapshot, &project_paths).await?;
+    save_sessions_to_dir_at_startup_sink(&dir, &snapshot, shutdown, || {})
+}
+
 /// Convenience: snapshot and save in one call. Logs errors but never fails.
 pub async fn persist_current_state_result(mgr: &SessionManager) -> Result<(), String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
     let settings = crate::config::settings::load_settings_for_cli();
     let project_paths = session_retention_project_paths(&settings);
     persist_current_state_to_dir_for_project_paths_result(mgr, &dir, Some(&project_paths)).await
+}
+
+pub(crate) async fn persist_current_state_for_startup_result(
+    mgr: &SessionManager,
+    shutdown: &crate::shutdown::ShutdownSignal,
+) -> Result<StartupPersistenceOutcome, String> {
+    let dir = super::config_dir().ok_or("Could not determine home directory")?;
+    let settings = crate::config::settings::load_settings_for_cli();
+    let project_paths = session_retention_project_paths(&settings);
+    let _guard = sessions_save_lock().lock().await;
+    let snapshot = snapshot_sessions(mgr).await;
+    let snapshot = filter_sessions_for_project_paths_blocking(snapshot, &project_paths).await?;
+    save_sessions_to_dir_at_startup_sink(&dir, &snapshot, shutdown, || {})
 }
 
 async fn persist_current_state_to_dir_for_project_paths_result(
@@ -1637,10 +1725,11 @@ mod tests {
         normalize_project_roots, persist_current_state_result, persist_current_state_to_dir_result,
         purge_sessions_outside_project_paths_in_dir, raise_hand_and_persist_to_dir_result,
         rename_with_retry, sanitize_failed_recoverable, save_sessions_to_dir,
-        session_retention_project_paths, sessions_save_lock, snapshot_sessions,
-        strip_auto_injected_args, working_directory_under_any_project_path,
+        save_sessions_to_dir_at_startup_sink, session_retention_project_paths, sessions_save_lock,
+        snapshot_sessions, strip_auto_injected_args, working_directory_under_any_project_path,
         write_start_fresh_and_persist_to_dir_result, PersistedSession, RaiseHandPersistOutcome,
-        FILTER_PROJECT_PATHS_THREAD_IDS, NORMALIZE_CALLS, RENAME_ATTEMPTS,
+        StartupPersistenceOutcome, FILTER_PROJECT_PATHS_THREAD_IDS, NORMALIZE_CALLS,
+        RENAME_ATTEMPTS,
     };
     #[cfg(windows)]
     use super::{deduplicate, load_sessions_from_path};
@@ -1649,6 +1738,68 @@ mod tests {
     use crate::session::session::{SessionCommunication, SessionCommunicationKind, SessionStatus};
     use std::sync::Arc;
     use std::time::Duration;
+
+    #[test]
+    fn restore_persistence_sink_rechecks_commit_after_uncommitted_failure() {
+        let temp = tempfile::tempdir().expect("restore persistence sink tempdir");
+        let destination = temp.path().join("sessions.json");
+        std::fs::write(&destination, b"original-sessions").expect("seed sessions destination");
+        let shutdown = crate::shutdown::ShutdownSignal::new_startup_gated();
+        let shutdown_for_writer = shutdown.clone();
+        let dir = temp.path().to_path_buf();
+        let (at_sink_tx, at_sink_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+
+        let writer = std::thread::spawn(move || {
+            save_sessions_to_dir_at_startup_sink(&dir, &[], &shutdown_for_writer, || {
+                at_sink_tx
+                    .send(())
+                    .expect("signal restore persistence mutation sink");
+                release_rx.recv().expect("release restore persistence sink");
+            })
+        });
+
+        at_sink_rx
+            .recv()
+            .expect("wait for real sessions persistence sink");
+        shutdown.trigger();
+        release_tx
+            .send(())
+            .expect("release cancelled sessions persistence sink");
+        assert_eq!(
+            writer.join().expect("join sessions writer").unwrap(),
+            StartupPersistenceOutcome::Deferred
+        );
+        assert_eq!(
+            std::fs::read(&destination).expect("read unchanged sessions"),
+            b"original-sessions"
+        );
+        let temp_prefix = format!("sessions.json.{}.", std::process::id());
+        assert!(std::fs::read_dir(temp.path())
+            .expect("read sessions tempdir")
+            .filter_map(Result::ok)
+            .all(|entry| !entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(&temp_prefix)));
+    }
+
+    #[test]
+    fn restore_persistence_sink_writes_only_with_committed_permit() {
+        let temp = tempfile::tempdir().expect("committed restore persistence tempdir");
+        let shutdown = crate::shutdown::ShutdownSignal::new_startup_gated();
+        assert!(shutdown.commit_startup());
+
+        assert_eq!(
+            save_sessions_to_dir_at_startup_sink(temp.path(), &[], &shutdown, || {}).unwrap(),
+            StartupPersistenceOutcome::Persisted
+        );
+        assert_eq!(
+            std::fs::read(temp.path().join("sessions.json"))
+                .expect("read committed sessions snapshot"),
+            b"[]"
+        );
+    }
 
     /// §224 D.2 — the strip drops every runtime field but preserves the recipe
     /// fields needed for the next-startup restore attempt. Since #747 a raised

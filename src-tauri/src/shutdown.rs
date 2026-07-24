@@ -8,6 +8,48 @@ const STARTUP_PENDING: u8 = 0;
 const STARTUP_COMMITTED: u8 = 1;
 const STARTUP_CANCELLED: u8 = 2;
 
+#[cfg(test)]
+thread_local! {
+    static INJECTED_ACTOR_START_FAILURE: std::cell::RefCell<Option<&'static str>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn with_injected_actor_start_failure<T>(
+    actor: &'static str,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct ResetInjectedActorStartFailure;
+
+    impl Drop for ResetInjectedActorStartFailure {
+        fn drop(&mut self) {
+            INJECTED_ACTOR_START_FAILURE.with(|slot| {
+                slot.replace(None);
+            });
+        }
+    }
+
+    INJECTED_ACTOR_START_FAILURE.with(|slot| {
+        assert!(
+            slot.replace(Some(actor)).is_none(),
+            "only one actor start failure may be injected per test thread"
+        );
+    });
+    let _reset = ResetInjectedActorStartFailure;
+    action()
+}
+
+#[cfg(test)]
+fn injected_actor_start_failure(actor: &'static str) -> Option<std::io::Error> {
+    INJECTED_ACTOR_START_FAILURE.with(|slot| {
+        (*slot.borrow() == Some(actor)).then(|| {
+            std::io::Error::other(format!(
+                "injected acknowledged actor start failure: {actor}"
+            ))
+        })
+    })
+}
+
 struct StartupDurableGate {
     state: AtomicU8,
     active_writers: AtomicUsize,
@@ -239,6 +281,11 @@ pub(crate) fn spawn_acknowledged_thread(
     actor: &'static str,
     body: impl FnOnce() + Send + 'static,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
+    #[cfg(test)]
+    if let Some(error) = injected_actor_start_failure(actor) {
+        return Err(error);
+    }
+
     spawn_acknowledged_with(
         actor,
         move |task| {
@@ -264,6 +311,11 @@ pub(crate) fn spawn_acknowledged_tokio_thread<F>(
 where
     F: Future<Output = ()> + Send + 'static,
 {
+    #[cfg(test)]
+    if let Some(error) = injected_actor_start_failure(actor) {
+        return Err(error);
+    }
+
     spawn_acknowledged_with(
         actor,
         move |task| {

@@ -3498,6 +3498,44 @@ mod tests {
         }
     }
 
+    #[test]
+    fn production_container_orphan_sweep_propagates_injected_acknowledged_start_failure() {
+        let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
+        let idle_detector = IdleDetector::new(|_| {}, |_| {});
+        let backend = ContainerTransportBackend::with_runtime(
+            output_senders,
+            idle_detector,
+            None,
+            None,
+            Arc::new(RecordingRuntime::default()),
+            None,
+        );
+        let lifecycle = crate::uncommitted_startup_lifecycle_for_test();
+        let error = crate::shutdown::with_injected_actor_start_failure(
+            "container-startup-orphan-sweep",
+            || {
+                crate::start_and_register_startup_thread(
+                    &lifecycle,
+                    "container startup orphan sweep",
+                    || {
+                        backend.cleanup_labeled_orphans_on_startup(
+                            crate::shutdown::ShutdownSignal::new_startup_gated(),
+                        )
+                    },
+                )
+            },
+        )
+        .expect_err("real container orphan sweep must propagate its acknowledged failure");
+        assert_eq!(
+            error.to_string(),
+            "Tauri setup failed: failed to start container startup orphan sweep: injected acknowledged actor start failure: container-startup-orphan-sweep"
+        );
+        assert_eq!(
+            crate::startup_runtime_owners_for_test(&lifecycle),
+            vec!["container startup orphan sweep"]
+        );
+    }
+
     struct GatedStartRuntime {
         started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
         release: Mutex<std::sync::mpsc::Receiver<()>>,

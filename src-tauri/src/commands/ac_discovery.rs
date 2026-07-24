@@ -441,8 +441,8 @@ struct TaskUpdatedPayload {
     session_ids: Vec<String>,
 }
 
-pub struct DiscoveryBranchWatcher {
-    app_handle: AppHandle,
+pub struct DiscoveryBranchWatcher<R: tauri::Runtime = tauri::Wry> {
+    app_handle: AppHandle<R>,
     session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
     /// Keyed by the project directory that directly contains the Project AC Root, not by
     /// `settings.project_paths` entries (which may be parent dirs holding many projects).
@@ -469,9 +469,9 @@ pub struct DiscoveryBranchWatcher {
     task_cache: Mutex<HashMap<PathBuf, TaskCacheEntry>>,
 }
 
-impl DiscoveryBranchWatcher {
+impl<R: tauri::Runtime> DiscoveryBranchWatcher<R> {
     pub fn new(
-        app_handle: AppHandle,
+        app_handle: AppHandle<R>,
         session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -3034,6 +3034,33 @@ mod tests {
     use crate::pty::idle_detector::IdleDetector;
     use crate::web::broadcast::{WsBroadcaster, WsOutMsg};
     use serde_json::{json, Value};
+
+    #[test]
+    fn production_discovery_watcher_propagates_injected_acknowledged_start_failure() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build discovery watcher test app");
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let watcher = DiscoveryBranchWatcher::new(app.handle().clone(), manager);
+        let lifecycle = crate::uncommitted_startup_lifecycle_for_test();
+        let error =
+            crate::shutdown::with_injected_actor_start_failure("discovery-branch-watcher", || {
+                crate::start_and_register_startup_thread(&lifecycle, "discovery watcher", || {
+                    watcher
+                        .start(crate::shutdown::ShutdownSignal::new_startup_gated())
+                        .map(Some)
+                })
+            })
+            .expect_err("real discovery watcher start must propagate its acknowledged failure");
+        assert_eq!(
+            error.to_string(),
+            "Tauri setup failed: failed to start discovery watcher: injected acknowledged actor start failure: discovery-branch-watcher"
+        );
+        assert_eq!(
+            crate::startup_runtime_owners_for_test(&lifecycle),
+            vec!["discovery watcher"]
+        );
+    }
 
     fn archive_test_session(
         name: &str,

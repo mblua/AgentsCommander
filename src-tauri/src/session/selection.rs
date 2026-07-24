@@ -11,7 +11,10 @@ use tokio::sync::{mpsc, oneshot, Notify, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::config::sessions_persistence::persist_current_state_result;
+use crate::config::sessions_persistence::{
+    persist_current_state_for_startup_result, persist_current_state_result,
+    StartupPersistenceOutcome,
+};
 use crate::pty::container_backend::ContainerTransportBackend;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::{
@@ -1902,7 +1905,24 @@ impl<R: Runtime> SelectionTransaction<R> {
 
     pub(crate) async fn persist(&self, source: SelectionSource, session_id: Option<Uuid>) {
         let manager = self.manager().await;
-        if let Err(error) = persist_current_state_result(&manager).await {
+        let result = match self.app.try_state::<crate::shutdown::ShutdownSignal>() {
+            Some(shutdown) => {
+                match persist_current_state_for_startup_result(&manager, shutdown.inner()).await {
+                    Ok(StartupPersistenceOutcome::Persisted) => Ok(()),
+                    Ok(StartupPersistenceOutcome::Deferred) => {
+                        log::debug!(
+                            "[selection] deferred persistence source={} session={:?} until startup commit",
+                            source,
+                            session_id
+                        );
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
+                }
+            }
+            None => persist_current_state_result(&manager).await,
+        };
+        if let Err(error) = result {
             log::warn!(
                 "[selection] persistence failed source={} session={:?}: {}",
                 source,
