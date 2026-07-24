@@ -1160,6 +1160,20 @@ fn with_bounded_startup_owner<T, R>(
     }
 }
 
+fn append_startup_pty_retained_diagnostic(diagnostics: &mut Vec<String>, retained: usize) {
+    if retained == 0 {
+        return;
+    }
+    #[cfg(windows)]
+    diagnostics.push(format!(
+        "{retained} startup PTY session(s) had no process-group owner"
+    ));
+    #[cfg(unix)]
+    diagnostics.push(format!(
+        "{retained} startup PTY process group(s) remained after local teardown"
+    ));
+}
+
 fn teardown_uncommitted_runtime(
     app: Option<&tauri::AppHandle>,
     lifecycle: &Arc<Mutex<StartupLifecycle>>,
@@ -1319,23 +1333,15 @@ fn teardown_uncommitted_runtime(
         match with_bounded_startup_owner(&pty_manager, cleanup_budget, |manager| {
             manager.kill_all_jobs()
         }) {
-            BoundedOwnerAccess::Acquired((_, jobless)) => {
-                if jobless > 0 {
-                    diagnostics.push(format!(
-                        "{jobless} startup PTY session(s) had no process-group owner"
-                    ));
-                }
+            BoundedOwnerAccess::Acquired((_, retained)) => {
+                append_startup_pty_retained_diagnostic(&mut diagnostics, retained);
             }
-            BoundedOwnerAccess::RecoveredPoison((_, jobless)) => {
+            BoundedOwnerAccess::RecoveredPoison((_, retained)) => {
                 diagnostics.push(
                     "startup PTY manager lock was poisoned; recovered its cleanup owner"
                         .to_string(),
                 );
-                if jobless > 0 {
-                    diagnostics.push(format!(
-                        "{jobless} startup PTY session(s) had no process-group owner"
-                    ));
-                }
+                append_startup_pty_retained_diagnostic(&mut diagnostics, retained);
             }
             BoundedOwnerAccess::Busy => {
                 diagnostics.push(
@@ -3898,7 +3904,7 @@ pub fn run(
                             }
                         }
                     };
-                    let (jobs_killed, jobless_sessions) = match jobs {
+                    let (terminated_owners, retained_sessions) = match jobs {
                         Some(counts) => counts,
                         None => {
                             log::error!(
@@ -3911,8 +3917,13 @@ pub fn run(
                             (0, 0)
                         }
                     };
+                    #[cfg(windows)]
                     log::info!(
-                        "[shutdown] terminated {jobs_killed} agent job object(s); {jobless_sessions} session(s) had no job"
+                        "[shutdown] terminated {terminated_owners} agent job object(s); {retained_sessions} session(s) had no job"
+                    );
+                    #[cfg(unix)]
+                    log::info!(
+                        "[shutdown] terminated and reaped {terminated_owners} local PTY process group(s); {retained_sessions} group(s) remained"
                     );
 
                     // #632 B2+B4 - run the identity reaper for accounting and as the
@@ -3950,9 +3961,14 @@ pub fn run(
                     }
                     // #632 MED-2 - job-less sessions are reaper-only; if the reaper did
                     // not finish, their trees may be orphaned. Make it visible.
-                    if cleanup.is_err() && jobless_sessions > 0 {
+                    if cleanup.is_err() && retained_sessions > 0 {
+                        #[cfg(windows)]
                         log::warn!(
-                            "[shutdown] {jobless_sessions} session(s) had no Job Object and the reaper did not finish in budget; their process trees may be orphaned"
+                            "[shutdown] {retained_sessions} session(s) had no Job Object and the reaper did not finish in budget; their process trees may be orphaned"
+                        );
+                        #[cfg(unix)]
+                        log::warn!(
+                            "[shutdown] {retained_sessions} local PTY process group(s) remained and resource cleanup did not finish in budget"
                         );
                     }
 
@@ -4428,144 +4444,28 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[derive(Default)]
-    struct StartupProcessBackend {
-        children: Mutex<std::collections::HashMap<uuid::Uuid, std::process::Child>>,
-    }
-
-    #[cfg(unix)]
-    impl StartupProcessBackend {
-        fn stop_child(&self, id: uuid::Uuid) -> bool {
-            let child = self
-                .children
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .remove(&id);
-            let Some(mut child) = child else {
-                return false;
-            };
-            let _ = child.kill();
-            let _ = child.wait();
-            true
-        }
-
-        fn child_count(&self) -> usize {
-            self.children
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .len()
-        }
-    }
-
-    #[cfg(unix)]
-    impl Drop for StartupProcessBackend {
-        fn drop(&mut self) {
-            let children = self
-                .children
-                .get_mut()
-                .unwrap_or_else(|error| error.into_inner());
-            for child in children.values_mut() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-            children.clear();
-        }
-    }
-
-    #[cfg(unix)]
-    impl crate::pty::backend::PtyBackend for StartupProcessBackend {
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
-
-        fn spawn(
-            &self,
-            spec: crate::pty::backend::BackendSpawnSpec,
-        ) -> futures::future::BoxFuture<'_, Result<(), crate::errors::AppError>> {
-            Box::pin(async move {
-                let child = std::process::Command::new("sleep")
-                    .arg("60")
-                    .spawn()
-                    .map_err(|error| crate::errors::AppError::PtyError(error.to_string()))?;
-                self.children
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .insert(spec.id, child);
-                Ok(())
-            })
-        }
-
-        fn write(
-            &self,
-            _authority: &crate::pty::manager::BackendWriteAuthority,
-            _id: uuid::Uuid,
-            _data: &[u8],
-        ) -> Result<(), crate::errors::AppError> {
-            Ok(())
-        }
-
-        fn resize(
-            &self,
-            _id: uuid::Uuid,
-            _cols: u16,
-            _rows: u16,
-        ) -> Result<(), crate::errors::AppError> {
-            Ok(())
-        }
-
-        fn kill(&self, id: uuid::Uuid) -> Result<(), crate::errors::AppError> {
-            if self.stop_child(id) {
-                Ok(())
-            } else {
-                Err(crate::errors::AppError::SessionNotFound(id.to_string()))
-            }
-        }
-
-        fn has_session(&self, id: uuid::Uuid) -> bool {
-            self.children
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .contains_key(&id)
-        }
-
-        fn get_screen_snapshot(
-            &self,
-            _id: uuid::Uuid,
-        ) -> Option<crate::pty::output::PtyScreenSnapshot> {
-            None
-        }
-
-        fn get_pty_size(&self, _id: uuid::Uuid) -> Option<(u16, u16)> {
-            None
-        }
-
-        fn get_screen_rows(&self, _id: uuid::Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
-            crate::pty::context_scrape::ScreenRowsRead::SessionOver
-        }
-
-        fn register_response_watcher(
-            &self,
-            _session_id: uuid::Uuid,
-            _request_id: String,
-            _response_dir: std::path::PathBuf,
-        ) {
-        }
-
-        fn terminate_job_for_session(&self, id: uuid::Uuid) -> bool {
-            self.stop_child(id)
-        }
-
-        fn kill_all_jobs(&self) -> (usize, usize) {
-            let ids = self
-                .children
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .keys()
-                .copied()
-                .collect::<Vec<_>>();
-            let killed = ids.into_iter().filter(|id| self.stop_child(*id)).count();
-            (killed, 0)
-        }
+    fn production_local_pty_manager() -> (
+        tauri::App<tauri::test::MockRuntime>,
+        Arc<Mutex<crate::pty::manager::PtyManager>>,
+    ) {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build production local PTY test app");
+        let session_manager = Arc::new(tokio::sync::RwLock::new(
+            crate::session::manager::SessionManager::new(),
+        ));
+        let git_watcher =
+            crate::pty::git_watcher::GitWatcher::new(session_manager, app.handle().clone());
+        let output_senders = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let idle = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
+        let manager = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new(
+            output_senders,
+            idle,
+            git_watcher,
+            None,
+            None,
+        )));
+        (app, manager)
     }
 
     #[cfg(unix)]
@@ -4645,6 +4545,170 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    fn startup_process_group_spec(
+        id: uuid::Uuid,
+        cwd: &std::path::Path,
+        marker: &std::path::Path,
+        resource_registration: Option<crate::resource_monitor::ResourceLaunchRegistration>,
+    ) -> crate::pty::backend::BackendSpawnSpec {
+        let mut spec = startup_process_spec(id, cwd);
+        spec.cmd = "/bin/sh".to_string();
+        spec.args = vec![
+            "-c".to_string(),
+            "sleep 60 & printf '%s %s\\n' \"$$\" \"$!\" > \"$AC_PTY_OWNER_MARKER\"; wait"
+                .to_string(),
+        ];
+        spec.configured_env = vec![(
+            "AC_PTY_OWNER_MARKER".to_string(),
+            marker.to_string_lossy().into_owned(),
+        )];
+        spec.resource_registration = resource_registration;
+        spec
+    }
+
+    #[cfg(target_os = "linux")]
+    fn startup_resource_registration(
+        monitor: &crate::resource_monitor::ResourceMonitorState,
+        id: uuid::Uuid,
+    ) -> crate::resource_monitor::ResourceLaunchRegistration {
+        let limits = crate::resource_monitor::ResourceLimits::from(&AppSettings {
+            resource_monitor_enabled: true,
+            ..AppSettings::default()
+        });
+        let permit = monitor
+            .try_reserve_agent_slot(limits)
+            .expect("reserve real startup resource-monitor slot")
+            .expect("resource monitoring enabled for owned fixture");
+        crate::resource_monitor::ResourceLaunchRegistration::new(
+            monitor.clone(),
+            permit,
+            crate::resource_monitor::ResourceLaunchMetadata {
+                session_id: id,
+                name: "restored owned local PTY".to_string(),
+                agent_id: Some("agent-owned".to_string()),
+                agent_label: Some("Owned".to_string()),
+                workgroup: Some("wg-test".to_string()),
+                agent: Some("owned".to_string()),
+                project: Some("project-test".to_string()),
+            },
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    fn read_startup_process_group_marker(path: &std::path::Path) -> (u32, u32) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            match std::fs::read_to_string(path) {
+                Ok(value) => {
+                    let mut fields = value.split_whitespace();
+                    let root = fields
+                        .next()
+                        .expect("marker root pid")
+                        .parse()
+                        .expect("parse marker root pid");
+                    let child = fields
+                        .next()
+                        .expect("marker child pid")
+                        .parse()
+                        .expect("parse marker child pid");
+                    assert!(fields.next().is_none(), "marker has exactly two pids");
+                    return (root, child);
+                }
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::NotFound
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("read process-group marker {}: {error}", path.display()),
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn linux_process_exists(pid: u32) -> bool {
+        std::path::Path::new("/proc").join(pid.to_string()).exists()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn linux_process_group_exists(group: u32) -> bool {
+        let Ok(group) = libc::pid_t::try_from(group) else {
+            return false;
+        };
+        // SAFETY: signal 0 only probes the positive process-group id.
+        if unsafe { libc::kill(-group, 0) } == 0 {
+            return true;
+        }
+        std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wait_for_startup_process_group_exit(root: u32, child: u32) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            if !linux_process_exists(root)
+                && !linux_process_exists(child)
+                && !linux_process_group_exists(root)
+            {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!(
+            "real PTY process group survived teardown: root={root} root_alive={} child={child} child_alive={} group_alive={}",
+            linux_process_exists(root),
+            linux_process_exists(child),
+            linux_process_group_exists(root)
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    struct StartupPtyCleanupGuard {
+        manager: Arc<Mutex<crate::pty::manager::PtyManager>>,
+        groups: Vec<u32>,
+        armed: bool,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl StartupPtyCleanupGuard {
+        fn new(manager: Arc<Mutex<crate::pty::manager::PtyManager>>) -> Self {
+            Self {
+                manager,
+                groups: Vec::new(),
+                armed: true,
+            }
+        }
+
+        fn record_group(&mut self, group: u32) {
+            self.groups.push(group);
+        }
+
+        fn disarm(&mut self) {
+            self.armed = false;
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Drop for StartupPtyCleanupGuard {
+        fn drop(&mut self) {
+            if !self.armed {
+                return;
+            }
+            let manager = self
+                .manager
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let _ = manager.kill_all_jobs();
+            for group in &self.groups {
+                if let Ok(group) = libc::pid_t::try_from(*group) {
+                    // SAFETY: the fixture recorded only process groups it spawned.
+                    let _ = unsafe { libc::kill(-group, libc::SIGKILL) };
+                }
+            }
+        }
+    }
+
     fn register_test_shutdown(
         lifecycle: &Arc<Mutex<super::StartupLifecycle>>,
         shutdown: &crate::shutdown::ShutdownSignal,
@@ -4656,11 +4720,146 @@ mod tests {
         .expect("register startup test shutdown");
     }
 
+    #[cfg(target_os = "linux")]
+    fn register_test_resource_monitor(
+        lifecycle: &Arc<Mutex<super::StartupLifecycle>>,
+        monitor: Arc<crate::resource_monitor::ResourceMonitorState>,
+    ) {
+        super::with_startup_runtime(lifecycle, "register test resource monitor", |runtime| {
+            runtime.record("resource monitor");
+            runtime.resource_monitor = Some(monitor);
+        })
+        .expect("register startup test resource monitor");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn production_lifecycle_reaps_owned_and_unowned_restored_local_process_groups() {
+        let temp = tempfile::tempdir().expect("startup local PTY owner tempdir");
+        let (_app, manager) = production_local_pty_manager();
+        let mut cleanup = StartupPtyCleanupGuard::new(manager.clone());
+        let monitor = Arc::new(crate::resource_monitor::ResourceMonitorState::new());
+
+        let owned_id = uuid::Uuid::new_v4();
+        let owned_marker = temp.path().join("owned-process-group.txt");
+        let owned_registration = startup_resource_registration(&monitor, owned_id);
+        tauri::async_runtime::block_on(crate::pty::manager::PtyManager::spawn(
+            &manager,
+            crate::pty::backend::SessionBackendKind::LocalProcess,
+            startup_process_group_spec(
+                owned_id,
+                temp.path(),
+                &owned_marker,
+                Some(owned_registration),
+            ),
+        ))
+        .expect("spawn owned restore through production local PTY manager");
+        let (owned_root, owned_child) = read_startup_process_group_marker(&owned_marker);
+        cleanup.record_group(owned_root);
+
+        let unowned_id = uuid::Uuid::new_v4();
+        let unowned_marker = temp.path().join("unowned-process-group.txt");
+        tauri::async_runtime::block_on(crate::pty::manager::PtyManager::spawn(
+            &manager,
+            crate::pty::backend::SessionBackendKind::LocalProcess,
+            startup_process_group_spec(unowned_id, temp.path(), &unowned_marker, None),
+        ))
+        .expect("spawn unowned restore through production local PTY manager");
+        let (unowned_root, unowned_child) = read_startup_process_group_marker(&unowned_marker);
+        cleanup.record_group(unowned_root);
+
+        for (root, child) in [(owned_root, owned_child), (unowned_root, unowned_child)] {
+            let root = libc::pid_t::try_from(root).expect("root pid fits pid_t");
+            let child = libc::pid_t::try_from(child).expect("child pid fits pid_t");
+            // SAFETY: both pids were written by live children spawned above.
+            assert_eq!(unsafe { libc::getpgid(root) }, root);
+            // SAFETY: both pids were written by live children spawned above.
+            assert_eq!(unsafe { libc::getsid(root) }, root);
+            // SAFETY: both pids were written by live children spawned above.
+            assert_eq!(unsafe { libc::getpgid(child) }, root);
+            // SAFETY: both pids were written by live children spawned above.
+            assert_eq!(unsafe { libc::getsid(child) }, root);
+        }
+        assert!(monitor.has_registered_group(owned_id));
+        assert!(!monitor.has_registered_group(unowned_id));
+        let limits = crate::resource_monitor::ResourceLimits::from(&AppSettings {
+            resource_monitor_enabled: true,
+            ..AppSettings::default()
+        });
+        let running = monitor.snapshot(limits);
+        let owned_group = running
+            .groups
+            .iter()
+            .find(|group| group.session_id == owned_id.to_string())
+            .expect("owned restore registered its real root pid");
+        assert_eq!(owned_group.root_pid, owned_root);
+        assert_eq!(
+            owned_group.state,
+            crate::resource_monitor::types::ResourceGroupState::Running
+        );
+
+        let shutdown = crate::shutdown::ShutdownSignal::new_startup_gated();
+        let lifecycle = empty_startup_lifecycle(shutdown.clone());
+        register_test_shutdown(&lifecycle, &shutdown);
+        register_test_resource_monitor(&lifecycle, monitor.clone());
+        let container = manager.lock().unwrap().container_backend();
+        super::register_startup_pty_manager(&lifecycle, manager.clone(), container)
+            .expect("register production local PTY owner");
+        let error = super::finish_build_failure(
+            &lifecycle,
+            crate::errors::StartupError::TauriSetup {
+                message: "injected post-restore local PTY failure".to_string(),
+            },
+        );
+
+        assert_eq!(
+            error.to_string(),
+            "Tauri setup failed: injected post-restore local PTY failure"
+        );
+        for (root, child) in [(owned_root, owned_child), (unowned_root, unowned_child)] {
+            wait_for_startup_process_group_exit(root, child);
+        }
+        {
+            let manager = manager.lock().unwrap();
+            assert!(!manager.has_session(owned_id));
+            assert!(!manager.has_session(unowned_id));
+            assert_eq!(
+                manager.context_session_liveness(owned_id),
+                crate::pty::context_scrape::ContextSessionLiveness::SessionOver
+            );
+            assert_eq!(
+                manager.context_session_liveness(unowned_id),
+                crate::pty::context_scrape::ContextSessionLiveness::SessionOver
+            );
+        }
+        let terminal = monitor.snapshot(limits);
+        let owned_group = terminal
+            .groups
+            .iter()
+            .find(|group| group.session_id == owned_id.to_string())
+            .expect("owned restore retains terminal accounting state");
+        assert_eq!(
+            owned_group.state,
+            crate::resource_monitor::types::ResourceGroupState::Terminated
+        );
+        assert_eq!(terminal.active_agent_groups, 0);
+        assert!(shutdown.is_cancelled());
+        assert_eq!(
+            super::startup_lifecycle_state(&lifecycle).expect("inspect local PTY lifecycle"),
+            super::StartupCommitState::TeardownComplete
+        );
+        cleanup.disarm();
+    }
+
     #[cfg(unix)]
     #[test]
-    fn production_lifecycle_reaps_restored_local_and_container_owners() {
+    fn production_lifecycle_reaps_restored_container_owner() {
         let temp = tempfile::tempdir().expect("startup external-owner tempdir");
-        let local = Arc::new(StartupProcessBackend::default());
+        let (_app, production_manager) = production_local_pty_manager();
+        let local_backend = production_manager
+            .lock()
+            .unwrap()
+            .backend_for_kind(crate::pty::backend::SessionBackendKind::LocalProcess);
         let runtime = Arc::new(StartupContainerRuntime::default());
         let output_senders = Arc::new(Mutex::new(std::collections::HashMap::new()));
         let idle = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
@@ -4682,7 +4881,6 @@ mod tests {
             ..AppSettings::default()
         });
         let container = Arc::new(container_backend);
-        let local_backend: Arc<dyn crate::pty::backend::PtyBackend> = local.clone();
         let manager = Arc::new(Mutex::new(
             crate::pty::manager::PtyManager::new_for_test_with_container_backend(
                 local_backend,
@@ -4691,13 +4889,6 @@ mod tests {
         ));
         crate::install_container_route_remover(&manager);
 
-        let local_id = uuid::Uuid::new_v4();
-        tauri::async_runtime::block_on(crate::pty::manager::PtyManager::spawn(
-            &manager,
-            crate::pty::backend::SessionBackendKind::LocalProcess,
-            startup_process_spec(local_id, temp.path()),
-        ))
-        .expect("spawn restored local process through real PTY manager seam");
         let container_id = uuid::Uuid::new_v4();
         let mut container_spec = startup_process_spec(container_id, temp.path());
         container_spec.container_image = Some("test/container:latest".to_string());
@@ -4750,7 +4941,6 @@ mod tests {
             error.to_string(),
             "Tauri setup failed: injected post-restore setup failure"
         );
-        assert_eq!(local.child_count(), 0);
         assert_eq!(
             runtime
                 .started
@@ -4768,10 +4958,6 @@ mod tests {
             &[container_id]
         );
         assert!(!container.contains_transport_state_for_test(container_id));
-        assert_eq!(
-            manager.lock().unwrap().backend_kind(local_id),
-            Some(crate::pty::backend::SessionBackendKind::LocalProcess)
-        );
         assert_eq!(manager.lock().unwrap().backend_kind(container_id), None);
         assert_eq!(
             super::startup_lifecycle_state(&lifecycle).expect("inspect external-owner lifecycle"),
@@ -4783,11 +4969,7 @@ mod tests {
     #[test]
     fn production_lifecycle_recovers_poisoned_pty_owner_with_exact_diagnostic() {
         let temp = tempfile::tempdir().expect("poisoned PTY owner tempdir");
-        let local = Arc::new(StartupProcessBackend::default());
-        let local_backend: Arc<dyn crate::pty::backend::PtyBackend> = local.clone();
-        let manager = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
-            local_backend,
-        )));
+        let (_app, manager) = production_local_pty_manager();
         let container = manager.lock().unwrap().container_backend();
         let local_id = uuid::Uuid::new_v4();
         tauri::async_runtime::block_on(crate::pty::manager::PtyManager::spawn(
@@ -4835,7 +5017,10 @@ mod tests {
             }
             other => panic!("unexpected poisoned-owner error: {other}"),
         }
-        assert_eq!(local.child_count(), 0);
+        assert!(!manager
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .has_session(local_id));
         manager.clear_poison();
     }
 
@@ -4843,11 +5028,7 @@ mod tests {
     #[test]
     fn production_lifecycle_bounds_busy_pty_owner_and_reports_retained_process() {
         let temp = tempfile::tempdir().expect("busy PTY owner tempdir");
-        let local = Arc::new(StartupProcessBackend::default());
-        let local_backend: Arc<dyn crate::pty::backend::PtyBackend> = local.clone();
-        let manager = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
-            local_backend,
-        )));
+        let (_app, manager) = production_local_pty_manager();
         let container = manager.lock().unwrap().container_backend();
         let local_id = uuid::Uuid::new_v4();
         tauri::async_runtime::block_on(crate::pty::manager::PtyManager::spawn(
@@ -4899,11 +5080,11 @@ mod tests {
             }
             other => panic!("unexpected busy-owner error: {other}"),
         }
-        assert_eq!(local.child_count(), 1);
         release_tx.send(()).expect("release real PTY owner");
         holder.join().expect("join real PTY owner holder");
+        assert!(manager.lock().unwrap().has_session(local_id));
         assert_eq!(manager.lock().unwrap().kill_all_jobs(), (1, 0));
-        assert_eq!(local.child_count(), 0);
+        assert!(!manager.lock().unwrap().has_session(local_id));
     }
 
     #[cfg(target_os = "linux")]

@@ -133,10 +133,10 @@ pub struct PtyManager {
 }
 
 impl PtyManager {
-    pub fn new(
+    pub fn new<R: tauri::Runtime>(
         output_senders: OutputSenderMap,
         idle_detector: Arc<IdleDetector>,
-        git_watcher: Arc<GitWatcher>,
+        git_watcher: Arc<GitWatcher<R>>,
         ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
         lifecycle_sender: Option<crate::session::selection::ContainerLifecycleSender>,
     ) -> Self {

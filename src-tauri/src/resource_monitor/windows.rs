@@ -591,8 +591,14 @@ mod platform {
     impl ProcessTreeBackend for PlatformProcessTreeBackend {
         fn observe_tree(
             &self,
-            _root: ProcessIdentity,
+            root: ProcessIdentity,
         ) -> Result<ObservedProcessTree, ResourceError> {
+            if !pid_exists(root.pid)? {
+                return Ok(ObservedProcessTree {
+                    processes: Vec::new(),
+                    errors: vec![format!("root pid {} was not in process snapshot", root.pid)],
+                });
+            }
             Ok(ObservedProcessTree {
                 processes: Vec::new(),
                 errors: vec!["process tree telemetry unavailable on this platform".to_string()],
@@ -600,7 +606,7 @@ mod platform {
         }
 
         fn observe_identity(&self, pid: u32) -> Result<Option<ProcessIdentity>, ResourceError> {
-            Ok(Some(ProcessIdentity {
+            Ok(pid_exists(pid)?.then_some(ProcessIdentity {
                 pid,
                 creation_time_100ns: 0,
             }))
@@ -617,6 +623,26 @@ mod platform {
 
         fn current_process_memory(&self) -> Result<ProcessMemory, ResourceError> {
             Ok(ProcessMemory::default())
+        }
+    }
+
+    fn pid_exists(pid: u32) -> Result<bool, ResourceError> {
+        let pid = libc::pid_t::try_from(pid)
+            .map_err(|_| ResourceError::Message(format!("pid {pid} exceeds pid_t range")))?;
+        if pid <= 0 {
+            return Ok(false);
+        }
+        // SAFETY: signal 0 does not modify the target process.
+        if unsafe { libc::kill(pid, 0) } == 0 {
+            return Ok(true);
+        }
+        let error = std::io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(libc::ESRCH) => Ok(false),
+            Some(libc::EPERM) => Ok(true),
+            _ => Err(ResourceError::Message(format!(
+                "failed to probe pid {pid}: {error}"
+            ))),
         }
     }
 }
