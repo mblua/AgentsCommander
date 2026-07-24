@@ -151,12 +151,13 @@ impl ResourceLaunchRegistration {
         Ok(identity)
     }
 
-    pub fn rollback_registered(&self) {
-        if self.registered {
-            let _ = self
-                .monitor
-                .kill_group(self.metadata.session_id, ResourceKillReason::SpawnRollback);
+    pub fn rollback_registered(&self) -> Result<Option<ResourceKillResult>, String> {
+        if !self.registered {
+            return Ok(None);
         }
+        self.monitor
+            .kill_group(self.metadata.session_id, ResourceKillReason::SpawnRollback)
+            .map(Some)
     }
 }
 

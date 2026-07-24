@@ -31,9 +31,10 @@ pub use stub_impl::JobObject;
 mod windows_impl {
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
+        JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+        TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows_sys::Win32::System::Threading::{
         OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
@@ -119,10 +120,40 @@ mod windows_impl {
         /// Terminate every process in the job. Idempotent; safe on an already-dead
         /// tree (TerminateJobObject just reports failure, which we log at debug).
         pub fn terminate(&self) {
+            if let Err(error) = self.terminate_checked() {
+                log::debug!("[pty] TerminateJobObject failed (tree may already be gone): {error}");
+            }
+        }
+
+        /// The checked form used by bounded PTY teardown. A failed kill is not
+        /// discarded because the caller must retain the Job Object when the
+        /// process tree cannot be proven empty before its deadline.
+        pub fn terminate_checked(&self) -> std::io::Result<()> {
             // SAFETY: `self.handle` is a valid job handle owned by `self`.
-            let ok = unsafe { TerminateJobObject(self.handle, 1) };
-            if ok == 0 {
-                log::debug!("[pty] TerminateJobObject failed (tree likely already gone)");
+            if unsafe { TerminateJobObject(self.handle, 1) } != 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        }
+
+        /// Nonblocking process-tree completion check for bounded teardown.
+        pub fn is_empty(&self) -> std::io::Result<bool> {
+            // SAFETY: the output buffer has the exact structure and byte size
+            // required by JobObjectBasicAccountingInformation.
+            unsafe {
+                let mut accounting = std::mem::zeroed::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>();
+                if QueryInformationJobObject(
+                    self.handle,
+                    JobObjectBasicAccountingInformation,
+                    &mut accounting as *mut _ as *mut core::ffi::c_void,
+                    std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                    std::ptr::null_mut(),
+                ) == 0
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(accounting.ActiveProcesses == 0)
             }
         }
     }
@@ -153,6 +184,12 @@ mod stub_impl {
             None
         }
         pub fn terminate(&self) {}
+        pub fn terminate_checked(&self) -> std::io::Result<()> {
+            Ok(())
+        }
+        pub fn is_empty(&self) -> std::io::Result<bool> {
+            Ok(true)
+        }
     }
 
     #[cfg(test)]

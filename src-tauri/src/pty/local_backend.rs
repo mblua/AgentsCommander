@@ -4,6 +4,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "linux")]
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use uuid::Uuid;
 
@@ -13,12 +16,12 @@ use std::path::Path;
 use std::sync::atomic::AtomicU64;
 
 use crate::errors::AppError;
-use crate::pty::backend::{BackendSpawnSpec, PtyBackend};
+use crate::pty::backend::{BackendSpawnSpec, PtyBackend, PtyShutdownReport};
 use crate::pty::context_scrape::{ContextSessionLiveness, ScreenRowsRead};
 use crate::pty::git_watcher::GitWatcher;
 use crate::pty::idle_detector::IdleDetector;
 use crate::pty::output::{PtyScreenSnapshot, SessionIoFanout};
-use crate::pty::spawn_diagnostics::{self, ChildLiveness, ExitCause, SpawnRecord, SpawnRecordInit};
+use crate::pty::spawn_diagnostics::{self, ChildLiveness, ExitCause, SpawnRecordInit};
 #[cfg(target_os = "linux")]
 use crate::session::profile::CodingAgentKind;
 use crate::telegram::manager::OutputSenderMap;
@@ -69,10 +72,7 @@ mod linux_codex_path_tests {
 struct PtyInstance {
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
-    child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
-    job: Option<crate::pty::job::JobObject>,
-    #[cfg(unix)]
-    process_group: Option<UnixProcessGroupOwner>,
+    owner: LocalProcessOwner,
     /// #973 (C) - the size the ConPTY is actually at, so a resize that changes nothing is
     /// not sent to the child. Seeded from the size the PTY was opened at.
     size: Mutex<(u16, u16)>,
@@ -84,23 +84,69 @@ struct PtyInstance {
     rendered: Arc<AtomicBool>,
 }
 
+type PortableChild = Box<dyn portable_pty::Child + Send + Sync>;
+
+struct LocalProcessOwner {
+    root_pid: Option<u32>,
+    child: Option<PortableChild>,
+    job: Option<crate::pty::job::JobObject>,
+    #[cfg(windows)]
+    job_required: bool,
+    #[cfg(unix)]
+    process_group: Option<UnixProcessGroupOwner>,
+    #[cfg(unix)]
+    process_group_required: bool,
+    resource_registration: Option<crate::resource_monitor::ResourceLaunchRegistration>,
+    diagnostics: Vec<String>,
+}
+
+impl LocalProcessOwner {
+    fn new(
+        child: PortableChild,
+        resource_registration: Option<crate::resource_monitor::ResourceLaunchRegistration>,
+    ) -> Self {
+        let root_pid = child.process_id();
+        Self {
+            root_pid,
+            child: Some(child),
+            job: None,
+            #[cfg(windows)]
+            job_required: true,
+            #[cfg(unix)]
+            process_group: None,
+            #[cfg(unix)]
+            process_group_required: true,
+            resource_registration,
+            diagnostics: Vec::new(),
+        }
+    }
+
+    fn push_diagnostic(&mut self, diagnostic: String) {
+        if !self.diagnostics.contains(&diagnostic) {
+            self.diagnostics.push(diagnostic);
+        }
+    }
+}
+
+const LOCAL_OWNER_SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
 #[cfg(unix)]
 const PROCESS_GROUP_TERM_GRACE: Duration = Duration::from_secs(3);
-#[cfg(unix)]
-const PROCESS_GROUP_KILL_GRACE: Duration = Duration::from_secs(2);
 
 /// A Unix portable-pty child calls `setsid()` before `exec`, so its PID is also
-/// the session and process-group leader. Retaining that value gives startup
-/// teardown a real group owner independently of the Windows Job Object slot.
+/// the session and process-group leader. Linux additionally retains the
+/// leader's `/proc` start identity, so a recycled numeric PID or PGID is never
+/// accepted as the original process group.
 #[cfg(unix)]
 #[derive(Clone, Copy)]
 struct UnixProcessGroupOwner {
     leader: libc::pid_t,
+    #[cfg(target_os = "linux")]
+    start_time_ticks: Option<u64>,
 }
 
 #[cfg(unix)]
 impl UnixProcessGroupOwner {
-    fn for_child_pid(pid: Option<u32>) -> Result<Self, AppError> {
+    fn unverified_for_child_pid(pid: Option<u32>) -> Result<Self, AppError> {
         let pid = pid.ok_or_else(|| {
             AppError::PtyError("portable-pty spawned a Unix child without a process id".to_string())
         })?;
@@ -114,78 +160,442 @@ impl UnixProcessGroupOwner {
                 "portable-pty spawned invalid Unix child pid {pid}"
             )));
         }
-        Ok(Self { leader })
+        Ok(Self {
+            leader,
+            #[cfg(target_os = "linux")]
+            start_time_ticks: None,
+        })
     }
 
-    fn signal(self, signal: libc::c_int) -> std::io::Result<()> {
-        // SAFETY: `leader` is a positive pid_t captured from the child handle.
-        // portable-pty establishes that child as a session leader before exec,
-        // so the negative value addresses only that child's process group.
-        if unsafe { libc::kill(-self.leader, signal) } == 0 {
-            return Ok(());
+    fn verify_identity(&mut self) -> Result<(), AppError> {
+        #[cfg(target_os = "linux")]
+        {
+            let stat = read_linux_proc_stat(self.leader)?.ok_or_else(|| {
+                AppError::PtyError(format!(
+                    "spawned Unix child pid {} exited before process-group identity capture",
+                    self.leader
+                ))
+            })?;
+            if stat.process_group != self.leader || stat.session != self.leader {
+                return Err(AppError::PtyError(format!(
+                    "spawned Unix child pid {} did not own its expected process group and session",
+                    self.leader
+                )));
+            }
+            self.start_time_ticks = Some(stat.start_time_ticks);
         }
-        let error = std::io::Error::last_os_error();
-        if error.raw_os_error() == Some(libc::ESRCH) {
-            Ok(())
-        } else {
-            Err(error)
+
+        #[cfg(all(unix, not(target_os = "linux")))]
+        {
+            // SAFETY: `leader` is the positive pid captured from portable-pty.
+            let process_group = unsafe { libc::getpgid(self.leader) };
+            if process_group != self.leader {
+                return Err(AppError::PtyError(format!(
+                    "spawned Unix child pid {} did not own process group {}",
+                    self.leader, process_group
+                )));
+            }
         }
+        Ok(())
     }
 
     fn exists(self) -> std::io::Result<bool> {
-        // SAFETY: signal 0 performs an existence/permission probe only.
-        if unsafe { libc::kill(-self.leader, 0) } == 0 {
-            return Ok(true);
+        #[cfg(target_os = "linux")]
+        {
+            match self.linux_identity_state()? {
+                LinuxGroupIdentityState::OriginalLeader
+                | LinuxGroupIdentityState::OriginalWithoutLeader => Ok(true),
+                LinuxGroupIdentityState::GoneOrReused => Ok(false),
+            }
         }
-        let error = std::io::Error::last_os_error();
-        match error.raw_os_error() {
-            Some(libc::ESRCH) => Ok(false),
-            Some(libc::EPERM) => Ok(true),
-            _ => Err(error),
+
+        #[cfg(all(unix, not(target_os = "linux")))]
+        {
+            numeric_process_group_exists(self.leader)
         }
+    }
+
+    fn signal(self, signal: libc::c_int, deadline: Instant) -> std::io::Result<bool> {
+        #[cfg(target_os = "linux")]
+        {
+            signal_linux_group_members(self, signal, deadline)
+        }
+
+        #[cfg(all(unix, not(target_os = "linux")))]
+        {
+            if Instant::now() >= deadline {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "Unix process-group signal deadline expired",
+                ));
+            }
+            if !self.exists()? {
+                return Ok(false);
+            }
+            // SAFETY: the existence probe above establishes the retained
+            // process group on platforms without Linux pidfds.
+            if unsafe { libc::kill(-self.leader, signal) } == 0 {
+                return Ok(true);
+            }
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ESRCH) {
+                Ok(false)
+            } else {
+                Err(error)
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn linux_identity_state(self) -> std::io::Result<LinuxGroupIdentityState> {
+        let current = read_linux_proc_stat(self.leader)?;
+        let group_exists = numeric_process_group_exists(self.leader)?;
+        let Some(expected_start) = self.start_time_ticks else {
+            if current.is_none() && !group_exists {
+                return Ok(LinuxGroupIdentityState::GoneOrReused);
+            }
+            return Err(std::io::Error::other(format!(
+                "Linux process-group {} has no captured start identity",
+                self.leader
+            )));
+        };
+        Ok(classify_linux_group_identity(
+            self.leader,
+            expected_start,
+            current,
+            group_exists,
+        ))
     }
 }
 
 #[cfg(unix)]
-struct UnixShutdownEntry {
-    id: Uuid,
-    group: Option<UnixProcessGroupOwner>,
-    child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
-    root_reaped: bool,
+fn numeric_process_group_exists(leader: libc::pid_t) -> std::io::Result<bool> {
+    if leader <= 0 {
+        return Ok(false);
+    }
+    // SAFETY: signal 0 performs an existence/permission probe only.
+    if unsafe { libc::kill(-leader, 0) } == 0 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::ESRCH) => Ok(false),
+        Some(libc::EPERM) => Ok(true),
+        _ => Err(error),
+    }
 }
 
-#[cfg(unix)]
-fn reap_exited_unix_root(entry: &mut UnixShutdownEntry) {
-    let Some(child) = entry.child.as_mut() else {
-        return;
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LinuxProcStat {
+    pid: libc::pid_t,
+    state: char,
+    process_group: libc::pid_t,
+    session: libc::pid_t,
+    start_time_ticks: u64,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LinuxGroupIdentityState {
+    OriginalLeader,
+    OriginalWithoutLeader,
+    GoneOrReused,
+}
+
+#[cfg(target_os = "linux")]
+fn classify_linux_group_identity(
+    leader: libc::pid_t,
+    expected_start: u64,
+    current: Option<LinuxProcStat>,
+    group_exists: bool,
+) -> LinuxGroupIdentityState {
+    match current {
+        Some(stat)
+            if stat.start_time_ticks == expected_start
+                && stat.process_group == leader
+                && stat.session == leader =>
+        {
+            LinuxGroupIdentityState::OriginalLeader
+        }
+        Some(_) => LinuxGroupIdentityState::GoneOrReused,
+        None if group_exists => LinuxGroupIdentityState::OriginalWithoutLeader,
+        None => LinuxGroupIdentityState::GoneOrReused,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn read_linux_proc_stat(pid: libc::pid_t) -> std::io::Result<Option<LinuxProcStat>> {
+    if pid <= 0 {
+        return Ok(None);
+    }
+    let path = format!("/proc/{pid}/stat");
+    let value = match std::fs::read_to_string(&path) {
+        Ok(value) => value,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
     };
-    match child.try_wait() {
-        Ok(Some(status)) => {
-            entry.child = None;
-            entry.root_reaped = true;
-            log::info!(
-                "[pty] reaped session {} Unix PTY root after SIGTERM: {:?}",
-                entry.id,
-                status
-            );
+    parse_linux_proc_stat(&value).map(Some)
+}
+
+#[cfg(target_os = "linux")]
+fn parse_linux_proc_stat(value: &str) -> std::io::Result<LinuxProcStat> {
+    let open = value
+        .find('(')
+        .ok_or_else(|| std::io::Error::other("Linux process stat omitted command start"))?;
+    let close = value
+        .rfind(')')
+        .ok_or_else(|| std::io::Error::other("Linux process stat omitted command end"))?;
+    if close <= open {
+        return Err(std::io::Error::other(
+            "Linux process stat had an invalid command field",
+        ));
+    }
+    let pid = value[..open]
+        .trim()
+        .parse::<libc::pid_t>()
+        .map_err(|error| std::io::Error::other(format!("invalid Linux stat pid: {error}")))?;
+    let fields = value[close + 1..].split_whitespace().collect::<Vec<_>>();
+    let parse_pid_field = |index: usize, name: &str| -> std::io::Result<libc::pid_t> {
+        fields
+            .get(index)
+            .ok_or_else(|| std::io::Error::other(format!("Linux stat omitted {name}")))?
+            .parse::<libc::pid_t>()
+            .map_err(|error| std::io::Error::other(format!("invalid Linux stat {name}: {error}")))
+    };
+    let start_time_ticks = fields
+        .get(19)
+        .ok_or_else(|| std::io::Error::other("Linux stat omitted start time"))?
+        .parse::<u64>()
+        .map_err(|error| {
+            std::io::Error::other(format!("invalid Linux stat start time: {error}"))
+        })?;
+    Ok(LinuxProcStat {
+        pid,
+        state: fields
+            .first()
+            .and_then(|value| value.chars().next())
+            .ok_or_else(|| std::io::Error::other("Linux stat omitted process state"))?,
+        process_group: parse_pid_field(2, "process group")?,
+        session: parse_pid_field(3, "session")?,
+        start_time_ticks,
+    })
+}
+
+#[cfg(target_os = "linux")]
+struct LinuxPidfdTarget {
+    stat: LinuxProcStat,
+    pidfd: OwnedFd,
+}
+
+#[cfg(target_os = "linux")]
+fn linux_group_members(
+    owner: UnixProcessGroupOwner,
+    deadline: Instant,
+) -> std::io::Result<Vec<LinuxPidfdTarget>> {
+    let mut members = Vec::new();
+    for entry in std::fs::read_dir("/proc")? {
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!(
+                    "Linux process-group {} enumeration exceeded teardown deadline",
+                    owner.leader
+                ),
+            ));
         }
-        Ok(None) => {}
-        Err(error) => log::warn!(
-            "[pty] failed to poll session {} Unix PTY root during shutdown: {}",
-            entry.id,
-            error
-        ),
+        let entry = entry?;
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|value| value.parse::<libc::pid_t>().ok())
+        else {
+            continue;
+        };
+        let Some(before) = read_linux_proc_stat(pid)? else {
+            continue;
+        };
+        if before.process_group != owner.leader || before.session != owner.leader {
+            continue;
+        }
+        let Some(pidfd) = open_linux_pidfd(pid)? else {
+            continue;
+        };
+        let Some(after) = read_linux_proc_stat(pid)? else {
+            continue;
+        };
+        if before == after {
+            members.push(LinuxPidfdTarget { stat: after, pidfd });
+        }
+    }
+    Ok(members)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_group_has_live_members(
+    owner: UnixProcessGroupOwner,
+    deadline: Instant,
+) -> std::io::Result<bool> {
+    Ok(linux_group_members(owner, deadline)?
+        .iter()
+        .any(|member| !matches!(member.stat.state, 'Z' | 'X' | 'x')))
+}
+
+#[cfg(target_os = "linux")]
+fn open_linux_pidfd(pid: libc::pid_t) -> std::io::Result<Option<OwnedFd>> {
+    // SAFETY: pidfd_open receives a positive observed pid and flags zero.
+    let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    if raw >= 0 {
+        // SAFETY: a successful pidfd_open returns a new owned descriptor.
+        return Ok(Some(unsafe { OwnedFd::from_raw_fd(raw as libc::c_int) }));
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(None)
+    } else {
+        Err(error)
     }
 }
 
-#[cfg(unix)]
-fn unix_shutdown_entry_is_gone(entry: &UnixShutdownEntry) -> bool {
-    if !entry.root_reaped {
-        return false;
+#[cfg(target_os = "linux")]
+fn send_linux_pidfd_signal(target: &LinuxPidfdTarget, signal: libc::c_int) -> std::io::Result<()> {
+    // SAFETY: the pidfd is owned and valid, the signal is a standard Unix
+    // signal, and the siginfo pointer is null as permitted by pidfd_send_signal.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            target.pidfd.as_raw_fd(),
+            signal,
+            std::ptr::null::<libc::siginfo_t>(),
+            0,
+        )
+    };
+    if result == 0 {
+        return Ok(());
     }
-    match entry.group {
-        Some(group) => matches!(group.exists(), Ok(false)),
-        None => true,
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "pidfd signal failed for pid {} start {}: {error}",
+            target.stat.pid, target.stat.start_time_ticks
+        )))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn with_original_linux_group<T>(
+    state: LinuxGroupIdentityState,
+    action: impl FnOnce() -> std::io::Result<T>,
+) -> std::io::Result<Option<T>> {
+    match state {
+        LinuxGroupIdentityState::OriginalLeader => action().map(Some),
+        LinuxGroupIdentityState::OriginalWithoutLeader => Err(std::io::Error::other(
+            "original leader identity is no longer observable; refusing numeric process-group signal",
+        )),
+        LinuxGroupIdentityState::GoneOrReused => Ok(None),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn signal_linux_group_members(
+    owner: UnixProcessGroupOwner,
+    signal: libc::c_int,
+    deadline: Instant,
+) -> std::io::Result<bool> {
+    let Some(members) = with_original_linux_group(owner.linux_identity_state()?, || {
+        linux_group_members(owner, deadline)
+    })?
+    else {
+        return Ok(false);
+    };
+    with_original_linux_group(owner.linux_identity_state()?, || {
+        if members.is_empty() {
+            return Err(std::io::Error::other(format!(
+                "Linux process group {} existed but exposed no identity-stable members",
+                owner.leader
+            )));
+        }
+        for member in &members {
+            if Instant::now() >= deadline {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!(
+                        "Linux process-group {} signaling exceeded teardown deadline",
+                        owner.leader
+                    ),
+                ));
+            }
+            send_linux_pidfd_signal(member, signal)?;
+        }
+        Ok(())
+    })
+    .map(|result| result.is_some())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_process_identity_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn reused_leader_identity_never_authorizes_a_signal() {
+        let leader = 300;
+        let expected_start = 41;
+        let reused = LinuxProcStat {
+            pid: leader,
+            state: 'S',
+            process_group: leader,
+            session: leader,
+            start_time_ticks: 42,
+        };
+        let state = classify_linux_group_identity(leader, expected_start, Some(reused), true);
+        assert_eq!(state, LinuxGroupIdentityState::GoneOrReused);
+        let signaled = AtomicBool::new(false);
+        assert!(with_original_linux_group(state, || {
+            signaled.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+        .expect("reused identity is a terminal no-op")
+        .is_none());
+        assert!(!signaled.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn leaderless_numeric_group_never_authorizes_a_signal() {
+        let signaled = AtomicBool::new(false);
+        let error =
+            with_original_linux_group(LinuxGroupIdentityState::OriginalWithoutLeader, || {
+                signaled.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+            .expect_err("a leaderless numeric group is not identity-qualified");
+        assert!(error
+            .to_string()
+            .contains("original leader identity is no longer observable"));
+        assert!(!signaled.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn naturally_absent_original_group_is_terminal() {
+        assert_eq!(
+            classify_linux_group_identity(300, 41, None, false),
+            LinuxGroupIdentityState::GoneOrReused
+        );
+    }
+
+    #[test]
+    fn proc_stat_parser_handles_spaces_and_parentheses_in_command() {
+        let parsed = parse_linux_proc_stat(
+            "17 (name with ) parenthesis) S 1 17 17 0 -1 0 0 0 0 0 0 0 0 0 0 0 0 0 4242 0",
+        )
+        .expect("parse injected proc stat");
+        assert_eq!(parsed.pid, 17);
+        assert_eq!(parsed.state, 'S');
+        assert_eq!(parsed.process_group, 17);
+        assert_eq!(parsed.session, 17);
+        assert_eq!(parsed.start_time_ticks, 4242);
     }
 }
 
@@ -772,6 +1182,7 @@ fn build_git_guard_env() -> Result<Option<GitGuardEnv>, AppError> {
 
 pub struct LocalProcessBackend<R: tauri::Runtime = tauri::Wry> {
     ptys: Arc<Mutex<HashMap<Uuid, PtyInstance>>>,
+    retained_owners: Arc<Mutex<HashMap<Uuid, Vec<LocalProcessOwner>>>>,
     fanout: SessionIoFanout,
     git_watcher: Arc<GitWatcher<R>>,
 }
@@ -800,16 +1211,646 @@ fn write_to_local_pty(
         .map_err(|error| AppError::PtyError(error.to_string()))
 }
 
+#[cfg(all(test, windows))]
 fn remove_local_pty(ptys: &Mutex<HashMap<Uuid, PtyInstance>>, id: Uuid) -> Option<PtyInstance> {
     ptys.lock()
         .unwrap_or_else(|error| error.into_inner())
         .remove(&id)
 }
 
+enum RetainedLocalProcess {
+    Instance(PtyInstance),
+    Detached(LocalProcessOwner),
+}
+
+impl RetainedLocalProcess {
+    fn owner_mut(&mut self) -> &mut LocalProcessOwner {
+        match self {
+            Self::Instance(instance) => &mut instance.owner,
+            Self::Detached(owner) => owner,
+        }
+    }
+}
+
+fn poll_local_root(id: Uuid, owner: &mut LocalProcessOwner) {
+    let Some(child) = owner.child.as_mut() else {
+        return;
+    };
+    match probe_child_contained(child) {
+        ChildLiveness::Exited { code, success } => {
+            log::info!(
+                "[pty] reaped session {} local PTY root pid {:?}: code={} success={}",
+                id,
+                owner.root_pid,
+                code,
+                success
+            );
+            owner.child = None;
+        }
+        ChildLiveness::Gone => {
+            owner.child = None;
+        }
+        ChildLiveness::Alive => {}
+        ChildLiveness::Unqueryable(error) => owner.push_diagnostic(format!(
+            "session {id} root pid {:?} poll failed: {error}",
+            owner.root_pid
+        )),
+    }
+}
+
+fn poll_local_root_for_shutdown(id: Uuid, owner: &mut LocalProcessOwner, _deadline: Instant) {
+    #[cfg(target_os = "linux")]
+    if owner.child.is_some() {
+        if let Some(group) = owner.process_group {
+            match group.linux_identity_state() {
+                Ok(LinuxGroupIdentityState::OriginalLeader) => {
+                    match linux_group_has_live_members(group, _deadline) {
+                        Ok(true) => return,
+                        Ok(false) => {}
+                        Err(error) => {
+                            owner.push_diagnostic(format!(
+                                "session {id} process group {} live-member probe failed: {error}",
+                                group.leader
+                            ));
+                            return;
+                        }
+                    }
+                }
+                Ok(
+                    LinuxGroupIdentityState::OriginalWithoutLeader
+                    | LinuxGroupIdentityState::GoneOrReused,
+                ) => {}
+                Err(error) => {
+                    owner.push_diagnostic(format!(
+                        "session {id} process group {} root-reap identity probe failed: {error}",
+                        group.leader
+                    ));
+                    return;
+                }
+            }
+        }
+    }
+
+    poll_local_root(id, owner);
+}
+
+fn local_process_tree_absent(id: Uuid, owner: &mut LocalProcessOwner, deadline: Instant) -> bool {
+    poll_local_root_for_shutdown(id, owner, deadline);
+    let root_absent = owner.child.is_none();
+
+    #[cfg(unix)]
+    let group_absent = match owner.process_group {
+        Some(group) => match group.exists() {
+            Ok(false) => {
+                owner.process_group = None;
+                owner.process_group_required = false;
+                true
+            }
+            Ok(true) => false,
+            Err(error) => {
+                owner.push_diagnostic(format!(
+                    "session {id} process group {} probe failed: {error}",
+                    group.leader
+                ));
+                false
+            }
+        },
+        None if owner.process_group_required => {
+            owner.push_diagnostic(format!(
+                "session {id} root pid {:?} has no verified Unix process-group owner",
+                owner.root_pid
+            ));
+            false
+        }
+        None => true,
+    };
+
+    #[cfg(windows)]
+    let group_absent = match owner.job.as_ref() {
+        Some(job) => match job.is_empty() {
+            Ok(true) => {
+                owner.job = None;
+                owner.job_required = false;
+                true
+            }
+            Ok(false) => false,
+            Err(error) => {
+                owner.push_diagnostic(format!(
+                    "session {id} root pid {:?} Job Object probe failed: {error}",
+                    owner.root_pid
+                ));
+                false
+            }
+        },
+        None if owner.job_required => {
+            owner.push_diagnostic(format!(
+                "session {id} root pid {:?} has no required Windows Job Object",
+                owner.root_pid
+            ));
+            false
+        }
+        None => true,
+    };
+
+    root_absent && group_absent
+}
+
+fn request_child_kill(id: Uuid, owner: &mut LocalProcessOwner, phase: &str) {
+    let Some(child) = owner.child.as_mut() else {
+        return;
+    };
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| child.kill()));
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => owner.push_diagnostic(format!(
+            "session {id} root pid {:?} {phase} kill failed: {error}",
+            owner.root_pid
+        )),
+        Err(_) => owner.push_diagnostic(format!(
+            "session {id} root pid {:?} {phase} kill panicked inside portable-pty",
+            owner.root_pid
+        )),
+    }
+}
+
+#[cfg(unix)]
+fn request_unix_group_signal(
+    id: Uuid,
+    owner: &mut LocalProcessOwner,
+    signal: libc::c_int,
+    phase: &str,
+    deadline: Instant,
+) -> bool {
+    let Some(group) = owner.process_group else {
+        owner.push_diagnostic(format!(
+            "session {id} root pid {:?} has no Unix group for {phase}",
+            owner.root_pid
+        ));
+        return false;
+    };
+    match group.signal(signal, deadline) {
+        Ok(true) => true,
+        Ok(false) => {
+            owner.process_group = None;
+            owner.process_group_required = false;
+            true
+        }
+        Err(error) => {
+            owner.push_diagnostic(format!(
+                "session {id} process group {} {phase} signal failed: {error}",
+                group.leader
+            ));
+            false
+        }
+    }
+}
+
+#[cfg(windows)]
+fn request_windows_job_termination(id: Uuid, owner: &mut LocalProcessOwner, phase: &str) -> bool {
+    let Some(job) = owner.job.as_ref() else {
+        owner.push_diagnostic(format!(
+            "session {id} root pid {:?} has no Windows Job Object for {phase}",
+            owner.root_pid
+        ));
+        return false;
+    };
+    match job.terminate_checked() {
+        Ok(()) => true,
+        Err(error) => {
+            owner.push_diagnostic(format!(
+                "session {id} root pid {:?} Job Object {phase} failed: {error}",
+                owner.root_pid
+            ));
+            false
+        }
+    }
+}
+
+fn poll_local_processes_until(entries: &mut [(Uuid, RetainedLocalProcess)], deadline: Instant) {
+    loop {
+        let mut all_absent = true;
+        for (id, retained) in entries.iter_mut() {
+            if Instant::now() >= deadline
+                || !local_process_tree_absent(*id, retained.owner_mut(), deadline)
+            {
+                all_absent = false;
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+        }
+        if all_absent || Instant::now() >= deadline {
+            break;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        std::thread::sleep(Duration::from_millis(10).min(remaining));
+    }
+}
+
+fn reconcile_resource_registration(id: Uuid, owner: &mut LocalProcessOwner) -> bool {
+    let Some(registration) = owner.resource_registration.as_ref() else {
+        return true;
+    };
+    match registration.rollback_registered() {
+        Ok(None) => {
+            owner.resource_registration = None;
+            true
+        }
+        Ok(Some(result))
+            if result.state == crate::resource_monitor::types::ResourceGroupState::Terminated =>
+        {
+            owner.resource_registration = None;
+            true
+        }
+        Ok(Some(result)) => {
+            owner.push_diagnostic(format!(
+                "session {id} resource ownership remained {:?}: {}",
+                result.state, result.message
+            ));
+            false
+        }
+        Err(error) => {
+            owner.push_diagnostic(format!(
+                "session {id} resource ownership reconciliation failed: {error}"
+            ));
+            false
+        }
+    }
+}
+
+fn retained_owner_diagnostic(id: Uuid, owner: &LocalProcessOwner, budget: Duration) -> String {
+    #[cfg(unix)]
+    let process_group = match owner.process_group {
+        Some(group) => {
+            #[cfg(target_os = "linux")]
+            {
+                format!("{}@start={:?}", group.leader, group.start_time_ticks)
+            }
+            #[cfg(all(unix, not(target_os = "linux")))]
+            {
+                group.leader.to_string()
+            }
+        }
+        None if owner.process_group_required => "missing-required".to_string(),
+        None => "absent".to_string(),
+    };
+    #[cfg(windows)]
+    let process_group = if owner.job.is_some() {
+        "job-object-retained".to_string()
+    } else {
+        "no-job-object".to_string()
+    };
+
+    let details = if owner.diagnostics.is_empty() {
+        "no syscall diagnostic was available".to_string()
+    } else {
+        owner.diagnostics.join(" | ")
+    };
+    format!(
+        "session {id} retained local PTY ownership after {}ms: root_pid={:?} root_handle={} group_owner={process_group}; {details}",
+        budget.as_millis(),
+        owner.root_pid,
+        if owner.child.is_some() {
+            "retained"
+        } else {
+            "reaped"
+        }
+    )
+}
+
+fn shutdown_local_processes(
+    entries: &mut [(Uuid, RetainedLocalProcess)],
+    budget: Duration,
+) -> Vec<Option<String>> {
+    let started = Instant::now();
+    let deadline = started.checked_add(budget).unwrap_or(started);
+    shutdown_local_processes_until(entries, budget, started, deadline)
+}
+
+fn shutdown_local_processes_until(
+    entries: &mut [(Uuid, RetainedLocalProcess)],
+    budget: Duration,
+    _started: Instant,
+    deadline: Instant,
+) -> Vec<Option<String>> {
+    #[cfg(unix)]
+    {
+        for (id, retained) in entries.iter_mut() {
+            if Instant::now() >= deadline {
+                break;
+            }
+            let owner = retained.owner_mut();
+            if !request_unix_group_signal(*id, owner, libc::SIGTERM, "SIGTERM", deadline) {
+                request_child_kill(*id, owner, "SIGTERM fallback");
+            }
+        }
+        let term_deadline = (_started + PROCESS_GROUP_TERM_GRACE).min(deadline);
+        poll_local_processes_until(entries, term_deadline);
+        for (id, retained) in entries.iter_mut() {
+            if Instant::now() >= deadline {
+                break;
+            }
+            let owner = retained.owner_mut();
+            if !local_process_tree_absent(*id, owner, deadline) {
+                if !request_unix_group_signal(*id, owner, libc::SIGKILL, "SIGKILL", deadline) {
+                    request_child_kill(*id, owner, "SIGKILL fallback");
+                } else {
+                    request_child_kill(*id, owner, "SIGKILL root fallback");
+                }
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        for (id, retained) in entries.iter_mut() {
+            if Instant::now() >= deadline {
+                break;
+            }
+            let owner = retained.owner_mut();
+            if !request_windows_job_termination(*id, owner, "termination") {
+                request_child_kill(*id, owner, "termination fallback");
+            }
+        }
+    }
+
+    poll_local_processes_until(entries, deadline);
+
+    entries
+        .iter_mut()
+        .map(|(id, retained)| {
+            let owner = retained.owner_mut();
+            if local_process_tree_absent(*id, owner, deadline)
+                && reconcile_resource_registration(*id, owner)
+            {
+                None
+            } else {
+                if Instant::now() >= deadline {
+                    owner.push_diagnostic(format!(
+                        "session {id} local PTY teardown deadline expired after {}ms",
+                        budget.as_millis()
+                    ));
+                }
+                Some(retained_owner_diagnostic(*id, owner, budget))
+            }
+        })
+        .collect()
+}
+
+fn insert_retained_owner(
+    owners: &mut HashMap<Uuid, Vec<LocalProcessOwner>>,
+    id: Uuid,
+    owner: LocalProcessOwner,
+) {
+    owners.entry(id).or_default().push(owner);
+}
+
+fn defer_retained_owner(
+    owners: Arc<Mutex<HashMap<Uuid, Vec<LocalProcessOwner>>>>,
+    id: Uuid,
+    owner: LocalProcessOwner,
+) {
+    let pending = Arc::new(Mutex::new(Some(owner)));
+    let worker_pending = Arc::clone(&pending);
+    let spawn_result = std::thread::Builder::new()
+        .name(format!("pty-owner-retain-{id}"))
+        .spawn(move || {
+            let owner = worker_pending
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take()
+                .expect("retained-owner worker receives exactly one owner");
+            loop {
+                match owners.try_lock() {
+                    Ok(mut owners) => {
+                        insert_retained_owner(&mut owners, id, owner);
+                        return;
+                    }
+                    Err(std::sync::TryLockError::Poisoned(error)) => {
+                        insert_retained_owner(&mut error.into_inner(), id, owner);
+                        return;
+                    }
+                    Err(std::sync::TryLockError::WouldBlock) => {
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                }
+            }
+        });
+    if let Err(error) = spawn_result {
+        let owner = pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+            .expect("failed retained-owner worker leaves its owner with the caller");
+        let diagnostic = retained_owner_diagnostic(id, &owner, Duration::ZERO);
+        log::error!(
+            "[pty] failed to start retained-owner worker: {error}; leaking the exact owner fail-closed: {diagnostic}"
+        );
+        std::mem::forget(owner);
+    }
+}
+
+fn store_retained_owner(
+    owners: &Arc<Mutex<HashMap<Uuid, Vec<LocalProcessOwner>>>>,
+    id: Uuid,
+    owner: LocalProcessOwner,
+) {
+    match owners.try_lock() {
+        Ok(mut owners) => insert_retained_owner(&mut owners, id, owner),
+        Err(std::sync::TryLockError::Poisoned(error)) => {
+            insert_retained_owner(&mut error.into_inner(), id, owner);
+        }
+        Err(std::sync::TryLockError::WouldBlock) => {
+            log::warn!(
+                "[pty] retained-owner map busy for session {id}; deferring exact owner storage"
+            );
+            defer_retained_owner(Arc::clone(owners), id, owner);
+        }
+    }
+}
+
+fn lock_local_owner_map_until<T>(
+    owner: &Mutex<T>,
+    deadline: Instant,
+) -> Result<std::sync::MutexGuard<'_, T>, ()> {
+    loop {
+        match owner.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(std::sync::TryLockError::Poisoned(error)) => return Ok(error.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                std::thread::sleep(Duration::from_millis(2).min(remaining));
+            }
+            Err(std::sync::TryLockError::WouldBlock) => return Err(()),
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SpawnFailurePoint {
+    TakeWriter,
+    CloneReader,
+    PostSpawnCwdVerification,
+    RouteRegistration,
+}
+
+#[cfg(test)]
+struct SpawnFailureInjection {
+    point: SpawnFailurePoint,
+    descendant_marker: std::path::PathBuf,
+}
+
+#[cfg(test)]
+fn spawn_failure_injections() -> &'static Mutex<HashMap<Uuid, SpawnFailureInjection>> {
+    static INJECTIONS: std::sync::OnceLock<Mutex<HashMap<Uuid, SpawnFailureInjection>>> =
+        std::sync::OnceLock::new();
+    INJECTIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn inject_spawn_failure(
+    id: Uuid,
+    point: SpawnFailurePoint,
+    descendant_marker: std::path::PathBuf,
+) {
+    spawn_failure_injections()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .insert(
+            id,
+            SpawnFailureInjection {
+                point,
+                descendant_marker,
+            },
+        );
+}
+
+#[cfg(test)]
+pub(crate) fn take_spawn_failure(id: Uuid, point: SpawnFailurePoint) -> Result<bool, AppError> {
+    let injection = {
+        let mut injections = spawn_failure_injections()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if injections
+            .get(&id)
+            .is_some_and(|entry| entry.point == point)
+        {
+            injections.remove(&id)
+        } else {
+            None
+        }
+    };
+    let Some(injection) = injection else {
+        return Ok(false);
+    };
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match std::fs::read_to_string(&injection.descendant_marker) {
+            Ok(value) if value.split_whitespace().count() == 2 => return Ok(true),
+            Ok(_) | Err(_) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Ok(value) => {
+                return Err(AppError::PtyError(format!(
+                    "injected {point:?} boundary did not observe two process ids in {}: {value:?}",
+                    injection.descendant_marker.display()
+                )));
+            }
+            Err(error) => {
+                return Err(AppError::PtyError(format!(
+                    "injected {point:?} boundary did not observe descendant marker {}: {error}",
+                    injection.descendant_marker.display()
+                )));
+            }
+        }
+    }
+}
+
+struct SpawnRollbackOwner {
+    id: Uuid,
+    owner: Option<LocalProcessOwner>,
+    retained_owners: Arc<Mutex<HashMap<Uuid, Vec<LocalProcessOwner>>>>,
+}
+
+impl SpawnRollbackOwner {
+    fn new(
+        id: Uuid,
+        child: PortableChild,
+        resource_registration: Option<crate::resource_monitor::ResourceLaunchRegistration>,
+        retained_owners: Arc<Mutex<HashMap<Uuid, Vec<LocalProcessOwner>>>>,
+    ) -> Self {
+        Self {
+            id,
+            owner: Some(LocalProcessOwner::new(child, resource_registration)),
+            retained_owners,
+        }
+    }
+
+    fn owner_mut(&mut self) -> &mut LocalProcessOwner {
+        self.owner
+            .as_mut()
+            .expect("spawn rollback owner must exist until commit")
+    }
+
+    fn fail(mut self, primary: AppError) -> AppError {
+        let owner = self
+            .owner
+            .take()
+            .expect("spawn rollback owner must exist on failure");
+        let mut entries = vec![(self.id, RetainedLocalProcess::Detached(owner))];
+        let diagnostic = shutdown_local_processes(&mut entries, LOCAL_OWNER_SHUTDOWN_BUDGET)
+            .pop()
+            .flatten();
+        let (_, retained) = entries
+            .pop()
+            .expect("spawn rollback retained exactly one owner");
+        if let Some(diagnostic) = diagnostic {
+            let RetainedLocalProcess::Detached(owner) = retained else {
+                unreachable!("spawn rollback retains a detached owner")
+            };
+            store_retained_owner(&self.retained_owners, self.id, owner);
+            return AppError::PtyError(format!(
+                "{primary}; spawn rollback retained ownership: {diagnostic}"
+            ));
+        }
+        primary
+    }
+
+    fn commit(mut self) -> LocalProcessOwner {
+        self.owner
+            .take()
+            .expect("spawn rollback owner must exist on commit")
+    }
+}
+
+impl Drop for SpawnRollbackOwner {
+    fn drop(&mut self) {
+        let Some(owner) = self.owner.take() else {
+            return;
+        };
+        let mut entries = vec![(self.id, RetainedLocalProcess::Detached(owner))];
+        let diagnostic = shutdown_local_processes(&mut entries, LOCAL_OWNER_SHUTDOWN_BUDGET)
+            .pop()
+            .flatten();
+        let (_, retained) = entries
+            .pop()
+            .expect("spawn rollback drop retained exactly one owner");
+        if let Some(diagnostic) = diagnostic {
+            let RetainedLocalProcess::Detached(owner) = retained else {
+                unreachable!("spawn rollback drop retains a detached owner")
+            };
+            log::error!("[pty] {diagnostic}");
+            store_retained_owner(&self.retained_owners, self.id, owner);
+        }
+    }
+}
+
 impl<R: tauri::Runtime> Clone for LocalProcessBackend<R> {
     fn clone(&self) -> Self {
         Self {
             ptys: Arc::clone(&self.ptys),
+            retained_owners: Arc::clone(&self.retained_owners),
             fanout: self.fanout.clone(),
             git_watcher: Arc::clone(&self.git_watcher),
         }
@@ -825,161 +1866,80 @@ impl<R: tauri::Runtime> LocalProcessBackend<R> {
     ) -> Self {
         Self {
             ptys: Arc::new(Mutex::new(HashMap::new())),
+            retained_owners: Arc::new(Mutex::new(HashMap::new())),
             fanout: SessionIoFanout::new(output_senders, idle_detector, ws_broadcaster),
             git_watcher,
         }
     }
 
-    #[cfg(unix)]
-    fn shutdown_unix_process_groups(&self) -> (usize, usize) {
-        let instances = {
-            let mut ptys = self.ptys.lock().unwrap_or_else(|error| error.into_inner());
-            ptys.drain().collect::<Vec<_>>()
+    fn shutdown_local_processes_with_budget(&self, budget: Duration) -> PtyShutdownReport {
+        let started = Instant::now();
+        let deadline = started.checked_add(budget).unwrap_or(started);
+        let mut ptys = match lock_local_owner_map_until(&self.ptys, deadline) {
+            Ok(ptys) => ptys,
+            Err(()) => {
+                return PtyShutdownReport {
+                    terminal: 0,
+                    retained: vec![format!(
+                        "retained local PTY ownership after {}ms: active owner map remained busy; session and PID diagnostics were unavailable because ownership could not be inspected",
+                        budget.as_millis()
+                    )],
+                };
+            }
         };
-        let mut entries = Vec::with_capacity(instances.len());
+        let mut retained_owners = match lock_local_owner_map_until(&self.retained_owners, deadline)
+        {
+            Ok(owners) => owners,
+            Err(()) => {
+                return PtyShutdownReport {
+                        terminal: 0,
+                        retained: vec![format!(
+                            "retained local PTY ownership after {}ms: detached owner map remained busy; session and PID diagnostics were unavailable because ownership could not be inspected",
+                            budget.as_millis()
+                        )],
+                    };
+            }
+        };
+        let instances = ptys.drain().collect::<Vec<_>>();
+        let detached = retained_owners.drain().collect::<Vec<_>>();
+        drop(retained_owners);
+        drop(ptys);
+        let mut entries = Vec::with_capacity(instances.len() + detached.len());
         for (id, mut instance) in instances {
-            let child_at_stop = match instance.child.as_mut() {
-                Some(child) => probe_child_contained(child),
-                None => ChildLiveness::Gone,
-            };
+            let child_at_stop = probe_owner_child(&mut instance.owner);
             spawn_diagnostics::mark_ac_stop(id, "app-shutdown", Some(child_at_stop));
-            let child = instance.child.take();
-            let group = instance.process_group.take();
-            match group {
-                Some(group) => {
-                    if let Err(error) = group.signal(libc::SIGTERM) {
-                        log::warn!(
-                            "[pty] failed to send SIGTERM to session {} process group {}: {}",
-                            id,
-                            group.leader,
-                            error
-                        );
-                    }
-                }
-                None => log::warn!(
-                    "[pty] session {} had no retained Unix process-group owner at shutdown",
-                    id
-                ),
-            }
-            entries.push(UnixShutdownEntry {
-                id,
-                root_reaped: child.is_none(),
-                child,
-                group,
-            });
-            // Close the PTY handles after SIGTERM. This also delivers the
-            // terminal hangup expected by interactive Unix children.
-            drop(instance);
+            entries.push((id, RetainedLocalProcess::Instance(instance)));
         }
-
-        let term_deadline = Instant::now() + PROCESS_GROUP_TERM_GRACE;
-        loop {
-            for entry in &mut entries {
-                reap_exited_unix_root(entry);
-            }
-            if entries.iter().all(unix_shutdown_entry_is_gone) || Instant::now() >= term_deadline {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-
-        for entry in &entries {
-            let Some(group) = entry.group else {
-                continue;
-            };
-            match group.exists() {
-                Ok(true) => {
-                    if let Err(error) = group.signal(libc::SIGKILL) {
-                        log::warn!(
-                            "[pty] failed to send SIGKILL to session {} process group {}: {}",
-                            entry.id,
-                            group.leader,
-                            error
-                        );
-                    }
-                }
-                Ok(false) => {}
-                Err(error) => log::warn!(
-                    "[pty] failed to probe session {} process group {} before SIGKILL: {}",
-                    entry.id,
-                    group.leader,
-                    error
-                ),
+        for (id, owners) in detached {
+            for mut owner in owners {
+                let child_at_stop = probe_owner_child(&mut owner);
+                spawn_diagnostics::mark_ac_stop(id, "app-shutdown", Some(child_at_stop));
+                entries.push((id, RetainedLocalProcess::Detached(owner)));
             }
         }
 
-        for entry in &mut entries {
-            let Some(mut child) = entry.child.take() else {
-                continue;
-            };
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    entry.root_reaped = true;
-                    log::info!(
-                        "[pty] reaped session {} Unix PTY root at shutdown: {:?}",
-                        entry.id,
-                        status
-                    );
+        let outcomes = shutdown_local_processes_until(&mut entries, budget, started, deadline);
+        let mut report = PtyShutdownReport::default();
+        for ((id, retained), outcome) in entries.into_iter().zip(outcomes) {
+            self.fanout.remove_session(id);
+            self.git_watcher.remove_session(id);
+            spawn_diagnostics::forget(id);
+            match outcome {
+                None => {
+                    report.terminal += 1;
                 }
-                Ok(None) | Err(_) => {
-                    if let Err(error) = child.kill() {
-                        log::warn!(
-                            "[pty] failed to terminate session {} Unix PTY root: {}",
-                            entry.id,
-                            error
-                        );
-                    }
-                    match child.wait() {
-                        Ok(status) => {
-                            entry.root_reaped = true;
-                            log::info!(
-                                "[pty] reaped session {} Unix PTY root at shutdown: {:?}",
-                                entry.id,
-                                status
-                            );
-                        }
-                        Err(error) => log::warn!(
-                            "[pty] failed to reap session {} Unix PTY root: {}",
-                            entry.id,
-                            error
-                        ),
-                    }
+                Some(diagnostic) => {
+                    log::error!("[pty] {diagnostic}");
+                    report.retained.push(diagnostic);
+                    let owner = match retained {
+                        RetainedLocalProcess::Instance(instance) => instance.owner,
+                        RetainedLocalProcess::Detached(owner) => owner,
+                    };
+                    store_retained_owner(&self.retained_owners, id, owner);
                 }
             }
         }
-
-        let kill_deadline = Instant::now() + PROCESS_GROUP_KILL_GRACE;
-        loop {
-            if entries.iter().all(unix_shutdown_entry_is_gone) || Instant::now() >= kill_deadline {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-
-        let mut terminal = 0;
-        let mut retained = 0;
-        for entry in &entries {
-            if unix_shutdown_entry_is_gone(entry) {
-                terminal += 1;
-            } else {
-                retained += 1;
-                match entry.group {
-                    Some(group) => log::error!(
-                        "[pty] session {} process group {} remained after Unix shutdown",
-                        entry.id,
-                        group.leader
-                    ),
-                    None => log::error!(
-                        "[pty] session {} Unix PTY root was not reaped at shutdown",
-                        entry.id
-                    ),
-                }
-            }
-            self.fanout.remove_session(entry.id);
-            self.git_watcher.remove_session(entry.id);
-            spawn_diagnostics::forget(entry.id);
-        }
-        (terminal, retained)
+        report
     }
 
     fn spawn_sync(&self, spec: BackendSpawnSpec) -> Result<(), AppError> {
@@ -1144,7 +2104,7 @@ impl<R: tauri::Runtime> LocalProcessBackend<R> {
 
         // #942 - time zero for time-to-first-output.
         let spawn_started = Instant::now();
-        let mut child = pair
+        let child = pair
             .slave
             .spawn_command(command)
             .map_err(|e| AppError::PtyError(e.to_string()))?;
@@ -1155,74 +2115,113 @@ impl<R: tauri::Runtime> LocalProcessBackend<R> {
             child_pid
         );
 
+        // Ownership begins immediately after the real child exists. Every
+        // subsequent failure either proves the whole owner terminal or stores
+        // it for a later bounded retry with an exact diagnostic.
+        let mut rollback_owner = SpawnRollbackOwner::new(
+            id,
+            child,
+            resource_registration.take(),
+            Arc::clone(&self.retained_owners),
+        );
+
         #[cfg(unix)]
-        let process_group = match UnixProcessGroupOwner::for_child_pid(child_pid) {
-            Ok(owner) => Some(owner),
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(error);
+        {
+            let mut process_group = match UnixProcessGroupOwner::unverified_for_child_pid(child_pid)
+            {
+                Ok(owner) => owner,
+                Err(error) => return Err(rollback_owner.fail(error)),
+            };
+            rollback_owner.owner_mut().process_group = Some(process_group);
+            if let Err(error) = process_group.verify_identity() {
+                return Err(rollback_owner.fail(error));
             }
-        };
+            rollback_owner.owner_mut().process_group = Some(process_group);
+        }
 
         let job = child_pid.and_then(crate::pty::job::JobObject::for_child);
+        #[cfg(windows)]
+        if job.is_none() {
+            return Err(rollback_owner.fail(AppError::PtyError(format!(
+                "spawned Windows child pid {child_pid:?} without an effective Job Object owner"
+            ))));
+        }
+        rollback_owner.owner_mut().job = job;
 
-        if let Some(registration) = resource_registration.as_mut() {
+        if let Some(registration) = rollback_owner.owner_mut().resource_registration.as_mut() {
             let Some(pid) = child_pid else {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(AppError::PtyError(
+                return Err(rollback_owner.fail(AppError::PtyError(
                     "Resource Monitor could not capture spawned child pid".to_string(),
-                ));
+                )));
             };
             if let Err(err) = registration.register_root_pid(pid) {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(AppError::PtyError(err));
+                return Err(rollback_owner.fail(AppError::PtyError(err)));
             }
         }
 
         drop(pair.slave);
 
+        #[cfg(test)]
+        match take_spawn_failure(id, SpawnFailurePoint::TakeWriter) {
+            Ok(true) => {
+                return Err(rollback_owner.fail(AppError::PtyError(
+                    "injected take_writer failure".to_string(),
+                )));
+            }
+            Ok(false) => {}
+            Err(error) => return Err(rollback_owner.fail(error)),
+        }
         let writer = match pair.master.take_writer() {
             Ok(writer) => writer,
-            Err(e) => {
-                if let Some(registration) = resource_registration.as_ref() {
-                    registration.rollback_registered();
-                }
-                return Err(AppError::PtyError(e.to_string()));
+            Err(error) => {
+                return Err(rollback_owner.fail(AppError::PtyError(error.to_string())));
             }
         };
 
+        #[cfg(test)]
+        match take_spawn_failure(id, SpawnFailurePoint::CloneReader) {
+            Ok(true) => {
+                return Err(rollback_owner.fail(AppError::PtyError(
+                    "injected reader clone failure".to_string(),
+                )));
+            }
+            Ok(false) => {}
+            Err(error) => return Err(rollback_owner.fail(error)),
+        }
         let mut reader = match pair.master.try_clone_reader() {
             Ok(reader) => reader,
-            Err(e) => {
-                if let Some(registration) = resource_registration.as_ref() {
-                    registration.rollback_registered();
-                }
-                return Err(AppError::PtyError(e.to_string()));
+            Err(error) => {
+                return Err(rollback_owner.fail(AppError::PtyError(error.to_string())));
             }
         };
 
         // #973 (B) - the child has rendered nothing yet, so the gate starts closed.
         let rendered = Arc::new(AtomicBool::new(false));
+        let mut ptys = self.ptys.lock().unwrap_or_else(|e| e.into_inner());
+        if ptys.contains_key(&id) {
+            drop(ptys);
+            return Err(rollback_owner.fail(AppError::PtyError(format!(
+                "local PTY session {id} already has an active owner"
+            ))));
+        }
+        if let Err(error) = ptys.try_reserve(1) {
+            drop(ptys);
+            return Err(rollback_owner.fail(AppError::PtyError(format!(
+                "failed to reserve local PTY owner storage: {error}"
+            ))));
+        }
         let instance = PtyInstance {
             master: Arc::new(Mutex::new(pair.master)),
             writer: Arc::new(Mutex::new(writer)),
-            child: Some(child),
-            job,
-            #[cfg(unix)]
-            process_group,
+            owner: rollback_owner.commit(),
             // #973 - the size we actually opened the ConPTY at (see PtyViewport).
             size: Mutex::new((cols, rows)),
             startup_gate: Mutex::new(StartupGate::Holding(None)),
             rendered: Arc::clone(&rendered),
         };
 
-        self.ptys
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(id, instance);
+        ptys.insert(id, instance);
+        drop(ptys);
         self.fanout.register_session(id, idle_tuning, rows, cols);
 
         // #942 - app.log is what users paste into issues, so a secret must never be
@@ -1355,10 +2354,26 @@ fn probe_child_in(ptys: &Mutex<HashMap<Uuid, PtyInstance>>, id: Uuid) -> ChildLi
     let Some(instance) = ptys.get_mut(&id) else {
         return ChildLiveness::Gone;
     };
-    let Some(child) = instance.child.as_mut() else {
+    probe_owner_child(&mut instance.owner)
+}
+
+fn probe_owner_child(owner: &mut LocalProcessOwner) -> ChildLiveness {
+    let Some(child) = owner.child.as_mut() else {
         return ChildLiveness::Gone;
     };
-    probe_child_contained(child)
+    let liveness = probe_child_contained(child);
+    if matches!(liveness, ChildLiveness::Exited { .. } | ChildLiveness::Gone) {
+        owner.child = None;
+        #[cfg(unix)]
+        if owner
+            .process_group
+            .is_some_and(|group| matches!(group.exists(), Ok(false)))
+        {
+            owner.process_group = None;
+            owner.process_group_required = false;
+        }
+    }
+    liveness
 }
 
 /// #1032 - a local session's screen rows, gated on its child actually being alive.
@@ -1599,9 +2614,17 @@ impl<R: tauri::Runtime> PtyBackend for LocalProcessBackend<R> {
     }
 
     fn has_session(&self, id: Uuid) -> bool {
-        self.ptys
+        if self
+            .ptys
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&id)
+        {
+            return true;
+        }
+        self.retained_owners
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
             .contains_key(&id)
     }
 
@@ -1644,88 +2667,99 @@ impl<R: tauri::Runtime> PtyBackend for LocalProcessBackend<R> {
     }
 
     fn kill(&self, id: Uuid) -> Result<(), AppError> {
+        let budget = LOCAL_OWNER_SHUTDOWN_BUDGET;
+        let started = Instant::now();
+        let deadline = started.checked_add(budget).unwrap_or(started);
+
         // #942 - probe the child BEFORE we tag the stop and BEFORE we touch job or
         // child. That ordering is the whole trick: nothing AC does can have killed a
         // child this probe already finds dead, so "was it already gone when we asked?"
         // has a witness that no race can flip. The old "already exited" line fired both
         // for a child that had died on its own and for one our own job kill had just
         // taken down; this is what tells the two apart.
-        let child_at_stop = self.probe_child(id);
+        let mut retained = {
+            let mut ptys = lock_local_owner_map_until(&self.ptys, deadline).map_err(|()| {
+                AppError::PtyError(format!(
+                    "session {id} retained local PTY ownership after {}ms: root_pid=unavailable root_handle=retained group_owner=uninspected; active owner map remained busy",
+                    budget.as_millis()
+                ))
+            })?;
+            ptys.remove(&id)
+                .map(RetainedLocalProcess::Instance)
+                .into_iter()
+                .collect::<Vec<_>>()
+        };
+        if retained.is_empty() {
+            let mut owners =
+                lock_local_owner_map_until(&self.retained_owners, deadline).map_err(|()| {
+                    AppError::PtyError(format!(
+                        "session {id} retained local PTY ownership after {}ms: root_pid=unavailable root_handle=retained group_owner=uninspected; detached owner map remained busy",
+                        budget.as_millis()
+                    ))
+                })?;
+            retained.extend(
+                owners
+                    .remove(&id)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(RetainedLocalProcess::Detached),
+            );
+        }
+        let mut child_at_stop = ChildLiveness::Gone;
+        for retained in &mut retained {
+            let observed = probe_owner_child(retained.owner_mut());
+            if matches!(&child_at_stop, ChildLiveness::Gone) {
+                child_at_stop = observed;
+            }
+        }
         let record =
             spawn_diagnostics::mark_ac_stop(id, "session-kill", Some(child_at_stop.clone()));
 
-        let instance = remove_local_pty(&self.ptys, id);
+        if retained.is_empty() {
+            self.fanout.remove_session(id);
+            self.git_watcher.remove_session(id);
+            spawn_diagnostics::forget(id);
+            return Ok(());
+        }
 
-        if let Some(mut instance) = instance {
-            if let Some(job) = instance.job.take() {
-                job.terminate();
+        let mut entries = retained
+            .into_iter()
+            .map(|retained| (id, retained))
+            .collect::<Vec<_>>();
+        let outcomes = shutdown_local_processes_until(&mut entries, budget, started, deadline);
+        let mut diagnostics = Vec::new();
+        for ((_, retained), outcome) in entries.into_iter().zip(outcomes) {
+            if let Some(diagnostic) = outcome {
+                let owner = match retained {
+                    RetainedLocalProcess::Instance(instance) => instance.owner,
+                    RetainedLocalProcess::Detached(owner) => owner,
+                };
+                store_retained_owner(&self.retained_owners, id, owner);
+                log::error!("[pty] {diagnostic}");
+                diagnostics.push(diagnostic);
             }
-            if let Some(mut child) = instance.child.take() {
-                let pid = child.process_id();
-                log::info!(
-                    "[pty] session-stop session={} pid={:?} source=session-kill child_at_stop={}",
-                    id,
-                    pid,
-                    child_at_stop.as_log()
-                );
-                match child.try_wait() {
-                    Ok(Some(status)) => {
-                        // Dead by the time we removed it. The pre-stop probe decides
-                        // whose kill this was: already dead before we touched anything
-                        // means the child ended itself.
-                        let liveness = ChildLiveness::from(&status);
-                        match record.as_ref() {
-                            Some(record) => {
-                                let cause = record.attribute_exit(record.stop_snapshot());
-                                record.log_child_exit(cause, &liveness, "observed-at-stop");
-                            }
-                            None => {
-                                let cause = if matches!(child_at_stop, ChildLiveness::Exited { .. })
-                                {
-                                    ExitCause::ChildInitiated
-                                } else {
-                                    ExitCause::AcRequested
-                                };
-                                log::info!(
-                                    "[pty] child-exit session={} pid={:?} cause={} detail=observed-at-stop child={}",
-                                    id,
-                                    pid,
-                                    cause.as_log(),
-                                    liveness.as_log()
-                                );
-                            }
-                        }
-                    }
-                    Ok(None) => {
-                        if let Err(e) = child.kill() {
-                            log::warn!(
-                                "[pty] Failed to kill session {} child pid {:?}: {}",
-                                id,
-                                pid,
-                                e
-                            );
-                        }
-                        reap_child_in_background(id, pid, child, record);
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "[pty] Failed to poll session {} child pid {:?}: {}",
-                            id,
-                            pid,
-                            e
-                        );
-                        if let Err(kill_err) = child.kill() {
-                            log::warn!(
-                                "[pty] Failed to kill session {} child pid {:?} after poll error: {}",
-                                id,
-                                pid,
-                                kill_err
-                            );
-                        }
-                        reap_child_in_background(id, pid, child, record);
-                    }
-                }
-            }
+        }
+        if !diagnostics.is_empty() {
+            self.fanout.remove_session(id);
+            self.git_watcher.remove_session(id);
+            spawn_diagnostics::forget(id);
+            return Err(AppError::PtyError(diagnostics.join(" | ")));
+        }
+
+        if let Some(record) = record.as_ref() {
+            let cause = record.attribute_exit(record.stop_snapshot());
+            let _ = record.log_child_exit(cause, &ChildLiveness::Gone, "bounded-stop");
+        } else {
+            let cause = if matches!(child_at_stop, ChildLiveness::Exited { .. }) {
+                ExitCause::ChildInitiated
+            } else {
+                ExitCause::AcRequested
+            };
+            log::info!(
+                "[pty] child-exit session={} cause={} detail=bounded-stop child=gone",
+                id,
+                cause.as_log()
+            );
         }
 
         self.fanout.remove_session(id);
@@ -1753,7 +2787,7 @@ impl<R: tauri::Runtime> PtyBackend for LocalProcessBackend<R> {
         let child_at_stop = self.probe_child(id);
         spawn_diagnostics::mark_ac_stop(id, "job-terminate", Some(child_at_stop));
         let ptys = self.ptys.lock().unwrap_or_else(|e| e.into_inner());
-        match ptys.get(&id).and_then(|inst| inst.job.as_ref()) {
+        match ptys.get(&id).and_then(|inst| inst.owner.job.as_ref()) {
             Some(job) => {
                 job.terminate();
                 true
@@ -1763,37 +2797,12 @@ impl<R: tauri::Runtime> PtyBackend for LocalProcessBackend<R> {
     }
 
     fn kill_all_jobs(&self) -> (usize, usize) {
-        #[cfg(unix)]
-        {
-            self.shutdown_unix_process_groups()
-        }
+        self.shutdown_local_processes_with_budget(LOCAL_OWNER_SHUTDOWN_BUDGET)
+            .counts()
+    }
 
-        #[cfg(windows)]
-        {
-            let mut ptys = self.ptys.lock().unwrap_or_else(|e| e.into_inner());
-            let mut terminated = 0;
-            let mut jobless = 0;
-            for (id, instance) in ptys.iter_mut() {
-                // #942 - shutdown stops every live session; tag them all as ours, with the
-                // same pre-stop witness every other stop path publishes. Lock order here is
-                // ptys -> diagnostics registry; nothing ever takes them the other way round
-                // (the monitor holds no registry lock while it probes under ptys).
-                let child_at_stop = match instance.child.as_mut() {
-                    Some(child) => probe_child_contained(child),
-                    None => ChildLiveness::Gone,
-                };
-                spawn_diagnostics::mark_ac_stop(*id, "app-shutdown", Some(child_at_stop));
-                match instance.job.as_ref() {
-                    Some(job) => {
-                        job.terminate();
-                        terminated += 1;
-                        log::info!("[pty] terminated job object for session {id} at shutdown");
-                    }
-                    None => jobless += 1,
-                }
-            }
-            (terminated, jobless)
-        }
+    fn kill_all_jobs_with_budget(&self, budget: Duration) -> PtyShutdownReport {
+        self.shutdown_local_processes_with_budget(budget)
     }
 
     fn get_screen_snapshot(&self, id: Uuid) -> Option<PtyScreenSnapshot> {
@@ -1817,49 +2826,6 @@ impl<R: tauri::Runtime> PtyBackend for LocalProcessBackend<R> {
         self.fanout
             .register_response_watcher(session_id, request_id, response_dir);
     }
-}
-
-fn reap_child_in_background(
-    session_id: Uuid,
-    pid: Option<u32>,
-    mut child: Box<dyn portable_pty::Child + Send + Sync>,
-    record: Option<Arc<SpawnRecord>>,
-) {
-    std::thread::spawn(move || match child.wait() {
-        Ok(status) => {
-            // #942 - the exit AC asked for. The monitor may have reported this child
-            // first (it died a hair before our stop); then the event is already on
-            // record with the right cause and we only leave a reap crumb.
-            let liveness = ChildLiveness::from(&status);
-            match record.as_ref() {
-                Some(record) => {
-                    let cause = record.attribute_exit(record.stop_snapshot());
-                    if !record.log_child_exit(cause, &liveness, "reaped-after-stop") {
-                        log::debug!(
-                            "[pty] Reaped session {} child pid {:?}: {:?} (exit already reported)",
-                            session_id,
-                            pid,
-                            status
-                        );
-                    }
-                }
-                None => log::info!(
-                    "[pty] child-exit session={} pid={:?} cause=ac-requested detail=reaped-after-stop child={}",
-                    session_id,
-                    pid,
-                    liveness.as_log()
-                ),
-            }
-        }
-        Err(e) => {
-            log::warn!(
-                "[pty] Failed to reap session {} child pid {:?}: {}",
-                session_id,
-                pid,
-                e
-            );
-        }
-    });
 }
 
 #[cfg(test)]
@@ -1933,6 +2899,134 @@ mod probe_containment_tests {
             ptys.lock().is_ok(),
             "the next terminal write still gets the lock"
         );
+    }
+}
+
+#[cfg(test)]
+mod bounded_owner_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Debug)]
+    struct NeverExitsChild {
+        kill_calls: Arc<AtomicUsize>,
+    }
+
+    impl portable_pty::ChildKiller for NeverExitsChild {
+        fn kill(&mut self) -> std::io::Result<()> {
+            self.kill_calls.fetch_add(1, Ordering::SeqCst);
+            Err(std::io::Error::other("injected child kill failure"))
+        }
+
+        fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+            Box::new(Self {
+                kill_calls: Arc::clone(&self.kill_calls),
+            })
+        }
+    }
+
+    impl portable_pty::Child for NeverExitsChild {
+        fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
+            Ok(None)
+        }
+
+        fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
+            panic!("bounded local PTY teardown must never call Child::wait")
+        }
+
+        fn process_id(&self) -> Option<u32> {
+            Some(4242)
+        }
+
+        #[cfg(windows)]
+        fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+            None
+        }
+    }
+
+    #[test]
+    fn failed_kill_returns_within_budget_and_retains_exact_owner() {
+        let id = Uuid::new_v4();
+        let kill_calls = Arc::new(AtomicUsize::new(0));
+        let owner = LocalProcessOwner::new(
+            Box::new(NeverExitsChild {
+                kill_calls: Arc::clone(&kill_calls),
+            }),
+            None,
+        );
+        #[cfg(unix)]
+        let owner = {
+            let mut owner = owner;
+            owner.process_group_required = false;
+            owner
+        };
+        let mut entries = vec![(id, RetainedLocalProcess::Detached(owner))];
+        let budget = Duration::from_millis(30);
+        let started = Instant::now();
+        let outcomes = shutdown_local_processes(&mut entries, budget);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "failed kill exceeded its explicit budget"
+        );
+        assert!(kill_calls.load(Ordering::SeqCst) >= 1);
+        let diagnostic = outcomes[0]
+            .as_ref()
+            .expect("failed kill must retain ownership");
+        assert!(diagnostic.contains(&id.to_string()));
+        assert!(diagnostic.contains("root_pid=Some(4242)"));
+        assert!(diagnostic.contains("injected child kill failure"));
+        assert!(entries[0].1.owner_mut().child.is_some());
+    }
+
+    #[test]
+    fn busy_owner_map_access_returns_at_its_deadline() {
+        let owner = Mutex::new(());
+        let _held = owner.lock().expect("hold owner map");
+        let budget = Duration::from_millis(30);
+        let started = Instant::now();
+        assert!(lock_local_owner_map_until(&owner, started + budget).is_err());
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "owner-map contention exceeded its explicit deadline"
+        );
+    }
+
+    #[test]
+    fn busy_retained_owner_map_defers_storage_without_dropping_the_owner() {
+        let id = Uuid::new_v4();
+        let owners = Arc::new(Mutex::new(HashMap::new()));
+        let held = owners.lock().expect("hold retained owner map");
+        let owner = LocalProcessOwner::new(
+            Box::new(NeverExitsChild {
+                kill_calls: Arc::new(AtomicUsize::new(0)),
+            }),
+            None,
+        );
+        let started = Instant::now();
+        store_retained_owner(&owners, id, owner);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "retained-owner storage blocked the bounded caller"
+        );
+        assert!(held.is_empty());
+        drop(held);
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            {
+                let owners = owners.lock().unwrap_or_else(|error| error.into_inner());
+                if let Some(stored) = owners.get(&id) {
+                    assert_eq!(stored.len(), 1);
+                    assert!(stored[0].child.is_some());
+                    break;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "deferred retained owner was not stored after the map became available"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
     }
 }
 
@@ -2063,7 +3157,8 @@ mod resize_dedup_tests {
 #[cfg(test)]
 mod startup_gate_tests {
     use super::{
-        hand_over_held_size, resize_instance, send_size_to_conpty, PtyInstance, StartupGate,
+        hand_over_held_size, resize_instance, send_size_to_conpty, LocalProcessOwner, PtyInstance,
+        StartupGate,
     };
     use portable_pty::{native_pty_system, MasterPty, PtySize};
     use std::sync::atomic::AtomicBool;
@@ -2089,10 +3184,19 @@ mod startup_gate_tests {
         let instance = PtyInstance {
             master: Arc::clone(&master),
             writer: Arc::new(Mutex::new(Box::new(std::io::sink()))),
-            child: None,
-            job: None,
-            #[cfg(unix)]
-            process_group: None,
+            owner: LocalProcessOwner {
+                root_pid: None,
+                child: None,
+                job: None,
+                #[cfg(windows)]
+                job_required: false,
+                #[cfg(unix)]
+                process_group: None,
+                #[cfg(unix)]
+                process_group_required: false,
+                resource_registration: None,
+                diagnostics: Vec::new(),
+            },
             size: Mutex::new((cols, rows)),
             startup_gate: Mutex::new(StartupGate::Holding(None)),
             rendered: Arc::new(AtomicBool::new(false)),
@@ -2319,7 +3423,8 @@ mod startup_gate_tests {
 #[cfg(test)]
 mod context_gate_tests {
     use super::{
-        probe_child_in, screen_rows_if_child_alive, ChildLiveness, PtyInstance, StartupGate,
+        probe_child_in, screen_rows_if_child_alive, ChildLiveness, LocalProcessOwner, PtyInstance,
+        StartupGate,
     };
     use crate::pty::context_scrape::ScreenRowsRead;
     use crate::pty::idle_detector::IdleDetector;
@@ -2357,20 +3462,26 @@ mod context_gate_tests {
             .slave
             .spawn_command(CommandBuilder::new(shell))
             .expect("spawn a real child");
+        let owner = LocalProcessOwner::new(child, None);
         #[cfg(unix)]
-        let process_group = super::UnixProcessGroupOwner::for_child_pid(child.process_id())
-            .map(Some)
-            .expect("capture real child process group");
+        let owner = {
+            let mut owner = owner;
+            let mut process_group =
+                super::UnixProcessGroupOwner::unverified_for_child_pid(owner.root_pid)
+                    .expect("capture real child process group");
+            process_group
+                .verify_identity()
+                .expect("verify real child process group");
+            owner.process_group = Some(process_group);
+            owner
+        };
         drop(pair.slave);
 
         let writer = pair.master.take_writer().expect("take_writer");
         let instance = PtyInstance {
             master: Arc::new(Mutex::new(pair.master)),
             writer: Arc::new(Mutex::new(writer)),
-            child: Some(child),
-            job: None,
-            #[cfg(unix)]
-            process_group,
+            owner,
             size: Mutex::new((cols, rows)),
             startup_gate: Mutex::new(StartupGate::Holding(None)),
             rendered: Arc::new(AtomicBool::new(false)),
@@ -2418,6 +3529,7 @@ mod context_gate_tests {
             let child = map
                 .get_mut(&id)
                 .expect("instance")
+                .owner
                 .child
                 .as_mut()
                 .expect("child");
@@ -2543,8 +3655,7 @@ mod blocked_writer_teardown_tests {
             PtyInstance {
                 master: Arc::new(Mutex::new(pair.master)),
                 writer: Arc::new(Mutex::new(writer)),
-                child: Some(child),
-                job: None,
+                owner: LocalProcessOwner::new(child, None),
                 size: Mutex::new((120, 30)),
                 startup_gate: Mutex::new(StartupGate::Holding(None)),
                 rendered: Arc::new(AtomicBool::new(false)),
@@ -2619,7 +3730,7 @@ mod blocked_writer_teardown_tests {
 
         let kill_started = Instant::now();
         let mut instance = remove_local_pty(&ptys, id).expect("remove blocked PTY instance");
-        if let Some(mut child) = instance.child.take() {
+        if let Some(mut child) = instance.owner.child.take() {
             child.kill().expect("terminate non-reading child");
         }
         drop(instance);

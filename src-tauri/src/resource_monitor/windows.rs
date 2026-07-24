@@ -570,7 +570,7 @@ mod platform {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 mod platform {
     use super::*;
 
@@ -593,7 +593,8 @@ mod platform {
             &self,
             root: ProcessIdentity,
         ) -> Result<ObservedProcessTree, ResourceError> {
-            if !pid_exists(root.pid)? {
+            let current = observe_identity(root.pid)?;
+            if current != Some(root) {
                 return Ok(ObservedProcessTree {
                     processes: Vec::new(),
                     errors: vec![format!("root pid {} was not in process snapshot", root.pid)],
@@ -606,19 +607,20 @@ mod platform {
         }
 
         fn observe_identity(&self, pid: u32) -> Result<Option<ProcessIdentity>, ResourceError> {
-            Ok(pid_exists(pid)?.then_some(ProcessIdentity {
-                pid,
-                creation_time_100ns: 0,
-            }))
+            observe_identity(pid)
         }
 
         fn terminate_verified(
             &self,
-            _process: &ObservedProcess,
+            process: &ObservedProcess,
         ) -> Result<TerminateOutcome, ResourceError> {
-            Err(ResourceError::Message(
-                "process termination unavailable on this platform".to_string(),
-            ))
+            if observe_identity(process.identity.pid)? != Some(process.identity) {
+                return Ok(TerminateOutcome::AlreadyGone);
+            }
+            Err(ResourceError::Message(format!(
+                "process termination unavailable on this platform for verified pid {}",
+                process.identity.pid
+            )))
         }
 
         fn current_process_memory(&self) -> Result<ProcessMemory, ResourceError> {
@@ -626,24 +628,324 @@ mod platform {
         }
     }
 
-    fn pid_exists(pid: u32) -> Result<bool, ResourceError> {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct ProcStat {
+        pid: u32,
+        start_time_ticks: u64,
+    }
+
+    fn observe_identity(pid: u32) -> Result<Option<ProcessIdentity>, ResourceError> {
+        let Some(stat) = read_proc_stat(pid)? else {
+            return Ok(None);
+        };
+        let ticks_per_second = clock_ticks_per_second()?;
+        let creation_time_100ns =
+            u64::try_from(u128::from(stat.start_time_ticks) * 10_000_000 / ticks_per_second)
+                .map_err(|_| {
+                    ResourceError::Message(format!(
+                        "Linux start identity overflowed for pid {}",
+                        stat.pid
+                    ))
+                })?;
+        Ok(Some(ProcessIdentity {
+            pid: stat.pid,
+            creation_time_100ns,
+        }))
+    }
+
+    fn read_proc_stat(pid: u32) -> Result<Option<ProcStat>, ResourceError> {
+        if pid == 0 {
+            return Ok(None);
+        }
+        let path = format!("/proc/{pid}/stat");
+        let value = match std::fs::read_to_string(&path) {
+            Ok(value) => value,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(ResourceError::Message(format!(
+                    "failed to read Linux process identity at {path}: {error}"
+                )));
+            }
+        };
+        parse_proc_stat(&value).map(Some)
+    }
+
+    fn parse_proc_stat(value: &str) -> Result<ProcStat, ResourceError> {
+        let open = value.find('(').ok_or_else(|| {
+            ResourceError::Message("Linux process stat omitted command start".to_string())
+        })?;
+        let close = value.rfind(')').ok_or_else(|| {
+            ResourceError::Message("Linux process stat omitted command end".to_string())
+        })?;
+        if close <= open {
+            return Err(ResourceError::Message(
+                "Linux process stat had an invalid command field".to_string(),
+            ));
+        }
+        let pid = value[..open].trim().parse::<u32>().map_err(|error| {
+            ResourceError::Message(format!("Linux process stat had an invalid pid: {error}"))
+        })?;
+        let fields = value[close + 1..].split_whitespace().collect::<Vec<_>>();
+        let start_time_ticks = fields
+            .get(19)
+            .ok_or_else(|| {
+                ResourceError::Message("Linux process stat omitted start time".to_string())
+            })?
+            .parse::<u64>()
+            .map_err(|error| {
+                ResourceError::Message(format!(
+                    "Linux process stat had an invalid start time: {error}"
+                ))
+            })?;
+        Ok(ProcStat {
+            pid,
+            start_time_ticks,
+        })
+    }
+
+    fn clock_ticks_per_second() -> Result<u128, ResourceError> {
+        // SAFETY: sysconf reads the fixed process clock-tick configuration.
+        let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+        if ticks <= 0 {
+            return Err(ResourceError::Message(format!(
+                "failed to read Linux clock ticks per second: {ticks}"
+            )));
+        }
+        Ok(ticks as u128)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn proc_stat_parser_preserves_a_real_start_identity() {
+            let parsed = parse_proc_stat(
+                "17 (name with ) parenthesis) S 1 17 17 0 -1 0 0 0 0 0 0 0 0 0 0 0 0 0 4242 0",
+            )
+            .expect("parse injected Linux proc stat");
+            assert_eq!(
+                parsed,
+                ProcStat {
+                    pid: 17,
+                    start_time_ticks: 4242
+                }
+            );
+        }
+
+        #[test]
+        fn linux_identity_is_non_placeholder_and_pid_reuse_is_not_adopted() {
+            let backend = PlatformProcessTreeBackend::new();
+            let pid = std::process::id();
+            let identity = backend
+                .observe_identity(pid)
+                .expect("observe current Linux identity")
+                .expect("current process exists");
+            assert_ne!(identity.creation_time_100ns, 0);
+            assert_eq!(
+                backend
+                    .observe_identity(pid)
+                    .expect("reobserve current Linux identity"),
+                Some(identity)
+            );
+
+            let reused = ProcessIdentity {
+                pid,
+                creation_time_100ns: identity.creation_time_100ns.saturating_add(1),
+            };
+            let tree = backend
+                .observe_tree(reused)
+                .expect("identity mismatch is a terminal observation");
+            assert!(tree.processes.is_empty());
+            assert_eq!(
+                tree.errors,
+                vec![format!("root pid {pid} was not in process snapshot")]
+            );
+            let process = ObservedProcess {
+                identity: reused,
+                parent_pid: None,
+                parent_identity: None,
+                exe_name: "reused".to_string(),
+                depth: 0,
+                private_bytes: None,
+                working_set_bytes: None,
+                cpu_percent: None,
+                kill_allowed: true,
+            };
+            assert_eq!(
+                backend
+                    .terminate_verified(&process)
+                    .expect("reused identity is already gone"),
+                TerminateOutcome::AlreadyGone
+            );
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod platform {
+    use super::*;
+
+    pub struct PlatformProcessTreeBackend;
+
+    impl Default for PlatformProcessTreeBackend {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl PlatformProcessTreeBackend {
+        pub fn new() -> Self {
+            Self
+        }
+    }
+
+    impl ProcessTreeBackend for PlatformProcessTreeBackend {
+        fn observe_tree(
+            &self,
+            root: ProcessIdentity,
+        ) -> Result<ObservedProcessTree, ResourceError> {
+            if observe_identity(root.pid)? != Some(root) {
+                return Ok(ObservedProcessTree {
+                    processes: Vec::new(),
+                    errors: vec![format!("root pid {} was not in process snapshot", root.pid)],
+                });
+            }
+            Ok(ObservedProcessTree {
+                processes: Vec::new(),
+                errors: vec!["process tree telemetry unavailable on this platform".to_string()],
+            })
+        }
+
+        fn observe_identity(&self, pid: u32) -> Result<Option<ProcessIdentity>, ResourceError> {
+            observe_identity(pid)
+        }
+
+        fn terminate_verified(
+            &self,
+            process: &ObservedProcess,
+        ) -> Result<TerminateOutcome, ResourceError> {
+            if observe_identity(process.identity.pid)? != Some(process.identity) {
+                return Ok(TerminateOutcome::AlreadyGone);
+            }
+            Err(ResourceError::Message(format!(
+                "process termination unavailable on this platform for verified pid {}",
+                process.identity.pid
+            )))
+        }
+
+        fn current_process_memory(&self) -> Result<ProcessMemory, ResourceError> {
+            Ok(ProcessMemory::default())
+        }
+    }
+
+    fn observe_identity(pid: u32) -> Result<Option<ProcessIdentity>, ResourceError> {
         let pid = libc::pid_t::try_from(pid)
-            .map_err(|_| ResourceError::Message(format!("pid {pid} exceeds pid_t range")))?;
+            .map_err(|_| ResourceError::Message("macOS pid exceeded pid_t range".to_string()))?;
         if pid <= 0 {
-            return Ok(false);
+            return Ok(None);
         }
-        // SAFETY: signal 0 does not modify the target process.
-        if unsafe { libc::kill(pid, 0) } == 0 {
-            return Ok(true);
+        let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+        let size =
+            libc::c_int::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).map_err(|_| {
+                ResourceError::Message("macOS process identity buffer exceeded c_int".to_string())
+            })?;
+        // SAFETY: the buffer is valid for exactly `size` bytes and
+        // PROC_PIDTBSDINFO initializes proc_bsdinfo on a full-size success.
+        let read = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                info.as_mut_ptr().cast(),
+                size,
+            )
+        };
+        if read == 0 {
+            let error = std::io::Error::last_os_error();
+            return match error.raw_os_error() {
+                Some(libc::ESRCH) | Some(libc::ENOENT) => Ok(None),
+                _ => Err(ResourceError::Message(format!(
+                    "failed to read macOS process identity for pid {pid}: {error}"
+                ))),
+            };
         }
-        let error = std::io::Error::last_os_error();
-        match error.raw_os_error() {
-            Some(libc::ESRCH) => Ok(false),
-            Some(libc::EPERM) => Ok(true),
-            _ => Err(ResourceError::Message(format!(
-                "failed to probe pid {pid}: {error}"
-            ))),
+        if read != size {
+            return Err(ResourceError::Message(format!(
+                "macOS process identity for pid {pid} returned {read} of {size} bytes"
+            )));
         }
+        // SAFETY: proc_pidinfo reported a complete proc_bsdinfo buffer.
+        let info = unsafe { info.assume_init() };
+        if info.pbi_pid != pid as u32 {
+            return Err(ResourceError::Message(format!(
+                "macOS process identity pid mismatch: requested {pid}, observed {}",
+                info.pbi_pid
+            )));
+        }
+        let creation_time_100ns = info
+            .pbi_start_tvsec
+            .checked_mul(10_000_000)
+            .and_then(|value| value.checked_add(info.pbi_start_tvusec.saturating_mul(10)))
+            .filter(|value| *value != 0)
+            .ok_or_else(|| {
+                ResourceError::Message(format!(
+                    "macOS process identity timestamp was invalid for pid {pid}"
+                ))
+            })?;
+        Ok(Some(ProcessIdentity {
+            pid: info.pbi_pid,
+            creation_time_100ns,
+        }))
+    }
+}
+
+#[cfg(all(not(windows), not(target_os = "linux"), not(target_os = "macos")))]
+mod platform {
+    use super::*;
+
+    pub struct PlatformProcessTreeBackend;
+
+    impl Default for PlatformProcessTreeBackend {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl PlatformProcessTreeBackend {
+        pub fn new() -> Self {
+            Self
+        }
+    }
+
+    impl ProcessTreeBackend for PlatformProcessTreeBackend {
+        fn observe_tree(
+            &self,
+            root: ProcessIdentity,
+        ) -> Result<ObservedProcessTree, ResourceError> {
+            Err(stable_identity_unavailable(root.pid))
+        }
+
+        fn observe_identity(&self, pid: u32) -> Result<Option<ProcessIdentity>, ResourceError> {
+            Err(stable_identity_unavailable(pid))
+        }
+
+        fn terminate_verified(
+            &self,
+            process: &ObservedProcess,
+        ) -> Result<TerminateOutcome, ResourceError> {
+            Err(stable_identity_unavailable(process.identity.pid))
+        }
+
+        fn current_process_memory(&self) -> Result<ProcessMemory, ResourceError> {
+            Ok(ProcessMemory::default())
+        }
+    }
+
+    fn stable_identity_unavailable(pid: u32) -> ResourceError {
+        ResourceError::Message(format!(
+            "stable process identity unavailable on this platform for pid {pid}"
+        ))
     }
 }
 

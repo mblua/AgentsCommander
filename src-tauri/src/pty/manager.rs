@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, TryLockError};
 use uuid::Uuid;
 
 use crate::errors::AppError;
-use crate::pty::backend::{BackendSpawnSpec, PtyBackend, SessionBackendKind};
+use crate::pty::backend::{BackendSpawnSpec, PtyBackend, PtyShutdownReport, SessionBackendKind};
 use crate::pty::container_backend::ContainerTransportBackend;
 use crate::pty::container_tokens::ContainerApiTokenManager;
 use crate::pty::context_scrape::{ContextSessionLiveness, ScreenRowsRead};
@@ -130,6 +130,15 @@ pub struct PtyManager {
     registry: Arc<Mutex<SpawnRegistry>>,
     local_backend: Arc<dyn PtyBackend>,
     container_backend: Arc<ContainerTransportBackend>,
+}
+
+fn rollback_failed_spawn(backend: &Arc<dyn PtyBackend>, id: Uuid, primary: AppError) -> AppError {
+    match backend.kill(id) {
+        Ok(()) => primary,
+        Err(cleanup) => {
+            AppError::PtyError(format!("{primary}; local PTY rollback failed: {cleanup}"))
+        }
+    }
 }
 
 impl PtyManager {
@@ -468,20 +477,55 @@ impl PtyManager {
             manager.backend_for_kind(backend_kind)
         };
         backend.spawn(spec).await?;
+
+        #[cfg(test)]
+        match crate::pty::local_backend::take_spawn_failure(
+            id,
+            crate::pty::local_backend::SpawnFailurePoint::PostSpawnCwdVerification,
+        ) {
+            Ok(true) => {
+                return Err(rollback_failed_spawn(
+                    &backend,
+                    id,
+                    AppError::PtyError("injected post-spawn CWD verification failure".to_string()),
+                ));
+            }
+            Ok(false) => {}
+            Err(error) => return Err(rollback_failed_spawn(&backend, id, error)),
+        }
+
         let cwd_identity = match crate::path_identity::verify_directory(std::path::Path::new(&cwd))
         {
             Ok(identity) => identity,
             Err(_) => {
-                if backend.kill(id).is_err() {
-                    log::warn!("[pty-route] unsafe route cleanup failed session={id}");
-                }
-                return Err(AppError::PtyError("unsafe_route_cwd".to_string()));
+                return Err(rollback_failed_spawn(
+                    &backend,
+                    id,
+                    AppError::PtyError("unsafe_route_cwd".to_string()),
+                ));
             }
         };
         let verified_replica_anchor =
             crate::config::teams::verify_pty_input_replica_cwd(std::path::Path::new(&cwd))
                 .ok()
                 .map(|identity| identity.replica_identity);
+
+        #[cfg(test)]
+        match crate::pty::local_backend::take_spawn_failure(
+            id,
+            crate::pty::local_backend::SpawnFailurePoint::RouteRegistration,
+        ) {
+            Ok(true) => {
+                return Err(rollback_failed_spawn(
+                    &backend,
+                    id,
+                    AppError::PtyError("injected route registration failure".to_string()),
+                ));
+            }
+            Ok(false) => {}
+            Err(error) => return Err(rollback_failed_spawn(&backend, id, error)),
+        }
+
         let route_result = match manager.lock() {
             Ok(manager) => manager.record_route_with_identities(
                 id,
@@ -492,10 +536,7 @@ impl PtyManager {
             Err(_) => Err(AppError::PtyError("pty_manager_poisoned".to_string())),
         };
         if let Err(error) = route_result {
-            if backend.kill(id).is_err() {
-                log::warn!("[pty-route] failed spawn route cleanup session={id}");
-            }
-            return Err(error);
+            return Err(rollback_failed_spawn(&backend, id, error));
         }
         Ok(())
     }
@@ -565,6 +606,11 @@ impl PtyManager {
     pub fn kill_all_jobs(&self) -> (usize, usize) {
         self.backend_for_kind(SessionBackendKind::LocalProcess)
             .kill_all_jobs()
+    }
+
+    pub fn kill_all_jobs_with_budget(&self, budget: std::time::Duration) -> PtyShutdownReport {
+        self.backend_for_kind(SessionBackendKind::LocalProcess)
+            .kill_all_jobs_with_budget(budget)
     }
 
     pub fn get_screen_snapshot(&self, id: Uuid) -> Option<PtyScreenSnapshot> {

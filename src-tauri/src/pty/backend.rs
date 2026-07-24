@@ -25,6 +25,18 @@ pub enum SessionBackendKind {
     ContainerTransport,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PtyShutdownReport {
+    pub terminal: usize,
+    pub retained: Vec<String>,
+}
+
+impl PtyShutdownReport {
+    pub fn counts(&self) -> (usize, usize) {
+        (self.terminal, self.retained.len())
+    }
+}
+
 /// #973 - the terminal size a session's PTY is opened at.
 ///
 /// AC used to open every ConPTY at a hardcoded 120x30 and let the frontend correct it a few
@@ -184,6 +196,16 @@ pub trait PtyBackend: Any + Send + Sync {
     fn publish_stop_witness(&self, _id: Uuid, _source: &str) {}
 
     fn kill_all_jobs(&self) -> (usize, usize);
+
+    fn kill_all_jobs_with_budget(&self, _budget: std::time::Duration) -> PtyShutdownReport {
+        let (terminal, retained) = self.kill_all_jobs();
+        PtyShutdownReport {
+            terminal,
+            retained: (0..retained)
+                .map(|index| format!("PTY owner {} remained after teardown", index + 1))
+                .collect(),
+        }
+    }
 }
 #[cfg(test)]
 mod pty_viewport_tests {

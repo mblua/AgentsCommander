@@ -1160,18 +1160,11 @@ fn with_bounded_startup_owner<T, R>(
     }
 }
 
-fn append_startup_pty_retained_diagnostic(diagnostics: &mut Vec<String>, retained: usize) {
-    if retained == 0 {
-        return;
-    }
-    #[cfg(windows)]
-    diagnostics.push(format!(
-        "{retained} startup PTY session(s) had no process-group owner"
-    ));
-    #[cfg(unix)]
-    diagnostics.push(format!(
-        "{retained} startup PTY process group(s) remained after local teardown"
-    ));
+fn append_startup_pty_retained_diagnostics(
+    diagnostics: &mut Vec<String>,
+    report: crate::pty::backend::PtyShutdownReport,
+) {
+    diagnostics.extend(report.retained);
 }
 
 fn teardown_uncommitted_runtime(
@@ -1331,17 +1324,17 @@ fn teardown_uncommitted_runtime(
     });
     if let Some(pty_manager) = pty_manager {
         match with_bounded_startup_owner(&pty_manager, cleanup_budget, |manager| {
-            manager.kill_all_jobs()
+            manager.kill_all_jobs_with_budget(cleanup_budget)
         }) {
-            BoundedOwnerAccess::Acquired((_, retained)) => {
-                append_startup_pty_retained_diagnostic(&mut diagnostics, retained);
+            BoundedOwnerAccess::Acquired(report) => {
+                append_startup_pty_retained_diagnostics(&mut diagnostics, report);
             }
-            BoundedOwnerAccess::RecoveredPoison((_, retained)) => {
+            BoundedOwnerAccess::RecoveredPoison(report) => {
                 diagnostics.push(
                     "startup PTY manager lock was poisoned; recovered its cleanup owner"
                         .to_string(),
                 );
-                append_startup_pty_retained_diagnostic(&mut diagnostics, retained);
+                append_startup_pty_retained_diagnostics(&mut diagnostics, report);
             }
             BoundedOwnerAccess::Busy => {
                 diagnostics.push(
@@ -3891,9 +3884,17 @@ pub fn run(
                         let deadline = std::time::Instant::now() + pty_lock_budget;
                         loop {
                             match pty_mgr.try_lock() {
-                                Ok(guard) => break Some(guard.kill_all_jobs()),
+                                Ok(guard) => {
+                                    break Some(
+                                        guard.kill_all_jobs_with_budget(pty_lock_budget),
+                                    );
+                                }
                                 Err(std::sync::TryLockError::Poisoned(error)) => {
-                                    break Some(error.into_inner().kill_all_jobs());
+                                    break Some(
+                                        error
+                                            .into_inner()
+                                            .kill_all_jobs_with_budget(pty_lock_budget),
+                                    );
                                 }
                                 Err(std::sync::TryLockError::WouldBlock)
                                     if std::time::Instant::now() < deadline =>
@@ -3905,7 +3906,12 @@ pub fn run(
                         }
                     };
                     let (terminated_owners, retained_sessions) = match jobs {
-                        Some(counts) => counts,
+                        Some(report) => {
+                            for retained in &report.retained {
+                                log::error!("[shutdown] {retained}");
+                            }
+                            report.counts()
+                        }
                         None => {
                             log::error!(
                                 "[shutdown] PTY owner lock reached the job cleanup deadline state=retained"
@@ -3919,11 +3925,11 @@ pub fn run(
                     };
                     #[cfg(windows)]
                     log::info!(
-                        "[shutdown] terminated {terminated_owners} agent job object(s); {retained_sessions} session(s) had no job"
+                        "[shutdown] proved {terminated_owners} local PTY owner(s) terminal; {retained_sessions} owner(s) retained"
                     );
                     #[cfg(unix)]
                     log::info!(
-                        "[shutdown] terminated and reaped {terminated_owners} local PTY process group(s); {retained_sessions} group(s) remained"
+                        "[shutdown] proved {terminated_owners} local PTY owner(s) terminal; {retained_sessions} owner(s) retained"
                     );
 
                     // #632 B2+B4 - run the identity reaper for accounting and as the
@@ -4556,8 +4562,7 @@ mod tests {
         spec.cmd = "/bin/sh".to_string();
         spec.args = vec![
             "-c".to_string(),
-            "sleep 60 & printf '%s %s\\n' \"$$\" \"$!\" > \"$AC_PTY_OWNER_MARKER\"; wait"
-                .to_string(),
+            "trap '' HUP; sh -c 'trap \"\" HUP; exec sleep 60' & child=$!; printf '%s %s\\n' \"$$\" \"$child\" > \"$AC_PTY_OWNER_MARKER\"; wait \"$child\"".to_string(),
         ];
         spec.configured_env = vec![(
             "AC_PTY_OWNER_MARKER".to_string(),
@@ -4593,6 +4598,58 @@ mod tests {
                 project: Some("project-test".to_string()),
             },
         )
+    }
+
+    #[cfg(target_os = "linux")]
+    struct RegistrationFailureBackend {
+        descendant_marker: std::path::PathBuf,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl crate::resource_monitor::ProcessTreeBackend for RegistrationFailureBackend {
+        fn observe_tree(
+            &self,
+            _root: crate::resource_monitor::ProcessIdentity,
+        ) -> Result<
+            crate::resource_monitor::types::ObservedProcessTree,
+            crate::resource_monitor::registry::ResourceError,
+        > {
+            Ok(crate::resource_monitor::types::ObservedProcessTree::default())
+        }
+
+        fn observe_identity(
+            &self,
+            _pid: u32,
+        ) -> Result<
+            Option<crate::resource_monitor::ProcessIdentity>,
+            crate::resource_monitor::registry::ResourceError,
+        > {
+            let _ = read_startup_process_group_marker(&self.descendant_marker);
+            Err(crate::resource_monitor::registry::ResourceError::Message(
+                "injected resource registration identity failure".to_string(),
+            ))
+        }
+
+        fn terminate_verified(
+            &self,
+            _process: &crate::resource_monitor::types::ObservedProcess,
+        ) -> Result<
+            crate::resource_monitor::types::TerminateOutcome,
+            crate::resource_monitor::registry::ResourceError,
+        > {
+            Err(crate::resource_monitor::registry::ResourceError::Message(
+                "termination must not run for a failed registration".to_string(),
+            ))
+        }
+
+        fn current_process_memory(
+            &self,
+        ) -> Result<
+            crate::resource_monitor::types::ProcessMemory,
+            crate::resource_monitor::registry::ResourceError,
+        > {
+            Ok(crate::resource_monitor::types::ProcessMemory::default())
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -4641,6 +4698,19 @@ mod tests {
             return true;
         }
         std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn assert_startup_process_group_absent(root: u32, child: u32) {
+        assert!(
+            !linux_process_exists(root)
+                && !linux_process_exists(child)
+                && !linux_process_group_exists(root),
+            "real PTY process group remained when teardown returned: root={root} root_alive={} child={child} child_alive={} group_alive={}",
+            linux_process_exists(root),
+            linux_process_exists(child),
+            linux_process_group_exists(root)
+        );
     }
 
     #[cfg(target_os = "linux")]
@@ -4848,6 +4918,155 @@ mod tests {
             super::startup_lifecycle_state(&lifecycle).expect("inspect local PTY lifecycle"),
             super::StartupCommitState::TeardownComplete
         );
+        cleanup.disarm();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn production_local_pty_rollbacks_reap_hup_ignoring_group_at_every_boundary() {
+        let temp = tempfile::tempdir().expect("local PTY rollback boundary tempdir");
+        let (_app, manager) = production_local_pty_manager();
+        let mut cleanup = StartupPtyCleanupGuard::new(manager.clone());
+        let monitor = Arc::new(crate::resource_monitor::ResourceMonitorState::new());
+        let limits = crate::resource_monitor::ResourceLimits::from(&AppSettings {
+            resource_monitor_enabled: true,
+            ..AppSettings::default()
+        });
+
+        for (point, label) in [
+            (
+                crate::pty::local_backend::SpawnFailurePoint::TakeWriter,
+                "take-writer",
+            ),
+            (
+                crate::pty::local_backend::SpawnFailurePoint::CloneReader,
+                "clone-reader",
+            ),
+            (
+                crate::pty::local_backend::SpawnFailurePoint::PostSpawnCwdVerification,
+                "post-spawn-cwd",
+            ),
+            (
+                crate::pty::local_backend::SpawnFailurePoint::RouteRegistration,
+                "route-registration",
+            ),
+        ] {
+            let id = uuid::Uuid::new_v4();
+            let marker = temp.path().join(format!("{label}.txt"));
+            crate::pty::local_backend::inject_spawn_failure(id, point, marker.clone());
+            let error = tauri::async_runtime::block_on(crate::pty::manager::PtyManager::spawn(
+                &manager,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+                startup_process_group_spec(
+                    id,
+                    temp.path(),
+                    &marker,
+                    Some(startup_resource_registration(&monitor, id)),
+                ),
+            ))
+            .expect_err("injected production boundary must fail");
+            assert!(
+                error.to_string().contains("injected"),
+                "{label} preserved primary error: {error}"
+            );
+            assert!(
+                !error.to_string().contains("retained ownership"),
+                "{label} should prove terminal ownership: {error}"
+            );
+
+            let (root, descendant) = read_startup_process_group_marker(&marker);
+            cleanup.record_group(root);
+            assert_startup_process_group_absent(root, descendant);
+            wait_for_startup_process_group_exit(root, descendant);
+            assert!(
+                !manager.lock().unwrap().has_session(id),
+                "{label} removed the failed local session"
+            );
+            let snapshot = monitor.snapshot(limits);
+            let row = snapshot
+                .groups
+                .iter()
+                .find(|group| group.session_id == id.to_string())
+                .expect("registered rollback keeps terminal accounting row");
+            assert_eq!(
+                row.state,
+                crate::resource_monitor::types::ResourceGroupState::Terminated,
+                "{label} reconciled resource accounting"
+            );
+            assert_eq!(snapshot.active_agent_groups, 0);
+        }
+
+        let registration_id = uuid::Uuid::new_v4();
+        let registration_marker = temp.path().join("resource-registration.txt");
+        let failing_monitor =
+            Arc::new(crate::resource_monitor::ResourceMonitorState::with_backend(
+                Arc::new(RegistrationFailureBackend {
+                    descendant_marker: registration_marker.clone(),
+                }),
+            ));
+        let registration_error =
+            tauri::async_runtime::block_on(crate::pty::manager::PtyManager::spawn(
+                &manager,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+                startup_process_group_spec(
+                    registration_id,
+                    temp.path(),
+                    &registration_marker,
+                    Some(startup_resource_registration(
+                        &failing_monitor,
+                        registration_id,
+                    )),
+                ),
+            ))
+            .expect_err("resource registration injection must fail");
+        assert!(registration_error
+            .to_string()
+            .contains("injected resource registration identity failure"));
+        assert!(!registration_error
+            .to_string()
+            .contains("retained ownership"));
+        let (registration_root, registration_descendant) =
+            read_startup_process_group_marker(&registration_marker);
+        cleanup.record_group(registration_root);
+        assert_startup_process_group_absent(registration_root, registration_descendant);
+        wait_for_startup_process_group_exit(registration_root, registration_descendant);
+        assert!(!manager.lock().unwrap().has_session(registration_id));
+        assert_eq!(failing_monitor.active_agent_groups(), 0);
+
+        let kill_id = uuid::Uuid::new_v4();
+        let kill_marker = temp.path().join("explicit-kill.txt");
+        tauri::async_runtime::block_on(crate::pty::manager::PtyManager::spawn(
+            &manager,
+            crate::pty::backend::SessionBackendKind::LocalProcess,
+            startup_process_group_spec(
+                kill_id,
+                temp.path(),
+                &kill_marker,
+                Some(startup_resource_registration(&monitor, kill_id)),
+            ),
+        ))
+        .expect("spawn explicit-kill production fixture");
+        let (kill_root, kill_descendant) = read_startup_process_group_marker(&kill_marker);
+        cleanup.record_group(kill_root);
+        manager
+            .lock()
+            .unwrap()
+            .kill(kill_id)
+            .expect("bounded explicit kill");
+        assert_startup_process_group_absent(kill_root, kill_descendant);
+        wait_for_startup_process_group_exit(kill_root, kill_descendant);
+        assert!(!manager.lock().unwrap().has_session(kill_id));
+        let snapshot = monitor.snapshot(limits);
+        let row = snapshot
+            .groups
+            .iter()
+            .find(|group| group.session_id == kill_id.to_string())
+            .expect("explicit kill retains terminal accounting row");
+        assert_eq!(
+            row.state,
+            crate::resource_monitor::types::ResourceGroupState::Terminated
+        );
+        assert_eq!(snapshot.active_agent_groups, 0);
         cleanup.disarm();
     }
 
