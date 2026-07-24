@@ -1214,6 +1214,18 @@ fn teardown_uncommitted_runtime(
     app: Option<&tauri::AppHandle>,
     lifecycle: &Arc<Mutex<StartupLifecycle>>,
 ) -> Vec<String> {
+    let cleanup_started = std::time::Instant::now();
+    let cleanup_deadline = cleanup_started
+        .checked_add(std::time::Duration::from_secs(SHUTDOWN_CLEANUP_BUDGET_SECS))
+        .unwrap_or(cleanup_started);
+    teardown_uncommitted_runtime_until(app, lifecycle, cleanup_deadline)
+}
+
+fn teardown_uncommitted_runtime_until(
+    app: Option<&tauri::AppHandle>,
+    lifecycle: &Arc<Mutex<StartupLifecycle>>,
+    cleanup_deadline: std::time::Instant,
+) -> Vec<String> {
     let mut diagnostics = Vec::new();
     let mut runtime = match take_startup_runtime(lifecycle) {
         Ok(runtime) => runtime,
@@ -1277,9 +1289,9 @@ fn teardown_uncommitted_runtime(
         })
     });
     if let Some(api_server) = api_server {
-        if let Err(error) = tauri::async_runtime::block_on(
-            api_server.shutdown_running(std::time::Duration::from_secs(2)),
-        ) {
+        if let Err(error) = tauri::async_runtime::block_on(api_server.shutdown_running(
+            cleanup_deadline.saturating_duration_since(std::time::Instant::now()),
+        )) {
             diagnostics.push(error);
         }
     }
@@ -1287,7 +1299,11 @@ fn teardown_uncommitted_runtime(
     for mut join in runtime.joins.drain(..) {
         join.handle.abort();
         if tauri::async_runtime::block_on(async {
-            tokio::time::timeout(std::time::Duration::from_secs(2), &mut join.handle).await
+            tokio::time::timeout(
+                cleanup_deadline.saturating_duration_since(std::time::Instant::now()),
+                &mut join.handle,
+            )
+            .await
         })
         .is_err()
         {
@@ -1298,9 +1314,8 @@ fn teardown_uncommitted_runtime(
         }
     }
 
-    let thread_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     for thread in runtime.threads.drain(..) {
-        while !thread.handle.is_finished() && std::time::Instant::now() < thread_deadline {
+        while !thread.handle.is_finished() && std::time::Instant::now() < cleanup_deadline {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         if thread.handle.is_finished() {
@@ -1335,23 +1350,21 @@ fn teardown_uncommitted_runtime(
         })
     });
     if let Some(selection) = selection {
-        let report = tauri::async_runtime::block_on(selection.close_and_join());
+        let report =
+            tauri::async_runtime::block_on(selection.close_and_join_until(cleanup_deadline));
         if !report.persistence_safe {
             diagnostics.extend(report.retained);
         }
     }
 
     if let Some(monitor) = context_monitor {
-        if let Err(error) = tauri::async_runtime::block_on(monitor.close_and_join()) {
+        if let Err(error) =
+            tauri::async_runtime::block_on(monitor.close_and_join_until(cleanup_deadline))
+        {
             diagnostics.push(error);
         }
     }
 
-    let cleanup_budget = std::time::Duration::from_secs(SHUTDOWN_CLEANUP_BUDGET_SECS);
-    let cleanup_started = std::time::Instant::now();
-    let cleanup_deadline = cleanup_started
-        .checked_add(cleanup_budget)
-        .unwrap_or(cleanup_started);
     let container_backend = runtime.container_backend.take();
     if let Some(container_backend) = container_backend {
         let report = container_backend.stop_all_started_containers_blocking(
@@ -1396,9 +1409,10 @@ fn teardown_uncommitted_runtime(
                     .try_lock()
                     .ok()
                     .map(|manager| {
-                        manager
-                            .shutdown_owner()
-                            .diagnostics("startup PTY manager lock deadline")
+                        manager.shutdown_owner().diagnostics_until(
+                            "startup PTY manager lock deadline",
+                            cleanup_deadline,
+                        )
                     })
                     .unwrap_or_default();
                 if detail.is_empty() {
@@ -1416,7 +1430,9 @@ fn teardown_uncommitted_runtime(
     }
 
     if let Some(shutdown) = shutdown.as_ref() {
-        if !shutdown.wait_for_durable_writes(std::time::Duration::from_secs(2)) {
+        if !shutdown.wait_for_durable_writes(
+            cleanup_deadline.saturating_duration_since(std::time::Instant::now()),
+        ) {
             diagnostics.push(
                 "startup durable-write producers did not quiesce within the teardown budget"
                     .to_string(),
@@ -1431,23 +1447,16 @@ fn teardown_uncommitted_runtime(
         })
     });
     if let Some(resource_monitor) = resource_monitor {
-        let state = Arc::clone(&resource_monitor);
-        match crate::shutdown::run_time_boxed(
-            std::time::Duration::from_secs(SHUTDOWN_CLEANUP_BUDGET_SECS),
-            move || state.kill_all_owned_groups(resource_monitor::ResourceKillReason::AppShutdown),
-        ) {
-            Ok(results) => {
-                diagnostics.extend(
-                    results
-                        .into_iter()
-                        .filter(|result| result.quarantined)
-                        .map(|result| result.message),
-                );
-            }
-            Err(error) => diagnostics.push(format!(
-                "startup resource-group teardown did not complete: {error}"
-            )),
-        }
+        let results = resource_monitor.kill_all_owned_groups_until(
+            resource_monitor::ResourceKillReason::AppShutdown,
+            cleanup_deadline,
+        );
+        diagnostics.extend(
+            results
+                .into_iter()
+                .filter(|result| result.quarantined)
+                .map(|result| result.message),
+        );
     }
 
     let ui_automation = runtime.ui_automation.take().or_else(|| {
@@ -5443,10 +5452,12 @@ mod tests {
             .expect("production local backend");
         let monitor = Arc::new(crate::resource_monitor::ResourceMonitorState::new());
 
-        for (point, label, has_child, was_registered) in [
+        for (point, label, has_child, was_registered, fanout_owned, diagnostics_owned) in [
             (
                 crate::pty::local_backend::SpawnPausePoint::BeforeSpawn,
                 "before-spawn",
+                false,
+                false,
                 false,
                 false,
             ),
@@ -5455,10 +5466,46 @@ mod tests {
                 "after-child",
                 true,
                 false,
+                false,
+                false,
             ),
             (
                 crate::pty::local_backend::SpawnPausePoint::AfterRegistration,
                 "after-registration",
+                true,
+                true,
+                false,
+                false,
+            ),
+            (
+                crate::pty::local_backend::SpawnPausePoint::AfterPublication,
+                "after-publication",
+                true,
+                true,
+                false,
+                false,
+            ),
+            (
+                crate::pty::local_backend::SpawnPausePoint::AfterFanoutPublication,
+                "after-fanout-publication",
+                true,
+                true,
+                true,
+                false,
+            ),
+            (
+                crate::pty::local_backend::SpawnPausePoint::AfterDiagnosticPublication,
+                "after-diagnostic-publication",
+                true,
+                true,
+                true,
+                true,
+            ),
+            (
+                crate::pty::local_backend::SpawnPausePoint::AfterMonitorReaderLaunch,
+                "after-monitor-reader-launch",
+                true,
+                true,
                 true,
                 true,
             ),
@@ -5490,14 +5537,42 @@ mod tests {
             if let Some((root, _)) = process_ids {
                 cleanup.record_group(root);
             }
+            let generations = local.owner_generations_for_test(id);
+            assert_eq!(generations.len(), 1, "{label} owns one exact generation");
+            let generation = generations[0];
+            let expected_registrations = (
+                fanout_owned.then_some(generation),
+                fanout_owned,
+                fanout_owned,
+                diagnostics_owned.then_some(generation),
+            );
+            assert_eq!(
+                local.ancillary_registrations_for_test(id),
+                expected_registrations,
+                "{label} publishes only the expected exact ancillary state"
+            );
+
             task.abort();
-            let cancelled = tauri::async_runtime::block_on(task)
+            let task_waiter = std::thread::spawn(move || tauri::async_runtime::block_on(task));
+            let cancellation_deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while !local.attempt_cancelled_for_test(id, generation)
+                && std::time::Instant::now() < cancellation_deadline
+            {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            assert!(
+                local.attempt_cancelled_for_test(id, generation),
+                "{label} async abort reached the exact generation"
+            );
+            release_tx.send(()).expect("release paused spawn worker");
+            let cancelled = task_waiter
+                .join()
+                .expect("join cancelled spawn waiter")
                 .expect_err("spawn waiter is cancelled at the injected boundary");
             assert!(matches!(
                 cancelled,
                 tauri::Error::JoinError(ref error) if error.is_cancelled()
             ));
-            release_tx.send(()).expect("release paused spawn worker");
 
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
             while local.owner_generation_count_for_test(id) != 0
@@ -5509,6 +5584,19 @@ mod tests {
                 local.owner_generation_count_for_test(id),
                 0,
                 "{label} cancellation committed terminal generation ownership"
+            );
+            assert!(
+                !backend.has_session(id),
+                "{label} removed the generation tombstone"
+            );
+            assert_eq!(
+                local.ancillary_registrations_for_test(id),
+                (None, false, false, None),
+                "{label} rolled back fanout, idle, parser, and diagnostics"
+            );
+            assert!(
+                local.ancillary_snapshot_for_test(id, generation).is_none(),
+                "{label} removed joined monitor and reader ownership"
             );
             if let Some((root, descendant)) = process_ids {
                 assert_startup_process_group_absent(root, descendant);
@@ -5559,57 +5647,147 @@ mod tests {
         let (existing_root, existing_descendant) =
             read_startup_process_group_marker(&existing_marker);
         cleanup.record_group(existing_root);
+        let established_generation = local.owner_generations_for_test(id);
+        assert_eq!(established_generation.len(), 1);
+        let established_generation = established_generation[0];
+        let established_ancillary = local
+            .ancillary_snapshot_for_test(id, established_generation)
+            .expect("established generation owns its ancillary workers");
+        assert!(established_ancillary.publication_closed);
+        assert!(established_ancillary.fanout_owned);
+        assert!(established_ancillary.diagnostics_owned);
+        assert!(established_ancillary.monitor_present);
+        assert!(established_ancillary.reader_present);
+        let established_registrations = local.ancillary_registrations_for_test(id);
+        assert_eq!(
+            established_registrations,
+            (
+                Some(established_generation),
+                true,
+                true,
+                Some(established_generation)
+            )
+        );
 
-        crate::pty::local_backend::allow_duplicate_reservation_once(id);
-        let cancelled_marker = temp.path().join("cancelled-published-generation.txt");
-        let (reached_tx, reached_rx) = std::sync::mpsc::sync_channel(1);
-        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
-        crate::pty::local_backend::inject_spawn_pause(
-            id,
-            crate::pty::local_backend::SpawnPausePoint::AfterPublication,
-            reached_tx,
-            release_rx,
-        );
-        let backend_for_spawn = Arc::clone(&backend);
-        let spec = startup_process_group_spec(id, temp.path(), &cancelled_marker, None);
-        let task = tauri::async_runtime::spawn(async move { backend_for_spawn.spawn(spec).await });
-        reached_rx
-            .recv_timeout(Duration::from_secs(3))
-            .expect("duplicate generation reached publication boundary");
-        let (cancelled_root, cancelled_descendant) =
-            read_startup_process_group_marker(&cancelled_marker);
-        cleanup.record_group(cancelled_root);
-        assert_eq!(local.owner_generation_count_for_test(id), 2);
-        task.abort();
-        let cancelled = tauri::async_runtime::block_on(task)
-            .expect_err("duplicate generation waiter is cancelled");
-        assert!(matches!(
-            cancelled,
-            tauri::Error::JoinError(ref error) if error.is_cancelled()
-        ));
-        release_tx
-            .send(())
-            .expect("release cancelled duplicate generation");
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while local.owner_generation_count_for_test(id) != 1 && std::time::Instant::now() < deadline
-        {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert_eq!(local.owner_generation_count_for_test(id), 1);
-        assert_startup_process_group_absent(cancelled_root, cancelled_descendant);
-        wait_for_startup_process_group_exit(cancelled_root, cancelled_descendant);
-        assert!(
-            linux_process_exists(existing_root) && linux_process_exists(existing_descendant),
-            "cancelling one generation must not kill the unrelated established owner"
-        );
-        {
-            let manager = manager.lock().unwrap();
-            assert!(manager.has_session(id));
+        for (point, label) in [
+            (
+                crate::pty::local_backend::SpawnPausePoint::AfterPublication,
+                "duplicate-after-publication",
+            ),
+            (
+                crate::pty::local_backend::SpawnPausePoint::AfterFanoutPublication,
+                "duplicate-after-fanout",
+            ),
+            (
+                crate::pty::local_backend::SpawnPausePoint::AfterDiagnosticPublication,
+                "duplicate-after-diagnostics",
+            ),
+            (
+                crate::pty::local_backend::SpawnPausePoint::AfterMonitorReaderLaunch,
+                "duplicate-after-workers",
+            ),
+        ] {
+            crate::pty::local_backend::allow_duplicate_reservation_once(id);
+            let cancelled_marker = temp.path().join(format!("{label}.txt"));
+            let (reached_tx, reached_rx) = std::sync::mpsc::sync_channel(1);
+            let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+            crate::pty::local_backend::inject_spawn_pause(id, point, reached_tx, release_rx);
+            let backend_for_spawn = Arc::clone(&backend);
+            let spec = startup_process_group_spec(id, temp.path(), &cancelled_marker, None);
+            let task =
+                tauri::async_runtime::spawn(async move { backend_for_spawn.spawn(spec).await });
+            reached_rx
+                .recv_timeout(Duration::from_secs(3))
+                .expect("duplicate generation reached its publication boundary");
+            let (cancelled_root, cancelled_descendant) =
+                read_startup_process_group_marker(&cancelled_marker);
+            cleanup.record_group(cancelled_root);
+            let generations = local.owner_generations_for_test(id);
+            assert_eq!(generations.len(), 2, "{label} has two exact generations");
+            let cancelled_generation = *generations
+                .iter()
+                .find(|generation| **generation != established_generation)
+                .expect("find cancelled duplicate generation");
             assert_eq!(
-                manager.backend_kind(id),
-                Some(crate::pty::backend::SessionBackendKind::LocalProcess)
+                local.ancillary_registrations_for_test(id),
+                established_registrations,
+                "{label} left every established UUID registration untouched"
+            );
+
+            task.abort();
+            let task_waiter = std::thread::spawn(move || tauri::async_runtime::block_on(task));
+            let cancellation_deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while !local.attempt_cancelled_for_test(id, cancelled_generation)
+                && std::time::Instant::now() < cancellation_deadline
+            {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            assert!(
+                local.attempt_cancelled_for_test(id, cancelled_generation),
+                "{label} async abort reached only the duplicate"
+            );
+            release_tx
+                .send(())
+                .expect("release cancelled duplicate generation");
+            let cancelled = task_waiter
+                .join()
+                .expect("join duplicate cancellation waiter")
+                .expect_err("duplicate generation waiter is cancelled");
+            assert!(matches!(
+                cancelled,
+                tauri::Error::JoinError(ref error) if error.is_cancelled()
+            ));
+
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while local.owner_generations_for_test(id) != vec![established_generation]
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert_eq!(
+                local.owner_generations_for_test(id),
+                vec![established_generation],
+                "{label} removed only the duplicate generation"
+            );
+            assert!(
+                local
+                    .ancillary_snapshot_for_test(id, cancelled_generation)
+                    .is_none(),
+                "{label} joined and removed duplicate monitor and reader ownership"
+            );
+            assert_eq!(
+                local.ancillary_registrations_for_test(id),
+                established_registrations,
+                "{label} preserved established fanout, idle, parser, and diagnostics"
+            );
+            assert_eq!(
+                local
+                    .ancillary_snapshot_for_test(id, established_generation)
+                    .expect("established ancillary state survives duplicate cancellation"),
+                established_ancillary,
+                "{label} did not alter the established attempt"
+            );
+            assert_startup_process_group_absent(cancelled_root, cancelled_descendant);
+            wait_for_startup_process_group_exit(cancelled_root, cancelled_descendant);
+            assert!(
+                linux_process_exists(existing_root) && linux_process_exists(existing_descendant),
+                "{label} did not kill the established owner"
+            );
+            {
+                let manager = manager.lock().unwrap();
+                assert!(manager.has_session(id));
+                assert_eq!(
+                    manager.backend_kind(id),
+                    Some(crate::pty::backend::SessionBackendKind::LocalProcess)
+                );
+            }
+            assert_eq!(
+                monitor.active_agent_groups(),
+                1,
+                "{label} preserved established resource ownership"
             );
         }
+
         let limits = crate::resource_monitor::ResourceLimits::from(&AppSettings {
             resource_monitor_enabled: true,
             ..AppSettings::default()
@@ -5897,6 +6075,9 @@ mod tests {
                 crate::pty::local_backend::LocalProcessBackend<tauri::test::MockRuntime>,
             >()
             .expect("production local backend");
+        let generations = local.owner_generations_for_test(id);
+        assert_eq!(generations.len(), 1);
+        let generation = generations[0];
 
         let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
@@ -5906,13 +6087,49 @@ mod tests {
         });
         entered_rx.recv().expect("wait for held resource registry");
 
+        let (cleanup_reached_tx, cleanup_reached_rx) = std::sync::mpsc::sync_channel(1);
+        let (cleanup_release_tx, cleanup_release_rx) = std::sync::mpsc::sync_channel(1);
+        crate::pty::local_backend::inject_cleanup_pause(
+            id,
+            crate::pty::local_backend::CleanupPausePoint::BeforeOutcomeCommit,
+            cleanup_reached_tx,
+            cleanup_release_rx,
+        );
         let started = std::time::Instant::now();
         let deadline = started + Duration::from_millis(75);
-        let retained = shutdown_owner.kill_all_until(deadline);
+        let shutdown_owner_for_worker = shutdown_owner.clone();
+        let shutdown =
+            std::thread::spawn(move || shutdown_owner_for_worker.kill_all_until(deadline));
+        cleanup_reached_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("cleanup reached outcome commit after resource deadline");
+        let (state_held_tx, state_held_rx) = std::sync::mpsc::sync_channel(1);
+        let (state_release_tx, state_release_rx) = std::sync::mpsc::sync_channel(1);
+        let backend_for_state = Arc::clone(&local_backend);
+        let state_holder = std::thread::spawn(move || {
+            let local = backend_for_state
+                .as_any()
+                .downcast_ref::<
+                    crate::pty::local_backend::LocalProcessBackend<tauri::test::MockRuntime>,
+                >()
+                .expect("production local backend in state holder");
+            local.hold_attempt_state_for_test(id, generation, state_held_tx, state_release_rx);
+        });
+        state_held_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("hold attempt state during outcome commit");
+        cleanup_release_tx
+            .send(())
+            .expect("release cleanup into held outcome state");
+        let retained = shutdown.join().expect("join bounded shutdown");
         let elapsed = started.elapsed();
+        state_release_tx
+            .send(())
+            .expect("release retained attempt state");
+        state_holder.join().expect("join attempt state holder");
         assert_eq!(retained.terminal, 0);
-        assert_eq!(retained.retained.len(), 1);
-        let diagnostic = &retained.retained[0];
+        assert!(!retained.retained.is_empty());
+        let diagnostic = retained.retained.join(" | ");
         assert!(diagnostic.contains(&id.to_string()), "{diagnostic}");
         assert!(diagnostic.contains("generation 1"), "{diagnostic}");
         assert!(
@@ -5927,6 +6144,7 @@ mod tests {
             diagnostic.contains("resource-monitor-start"),
             "{diagnostic}"
         );
+        assert!(diagnostic.contains("attempt-state-commit"), "{diagnostic}");
         assert!(
             elapsed < Duration::from_secs(1),
             "resource-lock shutdown escaped its deadline: {elapsed:?}"
@@ -5934,6 +6152,16 @@ mod tests {
         assert_startup_process_group_absent(root, descendant);
         wait_for_startup_process_group_exit(root, descendant);
         assert_eq!(local.owner_generation_count_for_test(id), 1);
+        assert_eq!(local.owner_generations_for_test(id), vec![generation]);
+        assert!(
+            local.attempt_is_teardown_for_test(id, generation),
+            "the exact owner remains continuously reachable in the teardown slot"
+        );
+        assert_eq!(
+            local.ancillary_registrations_for_test(id),
+            (Some(generation), true, true, Some(generation)),
+            "deadline exhaustion retains every exact ancillary cleanup authority"
+        );
 
         release_tx.send(()).expect("release resource registry");
         holder.join().expect("join resource registry holder");
@@ -5941,6 +6169,18 @@ mod tests {
             shutdown_owner.kill_all_until(std::time::Instant::now() + Duration::from_secs(2));
         assert_eq!(retry.counts(), (1, 0), "{:?}", retry.retained);
         assert_eq!(local.owner_generation_count_for_test(id), 0);
+        assert!(
+            !local_backend.has_session(id),
+            "retry removed the attempt and its kill tombstone"
+        );
+        assert_eq!(
+            local.ancillary_registrations_for_test(id),
+            (None, false, false, None)
+        );
+        assert!(
+            local.ancillary_snapshot_for_test(id, generation).is_none(),
+            "retry joined and removed monitor and reader ownership"
+        );
         let limits = crate::resource_monitor::ResourceLimits::from(&AppSettings {
             resource_monitor_enabled: true,
             ..AppSettings::default()
@@ -5962,6 +6202,402 @@ mod tests {
             .kill(id)
             .expect("remove terminal manager route");
         assert!(manager.lock().unwrap().backend_kind(id).is_none());
+        cleanup.disarm();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn production_explicit_kill_bounds_owner_fanout_and_idle_lock_contention() {
+        let temp = tempfile::tempdir().expect("bounded lock-contention tempdir");
+        let (_app, manager) = production_local_pty_manager();
+        let mut cleanup = StartupPtyCleanupGuard::new(manager.clone());
+        let monitor = Arc::new(crate::resource_monitor::ResourceMonitorState::new());
+        let backend = manager
+            .lock()
+            .unwrap()
+            .backend_for_kind(crate::pty::backend::SessionBackendKind::LocalProcess);
+        let local = backend
+            .as_any()
+            .downcast_ref::<
+                crate::pty::local_backend::LocalProcessBackend<tauri::test::MockRuntime>,
+            >()
+            .expect("production local backend");
+
+        let owner_id = uuid::Uuid::new_v4();
+        let owner_marker = temp.path().join("owner-registry-contention.txt");
+        tauri::async_runtime::block_on(crate::pty::manager::PtyManager::spawn(
+            &manager,
+            crate::pty::backend::SessionBackendKind::LocalProcess,
+            startup_process_group_spec(
+                owner_id,
+                temp.path(),
+                &owner_marker,
+                Some(startup_resource_registration(&monitor, owner_id)),
+            ),
+        ))
+        .expect("spawn owner-registry contention fixture");
+        let (owner_root, owner_descendant) = read_startup_process_group_marker(&owner_marker);
+        cleanup.record_group(owner_root);
+        let owner_generation = local.owner_generations_for_test(owner_id);
+        assert_eq!(owner_generation.len(), 1);
+        let owner_generation = owner_generation[0];
+        let (owner_held_tx, owner_held_rx) = std::sync::mpsc::sync_channel(1);
+        let (owner_release_tx, owner_release_rx) = std::sync::mpsc::sync_channel(1);
+        let backend_for_holder = Arc::clone(&backend);
+        let owner_holder = std::thread::spawn(move || {
+            let local = backend_for_holder
+                .as_any()
+                .downcast_ref::<
+                    crate::pty::local_backend::LocalProcessBackend<tauri::test::MockRuntime>,
+                >()
+                .expect("production local backend in owner holder");
+            local.hold_owner_registry_for_test(owner_held_tx, owner_release_rx);
+        });
+        owner_held_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("hold owner registry before explicit kill");
+        let backend_for_kill = Arc::clone(&backend);
+        let owner_started = std::time::Instant::now();
+        let owner_kill = std::thread::spawn(move || {
+            let local = backend_for_kill
+                .as_any()
+                .downcast_ref::<
+                    crate::pty::local_backend::LocalProcessBackend<tauri::test::MockRuntime>,
+                >()
+                .expect("production local backend in owner kill");
+            local.kill_with_budget_for_test(owner_id, Duration::from_millis(75))
+        });
+        let owner_error = owner_kill
+            .join()
+            .expect("join owner-contention kill")
+            .expect_err("held owner registry must exhaust explicit-kill deadline");
+        let owner_elapsed = owner_started.elapsed();
+        assert!(
+            owner_error.to_string().contains("owner-registry"),
+            "{owner_error}"
+        );
+        assert!(
+            owner_error.to_string().contains(&owner_id.to_string())
+                && owner_error
+                    .to_string()
+                    .contains(&format!("generation {owner_generation}"))
+                && owner_error
+                    .to_string()
+                    .contains(&format!("root_pid={owner_root}")),
+            "{owner_error}"
+        );
+        assert!(
+            owner_elapsed < Duration::from_secs(1),
+            "owner registry contention escaped the absolute deadline: {owner_elapsed:?}"
+        );
+        owner_release_tx
+            .send(())
+            .expect("release owner registry after bounded return");
+        owner_holder.join().expect("join owner registry holder");
+        assert_eq!(
+            local.owner_generations_for_test(owner_id),
+            vec![owner_generation]
+        );
+        assert!(
+            linux_process_exists(owner_root) && linux_process_exists(owner_descendant),
+            "pre-stop owner contention must retain the real process group"
+        );
+        assert_eq!(
+            local.ancillary_registrations_for_test(owner_id),
+            (Some(owner_generation), true, true, Some(owner_generation))
+        );
+        local
+            .kill_with_budget_for_test(owner_id, Duration::from_secs(2))
+            .expect("retry owner-contention kill");
+        assert_startup_process_group_absent(owner_root, owner_descendant);
+        wait_for_startup_process_group_exit(owner_root, owner_descendant);
+        assert!(!backend.has_session(owner_id));
+        manager
+            .lock()
+            .unwrap()
+            .kill(owner_id)
+            .expect("remove owner-contention manager route");
+
+        let mut last_ancillary_id = None;
+        for (label, hold_idle) in [("fanout", false), ("idle", true)] {
+            let id = uuid::Uuid::new_v4();
+            last_ancillary_id = Some(id);
+            let marker = temp.path().join(format!("{label}-cleanup-contention.txt"));
+            tauri::async_runtime::block_on(crate::pty::manager::PtyManager::spawn(
+                &manager,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+                startup_process_group_spec(
+                    id,
+                    temp.path(),
+                    &marker,
+                    Some(startup_resource_registration(&monitor, id)),
+                ),
+            ))
+            .expect("spawn ancillary contention fixture");
+            let (root, descendant) = read_startup_process_group_marker(&marker);
+            cleanup.record_group(root);
+            let generation = local.owner_generations_for_test(id);
+            assert_eq!(generation.len(), 1);
+            let generation = generation[0];
+
+            let (cleanup_reached_tx, cleanup_reached_rx) = std::sync::mpsc::sync_channel(1);
+            let (cleanup_release_tx, cleanup_release_rx) = std::sync::mpsc::sync_channel(1);
+            crate::pty::local_backend::inject_cleanup_pause(
+                id,
+                crate::pty::local_backend::CleanupPausePoint::BeforeAncillaryCleanup,
+                cleanup_reached_tx,
+                cleanup_release_rx,
+            );
+            let backend_for_kill = Arc::clone(&backend);
+            let started = std::time::Instant::now();
+            let kill = std::thread::spawn(move || {
+                let local = backend_for_kill
+                    .as_any()
+                    .downcast_ref::<
+                        crate::pty::local_backend::LocalProcessBackend<tauri::test::MockRuntime>,
+                    >()
+                    .expect("production local backend in ancillary kill");
+                local.kill_with_budget_for_test(id, Duration::from_millis(75))
+            });
+            cleanup_reached_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("owner cleanup reached the ancillary boundary");
+            let (held_tx, held_rx) = std::sync::mpsc::sync_channel(1);
+            let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+            let backend_for_holder = Arc::clone(&backend);
+            let holder = std::thread::spawn(move || {
+                let local = backend_for_holder
+                    .as_any()
+                    .downcast_ref::<
+                        crate::pty::local_backend::LocalProcessBackend<tauri::test::MockRuntime>,
+                    >()
+                    .expect("production local backend in ancillary holder");
+                if hold_idle {
+                    local.hold_idle_activity_for_test(held_tx, release_rx);
+                } else {
+                    local.hold_fanout_registry_for_test(held_tx, release_rx);
+                }
+            });
+            held_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("hold exact ancillary lock after owner cleanup");
+            cleanup_release_tx
+                .send(())
+                .expect("release cleanup into ancillary contention");
+            let error = kill
+                .join()
+                .expect("join ancillary-contention kill")
+                .expect_err("held ancillary lock must exhaust explicit-kill deadline");
+            let elapsed = started.elapsed();
+            assert!(
+                error.to_string().contains(if hold_idle {
+                    "idle cleanup"
+                } else {
+                    "fanout lock deadline"
+                }),
+                "{label}: {error}"
+            );
+            assert!(
+                elapsed < Duration::from_secs(1),
+                "{label} contention escaped the absolute deadline: {elapsed:?}"
+            );
+            assert_startup_process_group_absent(root, descendant);
+            wait_for_startup_process_group_exit(root, descendant);
+            release_tx
+                .send(())
+                .expect("release exact ancillary lock for retry");
+            holder.join().expect("join ancillary lock holder");
+            assert_eq!(local.owner_generations_for_test(id), vec![generation]);
+            assert!(
+                local.attempt_is_teardown_for_test(id, generation),
+                "{label} contention retained the exact teardown owner"
+            );
+            assert_eq!(
+                local.ancillary_registrations_for_test(id),
+                (Some(generation), true, true, Some(generation)),
+                "{label} contention retained exact ancillary authority"
+            );
+
+            local
+                .kill_with_budget_for_test(id, Duration::from_secs(2))
+                .expect("retry ancillary-contention kill");
+            assert!(!backend.has_session(id), "{label} retry removed tombstone");
+            assert_eq!(
+                local.ancillary_registrations_for_test(id),
+                (None, false, false, None)
+            );
+            assert!(
+                local.ancillary_snapshot_for_test(id, generation).is_none(),
+                "{label} retry joined and removed ancillary workers"
+            );
+            manager
+                .lock()
+                .unwrap()
+                .kill(id)
+                .expect("remove ancillary-contention manager route");
+        }
+
+        let limits = crate::resource_monitor::ResourceLimits::from(&AppSettings {
+            resource_monitor_enabled: true,
+            ..AppSettings::default()
+        });
+        let snapshot = monitor.snapshot(limits);
+        assert_eq!(snapshot.active_agent_groups, 0);
+        let last_ancillary_id = last_ancillary_id.expect("ran ancillary contention fixtures");
+        let row = snapshot
+            .groups
+            .iter()
+            .find(|group| group.session_id == last_ancillary_id.to_string())
+            .expect("latest contention fixture keeps a terminal resource row");
+        assert_eq!(
+            row.state,
+            crate::resource_monitor::types::ResourceGroupState::Terminated
+        );
+        cleanup.disarm();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn production_startup_teardown_shares_one_consumed_deadline_with_resources() {
+        let temp = tempfile::tempdir().expect("shared startup deadline tempdir");
+        let (_app, manager) = production_local_pty_manager();
+        let mut cleanup = StartupPtyCleanupGuard::new(manager.clone());
+        let monitor = Arc::new(crate::resource_monitor::ResourceMonitorState::new());
+        let id = uuid::Uuid::new_v4();
+        let marker = temp.path().join("shared-startup-deadline.txt");
+        tauri::async_runtime::block_on(crate::pty::manager::PtyManager::spawn(
+            &manager,
+            crate::pty::backend::SessionBackendKind::LocalProcess,
+            startup_process_group_spec(
+                id,
+                temp.path(),
+                &marker,
+                Some(startup_resource_registration(&monitor, id)),
+            ),
+        ))
+        .expect("spawn shared-deadline startup fixture");
+        let (root, descendant) = read_startup_process_group_marker(&marker);
+        cleanup.record_group(root);
+        let (shutdown_owner, backend, container) = {
+            let manager = manager.lock().unwrap();
+            (
+                manager.shutdown_owner(),
+                manager.backend_for_kind(crate::pty::backend::SessionBackendKind::LocalProcess),
+                manager.container_backend(),
+            )
+        };
+        let local = backend
+            .as_any()
+            .downcast_ref::<
+                crate::pty::local_backend::LocalProcessBackend<tauri::test::MockRuntime>,
+            >()
+            .expect("production local backend");
+        let generation = local.owner_generations_for_test(id);
+        assert_eq!(generation.len(), 1);
+        let generation = generation[0];
+
+        let shutdown = crate::shutdown::ShutdownSignal::new_startup_gated();
+        let lifecycle = empty_startup_lifecycle(shutdown.clone());
+        register_test_shutdown(&lifecycle, &shutdown);
+        super::register_startup_pty_manager(&lifecycle, manager.clone(), container)
+            .expect("register shared-deadline PTY owner");
+        register_test_resource_monitor(&lifecycle, Arc::clone(&monitor));
+
+        let (held_tx, held_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let backend_for_holder = Arc::clone(&backend);
+        let holder = std::thread::spawn(move || {
+            let local = backend_for_holder
+                .as_any()
+                .downcast_ref::<
+                    crate::pty::local_backend::LocalProcessBackend<tauri::test::MockRuntime>,
+                >()
+                .expect("production local backend in startup holder");
+            local.hold_owner_registry_for_test(held_tx, release_rx);
+        });
+        held_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("hold startup PTY owner registry");
+
+        let started = std::time::Instant::now();
+        let deadline = started + Duration::from_millis(75);
+        let diagnostics = super::teardown_uncommitted_runtime_until(None, &lifecycle, deadline);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "startup teardown escaped its original absolute deadline: {elapsed:?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains("owner-registry-bulk-shutdown")),
+            "startup retained PTY ownership diagnostic: {diagnostics:?}"
+        );
+        assert!(
+            diagnostics.iter().any(|diagnostic| {
+                diagnostic.contains(&id.to_string())
+                    && diagnostic.contains(&format!("generation {generation}"))
+                    && diagnostic.contains(&format!("root_pid={root}"))
+            }),
+            "startup retained exact PTY owner identity: {diagnostics:?}"
+        );
+        assert!(shutdown.is_cancelled());
+
+        release_tx
+            .send(())
+            .expect("release startup owner registry after bounded return");
+        holder.join().expect("join startup owner registry holder");
+        assert_eq!(local.owner_generations_for_test(id), vec![generation]);
+        assert!(
+            linux_process_exists(root) && linux_process_exists(descendant),
+            "the exhausted startup deadline must not start a fresh teardown budget"
+        );
+        assert_eq!(
+            local.ancillary_registrations_for_test(id),
+            (Some(generation), true, true, Some(generation))
+        );
+        let limits = crate::resource_monitor::ResourceLimits::from(&AppSettings {
+            resource_monitor_enabled: true,
+            ..AppSettings::default()
+        });
+        let retained = monitor.snapshot(limits);
+        let row = retained
+            .groups
+            .iter()
+            .find(|group| group.session_id == id.to_string())
+            .expect("shared-deadline resource row remains retryable");
+        assert_eq!(row.root_pid, root);
+        assert_eq!(
+            row.state,
+            crate::resource_monitor::types::ResourceGroupState::Running
+        );
+
+        let retry =
+            shutdown_owner.kill_all_until(std::time::Instant::now() + Duration::from_secs(2));
+        assert_eq!(retry.counts(), (1, 0), "{:?}", retry.retained);
+        assert_startup_process_group_absent(root, descendant);
+        wait_for_startup_process_group_exit(root, descendant);
+        assert!(!backend.has_session(id));
+        assert_eq!(
+            local.ancillary_registrations_for_test(id),
+            (None, false, false, None)
+        );
+        let terminal = monitor.snapshot(limits);
+        let row = terminal
+            .groups
+            .iter()
+            .find(|group| group.session_id == id.to_string())
+            .expect("retried shared-deadline resource row remains visible");
+        assert_eq!(
+            row.state,
+            crate::resource_monitor::types::ResourceGroupState::Terminated
+        );
+        assert_eq!(terminal.active_agent_groups, 0);
+        manager
+            .lock()
+            .unwrap()
+            .kill(id)
+            .expect("remove shared-deadline manager route");
         cleanup.disarm();
     }
 

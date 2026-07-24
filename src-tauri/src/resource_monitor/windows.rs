@@ -3,6 +3,122 @@ use super::types::{
     ObservedProcess, ObservedProcessTree, ProcessIdentity, ProcessMemory, TerminateOutcome,
 };
 
+fn run_platform_observation_until<T, F>(
+    deadline: std::time::Instant,
+    operation: &'static str,
+    pid: u32,
+    observe: F,
+) -> Result<T, ResourceError>
+where
+    T: Send + 'static,
+    F: FnOnce(std::sync::Arc<std::sync::atomic::AtomicBool>) -> Result<T, ResourceError>
+        + Send
+        + 'static,
+{
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    require_backend_time(deadline, operation, pid)?;
+    let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+    let cancelled_for_worker = std::sync::Arc::clone(&cancelled);
+    let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name(format!("resource-{operation}-{pid}"))
+        .spawn(move || {
+            #[cfg(test)]
+            pause_platform_observation_if_injected(operation, pid);
+            if cancelled_for_worker.load(Ordering::Acquire) {
+                return;
+            }
+            let result = observe(std::sync::Arc::clone(&cancelled_for_worker));
+            if !cancelled_for_worker.load(Ordering::Acquire) {
+                let _ = result_tx.send(result);
+            }
+        })
+        .map_err(|error| {
+            ResourceError::Message(format!(
+                "failed to start bounded {operation} worker for pid {pid}: {error}"
+            ))
+        })?;
+
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    match result_rx.recv_timeout(remaining) {
+        Ok(result) => result,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            cancelled.store(true, Ordering::Release);
+            Err(ResourceError::Message(format!(
+                "syscall={operation} deadline expired for pid {pid}"
+            )))
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(ResourceError::Message(
+            format!("bounded {operation} worker disconnected for pid {pid}"),
+        )),
+    }
+}
+
+#[cfg(test)]
+struct PlatformObservationPause {
+    operation: &'static str,
+    pid: u32,
+    reached: std::sync::mpsc::SyncSender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+fn platform_observation_pause() -> &'static std::sync::Mutex<Option<PlatformObservationPause>> {
+    static PAUSE: std::sync::OnceLock<std::sync::Mutex<Option<PlatformObservationPause>>> =
+        std::sync::OnceLock::new();
+    PAUSE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(test)]
+fn inject_platform_observation_pause(
+    operation: &'static str,
+    pid: u32,
+    reached: std::sync::mpsc::SyncSender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+) {
+    let mut slot = platform_observation_pause()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    assert!(
+        slot.is_none(),
+        "only one platform observation pause may be active"
+    );
+    *slot = Some(PlatformObservationPause {
+        operation,
+        pid,
+        reached,
+        release,
+    });
+}
+
+#[cfg(test)]
+fn pause_platform_observation_if_injected(operation: &'static str, pid: u32) {
+    let pause = {
+        let mut slot = platform_observation_pause()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if slot
+            .as_ref()
+            .is_some_and(|pause| pause.operation == operation && pause.pid == pid)
+        {
+            slot.take()
+        } else {
+            None
+        }
+    };
+    if let Some(pause) = pause {
+        pause
+            .reached
+            .send(())
+            .expect("signal native platform observation gate");
+        pause
+            .release
+            .recv()
+            .expect("release native platform observation gate");
+    }
+}
+
 #[cfg(windows)]
 mod platform {
     use std::collections::{HashMap, VecDeque};
@@ -73,10 +189,9 @@ mod platform {
             root: ProcessIdentity,
             deadline: std::time::Instant,
         ) -> Result<ObservedProcessTree, ResourceError> {
-            require_backend_time(deadline, "observe_tree", root.pid)?;
-            let tree = self.observe_tree(root)?;
-            require_backend_time(deadline, "observe_tree", root.pid)?;
-            Ok(tree)
+            run_platform_observation_until(deadline, "observe_tree", root.pid, move |_| {
+                Self::new().observe_tree(root)
+            })
         }
 
         fn observe_identity_until(
@@ -84,10 +199,9 @@ mod platform {
             pid: u32,
             deadline: std::time::Instant,
         ) -> Result<Option<ProcessIdentity>, ResourceError> {
-            require_backend_time(deadline, "observe_identity", pid)?;
-            let identity = self.observe_identity(pid)?;
-            require_backend_time(deadline, "observe_identity", pid)?;
-            Ok(identity)
+            run_platform_observation_until(deadline, "observe_identity", pid, move |_| {
+                observe_identity(pid)
+            })
         }
 
         fn terminate_verified(
@@ -130,7 +244,12 @@ mod platform {
         process: &ObservedProcess,
         deadline: std::time::Instant,
     ) -> Result<TerminateOutcome, ResourceError> {
-        let Some(current) = observe_identity(process.identity.pid)? else {
+        let pid = process.identity.pid;
+        let Some(current) =
+            run_platform_observation_until(deadline, "terminate_identity", pid, move |_| {
+                observe_identity(pid)
+            })?
+        else {
             return Ok(TerminateOutcome::AlreadyGone);
         };
         if current != process.identity {
@@ -143,20 +262,49 @@ mod platform {
             )));
         }
 
-        let handle = match open_process(
-            process.identity.pid,
-            PROCESS_TERMINATE | PROCESS_SYNCHRONIZE | PROCESS_QUERY_INFORMATION,
+        let access = PROCESS_TERMINATE | PROCESS_SYNCHRONIZE | PROCESS_QUERY_INFORMATION;
+        let (handle, opened_identity) =
+            match run_platform_observation_until(deadline, "open_process", pid, move |_| {
+                let handle = open_process(pid, access)?;
+                let identity = identity_from_handle(pid, &handle)?;
+                Ok((handle, identity))
+            }) {
+                Ok(opened) => opened,
+                Err(err) => {
+                    return verify_identity_exited_until(
+                        process.identity,
+                        err.to_string(),
+                        deadline,
+                    );
+                }
+            };
+        if opened_identity != process.identity {
+            return Ok(TerminateOutcome::AlreadyGone);
+        }
+        let handle = match run_platform_observation_until(
+            deadline,
+            "TerminateProcess",
+            pid,
+            move |cancelled| {
+                if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+                    return Err(ResourceError::Message(format!(
+                        "syscall=TerminateProcess deadline expired for pid {pid}"
+                    )));
+                }
+                require_backend_time(deadline, "TerminateProcess", pid)?;
+                let ok = unsafe { TerminateProcess(handle.raw(), 1) };
+                if ok == 0 {
+                    Err(last_error("TerminateProcess failed"))
+                } else {
+                    Ok(handle)
+                }
+            },
         ) {
             Ok(handle) => handle,
-            Err(err) => return verify_identity_exited(process.identity, err.to_string()),
+            Err(error) => {
+                return verify_identity_exited_until(process.identity, error.to_string(), deadline);
+            }
         };
-        let ok = unsafe { TerminateProcess(handle.raw(), 1) };
-        if ok == 0 {
-            return verify_identity_exited(
-                process.identity,
-                last_error("TerminateProcess failed").to_string(),
-            );
-        }
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         let wait_ms =
             u32::try_from(remaining.as_millis().min(u128::from(u32::MAX))).unwrap_or(u32::MAX);
@@ -180,14 +328,15 @@ mod platform {
             )),
         };
         if let Some(failure) = failure {
-            return verify_identity_exited(process.identity, failure);
+            return verify_identity_exited_until(process.identity, failure, deadline);
         }
-        verify_identity_exited(
+        verify_identity_exited_until(
             process.identity,
             format!(
                 "pid {} is still alive after termination",
                 process.identity.pid
             ),
+            deadline,
         )
     }
 
@@ -295,6 +444,10 @@ mod platform {
 
     struct OwnedHandle(HANDLE);
 
+    // SAFETY: Windows kernel handles are process-wide values. This wrapper owns
+    // exactly one CloseHandle call and may be transferred to the deadline caller.
+    unsafe impl Send for OwnedHandle {}
+
     impl OwnedHandle {
         fn raw(&self) -> HANDLE {
             self.0
@@ -382,6 +535,35 @@ mod platform {
         }))
     }
 
+    fn identity_from_handle(
+        pid: u32,
+        handle: &OwnedHandle,
+    ) -> Result<ProcessIdentity, ResourceError> {
+        let mut creation = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let mut exit = creation;
+        let mut kernel = creation;
+        let mut user = creation;
+        let ok = unsafe {
+            GetProcessTimes(
+                handle.raw(),
+                &mut creation,
+                &mut exit,
+                &mut kernel,
+                &mut user,
+            )
+        };
+        if ok == 0 {
+            return Err(last_error("GetProcessTimes on termination handle failed"));
+        }
+        Ok(ProcessIdentity {
+            pid,
+            creation_time_100ns: filetime_to_u64(creation),
+        })
+    }
+
     fn process_memory(pid: u32) -> Result<ProcessMemory, ResourceError> {
         let handle = open_process(pid, PROCESS_QUERY_INFORMATION | PROCESS_VM_READ)?;
         let mut counters = unsafe { std::mem::zeroed::<PROCESS_MEMORY_COUNTERS_EX>() };
@@ -414,11 +596,18 @@ mod platform {
         Ok(process_entries()?.contains_key(&pid))
     }
 
-    fn verify_identity_exited(
+    fn verify_identity_exited_until(
         identity: ProcessIdentity,
         failure: String,
+        deadline: std::time::Instant,
     ) -> Result<TerminateOutcome, ResourceError> {
-        match observe_identity(identity.pid)? {
+        let pid = identity.pid;
+        match run_platform_observation_until(
+            deadline,
+            "verify_termination_identity",
+            pid,
+            move |_| observe_identity(pid),
+        )? {
             Some(current) if current == identity => Err(ResourceError::Message(failure)),
             _ => Ok(TerminateOutcome::Terminated),
         }
@@ -668,8 +857,9 @@ mod platform {
             root: ProcessIdentity,
             deadline: std::time::Instant,
         ) -> Result<ObservedProcessTree, ResourceError> {
-            require_backend_time(deadline, "observe_tree", root.pid)?;
-            self.observe_tree(root)
+            run_platform_observation_until(deadline, "observe_tree", root.pid, move |_| {
+                Self::new().observe_tree(root)
+            })
         }
 
         fn observe_identity_until(
@@ -677,8 +867,9 @@ mod platform {
             pid: u32,
             deadline: std::time::Instant,
         ) -> Result<Option<ProcessIdentity>, ResourceError> {
-            require_backend_time(deadline, "observe_identity", pid)?;
-            self.observe_identity(pid)
+            run_platform_observation_until(deadline, "observe_identity", pid, move |_| {
+                observe_identity(pid)
+            })
         }
 
         fn terminate_verified(
@@ -700,7 +891,15 @@ mod platform {
             deadline: std::time::Instant,
         ) -> Result<TerminateOutcome, ResourceError> {
             require_backend_time(deadline, "terminate_verified", process.identity.pid)?;
-            self.terminate_verified(process)
+            let identity = self.observe_identity_until(process.identity.pid, deadline)?;
+            if identity != Some(process.identity) {
+                Ok(TerminateOutcome::AlreadyGone)
+            } else {
+                Err(ResourceError::Message(format!(
+                    "process termination unavailable on this platform for verified pid {}",
+                    process.identity.pid
+                )))
+            }
         }
 
         fn current_process_memory(&self) -> Result<ProcessMemory, ResourceError> {
@@ -859,6 +1058,74 @@ mod platform {
                 TerminateOutcome::AlreadyGone
             );
         }
+
+        #[test]
+        fn linux_production_observation_returns_at_the_absolute_native_deadline() {
+            let mut child = std::process::Command::new("sh")
+                .args(["-c", "exec sleep 30"])
+                .spawn()
+                .expect("spawn native observation fixture");
+            let pid = child.id();
+            let (reached_tx, reached_rx) = std::sync::mpsc::sync_channel(1);
+            let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+            inject_platform_observation_pause("observe_identity", pid, reached_tx, release_rx);
+
+            let started = std::time::Instant::now();
+            let caller = std::thread::spawn(move || {
+                PlatformProcessTreeBackend::new()
+                    .observe_identity_until(pid, started + std::time::Duration::from_millis(75))
+            });
+            reached_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("native observation reached the production gate");
+            let error = caller
+                .join()
+                .expect("join bounded native observation")
+                .expect_err("held native observation must hit its deadline");
+            let elapsed = started.elapsed();
+            assert!(
+                error
+                    .to_string()
+                    .contains("syscall=observe_identity deadline expired"),
+                "{error}"
+            );
+            assert!(
+                elapsed < std::time::Duration::from_secs(1),
+                "native observation escaped its absolute deadline: {elapsed:?}"
+            );
+            assert!(
+                child
+                    .try_wait()
+                    .expect("probe observation fixture")
+                    .is_none(),
+                "read-only observation cancellation must not terminate the fixture"
+            );
+
+            release_tx
+                .send(())
+                .expect("release cancelled native observation");
+            child.kill().expect("kill native observation fixture");
+            let reap_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                match child.try_wait().expect("reap native observation fixture") {
+                    Some(_) => break,
+                    None if std::time::Instant::now() < reap_deadline => {
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                    }
+                    None => panic!("native observation fixture did not exit after kill"),
+                }
+            }
+
+            let expired = PlatformProcessTreeBackend::new()
+                .observe_identity_until(pid, std::time::Instant::now())
+                .expect_err("expired deadline must reject before native observation");
+            assert!(
+                expired
+                    .to_string()
+                    .contains("observe_identity deadline expired"),
+                "{expired}"
+            );
+        }
     }
 }
 
@@ -906,8 +1173,9 @@ mod platform {
             root: ProcessIdentity,
             deadline: std::time::Instant,
         ) -> Result<ObservedProcessTree, ResourceError> {
-            require_backend_time(deadline, "observe_tree", root.pid)?;
-            self.observe_tree(root)
+            run_platform_observation_until(deadline, "observe_tree", root.pid, move |_| {
+                Self::new().observe_tree(root)
+            })
         }
 
         fn observe_identity_until(
@@ -915,8 +1183,9 @@ mod platform {
             pid: u32,
             deadline: std::time::Instant,
         ) -> Result<Option<ProcessIdentity>, ResourceError> {
-            require_backend_time(deadline, "observe_identity", pid)?;
-            self.observe_identity(pid)
+            run_platform_observation_until(deadline, "observe_identity", pid, move |_| {
+                observe_identity(pid)
+            })
         }
 
         fn terminate_verified(
@@ -938,7 +1207,15 @@ mod platform {
             deadline: std::time::Instant,
         ) -> Result<TerminateOutcome, ResourceError> {
             require_backend_time(deadline, "terminate_verified", process.identity.pid)?;
-            self.terminate_verified(process)
+            let identity = self.observe_identity_until(process.identity.pid, deadline)?;
+            if identity != Some(process.identity) {
+                Ok(TerminateOutcome::AlreadyGone)
+            } else {
+                Err(ResourceError::Message(format!(
+                    "process termination unavailable on this platform for verified pid {}",
+                    process.identity.pid
+                )))
+            }
         }
 
         fn current_process_memory(&self) -> Result<ProcessMemory, ResourceError> {
@@ -1042,8 +1319,9 @@ mod platform {
             root: ProcessIdentity,
             deadline: std::time::Instant,
         ) -> Result<ObservedProcessTree, ResourceError> {
-            require_backend_time(deadline, "observe_tree", root.pid)?;
-            self.observe_tree(root)
+            run_platform_observation_until(deadline, "observe_tree", root.pid, move |_| {
+                Err(stable_identity_unavailable(root.pid))
+            })
         }
 
         fn observe_identity_until(
@@ -1051,8 +1329,9 @@ mod platform {
             pid: u32,
             deadline: std::time::Instant,
         ) -> Result<Option<ProcessIdentity>, ResourceError> {
-            require_backend_time(deadline, "observe_identity", pid)?;
-            self.observe_identity(pid)
+            run_platform_observation_until(deadline, "observe_identity", pid, move |_| {
+                Err(stable_identity_unavailable(pid))
+            })
         }
 
         fn terminate_verified(
@@ -1067,8 +1346,10 @@ mod platform {
             process: &ObservedProcess,
             deadline: std::time::Instant,
         ) -> Result<TerminateOutcome, ResourceError> {
-            require_backend_time(deadline, "terminate_verified", process.identity.pid)?;
-            self.terminate_verified(process)
+            let pid = process.identity.pid;
+            run_platform_observation_until(deadline, "terminate_verified", pid, move |_| {
+                Err(stable_identity_unavailable(pid))
+            })
         }
 
         fn current_process_memory(&self) -> Result<ProcessMemory, ResourceError> {

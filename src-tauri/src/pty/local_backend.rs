@@ -147,8 +147,36 @@ enum LocalAttemptState {
     CancelRequested,
     Detached(LocalProcessOwner),
     Active(PtyInstance),
-    TeardownInProgress,
+    TeardownInProgress(Arc<LocalTeardownOwner>),
     Terminal,
+}
+
+struct LocalTeardownOwner {
+    retained: Mutex<(Uuid, RetainedLocalProcess)>,
+}
+
+struct AttemptAncillaryState {
+    publication_started: bool,
+    publication_closed: bool,
+    fanout_owned: bool,
+    diagnostics_owned: bool,
+    stop: Arc<AtomicBool>,
+    monitor: Option<std::thread::JoinHandle<()>>,
+    reader: Option<std::thread::JoinHandle<()>>,
+}
+
+impl AttemptAncillaryState {
+    fn new() -> Self {
+        Self {
+            publication_started: false,
+            publication_closed: false,
+            fanout_owned: false,
+            diagnostics_owned: false,
+            stop: Arc::new(AtomicBool::new(false)),
+            monitor: None,
+            reader: None,
+        }
+    }
 }
 
 struct LocalAttemptIdentity {
@@ -231,9 +259,11 @@ struct LocalProcessAttempt {
     id: Uuid,
     generation: u64,
     cancelled: AtomicBool,
+    worker_finished: AtomicBool,
     identity: LocalAttemptIdentity,
     state: Mutex<LocalAttemptState>,
     state_changed: Condvar,
+    ancillary: Mutex<AttemptAncillaryState>,
 }
 
 impl LocalProcessAttempt {
@@ -242,9 +272,11 @@ impl LocalProcessAttempt {
             id,
             generation,
             cancelled: AtomicBool::new(false),
+            worker_finished: AtomicBool::new(false),
             identity: LocalAttemptIdentity::new(),
             state: Mutex::new(LocalAttemptState::Reserved),
             state_changed: Condvar::new(),
+            ancillary: Mutex::new(AttemptAncillaryState::new()),
         }
     }
 
@@ -254,28 +286,23 @@ impl LocalProcessAttempt {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum LocalKillState {
-    InProgress,
-    Finished,
-}
-
 struct LocalKillTombstone {
-    state: Mutex<LocalKillState>,
+    finished: AtomicBool,
+    wait_lock: Mutex<()>,
     state_changed: Condvar,
 }
 
 impl LocalKillTombstone {
     fn new() -> Self {
         Self {
-            state: Mutex::new(LocalKillState::InProgress),
+            finished: AtomicBool::new(false),
+            wait_lock: Mutex::new(()),
             state_changed: Condvar::new(),
         }
     }
 
     fn finish(&self) {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        *state = LocalKillState::Finished;
+        self.finished.store(true, Ordering::Release);
         self.state_changed.notify_all();
     }
 }
@@ -1406,17 +1433,69 @@ fn remove_local_pty(ptys: &Mutex<HashMap<Uuid, PtyInstance>>, id: Uuid) -> Optio
         .remove(&id)
 }
 
-enum RetainedLocalProcess {
-    Instance(PtyInstance),
-    Detached(LocalProcessOwner),
+struct RetainedLocalProcess {
+    owner: LocalProcessOwner,
+    transport: Option<RetainedPtyTransport>,
+}
+
+struct RetainedPtyTransport {
+    master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    size: Mutex<(u16, u16)>,
+    startup_gate: Mutex<StartupGate>,
+    rendered: Arc<AtomicBool>,
 }
 
 impl RetainedLocalProcess {
-    fn owner_mut(&mut self) -> &mut LocalProcessOwner {
-        match self {
-            Self::Instance(instance) => &mut instance.owner,
-            Self::Detached(owner) => owner,
+    fn detached(owner: LocalProcessOwner) -> Self {
+        Self {
+            owner,
+            transport: None,
         }
+    }
+
+    fn active(instance: PtyInstance) -> Self {
+        let PtyInstance {
+            master,
+            writer,
+            owner,
+            size,
+            startup_gate,
+            rendered,
+        } = instance;
+        Self {
+            owner,
+            transport: Some(RetainedPtyTransport {
+                master,
+                writer,
+                size,
+                startup_gate,
+                rendered,
+            }),
+        }
+    }
+
+    fn owner_mut(&mut self) -> &mut LocalProcessOwner {
+        &mut self.owner
+    }
+
+    fn close_transport(&mut self) {
+        if let Some(transport) = self.transport.take() {
+            transport.close();
+        }
+    }
+}
+
+impl RetainedPtyTransport {
+    fn close(self) {
+        let Self {
+            master,
+            writer,
+            size,
+            startup_gate,
+            rendered,
+        } = self;
+        drop((master, writer, size, startup_gate, rendered));
     }
 }
 
@@ -1803,6 +1882,9 @@ fn lock_local_owner_map_until<T>(
     deadline: Instant,
 ) -> Result<std::sync::MutexGuard<'_, T>, ()> {
     loop {
+        if Instant::now() >= deadline {
+            return Err(());
+        }
         match owner.try_lock() {
             Ok(guard) => return Ok(guard),
             Err(std::sync::TryLockError::Poisoned(error)) => return Ok(error.into_inner()),
@@ -1813,6 +1895,32 @@ fn lock_local_owner_map_until<T>(
             Err(std::sync::TryLockError::WouldBlock) => return Err(()),
         }
     }
+}
+
+fn join_ancillary_thread_until(
+    handle: &mut Option<std::thread::JoinHandle<()>>,
+    deadline: Instant,
+    id: Uuid,
+    generation: u64,
+    owner: &str,
+) -> Result<(), String> {
+    let Some(thread) = handle.as_ref() else {
+        return Ok(());
+    };
+    thread.thread().unpark();
+    while !thread.is_finished() {
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "session {id} generation {generation} {owner} remained live through the absolute teardown deadline"
+            ));
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        std::thread::sleep(Duration::from_millis(2).min(remaining));
+    }
+    if handle.take().is_some_and(|thread| thread.join().is_err()) {
+        log::warn!("[pty] session {id} generation {generation} {owner} panicked during teardown");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1831,6 +1939,29 @@ pub(crate) enum SpawnPausePoint {
     AfterChildCreation,
     AfterRegistration,
     AfterPublication,
+    AfterFanoutPublication,
+    AfterDiagnosticPublication,
+    AfterMonitorReaderLaunch,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CleanupPausePoint {
+    BeforeAncillaryCleanup,
+    BeforeOutcomeCommit,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AttemptAncillarySnapshot {
+    pub(crate) publication_started: bool,
+    pub(crate) publication_closed: bool,
+    pub(crate) fanout_owned: bool,
+    pub(crate) diagnostics_owned: bool,
+    pub(crate) monitor_present: bool,
+    pub(crate) monitor_finished: bool,
+    pub(crate) reader_present: bool,
+    pub(crate) reader_finished: bool,
 }
 
 #[cfg(test)]
@@ -1856,6 +1987,20 @@ struct SpawnPauseInjection {
 #[cfg(test)]
 fn spawn_pause_injections() -> &'static Mutex<HashMap<Uuid, SpawnPauseInjection>> {
     static INJECTIONS: std::sync::OnceLock<Mutex<HashMap<Uuid, SpawnPauseInjection>>> =
+        std::sync::OnceLock::new();
+    INJECTIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+struct CleanupPauseInjection {
+    point: CleanupPausePoint,
+    reached: std::sync::mpsc::SyncSender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+fn cleanup_pause_injections() -> &'static Mutex<HashMap<Uuid, CleanupPauseInjection>> {
+    static INJECTIONS: std::sync::OnceLock<Mutex<HashMap<Uuid, CleanupPauseInjection>>> =
         std::sync::OnceLock::new();
     INJECTIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -1913,6 +2058,26 @@ pub(crate) fn inject_spawn_pause(
         .insert(
             id,
             SpawnPauseInjection {
+                point,
+                reached,
+                release,
+            },
+        );
+}
+
+#[cfg(test)]
+pub(crate) fn inject_cleanup_pause(
+    id: Uuid,
+    point: CleanupPausePoint,
+    reached: std::sync::mpsc::SyncSender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+) {
+    cleanup_pause_injections()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .insert(
+            id,
+            CleanupPauseInjection {
                 point,
                 reached,
                 release,
@@ -1998,6 +2163,33 @@ fn pause_spawn_if_injected(id: Uuid, point: SpawnPausePoint) -> Result<(), AppEr
     injection.release.recv().map_err(|error| {
         AppError::PtyError(format!("release injected spawn pause {point:?}: {error}"))
     })
+}
+
+#[cfg(test)]
+fn pause_cleanup_if_injected(id: Uuid, point: CleanupPausePoint) {
+    let injection = {
+        let mut injections = cleanup_pause_injections()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if injections
+            .get(&id)
+            .is_some_and(|injection| injection.point == point)
+        {
+            injections.remove(&id)
+        } else {
+            None
+        }
+    };
+    if let Some(injection) = injection {
+        injection
+            .reached
+            .send(())
+            .expect("publish injected cleanup pause");
+        injection
+            .release
+            .recv()
+            .expect("release injected cleanup pause");
+    }
 }
 
 #[cfg(test)]
@@ -2105,12 +2297,15 @@ impl<R: tauri::Runtime> LocalProcessBackend<R> {
                 .bind_owner_generation(attempt.generation)
                 .map_err(AppError::PtyError)?;
         }
-        self.spawn_sync(spec, Arc::clone(&attempt))?;
+        let spawn_result = self.spawn_sync(spec, Arc::clone(&attempt));
+        attempt.worker_finished.store(true, Ordering::Release);
+        attempt.state_changed.notify_all();
+        spawn_result?;
         let mut state = attempt
             .state
             .lock()
             .map_err(|_| AppError::PtyError("local_attempt_state_poisoned".to_string()))?;
-        let previous = std::mem::replace(&mut *state, LocalAttemptState::TeardownInProgress);
+        let previous = std::mem::replace(&mut *state, LocalAttemptState::Reserved);
         let LocalAttemptState::Active(instance) = previous else {
             *state = previous;
             return Err(AppError::PtyError(
@@ -2132,6 +2327,164 @@ impl<R: tauri::Runtime> LocalProcessBackend<R> {
             .get(&id)
             .map(|session| session.attempts.len())
             .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn owner_generations_for_test(&self, id: Uuid) -> Vec<u64> {
+        let mut generations = self
+            .ownership
+            .registry
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .sessions
+            .get(&id)
+            .map(|session| session.attempts.keys().copied().collect::<Vec<_>>())
+            .unwrap_or_default();
+        generations.sort_unstable();
+        generations
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ancillary_snapshot_for_test(
+        &self,
+        id: Uuid,
+        generation: u64,
+    ) -> Option<AttemptAncillarySnapshot> {
+        let attempt = self
+            .ownership
+            .registry
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .sessions
+            .get(&id)?
+            .attempts
+            .get(&generation)
+            .cloned()?;
+        let ancillary = attempt
+            .ancillary
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        Some(AttemptAncillarySnapshot {
+            publication_started: ancillary.publication_started,
+            publication_closed: ancillary.publication_closed,
+            fanout_owned: ancillary.fanout_owned,
+            diagnostics_owned: ancillary.diagnostics_owned,
+            monitor_present: ancillary.monitor.is_some(),
+            monitor_finished: ancillary
+                .monitor
+                .as_ref()
+                .is_some_and(std::thread::JoinHandle::is_finished),
+            reader_present: ancillary.reader.is_some(),
+            reader_finished: ancillary
+                .reader
+                .as_ref()
+                .is_some_and(std::thread::JoinHandle::is_finished),
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ancillary_registrations_for_test(
+        &self,
+        id: Uuid,
+    ) -> (Option<u64>, bool, bool, Option<u64>) {
+        (
+            self.fanout.registered_generation_for_test(id),
+            self.fanout.idle_registered_for_test(id),
+            self.fanout.parser_registered_for_test(id),
+            spawn_diagnostics::registered_generation_for_test(id),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn attempt_is_teardown_for_test(&self, id: Uuid, generation: u64) -> bool {
+        let attempt = self
+            .ownership
+            .registry
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .sessions
+            .get(&id)
+            .and_then(|session| session.attempts.get(&generation))
+            .cloned();
+        attempt.is_some_and(|attempt| {
+            attempt
+                .state
+                .lock()
+                .map(|state| matches!(*state, LocalAttemptState::TeardownInProgress(_)))
+                .unwrap_or(false)
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn attempt_cancelled_for_test(&self, id: Uuid, generation: u64) -> bool {
+        self.ownership
+            .registry
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .sessions
+            .get(&id)
+            .and_then(|session| session.attempts.get(&generation))
+            .is_some_and(|attempt| attempt.cancelled.load(Ordering::Acquire))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hold_owner_registry_for_test(
+        &self,
+        entered: std::sync::mpsc::SyncSender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        let _guard = self
+            .ownership
+            .registry
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        entered.send(()).expect("signal held local owner registry");
+        release.recv().expect("release held local owner registry");
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hold_attempt_state_for_test(
+        &self,
+        id: Uuid,
+        generation: u64,
+        entered: std::sync::mpsc::SyncSender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        let attempt = self
+            .ownership
+            .registry
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .sessions
+            .get(&id)
+            .and_then(|session| session.attempts.get(&generation))
+            .cloned()
+            .expect("attempt exists for held-state fixture");
+        let _guard = attempt
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        entered.send(()).expect("signal held attempt state");
+        release.recv().expect("release held attempt state");
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hold_fanout_registry_for_test(
+        &self,
+        entered: std::sync::mpsc::SyncSender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        self.fanout
+            .hold_generation_registry_for_test(entered, release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hold_idle_activity_for_test(
+        &self,
+        entered: std::sync::mpsc::SyncSender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        self.fanout.hold_idle_activity_for_test(entered, release);
     }
 
     fn reserve_attempt(&self, id: Uuid) -> Result<Arc<LocalProcessAttempt>, AppError> {
@@ -2289,7 +2642,7 @@ impl<R: tauri::Runtime> LocalProcessBackend<R> {
         if attempt.cancelled.load(Ordering::Acquire) {
             return Err(Self::attempt_cancelled_error(attempt));
         }
-        let previous = std::mem::replace(&mut *state, LocalAttemptState::TeardownInProgress);
+        let previous = std::mem::replace(&mut *state, LocalAttemptState::Reserved);
         let LocalAttemptState::Detached(owner) = previous else {
             *state = previous;
             return Err(Self::attempt_cancelled_error(attempt));
@@ -2335,6 +2688,12 @@ impl<R: tauri::Runtime> LocalProcessBackend<R> {
         attempt: &Arc<LocalProcessAttempt>,
         deadline: Instant,
     ) -> Result<(), String> {
+        self.remove_diagnostic_attempts_until(
+            attempt.id,
+            &[attempt.generation],
+            deadline,
+            "Mutex::try_lock(diagnostic-index-commit)",
+        )?;
         let mut registry = lock_local_owner_map_until(&self.ownership.registry, deadline)
             .map_err(|()| attempt.diagnostic("Mutex::try_lock(owner-registry-commit)"))?;
         let mut remove_session = false;
@@ -2354,21 +2713,6 @@ impl<R: tauri::Runtime> LocalProcessBackend<R> {
         if remove_session {
             registry.sessions.remove(&attempt.id);
         }
-        drop(registry);
-        if let Ok(mut index) = self.ownership.diagnostic_index.try_lock() {
-            if let Some(attempts) = index.get_mut(&attempt.id) {
-                attempts.retain(|candidate| {
-                    candidate.generation != attempt.generation
-                        || !matches!(
-                            candidate.state.try_lock().as_deref(),
-                            Ok(LocalAttemptState::Terminal)
-                        )
-                });
-                if attempts.is_empty() {
-                    index.remove(&attempt.id);
-                }
-            }
-        }
         Ok(())
     }
 
@@ -2380,10 +2724,10 @@ impl<R: tauri::Runtime> LocalProcessBackend<R> {
         deadline: Instant,
     ) -> Result<bool, String> {
         attempt.cancelled.store(true, Ordering::Release);
-        let retained = loop {
+        let teardown = loop {
             let mut state = lock_local_owner_map_until(&attempt.state, deadline)
                 .map_err(|()| attempt.diagnostic("Mutex::try_lock(attempt-state)"))?;
-            let previous = std::mem::replace(&mut *state, LocalAttemptState::TeardownInProgress);
+            let previous = std::mem::replace(&mut *state, LocalAttemptState::Reserved);
             match previous {
                 LocalAttemptState::Reserved | LocalAttemptState::CancelRequested => {
                     *state = LocalAttemptState::CancelRequested;
@@ -2402,25 +2746,24 @@ impl<R: tauri::Runtime> LocalProcessBackend<R> {
                     drop(next);
                 }
                 LocalAttemptState::Detached(owner) => {
-                    break RetainedLocalProcess::Detached(owner);
+                    let teardown = Arc::new(LocalTeardownOwner {
+                        retained: Mutex::new((attempt.id, RetainedLocalProcess::detached(owner))),
+                    });
+                    *state = LocalAttemptState::TeardownInProgress(Arc::clone(&teardown));
+                    attempt.state_changed.notify_all();
+                    break teardown;
                 }
                 LocalAttemptState::Active(instance) => {
-                    break RetainedLocalProcess::Instance(instance);
+                    let teardown = Arc::new(LocalTeardownOwner {
+                        retained: Mutex::new((attempt.id, RetainedLocalProcess::active(instance))),
+                    });
+                    *state = LocalAttemptState::TeardownInProgress(Arc::clone(&teardown));
+                    attempt.state_changed.notify_all();
+                    break teardown;
                 }
-                LocalAttemptState::TeardownInProgress => {
-                    *state = LocalAttemptState::TeardownInProgress;
-                    let now = Instant::now();
-                    if now >= deadline {
-                        return Err(attempt.diagnostic(
-                            "another teardown retained its in-progress tombstone through deadline",
-                        ));
-                    }
-                    let remaining = deadline.saturating_duration_since(now);
-                    let (next, _) = attempt
-                        .state_changed
-                        .wait_timeout(state, remaining)
-                        .unwrap_or_else(|error| error.into_inner());
-                    drop(next);
+                LocalAttemptState::TeardownInProgress(teardown) => {
+                    *state = LocalAttemptState::TeardownInProgress(Arc::clone(&teardown));
+                    break teardown;
                 }
                 LocalAttemptState::Terminal => {
                     *state = LocalAttemptState::Terminal;
@@ -2429,32 +2772,106 @@ impl<R: tauri::Runtime> LocalProcessBackend<R> {
             }
         };
 
-        let mut entries = vec![(attempt.id, retained)];
-        let diagnostic = shutdown_local_processes_until(&mut entries, budget, started, deadline)
-            .pop()
-            .flatten();
-        let (_, retained) = entries
-            .pop()
-            .expect("one attempt cleanup retains exactly one ownership value");
-        let mut state = lock_local_owner_map_until(&attempt.state, deadline)
-            .map_err(|()| attempt.diagnostic("Mutex::try_lock(attempt-state-commit)"))?;
-        match diagnostic {
-            None => {
-                *state = LocalAttemptState::Terminal;
-                attempt.state_changed.notify_all();
-                Ok(true)
-            }
-            Some(diagnostic) => {
-                let owner = match retained {
-                    RetainedLocalProcess::Instance(instance) => instance.owner,
-                    RetainedLocalProcess::Detached(owner) => owner,
-                };
-                attempt.identity.update(&owner);
-                *state = LocalAttemptState::Detached(owner);
-                attempt.state_changed.notify_all();
-                Err(diagnostic)
-            }
+        let mut retained = lock_local_owner_map_until(&teardown.retained, deadline)
+            .map_err(|()| attempt.diagnostic("Mutex::try_lock(retained-owner-slot)"))?;
+        let mut diagnostics = shutdown_local_processes_until(
+            std::slice::from_mut(&mut *retained),
+            budget,
+            started,
+            deadline,
+        )
+        .pop()
+        .flatten()
+        .into_iter()
+        .collect::<Vec<_>>();
+        attempt.identity.update(retained.1.owner_mut());
+        retained.1.close_transport();
+
+        #[cfg(test)]
+        pause_cleanup_if_injected(attempt.id, CleanupPausePoint::BeforeAncillaryCleanup);
+
+        if let Err(diagnostic) = self.cleanup_attempt_ancillary_until(attempt, deadline) {
+            diagnostics.push(diagnostic);
         }
+
+        #[cfg(test)]
+        pause_cleanup_if_injected(attempt.id, CleanupPausePoint::BeforeOutcomeCommit);
+
+        let mut state = match lock_local_owner_map_until(&attempt.state, deadline) {
+            Ok(state) => state,
+            Err(()) => {
+                diagnostics.push(attempt.diagnostic("Mutex::try_lock(attempt-state-commit)"));
+                return Err(diagnostics.join(" | "));
+            }
+        };
+        let owns_slot = matches!(
+            &*state,
+            LocalAttemptState::TeardownInProgress(current)
+                if Arc::ptr_eq(current, &teardown)
+        );
+        if !owns_slot {
+            diagnostics
+                .push(attempt.diagnostic("teardown owner slot changed before outcome commit"));
+            return Err(diagnostics.join(" | "));
+        }
+        if diagnostics.is_empty() {
+            *state = LocalAttemptState::Terminal;
+            attempt.state_changed.notify_all();
+            Ok(true)
+        } else {
+            attempt.state_changed.notify_all();
+            Err(diagnostics.join(" | "))
+        }
+    }
+
+    fn cleanup_attempt_ancillary_until(
+        &self,
+        attempt: &Arc<LocalProcessAttempt>,
+        deadline: Instant,
+    ) -> Result<(), String> {
+        let mut ancillary = lock_local_owner_map_until(&attempt.ancillary, deadline)
+            .map_err(|()| attempt.diagnostic("Mutex::try_lock(attempt-ancillary-cleanup)"))?;
+        ancillary.stop.store(true, Ordering::Release);
+        if ancillary.publication_started
+            && !ancillary.publication_closed
+            && !attempt.worker_finished.load(Ordering::Acquire)
+        {
+            return Err(
+                attempt.diagnostic("spawn publication transaction remained open through teardown")
+            );
+        }
+
+        join_ancillary_thread_until(
+            &mut ancillary.monitor,
+            deadline,
+            attempt.id,
+            attempt.generation,
+            "diagnostic monitor",
+        )?;
+        join_ancillary_thread_until(
+            &mut ancillary.reader,
+            deadline,
+            attempt.id,
+            attempt.generation,
+            "PTY reader",
+        )?;
+
+        if ancillary.fanout_owned {
+            self.fanout.remove_session_generation_until(
+                attempt.id,
+                attempt.generation,
+                deadline,
+            )?;
+            self.git_watcher
+                .remove_session_until(attempt.id, deadline)?;
+            ancillary.fanout_owned = false;
+        }
+        if ancillary.diagnostics_owned {
+            spawn_diagnostics::forget_generation_until(attempt.id, attempt.generation, deadline)?;
+            ancillary.diagnostics_owned = false;
+        }
+        ancillary.publication_closed = true;
+        Ok(())
     }
 
     fn cleanup_cancelled_attempt(&self, attempt: &Arc<LocalProcessAttempt>) {
@@ -2466,10 +2883,11 @@ impl<R: tauri::Runtime> LocalProcessBackend<R> {
                     attempt.state_changed.notify_all();
                     false
                 }
-                LocalAttemptState::CancelRequested | LocalAttemptState::TeardownInProgress => false,
+                LocalAttemptState::CancelRequested => false,
                 LocalAttemptState::Terminal
                 | LocalAttemptState::Detached(_)
-                | LocalAttemptState::Active(_) => true,
+                | LocalAttemptState::Active(_)
+                | LocalAttemptState::TeardownInProgress(_) => true,
             },
             Err(std::sync::TryLockError::Poisoned(error)) => {
                 let state = error.into_inner();
@@ -2478,6 +2896,7 @@ impl<R: tauri::Runtime> LocalProcessBackend<R> {
                     LocalAttemptState::Terminal
                         | LocalAttemptState::Detached(_)
                         | LocalAttemptState::Active(_)
+                        | LocalAttemptState::TeardownInProgress(_)
                 )
             }
             // The blocking worker or an existing teardown owns the state
@@ -2535,6 +2954,25 @@ impl<R: tauri::Runtime> LocalProcessBackend<R> {
             .unwrap_or_default()
     }
 
+    fn snapshot_attempts_until(
+        &self,
+        id: Uuid,
+        deadline: Instant,
+    ) -> Result<Vec<Arc<LocalProcessAttempt>>, String> {
+        let registry = lock_local_owner_map_until(&self.ownership.registry, deadline).map_err(
+            |()| {
+                format!(
+                    "session {id} retained local PTY ownership: syscall=Mutex::try_lock(owner-registry-snapshot)"
+                )
+            },
+        )?;
+        Ok(registry
+            .sessions
+            .get(&id)
+            .map(|session| session.attempts.values().cloned().collect())
+            .unwrap_or_default())
+    }
+
     fn diagnostic_attempts(&self, id: Option<Uuid>, operation: &str) -> Vec<String> {
         let index = self
             .ownership
@@ -2548,13 +2986,55 @@ impl<R: tauri::Runtime> LocalProcessBackend<R> {
             .collect()
     }
 
+    fn diagnostic_attempts_until(
+        &self,
+        id: Option<Uuid>,
+        operation: &str,
+        deadline: Instant,
+    ) -> Vec<String> {
+        let Ok(index) = lock_local_owner_map_until(&self.ownership.diagnostic_index, deadline)
+        else {
+            return vec![format!(
+                "local PTY diagnostic index remained busy through deadline: syscall={operation}"
+            )];
+        };
+        index
+            .iter()
+            .filter(|(session_id, _)| id.is_none_or(|id| id == **session_id))
+            .flat_map(|(_, attempts)| attempts.iter().map(|attempt| attempt.diagnostic(operation)))
+            .collect()
+    }
+
+    fn remove_diagnostic_attempts_until(
+        &self,
+        id: Uuid,
+        generations: &[u64],
+        deadline: Instant,
+        operation: &str,
+    ) -> Result<(), String> {
+        if generations.is_empty() {
+            return Ok(());
+        }
+        let mut index = lock_local_owner_map_until(&self.ownership.diagnostic_index, deadline)
+            .map_err(|()| {
+                format!("session {id} retained terminal diagnostic ownership: syscall={operation}")
+            })?;
+        if let Some(attempts) = index.get_mut(&id) {
+            attempts.retain(|attempt| !generations.contains(&attempt.generation));
+            if attempts.is_empty() {
+                index.remove(&id);
+            }
+        }
+        Ok(())
+    }
+
     fn wait_for_kill_tombstone(
         _id: Uuid,
         tombstone: &LocalKillTombstone,
         deadline: Instant,
     ) -> Result<(), ()> {
-        let mut state = lock_local_owner_map_until(&tombstone.state, deadline)?;
-        while *state == LocalKillState::InProgress {
+        let mut wait = lock_local_owner_map_until(&tombstone.wait_lock, deadline)?;
+        while !tombstone.finished.load(Ordering::Acquire) {
             #[cfg(test)]
             notify_concurrent_kill_wait(_id);
             let now = Instant::now();
@@ -2564,10 +3044,10 @@ impl<R: tauri::Runtime> LocalProcessBackend<R> {
             let remaining = deadline.saturating_duration_since(now);
             let (next, timeout) = tombstone
                 .state_changed
-                .wait_timeout(state, remaining)
+                .wait_timeout(wait, remaining)
                 .unwrap_or_else(|error| error.into_inner());
-            state = next;
-            if timeout.timed_out() && *state == LocalKillState::InProgress {
+            wait = next;
+            if timeout.timed_out() && !tombstone.finished.load(Ordering::Acquire) {
                 return Err(());
             }
         }
@@ -2587,8 +3067,11 @@ impl<R: tauri::Runtime> LocalProcessBackend<R> {
             {
                 Ok(registry) => registry,
                 Err(()) => {
-                    let diagnostics =
-                        self.diagnostic_attempts(Some(id), "Mutex::try_lock(owner-registry)");
+                    let diagnostics = self.diagnostic_attempts_until(
+                        Some(id),
+                        "Mutex::try_lock(owner-registry)",
+                        deadline,
+                    );
                     return Err(if diagnostics.is_empty() {
                         vec![format!(
                             "session {id} retained local PTY ownership after {}ms: no generation was published before the owner-registry deadline",
@@ -2603,11 +3086,7 @@ impl<R: tauri::Runtime> LocalProcessBackend<R> {
                 return Ok(0);
             };
             if let Some(existing) = session.kill.as_ref().cloned() {
-                let finished = existing
-                    .state
-                    .try_lock()
-                    .map(|state| *state == LocalKillState::Finished)
-                    .unwrap_or(false);
+                let finished = existing.finished.load(Ordering::Acquire);
                 if finished {
                     session.kill = None;
                     session.attempts.retain(|_, attempt| {
@@ -2623,9 +3102,10 @@ impl<R: tauri::Runtime> LocalProcessBackend<R> {
                 }
                 drop(registry);
                 if Self::wait_for_kill_tombstone(id, &existing, deadline).is_err() {
-                    return Err(self.diagnostic_attempts(
+                    return Err(self.diagnostic_attempts_until(
                         Some(id),
                         "concurrent kill tombstone remained in progress through deadline",
+                        deadline,
                     ));
                 }
                 continue;
@@ -2638,18 +3118,34 @@ impl<R: tauri::Runtime> LocalProcessBackend<R> {
 
         let mut diagnostics = Vec::new();
         let mut terminal = 0;
+        let mut terminal_generations = Vec::new();
         for attempt in &attempts {
             if Instant::now() >= deadline {
                 diagnostics.push(attempt.diagnostic("absolute teardown deadline expired"));
                 continue;
             }
             match self.cleanup_attempt_until(attempt, budget, started, deadline) {
-                Ok(true) => terminal += 1,
+                Ok(true) => {
+                    terminal += 1;
+                    terminal_generations.push(attempt.generation);
+                }
                 Ok(false) => {}
                 Err(diagnostic) => diagnostics.push(diagnostic),
             }
         }
 
+        let terminal_index_cleaned = match self.remove_diagnostic_attempts_until(
+            id,
+            &terminal_generations,
+            deadline,
+            "Mutex::try_lock(diagnostic-index-outcome)",
+        ) {
+            Ok(()) => true,
+            Err(diagnostic) => {
+                diagnostics.push(diagnostic);
+                false
+            }
+        };
         let commit = lock_local_owner_map_until(&self.ownership.registry, deadline);
         match commit {
             Ok(mut registry) => {
@@ -2660,12 +3156,11 @@ impl<R: tauri::Runtime> LocalProcessBackend<R> {
                         .as_ref()
                         .is_some_and(|current| Arc::ptr_eq(current, &tombstone))
                     {
-                        session.attempts.retain(|_, attempt| {
-                            !matches!(
-                                attempt.state.try_lock().as_deref(),
-                                Ok(LocalAttemptState::Terminal)
-                            )
-                        });
+                        if terminal_index_cleaned {
+                            session
+                                .attempts
+                                .retain(|generation, _| !terminal_generations.contains(generation));
+                        }
                         session.kill = None;
                         remove_session = session.attempts.is_empty();
                     }
@@ -2673,33 +3168,15 @@ impl<R: tauri::Runtime> LocalProcessBackend<R> {
                 if remove_session {
                     registry.sessions.remove(&id);
                 }
-                drop(registry);
-                if let Ok(mut index) = self.ownership.diagnostic_index.try_lock() {
-                    if let Some(indexed) = index.get_mut(&id) {
-                        indexed.retain(|attempt| {
-                            !matches!(
-                                attempt.state.try_lock().as_deref(),
-                                Ok(LocalAttemptState::Terminal)
-                            )
-                        });
-                        if indexed.is_empty() {
-                            index.remove(&id);
-                        }
-                    }
-                }
             }
-            Err(()) => {
-                diagnostics.extend(self.diagnostic_attempts(
-                    Some(id),
-                    "Mutex::try_lock(owner-registry-outcome-commit)",
-                ))
-            }
+            Err(()) => diagnostics.extend(self.diagnostic_attempts_until(
+                Some(id),
+                "Mutex::try_lock(owner-registry-outcome-commit)",
+                deadline,
+            )),
         }
         tombstone.finish();
 
-        self.fanout.remove_session(id);
-        self.git_watcher.remove_session(id);
-        spawn_diagnostics::forget(id);
         if diagnostics.is_empty() {
             log::debug!(
                 "[pty] session {id} source={source} committed terminal ownership for {terminal} generation(s)"
@@ -2716,13 +3193,24 @@ impl<R: tauri::Runtime> LocalProcessBackend<R> {
         started: Instant,
         deadline: Instant,
     ) -> PtyShutdownReport {
+        let retained_snapshot = self.diagnostic_attempts_until(
+            None,
+            "Mutex::try_lock(owner-registry-bulk-shutdown)",
+            deadline,
+        );
         let ids = match lock_local_owner_map_until(&self.ownership.registry, deadline) {
             Ok(registry) => registry.sessions.keys().copied().collect::<Vec<_>>(),
             Err(()) => {
                 return PtyShutdownReport {
                     terminal: 0,
-                    retained: self
-                        .diagnostic_attempts(None, "Mutex::try_lock(owner-registry-bulk-shutdown)"),
+                    retained: if retained_snapshot.is_empty() {
+                        vec![
+                            "local PTY owner registry remained busy through the absolute teardown deadline: syscall=Mutex::try_lock(owner-registry-bulk-shutdown)"
+                                .to_string(),
+                        ]
+                    } else {
+                        retained_snapshot
+                    },
                 };
             }
         };
@@ -3042,7 +3530,6 @@ impl<R: tauri::Runtime> LocalProcessBackend<R> {
             let primary = Self::attempt_cancelled_error(&attempt);
             return Err(self.fail_spawn_attempt(&attempt, primary));
         }
-        self.fanout.register_session(id, idle_tuning, rows, cols);
 
         // #942 - app.log is what users paste into issues, so a secret must never be
         // echoed back out through the child output or the argv we log. Keyed on the env
@@ -3060,75 +3547,122 @@ impl<R: tauri::Runtime> LocalProcessBackend<R> {
 
         // #942 - emits `[pty] spawn-record` (argv, cwd, CLI, profile, CODEX_HOME,
         // concurrency).
-        let record = spawn_diagnostics::register(SpawnRecordInit {
-            session_id: id,
-            pid: child_pid,
-            argv: exec_argv,
-            cwd: spawn_cwd,
-            cli: coding_agent,
-            agent_profile_id: agent_id,
-            codex_home,
-            configured_env_count: configured_env.len(),
-            removed_env_count: env_remove_keys.len(),
-            redact,
-            window: spawn_window,
-            started: spawn_started,
-            thresholds: diag_thresholds,
-        });
-
-        // #942 - the startup verdict at the deadline and exit attribution. The PTY
-        // reader alone cannot carry either: ConPTY holds the pipe open past the death of
-        // the child, so a child that dies on its own would stay invisible until the
-        // session is torn down. The monitor polls the child handle instead and ends with
-        // the session (detached on purpose; the handle is only useful to tests).
-        let monitor_backend = self.clone();
-        let _monitor = spawn_diagnostics::watch_child(Arc::clone(&record), move || {
-            monitor_backend.probe_child(id)
-        });
-
-        let session_id_str = id.to_string();
-        let fanout = self.fanout.clone();
-        let gate_backend = self.clone();
-        std::thread::spawn(move || {
-            let mut buf = [0u8; 4096];
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        // #942 - time-to-first-output and the retained head bytes. Hot
-                        // path: once the first byte is stamped and the head buffer is
-                        // full this is two relaxed loads and one relaxed add.
-                        record.note_output(&buf[..n]);
-                        fanout.handle_output(
-                            &output_target,
-                            id,
-                            &session_id_str,
-                            buf[..n].to_vec(),
-                        );
-                        // #973 (B) - has the child PAINTED anything yet? Asked of the real vt100
-                        // parser that `handle_output` has just fed this chunk to, which is why it
-                        // is asked after it and not before.
-                        //
-                        // Once the child has painted, this is a single relaxed load per chunk and
-                        // nothing else: no lock, no scan, no allocation. Before it has, it is one
-                        // uncontended lock and a bounded scan of the grid - and it REPLACED a
-                        // second `from_utf8_lossy` + `strip_ansi_csi` over the whole chunk, which
-                        // `handle_output` was already paying for the idle detector on the very
-                        // same bytes. One less chunk-sized allocation per chunk, not one more.
-                        //
-                        // Locks: the query takes `screen_parsers` and RELEASES it before
-                        // `open_startup_gate` takes `ptys`. The two are sequential, never nested,
-                        // so the order stays `ptys -> startup_gate -> size -> master`.
-                        if !rendered.load(Ordering::Relaxed)
-                            && fanout.has_rendered_visible_content(id)
-                        {
-                            gate_backend.open_startup_gate(id);
-                        }
+        let publication_result = {
+            let mut ancillary = attempt
+                .ancillary
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if attempt.cancelled.load(Ordering::Acquire) {
+                Err(Self::attempt_cancelled_error(&attempt))
+            } else {
+                ancillary.publication_started = true;
+                let result = (|| -> Result<(), AppError> {
+                    ancillary.fanout_owned = self.fanout.register_session_generation(
+                        id,
+                        attempt.generation,
+                        idle_tuning,
+                        rows,
+                        cols,
+                    );
+                    #[cfg(test)]
+                    pause_spawn_if_injected(id, SpawnPausePoint::AfterFanoutPublication)?;
+                    if attempt.cancelled.load(Ordering::Acquire) {
+                        return Err(Self::attempt_cancelled_error(&attempt));
                     }
-                    Err(_) => break,
-                }
+
+                    let registration = spawn_diagnostics::register_generation(
+                        SpawnRecordInit {
+                            session_id: id,
+                            pid: child_pid,
+                            argv: exec_argv,
+                            cwd: spawn_cwd,
+                            cli: coding_agent,
+                            agent_profile_id: agent_id,
+                            codex_home,
+                            configured_env_count: configured_env.len(),
+                            removed_env_count: env_remove_keys.len(),
+                            redact,
+                            window: spawn_window,
+                            started: spawn_started,
+                            thresholds: diag_thresholds,
+                        },
+                        attempt.generation,
+                    );
+                    ancillary.diagnostics_owned = registration.owns_slot;
+                    let record = registration.record;
+                    #[cfg(test)]
+                    pause_spawn_if_injected(id, SpawnPausePoint::AfterDiagnosticPublication)?;
+                    if attempt.cancelled.load(Ordering::Acquire) {
+                        return Err(Self::attempt_cancelled_error(&attempt));
+                    }
+
+                    // The monitor and reader handles stay in the exact attempt.
+                    // Teardown signals and joins them before that attempt may become
+                    // terminal or removable.
+                    let monitor_attempt = Arc::clone(&attempt);
+                    let monitor_stop = Arc::clone(&ancillary.stop);
+                    ancillary.monitor = Some(spawn_diagnostics::watch_child_until_stopped(
+                        Arc::clone(&record),
+                        monitor_stop,
+                        move || Self::probe_attempt_child(&monitor_attempt),
+                    ));
+
+                    let session_id_str = id.to_string();
+                    let fanout = self.fanout.clone();
+                    let gate_backend = self.clone();
+                    let reader_attempt = Arc::clone(&attempt);
+                    let reader_stop = Arc::clone(&ancillary.stop);
+                    let generation = attempt.generation;
+                    ancillary.reader = Some(std::thread::spawn(move || {
+                        let mut buf = [0u8; 4096];
+                        loop {
+                            if reader_stop.load(Ordering::Acquire)
+                                || reader_attempt.cancelled.load(Ordering::Acquire)
+                            {
+                                break;
+                            }
+                            match reader.read(&mut buf) {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    if reader_stop.load(Ordering::Acquire)
+                                        || reader_attempt.cancelled.load(Ordering::Acquire)
+                                    {
+                                        break;
+                                    }
+                                    // #942 - time-to-first-output and the retained head bytes.
+                                    record.note_output(&buf[..n]);
+                                    fanout.handle_output_generation(
+                                        &output_target,
+                                        id,
+                                        generation,
+                                        &session_id_str,
+                                        buf[..n].to_vec(),
+                                    );
+                                    if !rendered.load(Ordering::Relaxed)
+                                        && fanout
+                                            .has_rendered_visible_content_generation(id, generation)
+                                    {
+                                        gate_backend.open_startup_gate_for_attempt(&reader_attempt);
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                    }));
+                    #[cfg(test)]
+                    pause_spawn_if_injected(id, SpawnPausePoint::AfterMonitorReaderLaunch)?;
+                    if attempt.cancelled.load(Ordering::Acquire) {
+                        return Err(Self::attempt_cancelled_error(&attempt));
+                    }
+                    Ok(())
+                })();
+                ancillary.publication_closed = true;
+                result
             }
-        });
+        };
+        if let Err(error) = publication_result {
+            return Err(self.fail_spawn_attempt(&attempt, error));
+        }
 
         Ok(())
     }
@@ -3136,19 +3670,16 @@ impl<R: tauri::Runtime> LocalProcessBackend<R> {
     /// #973 (B) - the child rendered. Hand the ConPTY the size the view has been waiting to
     /// give it, and bring the vt100 screen with it. Called from the PTY read loop, once per
     /// session in practice. The decision itself is `hand_over_held_size`.
-    fn open_startup_gate(&self, id: Uuid) {
+    fn open_startup_gate_for_attempt(&self, attempt: &Arc<LocalProcessAttempt>) {
         let applied = {
-            let mut applied = None;
-            for attempt in self.snapshot_attempts(id) {
-                let Ok(state) = attempt.state.lock() else {
-                    continue;
-                };
-                if let LocalAttemptState::Active(instance) = &*state {
-                    applied = hand_over_held_size(instance, id);
-                    break;
-                }
+            let Ok(state) = attempt.state.lock() else {
+                return;
+            };
+            if let LocalAttemptState::Active(instance) = &*state {
+                hand_over_held_size(instance, attempt.id)
+            } else {
+                None
             }
-            applied
         };
 
         // Outside the `ptys` guard: the screen and the broadcast take locks of their own, and
@@ -3157,7 +3688,8 @@ impl<R: tauri::Runtime> LocalProcessBackend<R> {
         // Only for a size the ConPTY actually took. The vt100 screen models the CHILD's
         // screen, so it must not be moved to a size the child was never given.
         if let Some((cols, rows)) = applied {
-            self.fanout.resize_screen_and_broadcast(id, cols, rows);
+            self.fanout
+                .resize_screen_and_broadcast(attempt.id, cols, rows);
         }
     }
 
@@ -3165,28 +3697,132 @@ impl<R: tauri::Runtime> LocalProcessBackend<R> {
     /// (zero timeout) and never reports a child it could not query as running.
     fn probe_child(&self, id: Uuid) -> ChildLiveness {
         for attempt in self.snapshot_attempts(id) {
-            let Ok(mut state) = attempt.state.lock() else {
-                return ChildLiveness::Unqueryable(
-                    "local attempt state lock is poisoned".to_string(),
-                );
-            };
-            match &mut *state {
-                LocalAttemptState::Active(instance) => {
-                    return probe_owner_child(&mut instance.owner);
-                }
-                LocalAttemptState::Detached(owner) => return probe_owner_child(owner),
-                LocalAttemptState::Reserved
-                | LocalAttemptState::CancelRequested
-                | LocalAttemptState::TeardownInProgress => {
-                    return ChildLiveness::Unqueryable(format!(
-                        "local PTY generation {} is not yet queryable",
-                        attempt.generation
-                    ));
-                }
-                LocalAttemptState::Terminal => {}
+            let liveness = Self::probe_attempt_child(&attempt);
+            if !matches!(liveness, ChildLiveness::Gone) {
+                return liveness;
             }
         }
         ChildLiveness::Gone
+    }
+
+    fn probe_attempt_child(attempt: &Arc<LocalProcessAttempt>) -> ChildLiveness {
+        let Ok(mut state) = attempt.state.lock() else {
+            return ChildLiveness::Unqueryable("local attempt state lock is poisoned".to_string());
+        };
+        match &mut *state {
+            LocalAttemptState::Active(instance) => probe_owner_child(&mut instance.owner),
+            LocalAttemptState::Detached(owner) => probe_owner_child(owner),
+            LocalAttemptState::Reserved
+            | LocalAttemptState::CancelRequested
+            | LocalAttemptState::TeardownInProgress(_) => ChildLiveness::Unqueryable(format!(
+                "local PTY generation {} is not yet queryable",
+                attempt.generation
+            )),
+            LocalAttemptState::Terminal => ChildLiveness::Gone,
+        }
+    }
+
+    fn probe_child_until(&self, id: Uuid, deadline: Instant) -> Result<ChildLiveness, String> {
+        for attempt in self.snapshot_attempts_until(id, deadline)? {
+            let mut state = lock_local_owner_map_until(&attempt.state, deadline)
+                .map_err(|()| attempt.diagnostic("Mutex::try_lock(attempt-state-pre-stop)"))?;
+            let liveness = match &mut *state {
+                LocalAttemptState::Active(instance) => probe_owner_child(&mut instance.owner),
+                LocalAttemptState::Detached(owner) => probe_owner_child(owner),
+                LocalAttemptState::Reserved
+                | LocalAttemptState::CancelRequested
+                | LocalAttemptState::TeardownInProgress(_) => ChildLiveness::Unqueryable(format!(
+                    "local PTY generation {} is not yet queryable",
+                    attempt.generation
+                )),
+                LocalAttemptState::Terminal => ChildLiveness::Gone,
+            };
+            if Instant::now() >= deadline {
+                return Err(attempt.diagnostic("bounded pre-stop child observation"));
+            }
+            if !matches!(liveness, ChildLiveness::Gone) {
+                return Ok(liveness);
+            }
+        }
+        Ok(ChildLiveness::Gone)
+    }
+
+    fn kill_with_deadline(
+        &self,
+        id: Uuid,
+        budget: Duration,
+        started: Instant,
+        deadline: Instant,
+    ) -> Result<(), AppError> {
+        let retained_snapshot = self.diagnostic_attempts_until(
+            Some(id),
+            "Mutex::try_lock(pre-stop-owner-snapshot)",
+            deadline,
+        );
+        let mut diagnostics = Vec::new();
+        let child_at_stop = match self.probe_child_until(id, deadline) {
+            Ok(liveness) => liveness,
+            Err(diagnostic) => {
+                diagnostics.push(diagnostic.clone());
+                ChildLiveness::Unqueryable(diagnostic)
+            }
+        };
+        let record = match spawn_diagnostics::mark_ac_stop_until(
+            id,
+            "session-kill",
+            Some(child_at_stop.clone()),
+            deadline,
+        ) {
+            Ok(record) => record,
+            Err(diagnostic) => {
+                diagnostics.push(diagnostic);
+                None
+            }
+        };
+        let terminal = match self.kill_session_until(id, budget, started, deadline, "session-kill")
+        {
+            Ok(terminal) => terminal,
+            Err(mut retained) => {
+                diagnostics.append(&mut retained);
+                diagnostics.extend(retained_snapshot);
+                return Err(AppError::PtyError(diagnostics.join(" | ")));
+            }
+        };
+
+        if let Some(record) = record.as_ref() {
+            let cause = record.attribute_exit(record.stop_snapshot());
+            let _ = record.log_child_exit(cause, &ChildLiveness::Gone, "bounded-stop");
+        } else {
+            let cause = if matches!(child_at_stop, ChildLiveness::Exited { .. }) {
+                ExitCause::ChildInitiated
+            } else {
+                ExitCause::AcRequested
+            };
+            log::info!(
+                "[pty] child-exit session={} cause={} detail=bounded-stop child=gone",
+                id,
+                cause.as_log()
+            );
+        }
+        log::debug!(
+            "[pty] explicit kill committed {terminal} terminal generation(s) for session {id}"
+        );
+        if diagnostics.is_empty() {
+            Ok(())
+        } else {
+            Err(AppError::PtyError(diagnostics.join(" | ")))
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn kill_with_budget_for_test(
+        &self,
+        id: Uuid,
+        budget: Duration,
+    ) -> Result<(), AppError> {
+        let started = Instant::now();
+        let deadline = started.checked_add(budget).unwrap_or(started);
+        self.kill_with_deadline(id, budget, started, deadline)
     }
 }
 
@@ -3373,6 +4009,17 @@ struct BlockingSpawnCancelGuard {
     disarmed: bool,
 }
 
+struct SpawnWorkerCompletion {
+    attempt: Arc<LocalProcessAttempt>,
+}
+
+impl Drop for SpawnWorkerCompletion {
+    fn drop(&mut self) {
+        self.attempt.worker_finished.store(true, Ordering::Release);
+        self.attempt.state_changed.notify_all();
+    }
+}
+
 impl BlockingSpawnCancelGuard {
     fn disarm(&mut self) {
         self.disarmed = true;
@@ -3425,7 +4072,11 @@ impl<R: tauri::Runtime> PtyBackend for LocalProcessBackend<R> {
                 disarmed: false,
             };
             let handle = tokio::task::spawn_blocking(move || {
+                let completion = SpawnWorkerCompletion {
+                    attempt: Arc::clone(&worker_attempt),
+                };
                 let result = spawn_backend.spawn_sync(spec, Arc::clone(&worker_attempt));
+                drop(completion);
                 if worker_attempt.cancelled.load(Ordering::Acquire) {
                     (worker_cleanup)(Arc::clone(&worker_attempt));
                 }
@@ -3524,32 +4175,7 @@ impl<R: tauri::Runtime> PtyBackend for LocalProcessBackend<R> {
         let budget = LOCAL_OWNER_SHUTDOWN_BUDGET;
         let started = Instant::now();
         let deadline = started.checked_add(budget).unwrap_or(started);
-        let child_at_stop = self.probe_child(id);
-        let record =
-            spawn_diagnostics::mark_ac_stop(id, "session-kill", Some(child_at_stop.clone()));
-        let terminal = self
-            .kill_session_until(id, budget, started, deadline, "session-kill")
-            .map_err(|diagnostics| AppError::PtyError(diagnostics.join(" | ")))?;
-
-        if let Some(record) = record.as_ref() {
-            let cause = record.attribute_exit(record.stop_snapshot());
-            let _ = record.log_child_exit(cause, &ChildLiveness::Gone, "bounded-stop");
-        } else {
-            let cause = if matches!(child_at_stop, ChildLiveness::Exited { .. }) {
-                ExitCause::ChildInitiated
-            } else {
-                ExitCause::AcRequested
-            };
-            log::info!(
-                "[pty] child-exit session={} cause={} detail=bounded-stop child=gone",
-                id,
-                cause.as_log()
-            );
-        }
-        log::debug!(
-            "[pty] explicit kill committed {terminal} terminal generation(s) for session {id}"
-        );
-        Ok(())
+        self.kill_with_deadline(id, budget, started, deadline)
     }
 
     /// #942 - record who asked for the stop and what the child looked like BEFORE any
@@ -3604,6 +4230,10 @@ impl<R: tauri::Runtime> PtyBackend for LocalProcessBackend<R> {
 
     fn ownership_diagnostics(&self, operation: &str) -> Vec<String> {
         self.diagnostic_attempts(None, operation)
+    }
+
+    fn ownership_diagnostics_until(&self, operation: &str, deadline: Instant) -> Vec<String> {
+        self.diagnostic_attempts_until(None, operation, deadline)
     }
 
     fn get_screen_snapshot(&self, id: Uuid) -> Option<PtyScreenSnapshot> {
@@ -3769,7 +4399,7 @@ mod bounded_owner_tests {
             owner.process_group_required = false;
             owner
         };
-        let mut entries = vec![(id, RetainedLocalProcess::Detached(owner))];
+        let mut entries = vec![(id, RetainedLocalProcess::detached(owner))];
         let budget = Duration::from_millis(30);
         let started = Instant::now();
         let outcomes = shutdown_local_processes(&mut entries, budget);

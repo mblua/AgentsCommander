@@ -921,8 +921,18 @@ impl SpawnRecord {
 
 #[derive(Default)]
 struct Registry {
-    records: HashMap<Uuid, Arc<SpawnRecord>>,
+    records: HashMap<Uuid, RegisteredSpawnRecord>,
     recent: VecDeque<(Instant, Option<CodingAgentKind>)>,
+}
+
+struct RegisteredSpawnRecord {
+    generation: u64,
+    record: Arc<SpawnRecord>,
+}
+
+pub(crate) struct SpawnRecordRegistration {
+    pub(crate) record: Arc<SpawnRecord>,
+    pub(crate) owns_slot: bool,
 }
 
 fn registry() -> &'static Mutex<Registry> {
@@ -969,14 +979,30 @@ pub fn note_spawn_attempt(cli: Option<CodingAgentKind>, thresholds: Thresholds) 
 
 /// Register a spawned child and emit its spawn record.
 pub fn register(init: SpawnRecordInit) -> Arc<SpawnRecord> {
+    register_generation(init, 0).record
+}
+
+/// Registers diagnostics only when no live generation owns the UUID slot.
+/// A duplicate still receives its private record for its own monitor, but it
+/// cannot replace the established generation's public diagnostic identity.
+pub(crate) fn register_generation(
+    init: SpawnRecordInit,
+    generation: u64,
+) -> SpawnRecordRegistration {
     let record = Arc::new(SpawnRecord::new(init));
     record.log_spawn();
-    registry()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .records
-        .insert(record.session_id, Arc::clone(&record));
-    record
+    let mut registry = registry().lock().unwrap_or_else(|e| e.into_inner());
+    let owns_slot = match registry.records.entry(record.session_id) {
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(RegisteredSpawnRecord {
+                generation,
+                record: Arc::clone(&record),
+            });
+            true
+        }
+        std::collections::hash_map::Entry::Occupied(_) => false,
+    };
+    SpawnRecordRegistration { record, owns_slot }
 }
 
 /// Tag a session's child as stopped by AC (session kill, job terminate,
@@ -995,9 +1021,30 @@ pub fn mark_ac_stop(
         .unwrap_or_else(|e| e.into_inner())
         .records
         .get(&session_id)
-        .cloned()?;
+        .map(|entry| Arc::clone(&entry.record))?;
     record.mark_ac_stop(source, pre_stop);
     Some(record)
+}
+
+pub(crate) fn mark_ac_stop_until(
+    session_id: Uuid,
+    source: &str,
+    pre_stop: Option<ChildLiveness>,
+    deadline: Instant,
+) -> Result<Option<Arc<SpawnRecord>>, String> {
+    let record = {
+        let registry = lock_registry_until(deadline).map_err(|()| {
+            format!("session {session_id} spawn-diagnostic pre-stop lock deadline")
+        })?;
+        registry
+            .records
+            .get(&session_id)
+            .map(|entry| Arc::clone(&entry.record))
+    };
+    if let Some(record) = record.as_ref() {
+        record.mark_ac_stop(source, pre_stop);
+    }
+    Ok(record)
 }
 
 pub fn forget(session_id: Uuid) {
@@ -1006,6 +1053,53 @@ pub fn forget(session_id: Uuid) {
         .unwrap_or_else(|e| e.into_inner())
         .records
         .remove(&session_id);
+}
+
+pub(crate) fn forget_generation_until(
+    session_id: Uuid,
+    generation: u64,
+    deadline: Instant,
+) -> Result<bool, String> {
+    let mut registry = lock_registry_until(deadline).map_err(|()| {
+        format!("session {session_id} generation {generation} spawn-diagnostic lock deadline")
+    })?;
+    if registry
+        .records
+        .get(&session_id)
+        .is_some_and(|entry| entry.generation == generation)
+    {
+        registry.records.remove(&session_id);
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn registered_generation_for_test(session_id: Uuid) -> Option<u64> {
+    registry()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .records
+        .get(&session_id)
+        .map(|entry| entry.generation)
+}
+
+fn lock_registry_until(deadline: Instant) -> Result<std::sync::MutexGuard<'static, Registry>, ()> {
+    loop {
+        if Instant::now() >= deadline {
+            return Err(());
+        }
+        match registry().try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(std::sync::TryLockError::Poisoned(error)) => return Ok(error.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                std::thread::sleep(Duration::from_millis(2).min(remaining));
+            }
+            Err(std::sync::TryLockError::WouldBlock) => return Err(()),
+        }
+    }
 }
 
 /// One monitor thread per local session. It owns two signals the PTY reader cannot
@@ -1017,13 +1111,30 @@ pub fn watch_child<P>(record: Arc<SpawnRecord>, probe: P) -> JoinHandle<()>
 where
     P: Fn() -> ChildLiveness + Send + 'static,
 {
+    watch_child_until_stopped(record, Arc::new(AtomicBool::new(false)), probe)
+}
+
+pub(crate) fn watch_child_until_stopped<P>(
+    record: Arc<SpawnRecord>,
+    stop: Arc<AtomicBool>,
+    probe: P,
+) -> JoinHandle<()>
+where
+    P: Fn() -> ChildLiveness + Send + 'static,
+{
     std::thread::spawn(move || loop {
+        if stop.load(Ordering::Acquire) {
+            return;
+        }
         let tick = if record.in_startup_phase() {
             record.thresholds.startup_poll
         } else {
             record.thresholds.steady_poll
         };
-        std::thread::sleep(tick);
+        std::thread::park_timeout(tick);
+        if stop.load(Ordering::Acquire) {
+            return;
+        }
 
         // Read the stop state BEFORE looking at the child: a stop that lands after this
         // point cannot be what killed a child the probe is about to find already dead.

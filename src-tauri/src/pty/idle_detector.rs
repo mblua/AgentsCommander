@@ -461,6 +461,67 @@ impl IdleDetector {
         self.tuning.lock().unwrap().remove(&session_id);
     }
 
+    pub(crate) fn remove_session_until(
+        &self,
+        session_id: Uuid,
+        deadline: Instant,
+    ) -> Result<(), String> {
+        lock_until(&self.activity, deadline, "activity")?.remove(&session_id);
+        lock_until(&self.silence, deadline, "silence")?.remove(&session_id);
+        lock_until(&self.registered_at, deadline, "registered-at")?.remove(&session_id);
+        lock_until(&self.idle_set, deadline, "idle-set")?.remove(&session_id);
+        lock_until(&self.resize_grace, deadline, "resize-grace")?.remove(&session_id);
+        lock_until(&self.tuning, deadline, "tuning")?.remove(&session_id);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn registration_present_for_test(&self, session_id: Uuid) -> bool {
+        self.activity
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains_key(&session_id)
+            || self
+                .silence
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .contains_key(&session_id)
+            || self
+                .registered_at
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .contains_key(&session_id)
+            || self
+                .idle_set
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .contains(&session_id)
+            || self
+                .resize_grace
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .contains_key(&session_id)
+            || self
+                .tuning
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .contains_key(&session_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hold_activity_for_test(
+        &self,
+        entered: std::sync::mpsc::SyncSender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        let _guard = self
+            .activity
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        entered.send(()).expect("signal held idle activity");
+        release.recv().expect("release held idle activity");
+    }
+
     /// Start the watcher thread that polls for idle transitions.
     pub fn start(
         self: &Arc<Self>,
@@ -501,6 +562,29 @@ impl IdleDetector {
                 }
             }
         })
+    }
+}
+
+fn lock_until<'a, T>(
+    owner: &'a Mutex<T>,
+    deadline: Instant,
+    label: &str,
+) -> Result<std::sync::MutexGuard<'a, T>, String> {
+    loop {
+        if Instant::now() >= deadline {
+            return Err(format!("idle-detector {label} lock deadline"));
+        }
+        match owner.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(std::sync::TryLockError::Poisoned(error)) => return Ok(error.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                std::thread::sleep(Duration::from_millis(2).min(remaining));
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(format!("idle-detector {label} lock deadline"));
+            }
+        }
     }
 }
 

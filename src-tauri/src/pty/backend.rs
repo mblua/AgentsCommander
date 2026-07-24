@@ -216,6 +216,19 @@ pub trait PtyBackend: Any + Send + Sync {
     fn ownership_diagnostics(&self, _operation: &str) -> Vec<String> {
         Vec::new()
     }
+
+    fn ownership_diagnostics_until(
+        &self,
+        operation: &str,
+        deadline: std::time::Instant,
+    ) -> Vec<String> {
+        if std::time::Instant::now() >= deadline {
+            return vec![format!(
+                "PTY ownership diagnostics skipped after absolute deadline: syscall={operation}"
+            )];
+        }
+        self.ownership_diagnostics(operation)
+    }
 }
 #[cfg(test)]
 mod pty_viewport_tests {

@@ -142,8 +142,13 @@ impl PtyShutdownOwner {
         self.local_backend.kill_all_jobs_until(deadline)
     }
 
-    pub(crate) fn diagnostics(&self, operation: &str) -> Vec<String> {
-        self.local_backend.ownership_diagnostics(operation)
+    pub(crate) fn diagnostics_until(
+        &self,
+        operation: &str,
+        deadline: std::time::Instant,
+    ) -> Vec<String> {
+        self.local_backend
+            .ownership_diagnostics_until(operation, deadline)
     }
 }
 

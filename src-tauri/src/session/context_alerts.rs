@@ -187,6 +187,31 @@ impl ContextAlertMonitor {
             .await
             .map_err(|error| format!("Context alert actor join failed: {}", error))
     }
+
+    pub(crate) async fn close_and_join_until(&self, deadline: Instant) -> Result<(), String> {
+        self.request_close();
+        let handle = self
+            .join
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        let Some(mut handle) = handle else {
+            return Ok(());
+        };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match tokio::time::timeout(remaining, &mut handle).await {
+            Ok(result) => {
+                result.map_err(|error| format!("Context alert actor join failed: {error}"))
+            }
+            Err(_) => {
+                let mut slot = self.join.lock().unwrap_or_else(|error| error.into_inner());
+                if slot.is_none() {
+                    *slot = Some(handle);
+                }
+                Err("Context alert actor remained live through the teardown deadline".to_string())
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

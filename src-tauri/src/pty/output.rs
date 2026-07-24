@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
@@ -26,6 +27,7 @@ pub struct SessionIoFanout {
     response_watchers: ResponseWatcherMap,
     ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
     screen_parsers: Arc<Mutex<HashMap<Uuid, ScreenReplayState>>>,
+    session_generations: Arc<Mutex<HashMap<Uuid, u64>>>,
 }
 
 pub struct PtyScreenSnapshot {
@@ -103,19 +105,69 @@ impl SessionIoFanout {
             response_watchers: Arc::new(Mutex::new(HashMap::new())),
             ws_broadcaster,
             screen_parsers: Arc::new(Mutex::new(HashMap::new())),
+            session_generations: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     pub fn register_session(&self, id: Uuid, idle_tuning: IdleTuning, rows: u16, cols: u16) {
+        let _ = self.register_session_generation(id, 0, idle_tuning, rows, cols);
+    }
+
+    /// Publishes one UUID-scoped fanout owner without replacing a live
+    /// generation. The returned Boolean is the exact removal authority.
+    pub(crate) fn register_session_generation(
+        &self,
+        id: Uuid,
+        generation: u64,
+        idle_tuning: IdleTuning,
+        rows: u16,
+        cols: u16,
+    ) -> bool {
+        let mut generations = self
+            .session_generations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if generations.contains_key(&id) {
+            return false;
+        }
         self.idle_detector.register_session(id, idle_tuning);
         let replay = ScreenReplayState {
             parser: vt100::Parser::new(rows, cols, 0),
             output_sequence: 0,
         };
-        self.screen_parsers.lock().unwrap().insert(id, replay);
+        self.screen_parsers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(id, replay);
+        generations.insert(id, generation);
+        true
     }
 
     pub fn handle_output(
+        &self,
+        output_target: &PtyOutputTarget,
+        id: Uuid,
+        session_id_str: &str,
+        data: Vec<u8>,
+    ) {
+        self.handle_output_inner(output_target, id, session_id_str, data);
+    }
+
+    pub(crate) fn handle_output_generation(
+        &self,
+        output_target: &PtyOutputTarget,
+        id: Uuid,
+        generation: u64,
+        session_id_str: &str,
+        data: Vec<u8>,
+    ) {
+        if !self.generation_is_current(id, generation) {
+            return;
+        }
+        self.handle_output_inner(output_target, id, session_id_str, data);
+    }
+
+    fn handle_output_inner(
         &self,
         output_target: &PtyOutputTarget,
         id: Uuid,
@@ -224,6 +276,10 @@ impl SessionIoFanout {
     }
 
     pub fn remove_session(&self, id: Uuid) {
+        self.session_generations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&id);
         self.idle_detector.remove_session(id);
 
         if let Ok(mut watchers) = self.response_watchers.lock() {
@@ -233,6 +289,42 @@ impl SessionIoFanout {
         if let Ok(mut parsers) = self.screen_parsers.lock() {
             parsers.remove(&id);
         }
+    }
+
+    /// Removes only the generation that acquired fanout publication authority.
+    /// Every lock acquisition is covered by the caller's original deadline.
+    pub(crate) fn remove_session_generation_until(
+        &self,
+        id: Uuid,
+        generation: u64,
+        deadline: Instant,
+    ) -> Result<bool, String> {
+        let mut generations = lock_until(&self.session_generations, deadline)
+            .map_err(|()| format!("session {id} generation {generation} fanout lock deadline"))?;
+        if generations.get(&id).copied() != Some(generation) {
+            return Ok(false);
+        }
+
+        self.idle_detector
+            .remove_session_until(id, deadline)
+            .map_err(|error| {
+                format!("session {id} generation {generation} idle cleanup: {error}")
+            })?;
+
+        {
+            let mut watchers = lock_until(&self.response_watchers, deadline).map_err(|()| {
+                format!("session {id} generation {generation} response-watcher lock deadline")
+            })?;
+            watchers.retain(|(session_id, _), _| *session_id != id);
+        }
+        {
+            let mut parsers = lock_until(&self.screen_parsers, deadline).map_err(|()| {
+                format!("session {id} generation {generation} screen-parser lock deadline")
+            })?;
+            parsers.remove(&id);
+        }
+        generations.remove(&id);
+        Ok(true)
     }
 
     /// #973 (B) - has the child painted anything a human could see?
@@ -269,6 +361,66 @@ impl SessionIoFanout {
             return false;
         };
         screen_shows_visible_content(state.parser.screen())
+    }
+
+    pub(crate) fn has_rendered_visible_content_generation(
+        &self,
+        id: Uuid,
+        generation: u64,
+    ) -> bool {
+        self.generation_is_current(id, generation) && self.has_rendered_visible_content(id)
+    }
+
+    fn generation_is_current(&self, id: Uuid, generation: u64) -> bool {
+        self.session_generations
+            .lock()
+            .map(|generations| generations.get(&id).copied() == Some(generation))
+            .unwrap_or(false)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn registered_generation_for_test(&self, id: Uuid) -> Option<u64> {
+        self.session_generations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(&id)
+            .copied()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn parser_registered_for_test(&self, id: Uuid) -> bool {
+        self.screen_parsers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains_key(&id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn idle_registered_for_test(&self, id: Uuid) -> bool {
+        self.idle_detector.registration_present_for_test(id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hold_generation_registry_for_test(
+        &self,
+        entered: std::sync::mpsc::SyncSender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        let _guard = self
+            .session_generations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        entered.send(()).expect("signal held fanout registry");
+        release.recv().expect("release held fanout registry");
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hold_idle_activity_for_test(
+        &self,
+        entered: std::sync::mpsc::SyncSender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        self.idle_detector.hold_activity_for_test(entered, release);
     }
 
     pub fn get_screen_snapshot(&self, id: Uuid) -> Option<PtyScreenSnapshot> {
@@ -321,6 +473,23 @@ impl SessionIoFanout {
                     capturing: false,
                 },
             );
+        }
+    }
+}
+
+fn lock_until<T>(owner: &Mutex<T>, deadline: Instant) -> Result<std::sync::MutexGuard<'_, T>, ()> {
+    loop {
+        if Instant::now() >= deadline {
+            return Err(());
+        }
+        match owner.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(std::sync::TryLockError::Poisoned(error)) => return Ok(error.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                std::thread::sleep(Duration::from_millis(2).min(remaining));
+            }
+            Err(std::sync::TryLockError::WouldBlock) => return Err(()),
         }
     }
 }

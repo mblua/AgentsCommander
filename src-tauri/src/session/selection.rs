@@ -1438,6 +1438,11 @@ impl SelectionCoordinator {
             .await
     }
 
+    pub(crate) async fn close_and_join_until(&self, deadline: Instant) -> SelectionShutdownReport {
+        self.close_and_join_with_budget(deadline.saturating_duration_since(Instant::now()))
+            .await
+    }
+
     async fn close_and_join_with_budget(&self, budget: Duration) -> SelectionShutdownReport {
         let started_at = Instant::now();
         let deadline = started_at.checked_add(budget).unwrap_or(started_at);

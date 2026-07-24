@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::future::join_all;
 use tauri::{AppHandle, Emitter};
@@ -351,6 +351,31 @@ impl<R: tauri::Runtime> GitWatcher<R> {
 
     pub fn remove_session(&self, id: Uuid) {
         self.cache.lock().unwrap().remove(&id);
+    }
+
+    pub(crate) fn remove_session_until(&self, id: Uuid, deadline: Instant) -> Result<(), String> {
+        loop {
+            if Instant::now() >= deadline {
+                return Err(format!("session {id} git-watcher cache lock deadline"));
+            }
+            match self.cache.try_lock() {
+                Ok(mut cache) => {
+                    cache.remove(&id);
+                    return Ok(());
+                }
+                Err(std::sync::TryLockError::Poisoned(error)) => {
+                    error.into_inner().remove(&id);
+                    return Ok(());
+                }
+                Err(std::sync::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    std::thread::sleep(Duration::from_millis(2).min(remaining));
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    return Err(format!("session {id} git-watcher cache lock deadline"));
+                }
+            }
+        }
     }
 
     /// Force a re-emit on the next tick for `id`. Called by

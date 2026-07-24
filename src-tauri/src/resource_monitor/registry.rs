@@ -710,12 +710,30 @@ impl ResourceMonitorState {
         // is not registered, already terminating or already terminated kills nothing, so
         // it must not latch an attribution). No-op for sessions with no local spawn
         // record. Taken with no resource-monitor lock held.
-        crate::pty::spawn_diagnostics::mark_ac_stop(session_id, reason.as_log_reason(), None);
+        let mut errors = Vec::new();
+        match deadline {
+            Some(deadline) => {
+                if let Err(error) = crate::pty::spawn_diagnostics::mark_ac_stop_until(
+                    session_id,
+                    reason.as_log_reason(),
+                    None,
+                    deadline,
+                ) {
+                    errors.push(error);
+                }
+            }
+            None => {
+                crate::pty::spawn_diagnostics::mark_ac_stop(
+                    session_id,
+                    reason.as_log_reason(),
+                    None,
+                );
+            }
+        }
 
         let mut targets = previous_targets;
         let mut current_cleanup_identities = BTreeSet::new();
         let mut pending_identity_errors = Vec::new();
-        let mut errors = Vec::new();
         let observe_started = Instant::now();
         let observed_tree = match deadline {
             Some(deadline) => self.backend.observe_tree_until(root_identity, deadline),
