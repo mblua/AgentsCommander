@@ -558,7 +558,10 @@ mod tests {
         let mut clocks = CoordinatorClocks::default();
         let fqn = "proj:wg-1-team/coord";
 
-        assert!(clocks.mark_auto_closed(fqn, ts(0)), "first mark transitions None -> Some");
+        assert!(
+            clocks.mark_auto_closed(fqn, ts(0)),
+            "first mark transitions None -> Some"
+        );
         assert_eq!(clocks.auto_closed_at(fqn), Some(ts(0)));
         assert!(
             !clocks.mark_auto_closed(fqn, ts(50)),
@@ -614,7 +617,10 @@ mod tests {
 
         clocks.note_user_message(fqn, ts(0));
         clocks.mark_manually_closed(fqn, ts(1));
-        assert!(clocks.clear_manually_closed(fqn), "Some -> None returns true");
+        assert!(
+            clocks.clear_manually_closed(fqn),
+            "Some -> None returns true"
+        );
         assert_eq!(clocks.manually_closed_at(fqn), None);
         // The badge clock survives the clear.
         assert_eq!(clocks.last_user_message_at(fqn), Some(ts(0)));
@@ -749,12 +755,18 @@ mod tests {
         // An older candidate is a no-op (monotonic forward) and does not dirty.
         assert!(!clocks.note_activity(fqn, ts(150)));
         assert_eq!(clocks.last_activity_at(fqn), Some(ts(200)));
-        assert!(!clocks.take_dirty(), "an older candidate must not dirty the store");
+        assert!(
+            !clocks.take_dirty(),
+            "an older candidate must not dirty the store"
+        );
 
         // An equal candidate is also a no-op (advance is strictly-newer).
         assert!(!clocks.note_activity(fqn, ts(200)));
         assert_eq!(clocks.last_activity_at(fqn), Some(ts(200)));
-        assert!(!clocks.take_dirty(), "an equal candidate must not dirty the store");
+        assert!(
+            !clocks.take_dirty(),
+            "an equal candidate must not dirty the store"
+        );
     }
 
     #[test]
@@ -897,8 +909,12 @@ mod tests {
         assert!(clocks.take_dirty(), "a real removal dirties the store");
         assert_eq!(clocks.last_user_message_at("proj:wg-1-team/coord"), None);
         assert_eq!(clocks.last_user_message_at("proj:wg-1-team/dev"), None);
-        assert!(clocks.last_user_message_at("proj:wg-2-team/coord").is_some());
-        assert!(clocks.last_user_message_at("other:wg-1-team/coord").is_some());
+        assert!(clocks
+            .last_user_message_at("proj:wg-2-team/coord")
+            .is_some());
+        assert!(clocks
+            .last_user_message_at("other:wg-1-team/coord")
+            .is_some());
         assert!(clocks.last_user_message_at("proj/architect").is_some());
     }
 
@@ -921,14 +937,17 @@ mod tests {
         clocks.note_user_message("proj:wg-2-team/coord", ts(0));
         let _ = clocks.take_dirty();
         assert_eq!(clocks.remove_workgroup("proj", "wg-1-team"), 0);
-        assert!(!clocks.take_dirty(), "removing nothing must not dirty the store");
+        assert!(
+            !clocks.take_dirty(),
+            "removing nothing must not dirty the store"
+        );
     }
 
     #[test]
     fn remove_workgroup_is_case_insensitive() {
         let mut clocks = CoordinatorClocks::default();
         clocks.note_user_message("MyProj:WG-1-Team/coord", ts(0)); // key carries spawn case
-        // Caller passes a different case (e.g. project resolved as a read_dir child).
+                                                                   // Caller passes a different case (e.g. project resolved as a read_dir child).
         assert_eq!(clocks.remove_workgroup("myproj", "wg-1-team"), 1);
         assert_eq!(clocks.last_user_message_at("MyProj:WG-1-Team/coord"), None);
     }
@@ -945,13 +964,22 @@ mod tests {
         // Live wg dir present -> KEEP.
         assert!(should_keep_clock_key("MyProj:wg-1-live/coord", &candidates));
         // Wg dir confirmed absent -> PRUNE.
-        assert!(!should_keep_clock_key("MyProj:wg-2-gone/coord", &candidates));
+        assert!(!should_keep_clock_key(
+            "MyProj:wg-2-gone/coord",
+            &candidates
+        ));
         // Origin agent (no ':') -> KEEP.
         assert!(should_keep_clock_key("MyProj/architect", &candidates));
         // Unknown/unregistered project -> KEEP (cannot confirm).
-        assert!(should_keep_clock_key("Unregistered:wg-1/coord", &candidates));
+        assert!(should_keep_clock_key(
+            "Unregistered:wg-1/coord",
+            &candidates
+        ));
         // Project name resolves case-insensitively (matches resolve_project_reference).
-        assert!(!should_keep_clock_key("myproj:wg-2-gone/coord", &candidates));
+        assert!(!should_keep_clock_key(
+            "myproj:wg-2-gone/coord",
+            &candidates
+        ));
     }
 
     #[test]
@@ -1001,13 +1029,21 @@ mod tests {
         let empty: HashSet<String> = HashSet::new();
         let mut probe = CoordinatorClocks::default();
         probe.note_user_message("app:wg-5-team/coord", ts(0));
-        assert_eq!(prune_with(&mut probe, &candidates, &empty), 1, "unprotected -> pruned");
+        assert_eq!(
+            prune_with(&mut probe, &candidates, &empty),
+            1,
+            "unprotected -> pruned"
+        );
 
         // With the persisted-session keep-set the live key survives.
         let mut clocks = CoordinatorClocks::default();
         clocks.note_user_message("app:wg-5-team/coord", ts(0)); // live coord of the OTHER "app"
         let live: HashSet<String> = HashSet::from(["app:wg-5-team/coord".to_string()]);
-        assert_eq!(prune_with(&mut clocks, &candidates, &live), 0, "live key protected");
+        assert_eq!(
+            prune_with(&mut clocks, &candidates, &live),
+            0,
+            "live key protected"
+        );
         assert!(clocks.last_user_message_at("app:wg-5-team/coord").is_some());
     }
 }

@@ -150,9 +150,7 @@ fn validate_definition(def: &CodingAgentDefinition) -> Result<(), String> {
     validate_env_rows(&def.envs, &context)?;
     if let Some(name) = def.instructions_filename.as_deref() {
         if !is_safe_instructions_filename(name) {
-            return Err(format!(
-                "{context}: unsafe instructions filename '{name}'"
-            ));
+            return Err(format!("{context}: unsafe instructions filename '{name}'"));
         }
     }
     if let Some(cfg) = def.config_seed.as_ref() {
@@ -192,7 +190,10 @@ fn validate_and_filter(
 /// The embedded default, validated (defensive; also dedups). Used as the
 /// in-memory fallback when the on-disk manifest is missing or unparseable.
 fn validated_embedded_default() -> Vec<CodingAgentDefinition> {
-    validate_and_filter(embedded_default_catalog().agents, "embedded default catalog")
+    validate_and_filter(
+        embedded_default_catalog().agents,
+        "embedded default catalog",
+    )
 }
 
 /// Load the catalog for the `get_coding_agent_catalog` command.
@@ -264,7 +265,10 @@ pub fn ensure_seeded(config_dir: &Path) {
     }
 
     match write_manifest_atomic(&path, EMBEDDED_DEFAULT_CATALOG_JSON.as_bytes()) {
-        Ok(()) => log::info!("[coding-agents] seeded default catalog at {}", path.display()),
+        Ok(()) => log::info!(
+            "[coding-agents] seeded default catalog at {}",
+            path.display()
+        ),
         Err(e) => log::warn!("[coding-agents] failed to seed {} ({e})", path.display()),
     }
 }
@@ -421,8 +425,7 @@ pub fn reseedable_command_basenames() -> Vec<String> {
 /// Reduce a coding-agent command to its executable basename (lowercase), mirroring
 /// the settings save path. `None` if the command does not tokenize.
 fn command_executable_basename(command: &str) -> Option<String> {
-    let normalized =
-        crate::config::agent_command::normalize_legacy_agent_command(command).ok()?;
+    let normalized = crate::config::agent_command::normalize_legacy_agent_command(command).ok()?;
     Some(crate::config::settings::command_token_basename(
         &normalized.shell,
     ))
@@ -479,7 +482,10 @@ pub fn ensure_seeded_masters(config_dir: &Path) {
             ),
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&staging);
-                log::warn!("[coding-agents] failed to seed master {} ({e})", dir.display());
+                log::warn!(
+                    "[coding-agents] failed to seed master {} ({e})",
+                    dir.display()
+                );
             }
         }
     }
@@ -574,7 +580,10 @@ fn backup_master_dir(dir: &Path) -> Result<PathBuf, String> {
             .map_err(|e| format!("backup {} -> {}: {e}", dir.display(), bak.display()))?;
         return Ok(bak);
     }
-    Err(format!("could not find a unique .bak path for {}", dir.display()))
+    Err(format!(
+        "could not find a unique .bak path for {}",
+        dir.display()
+    ))
 }
 
 fn unique_suffix() -> String {
@@ -607,11 +616,51 @@ mod tests {
     /// frontend keeps a parallel `FALLBACK_CODING_AGENTS` test (E7).
     #[allow(clippy::type_complexity)]
     const EXPECTED_PRESETS: [(&str, &str, &str, &str, &str, &str, Option<&str>); 6] = [
-        ("claude", "Claude Code", "Coding Agent by Anthropic", "#d97706", "claude", "CLAUDE.md", Some(".claude")),
-        ("codex", "Codex", "Coding Agent by OpenAI", "#10b981", "codex", "AGENTS.md", Some(".codex")),
-        ("hermes", "Hermes", "Coding Agent by Nous Research", "#8b5cf6", "hermes", "AGENTS.md", None),
-        ("cursor", "Cursor CLI", "Coding Agent by Cursor", "#22d3ee", "agent", "AGENTS.md", None),
-        ("pi", "Pi", "Coding Agent by Earendil Inc", "#ec4899", "pi", "AGENTS.md", None),
+        (
+            "claude",
+            "Claude Code",
+            "Coding Agent by Anthropic",
+            "#d97706",
+            "claude",
+            "CLAUDE.md",
+            Some(".claude"),
+        ),
+        (
+            "codex",
+            "Codex",
+            "Coding Agent by OpenAI",
+            "#10b981",
+            "codex",
+            "AGENTS.md",
+            Some(".codex"),
+        ),
+        (
+            "hermes",
+            "Hermes",
+            "Coding Agent by Nous Research",
+            "#8b5cf6",
+            "hermes",
+            "AGENTS.md",
+            None,
+        ),
+        (
+            "cursor",
+            "Cursor CLI",
+            "Coding Agent by Cursor",
+            "#22d3ee",
+            "agent",
+            "AGENTS.md",
+            None,
+        ),
+        (
+            "pi",
+            "Pi",
+            "Coding Agent by Earendil Inc",
+            "#ec4899",
+            "pi",
+            "AGENTS.md",
+            None,
+        ),
         (
             "opencode",
             "OpenCode",
@@ -636,11 +685,17 @@ mod tests {
         let catalog = embedded_default_catalog();
         assert_eq!(catalog.schema_version, CATALOG_SCHEMA_VERSION);
         let keys: Vec<&str> = catalog.agents.iter().map(|a| a.key.as_str()).collect();
-        assert_eq!(keys, ["claude", "codex", "hermes", "cursor", "pi", "opencode"]);
+        assert_eq!(
+            keys,
+            ["claude", "codex", "hermes", "cursor", "pi", "opencode"]
+        );
         // OpenCode is last and carries the #768 "by Anomaly" subtitle.
         let last = catalog.agents.last().unwrap();
         assert_eq!(last.key, "opencode");
-        assert_eq!(last.description, "Open-source terminal coding agent by Anomaly");
+        assert_eq!(
+            last.description,
+            "Open-source terminal coding agent by Anomaly"
+        );
     }
 
     #[test]
@@ -668,7 +723,10 @@ mod tests {
                     assert!(cs.enabled, "{key} configSeed must be enabled");
                     assert_eq!(cs.dest, dest, "{key} configSeed dest");
                 }
-                None => assert!(def.config_seed.is_none(), "{key} must ship configSeed UNSET"),
+                None => assert!(
+                    def.config_seed.is_none(),
+                    "{key} must ship configSeed UNSET"
+                ),
             }
             assert!(def.removable, "{key} must be removable");
             assert!(def.envs.is_empty());
@@ -695,7 +753,16 @@ mod tests {
         for ok in ["claude", "cursor-cli", "pi", "a1", "opencode", "x-2-y"] {
             assert!(validate_catalog_key(ok).is_ok(), "should accept {ok:?}");
         }
-        for bad in ["", "Claude", "cursor_cli", "cursor cli", "café", "a.b", "UP", "a/b"] {
+        for bad in [
+            "",
+            "Claude",
+            "cursor_cli",
+            "cursor cli",
+            "café",
+            "a.b",
+            "UP",
+            "a/b",
+        ] {
             assert!(validate_catalog_key(bad).is_err(), "should reject {bad:?}");
         }
     }
@@ -717,7 +784,11 @@ mod tests {
         std::fs::write(&path, garbage).unwrap();
 
         let agents = load_catalog(dir.path());
-        assert_eq!(agents.len(), 6, "corrupt file self-heals to embedded default");
+        assert_eq!(
+            agents.len(),
+            6,
+            "corrupt file self-heals to embedded default"
+        );
         // G3: the corrupt file is preserved byte-for-byte, never overwritten.
         assert_eq!(std::fs::read(&path).unwrap(), garbage);
     }
@@ -842,8 +913,15 @@ mod tests {
                 .as_ref()
                 .unwrap_or_else(|| panic!("{} def missing configSeed", m.command_basename));
             assert!(cs.enabled);
-            assert_eq!(cs.dest, m.dest, "master dest must match the def configSeed dest");
-            assert!(!m.files.is_empty(), "master {} must ship >=1 file", m.command_basename);
+            assert_eq!(
+                cs.dest, m.dest,
+                "master dest must match the def configSeed dest"
+            );
+            assert!(
+                !m.files.is_empty(),
+                "master {} must ship >=1 file",
+                m.command_basename
+            );
         }
     }
 
@@ -900,7 +978,10 @@ mod tests {
 
         let result = reseed_master_for_command(dir.path(), "codex").unwrap();
         assert_eq!(result.dest, ".codex");
-        assert!(result.backup_path.is_empty(), "no backup when master was absent");
+        assert!(
+            result.backup_path.is_empty(),
+            "no backup when master was absent"
+        );
         assert_eq!(
             std::fs::read(master_dir.join(m.files[0].rel_path)).unwrap(),
             m.files[0].bytes
@@ -921,7 +1002,13 @@ mod tests {
             );
         }
         // Path/extension forms of a real master command still resolve by basename.
-        for good in ["claude", "codex", "opencode", "claude.exe", "codex --model x"] {
+        for good in [
+            "claude",
+            "codex",
+            "opencode",
+            "claude.exe",
+            "codex --model x",
+        ] {
             assert!(
                 reseed_master_for_command(dir.path(), good).is_ok(),
                 "should accept {good:?}"
@@ -933,6 +1020,12 @@ mod tests {
     fn master_dir_for_dest_is_under_seed_subdir() {
         let dir = seed_dir();
         let p = master_dir_for_dest(dir.path(), ".claude");
-        assert_eq!(p, dir.path().join("coding-agents").join("_seed").join(".claude"));
+        assert_eq!(
+            p,
+            dir.path()
+                .join("coding-agents")
+                .join("_seed")
+                .join(".claude")
+        );
     }
 }

@@ -350,7 +350,11 @@ where
 
     // Write the text block through the held permit.
     PtyManager::write_with_permit(&permit, text.as_bytes()).map_err(|error| {
-        log::error!("[inject] PTY write FAILED session={}: {}", session_id, error);
+        log::error!(
+            "[inject] PTY write FAILED session={}: {}",
+            session_id,
+            error
+        );
         format!("PTY write failed: {}", error)
     })?;
     log::info!(
@@ -747,7 +751,10 @@ mod tests {
                 "Pi compact remains unsupported: {shell:?}"
             );
             assert!(supports_auto_self_maintenance(shell));
-            assert!(supports_self_handoff_switch(shell), "Pi switch source: {shell:?}");
+            assert!(
+                supports_self_handoff_switch(shell),
+                "Pi switch source: {shell:?}"
+            );
         }
 
         let unsupported = [

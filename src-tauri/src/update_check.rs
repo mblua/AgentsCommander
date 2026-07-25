@@ -64,7 +64,9 @@ fn read_cache() -> Option<UpdateCache> {
 
 fn write_cache(cache: &UpdateCache) {
     let Some(path) = cache_path() else { return };
-    let Ok(json) = serde_json::to_string_pretty(cache) else { return };
+    let Ok(json) = serde_json::to_string_pretty(cache) else {
+        return;
+    };
     // Atomic write (L3/E1): write a sibling temp file, then rename over the
     // target so a concurrent reader (the Phase-2 CLI) never observes a
     // half-written file. On Windows, std::fs::rename maps to MoveFileExW with
@@ -242,7 +244,11 @@ pub async fn run_startup_check(app: AppHandle, cache_state: Arc<OnceLock<UpdateI
             info.latest_version
         );
     } else {
-        log::debug!("[update-check] up to date (current {}, latest {})", current, latest);
+        log::debug!(
+            "[update-check] up to date (current {}, latest {})",
+            current,
+            latest
+        );
     }
 }
 
@@ -342,8 +348,7 @@ pub fn read_cached_notice() -> Option<String> {
     if !is_newer(&cache.latest_version, current) {
         return None;
     }
-    let enabled =
-        crate::config::settings::load_settings_for_cli().npm_update_notifications_enabled;
+    let enabled = crate::config::settings::load_settings_for_cli().npm_update_notifications_enabled;
     cli_notice(&cache, current, enabled)
 }
 
@@ -436,7 +441,10 @@ mod tests {
             latest_version: "0.9.16".into(),
         };
         // Toggle off -> Skip, even with a fresh cache.
-        assert_eq!(plan_check(false, &Some(fresh.clone()), now), CheckPlan::Skip);
+        assert_eq!(
+            plan_check(false, &Some(fresh.clone()), now),
+            CheckPlan::Skip
+        );
         // Enabled + no cache -> Fetch.
         assert_eq!(plan_check(true, &None, now), CheckPlan::Fetch);
         // Enabled + fresh cache (throttle hit) -> UseCached.

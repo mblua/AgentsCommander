@@ -656,8 +656,11 @@ mod tests {
     fn save_persists_non_stop_and_preserves_unknown_keys() {
         let project = project_with_workspace();
         let path = settings_path(project.path());
-        std::fs::write(&path, r#"{"agents":[{"id":"a1"}],"tooling":{"custom":true}}"#)
-            .expect("write settings");
+        std::fs::write(
+            &path,
+            r#"{"agents":[{"id":"a1"}],"tooling":{"custom":true}}"#,
+        )
+        .expect("write settings");
         let config = WorkgroupGroupsConfig {
             groups: vec![group("bots", "BOTS", "^(wg-9)$")],
             show_all: true,

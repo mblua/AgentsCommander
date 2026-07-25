@@ -11,9 +11,8 @@ use sha2::{Digest, Sha256};
 use crate::cli::session_safety::{find_live_sessions_under, LiveSessionBlocker};
 use crate::cli::workgroup;
 use crate::commands::entity_creation::{
-    agent_ref_bare_name, create_agent_matrix_from_role,
-    resolve_agent_ref, sanitize_name, validate_existing_name,
-    CreateAgentMatrixFromRoleArgs,
+    agent_ref_bare_name, create_agent_matrix_from_role, resolve_agent_ref, sanitize_name,
+    validate_existing_name, CreateAgentMatrixFromRoleArgs,
 };
 
 #[derive(Args)]

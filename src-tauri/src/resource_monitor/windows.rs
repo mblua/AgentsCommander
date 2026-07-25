@@ -424,7 +424,11 @@ mod platform {
                 no_memory,
             );
 
-            assert!(tree.errors.is_empty(), "unexpected errors: {:?}", tree.errors);
+            assert!(
+                tree.errors.is_empty(),
+                "unexpected errors: {:?}",
+                tree.errors
+            );
             assert_eq!(tree.processes.len(), 2);
             assert_eq!(tree.processes[0].identity, identity(1000, 111));
             assert_eq!(tree.processes[0].depth, 0);
@@ -551,7 +555,11 @@ mod platform {
                 no_memory,
             );
 
-            assert!(tree.errors.is_empty(), "unexpected errors: {:?}", tree.errors);
+            assert!(
+                tree.errors.is_empty(),
+                "unexpected errors: {:?}",
+                tree.errors
+            );
             assert_eq!(tree.processes.len(), 2);
             assert!(probed.contains(&1000) && probed.contains(&1001));
             assert!(
