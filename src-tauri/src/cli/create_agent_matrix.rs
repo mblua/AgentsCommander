@@ -10,9 +10,7 @@ use clap::Args;
 use serde::{Deserialize, Serialize};
 
 use crate::cli::create_agent;
-use crate::commands::entity_creation::{
-    create_agent_matrix_on_disk, CreateAgentMatrixDiskArgs,
-};
+use crate::commands::entity_creation::{create_agent_matrix_on_disk, CreateAgentMatrixDiskArgs};
 use crate::config::projects::resolve_project_reference;
 
 #[derive(Args)]

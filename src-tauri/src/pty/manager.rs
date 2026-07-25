@@ -108,9 +108,7 @@ impl<'a> PtyRouteWriteGuard<'a> {
 
     pub(crate) fn retain_settings_guard(
         &mut self,
-        settings_guard: tokio::sync::OwnedRwLockReadGuard<
-            crate::config::settings::AppSettings,
-        >,
+        settings_guard: tokio::sync::OwnedRwLockReadGuard<crate::config::settings::AppSettings>,
     ) {
         self._settings_guard = Some(settings_guard);
     }

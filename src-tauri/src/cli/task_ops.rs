@@ -1519,7 +1519,11 @@ mod tests {
         // lowercase duplicate (Grinch MUST-FIX #1 second half).
         let parsed = parse_task("---\nTitle: Old\n---\nbody\n");
         let p = apply_set_title(&parsed, "Auto");
-        let title_lines = p.frontmatter.iter().filter(|l| title_line(l).is_some()).count();
+        let title_lines = p
+            .frontmatter
+            .iter()
+            .filter(|l| title_line(l).is_some())
+            .count();
         assert_eq!(title_lines, 1, "exactly one title line after replacement");
         assert_eq!(p.frontmatter, vec!["title: 'Auto'".to_string()]);
     }
@@ -1537,7 +1541,11 @@ mod tests {
         let now = || fixed_now_at(2026, 1, 1, 0, 0, 0);
         let r = perform_inner(&wg, TaskOp::SetTitle("USER: forged".into()), now);
         assert!(matches!(r, Err(TaskOpError::ReservedUserTitlePrefix)));
-        assert_eq!(std::fs::read(&task).unwrap(), before, "unchanged on invalid input");
+        assert_eq!(
+            std::fs::read(&task).unwrap(),
+            before,
+            "unchanged on invalid input"
+        );
         assert_eq!(bak_count(&wg), 0, "no backup on invalid input");
     }
 

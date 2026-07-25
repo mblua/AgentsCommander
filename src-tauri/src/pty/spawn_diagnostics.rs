@@ -256,7 +256,10 @@ fn env_u64(key: &str, default: u64, max: u64) -> u64 {
 #[derive(Debug, Clone)]
 pub enum ChildLiveness {
     Alive,
-    Exited { code: u32, success: bool },
+    Exited {
+        code: u32,
+        success: bool,
+    },
     /// The OS would not tell us. Distinct from `Alive` on purpose: reporting an
     /// unanswerable handle as "running" is the same ambiguity class as the
     /// `ExitStatus { code: 1 }` trap this module exists to kill.
@@ -613,7 +616,10 @@ impl SpawnRecord {
         let episode_open = self.stop_episode_open();
         self.record_witness(pre_stop, episode_open);
 
-        *self.ac_stop_source.lock().unwrap_or_else(|e| e.into_inner()) = Some(source.to_string());
+        *self
+            .ac_stop_source
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(source.to_string());
         let stamp = (self.started.elapsed().as_micros().min(u64::MAX as u128) as u64).max(1);
         self.ac_stop_at_us.store(stamp, Ordering::SeqCst);
         // Published last: any thread that sees this flag also sees the source, the
@@ -672,8 +678,8 @@ impl SpawnRecord {
             + chunk.len() as u64;
 
         let needs_first = self.first_output_us.load(Ordering::Relaxed) == 0;
-        let needs_paint =
-            self.first_paint_us.load(Ordering::Relaxed) == 0 && total >= self.thresholds.paint_floor;
+        let needs_paint = self.first_paint_us.load(Ordering::Relaxed) == 0
+            && total >= self.thresholds.paint_floor;
 
         if needs_first || needs_paint {
             let elapsed = self.started.elapsed();
@@ -834,7 +840,8 @@ impl SpawnRecord {
         // status, is the #942 smoking gun. A clean exit from a session that did come up
         // is just someone quitting.
         let never_came_up = self.is_stalled();
-        let unexpected = cause == ExitCause::ChildInitiated && (never_came_up || !liveness.exited_ok());
+        let unexpected =
+            cause == ExitCause::ChildInitiated && (never_came_up || !liveness.exited_ok());
         // The head bytes and the argv go out whenever the session never came up, whoever
         // ended it. The user who kills a blank terminal at t=3s (before the deadline
         // report can fire) is reporting THIS bug, and we must not answer with a one-line
@@ -1212,7 +1219,10 @@ mod tests {
 
         let shell = aged_record(None);
         shell.note_output(b"C:\\repo>");
-        assert!(!shell.is_stalled(), "a tiny shell prompt is a healthy start");
+        assert!(
+            !shell.is_stalled(),
+            "a tiny shell prompt is a healthy start"
+        );
 
         let painted = aged_record(Some(CodingAgentKind::Codex));
         painted.note_output(&vec![b'x'; painted.thresholds.paint_floor as usize]);
@@ -1603,13 +1613,22 @@ mod tests {
         let head = record.head_log();
         let argv = record.argv_log();
         for secret in [windows_path, quoted, control, unicode] {
-            assert!(!head.contains(secret), "raw secret survived in head: {head}");
-            assert!(!argv.contains(secret), "raw secret survived in argv: {argv}");
+            assert!(
+                !head.contains(secret),
+                "raw secret survived in head: {head}"
+            );
+            assert!(
+                !argv.contains(secret),
+                "raw secret survived in argv: {argv}"
+            );
         }
         // The escaped shapes must not survive either: escaping happens after the scrub.
         assert!(!head.contains("auth.json"), "escaped path survived: {head}");
         assert!(!argv.contains("auth.json"), "escaped path survived: {argv}");
-        assert!(!head.contains("9876"), "escaped non-ASCII secret survived: {head}");
+        assert!(
+            !head.contains("9876"),
+            "escaped non-ASCII secret survived: {head}"
+        );
         assert!(head.contains("<redacted>"));
         assert!(argv.contains("<redacted>"));
         assert!(
@@ -1625,8 +1644,14 @@ mod tests {
 ");
 
         let head = record.head_log();
-        assert!(!head.contains("AIzaSyFAKE_KEY_VALUE"), "url key survived: {head}");
-        assert!(head.contains("error: GET"), "the error text still has to be readable");
+        assert!(
+            !head.contains("AIzaSyFAKE_KEY_VALUE"),
+            "url key survived: {head}"
+        );
+        assert!(
+            head.contains("error: GET"),
+            "the error text still has to be readable"
+        );
     }
 
     #[test]
@@ -1894,7 +1919,9 @@ mod tests {
             wait_until(Duration::from_secs(2), || handle.is_finished()),
             "a panicking probe must end the monitor, not the app"
         );
-        handle.join().expect("the panic is caught inside the thread");
+        handle
+            .join()
+            .expect("the panic is caught inside the thread");
         assert!(!record.exit_reported.load(Ordering::Relaxed));
     }
 

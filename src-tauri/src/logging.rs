@@ -15,7 +15,7 @@
 use std::collections::VecDeque;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 static INIT: OnceLock<()> = OnceLock::new();
@@ -349,8 +349,8 @@ fn install_format(builder: &mut env_logger::Builder, log_state: Arc<Option<Arc<A
             if let Ok(mut f) = state.file.lock() {
                 let _ = f.write_all(line.as_bytes());
             }
-            let new_total = state.bytes.fetch_add(line.len() as u64, Ordering::Relaxed)
-                + line.len() as u64;
+            let new_total =
+                state.bytes.fetch_add(line.len() as u64, Ordering::Relaxed) + line.len() as u64;
             if new_total >= APP_LOG_MAX_BYTES {
                 rotate(state);
             }

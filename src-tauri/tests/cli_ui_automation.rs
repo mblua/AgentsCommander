@@ -749,7 +749,14 @@ fn fake_response_makes_ui_hover_leave_succeed() {
 
     let (code, stdout, stderr) = run(
         &bin,
-        &["ui-hover", "--window", "main", "--leave", "--timeout-ms", "3000"],
+        &[
+            "ui-hover",
+            "--window",
+            "main",
+            "--leave",
+            "--timeout-ms",
+            "3000",
+        ],
     );
     responder.join().unwrap();
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");

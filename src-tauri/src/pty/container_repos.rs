@@ -66,14 +66,16 @@ impl RepoMountResolution {
     /// The Docker consumer: canonical host path + container target for each
     /// mounted repo, in config order.
     pub fn mounts(&self) -> impl Iterator<Item = (&Path, &str)> {
-        self.entries.iter().filter_map(|entry| match &entry.outcome {
-            RepoOutcome::Mounted {
-                host_path,
-                container_path,
-                ..
-            } => Some((host_path.as_path(), container_path.as_str())),
-            RepoOutcome::NotFound => None,
-        })
+        self.entries
+            .iter()
+            .filter_map(|entry| match &entry.outcome {
+                RepoOutcome::Mounted {
+                    host_path,
+                    container_path,
+                    ..
+                } => Some((host_path.as_path(), container_path.as_str())),
+                RepoOutcome::NotFound => None,
+            })
     }
 }
 

@@ -831,7 +831,11 @@ mod tests {
         assert_eq!(rendered.matches(rid).count(), 2);
         assert_eq!(
             rendered.len(),
-            PTY_WRAP_FIXED + "wg7-me".len() + "hi".len() + PTY_RESPONSE_MARKER_FIXED + 2 * rid.len()
+            PTY_WRAP_FIXED
+                + "wg7-me".len()
+                + "hi".len()
+                + PTY_RESPONSE_MARKER_FIXED
+                + 2 * rid.len()
         );
         assert!(rendered.starts_with('\n'));
         assert!(rendered.ends_with("\n\r"));

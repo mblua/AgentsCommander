@@ -525,7 +525,11 @@ fn detect_wg_replica(root: &str) -> Result<Option<WgReplicaInfo>, String> {
     let Some(layout) = crate::config::workspace::wg_replica_layout_from_agent_dir(&canon)? else {
         return Ok(None);
     };
-    let Some(my_project) = layout.project_dir.file_name().and_then(|name| name.to_str()) else {
+    let Some(my_project) = layout
+        .project_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+    else {
         return Ok(None);
     };
 
@@ -1984,7 +1988,10 @@ mod tests {
 
         peer.context_percent = None;
         let json = serde_json::to_string(&peer).unwrap();
-        assert!(!json.contains("contextPercent"), "None must omit the key: {json}");
+        assert!(
+            !json.contains("contextPercent"),
+            "None must omit the key: {json}"
+        );
     }
 
     #[test]
@@ -2000,7 +2007,10 @@ mod tests {
         let lean = LeanPeerInfo::from(&peer);
         assert_eq!(lean.context_percent, None);
         let json = serde_json::to_string(&lean).unwrap();
-        assert!(!json.contains("contextPercent"), "None must omit the key: {json}");
+        assert!(
+            !json.contains("contextPercent"),
+            "None must omit the key: {json}"
+        );
     }
 
     // §6.3 — field preservation parity

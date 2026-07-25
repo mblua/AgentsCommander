@@ -677,10 +677,7 @@ struct ScraperPersist {
 }
 
 impl ContextPersistSink for ScraperPersist {
-    fn commit(
-        &self,
-        changed: Vec<(uuid::Uuid, Option<u8>)>,
-    ) -> futures::future::BoxFuture<'_, ()> {
+    fn commit(&self, changed: Vec<(uuid::Uuid, Option<u8>)>) -> futures::future::BoxFuture<'_, ()> {
         // Clone the Arc before the `async move` so the returned future is
         // 'static + Send (it captures the Arc, not `&self`).
         let mgr = Arc::clone(&self.session_mgr);
