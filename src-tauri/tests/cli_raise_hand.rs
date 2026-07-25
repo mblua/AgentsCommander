@@ -328,7 +328,10 @@ fn simulate_daemon_response(
             continue;
         };
 
-        break (path, body, msg, msg_id.to_string(), request_id.to_string());
+        let msg_id = msg_id.to_string();
+        let request_id = request_id.to_string();
+
+        break (path, body, msg, msg_id, request_id);
     };
 
     validate_raise_hand_message(&msg).map_err(|e| format!("contract violation: {}", e))?;
