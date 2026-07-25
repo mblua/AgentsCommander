@@ -7070,6 +7070,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             &no_skill_section(),
             &new_replica,
             None,
+            None,
         );
 
         // Restore write perms before any assertion so tempdir cleanup works.
