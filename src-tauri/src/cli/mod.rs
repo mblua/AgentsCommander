@@ -5,6 +5,7 @@ pub mod coding_agent;
 pub mod create_agent;
 pub mod create_agent_matrix;
 pub mod harness;
+pub mod injected_messages;
 pub mod list_peers;
 pub mod list_sessions;
 pub mod loop_cmd;
@@ -174,6 +175,9 @@ pub enum Commands {
     Harness(harness::HarnessArgs),
     /// Manage Coding Agent configurations (settings.agents)
     CodingAgent(coding_agent::CodingAgentArgs),
+    /// Manage the injected PTY message templates (injected-messages.toml)
+    #[command(name = "injected-messages")]
+    InjectedMessages(injected_messages::InjectedMessagesArgs),
     /// Manage control-plane API client tokens (mint / revoke / list; host authority required)
     ApiClient(api_client::ApiClientArgs),
     /// Delete only the disposable testable app state
@@ -334,6 +338,7 @@ pub fn handle_cli(cmd: Commands) -> i32 {
         Commands::Loop(args) => loop_cmd::execute(args),
         Commands::Harness(args) => harness::execute(args),
         Commands::CodingAgent(args) => coding_agent::execute(args),
+        Commands::InjectedMessages(args) => injected_messages::execute(args),
         Commands::ApiClient(args) => api_client::execute(args),
         Commands::TestReset(args) => crate::testability::reset::execute(args),
         Commands::WindowInfo(args) => crate::testability::window_info::execute(args),
