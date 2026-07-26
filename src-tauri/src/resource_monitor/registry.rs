@@ -320,7 +320,7 @@ impl ResourceMonitorState {
                     && g.project == project)
             });
         }
-        inner.groups.insert(
+        let replaced = inner.groups.insert(
             session_id,
             ResourceAgentGroup {
                 session_id,
@@ -341,6 +341,23 @@ impl ResourceMonitorState {
                 terminated_at: None,
             },
         );
+        // #1151 - no flow reuses a session UUID today (relaunch and restart both allocate
+        // a new one), so this insert should only ever replace a Terminated row the dedup
+        // above chose to keep. If it ever replaces a live or Quarantined one, that row's
+        // permit accounting is lost silently and the cap drifts. Diagnostic only:
+        // an assert here would turn a bookkeeping drift into a panic on the launch path,
+        // which is a strictly worse failure than the hazard it guards.
+        if let Some(previous) = replaced {
+            if !matches!(previous.state, ResourceGroupState::Terminated) {
+                log::error!(
+                    "[resource-monitor] register_group replaced a live row session={} previous_state={:?} previous_root_pid={} permit_released={}",
+                    session_id,
+                    previous.state,
+                    previous.root_identity.pid,
+                    previous.permit_released
+                );
+            }
+        }
         Ok(())
     }
 
