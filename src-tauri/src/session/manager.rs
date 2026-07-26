@@ -125,6 +125,11 @@ pub(crate) struct CommitResult {
     pub finalized_rows: Vec<SessionInfo>,
     pub cleared_raise_hand_ids: Vec<Uuid>,
     pub selection: Option<SessionSelection>,
+    /// #1149 - activity records built under the write guard and appended by
+    /// `SelectionCoordinator::commit` once the guard is gone. Carried out rather
+    /// than appended in place because the guard is a local of
+    /// `commit_selection_transition` and no append may hold it.
+    pub activity: Vec<crate::config::activity_log::ActivityRecord>,
 }
 
 impl Default for SessionManager {
@@ -1552,6 +1557,10 @@ impl SessionManager {
 
         let mut result = CommitResult::default();
         let mut changed_ids = HashSet::new();
+        // #1149 - ids only. The record itself is built after every fallible exit
+        // below, so a later `?` can never strand a record for a session this
+        // commit did not actually finalize.
+        let mut finalized_live_ids: Vec<Uuid> = Vec::new();
         for mutation in mutations.finalizations {
             match mutation {
                 FinalizeMutation::Live(binding, _) => {
@@ -1564,6 +1573,7 @@ impl SessionManager {
                             ));
                         }
                         record.status = SessionStatus::Running;
+                        finalized_live_ids.push(binding.session_id);
                         result.finalized_rows.push(SessionInfo::from(&*record));
                     }
                 }
@@ -1680,6 +1690,29 @@ impl SessionManager {
             state.selection.detached(),
             if selection_changed { "committed" } else { "noop" },
         );
+
+        // #1149 - the opening edge at session birth, deferred past every fallible
+        // exit above so no record can survive a commit that returned `Err`. The
+        // write guard is still held, which is what keeps the coalescer exclusive.
+        //
+        // The re-read is also semantically better than emitting inside the
+        // finalization arm: a session finalized and then removed or marked exited
+        // reads back as absent or `Exited`, so `is_working` is false and nothing
+        // is recorded. Such a session was never observably working. One promoted
+        // to `Active` still reads as working and is recorded.
+        for id in finalized_live_ids {
+            if let Some(record) = state.sessions.get(&id) {
+                if crate::session::session::is_working(record) {
+                    result
+                        .activity
+                        .push(crate::config::activity_log::build_busy(
+                            id,
+                            record,
+                            crate::config::activity_log::BusyReason::SessionStart,
+                        ));
+                }
+            }
+        }
 
         Ok(result)
     }
@@ -3736,6 +3769,151 @@ mod tests {
         assert!(
             saw_idle,
             "the sequence must actually reach Idle or it proves nothing"
+        );
+    }
+
+    fn activity_json(record: &crate::config::activity_log::ActivityRecord) -> serde_json::Value {
+        serde_json::to_value(record).expect("an activity record serializes")
+    }
+
+    #[tokio::test]
+    async fn finalize_live_yields_exactly_one_session_start_busy_record() {
+        let manager = SessionManager::new();
+        let capability = CommitCapability::for_test();
+        let (pending, binding) = pending_fixture(&manager, false).await;
+        let live = live_witness(pending.id);
+        let mut mutations = LifecycleMutations::default();
+        mutations.finalize_live(binding, live);
+
+        let result = manager
+            .commit_selection_transition(
+                &capability,
+                CommitDecision::Live(live),
+                SelectionCause::UserSwitch,
+                mutations,
+            )
+            .await
+            .expect("finalize live");
+
+        assert_eq!(
+            result.activity.len(),
+            1,
+            "session birth is one opening edge, no more and no less"
+        );
+        let record = activity_json(&result.activity[0]);
+        assert_eq!(record["event"], "busy");
+        assert_eq!(record["reason"], "session_start");
+        assert_eq!(record["sessionId"], pending.id.to_string());
+        assert_eq!(record["cwd"], "C:/work");
+        assert_eq!(record["continuesBlock"], serde_json::json!(false));
+        assert!(record.get("gapMs").is_none());
+    }
+
+    #[tokio::test]
+    async fn finalize_dormant_yields_no_activity_record() {
+        let manager = SessionManager::new();
+        let capability = CommitCapability::for_test();
+        let (pending, binding) = pending_fixture(&manager, false).await;
+        let dormant = dormant_witness(pending.id);
+        let mut mutations = LifecycleMutations::default();
+        mutations.finalize_dormant(binding, dormant, 0);
+
+        let result = manager
+            .commit_selection_transition(
+                &capability,
+                CommitDecision::Dormant(dormant),
+                SelectionCause::UserSwitch,
+                mutations,
+            )
+            .await
+            .expect("finalize dormant");
+
+        assert!(
+            result.activity.is_empty(),
+            "a dormant finalization never opens an interval"
+        );
+    }
+
+    // The conflict validation rejects remove+finalize outright, so the deferred
+    // re-read is defense in depth rather than the active mechanism here. Either
+    // way no record reaches the caller, which is the required behavior.
+    #[tokio::test]
+    async fn a_session_finalized_and_removed_in_the_same_commit_yields_no_activity_record() {
+        let manager = SessionManager::new();
+        let capability = CommitCapability::for_test();
+        let (pending, binding) = pending_fixture(&manager, false).await;
+        let live = live_witness(pending.id);
+        let mut mutations = LifecycleMutations::default();
+        mutations.finalize_live(binding, live);
+        mutations.remove(pending.id);
+
+        let error = manager
+            .commit_selection_transition(
+                &capability,
+                CommitDecision::Live(live),
+                SelectionCause::UserSwitch,
+                mutations,
+            )
+            .await
+            .expect_err("remove+finalize is rejected");
+
+        assert!(
+            error.contains("remove+finalize conflict"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_finalized_and_marked_exited_in_the_same_commit_yields_no_activity_record() {
+        let manager = SessionManager::new();
+        let capability = CommitCapability::for_test();
+        let (pending, binding) = pending_fixture(&manager, false).await;
+        let live = live_witness(pending.id);
+        let mut mutations = LifecycleMutations::default();
+        mutations.finalize_live(binding, live);
+        mutations.mark_exited(pending.id, 0);
+
+        let error = manager
+            .commit_selection_transition(
+                &capability,
+                CommitDecision::Live(live),
+                SelectionCause::UserSwitch,
+                mutations,
+            )
+            .await
+            .expect_err("markExited+finalize is rejected");
+
+        assert!(
+            error.contains("markExited+finalize conflict"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// The records are built after every fallible exit, so an `Err` returns
+    /// before any `CommitResult` reaches the caller and nothing can be appended
+    /// for a session this commit did not finalize.
+    #[tokio::test]
+    async fn a_failed_commit_yields_no_activity_records() {
+        let manager = SessionManager::new();
+        let capability = CommitCapability::for_test();
+        let (session, binding) = pending_fixture(&manager, false).await;
+        manager.state.write().await.revision = u64::MAX;
+        let live = live_witness(session.id);
+        let mut mutations = LifecycleMutations::default();
+        mutations.finalize_live(binding, live);
+
+        let outcome = manager
+            .commit_selection_transition(
+                &capability,
+                CommitDecision::Live(live),
+                SelectionCause::UserSwitch,
+                mutations,
+            )
+            .await;
+
+        assert!(
+            outcome.is_err(),
+            "no CommitResult, therefore no activity records, may reach the caller"
         );
     }
 }

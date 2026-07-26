@@ -1891,10 +1891,25 @@ impl<R: Runtime> SelectionTransaction<R> {
         cause: SelectionCause,
         mutations: LifecycleMutations,
     ) -> Result<CommitResult, String> {
-        self.manager()
+        // #1149 - the single funnel that returns a `CommitResult` outward, so the
+        // only place the birth-edge records can be appended.
+        //
+        // The `let` binding is load-bearing. As a tail expression the temporary
+        // `SessionManager` would live across the append. It is harmless today
+        // only because `manager()` returns by value, cloning out of the outer
+        // lock and releasing that guard before it returns, so `append_batch`
+        // holds neither the outer nor the inner lock. That stops being true if
+        // `manager()` is ever changed to return a guard.
+        //
+        // The `?` means an `Err` returns before the append and drops `result`
+        // whole, so no record survives for a session that was never finalized.
+        let result = self
+            .manager()
             .await
             .commit_selection_transition(&self.capability, decision, cause, mutations)
-            .await
+            .await?;
+        crate::config::activity_log::append_batch(&result.activity);
+        Ok(result)
     }
 
     pub(crate) async fn persist(&self, source: SelectionSource, session_id: Option<Uuid>) {
