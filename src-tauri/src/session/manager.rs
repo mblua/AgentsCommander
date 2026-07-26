@@ -574,6 +574,45 @@ impl SessionManager {
         }
     }
 
+    /// #1149 - the working-session set, sampled without an await.
+    ///
+    /// `RunEvent::Exit` runs on the main thread and needs this set while the
+    /// session map is still populated, but the only public read path,
+    /// `list_sessions`, is `async` and unbounded, and the outer
+    /// `Arc<RwLock<SessionManager>>` has no production writer so spinning on it
+    /// would bound nothing. `None` means a writer holds or has merely queued for
+    /// `state` (`tokio::sync::RwLock` is write-preferring), and the caller is
+    /// expected to bound its own retry rather than block.
+    ///
+    /// Uses `is_working` internally so exactly one definition of "working"
+    /// exists, and carries only the four fields an `idle` record needs: no
+    /// `token`, no `last_prompt`, no shell args.
+    ///
+    /// `pub fn`, not `pub async fn`, deliberately: the architecture guard rejects
+    /// new public async manager mutators, and a shutdown caller must not await.
+    pub fn try_snapshot_working_sessions(
+        &self,
+    ) -> Option<Vec<crate::config::activity_log::WorkingSessionSnapshot>> {
+        let state = self.state.try_read().ok()?;
+        Some(
+            state
+                .order
+                .iter()
+                .filter(|id| !state.pending_create.contains_key(id))
+                .filter_map(|id| state.sessions.get(id))
+                .filter(|session| crate::session::session::is_working(session))
+                .map(
+                    |session| crate::config::activity_log::WorkingSessionSnapshot {
+                        id: session.id,
+                        name: session.name.clone(),
+                        cwd: session.working_directory.clone(),
+                        agent_kind: session.agent_kind,
+                    },
+                )
+                .collect(),
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn prepare_pty_input_boundary<'a, F, G>(
         &self,
@@ -4117,6 +4156,76 @@ mod tests {
             opening[0]["sessionId"], closing[0]["sessionId"],
             "the closing edge must pair with the opening one"
         );
+    }
+
+    #[tokio::test]
+    async fn try_snapshot_working_sessions_excludes_pending_create() {
+        let manager = SessionManager::new();
+        let live = working_session(&manager, "C:\\live").await;
+        let (pending, _binding) = pending_fixture(&manager, false).await;
+
+        let rows = manager
+            .try_snapshot_working_sessions()
+            .expect("no writer holds state");
+
+        let ids: Vec<Uuid> = rows.iter().map(|row| row.id).collect();
+        assert!(ids.contains(&live.id));
+        assert!(
+            !ids.contains(&pending.id),
+            "a session that does not exist publicly yet must not get a synthetic close"
+        );
+    }
+
+    #[tokio::test]
+    async fn try_snapshot_working_sessions_returns_none_rather_than_blocking_while_a_writer_holds_state(
+    ) {
+        let manager = SessionManager::new();
+        let _live = working_session(&manager, "C:\\live").await;
+
+        let writer = manager.state.write().await;
+        assert!(
+            manager.try_snapshot_working_sessions().is_none(),
+            "the shutdown path must never block on the session map"
+        );
+        drop(writer);
+
+        assert!(
+            manager.try_snapshot_working_sessions().is_some(),
+            "the snapshot succeeds again once the writer is gone"
+        );
+    }
+
+    #[tokio::test]
+    async fn try_snapshot_working_sessions_uses_the_same_predicate_as_is_working() {
+        let manager = SessionManager::new();
+        let subject = working_session(&manager, "C:\\subject").await;
+
+        // Every state the two production writers and the exit path can leave a
+        // session in, checked against the shared predicate rather than a second
+        // definition over `SessionInfo`.
+        for step in ["born", "idle", "busy", "exited"] {
+            match step {
+                "born" => {}
+                "idle" => manager.mark_idle(subject.id).await,
+                "busy" => manager.mark_busy(subject.id).await,
+                _ => {
+                    manager.mark_exited(subject.id, 0).await;
+                }
+            }
+            let stored = manager.get_session(subject.id).await.expect("session");
+            let listed = manager
+                .try_snapshot_working_sessions()
+                .expect("no writer holds state")
+                .iter()
+                .any(|row| row.id == subject.id);
+            assert_eq!(
+                listed,
+                crate::session::session::is_working(&stored),
+                "step {step}: status={:?} waiting_for_input={}",
+                stored.status,
+                stored.waiting_for_input
+            );
+        }
     }
 
     #[tokio::test]
