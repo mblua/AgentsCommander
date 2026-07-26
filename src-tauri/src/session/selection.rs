@@ -407,6 +407,17 @@ pub enum CriticalAdmissionOutcome<T> {
     AlreadyPending,
 }
 
+/// #1151 - `watchdog_resource_kill` must distinguish two conditions that the shared
+/// `CriticalAdmissionOutcome::AlreadyPending` conflates: a genuinely in-flight critical
+/// admission for the same UUID, and a session that is no longer public or pending. Only
+/// the second may fall back to a registry-only quarantine retry.
+#[derive(Debug, Clone)]
+pub(crate) enum WatchdogKillOutcome {
+    Completed(crate::resource_monitor::ResourceKillResult),
+    AlreadyInFlight,
+    NoPublicSession,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CoordinatorPhase {
     Bootstrapping = 0,
@@ -1278,7 +1289,7 @@ impl SelectionCoordinator {
     pub(crate) async fn watchdog_resource_kill(
         &self,
         session_id: Uuid,
-    ) -> Result<CriticalAdmissionOutcome<crate::resource_monitor::ResourceKillResult>, String> {
+    ) -> Result<WatchdogKillOutcome, String> {
         if IN_SELECTION_WORKER.try_with(|_| ()).is_ok() {
             return Err(SelectionCoordinatorError::RecursiveSubmission.to_string());
         }
@@ -1293,7 +1304,7 @@ impl SelectionCoordinator {
         }
         let manager = self.inner.manager.read().await.clone();
         if !manager.contains_public_or_pending(session_id).await {
-            return Ok(CriticalAdmissionOutcome::AlreadyPending);
+            return Ok(WatchdogKillOutcome::NoPublicSession);
         }
         let key = CriticalAdmissionKey {
             session_id,
@@ -1305,7 +1316,7 @@ impl SelectionCoordinator {
             guard,
         }) = self.reserve_critical_admission(key).await?
         else {
-            return Ok(CriticalAdmissionOutcome::AlreadyPending);
+            return Ok(WatchdogKillOutcome::AlreadyInFlight);
         };
         let (response, receiver) = oneshot::channel();
         drop(slot.send(CoordinatorEnvelope {
@@ -1321,7 +1332,7 @@ impl SelectionCoordinator {
         let result = receiver
             .await
             .map_err(|_| SelectionCoordinatorError::Unavailable.to_string())??;
-        Ok(CriticalAdmissionOutcome::Completed(result))
+        Ok(WatchdogKillOutcome::Completed(result))
     }
 
     pub(crate) async fn background_destroy(
@@ -4713,7 +4724,7 @@ mod tests {
                 .watchdog_resource_kill(session.id)
                 .await
                 .unwrap(),
-            CriticalAdmissionOutcome::AlreadyPending
+            WatchdogKillOutcome::AlreadyInFlight
         ));
         assert!(matches!(
             coordinator.background_destroy(session.id).await.unwrap(),
@@ -4734,6 +4745,162 @@ mod tests {
         }
         assert!(coordinator.inner.critical_keys.lock().unwrap().is_empty());
         assert!(coordinator.inner.worker.lock().unwrap().is_none());
+    }
+
+    // #1151 (S1) - an absent session UUID reports NoPublicSession, distinctly from the
+    // in-flight case, and does so before any admission is reserved or job enqueued.
+    #[tokio::test]
+    async fn watchdog_kill_reports_no_public_session_for_absent_uuid() {
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(Arc::new(
+            LifecycleTestBackend::default(),
+        ))));
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(pty)
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build no-public-session app");
+        coordinator.start(app.handle().clone()).unwrap();
+        let restore = coordinator.submit_restore_first().await.unwrap();
+
+        // Every envelope slot is taken and the restore barrier is still held, so ANY
+        // attempt to reserve a critical admission would park indefinitely. Returning
+        // promptly is therefore proof that the absent-session check runs before the
+        // reservation and before a CoordinatorJob::ResourceKill can be enqueued.
+        let mut reservations = Vec::new();
+        while let Ok(reservation) = coordinator.reserve_auto_close() {
+            reservations.push(reservation);
+        }
+        assert!(!reservations.is_empty());
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(1),
+            coordinator.watchdog_resource_kill(Uuid::new_v4()),
+        )
+        .await
+        .expect("absent-session watchdog kill returns without reserving admission")
+        .unwrap();
+        assert!(matches!(outcome, WatchdogKillOutcome::NoPublicSession));
+        assert!(coordinator.inner.critical_keys.lock().unwrap().is_empty());
+
+        restore.finish();
+        coordinator.close_and_join().await;
+        drop(reservations);
+    }
+
+    // #1151 (S2) - with the WatchdogKill critical key held for a PUBLIC uuid, the second
+    // call reports AlreadyInFlight, never NoPublicSession. The orphan fallback keys off
+    // the second variant only, so conflating them would re-enter a live cleanup.
+    #[tokio::test]
+    async fn watchdog_kill_reports_already_in_flight_when_key_held() {
+        use crate::pty::backend::SessionBackendKind;
+
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let session = manager
+            .read()
+            .await
+            .create_session(
+                "shell".to_string(),
+                Vec::new(),
+                "C:/watchdog-in-flight".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(Arc::new(
+            LifecycleTestBackend::default(),
+        ))));
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(pty)
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build already-in-flight app");
+        coordinator.start(app.handle().clone()).unwrap();
+        let guard = coordinator.submit_restore_first().await.unwrap();
+        let reservations = (0..COORDINATOR_QUEUE_CAPACITY)
+            .map(|_| coordinator.reserve_auto_close().unwrap())
+            .collect::<Vec<_>>();
+
+        let waiter = {
+            let coordinator = coordinator.clone();
+            tokio::spawn(async move { coordinator.watchdog_resource_kill(session.id).await })
+        };
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !coordinator
+                .critical_key_registered_for_test(session.id, CriticalAdmissionKind::WatchdogKill)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the first watchdog kill registers its critical key");
+
+        assert!(matches!(
+            coordinator
+                .watchdog_resource_kill(session.id)
+                .await
+                .unwrap(),
+            WatchdogKillOutcome::AlreadyInFlight
+        ));
+
+        coordinator
+            .close_and_join_with_budget(Duration::from_millis(25))
+            .await;
+        guard.finish();
+        drop(reservations);
+        assert_eq!(
+            waiter.await.unwrap().unwrap_err(),
+            SelectionCoordinatorError::Unavailable.to_string()
+        );
+    }
+
+    // #1151 (S3) - the absent-session outcomes of the two SIBLING entry points are
+    // deliberately inconsistent with each other and are left exactly as they are. A
+    // dedicated WatchdogKillOutcome exists so nobody normalizes all three at once.
+    #[tokio::test]
+    async fn absent_session_outcomes_for_route_loss_and_background_destroy_are_unchanged() {
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(Arc::new(
+            LifecycleTestBackend::default(),
+        ))));
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(pty)
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build absent-session sibling app");
+        coordinator.start(app.handle().clone()).unwrap();
+        coordinator.submit_restore_first().await.unwrap().finish();
+
+        assert!(matches!(
+            coordinator
+                .container_lifecycle_sender()
+                .route_lost(Uuid::new_v4(), 7)
+                .await
+                .unwrap(),
+            CriticalAdmissionOutcome::Completed(())
+        ));
+        assert!(matches!(
+            coordinator
+                .background_destroy(Uuid::new_v4())
+                .await
+                .unwrap(),
+            CriticalAdmissionOutcome::AlreadyPending
+        ));
+        assert!(coordinator.inner.critical_keys.lock().unwrap().is_empty());
+        coordinator.close_and_join().await;
     }
 
     #[tokio::test]

@@ -3,7 +3,7 @@ use std::time::Duration;
 use crate::config::settings::{ResourceWatchdogAction, SettingsState};
 use crate::resource_monitor::types::{ResourceGroupState, ResourceLimits};
 use crate::resource_monitor::ResourceMonitorState;
-use crate::session::selection::{CriticalAdmissionOutcome, SelectionCoordinator};
+use crate::session::selection::{SelectionCoordinator, WatchdogKillOutcome};
 use crate::shutdown::ShutdownSignal;
 use serde::Serialize;
 use uuid::Uuid;
@@ -100,7 +100,7 @@ async fn run_tick(
 
 async fn submit_watchdog_kill(coordinator: &SelectionCoordinator, session_id: Uuid) {
     match coordinator.watchdog_resource_kill(session_id).await {
-        Ok(CriticalAdmissionOutcome::Completed(result)) => {
+        Ok(WatchdogKillOutcome::Completed(result)) => {
             log::info!(
                 "[resource-watchdog] finalized session={} state={:?} finalized={}",
                 session_id,
@@ -108,9 +108,17 @@ async fn submit_watchdog_kill(coordinator: &SelectionCoordinator, session_id: Uu
                 result.finalized
             );
         }
-        Ok(CriticalAdmissionOutcome::AlreadyPending) => {
+        // #1151 - the two conditions the old conflated line merged are now distinct, so a
+        // log reader can tell an in-flight critical admission from a vanished session row.
+        Ok(WatchdogKillOutcome::AlreadyInFlight) => {
             log::debug!(
-                "[resource-watchdog] kill already pending or session no longer public session={}",
+                "[resource-watchdog] kill already in flight session={}",
+                session_id
+            );
+        }
+        Ok(WatchdogKillOutcome::NoPublicSession) => {
+            log::debug!(
+                "[resource-watchdog] session no longer public session={}",
                 session_id
             );
         }

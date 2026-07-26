@@ -271,8 +271,8 @@ mod tests {
     use crate::resource_monitor::ResourceMonitorState;
     use crate::session::manager::SessionManager;
     use crate::session::selection::{
-        CriticalAdmissionKind, CriticalAdmissionOutcome, SelectionCoordinator, SelectionMode,
-        SelectionSource, SelectionTransaction, TrustedResourceIntent,
+        CriticalAdmissionKind, SelectionCoordinator, SelectionMode, SelectionSource,
+        SelectionTransaction, TrustedResourceIntent, WatchdogKillOutcome,
     };
     use crate::session::session::SessionStatus;
     use crate::web::broadcast::WsBroadcaster;
@@ -843,7 +843,7 @@ mod tests {
             let watchdog_result = watchdog.await.unwrap().unwrap();
             assert!(matches!(
                 watchdog_result,
-                CriticalAdmissionOutcome::Completed(ref result) if result.finalized
+                WatchdogKillOutcome::Completed(ref result) if result.finalized
             ));
             assert!(user.await.unwrap().unwrap().finalized);
         } else {
@@ -877,7 +877,7 @@ mod tests {
             let watchdog_result = watchdog.await.unwrap().unwrap();
             assert!(matches!(
                 watchdog_result,
-                CriticalAdmissionOutcome::Completed(ref result) if result.finalized
+                WatchdogKillOutcome::Completed(ref result) if result.finalized
             ));
         }
 
@@ -989,7 +989,7 @@ mod tests {
                 .watchdog_resource_kill(session.id)
                 .await
                 .unwrap(),
-            CriticalAdmissionOutcome::AlreadyPending
+            WatchdogKillOutcome::AlreadyInFlight
         ));
 
         drop(reservations.pop());
@@ -1010,7 +1010,7 @@ mod tests {
         let result = waiter.await.unwrap().unwrap();
         assert!(matches!(
             result,
-            CriticalAdmissionOutcome::Completed(ref result) if result.finalized
+            WatchdogKillOutcome::Completed(ref result) if result.finalized
         ));
         drop(reservations);
 
@@ -1030,7 +1030,7 @@ mod tests {
                 .watchdog_resource_kill(session.id)
                 .await
                 .unwrap(),
-            CriticalAdmissionOutcome::Completed(_)
+            WatchdogKillOutcome::Completed(_)
         ));
         assert!(events_rx.try_recv().is_err());
         coordinator.close_and_join().await;
