@@ -963,6 +963,10 @@ enum BackendWatchdogMode {
     Warn,
     KillGroup,
     Tick,
+    /// #1151 - runs the production quarantine-retry gate and loop, so native verification
+    /// of the orphan path is a deterministic, assertable artifact rather than log scraping
+    /// behind a 15 second backoff.
+    QuarantineRetry,
 }
 
 impl BackendWatchdogMode {
@@ -972,8 +976,9 @@ impl BackendWatchdogMode {
             "warn" => Ok(Self::Warn),
             "killGroup" | "kill-group" => Ok(Self::KillGroup),
             "tick" => Ok(Self::Tick),
+            "quarantineRetry" | "quarantine-retry" => Ok(Self::QuarantineRetry),
             other => Err(format!(
-                "Unsupported resource monitor watchdog mode '{other}'. Expected sample, warn, killGroup, or tick."
+                "Unsupported resource monitor watchdog mode '{other}'. Expected sample, warn, killGroup, tick, or quarantineRetry."
             )),
         }
     }
@@ -984,6 +989,7 @@ impl BackendWatchdogMode {
             Self::Warn => "warn",
             Self::KillGroup => "killGroup",
             Self::Tick => "tick",
+            Self::QuarantineRetry => "quarantineRetry",
         }
     }
 }
@@ -1118,6 +1124,37 @@ async fn handle_resource_watchdog_backend_request_with_config<R: tauri::Runtime>
         }
     }
 
+    // #1151 - run the PRODUCTION quarantine-retry gate and loop, not a mirrored copy, so
+    // these reports are evidence about shipped dispatch logic. The coordinator is resolved
+    // ONCE before the call, because the loop takes it by reference for every group.
+    let mut quarantine_retries = Vec::new();
+    if resource_monitor_enabled
+        && matches!(
+            mode,
+            BackendWatchdogMode::QuarantineRetry | BackendWatchdogMode::Tick
+        )
+    {
+        match app.try_state::<crate::session::selection::SelectionCoordinator>() {
+            Some(coordinator) => {
+                for report in crate::resource_monitor::watchdog::run_quarantine_retries(
+                    &monitor,
+                    coordinator.inner(),
+                    &groups,
+                )
+                .await
+                {
+                    quarantine_retries.push(serde_json::to_value(&report).unwrap_or_else(
+                        |error| json!({ "ok": false, "message": error.to_string() }),
+                    ));
+                }
+            }
+            None => quarantine_retries.push(json!({
+                "ok": false,
+                "message": "selectionCoordinatorUnavailable",
+            })),
+        }
+    }
+
     let state = if !resource_monitor_enabled {
         "disabled"
     } else if !kill_results.is_empty() {
@@ -1186,9 +1223,14 @@ async fn handle_resource_watchdog_backend_request_with_config<R: tauri::Runtime>
                 "groupKillPrivateBytes": limits.group_kill_private_bytes,
                 "processKillPrivateBytes": limits.process_kill_private_bytes,
             },
+            // #1151 - `snapshot` is captured BEFORE the action loop and is deliberately
+            // left that way. Every post-retry assertion reads `quarantineRetries[i]`
+            // instead; reading `snapshot.activeAgentGroups` after a successful reclaim
+            // still shows the pre-action figure and produces a false FAIL.
             "snapshot": snapshot_diagnostics,
             "decisions": decisions,
             "killResults": kill_results,
+            "quarantineRetries": quarantine_retries,
         })),
         available_windows: None,
         timeout_ms: None,
@@ -2011,6 +2053,15 @@ mod tests {
                 kill_allowed: true,
             }
         }
+
+        fn mark_stubborn(&self, pid: u32) {
+            self.stubborn.lock().unwrap().insert(pid);
+        }
+
+        fn mark_gone(&self, pid: u32) {
+            self.stubborn.lock().unwrap().remove(&pid);
+            self.gone.lock().unwrap().insert(pid);
+        }
     }
 
     impl ProcessTreeBackend for AutomationProcessBackend {
@@ -2162,7 +2213,7 @@ mod tests {
             ..AppSettings::default()
         };
 
-        for mode in ["sample", "warn", "killGroup", "tick"] {
+        for mode in ["sample", "warn", "killGroup", "tick", "quarantineRetry"] {
             let request = UiAutomationRequest {
                 request_id: Uuid::new_v4().to_string(),
                 token: "token".to_string(),
@@ -2215,6 +2266,7 @@ mod tests {
                     },
                     "decisions": [],
                     "killResults": [],
+                    "quarantineRetries": [],
                 }))
             );
         }
@@ -2350,6 +2402,164 @@ mod tests {
         coordinator.close_and_join().await;
         drop(reservations);
         let _ = waiter.await;
+    }
+
+    /// #1151 - registers a group, quarantines its cleanup on a stubborn child, and leaves
+    /// the retry backoff already satisfied. No public session row is ever created, which
+    /// is precisely what makes the group an orphan.
+    fn orphan_automation_group(
+        monitor: &crate::resource_monitor::ResourceMonitorState,
+        backend: &AutomationProcessBackend,
+        limits: crate::resource_monitor::ResourceLimits,
+        session_id: Uuid,
+        root_pid: u32,
+    ) -> ProcessIdentity {
+        backend.mark_stubborn(AutomationProcessBackend::child_pid(root_pid));
+        let root = register_automation_group(monitor, limits, session_id, root_pid);
+        let quarantine = monitor
+            .kill_group(
+                session_id,
+                crate::resource_monitor::types::ResourceKillReason::SessionDestroy,
+            )
+            .expect("first cleanup runs");
+        assert!(quarantine.quarantined);
+        monitor.test_backdate_quarantine_retry(session_id);
+        root
+    }
+
+    async fn automation_app_with_coordinator(
+        monitor: Arc<crate::resource_monitor::ResourceMonitorState>,
+    ) -> (tauri::App<tauri::test::MockRuntime>, SelectionCoordinator) {
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(monitor)
+            .manage(coordinator.clone())
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build quarantine-retry automation app");
+        coordinator
+            .start(app.handle().clone())
+            .expect("start quarantine-retry coordinator");
+        coordinator
+            .submit_restore_first()
+            .await
+            .expect("restore-first admitted")
+            .finish();
+        (app, coordinator)
+    }
+
+    // #1151 (A1) - the deterministic native artifact for a successful reclaim. Everything
+    // is read from quarantineRetries[0], NEVER from diagnostics.snapshot, which is captured
+    // before the action loop and would still read activeAgentGroups = 1 on a correct build.
+    #[tokio::test]
+    async fn quarantine_retry_mode_reports_completed_orphan_cleanup() {
+        let backend = Arc::new(AutomationProcessBackend::default());
+        let monitor = Arc::new(crate::resource_monitor::ResourceMonitorState::with_backend(
+            backend.clone() as Arc<dyn ProcessTreeBackend>,
+        ));
+        let cfg = automation_settings();
+        let limits = crate::resource_monitor::ResourceLimits::from(&cfg);
+
+        let session_id = Uuid::new_v4();
+        let root = orphan_automation_group(&monitor, &backend, limits, session_id, 6_100);
+        assert_eq!(monitor.active_agent_groups(), 1);
+        // The blocker finally exits, which is the only thing a retry can discover.
+        backend.mark_gone(AutomationProcessBackend::child_pid(6_100));
+
+        let (app, coordinator) = automation_app_with_coordinator(Arc::clone(&monitor)).await;
+        let response = handle_resource_watchdog_backend_request_with_config(
+            app.handle(),
+            &watchdog_backend_request("quarantineRetry"),
+            &cfg,
+        )
+        .await;
+
+        assert!(response.ok);
+        let diagnostics = response.diagnostics.expect("watchdog diagnostics");
+        let retries = diagnostics["quarantineRetries"]
+            .as_array()
+            .expect("quarantineRetries array");
+        assert_eq!(retries.len(), 1);
+        assert_eq!(retries[0]["sessionId"], json!(session_id));
+        assert_eq!(retries[0]["path"], json!("orphan"));
+        assert_eq!(retries[0]["rootPid"], json!(root.pid));
+        assert_eq!(retries[0]["quarantined"], json!(false));
+        assert_eq!(retries[0]["stillCountsTowardAdmission"], json!(false));
+        assert_eq!(retries[0]["activeAgentGroups"], json!(0));
+        // The pre-action snapshot deliberately still shows the group counted.
+        assert_eq!(diagnostics["snapshot"]["activeAgentGroups"], json!(1));
+        coordinator.close_and_join().await;
+    }
+
+    // #1151 (A2) - the safety artifact. An owned descendant that is still unverifiable
+    // keeps blocking capacity, and the report says so instead of claiming a reclaim.
+    #[tokio::test]
+    async fn quarantine_retry_mode_reports_still_blocked_group() {
+        let backend = Arc::new(AutomationProcessBackend::default());
+        let monitor = Arc::new(crate::resource_monitor::ResourceMonitorState::with_backend(
+            backend.clone() as Arc<dyn ProcessTreeBackend>,
+        ));
+        let cfg = automation_settings();
+        let limits = crate::resource_monitor::ResourceLimits::from(&cfg);
+
+        let session_id = Uuid::new_v4();
+        // The blocker is deliberately NOT marked gone.
+        orphan_automation_group(&monitor, &backend, limits, session_id, 6_200);
+
+        let (app, coordinator) = automation_app_with_coordinator(Arc::clone(&monitor)).await;
+        let response = handle_resource_watchdog_backend_request_with_config(
+            app.handle(),
+            &watchdog_backend_request("quarantineRetry"),
+            &cfg,
+        )
+        .await;
+
+        let diagnostics = response.diagnostics.expect("watchdog diagnostics");
+        let retries = diagnostics["quarantineRetries"]
+            .as_array()
+            .expect("quarantineRetries array");
+        assert_eq!(retries.len(), 1);
+        assert_eq!(retries[0]["path"], json!("orphan"));
+        assert_eq!(retries[0]["quarantined"], json!(true));
+        assert_eq!(retries[0]["stillCountsTowardAdmission"], json!(true));
+        assert_eq!(retries[0]["activeAgentGroups"], json!(1));
+        assert_eq!(monitor.active_agent_groups(), 1);
+        coordinator.close_and_join().await;
+    }
+
+    // #1151 (A4) - an unsupported backend stays at zero admission and zero enforcement
+    // calls in the new mode too.
+    #[tokio::test]
+    async fn unsupported_backend_quarantine_retry_is_disabled() {
+        let backend = Arc::new(UnsupportedAutomationBackend::default());
+        let monitor = Arc::new(crate::resource_monitor::ResourceMonitorState::with_backend(
+            backend.clone() as Arc<dyn ProcessTreeBackend>,
+        ));
+        let cfg = automation_settings();
+
+        let (app, coordinator) = automation_app_with_coordinator(Arc::clone(&monitor)).await;
+        let response = handle_resource_watchdog_backend_request_with_config(
+            app.handle(),
+            &watchdog_backend_request("quarantineRetry"),
+            &cfg,
+        )
+        .await;
+
+        assert!(response.ok);
+        assert_eq!(response.target.expect("target")["state"], json!("disabled"));
+        let diagnostics = response.diagnostics.expect("watchdog diagnostics");
+        assert_eq!(diagnostics["quarantineRetries"], json!([]));
+        assert_eq!(backend.observe_tree_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(backend.observe_identity_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(backend.terminate_verified_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            backend.current_process_memory_calls.load(Ordering::SeqCst),
+            0
+        );
+        coordinator.close_and_join().await;
     }
 
     #[test]
