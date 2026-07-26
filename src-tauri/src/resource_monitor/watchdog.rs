@@ -31,6 +31,9 @@ pub fn start(
     coordinator: SelectionCoordinator,
     shutdown: ShutdownSignal,
 ) {
+    if !watchdog_eligible(&monitor) {
+        return;
+    }
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::select! {
@@ -41,6 +44,10 @@ pub fn start(
             }
         }
     });
+}
+
+fn watchdog_eligible(monitor: &ResourceMonitorState) -> bool {
+    monitor.supports_process_tree_enforcement()
 }
 
 async fn next_delay(monitor: &ResourceMonitorState, settings: &SettingsState) -> Duration {
@@ -57,6 +64,9 @@ async fn run_tick(
     settings: &SettingsState,
     coordinator: &SelectionCoordinator,
 ) {
+    if !watchdog_eligible(monitor) {
+        return;
+    }
     let cfg = settings.read().await.clone();
     if !cfg.resource_monitor_enabled {
         return;
@@ -163,9 +173,58 @@ pub fn evaluate_watchdog_groups(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::settings::AppSettings;
+    use crate::resource_monitor::registry::{ProcessTreeBackend, ResourceError};
     use crate::resource_monitor::types::{
-        ProcessIdentity, ResourceAgentGroupSnapshot, ResourceNetworkState, ResourceProcessSnapshot,
+        ObservedProcess, ObservedProcessTree, ProcessIdentity, ProcessMemory,
+        ResourceAgentGroupSnapshot, ResourceNetworkState, ResourceProcessSnapshot,
+        TerminateOutcome,
     };
+    use crate::session::manager::SessionManager;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+
+    #[derive(Default)]
+    struct UnsupportedWatchdogBackend {
+        observe_tree_calls: AtomicUsize,
+        observe_identity_calls: AtomicUsize,
+        terminate_verified_calls: AtomicUsize,
+        current_process_memory_calls: AtomicUsize,
+    }
+
+    impl ProcessTreeBackend for UnsupportedWatchdogBackend {
+        fn supports_process_tree_enforcement(&self) -> bool {
+            false
+        }
+
+        fn observe_tree(
+            &self,
+            _root: ProcessIdentity,
+        ) -> Result<ObservedProcessTree, ResourceError> {
+            self.observe_tree_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(ObservedProcessTree::default())
+        }
+
+        fn observe_identity(&self, _pid: u32) -> Result<Option<ProcessIdentity>, ResourceError> {
+            self.observe_identity_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        }
+
+        fn terminate_verified(
+            &self,
+            _process: &ObservedProcess,
+        ) -> Result<TerminateOutcome, ResourceError> {
+            self.terminate_verified_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(TerminateOutcome::AlreadyGone)
+        }
+
+        fn current_process_memory(&self) -> Result<ProcessMemory, ResourceError> {
+            self.current_process_memory_calls
+                .fetch_add(1, Ordering::SeqCst);
+            Ok(ProcessMemory::default())
+        }
+    }
 
     fn limits() -> ResourceLimits {
         ResourceLimits {
@@ -224,6 +283,56 @@ mod tests {
             kill_allowed: true,
             last_error: None,
         }
+    }
+
+    #[tokio::test]
+    async fn unsupported_backend_is_ineligible_for_start_and_tick() {
+        let backend = Arc::new(UnsupportedWatchdogBackend::default());
+        let monitor =
+            ResourceMonitorState::with_backend(backend.clone() as Arc<dyn ProcessTreeBackend>);
+        assert!(!watchdog_eligible(&monitor));
+
+        let cfg = AppSettings {
+            resource_monitor_enabled: true,
+            ..AppSettings::default()
+        };
+        let settings = Arc::new(tokio::sync::RwLock::new(cfg));
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let coordinator = SelectionCoordinator::new(manager, CancellationToken::new());
+        let shutdown = ShutdownSignal::new();
+
+        let start_fn: fn(
+            ResourceMonitorState,
+            SettingsState,
+            SelectionCoordinator,
+            ShutdownSignal,
+        ) = start;
+        start_fn(
+            monitor.clone(),
+            Arc::clone(&settings),
+            coordinator.clone(),
+            shutdown.clone(),
+        );
+        tokio::task::yield_now().await;
+
+        let settings_guard = settings.write().await;
+        tokio::time::timeout(
+            Duration::from_millis(50),
+            run_tick(&monitor, &settings, &coordinator),
+        )
+        .await
+        .expect("unsupported tick returns before reading settings");
+        shutdown.trigger();
+        drop(settings_guard);
+        tokio::task::yield_now().await;
+
+        assert_eq!(backend.observe_tree_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(backend.observe_identity_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(backend.terminate_verified_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            backend.current_process_memory_calls.load(Ordering::SeqCst),
+            0
+        );
     }
 
     #[test]

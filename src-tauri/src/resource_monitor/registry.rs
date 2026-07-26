@@ -32,6 +32,10 @@ impl From<&str> for ResourceError {
 }
 
 pub trait ProcessTreeBackend: Send + Sync + 'static {
+    fn supports_process_tree_enforcement(&self) -> bool {
+        true
+    }
+
     fn observe_tree(&self, root: ProcessIdentity) -> Result<ObservedProcessTree, ResourceError>;
     fn observe_identity(&self, pid: u32) -> Result<Option<ProcessIdentity>, ResourceError>;
     fn terminate_verified(
@@ -127,7 +131,13 @@ impl ResourceLaunchRegistration {
         }
     }
 
-    pub fn register_root_pid(&mut self, pid: u32) -> Result<ProcessIdentity, String> {
+    pub fn register_root_pid(&mut self, pid: u32) -> Result<Option<ProcessIdentity>, String> {
+        if !self.monitor.supports_process_tree_enforcement() {
+            if let Some(permit) = self.permit.take() {
+                self.monitor.release_unregistered_permit(permit);
+            }
+            return Ok(None);
+        }
         let identity = self
             .monitor
             .observe_identity(pid)?
@@ -148,7 +158,7 @@ impl ResourceLaunchRegistration {
             identity,
         )?;
         self.registered = true;
-        Ok(identity)
+        Ok(Some(identity))
     }
 
     pub fn rollback_registered(&self) {
@@ -177,11 +187,19 @@ impl ResourceMonitorState {
         }
     }
 
+    pub fn supports_process_tree_enforcement(&self) -> bool {
+        self.backend.supports_process_tree_enforcement()
+    }
+
+    pub fn is_effectively_enabled(&self, configured_enabled: bool) -> bool {
+        configured_enabled && self.supports_process_tree_enforcement()
+    }
+
     pub fn try_reserve_agent_slot(
         &self,
         limits: ResourceLimits,
     ) -> Result<Option<AgentLaunchPermit>, String> {
-        if !limits.monitor_enabled {
+        if !self.is_effectively_enabled(limits.monitor_enabled) {
             return Ok(None);
         }
         let mut inner = self
@@ -207,11 +225,18 @@ impl ResourceMonitorState {
         }
     }
 
-    pub fn hold_logical_agent_slot(&self, permit: AgentLaunchPermit) -> ResourceLogicalAgentSlot {
-        ResourceLogicalAgentSlot {
+    pub fn hold_logical_agent_slot(
+        &self,
+        permit: AgentLaunchPermit,
+    ) -> Option<ResourceLogicalAgentSlot> {
+        if !self.supports_process_tree_enforcement() {
+            self.release_unregistered_permit(permit);
+            return None;
+        }
+        Some(ResourceLogicalAgentSlot {
             monitor: self.clone(),
             permit: Some(permit),
-        }
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -302,6 +327,9 @@ impl ResourceMonitorState {
     }
 
     pub fn active_agent_groups(&self) -> usize {
+        if !self.supports_process_tree_enforcement() {
+            return 0;
+        }
         self.inner
             .lock()
             .map(|inner| active_count(&inner))
@@ -328,6 +356,9 @@ impl ResourceMonitorState {
     }
 
     pub fn snapshot(&self, limits: ResourceLimits) -> ResourceSnapshot {
+        if !self.is_effectively_enabled(limits.monitor_enabled) {
+            return disabled_snapshot(limits);
+        }
         let samples = self.sample_running_groups();
         let mut warnings = Vec::new();
         let mut reap_candidates: Vec<(Uuid, ProcessIdentity)> = Vec::new();
@@ -1122,6 +1153,22 @@ fn group_snapshot(group: &ResourceAgentGroup) -> ResourceAgentGroupSnapshot {
     }
 }
 
+fn disabled_snapshot(limits: ResourceLimits) -> ResourceSnapshot {
+    ResourceSnapshot {
+        captured_at: Utc::now(),
+        overall_state: ResourceOverallState::Unknown,
+        monitor_enabled: false,
+        active_agent_groups: 0,
+        max_concurrent_agent_groups: limits.max_concurrent_agent_processes,
+        app_private_bytes: None,
+        app_working_set_bytes: None,
+        network_state: ResourceNetworkState::Unknown,
+        network_summary: "Socket attribution unavailable".to_string(),
+        groups: Vec::new(),
+        warnings: Vec::new(),
+    }
+}
+
 fn sum_optional(values: impl Iterator<Item = Option<u64>>) -> Option<u64> {
     let mut any = false;
     let mut total = 0_u64;
@@ -1135,6 +1182,7 @@ fn sum_optional(values: impl Iterator<Item = Option<u64>>) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     use super::*;
@@ -1153,6 +1201,66 @@ mod tests {
         /// failed enumeration. The Err arm of snapshot() must never reach the strike
         /// counter or reap.
         fail_observe: Mutex<BTreeSet<ProcessIdentity>>,
+    }
+
+    struct CapabilityTestBackend {
+        supported: AtomicBool,
+        observe_tree_calls: AtomicUsize,
+        observe_identity_calls: AtomicUsize,
+        terminate_verified_calls: AtomicUsize,
+        current_process_memory_calls: AtomicUsize,
+    }
+
+    impl CapabilityTestBackend {
+        fn new(supported: bool) -> Self {
+            Self {
+                supported: AtomicBool::new(supported),
+                observe_tree_calls: AtomicUsize::new(0),
+                observe_identity_calls: AtomicUsize::new(0),
+                terminate_verified_calls: AtomicUsize::new(0),
+                current_process_memory_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn set_supported(&self, supported: bool) {
+            self.supported.store(supported, Ordering::SeqCst);
+        }
+    }
+
+    impl ProcessTreeBackend for CapabilityTestBackend {
+        fn supports_process_tree_enforcement(&self) -> bool {
+            self.supported.load(Ordering::SeqCst)
+        }
+
+        fn observe_tree(
+            &self,
+            _root: ProcessIdentity,
+        ) -> Result<ObservedProcessTree, ResourceError> {
+            self.observe_tree_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(ObservedProcessTree::default())
+        }
+
+        fn observe_identity(&self, pid: u32) -> Result<Option<ProcessIdentity>, ResourceError> {
+            self.observe_identity_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(ProcessIdentity {
+                pid,
+                creation_time_100ns: u64::from(pid),
+            }))
+        }
+
+        fn terminate_verified(
+            &self,
+            _process: &ObservedProcess,
+        ) -> Result<TerminateOutcome, ResourceError> {
+            self.terminate_verified_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(TerminateOutcome::AlreadyGone)
+        }
+
+        fn current_process_memory(&self) -> Result<ProcessMemory, ResourceError> {
+            self.current_process_memory_calls
+                .fetch_add(1, Ordering::SeqCst);
+            Ok(ProcessMemory::default())
+        }
     }
 
     impl FakeProcessTreeBackend {
@@ -1390,6 +1498,109 @@ mod tests {
             group_kill_private_bytes: 200,
             process_kill_private_bytes: 200,
         }
+    }
+
+    fn assert_disabled_snapshot(snapshot: &ResourceSnapshot, expected_limits: ResourceLimits) {
+        assert_eq!(snapshot.overall_state, ResourceOverallState::Unknown);
+        assert!(!snapshot.monitor_enabled);
+        assert_eq!(snapshot.active_agent_groups, 0);
+        assert_eq!(
+            snapshot.max_concurrent_agent_groups,
+            expected_limits.max_concurrent_agent_processes
+        );
+        assert_eq!(snapshot.app_private_bytes, None);
+        assert_eq!(snapshot.app_working_set_bytes, None);
+        assert_eq!(snapshot.network_state, ResourceNetworkState::Unknown);
+        assert_eq!(snapshot.network_summary, "Socket attribution unavailable");
+        assert!(snapshot.groups.is_empty());
+        assert!(snapshot.warnings.is_empty());
+    }
+
+    #[test]
+    fn unsupported_backend_never_consumes_agent_capacity() {
+        let backend = Arc::new(CapabilityTestBackend::new(false));
+        let state =
+            ResourceMonitorState::with_backend(backend.clone() as Arc<dyn ProcessTreeBackend>);
+        let test_limits = limits(1);
+
+        for _ in 0..33 {
+            assert!(state.try_reserve_agent_slot(test_limits).unwrap().is_none());
+            assert_eq!(state.active_agent_groups(), 0);
+            assert_disabled_snapshot(&state.snapshot(test_limits), test_limits);
+        }
+
+        assert_eq!(backend.observe_tree_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(backend.observe_identity_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(backend.terminate_verified_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            backend.current_process_memory_calls.load(Ordering::SeqCst),
+            0
+        );
+    }
+
+    #[test]
+    fn supported_backend_still_enforces_agent_capacity() {
+        let (state, _backend) = state_with_fake();
+        let first = state
+            .try_reserve_agent_slot(limits(1))
+            .unwrap()
+            .expect("default-supported backend reserves the first slot");
+
+        let error = state.try_reserve_agent_slot(limits(1)).unwrap_err();
+        assert!(error.contains("1/1"), "unexpected cap error: {error}");
+
+        state.release_unregistered_permit(first);
+        let next = state
+            .try_reserve_agent_slot(limits(1))
+            .unwrap()
+            .expect("released default-supported permit restores capacity");
+        state.release_unregistered_permit(next);
+    }
+
+    #[test]
+    fn unsupported_backend_releases_preissued_permits_before_registration() {
+        let backend = Arc::new(CapabilityTestBackend::new(true));
+        let state =
+            ResourceMonitorState::with_backend(backend.clone() as Arc<dyn ProcessTreeBackend>);
+        let test_limits = limits(1);
+
+        let logical_permit = state.try_reserve_agent_slot(test_limits).unwrap().unwrap();
+        backend.set_supported(false);
+        assert!(state.hold_logical_agent_slot(logical_permit).is_none());
+        backend.set_supported(true);
+        let replacement = state
+            .try_reserve_agent_slot(test_limits)
+            .unwrap()
+            .expect("logical-slot rejection releases the preissued permit");
+        state.release_unregistered_permit(replacement);
+
+        let registration_permit = state.try_reserve_agent_slot(test_limits).unwrap().unwrap();
+        let session_id = Uuid::new_v4();
+        let mut registration = ResourceLaunchRegistration::new(
+            state.clone(),
+            registration_permit,
+            ResourceLaunchMetadata {
+                session_id,
+                name: "agent".to_string(),
+                agent_id: None,
+                agent_label: None,
+                workgroup: None,
+                agent: None,
+                project: None,
+            },
+        );
+        backend.set_supported(false);
+        assert_eq!(registration.register_root_pid(77).unwrap(), None);
+        assert!(!state.has_registered_group(session_id));
+        assert_eq!(backend.observe_identity_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(backend.observe_tree_calls.load(Ordering::SeqCst), 0);
+
+        backend.set_supported(true);
+        let replacement = state
+            .try_reserve_agent_slot(test_limits)
+            .unwrap()
+            .expect("registration rejection releases the preissued permit");
+        state.release_unregistered_permit(replacement);
     }
 
     #[test]

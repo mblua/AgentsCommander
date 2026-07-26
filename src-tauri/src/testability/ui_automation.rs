@@ -1016,6 +1016,15 @@ async fn handle_resource_watchdog_backend_request(
     app: &AppHandle,
     request: &UiAutomationRequest,
 ) -> UiAutomationResponse {
+    let cfg = crate::config::settings::load_settings();
+    handle_resource_watchdog_backend_request_with_config(app, request, &cfg).await
+}
+
+async fn handle_resource_watchdog_backend_request_with_config<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    request: &UiAutomationRequest,
+    cfg: &crate::config::settings::AppSettings,
+) -> UiAutomationResponse {
     let mode = match BackendWatchdogMode::parse(request.value.as_deref()) {
         Ok(mode) => mode,
         Err(message) => {
@@ -1032,8 +1041,8 @@ async fn handle_resource_watchdog_backend_request(
         );
     };
 
-    let cfg = crate::config::settings::load_settings();
-    let limits = crate::resource_monitor::ResourceLimits::from(&cfg);
+    let limits = crate::resource_monitor::ResourceLimits::from(cfg);
+    let resource_monitor_enabled = monitor.is_effectively_enabled(cfg.resource_monitor_enabled);
     let snapshot = monitor.snapshot(limits);
     let groups = snapshot
         .groups
@@ -1054,12 +1063,11 @@ async fn handle_resource_watchdog_backend_request(
         .filter(|decision| decision.kill_required)
         .count();
 
-    let kill_enabled = cfg.resource_monitor_enabled
-        && matches!(mode, BackendWatchdogMode::KillGroup)
-        || (cfg.resource_monitor_enabled
-            && matches!(mode, BackendWatchdogMode::Tick)
-            && cfg.resource_watchdog_action
-                == crate::config::settings::ResourceWatchdogAction::KillGroup);
+    let kill_enabled = resource_monitor_enabled
+        && (matches!(mode, BackendWatchdogMode::KillGroup)
+            || (matches!(mode, BackendWatchdogMode::Tick)
+                && cfg.resource_watchdog_action
+                    == crate::config::settings::ResourceWatchdogAction::KillGroup));
 
     let mut kill_results = Vec::new();
     if kill_enabled {
@@ -1100,7 +1108,7 @@ async fn handle_resource_watchdog_backend_request(
         }
     }
 
-    let state = if !cfg.resource_monitor_enabled {
+    let state = if !resource_monitor_enabled {
         "disabled"
     } else if !kill_results.is_empty() {
         "enforcing"
@@ -1110,6 +1118,27 @@ async fn handle_resource_watchdog_backend_request(
         "warn"
     } else {
         "ok"
+    };
+
+    let snapshot_diagnostics = if monitor.supports_process_tree_enforcement() {
+        json!({
+            "capturedAt": snapshot.captured_at,
+            "overallState": snapshot.overall_state,
+            "activeAgentGroups": snapshot.active_agent_groups,
+            "appPrivateBytes": snapshot.app_private_bytes,
+            "networkState": snapshot.network_state,
+            "networkSummary": snapshot.network_summary,
+            "warnings": snapshot.warnings,
+        })
+    } else {
+        json!({
+            "overallState": snapshot.overall_state,
+            "activeAgentGroups": snapshot.active_agent_groups,
+            "appPrivateBytes": snapshot.app_private_bytes,
+            "networkState": snapshot.network_state,
+            "networkSummary": snapshot.network_summary,
+            "warnings": snapshot.warnings,
+        })
     };
 
     UiAutomationResponse {
@@ -1139,7 +1168,7 @@ async fn handle_resource_watchdog_backend_request(
         diagnostics: Some(json!({
             "mode": mode.as_str(),
             "configuredAction": cfg.resource_watchdog_action,
-            "resourceMonitorEnabled": cfg.resource_monitor_enabled,
+            "resourceMonitorEnabled": resource_monitor_enabled,
             "killApplied": kill_enabled,
             "limits": {
                 "maxConcurrentAgentGroups": limits.max_concurrent_agent_processes,
@@ -1147,15 +1176,7 @@ async fn handle_resource_watchdog_backend_request(
                 "groupKillPrivateBytes": limits.group_kill_private_bytes,
                 "processKillPrivateBytes": limits.process_kill_private_bytes,
             },
-            "snapshot": {
-                "capturedAt": snapshot.captured_at,
-                "overallState": snapshot.overall_state,
-                "activeAgentGroups": snapshot.active_agent_groups,
-                "appPrivateBytes": snapshot.app_private_bytes,
-                "networkState": snapshot.network_state,
-                "networkSummary": snapshot.network_summary,
-                "warnings": snapshot.warnings,
-            },
+            "snapshot": snapshot_diagnostics,
             "decisions": decisions,
             "killResults": kill_results,
         })),
@@ -1882,6 +1903,53 @@ impl RequestFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::settings::{AppSettings, ResourceWatchdogAction};
+    use crate::resource_monitor::registry::{ProcessTreeBackend, ResourceError};
+    use crate::resource_monitor::types::{
+        ObservedProcess, ObservedProcessTree, ProcessIdentity, ProcessMemory, TerminateOutcome,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct UnsupportedAutomationBackend {
+        observe_tree_calls: AtomicUsize,
+        observe_identity_calls: AtomicUsize,
+        terminate_verified_calls: AtomicUsize,
+        current_process_memory_calls: AtomicUsize,
+    }
+
+    impl ProcessTreeBackend for UnsupportedAutomationBackend {
+        fn supports_process_tree_enforcement(&self) -> bool {
+            false
+        }
+
+        fn observe_tree(
+            &self,
+            _root: ProcessIdentity,
+        ) -> Result<ObservedProcessTree, ResourceError> {
+            self.observe_tree_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(ObservedProcessTree::default())
+        }
+
+        fn observe_identity(&self, _pid: u32) -> Result<Option<ProcessIdentity>, ResourceError> {
+            self.observe_identity_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        }
+
+        fn terminate_verified(
+            &self,
+            _process: &ObservedProcess,
+        ) -> Result<TerminateOutcome, ResourceError> {
+            self.terminate_verified_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(TerminateOutcome::AlreadyGone)
+        }
+
+        fn current_process_memory(&self) -> Result<ProcessMemory, ResourceError> {
+            self.current_process_memory_calls
+                .fetch_add(1, Ordering::SeqCst);
+            Ok(ProcessMemory::default())
+        }
+    }
 
     fn sample_request(request_id: String, selector: &str) -> UiAutomationRequest {
         UiAutomationRequest {
@@ -1905,6 +1973,92 @@ mod tests {
             UiAutomationAction::TypeText => "typeText",
             UiAutomationAction::Backend => "backend",
         }
+    }
+
+    #[tokio::test]
+    async fn unsupported_backend_reports_disabled_and_never_kills() {
+        let backend = Arc::new(UnsupportedAutomationBackend::default());
+        let monitor = Arc::new(crate::resource_monitor::ResourceMonitorState::with_backend(
+            backend.clone() as Arc<dyn ProcessTreeBackend>,
+        ));
+        let app = tauri::test::mock_builder()
+            .manage(monitor)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build unsupported resource-watchdog automation app");
+        let cfg = AppSettings {
+            resource_monitor_enabled: true,
+            resource_watchdog_action: ResourceWatchdogAction::KillGroup,
+            max_concurrent_agent_processes: 7,
+            agent_group_warn_private_bytes: 101,
+            agent_group_kill_private_bytes: 202,
+            agent_process_kill_private_bytes: 303,
+            ..AppSettings::default()
+        };
+
+        for mode in ["sample", "warn", "killGroup", "tick"] {
+            let request = UiAutomationRequest {
+                request_id: Uuid::new_v4().to_string(),
+                token: "token".to_string(),
+                window: BACKEND_AUTOMATION_WINDOW.to_string(),
+                action: UiAutomationAction::Backend,
+                selector: RESOURCE_WATCHDOG_BACKEND_SELECTOR.to_string(),
+                value: Some(mode.to_string()),
+                expires_at_unix_ms: Some(now_unix_ms() + 1_000),
+            };
+
+            let response =
+                handle_resource_watchdog_backend_request_with_config(app.handle(), &request, &cfg)
+                    .await;
+
+            assert!(response.ok);
+            assert_eq!(
+                response.target,
+                Some(json!({
+                    "testId": RESOURCE_WATCHDOG_BACKEND_SELECTOR,
+                    "role": "backend",
+                    "state": "disabled",
+                    "tag": "backend",
+                    "text": format!(
+                        "resource monitor watchdog {mode}: 0 group(s), 0 warn match(es), 0 kill match(es)"
+                    ),
+                    "visible": true,
+                    "disabled": false,
+                }))
+            );
+            assert_eq!(
+                response.diagnostics,
+                Some(json!({
+                    "mode": mode,
+                    "configuredAction": cfg.resource_watchdog_action,
+                    "resourceMonitorEnabled": false,
+                    "killApplied": false,
+                    "limits": {
+                        "maxConcurrentAgentGroups": 7,
+                        "groupWarnPrivateBytes": 101,
+                        "groupKillPrivateBytes": 202,
+                        "processKillPrivateBytes": 303,
+                    },
+                    "snapshot": {
+                        "overallState": "unknown",
+                        "activeAgentGroups": 0,
+                        "appPrivateBytes": null,
+                        "networkState": "unknown",
+                        "networkSummary": "Socket attribution unavailable",
+                        "warnings": [],
+                    },
+                    "decisions": [],
+                    "killResults": [],
+                }))
+            );
+        }
+
+        assert_eq!(backend.observe_tree_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(backend.observe_identity_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(backend.terminate_verified_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            backend.current_process_memory_calls.load(Ordering::SeqCst),
+            0
+        );
     }
 
     #[test]
