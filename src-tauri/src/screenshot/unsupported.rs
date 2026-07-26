@@ -5,7 +5,7 @@
 //! layer and `lib.rs` wiring are identical across targets: every capture path
 //! reports an unsupported status, and hotkey "registration" only validates syntax.
 
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager};
 
 use super::{
     ScreenshotCaptureResult, ScreenshotCaptureState, ScreenshotHotkeyState, ScreenshotOverlayState,
