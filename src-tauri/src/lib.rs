@@ -734,6 +734,12 @@ pub fn run(
     config::coding_agents_catalog::ensure_seeded_masters(&config_dir);
 
     let instance_id = uuid::Uuid::new_v4().to_string();
+    // #1149 - open the activity run here, before the rest of boot: a panic in the
+    // remaining path then still leaves a run that had started and never stopped,
+    // which the next startup reports as unclean. This is also the last point at
+    // which `daemon.pid` still holds the PREVIOUS writer's PID, which is what
+    // lets the scan tell a dead predecessor from a live sibling.
+    crate::config::activity_log::init_run(&config_dir, &instance_id);
     let app_outbox_path = instances_dir.join(&instance_id).join("outbox");
     std::fs::create_dir_all(&app_outbox_path).expect("Failed to create app outbox directory");
     let app_outbox = AppOutbox::new(app_outbox_path.to_string_lossy().to_string());
