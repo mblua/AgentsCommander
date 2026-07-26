@@ -269,7 +269,7 @@ impl SimulatorHandle {
 }
 
 fn spawn_daemon_simulator(
-    tmp: &Path,
+    _tmp: &Path,
     outbox_dir: &Path,
     responses_dir: &Path,
     response_body: &str,
@@ -278,9 +278,9 @@ fn spawn_daemon_simulator(
 ) -> SimulatorHandle {
     #[cfg(target_os = "windows")]
     {
-        let response_body_path = tmp.join("response-body.json");
+        let response_body_path = _tmp.join("response-body.json");
         std::fs::write(&response_body_path, response_body).expect("write response body");
-        let script = write_windows_simulator_script(tmp);
+        let script = write_windows_simulator_script(_tmp);
 
         let child = Command::new("powershell.exe")
             .args([
