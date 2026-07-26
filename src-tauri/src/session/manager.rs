@@ -3671,4 +3671,71 @@ mod tests {
         assert!(manager.get_pending_session(binding).await.is_some());
         assert!(manager.list_sessions().await.is_empty());
     }
+
+    /// The unstated invariant that makes `commit_selection_transition`'s
+    /// `-> Active` promotion neutral for the activity signal: a session is never
+    /// `Idle` while `waiting_for_input` is false. If it ever were, focusing that
+    /// session would flip `is_working` false to true with no record behind it.
+    #[tokio::test]
+    async fn idle_status_implies_waiting_for_input() {
+        let manager = SessionManager::new();
+        // The first session takes the selection and becomes Active; the second
+        // stays Running, which is the only status `mark_idle` demotes.
+        let _selected = manager
+            .create_session(
+                "sh".to_string(),
+                Vec::new(),
+                "C:\\selected".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create the selected session");
+        let subject = manager
+            .create_session(
+                "sh".to_string(),
+                Vec::new(),
+                "C:\\subject".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create the subject session");
+
+        assert_eq!(subject.status, SessionStatus::Running);
+        assert!(
+            !subject.waiting_for_input,
+            "a session is born (Running, false)"
+        );
+
+        let mut saw_idle = false;
+        // Both writers, repeated, so the no-op paths are covered too.
+        for action in ["idle", "idle", "busy", "busy", "idle"] {
+            match action {
+                "idle" => manager.mark_idle(subject.id).await,
+                _ => manager.mark_busy(subject.id).await,
+            }
+            let observed = manager
+                .get_session(subject.id)
+                .await
+                .expect("the subject session survives");
+            if matches!(observed.status, SessionStatus::Idle) {
+                saw_idle = true;
+                assert!(
+                    observed.waiting_for_input,
+                    "after {action}: Idle with waiting_for_input false manufactures an unrecorded ON edge"
+                );
+            }
+        }
+        assert!(
+            saw_idle,
+            "the sequence must actually reach Idle or it proves nothing"
+        );
+    }
 }

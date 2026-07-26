@@ -211,6 +211,27 @@ pub enum SessionStatus {
     Exited(i32),
 }
 
+/// Backend "working" predicate. Identical to `cli/list_peers.rs`'s documented
+/// `working` field and to `isWorkingActivity` in shared/session-activity.ts.
+///
+/// `pending_review` is deliberately excluded: it is documented frontend-only
+/// state (`session.rs:106-108`) whose transitions are user-driven, and the
+/// session is already `waiting_for_input` by the time it can be set.
+///
+/// INVARIANT relied on by `commit_selection_transition:1644`: `status == Idle`
+/// implies `waiting_for_input == true`. All three `waiting_for_input` writers
+/// (`manager.rs:488`, `:507`, `:653`) move `Idle`/`Running` in lockstep and a
+/// session is born `(Running, false)`. If this ever breaks, focusing a session
+/// manufactures an unrecorded ON edge. Asserted by
+/// `idle_status_implies_waiting_for_input`.
+///
+/// NOTE: `SessionManager::switch_session` (`:1797`, `#[cfg(test)]` impl) would
+/// violate the edge model for an `Exited` session. It is unreachable in
+/// production; do not promote it without adding an `Exited` guard and a record.
+pub fn is_working(s: &Session) -> bool {
+    !s.waiting_for_input && matches!(s.status, SessionStatus::Active | SessionStatus::Running)
+}
+
 pub(crate) fn is_live_session_record(has_id: bool, status: Option<&SessionStatus>) -> bool {
     has_id && !matches!(status, Some(SessionStatus::Exited(_)))
 }
@@ -644,5 +665,47 @@ mod tests {
             serde_json::json!(null),
             "key present as null, not omitted"
         );
+    }
+
+    #[test]
+    fn is_working_matches_the_documented_list_peers_predicate() {
+        // Every point of the state space, against the definition `cli/list_peers.rs`
+        // publishes: "true iff the peer has a Running/Active session not waiting
+        // for input".
+        let cases = [
+            (SessionStatus::Active, false, true),
+            (SessionStatus::Running, false, true),
+            (SessionStatus::Idle, false, false),
+            (SessionStatus::Exited(0), false, false),
+            (SessionStatus::Active, true, false),
+            (SessionStatus::Running, true, false),
+            (SessionStatus::Idle, true, false),
+            (SessionStatus::Exited(0), true, false),
+        ];
+        for (status, waiting_for_input, expected) in cases {
+            let mut session = sample_session(None);
+            session.status = status.clone();
+            session.waiting_for_input = waiting_for_input;
+            assert_eq!(
+                is_working(&session),
+                expected,
+                "status={status:?} waiting_for_input={waiting_for_input}"
+            );
+        }
+    }
+
+    #[test]
+    fn is_working_ignores_pending_review() {
+        for pending_review in [false, true] {
+            let mut working = sample_session(None);
+            working.pending_review = pending_review;
+            assert!(is_working(&working));
+
+            let mut idle = sample_session(None);
+            idle.status = SessionStatus::Idle;
+            idle.waiting_for_input = true;
+            idle.pending_review = pending_review;
+            assert!(!is_working(&idle));
+        }
     }
 }
