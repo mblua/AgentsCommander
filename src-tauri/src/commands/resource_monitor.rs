@@ -1113,4 +1113,372 @@ mod tests {
         guard.finish();
         coordinator.close_and_join().await;
     }
+
+    /// #1151 (W6) - a backend that quarantines the first cleanup on a stubborn child and,
+    /// once armed, BLOCKS inside `observe_tree`, which is `kill_group_inner`'s first
+    /// backend call and therefore a deterministic barrier. Releasing the gate also makes
+    /// the child verifiably gone, so the parked retry settles to Terminated.
+    struct QuarantineGatedBackend {
+        root: ProcessIdentity,
+        armed: AtomicBool,
+        entered: AtomicBool,
+        child_gone: AtomicBool,
+        gate: (Mutex<bool>, Condvar),
+    }
+
+    impl QuarantineGatedBackend {
+        fn new(root: ProcessIdentity) -> Self {
+            Self {
+                root,
+                armed: AtomicBool::new(false),
+                entered: AtomicBool::new(false),
+                child_gone: AtomicBool::new(false),
+                gate: (Mutex::new(false), Condvar::new()),
+            }
+        }
+
+        fn child(&self) -> ProcessIdentity {
+            ProcessIdentity {
+                pid: self.root.pid + 1,
+                creation_time_100ns: self.root.creation_time_100ns + 1,
+            }
+        }
+
+        fn released(&self) -> bool {
+            *self.gate.0.lock().unwrap()
+        }
+
+        fn release(&self) {
+            self.child_gone.store(true, Ordering::SeqCst);
+            *self.gate.0.lock().unwrap() = true;
+            self.gate.1.notify_all();
+        }
+
+        fn observed(
+            identity: ProcessIdentity,
+            depth: u32,
+            parent_pid: Option<u32>,
+        ) -> ObservedProcess {
+            ObservedProcess {
+                identity,
+                parent_pid,
+                parent_identity: None,
+                exe_name: format!("p{}", identity.pid),
+                depth,
+                private_bytes: None,
+                working_set_bytes: None,
+                cpu_percent: None,
+                kill_allowed: true,
+            }
+        }
+    }
+
+    impl ProcessTreeBackend for QuarantineGatedBackend {
+        fn observe_tree(
+            &self,
+            _root: ProcessIdentity,
+        ) -> Result<ObservedProcessTree, ResourceError> {
+            if self.armed.load(Ordering::SeqCst) {
+                self.entered.store(true, Ordering::SeqCst);
+                let mut released = self.gate.0.lock().unwrap();
+                while !*released {
+                    released = self.gate.1.wait(released).unwrap();
+                }
+            }
+            let mut processes = vec![Self::observed(self.root, 0, None)];
+            if !self.child_gone.load(Ordering::SeqCst) {
+                processes.push(Self::observed(self.child(), 1, Some(self.root.pid)));
+            }
+            Ok(ObservedProcessTree {
+                processes,
+                errors: Vec::new(),
+            })
+        }
+
+        fn observe_identity(&self, pid: u32) -> Result<Option<ProcessIdentity>, ResourceError> {
+            if pid == self.root.pid {
+                return Ok(Some(self.root));
+            }
+            if pid == self.child().pid && !self.child_gone.load(Ordering::SeqCst) {
+                return Ok(Some(self.child()));
+            }
+            Ok(None)
+        }
+
+        fn terminate_verified(
+            &self,
+            process: &ObservedProcess,
+        ) -> Result<TerminateOutcome, ResourceError> {
+            if process.identity == self.child() && !self.child_gone.load(Ordering::SeqCst) {
+                return Err(ResourceError::Message(format!(
+                    "pid {}: process still alive after terminate",
+                    process.identity.pid
+                )));
+            }
+            Ok(TerminateOutcome::AlreadyGone)
+        }
+
+        fn current_process_memory(&self) -> Result<ProcessMemory, ResourceError> {
+            Ok(ProcessMemory::default())
+        }
+    }
+
+    // #1151 (W2) - a LIVE public session keeps the coordinator plus Job Object path
+    // exactly as before: the transaction runs, the session finalizes once, and the
+    // registry-only orphan path is never entered.
+    #[tokio::test]
+    async fn live_public_session_still_uses_coordinator() {
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let session = manager
+            .read()
+            .await
+            .create_session(
+                "shell".to_string(),
+                Vec::new(),
+                "C:/orphan-live-session".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        let pty_backend = Arc::new(ResourcePtyBackend::default());
+        pty_backend.set_live(session.id);
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(pty_backend.clone())));
+        pty.lock()
+            .unwrap()
+            .record_route(session.id, SessionBackendKind::LocalProcess);
+        let root = ProcessIdentity {
+            pid: 5300,
+            creation_time_100ns: 900,
+        };
+        let process_backend = Arc::new(GatedBackend::new(root));
+        let monitor = Arc::new(ResourceMonitorState::with_backend(
+            process_backend.clone() as Arc<dyn ProcessTreeBackend>
+        ));
+        register_running(monitor.as_ref(), session.id, root);
+        assert_eq!(monitor.active_agent_groups(), 1);
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(Arc::clone(&pty))
+            .manage(Arc::clone(&monitor))
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build live-session orphan-retry app");
+        coordinator.start(app.handle().clone()).unwrap();
+        coordinator.submit_restore_first().await.unwrap().finish();
+
+        let report = crate::resource_monitor::watchdog::retry_quarantined_group(
+            monitor.as_ref(),
+            &coordinator,
+            session.id,
+            root,
+        )
+        .await;
+
+        assert_eq!(
+            report.path,
+            crate::resource_monitor::watchdog::QuarantineRetryPath::Coordinator
+        );
+        assert_eq!(report.root_pid, root.pid);
+        assert_eq!(report.state, Some(ResourceGroupState::Terminated));
+        assert!(!report.still_counts_toward_admission);
+        assert_eq!(report.active_agent_groups, 0);
+        assert_eq!(
+            manager
+                .read()
+                .await
+                .get_session(session.id)
+                .await
+                .unwrap()
+                .status,
+            SessionStatus::Exited(0)
+        );
+        // Finalized exactly once, through the coordinator: one PTY teardown and the route
+        // gone. The registry-only path never touches the PTY at all.
+        assert_eq!(pty_backend.terminate_count.load(Ordering::SeqCst), 1);
+        assert!(!pty.lock().unwrap().has_session(session.id));
+        coordinator.close_and_join().await;
+    }
+
+    // #1151 (W5) - NON-REGRESSION. A destroy-retained root agent keeps its row as Exited,
+    // so contains_public_or_pending is still true and the coordinator path stays. An
+    // implementation that keyed the orphan decision on "the PTY is gone" rather than "the
+    // session row is gone" would silently divert this working path onto the new one.
+    #[tokio::test]
+    async fn exited_row_still_uses_coordinator() {
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let session = manager
+            .read()
+            .await
+            .create_session(
+                "shell".to_string(),
+                Vec::new(),
+                "C:/orphan-exited-row".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        // mark_exited's bool reports whether a raise-hand flag was cleared, not success.
+        manager.read().await.mark_exited(session.id, 0).await;
+        assert_eq!(
+            manager
+                .read()
+                .await
+                .get_session(session.id)
+                .await
+                .unwrap()
+                .status,
+            SessionStatus::Exited(0)
+        );
+        let pty_backend = Arc::new(ResourcePtyBackend::default());
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(pty_backend.clone())));
+        let root = ProcessIdentity {
+            pid: 5400,
+            creation_time_100ns: 1000,
+        };
+        let process_backend = Arc::new(GatedBackend::new(root));
+        let monitor = Arc::new(ResourceMonitorState::with_backend(
+            process_backend.clone() as Arc<dyn ProcessTreeBackend>
+        ));
+        register_running(monitor.as_ref(), session.id, root);
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(Arc::clone(&pty))
+            .manage(Arc::clone(&monitor))
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build exited-row orphan-retry app");
+        coordinator.start(app.handle().clone()).unwrap();
+        coordinator.submit_restore_first().await.unwrap().finish();
+
+        let report = crate::resource_monitor::watchdog::retry_quarantined_group(
+            monitor.as_ref(),
+            &coordinator,
+            session.id,
+            root,
+        )
+        .await;
+
+        assert_eq!(
+            report.path,
+            crate::resource_monitor::watchdog::QuarantineRetryPath::Coordinator
+        );
+        assert_eq!(
+            manager
+                .read()
+                .await
+                .get_session(session.id)
+                .await
+                .unwrap()
+                .status,
+            SessionStatus::Exited(0)
+        );
+        coordinator.close_and_join().await;
+    }
+
+    // #1151 (W6) - the orphan retry runs OFF the async runtime. kill_group can cost about
+    // two seconds per stubborn PID, so inlining it would stall a Tokio worker. While the
+    // retry is parked inside observe_tree, an independent task must still make progress.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn orphan_retry_runs_off_the_async_runtime() {
+        let root = ProcessIdentity {
+            pid: 5500,
+            creation_time_100ns: 1100,
+        };
+        let process_backend = Arc::new(QuarantineGatedBackend::new(root));
+        let monitor = Arc::new(ResourceMonitorState::with_backend(
+            process_backend.clone() as Arc<dyn ProcessTreeBackend>
+        ));
+        // No session row is ever created: that is what makes this group an orphan.
+        let session_id = Uuid::new_v4();
+        register_running(monitor.as_ref(), session_id, root);
+        let quarantine = monitor
+            .kill_group(session_id, ResourceKillReason::SessionDestroy)
+            .expect("first cleanup runs");
+        assert!(quarantine.quarantined);
+
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(Arc::new(
+            ResourcePtyBackend::default(),
+        ))));
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(pty)
+            .manage(Arc::clone(&monitor))
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build off-runtime orphan-retry app");
+        coordinator.start(app.handle().clone()).unwrap();
+        coordinator.submit_restore_first().await.unwrap().finish();
+
+        struct ReleaseOnDrop(Arc<QuarantineGatedBackend>);
+        impl Drop for ReleaseOnDrop {
+            fn drop(&mut self) {
+                self.0.release();
+            }
+        }
+        let _release_guard = ReleaseOnDrop(process_backend.clone());
+        process_backend.armed.store(true, Ordering::SeqCst);
+
+        let retry = {
+            let monitor = Arc::clone(&monitor);
+            let coordinator = coordinator.clone();
+            tokio::spawn(async move {
+                crate::resource_monitor::watchdog::retry_quarantined_group(
+                    monitor.as_ref(),
+                    &coordinator,
+                    session_id,
+                    root,
+                )
+                .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !process_backend.entered.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the orphan retry enters the backend barrier");
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let ticker = {
+            let counter = Arc::clone(&counter);
+            tokio::spawn(async move {
+                for _ in 0..50 {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(2), ticker)
+            .await
+            .expect("the async runtime keeps running while the orphan retry blocks")
+            .unwrap();
+        assert_eq!(counter.load(Ordering::SeqCst), 50);
+        assert!(!process_backend.released());
+
+        process_backend.release();
+        let report = retry.await.unwrap();
+        assert_eq!(
+            report.path,
+            crate::resource_monitor::watchdog::QuarantineRetryPath::Orphan
+        );
+        assert_eq!(report.state, Some(ResourceGroupState::Terminated));
+        assert!(!report.still_counts_toward_admission);
+        coordinator.close_and_join().await;
+    }
 }

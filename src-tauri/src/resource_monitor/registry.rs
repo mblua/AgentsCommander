@@ -2676,9 +2676,7 @@ mod tests {
         id: Uuid,
         root_pid: u32,
         max: u32,
-        workgroup: Option<String>,
-        agent: Option<String>,
-        project: Option<String>,
+        identity_triple: Option<(&str, &str, &str)>,
     ) -> (ProcessIdentity, ProcessIdentity) {
         let root = identity(root_pid, u64::from(root_pid));
         let child = identity(root_pid + 1, u64::from(root_pid + 1));
@@ -2690,6 +2688,14 @@ mod tests {
             ],
         );
         backend.mark_stubborn(child);
+        let (workgroup, agent, project) = match identity_triple {
+            Some((workgroup, agent, project)) => (
+                Some(workgroup.to_string()),
+                Some(agent.to_string()),
+                Some(project.to_string()),
+            ),
+            None => (None, None, None),
+        };
         let permit = state.try_reserve_agent_slot(limits(max)).unwrap().unwrap();
         state
             .register_group(
@@ -2718,7 +2724,7 @@ mod tests {
     fn orphan_quarantine_retry_reclaims_slot() {
         let (state, backend) = state_with_fake();
         let id = Uuid::new_v4();
-        let (root, child) = quarantined_group(&state, &backend, id, 80, 1, None, None, None);
+        let (root, child) = quarantined_group(&state, &backend, id, 80, 1, None);
         assert_eq!(state.active_agent_groups(), 1);
 
         backend.mark_gone(child);
@@ -2739,7 +2745,7 @@ mod tests {
     fn orphan_retry_keeps_live_descendant_quarantined() {
         let (state, backend) = state_with_fake();
         let id = Uuid::new_v4();
-        let (root, _child) = quarantined_group(&state, &backend, id, 82, 1, None, None, None);
+        let (root, _child) = quarantined_group(&state, &backend, id, 82, 1, None);
 
         let outcome = state.retry_orphaned_quarantine(id, root).unwrap();
         let QuarantineRetryOutcome::Completed(result) = outcome else {
@@ -2757,7 +2763,7 @@ mod tests {
     fn orphan_retry_rejects_root_mismatch() {
         let (state, backend) = state_with_fake();
         let id = Uuid::new_v4();
-        let (_root, _child) = quarantined_group(&state, &backend, id, 84, 1, None, None, None);
+        let (_root, _child) = quarantined_group(&state, &backend, id, 84, 1, None);
 
         let before = backend.call_counts();
         let outcome = state
@@ -2812,7 +2818,7 @@ mod tests {
     fn orphan_retry_rejects_unregistered() {
         let (state, backend) = state_with_fake();
         let id = Uuid::new_v4();
-        let (root, _child) = quarantined_group(&state, &backend, id, 88, 1, None, None, None);
+        let (root, _child) = quarantined_group(&state, &backend, id, 88, 1, None);
 
         let before = backend.call_counts();
         let outcome = state
@@ -2832,7 +2838,7 @@ mod tests {
     fn orphan_retry_rejects_terminating_state() {
         let (state, backend) = state_with_fake();
         let id = Uuid::new_v4();
-        let (root, _child) = quarantined_group(&state, &backend, id, 90, 1, None, None, None);
+        let (root, _child) = quarantined_group(&state, &backend, id, 90, 1, None);
         state.test_force_state(id, ResourceGroupState::Terminating);
 
         let before = backend.call_counts();
@@ -2854,7 +2860,7 @@ mod tests {
     fn orphan_retry_is_idempotent_after_success() {
         let (state, backend) = state_with_fake();
         let id = Uuid::new_v4();
-        let (root, child) = quarantined_group(&state, &backend, id, 92, 1, None, None, None);
+        let (root, child) = quarantined_group(&state, &backend, id, 92, 1, None);
 
         backend.mark_gone(child);
         assert!(matches!(
@@ -2963,13 +2969,13 @@ mod tests {
     #[test]
     fn restart_shaped_orphan_retry_unblocks_relaunch_dedup() {
         let (state, backend) = state_with_fake();
-        let wg = || Some("wg-1".to_string());
-        let agent = || Some("dev-rust".to_string());
-        let project = || Some("ac".to_string());
+        let triple = ("wg-1", "dev-rust", "ac");
+        let wg = || Some(triple.0.to_string());
+        let agent = || Some(triple.1.to_string());
+        let project = || Some(triple.2.to_string());
 
         let id_a = Uuid::new_v4();
-        let (root_a, child_a) =
-            quarantined_group(&state, &backend, id_a, 100, 2, wg(), agent(), project());
+        let (root_a, child_a) = quarantined_group(&state, &backend, id_a, 100, 2, Some(triple));
 
         // The restart replacement: a NEW uuid with the SAME identity triple.
         let id_b = Uuid::new_v4();
