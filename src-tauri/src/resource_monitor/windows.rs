@@ -583,6 +583,10 @@ mod platform {
     }
 
     impl ProcessTreeBackend for PlatformProcessTreeBackend {
+        fn supports_process_tree_enforcement(&self) -> bool {
+            false
+        }
+
         fn observe_tree(
             &self,
             _root: ProcessIdentity,
@@ -611,6 +615,18 @@ mod platform {
 
         fn current_process_memory(&self) -> Result<ProcessMemory, ResourceError> {
             Ok(ProcessMemory::default())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn non_windows_production_backend_disables_process_tree_enforcement() {
+            let backend = PlatformProcessTreeBackend::new();
+
+            assert!(!backend.supports_process_tree_enforcement());
         }
     }
 }
