@@ -89,6 +89,37 @@ pub struct AgentLaunchPermit {
     generation: u64,
 }
 
+/// #1151 - outcome of `retry_orphaned_quarantine`. `Skipped` performs ZERO backend
+/// calls, so an ineligible group costs nothing and cannot be confused with a cleanup
+/// that ran and found the group already gone.
+#[derive(Debug, Clone)]
+pub(crate) enum QuarantineRetryOutcome {
+    Completed(ResourceKillResult),
+    Skipped(QuarantineRetrySkip),
+}
+
+/// #1151 - why an orphan quarantine retry did not run. `NotRegistered` is defensive
+/// only: a Quarantined row can never be removed from the group map, so a UUID sampled
+/// as Quarantined in the same tick is always still there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QuarantineRetrySkip {
+    Unsupported,
+    NotRegistered,
+    NotQuarantined(ResourceGroupState),
+    RootMismatch,
+}
+
+impl QuarantineRetrySkip {
+    pub(crate) fn as_reason(self) -> &'static str {
+        match self {
+            Self::Unsupported => "unsupported",
+            Self::NotRegistered => "notRegistered",
+            Self::NotQuarantined(_) => "notQuarantined",
+            Self::RootMismatch => "rootMismatch",
+        }
+    }
+}
+
 pub struct ResourceLaunchRegistration {
     monitor: ResourceMonitorState,
     permit: Option<AgentLaunchPermit>,
@@ -355,6 +386,28 @@ impl ResourceMonitorState {
         }
     }
 
+    /// #1151 - on the real impl, not inside `mod tests`, so watchdog.rs's tests can reach
+    /// it. Mirrors PtyManager::new_for_test (pty/manager.rs), which is `#[cfg(test)]
+    /// pub(crate)` on the real impl for exactly this cross-module need.
+    ///
+    /// `checked_sub` rather than plain subtraction: `Instant`'s epoch is unspecified
+    /// (machine boot on Windows), so `Instant::now() - QUARANTINE_RETRY_BACKOFF` can
+    /// panic. The `expect` makes a failure loud rather than producing a test that
+    /// silently is not due. Setting `kill_started_at = None` is deliberately NOT used:
+    /// `quarantine_retry_due` calls that branch dead-but-defensive, and a test depending
+    /// on it would convert a defensive branch into a load-bearing one.
+    #[cfg(test)]
+    pub(crate) fn test_backdate_quarantine_retry(&self, id: Uuid) {
+        if let Ok(mut inner) = self.inner.lock() {
+            if let Some(group) = inner.groups.get_mut(&id) {
+                let backdated = Instant::now()
+                    .checked_sub(QUARANTINE_RETRY_BACKOFF + Duration::from_millis(1))
+                    .expect("backdated quarantine retry instant is representable");
+                group.kill_started_at = Some(backdated);
+            }
+        }
+    }
+
     pub fn snapshot(&self, limits: ResourceLimits) -> ResourceSnapshot {
         if !self.is_effectively_enabled(limits.monitor_enabled) {
             return disabled_snapshot(limits);
@@ -428,7 +481,80 @@ impl ResourceMonitorState {
         session_id: Uuid,
         reason: ResourceKillReason,
     ) -> Result<ResourceKillResult, String> {
-        self.kill_group_inner(session_id, reason, false)
+        self.kill_group_inner(session_id, reason, false, None)
+    }
+
+    /// #1151 - registry-only cleanup retry for an ORPHANED quarantined group: one whose
+    /// public session row is gone, so `SelectionCoordinator::watchdog_resource_kill`
+    /// returns `NoPublicSession` and no production caller can ever reach `kill_group`
+    /// for it again. Without this the group's admission permit leaks permanently.
+    ///
+    /// It decides only WHETHER `kill_group_inner` runs, never what it concludes: the
+    /// permit is still released only by a full verified cleanup pass. The absence of a
+    /// session row is never an input to that decision.
+    ///
+    /// `expected_root` binds the retry to the registration the watchdog sampled, and is
+    /// re-checked inside the same critical section that flips the group to `Terminating`.
+    pub(crate) fn retry_orphaned_quarantine(
+        &self,
+        session_id: Uuid,
+        expected_root: ProcessIdentity,
+    ) -> Result<QuarantineRetryOutcome, String> {
+        if !self.supports_process_tree_enforcement() {
+            return Ok(QuarantineRetryOutcome::Skipped(
+                QuarantineRetrySkip::Unsupported,
+            ));
+        }
+        // Classify under the lock. A Quarantined row can never be removed from the map
+        // (register_group's retain and prune_terminated_groups both filter on
+        // Terminated), so a passing classification cannot be invalidated by a removal,
+        // only by a concurrent state transition, which kill_group_inner reports honestly.
+        {
+            let inner = self
+                .inner
+                .lock()
+                .map_err(|_| "resource monitor lock poisoned")?;
+            let Some(group) = inner.groups.get(&session_id) else {
+                return Ok(QuarantineRetryOutcome::Skipped(
+                    QuarantineRetrySkip::NotRegistered,
+                ));
+            };
+            if !matches!(group.state, ResourceGroupState::Quarantined) {
+                return Ok(QuarantineRetryOutcome::Skipped(
+                    QuarantineRetrySkip::NotQuarantined(group.state),
+                ));
+            }
+            if group.root_identity != expected_root {
+                return Ok(QuarantineRetryOutcome::Skipped(
+                    QuarantineRetrySkip::RootMismatch,
+                ));
+            }
+        }
+        let result = self.kill_group_inner(
+            session_id,
+            ResourceKillReason::Watchdog,
+            false,
+            Some(expected_root),
+        )?;
+        Ok(QuarantineRetryOutcome::Completed(result))
+    }
+
+    /// #1151 - true if this single group still counts toward the admission cap. Mirrors
+    /// the `active_count` predicate for one group so callers never re-derive it. An
+    /// absent group returns false: it cannot be occupying a slot. Returns false on an
+    /// unsupported backend, matching `active_agent_groups()`.
+    pub(crate) fn group_counts_toward_admission(&self, session_id: Uuid) -> bool {
+        if !self.supports_process_tree_enforcement() {
+            return false;
+        }
+        self.inner
+            .lock()
+            .map(|inner| {
+                inner.groups.get(&session_id).is_some_and(|group| {
+                    !matches!(group.state, ResourceGroupState::Terminated) || !group.permit_released
+                })
+            })
+            .unwrap_or(false)
     }
 
     /// #632 B2a - shared kill implementation. `fresh_targets_only` controls only the
@@ -437,11 +563,18 @@ impl ResourceMonitorState {
     /// is targeted, so the reaper does not walk hundreds of stale-dead PIDs (each of
     /// which would force a full toolhelp snapshot). The Job Object kill already
     /// terminated the live tree at shutdown, so the fresh set is normally empty.
+    ///
+    /// #1151 - `expected_quarantined_root` is the same kind of knob for AUTHORITY rather
+    /// than targets: a caller-supplied binding that narrows which registration this kill
+    /// may act on. It is checked inside the SAME critical section that flips the group to
+    /// `Terminating`, so a stale watchdog sample cannot act on a replacement row. Like
+    /// `fresh_targets_only` it never weakens verification; it can only refuse to start.
     fn kill_group_inner(
         &self,
         session_id: Uuid,
         reason: ResourceKillReason,
         fresh_targets_only: bool,
+        expected_quarantined_root: Option<ProcessIdentity>,
     ) -> Result<ResourceKillResult, String> {
         let kill_started = Instant::now();
         let (root_identity, previous_targets) = {
@@ -460,6 +593,28 @@ impl ResourceMonitorState {
                     finalized: false,
                 });
             };
+            // #1151 - when a caller binds this kill to a specific quarantined
+            // registration, verify state and root identity inside the SAME critical
+            // section that flips to Terminating. A stale watchdog sample must never act
+            // on a replacement row (the only way one can exist under the same UUID is
+            // register_group's insert below). Placed before the `match` so the guard is
+            // strictly stronger than the Terminating/Terminated early returns, and before
+            // mark_ac_stop so a rejected retry never latches a stop attribution.
+            if let Some(expected) = expected_quarantined_root {
+                if !matches!(group.state, ResourceGroupState::Quarantined)
+                    || group.root_identity != expected
+                {
+                    return Ok(ResourceKillResult {
+                        session_id: session_id.to_string(),
+                        state: group.state,
+                        killed_processes: Vec::new(),
+                        quarantined: matches!(group.state, ResourceGroupState::Quarantined),
+                        message: "resource group quarantine retry guard rejected".to_string(),
+                        blocked_by_security: false,
+                        finalized: false,
+                    });
+                }
+            }
             match group.state {
                 ResourceGroupState::Terminating => {
                     return Ok(ResourceKillResult {
@@ -723,7 +878,7 @@ impl ResourceMonitorState {
             .map(|inner| inner.groups.keys().copied().collect::<Vec<_>>())
             .unwrap_or_default();
         ids.into_iter()
-            .filter_map(|id| self.kill_group_inner(id, reason, true).ok())
+            .filter_map(|id| self.kill_group_inner(id, reason, true, None).ok())
             .collect()
     }
 
@@ -1201,6 +1356,11 @@ mod tests {
         /// failed enumeration. The Err arm of snapshot() must never reach the strike
         /// counter or reap.
         fail_observe: Mutex<BTreeSet<ProcessIdentity>>,
+        /// #1151 - call counters so a test can assert that an ineligible orphan retry
+        /// touched the backend zero times.
+        observe_tree_calls: AtomicUsize,
+        observe_identity_calls: AtomicUsize,
+        terminate_verified_calls: AtomicUsize,
     }
 
     struct CapabilityTestBackend {
@@ -1345,6 +1505,15 @@ mod tests {
         fn terminated(&self) -> Vec<ProcessIdentity> {
             self.terminated.lock().unwrap().clone()
         }
+
+        /// #1151 - (observe_tree, observe_identity, terminate_verified) call counts.
+        fn call_counts(&self) -> (usize, usize, usize) {
+            (
+                self.observe_tree_calls.load(Ordering::SeqCst),
+                self.observe_identity_calls.load(Ordering::SeqCst),
+                self.terminate_verified_calls.load(Ordering::SeqCst),
+            )
+        }
     }
 
     impl ProcessTreeBackend for FakeProcessTreeBackend {
@@ -1352,6 +1521,7 @@ mod tests {
             &self,
             root: ProcessIdentity,
         ) -> Result<ObservedProcessTree, ResourceError> {
+            self.observe_tree_calls.fetch_add(1, Ordering::SeqCst);
             if self.fail_observe.lock().unwrap().contains(&root) {
                 return Err(ResourceError::Message("observe failed".into()));
             }
@@ -1365,6 +1535,7 @@ mod tests {
         }
 
         fn observe_identity(&self, pid: u32) -> Result<Option<ProcessIdentity>, ResourceError> {
+            self.observe_identity_calls.fetch_add(1, Ordering::SeqCst);
             let current = self.identities.lock().unwrap().get(&pid).copied();
             if current.is_none() {
                 return Ok(None);
@@ -1381,6 +1552,7 @@ mod tests {
             &self,
             process: &ObservedProcess,
         ) -> Result<TerminateOutcome, ResourceError> {
+            self.terminate_verified_calls.fetch_add(1, Ordering::SeqCst);
             if self.stale.lock().unwrap().contains(&process.identity) {
                 return Ok(TerminateOutcome::AlreadyGone);
             }
@@ -2222,6 +2394,15 @@ mod tests {
         fn test_state(&self, id: Uuid) -> Option<ResourceGroupState> {
             self.inner.lock().unwrap().groups.get(&id).map(|g| g.state)
         }
+
+        /// #1151 - deterministic stand-in for a concurrent transition, so R6 can drive
+        /// the Terminating classification without threads. Stays inside `mod tests`
+        /// because its only caller is in this file.
+        fn test_force_state(&self, id: Uuid, state: ResourceGroupState) {
+            if let Some(group) = self.inner.lock().unwrap().groups.get_mut(&id) {
+                group.state = state;
+            }
+        }
     }
 
     fn missing_root_error(root: ProcessIdentity) -> Vec<String> {
@@ -2484,6 +2665,367 @@ mod tests {
         assert_eq!(retry.state, ResourceGroupState::Terminated);
         assert_eq!(state.active_agent_groups(), 0);
         assert!(state.try_reserve_agent_slot(limits(1)).is_ok());
+    }
+
+    /// #1151 - registers a group whose cleanup quarantines on a stubborn child, which is
+    /// the shape every orphan takes: the root and one descendant, the descendant refusing
+    /// to verify gone at teardown. Returns the group's root and child identities.
+    fn quarantined_group(
+        state: &ResourceMonitorState,
+        backend: &FakeProcessTreeBackend,
+        id: Uuid,
+        root_pid: u32,
+        max: u32,
+        workgroup: Option<String>,
+        agent: Option<String>,
+        project: Option<String>,
+    ) -> (ProcessIdentity, ProcessIdentity) {
+        let root = identity(root_pid, u64::from(root_pid));
+        let child = identity(root_pid + 1, u64::from(root_pid + 1));
+        backend.add_tree(
+            root,
+            vec![
+                observed(root_pid, u64::from(root_pid), None, 0),
+                observed(root_pid + 1, u64::from(root_pid + 1), Some(root_pid), 1),
+            ],
+        );
+        backend.mark_stubborn(child);
+        let permit = state.try_reserve_agent_slot(limits(max)).unwrap().unwrap();
+        state
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                workgroup,
+                agent,
+                project,
+                root,
+            )
+            .unwrap();
+        let first = state
+            .kill_group(id, ResourceKillReason::SessionDestroy)
+            .unwrap();
+        assert!(first.quarantined);
+        assert_eq!(first.state, ResourceGroupState::Quarantined);
+        (root, child)
+    }
+
+    // #1151 (R1) - the fix itself at registry level: once the blocker is verifiably gone,
+    // the registry-only retry releases the permit and the next launch is admitted.
+    #[test]
+    fn orphan_quarantine_retry_reclaims_slot() {
+        let (state, backend) = state_with_fake();
+        let id = Uuid::new_v4();
+        let (root, child) = quarantined_group(&state, &backend, id, 80, 1, None, None, None);
+        assert_eq!(state.active_agent_groups(), 1);
+
+        backend.mark_gone(child);
+        let outcome = state.retry_orphaned_quarantine(id, root).unwrap();
+        let QuarantineRetryOutcome::Completed(result) = outcome else {
+            panic!("an eligible orphan retry runs the cleanup: {outcome:?}");
+        };
+        assert!(!result.quarantined);
+        assert_eq!(result.state, ResourceGroupState::Terminated);
+        assert!(!state.group_counts_toward_admission(id));
+        assert_eq!(state.active_agent_groups(), 0);
+        assert!(state.try_reserve_agent_slot(limits(1)).is_ok());
+    }
+
+    // #1151 (R2) - the safety half of R1: an owned descendant that is still unverifiable
+    // keeps blocking capacity. The retry decides only WHETHER kill_group runs.
+    #[test]
+    fn orphan_retry_keeps_live_descendant_quarantined() {
+        let (state, backend) = state_with_fake();
+        let id = Uuid::new_v4();
+        let (root, _child) = quarantined_group(&state, &backend, id, 82, 1, None, None, None);
+
+        let outcome = state.retry_orphaned_quarantine(id, root).unwrap();
+        let QuarantineRetryOutcome::Completed(result) = outcome else {
+            panic!("an eligible orphan retry runs the cleanup: {outcome:?}");
+        };
+        assert!(result.quarantined);
+        assert_eq!(result.state, ResourceGroupState::Quarantined);
+        assert!(state.group_counts_toward_admission(id));
+        assert_eq!(state.active_agent_groups(), 1);
+        assert!(state.try_reserve_agent_slot(limits(1)).is_err());
+    }
+
+    // #1151 (R3) - a stale sample bound to a different root identity cannot act.
+    #[test]
+    fn orphan_retry_rejects_root_mismatch() {
+        let (state, backend) = state_with_fake();
+        let id = Uuid::new_v4();
+        let (_root, _child) = quarantined_group(&state, &backend, id, 84, 1, None, None, None);
+
+        let before = backend.call_counts();
+        let outcome = state
+            .retry_orphaned_quarantine(id, identity(999, 999))
+            .unwrap();
+        assert!(matches!(
+            outcome,
+            QuarantineRetryOutcome::Skipped(QuarantineRetrySkip::RootMismatch)
+        ));
+        assert_eq!(state.test_state(id), Some(ResourceGroupState::Quarantined));
+        assert_eq!(backend.call_counts(), before);
+    }
+
+    // #1151 (R4) - a Running group is never taken by the orphan path. That case belongs
+    // to the missing-root strike reaper (#1040), not to this fix.
+    #[test]
+    fn orphan_retry_rejects_non_quarantined_state() {
+        let (state, backend) = state_with_fake();
+        let root = identity(86, 86);
+        backend.add_tree(root, vec![observed(86, 86, None, 0)]);
+        let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
+        let id = Uuid::new_v4();
+        state
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
+            .unwrap();
+
+        let before = backend.call_counts();
+        let outcome = state.retry_orphaned_quarantine(id, root).unwrap();
+        assert!(matches!(
+            outcome,
+            QuarantineRetryOutcome::Skipped(QuarantineRetrySkip::NotQuarantined(
+                ResourceGroupState::Running
+            ))
+        ));
+        assert_eq!(backend.call_counts(), before);
+    }
+
+    // #1151 (R5) - defensive arm only. A Quarantined row can never be removed from the
+    // group map, so this is unreachable through real sampling and must be driven with a
+    // fabricated UUID.
+    #[test]
+    fn orphan_retry_rejects_unregistered() {
+        let (state, backend) = state_with_fake();
+        let id = Uuid::new_v4();
+        let (root, _child) = quarantined_group(&state, &backend, id, 88, 1, None, None, None);
+
+        let before = backend.call_counts();
+        let outcome = state
+            .retry_orphaned_quarantine(Uuid::new_v4(), root)
+            .unwrap();
+        assert!(matches!(
+            outcome,
+            QuarantineRetryOutcome::Skipped(QuarantineRetrySkip::NotRegistered)
+        ));
+        assert_eq!(state.test_state(id), Some(ResourceGroupState::Quarantined));
+        assert_eq!(backend.call_counts(), before);
+    }
+
+    // #1151 (R6) - deterministic stand-in for the concurrent-kill case: another caller
+    // already owns the transition, so the orphan retry must not touch it.
+    #[test]
+    fn orphan_retry_rejects_terminating_state() {
+        let (state, backend) = state_with_fake();
+        let id = Uuid::new_v4();
+        let (root, _child) = quarantined_group(&state, &backend, id, 90, 1, None, None, None);
+        state.test_force_state(id, ResourceGroupState::Terminating);
+
+        let before = backend.call_counts();
+        let outcome = state.retry_orphaned_quarantine(id, root).unwrap();
+        assert!(matches!(
+            outcome,
+            QuarantineRetryOutcome::Skipped(QuarantineRetrySkip::NotQuarantined(
+                ResourceGroupState::Terminating
+            ))
+        ));
+        assert_eq!(state.test_state(id), Some(ResourceGroupState::Terminating));
+        assert_eq!(backend.call_counts(), before);
+    }
+
+    // #1151 (R7) - a second retry after a successful one is a no-op. The watchdog
+    // re-samples every tick, so this runs in production whenever a tick overlaps a
+    // just-completed reclaim.
+    #[test]
+    fn orphan_retry_is_idempotent_after_success() {
+        let (state, backend) = state_with_fake();
+        let id = Uuid::new_v4();
+        let (root, child) = quarantined_group(&state, &backend, id, 92, 1, None, None, None);
+
+        backend.mark_gone(child);
+        assert!(matches!(
+            state.retry_orphaned_quarantine(id, root).unwrap(),
+            QuarantineRetryOutcome::Completed(_)
+        ));
+        assert_eq!(state.active_agent_groups(), 0);
+
+        let before = backend.call_counts();
+        let outcome = state.retry_orphaned_quarantine(id, root).unwrap();
+        assert!(matches!(
+            outcome,
+            QuarantineRetryOutcome::Skipped(QuarantineRetrySkip::NotQuarantined(
+                ResourceGroupState::Terminated
+            ))
+        ));
+        assert_eq!(state.active_agent_groups(), 0);
+        assert_eq!(backend.call_counts(), before);
+    }
+
+    // #1151 (R8) - defense in depth. The watchdog is already gated on capability, so this
+    // check is unreachable on Windows; it must still cost nothing where it is reachable.
+    #[test]
+    fn unsupported_backend_orphan_retry_is_noop() {
+        let backend = Arc::new(CapabilityTestBackend::new(false));
+        let state =
+            ResourceMonitorState::with_backend(backend.clone() as Arc<dyn ProcessTreeBackend>);
+
+        let outcome = state
+            .retry_orphaned_quarantine(Uuid::new_v4(), identity(94, 94))
+            .unwrap();
+        assert!(matches!(
+            outcome,
+            QuarantineRetryOutcome::Skipped(QuarantineRetrySkip::Unsupported)
+        ));
+        assert_eq!(backend.observe_tree_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(backend.observe_identity_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(backend.terminate_verified_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            backend.current_process_memory_calls.load(Ordering::SeqCst),
+            0
+        );
+    }
+
+    // #1151 (R9) - group_counts_toward_admission is the admission predicate itself, not
+    // an inference, so the watchdog can report the fact without claiming authorship.
+    // Compared against the active_count FILTER (the delta this group contributes), not
+    // against active_agent_groups() directly, which also counts pending permits.
+    #[test]
+    fn group_counts_toward_admission_matches_the_active_count_filter() {
+        let (state, backend) = state_with_fake();
+        let absent = Uuid::new_v4();
+        assert_eq!(state.active_agent_groups(), 0);
+        assert!(!state.group_counts_toward_admission(absent));
+
+        let root = identity(96, 96);
+        let child = identity(97, 97);
+        backend.add_tree(
+            root,
+            vec![observed(96, 96, None, 0), observed(97, 97, Some(96), 1)],
+        );
+        backend.mark_stubborn(child);
+        let permit = state.try_reserve_agent_slot(limits(2)).unwrap().unwrap();
+        let id = Uuid::new_v4();
+        state
+            .register_group(
+                permit,
+                id,
+                "agent".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                root,
+            )
+            .unwrap();
+
+        // Running: included by the filter, so the figure rises by exactly this group.
+        assert!(state.group_counts_toward_admission(id));
+        assert_eq!(state.active_agent_groups(), 1);
+
+        // Quarantined: still included. This is the whole reason the permit leaks.
+        state
+            .kill_group(id, ResourceKillReason::SessionDestroy)
+            .unwrap();
+        assert_eq!(state.test_state(id), Some(ResourceGroupState::Quarantined));
+        assert!(state.group_counts_toward_admission(id));
+        assert_eq!(state.active_agent_groups(), 1);
+
+        // Terminated with the permit released: excluded, back to the empty figure.
+        backend.mark_gone(child);
+        state.retry_orphaned_quarantine(id, root).unwrap();
+        assert_eq!(state.test_state(id), Some(ResourceGroupState::Terminated));
+        assert!(!state.group_counts_toward_admission(id));
+        assert_eq!(state.active_agent_groups(), 0);
+
+        // Absent: never included.
+        assert!(!state.group_counts_toward_admission(absent));
+    }
+
+    // #1151 (R10) - the restart shape at registry level. A restart replacement carries the
+    // same workgroup/agent/project under a NEW uuid, so register_group's relaunch dedup
+    // WOULD have collected the old row and does not, because it is Quarantined rather
+    // than Terminated. That is the accumulator; the retry is what drains it.
+    #[test]
+    fn restart_shaped_orphan_retry_unblocks_relaunch_dedup() {
+        let (state, backend) = state_with_fake();
+        let wg = || Some("wg-1".to_string());
+        let agent = || Some("dev-rust".to_string());
+        let project = || Some("ac".to_string());
+
+        let id_a = Uuid::new_v4();
+        let (root_a, child_a) =
+            quarantined_group(&state, &backend, id_a, 100, 2, wg(), agent(), project());
+
+        // The restart replacement: a NEW uuid with the SAME identity triple.
+        let id_b = Uuid::new_v4();
+        let root_b = identity(110, 110);
+        backend.add_tree(root_b, vec![observed(110, 110, None, 0)]);
+        let permit_b = state.try_reserve_agent_slot(limits(2)).unwrap().unwrap();
+        state
+            .register_group(
+                permit_b,
+                id_b,
+                "agent".into(),
+                None,
+                None,
+                wg(),
+                agent(),
+                project(),
+                root_b,
+            )
+            .unwrap();
+
+        // A's row survives the dedup because it is Quarantined, and both rows count.
+        assert_eq!(
+            state.test_state(id_a),
+            Some(ResourceGroupState::Quarantined)
+        );
+        assert_eq!(state.active_agent_groups(), 2);
+
+        // The blocker clears and the orphan retry drains A.
+        backend.mark_gone(child_a);
+        assert!(matches!(
+            state.retry_orphaned_quarantine(id_a, root_a).unwrap(),
+            QuarantineRetryOutcome::Completed(_)
+        ));
+        assert_eq!(state.test_state(id_a), Some(ResourceGroupState::Terminated));
+        assert_eq!(state.active_agent_groups(), 1);
+
+        // A third launch of the same triple now reclaims A's row instead of stacking.
+        let id_c = Uuid::new_v4();
+        let root_c = identity(120, 120);
+        backend.add_tree(root_c, vec![observed(120, 120, None, 0)]);
+        let permit_c = state.try_reserve_agent_slot(limits(2)).unwrap().unwrap();
+        state
+            .register_group(
+                permit_c,
+                id_c,
+                "agent".into(),
+                None,
+                None,
+                wg(),
+                agent(),
+                project(),
+                root_c,
+            )
+            .unwrap();
+        assert_eq!(state.test_state(id_a), None);
+        assert_eq!(state.active_agent_groups(), 2);
     }
 
     // (c) H3 - registering the same wg/role drops the prior Terminated duplicate row.
