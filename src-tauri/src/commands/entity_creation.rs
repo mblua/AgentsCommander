@@ -4294,6 +4294,7 @@ pub(crate) fn is_rename_blocked_by_handle(e: &std::io::Error) -> bool {
 ///
 /// `pub(crate)` so the unit test in `wg_delete_diagnostic::tests` can exercise it
 /// without moving the test into this module.
+#[cfg(any(windows, test))]
 pub(crate) fn is_file_in_use_error(e: &std::io::Error) -> bool {
     #[cfg(windows)]
     {
