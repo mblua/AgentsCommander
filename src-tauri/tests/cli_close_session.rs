@@ -418,7 +418,10 @@ fn simulate_daemon_response(
             continue;
         };
 
-        break (path, body, msg, msg_id.to_string(), request_id.to_string());
+        let msg_id = msg_id.to_string();
+        let request_id = request_id.to_string();
+
+        break (path, body, msg, msg_id, request_id);
     };
 
     validate_close_session_message(&msg, expected_target, expected_timeout_secs)
