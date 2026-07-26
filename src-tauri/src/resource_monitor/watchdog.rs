@@ -130,6 +130,24 @@ async fn run_tick(
     let limits = ResourceLimits::from(&cfg);
     let groups = monitor.sample_for_watchdog(limits);
 
+    // #1151 - the kill_required loop is evaluated FIRST. Before this fix an orphan
+    // quarantine retry returned immediately, so the quarantine loop was effectively free;
+    // it now performs a real blocking kill_group per orphan, and running it first would
+    // delay every memory-driven kill decision on a KillGroup install. The starvation is
+    // introduced by this change, so mitigating it belongs to this change.
+    //
+    // #559 (H2) - the quarantine retry runs on EVERY configured action, including the
+    // default Warn. The action gate is therefore SCOPED to the kill_required loop; it must
+    // never be an early return from run_tick, which would delete the whole fix on a
+    // default install while the app kept quarantining and kept leaking.
+    if cfg.resource_watchdog_action == ResourceWatchdogAction::KillGroup {
+        for decision in evaluate_watchdog_groups(&groups, limits) {
+            if decision.kill_required {
+                submit_watchdog_kill(coordinator, decision.session_id).await;
+            }
+        }
+    }
+
     // #559 (H2) - retry cleanup for quarantined groups regardless of the configured
     // watchdog action; a leaked slot must be reclaimed even in Warn mode. kill_group
     // already re-observes and releases if the process is now gone. A double-dispatch
@@ -142,18 +160,12 @@ async fn run_tick(
     // relies on the same Terminating/Terminated transition for mutual exclusion. So
     // weakening kill_group_inner's state guard now breaks two callers, not one.
     //
+    // Reordering is behavior-neutral on which groups are dispatched: evaluate_watchdog_groups
+    // is Running-only and this loop is Quarantined-only, over the same immutable sample.
+    //
     // run_tick discards the reports and logs nothing: retry_quarantined_group owns all
     // logging, or every orphan cleanup would emit its line twice.
     let _ = run_quarantine_retries(monitor, coordinator, &groups).await;
-
-    if cfg.resource_watchdog_action != ResourceWatchdogAction::KillGroup {
-        return;
-    }
-    for decision in evaluate_watchdog_groups(&groups, limits) {
-        if decision.kill_required {
-            submit_watchdog_kill(coordinator, decision.session_id).await;
-        }
-    }
 }
 
 /// #1151 - owns the quarantine-retry GATE and the loop, so no caller reimplements the
@@ -871,6 +883,55 @@ mod tests {
             .expect("supported backend issues a permit");
         monitor.release_unregistered_permit(permit);
         coordinator.close_and_join().await;
+    }
+
+    // #1151 (W7) - the named pin for `#559 (H2)`, which has been unpinned since it was
+    // written: the quarantine retry runs on EVERY configured action, starting with the
+    // DEFAULT Warn. This is what fails if the run_tick action gate is ever restored to an
+    // early return instead of a scoped `if` around the kill_required loop.
+    #[tokio::test]
+    async fn quarantine_retry_runs_in_warn_mode() {
+        for (index, action) in [
+            ResourceWatchdogAction::Warn,
+            ResourceWatchdogAction::KillGroup,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let backend = Arc::new(QuarantineWatchdogBackend::default());
+            let monitor = Arc::new(ResourceMonitorState::with_backend(
+                backend.clone() as Arc<dyn ProcessTreeBackend>
+            ));
+            let cfg = AppSettings {
+                resource_watchdog_action: action,
+                ..orphan_settings(1)
+            };
+            let group_limits = ResourceLimits::from(&cfg);
+
+            let session_id = Uuid::new_v4();
+            orphan_one_group(
+                &monitor,
+                &backend,
+                group_limits,
+                session_id,
+                240 + (index as u32) * 10,
+                None,
+            );
+            assert_eq!(monitor.active_agent_groups(), 1);
+
+            let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+            let (_app, coordinator) = running_coordinator(manager, Arc::clone(&monitor)).await;
+            let settings = Arc::new(tokio::sync::RwLock::new(cfg));
+
+            run_tick(&monitor, &settings, &coordinator).await;
+
+            assert!(
+                !monitor.group_counts_toward_admission(session_id),
+                "{action:?}: the quarantine retry must run on every configured action"
+            );
+            assert_eq!(monitor.active_agent_groups(), 0, "{action:?}");
+            coordinator.close_and_join().await;
+        }
     }
 
     // #1151 (W3a) - the rule the issue states explicitly: only NoPublicSession may fall
