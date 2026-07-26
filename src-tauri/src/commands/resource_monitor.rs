@@ -1423,8 +1423,10 @@ mod tests {
     //
     // Exactly ONE worker thread is load-bearing, not a style choice: it makes "the async
     // runtime" an enumerable set of one OS thread, so the thread-identity assertion below
-    // is a complete statement rather than a sample. At two workers an inline call lands on
-    // the worker the test did not sample, and the test passes on a broken build.
+    // is a complete statement rather than a sample. At two workers it degrades to sampling
+    // one worker out of two, and whether the mutation is caught becomes scheduler
+    // dependent. That is not acceptable for a regression pin, however it happens to land
+    // in any one environment.
     //
     // Every wait here is a `std` wait on the test thread, capped so a failure is an
     // assertion and not a hang. `tokio::time` must not appear in this test: a shape that
