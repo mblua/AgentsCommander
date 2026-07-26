@@ -489,6 +489,8 @@ fn metrics_record(run_id: String) -> ActivityRecord {
 ///
 /// Inert until [`init_run`] has stored a sink.
 pub fn append(record: ActivityRecord) {
+    #[cfg(test)]
+    capture::note(std::slice::from_ref(&record));
     let Some(path) = sink_path() else { return };
     append_at(&path, std::slice::from_ref(&record));
 }
@@ -497,11 +499,42 @@ pub fn append(record: ActivityRecord) {
 ///
 /// Inert until [`init_run`] has stored a sink.
 pub fn append_batch(records: &[ActivityRecord]) {
+    #[cfg(test)]
+    capture::note(records);
     if records.is_empty() {
         return;
     }
     let Some(path) = sink_path() else { return };
     append_at(&path, records);
+}
+
+/// Test-only, in-memory mirror of the emission calls.
+///
+/// No sink is ever configured in a test process, which is the property that
+/// keeps unit tests out of a live log. The same property makes the record an
+/// emission site produced invisible to a test, because the mutation sites hold
+/// it in a local and hand it straight to [`append`]. Mirroring the call here is
+/// what lets `session/manager.rs` assert "exactly one record" without a file.
+///
+/// This is NOT a sink: nothing is written, nothing is read back by production
+/// code, and each `#[test]` owns its own thread-local buffer.
+#[cfg(test)]
+pub(crate) mod capture {
+    use super::ActivityRecord;
+    use std::cell::RefCell;
+
+    thread_local! {
+        static CAPTURED: RefCell<Vec<ActivityRecord>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(crate) fn note(records: &[ActivityRecord]) {
+        CAPTURED.with(|captured| captured.borrow_mut().extend(records.iter().cloned()));
+    }
+
+    /// Take everything emitted on this thread since the last call.
+    pub(crate) fn drain() -> Vec<ActivityRecord> {
+        CAPTURED.with(|captured| std::mem::take(&mut *captured.borrow_mut()))
+    }
 }
 
 /// Path-parameterized append core, and the test seam for every append.
