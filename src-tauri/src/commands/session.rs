@@ -2132,7 +2132,7 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                 None,
                 resource_permit
                     .take()
-                    .map(|permit| resource_monitor.hold_logical_agent_slot(permit)),
+                    .and_then(|permit| resource_monitor.hold_logical_agent_slot(permit)),
             ),
         };
 

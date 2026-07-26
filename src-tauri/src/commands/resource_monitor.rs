@@ -42,16 +42,19 @@ pub async fn get_resource_snapshot(
 /// budget-exhausted `Terminating`) result leaves the instance/job intact for a
 /// Force/Retry and never marks a possibly-alive agent `Exited`.
 #[tauri::command]
-pub async fn kill_resource_group(
-    app: AppHandle,
+pub async fn kill_resource_group<R: tauri::Runtime>(
+    app: AppHandle<R>,
     request: ResourceKillRequest,
-    _monitor: State<'_, Arc<ResourceMonitorState>>,
+    monitor: State<'_, Arc<ResourceMonitorState>>,
     _pty_mgr: State<'_, Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>>,
     _session_mgr: State<'_, Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>,
 ) -> Result<ResourceKillResult, String> {
     let session_id = Uuid::parse_str(&request.session_id).map_err(|e| e.to_string())?;
     if request.reason != ResourceKillReason::User {
         return Err("resourceMonitor user command requires reason=user".to_string());
+    }
+    if !monitor.supports_process_tree_enforcement() {
+        return Ok(unsupported_kill_result(session_id));
     }
     let coordinator = app
         .try_state::<SelectionCoordinator>()
@@ -70,14 +73,17 @@ pub(crate) async fn execute_resource_kill_transaction<R: tauri::Runtime>(
         TrustedResourceIntent::User => ResourceKillReason::User,
         TrustedResourceIntent::Watchdog => ResourceKillReason::Watchdog,
     };
-    let pty_mgr = transaction
-        .app()
-        .state::<Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>>();
     let monitor = transaction
         .app()
         .state::<Arc<ResourceMonitorState>>()
         .inner()
         .clone();
+    if !monitor.supports_process_tree_enforcement() {
+        return Ok(unsupported_kill_result(session_id));
+    }
+    let pty_mgr = transaction
+        .app()
+        .state::<Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>>();
 
     // Fire the Job Object FIRST (pure: keeps the instance/job for a Retry). The
     // std-Mutex guard is dropped before any await.
@@ -182,6 +188,20 @@ pub(crate) async fn execute_resource_kill_transaction<R: tauri::Runtime>(
     Ok(result)
 }
 
+fn unsupported_kill_result(session_id: Uuid) -> ResourceKillResult {
+    ResourceKillResult {
+        session_id: session_id.to_string(),
+        state: ResourceGroupState::Running,
+        killed_processes: Vec::new(),
+        quarantined: false,
+        message:
+            "resource monitor enforcement is unsupported on this platform; no process was killed"
+                .to_string(),
+        blocked_by_security: false,
+        finalized: false,
+    }
+}
+
 /// Upper bound on how long `verify_kill_settled` waits for a concurrent kill to leave
 /// `Terminating`. After the job fire the concurrent reaper sees an AlreadyGone tree, so
 /// the common case settles in one or two ~75ms polls. The budget sits ABOVE the
@@ -234,7 +254,10 @@ fn should_finalize_kill(state: ResourceGroupState) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{should_finalize_kill, verify_kill_settled};
+    use super::{
+        execute_resource_kill_transaction, kill_resource_group, should_finalize_kill,
+        verify_kill_settled,
+    };
     use crate::pty::backend::{BackendSpawnSpec, PtyBackend, SessionBackendKind};
     use crate::pty::manager::PtyManager;
     use crate::resource_monitor::registry::{
@@ -242,13 +265,14 @@ mod tests {
     };
     use crate::resource_monitor::types::{
         ObservedProcess, ObservedProcessTree, ProcessIdentity, ProcessMemory, ResourceGroupState,
-        ResourceKillReason, ResourceLaunchMetadata, ResourceLimits, TerminateOutcome,
+        ResourceKillReason, ResourceKillResult, ResourceLaunchMetadata, ResourceLimits,
+        TerminateOutcome,
     };
     use crate::resource_monitor::ResourceMonitorState;
     use crate::session::manager::SessionManager;
     use crate::session::selection::{
         CriticalAdmissionKind, CriticalAdmissionOutcome, SelectionCoordinator, SelectionMode,
-        SelectionSource, TrustedResourceIntent,
+        SelectionSource, SelectionTransaction, TrustedResourceIntent,
     };
     use crate::session::session::SessionStatus;
     use crate::web::broadcast::WsBroadcaster;
@@ -259,7 +283,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Condvar, Mutex};
     use std::time::Duration;
-    use tauri::Listener;
+    use tauri::{Listener, Manager};
     use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
 
@@ -268,6 +292,47 @@ mod tests {
         live: Mutex<HashSet<Uuid>>,
         terminate_count: AtomicUsize,
         kill_count: AtomicUsize,
+    }
+
+    #[derive(Default)]
+    struct UnsupportedKillBackend {
+        observe_tree_calls: AtomicUsize,
+        observe_identity_calls: AtomicUsize,
+        terminate_verified_calls: AtomicUsize,
+        current_process_memory_calls: AtomicUsize,
+    }
+
+    impl ProcessTreeBackend for UnsupportedKillBackend {
+        fn supports_process_tree_enforcement(&self) -> bool {
+            false
+        }
+
+        fn observe_tree(
+            &self,
+            _root: ProcessIdentity,
+        ) -> Result<ObservedProcessTree, ResourceError> {
+            self.observe_tree_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(ObservedProcessTree::default())
+        }
+
+        fn observe_identity(&self, _pid: u32) -> Result<Option<ProcessIdentity>, ResourceError> {
+            self.observe_identity_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        }
+
+        fn terminate_verified(
+            &self,
+            _process: &ObservedProcess,
+        ) -> Result<TerminateOutcome, ResourceError> {
+            self.terminate_verified_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(TerminateOutcome::AlreadyGone)
+        }
+
+        fn current_process_memory(&self) -> Result<ProcessMemory, ResourceError> {
+            self.current_process_memory_calls
+                .fetch_add(1, Ordering::SeqCst);
+            Ok(ProcessMemory::default())
+        }
     }
 
     impl ResourcePtyBackend {
@@ -352,6 +417,131 @@ mod tests {
         fn kill_all_jobs(&self) -> (usize, usize) {
             (0, 0)
         }
+    }
+
+    fn assert_unsupported_kill_result(result: &ResourceKillResult, session_id: Uuid) {
+        assert_eq!(result.session_id, session_id.to_string());
+        assert_eq!(result.state, ResourceGroupState::Running);
+        assert!(result.killed_processes.is_empty());
+        assert!(!result.quarantined);
+        assert_eq!(
+            result.message,
+            "resource monitor enforcement is unsupported on this platform; no process was killed"
+        );
+        assert!(!result.blocked_by_security);
+        assert!(!result.finalized);
+    }
+
+    #[tokio::test]
+    async fn unsupported_backend_manual_kill_is_side_effect_free() {
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let session = manager
+            .read()
+            .await
+            .create_session(
+                "shell".to_string(),
+                Vec::new(),
+                "/tmp/unsupported-resource-kill".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        let pty_backend = Arc::new(ResourcePtyBackend::default());
+        pty_backend.set_live(session.id);
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(pty_backend.clone())));
+        pty.lock()
+            .unwrap()
+            .record_route(session.id, SessionBackendKind::LocalProcess);
+        let process_backend = Arc::new(UnsupportedKillBackend::default());
+        let monitor = Arc::new(ResourceMonitorState::with_backend(
+            process_backend.clone() as Arc<dyn ProcessTreeBackend>
+        ));
+        let before_selection = manager.read().await.selection_payload().await;
+
+        let app = tauri::test::mock_builder()
+            .invoke_handler(tauri::generate_handler![kill_resource_group])
+            .manage(Arc::clone(&manager))
+            .manage(Arc::clone(&pty))
+            .manage(Arc::clone(&monitor))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build unsupported resource-kill app");
+        assert!(app.try_state::<SelectionCoordinator>().is_none());
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        let public_response = tauri::test::get_ipc_response(
+            &webview,
+            tauri::webview::InvokeRequest {
+                cmd: "kill_resource_group".into(),
+                callback: tauri::ipc::CallbackFn(0),
+                error: tauri::ipc::CallbackFn(1),
+                url: "http://tauri.localhost".parse().unwrap(),
+                body: tauri::ipc::InvokeBody::Json(serde_json::json!({
+                    "request": {
+                        "sessionId": session.id,
+                        "reason": "user",
+                    }
+                })),
+                headers: Default::default(),
+                invoke_key: tauri::test::INVOKE_KEY.to_string(),
+            },
+        )
+        .expect("unsupported public kill returns success")
+        .deserialize::<ResourceKillResult>()
+        .unwrap();
+        assert_unsupported_kill_result(&public_response, session.id);
+
+        let transaction = SelectionTransaction::for_test(app.handle().clone());
+        let inner_response = execute_resource_kill_transaction(
+            &transaction,
+            session.id,
+            TrustedResourceIntent::Watchdog,
+        )
+        .await
+        .unwrap();
+        assert_unsupported_kill_result(&inner_response, session.id);
+
+        assert_eq!(process_backend.observe_tree_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            process_backend
+                .observe_identity_calls
+                .load(Ordering::SeqCst),
+            0
+        );
+        assert_eq!(
+            process_backend
+                .terminate_verified_calls
+                .load(Ordering::SeqCst),
+            0
+        );
+        assert_eq!(
+            process_backend
+                .current_process_memory_calls
+                .load(Ordering::SeqCst),
+            0
+        );
+        assert_eq!(pty_backend.terminate_count.load(Ordering::SeqCst), 0);
+        assert_eq!(pty_backend.kill_count.load(Ordering::SeqCst), 0);
+        assert!(pty.lock().unwrap().has_session(session.id));
+        assert!(!monitor.has_registered_group(session.id));
+        assert_eq!(monitor.active_agent_groups(), 0);
+        let after_selection = manager.read().await.selection_payload().await;
+        assert_eq!(after_selection.revision(), before_selection.revision());
+        assert_eq!(after_selection.id(), before_selection.id());
+        assert_eq!(
+            manager
+                .read()
+                .await
+                .get_session(session.id)
+                .await
+                .unwrap()
+                .status,
+            SessionStatus::Active
+        );
     }
 
     #[test]
