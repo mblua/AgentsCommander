@@ -1118,10 +1118,18 @@ mod tests {
     /// once armed, BLOCKS inside `observe_tree`, which is `kill_group_inner`'s first
     /// backend call and therefore a deterministic barrier. Releasing the gate also makes
     /// the child verifiably gone, so the parked retry settles to Terminated.
+    ///
+    /// The barrier is announced through a Condvar rather than an AtomicBool so the test
+    /// thread can wait for it with a plain `std` wait. W6 must never need the async
+    /// runtime to make progress in order to report, because the defect it exists to catch
+    /// is exactly the one that stops the runtime from making progress.
     struct QuarantineGatedBackend {
         root: ProcessIdentity,
         armed: AtomicBool,
-        entered: AtomicBool,
+        entered: (Mutex<bool>, Condvar),
+        /// The thread that ran the armed `observe_tree`, recorded before it blocks. This
+        /// is the subject of W6's assertion 1.
+        observer: Mutex<Option<std::thread::ThreadId>>,
         child_gone: AtomicBool,
         gate: (Mutex<bool>, Condvar),
     }
@@ -1131,10 +1139,26 @@ mod tests {
             Self {
                 root,
                 armed: AtomicBool::new(false),
-                entered: AtomicBool::new(false),
+                entered: (Mutex::new(false), Condvar::new()),
+                observer: Mutex::new(None),
                 child_gone: AtomicBool::new(false),
                 gate: (Mutex::new(false), Condvar::new()),
             }
+        }
+
+        /// Blocks the calling thread, using `std` only, until the armed `observe_tree` has
+        /// recorded its thread and is about to park on the release gate. Returns false on
+        /// timeout so the caller reports an assertion failure instead of hanging.
+        fn wait_entered(&self, timeout: Duration) -> bool {
+            let (lock, condvar) = &self.entered;
+            let (entered, wait) = condvar
+                .wait_timeout_while(lock.lock().unwrap(), timeout, |entered| !*entered)
+                .unwrap();
+            !wait.timed_out() && *entered
+        }
+
+        fn observer(&self) -> Option<std::thread::ThreadId> {
+            *self.observer.lock().unwrap()
         }
 
         fn child(&self) -> ProcessIdentity {
@@ -1179,7 +1203,14 @@ mod tests {
             _root: ProcessIdentity,
         ) -> Result<ObservedProcessTree, ResourceError> {
             if self.armed.load(Ordering::SeqCst) {
-                self.entered.store(true, Ordering::SeqCst);
+                // Record the observer BEFORE announcing the barrier, so a waiter that
+                // sees `entered` always sees the thread id too.
+                *self.observer.lock().unwrap() = Some(std::thread::current().id());
+                {
+                    let (lock, condvar) = &self.entered;
+                    *lock.lock().unwrap() = true;
+                    condvar.notify_all();
+                }
                 let mut released = self.gate.0.lock().unwrap();
                 while !*released {
                     released = self.gate.1.wait(released).unwrap();
@@ -1388,10 +1419,31 @@ mod tests {
     }
 
     // #1151 (W6) - the orphan retry runs OFF the async runtime. kill_group can cost about
-    // two seconds per stubborn PID, so inlining it would stall a Tokio worker. While the
-    // retry is parked inside observe_tree, an independent task must still make progress.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    // two seconds per stubborn PID, so inlining it would stall a Tokio worker.
+    //
+    // Exactly ONE worker thread is load-bearing, not a style choice: it makes "the async
+    // runtime" an enumerable set of one OS thread, so the thread-identity assertion below
+    // is a complete statement rather than a sample. At two workers an inline call lands on
+    // the worker the test did not sample, and the test passes on a broken build.
+    //
+    // Every wait here is a `std` wait on the test thread, capped so a failure is an
+    // assertion and not a hang. `tokio::time` must not appear in this test: a shape that
+    // needs the runtime to make progress in order to REPORT cannot report the very defect
+    // that stops the runtime from making progress.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn orphan_retry_runs_off_the_async_runtime() {
+        // Harness self-check, taken while the runtime is still idle: spawned tasks really
+        // do run on a worker thread rather than on the block_on thread. If a future Tokio
+        // ever changed that, every assertion below would be silently vacuous.
+        let test_thread = std::thread::current().id();
+        let worker_thread = tokio::spawn(async { std::thread::current().id() })
+            .await
+            .expect("the worker identity probe joins");
+        assert_ne!(
+            worker_thread, test_thread,
+            "spawned tasks must run on the runtime's worker thread, not on the test thread"
+        );
+
         let root = ProcessIdentity {
             pid: 5500,
             creation_time_100ns: 1100,
@@ -1433,6 +1485,9 @@ mod tests {
         let _release_guard = ReleaseOnDrop(process_backend.clone());
         process_backend.armed.store(true, Ordering::SeqCst);
 
+        // tokio::spawn is load-bearing too: it is what puts an inlined blocking call on
+        // the worker thread, instead of on the test thread where it would satisfy
+        // assertion 1 for the wrong reason.
         let retry = {
             let monitor = Arc::clone(&monitor);
             let coordinator = coordinator.clone();
@@ -1446,32 +1501,51 @@ mod tests {
                 .await
             })
         };
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while !process_backend.entered.load(Ordering::SeqCst) {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("the orphan retry enters the backend barrier");
+        assert!(
+            process_backend.wait_entered(Duration::from_secs(5)),
+            "the orphan retry enters the backend barrier"
+        );
+        let observer = process_backend
+            .observer()
+            .expect("the barrier records its thread before parking");
 
-        let counter = Arc::new(AtomicUsize::new(0));
-        let ticker = {
-            let counter = Arc::clone(&counter);
-            tokio::spawn(async move {
-                for _ in 0..50 {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                    tokio::task::yield_now().await;
-                }
-            })
-        };
-        tokio::time::timeout(Duration::from_secs(2), ticker)
-            .await
-            .expect("the async runtime keeps running while the orphan retry blocks")
-            .unwrap();
-        assert_eq!(counter.load(Ordering::SeqCst), 50);
-        assert!(!process_backend.released());
+        // Assertion 2's probe, taken while the gate is still held: a task that the runtime
+        // polls right now proves the runtime is still polling tasks. The channel is `std`,
+        // so its result reaches the test thread whether or not the runtime is alive.
+        let (tx, rx) = std::sync::mpsc::channel();
+        tokio::spawn(async move {
+            let _ = tx.send(());
+        });
+        let runtime_polled_a_task = rx.recv_timeout(Duration::from_secs(5)).is_ok();
 
+        assert!(
+            !process_backend.released(),
+            "the barrier must still be held while both facts are captured"
+        );
         process_backend.release();
+
+        // Assertion 1: the blocking work ran on neither the runtime's single worker nor
+        // the test thread, so it ran on the blocking pool. With one worker those two are
+        // the only non-blocking-pool threads, so this is exhaustive. It rejects an inline
+        // call and tokio::task::block_in_place alike.
+        assert_ne!(
+            observer, worker_thread,
+            "the orphan retry must not run on the async runtime's worker thread"
+        );
+        assert_ne!(
+            observer, test_thread,
+            "the orphan retry must not run on the test thread"
+        );
+        // Assertion 2: the runtime kept making progress while the blocking call was in
+        // flight. This is what rejects std::thread::spawn(..).join(), which is off the
+        // runtime by identity yet parks the worker for the whole call. Never assert WHICH
+        // thread sent it: block_in_place legitimately migrates the scheduler to a
+        // replacement thread, so pinning the sender would add a false-failure mode.
+        assert!(
+            runtime_polled_a_task,
+            "the async runtime must keep polling tasks while the orphan retry blocks"
+        );
+
         let report = retry.await.unwrap();
         assert_eq!(
             report.path,
