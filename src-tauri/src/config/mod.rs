@@ -1,3 +1,4 @@
+pub mod activity_log;
 pub mod agent_command;
 pub mod agent_config;
 pub mod agent_creation;
