@@ -125,6 +125,11 @@ pub(crate) struct CommitResult {
     pub finalized_rows: Vec<SessionInfo>,
     pub cleared_raise_hand_ids: Vec<Uuid>,
     pub selection: Option<SessionSelection>,
+    /// #1149 - activity records built under the write guard and appended by
+    /// `SelectionCoordinator::commit` once the guard is gone. Carried out rather
+    /// than appended in place because the guard is a local of
+    /// `commit_selection_transition` and no append may hold it.
+    pub activity: Vec<crate::config::activity_log::ActivityRecord>,
 }
 
 impl Default for SessionManager {
@@ -473,42 +478,139 @@ impl SessionManager {
         out
     }
 
+    /// #1149 - the guard added here is emit-only. Every mutation below runs
+    /// exactly as it did before, on every call, in every state; only the
+    /// `log::info!` and the activity record are conditional. That is what turns
+    /// 55,816 `[session-state]` lines into the roughly 8,054 real transitions
+    /// among them without changing any behavior.
     pub async fn mark_idle(&self, id: Uuid) {
-        let mut state = self.state.write().await;
-        if state.pending_create.contains_key(&id) {
-            return;
-        }
-        if let Some(s) = state.sessions.get_mut(&id) {
-            log::info!(
-                "[session-state] {} '{}': waiting_for_input {} → true",
-                &id.to_string()[..8],
-                s.name,
-                s.waiting_for_input
-            );
+        let record = {
+            let mut state = self.state.write().await;
+            if state.pending_create.contains_key(&id) {
+                return;
+            }
+            let Some(s) = state.sessions.get_mut(&id) else {
+                return;
+            };
+            let was_working = crate::session::session::is_working(s);
+            // MUST stay above the assignment: the literal `false` is correct only
+            // because this line reads the pre-mutation state under `was_working`.
+            // Below the assignment it would print `true → true` forever.
+            if was_working {
+                log::info!(
+                    "[session-state] {} '{}': waiting_for_input false → true",
+                    &id.to_string()[..8],
+                    s.name
+                );
+            }
             s.waiting_for_input = true;
             if matches!(s.status, SessionStatus::Running) {
                 s.status = SessionStatus::Idle;
             }
+            if was_working && !crate::session::session::is_working(s) {
+                // Built under the same guard that stamps `at`, so the block
+                // annotation can never disagree with its own timestamp.
+                Some(crate::config::activity_log::build_idle(
+                    id,
+                    s,
+                    crate::config::activity_log::IdleReason::MarkIdle,
+                ))
+            } else {
+                None
+            }
+        }; // write guard released here
+        if let Some(record) = record {
+            crate::config::activity_log::append(record);
         }
     }
 
+    /// Mirror of [`Self::mark_idle`]. See the emit-only note there.
     pub async fn mark_busy(&self, id: Uuid) {
-        let mut state = self.state.write().await;
-        if state.pending_create.contains_key(&id) {
-            return;
-        }
-        if let Some(s) = state.sessions.get_mut(&id) {
-            log::info!(
-                "[session-state] {} '{}': waiting_for_input {} → false",
-                &id.to_string()[..8],
-                s.name,
-                s.waiting_for_input
-            );
+        let record = {
+            let mut state = self.state.write().await;
+            if state.pending_create.contains_key(&id) {
+                return;
+            }
+            let Some(s) = state.sessions.get_mut(&id) else {
+                return;
+            };
+            let was_working = crate::session::session::is_working(s);
+            // The post-mutation predicate, computable before the mutation: this
+            // clears `waiting_for_input` and promotes `Idle` to `Running`, so the
+            // session ends up working iff it is not `Exited`. The `Exited` term is
+            // required, not decorative: `mark_exited` leaves `waiting_for_input`
+            // untouched, so a session that died while working sits at
+            // `(Exited, false)`, where the literal `true` below would be a lie and
+            // the line would repeat a target value A9 forbids repeating.
+            let becomes_working = !matches!(s.status, SessionStatus::Exited(_));
+            // MUST stay above the assignment; see `mark_idle`.
+            if !was_working && becomes_working {
+                log::info!(
+                    "[session-state] {} '{}': waiting_for_input true → false",
+                    &id.to_string()[..8],
+                    s.name
+                );
+            }
             s.waiting_for_input = false;
             if matches!(s.status, SessionStatus::Idle) {
                 s.status = SessionStatus::Running;
             }
+            // The post-check is load-bearing here, unlike in `mark_idle` where
+            // `was_working` implies it: on an `Exited` session this clears
+            // `waiting_for_input` and leaves the status alone, so `is_working`
+            // stays false and no record may be emitted.
+            if !was_working && crate::session::session::is_working(s) {
+                Some(crate::config::activity_log::build_busy(
+                    id,
+                    s,
+                    crate::config::activity_log::BusyReason::MarkBusy,
+                ))
+            } else {
+                None
+            }
+        }; // write guard released here
+        if let Some(record) = record {
+            crate::config::activity_log::append(record);
         }
+    }
+
+    /// #1149 - the working-session set, sampled without an await.
+    ///
+    /// `RunEvent::Exit` runs on the main thread and needs this set while the
+    /// session map is still populated, but the only public read path,
+    /// `list_sessions`, is `async` and unbounded, and the outer
+    /// `Arc<RwLock<SessionManager>>` has no production writer so spinning on it
+    /// would bound nothing. `None` means a writer holds or has merely queued for
+    /// `state` (`tokio::sync::RwLock` is write-preferring), and the caller is
+    /// expected to bound its own retry rather than block.
+    ///
+    /// Uses `is_working` internally so exactly one definition of "working"
+    /// exists, and carries only the four fields an `idle` record needs: no
+    /// `token`, no `last_prompt`, no shell args.
+    ///
+    /// `pub fn`, not `pub async fn`, deliberately: the architecture guard rejects
+    /// new public async manager mutators, and a shutdown caller must not await.
+    pub fn try_snapshot_working_sessions(
+        &self,
+    ) -> Option<Vec<crate::config::activity_log::WorkingSessionSnapshot>> {
+        let state = self.state.try_read().ok()?;
+        Some(
+            state
+                .order
+                .iter()
+                .filter(|id| !state.pending_create.contains_key(id))
+                .filter_map(|id| state.sessions.get(id))
+                .filter(|session| crate::session::session::is_working(session))
+                .map(
+                    |session| crate::config::activity_log::WorkingSessionSnapshot {
+                        id: session.id,
+                        name: session.name.clone(),
+                        cwd: session.working_directory.clone(),
+                        agent_kind: session.agent_kind,
+                    },
+                )
+                .collect(),
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -536,7 +638,7 @@ impl SessionManager {
     {
         use crate::pty::idle_detector::PtyInputBoundaryFailure as Failure;
 
-        let (route_guard, was_idle) = {
+        let (route_guard, was_idle, activity) = {
             let settings_guard = Arc::clone(settings)
                 .try_read_owned()
                 .map_err(|_| Failure::RouteUnavailable)?;
@@ -654,11 +756,31 @@ impl SessionManager {
             if matches!(session.status, SessionStatus::Idle) {
                 session.status = SessionStatus::Running;
             }
+            // #1149 - the third working-state mutation site, and the one that
+            // bypasses `mark_busy`: `waiting_for_input` is already false by the
+            // time `notify_pty_input_busy` reaches it, so hooking only
+            // `mark_idle`/`mark_busy` would silently lose every inter-agent
+            // injection edge.
+            //
+            // Unconditional here, unlike the other two sites: the checks above
+            // rejected this call unless the session was non-`Exited` and waiting
+            // for input, and `SessionStatus` has exactly four variants, so the
+            // session is necessarily `Active` or `Running` with
+            // `waiting_for_input == false` now. Nothing below can discard the
+            // record either: no `?` and no early return remains in this block.
+            let activity = crate::config::activity_log::build_busy(
+                id,
+                session,
+                crate::config::activity_log::BusyReason::PtyInputBoundary,
+            );
             let (mut route_guard, was_idle) = prepared;
             route_guard.retain_authority_guard(authority_route_guard);
             route_guard.retain_settings_guard(settings_guard);
-            (route_guard, was_idle)
-        };
+            (route_guard, was_idle, activity)
+        }; // write guard released here
+        crate::config::activity_log::append(activity);
+        // The `mark_busy` this reaches through the idle callback then sees no
+        // edge and emits nothing, so there is exactly one record per injection.
         idle_detector.notify_pty_input_busy(id, was_idle);
         Ok(route_guard)
     }
@@ -1552,6 +1674,10 @@ impl SessionManager {
 
         let mut result = CommitResult::default();
         let mut changed_ids = HashSet::new();
+        // #1149 - ids only. The record itself is built after every fallible exit
+        // below, so a later `?` can never strand a record for a session this
+        // commit did not actually finalize.
+        let mut finalized_live_ids: Vec<Uuid> = Vec::new();
         for mutation in mutations.finalizations {
             match mutation {
                 FinalizeMutation::Live(binding, _) => {
@@ -1564,6 +1690,7 @@ impl SessionManager {
                             ));
                         }
                         record.status = SessionStatus::Running;
+                        finalized_live_ids.push(binding.session_id);
                         result.finalized_rows.push(SessionInfo::from(&*record));
                     }
                 }
@@ -1680,6 +1807,29 @@ impl SessionManager {
             state.selection.detached(),
             if selection_changed { "committed" } else { "noop" },
         );
+
+        // #1149 - the opening edge at session birth, deferred past every fallible
+        // exit above so no record can survive a commit that returned `Err`. The
+        // write guard is still held, which is what keeps the coalescer exclusive.
+        //
+        // The re-read is also semantically better than emitting inside the
+        // finalization arm: a session finalized and then removed or marked exited
+        // reads back as absent or `Exited`, so `is_working` is false and nothing
+        // is recorded. Such a session was never observably working. One promoted
+        // to `Active` still reads as working and is recorded.
+        for id in finalized_live_ids {
+            if let Some(record) = state.sessions.get(&id) {
+                if crate::session::session::is_working(record) {
+                    result
+                        .activity
+                        .push(crate::config::activity_log::build_busy(
+                            id,
+                            record,
+                            crate::config::activity_log::BusyReason::SessionStart,
+                        ));
+                }
+            }
+        }
 
         Ok(result)
     }
@@ -3670,5 +3820,552 @@ mod tests {
         assert_eq!(error, "selection revision overflow");
         assert!(manager.get_pending_session(binding).await.is_some());
         assert!(manager.list_sessions().await.is_empty());
+    }
+
+    /// The unstated invariant that makes `commit_selection_transition`'s
+    /// `-> Active` promotion neutral for the activity signal: a session is never
+    /// `Idle` while `waiting_for_input` is false. If it ever were, focusing that
+    /// session would flip `is_working` false to true with no record behind it.
+    #[tokio::test]
+    async fn idle_status_implies_waiting_for_input() {
+        let manager = SessionManager::new();
+        // The first session takes the selection and becomes Active; the second
+        // stays Running, which is the only status `mark_idle` demotes.
+        let _selected = manager
+            .create_session(
+                "sh".to_string(),
+                Vec::new(),
+                "C:\\selected".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create the selected session");
+        let subject = manager
+            .create_session(
+                "sh".to_string(),
+                Vec::new(),
+                "C:\\subject".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create the subject session");
+
+        assert_eq!(subject.status, SessionStatus::Running);
+        assert!(
+            !subject.waiting_for_input,
+            "a session is born (Running, false)"
+        );
+
+        let mut saw_idle = false;
+        // Both writers, repeated, so the no-op paths are covered too.
+        for action in ["idle", "idle", "busy", "busy", "idle"] {
+            match action {
+                "idle" => manager.mark_idle(subject.id).await,
+                _ => manager.mark_busy(subject.id).await,
+            }
+            let observed = manager
+                .get_session(subject.id)
+                .await
+                .expect("the subject session survives");
+            if matches!(observed.status, SessionStatus::Idle) {
+                saw_idle = true;
+                assert!(
+                    observed.waiting_for_input,
+                    "after {action}: Idle with waiting_for_input false manufactures an unrecorded ON edge"
+                );
+            }
+        }
+        assert!(
+            saw_idle,
+            "the sequence must actually reach Idle or it proves nothing"
+        );
+    }
+
+    fn activity_json(record: &crate::config::activity_log::ActivityRecord) -> serde_json::Value {
+        serde_json::to_value(record).expect("an activity record serializes")
+    }
+
+    /// Everything the emission sites appended on this thread since the last call.
+    /// No sink is configured in a test process, so this observes the calls
+    /// without a file.
+    fn emitted() -> Vec<serde_json::Value> {
+        crate::config::activity_log::capture::drain()
+            .iter()
+            .map(activity_json)
+            .collect()
+    }
+
+    /// A live, working session: the first `create_session` takes the selection
+    /// and becomes `Active`, so the returned one stays `Running`.
+    async fn working_session(manager: &SessionManager, cwd: &str) -> Session {
+        if manager.get_active().await.is_none() {
+            manager
+                .create_session(
+                    "sh".to_string(),
+                    Vec::new(),
+                    "C:\\selected".to_string(),
+                    None,
+                    None,
+                    Vec::new(),
+                    false,
+                    SessionBackendKind::LocalProcess,
+                )
+                .await
+                .expect("create the selected session");
+        }
+        manager
+            .create_session(
+                "sh".to_string(),
+                Vec::new(),
+                cwd.to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create a working session")
+    }
+
+    #[tokio::test]
+    async fn mark_idle_on_a_working_session_yields_exactly_one_idle_record() {
+        let manager = SessionManager::new();
+        let subject = working_session(&manager, "C:\\subject").await;
+        let _ = emitted();
+
+        manager.mark_idle(subject.id).await;
+
+        let records = emitted();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["event"], "idle");
+        assert_eq!(records[0]["reason"], "mark_idle");
+        assert_eq!(records[0]["sessionId"], subject.id.to_string());
+        assert_eq!(records[0]["cwd"], "C:\\subject");
+        assert_eq!(records[0]["idleThresholdMs"], serde_json::json!(2_500));
+    }
+
+    #[tokio::test]
+    async fn mark_idle_on_an_already_idle_session_yields_no_record() {
+        let manager = SessionManager::new();
+        let subject = working_session(&manager, "C:\\subject").await;
+        manager.mark_idle(subject.id).await;
+        let _ = emitted();
+
+        manager.mark_idle(subject.id).await;
+
+        assert!(
+            emitted().is_empty(),
+            "a call that changes nothing produces no record"
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_busy_on_an_idle_session_yields_exactly_one_busy_record() {
+        let manager = SessionManager::new();
+        let subject = working_session(&manager, "C:\\subject").await;
+        manager.mark_idle(subject.id).await;
+        let _ = emitted();
+
+        manager.mark_busy(subject.id).await;
+
+        let records = emitted();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["event"], "busy");
+        assert_eq!(records[0]["reason"], "mark_busy");
+        assert_eq!(records[0]["sessionId"], subject.id.to_string());
+        assert_eq!(
+            records[0]["continuesBlock"],
+            serde_json::json!(true),
+            "the idle a moment ago is inside the block window"
+        );
+        assert!(records[0]["gapMs"].is_u64());
+    }
+
+    #[tokio::test]
+    async fn mark_busy_twice_yields_one_record() {
+        let manager = SessionManager::new();
+        let subject = working_session(&manager, "C:\\subject").await;
+        manager.mark_idle(subject.id).await;
+        let _ = emitted();
+
+        manager.mark_busy(subject.id).await;
+        manager.mark_busy(subject.id).await;
+
+        assert_eq!(emitted().len(), 1, "only the edge is recorded");
+    }
+
+    #[tokio::test]
+    async fn mark_busy_on_an_exited_session_yields_no_record() {
+        let manager = SessionManager::new();
+        let subject = working_session(&manager, "C:\\subject").await;
+        // Exiting leaves `waiting_for_input` untouched, so the session sits at
+        // `(Exited, false)`: `mark_busy` changes nothing observable and
+        // `is_working` stays false.
+        manager.mark_exited(subject.id, 0).await;
+        let stored = manager
+            .get_session(subject.id)
+            .await
+            .expect("the session still exists");
+        assert!(!stored.waiting_for_input);
+        let _ = emitted();
+
+        manager.mark_busy(subject.id).await;
+
+        assert!(
+            emitted().is_empty(),
+            "a dead session must not open an interval"
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_idle_still_demotes_running_to_idle_when_already_waiting_for_input() {
+        let manager = SessionManager::new();
+        let subject = working_session(&manager, "C:\\subject").await;
+        // Waiting for input while still `Running`: the guard must not skip the
+        // demotion just because there is no edge to record.
+        manager.mark_idle(subject.id).await;
+        manager.mark_busy(subject.id).await;
+        manager
+            .state
+            .write()
+            .await
+            .sessions
+            .get_mut(&subject.id)
+            .expect("session")
+            .waiting_for_input = true;
+        let _ = emitted();
+
+        manager.mark_idle(subject.id).await;
+
+        let stored = manager.get_session(subject.id).await.expect("session");
+        assert_eq!(stored.status, SessionStatus::Idle);
+        assert!(stored.waiting_for_input);
+        assert!(emitted().is_empty(), "no edge, so no record");
+    }
+
+    #[tokio::test]
+    async fn mark_idle_still_sets_waiting_for_input_on_every_call() {
+        let manager = SessionManager::new();
+        let subject = working_session(&manager, "C:\\subject").await;
+        for round in 0..3 {
+            manager.mark_idle(subject.id).await;
+            let stored = manager.get_session(subject.id).await.expect("session");
+            assert!(
+                stored.waiting_for_input,
+                "round {round}: the mutation is unconditional"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn mark_idle_on_a_pending_create_session_yields_no_record() {
+        let manager = SessionManager::new();
+        let (pending, _binding) = pending_fixture(&manager, false).await;
+        let _ = emitted();
+
+        manager.mark_idle(pending.id).await;
+        manager.mark_busy(pending.id).await;
+
+        assert!(
+            emitted().is_empty(),
+            "a session that does not exist publicly yet emits nothing"
+        );
+    }
+
+    /// `commands/session.rs` hands the PTY spawn `idle_tuning_for(agent_kind)`,
+    /// and the detector registers exactly that. The record must therefore report
+    /// the same threshold for every kind, not a hardcoded constant.
+    #[tokio::test]
+    async fn idle_record_carries_the_same_threshold_the_detector_registered() {
+        let manager = SessionManager::new();
+        let subject = working_session(&manager, "C:\\subject").await;
+
+        for kind in [
+            None,
+            Some(CodingAgentKind::Claude),
+            Some(CodingAgentKind::Codex),
+            Some(CodingAgentKind::Gemini),
+            Some(CodingAgentKind::Pi),
+        ] {
+            let mut session = subject.clone();
+            session.agent_kind = kind;
+            let record = activity_json(&crate::config::activity_log::build_idle(
+                session.id,
+                &session,
+                crate::config::activity_log::IdleReason::MarkIdle,
+            ));
+            let registered = crate::session::profile::idle_tuning_for(kind)
+                .idle_threshold
+                .as_millis() as u64;
+            assert_eq!(
+                record["idleThresholdMs"],
+                serde_json::json!(registered),
+                "kind={kind:?}"
+            );
+        }
+
+        // And through the real mutation site, for the kind the fixture carries.
+        let _ = emitted();
+        manager.mark_idle(subject.id).await;
+        let records = emitted();
+        let registered = crate::session::profile::idle_tuning_for(subject.agent_kind)
+            .idle_threshold
+            .as_millis() as u64;
+        assert_eq!(records[0]["idleThresholdMs"], serde_json::json!(registered));
+    }
+
+    /// The defect the birth edge exists to remove: without it the first
+    /// `mark_idle` after finalization is an orphan `idle` with no opening `busy`.
+    #[tokio::test]
+    async fn the_first_idle_after_finalization_has_a_matching_busy() {
+        let manager = SessionManager::new();
+        let capability = CommitCapability::for_test();
+        let (pending, binding) = pending_fixture(&manager, false).await;
+        let live = live_witness(pending.id);
+        let mut mutations = LifecycleMutations::default();
+        mutations.finalize_live(binding, live);
+        let result = manager
+            .commit_selection_transition(
+                &capability,
+                CommitDecision::Live(live),
+                SelectionCause::UserSwitch,
+                mutations,
+            )
+            .await
+            .expect("finalize live");
+        let opening: Vec<serde_json::Value> = result.activity.iter().map(activity_json).collect();
+        let _ = emitted();
+
+        manager.mark_idle(pending.id).await;
+        let closing = emitted();
+
+        assert_eq!(opening.len(), 1);
+        assert_eq!(opening[0]["event"], "busy");
+        assert_eq!(closing.len(), 1);
+        assert_eq!(closing[0]["event"], "idle");
+        assert_eq!(
+            opening[0]["sessionId"], closing[0]["sessionId"],
+            "the closing edge must pair with the opening one"
+        );
+    }
+
+    #[tokio::test]
+    async fn try_snapshot_working_sessions_excludes_pending_create() {
+        let manager = SessionManager::new();
+        let live = working_session(&manager, "C:\\live").await;
+        let (pending, _binding) = pending_fixture(&manager, false).await;
+
+        let rows = manager
+            .try_snapshot_working_sessions()
+            .expect("no writer holds state");
+
+        let ids: Vec<Uuid> = rows.iter().map(|row| row.id).collect();
+        assert!(ids.contains(&live.id));
+        assert!(
+            !ids.contains(&pending.id),
+            "a session that does not exist publicly yet must not get a synthetic close"
+        );
+    }
+
+    #[tokio::test]
+    async fn try_snapshot_working_sessions_returns_none_rather_than_blocking_while_a_writer_holds_state(
+    ) {
+        let manager = SessionManager::new();
+        let _live = working_session(&manager, "C:\\live").await;
+
+        let writer = manager.state.write().await;
+        assert!(
+            manager.try_snapshot_working_sessions().is_none(),
+            "the shutdown path must never block on the session map"
+        );
+        drop(writer);
+
+        assert!(
+            manager.try_snapshot_working_sessions().is_some(),
+            "the snapshot succeeds again once the writer is gone"
+        );
+    }
+
+    #[tokio::test]
+    async fn try_snapshot_working_sessions_uses_the_same_predicate_as_is_working() {
+        let manager = SessionManager::new();
+        let subject = working_session(&manager, "C:\\subject").await;
+
+        // Every state the two production writers and the exit path can leave a
+        // session in, checked against the shared predicate rather than a second
+        // definition over `SessionInfo`.
+        for step in ["born", "idle", "busy", "exited"] {
+            match step {
+                "born" => {}
+                "idle" => manager.mark_idle(subject.id).await,
+                "busy" => manager.mark_busy(subject.id).await,
+                _ => {
+                    manager.mark_exited(subject.id, 0).await;
+                }
+            }
+            let stored = manager.get_session(subject.id).await.expect("session");
+            let listed = manager
+                .try_snapshot_working_sessions()
+                .expect("no writer holds state")
+                .iter()
+                .any(|row| row.id == subject.id);
+            assert_eq!(
+                listed,
+                crate::session::session::is_working(&stored),
+                "step {step}: status={:?} waiting_for_input={}",
+                stored.status,
+                stored.waiting_for_input
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn finalize_live_yields_exactly_one_session_start_busy_record() {
+        let manager = SessionManager::new();
+        let capability = CommitCapability::for_test();
+        let (pending, binding) = pending_fixture(&manager, false).await;
+        let live = live_witness(pending.id);
+        let mut mutations = LifecycleMutations::default();
+        mutations.finalize_live(binding, live);
+
+        let result = manager
+            .commit_selection_transition(
+                &capability,
+                CommitDecision::Live(live),
+                SelectionCause::UserSwitch,
+                mutations,
+            )
+            .await
+            .expect("finalize live");
+
+        assert_eq!(
+            result.activity.len(),
+            1,
+            "session birth is one opening edge, no more and no less"
+        );
+        let record = activity_json(&result.activity[0]);
+        assert_eq!(record["event"], "busy");
+        assert_eq!(record["reason"], "session_start");
+        assert_eq!(record["sessionId"], pending.id.to_string());
+        assert_eq!(record["cwd"], "C:/work");
+        assert_eq!(record["continuesBlock"], serde_json::json!(false));
+        assert!(record.get("gapMs").is_none());
+    }
+
+    #[tokio::test]
+    async fn finalize_dormant_yields_no_activity_record() {
+        let manager = SessionManager::new();
+        let capability = CommitCapability::for_test();
+        let (pending, binding) = pending_fixture(&manager, false).await;
+        let dormant = dormant_witness(pending.id);
+        let mut mutations = LifecycleMutations::default();
+        mutations.finalize_dormant(binding, dormant, 0);
+
+        let result = manager
+            .commit_selection_transition(
+                &capability,
+                CommitDecision::Dormant(dormant),
+                SelectionCause::UserSwitch,
+                mutations,
+            )
+            .await
+            .expect("finalize dormant");
+
+        assert!(
+            result.activity.is_empty(),
+            "a dormant finalization never opens an interval"
+        );
+    }
+
+    // The conflict validation rejects remove+finalize outright, so the deferred
+    // re-read is defense in depth rather than the active mechanism here. Either
+    // way no record reaches the caller, which is the required behavior.
+    #[tokio::test]
+    async fn a_session_finalized_and_removed_in_the_same_commit_yields_no_activity_record() {
+        let manager = SessionManager::new();
+        let capability = CommitCapability::for_test();
+        let (pending, binding) = pending_fixture(&manager, false).await;
+        let live = live_witness(pending.id);
+        let mut mutations = LifecycleMutations::default();
+        mutations.finalize_live(binding, live);
+        mutations.remove(pending.id);
+
+        let error = manager
+            .commit_selection_transition(
+                &capability,
+                CommitDecision::Live(live),
+                SelectionCause::UserSwitch,
+                mutations,
+            )
+            .await
+            .expect_err("remove+finalize is rejected");
+
+        assert!(
+            error.contains("remove+finalize conflict"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_finalized_and_marked_exited_in_the_same_commit_yields_no_activity_record() {
+        let manager = SessionManager::new();
+        let capability = CommitCapability::for_test();
+        let (pending, binding) = pending_fixture(&manager, false).await;
+        let live = live_witness(pending.id);
+        let mut mutations = LifecycleMutations::default();
+        mutations.finalize_live(binding, live);
+        mutations.mark_exited(pending.id, 0);
+
+        let error = manager
+            .commit_selection_transition(
+                &capability,
+                CommitDecision::Live(live),
+                SelectionCause::UserSwitch,
+                mutations,
+            )
+            .await
+            .expect_err("markExited+finalize is rejected");
+
+        assert!(
+            error.contains("markExited+finalize conflict"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// The records are built after every fallible exit, so an `Err` returns
+    /// before any `CommitResult` reaches the caller and nothing can be appended
+    /// for a session this commit did not finalize.
+    #[tokio::test]
+    async fn a_failed_commit_yields_no_activity_records() {
+        let manager = SessionManager::new();
+        let capability = CommitCapability::for_test();
+        let (session, binding) = pending_fixture(&manager, false).await;
+        manager.state.write().await.revision = u64::MAX;
+        let live = live_witness(session.id);
+        let mut mutations = LifecycleMutations::default();
+        mutations.finalize_live(binding, live);
+
+        let outcome = manager
+            .commit_selection_transition(
+                &capability,
+                CommitDecision::Live(live),
+                SelectionCause::UserSwitch,
+                mutations,
+            )
+            .await;
+
+        assert!(
+            outcome.is_err(),
+            "no CommitResult, therefore no activity records, may reach the caller"
+        );
     }
 }

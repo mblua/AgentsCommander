@@ -734,6 +734,12 @@ pub fn run(
     config::coding_agents_catalog::ensure_seeded_masters(&config_dir);
 
     let instance_id = uuid::Uuid::new_v4().to_string();
+    // #1149 - open the activity run here, before the rest of boot: a panic in the
+    // remaining path then still leaves a run that had started and never stopped,
+    // which the next startup reports as unclean. This is also the last point at
+    // which `daemon.pid` still holds the PREVIOUS writer's PID, which is what
+    // lets the scan tell a dead predecessor from a live sibling.
+    crate::config::activity_log::init_run(&config_dir, &instance_id);
     let app_outbox_path = instances_dir.join(&instance_id).join("outbox");
     std::fs::create_dir_all(&app_outbox_path).expect("Failed to create app outbox directory");
     let app_outbox = AppOutbox::new(app_outbox_path.to_string_lossy().to_string());
@@ -2471,6 +2477,71 @@ pub fn run(
                     for shutdown in bridge_shutdowns {
                         shutdown.abort_now();
                     }
+
+                    // #1149 - close every open activity interval here. `trigger()`
+                    // below stops the IdleDetector before anything else, so this
+                    // is the only position where the session map is still
+                    // populated AND the detector is still alive. Without it a
+                    // clean exit would drop every open interval, which is the
+                    // defect this issue names first.
+                    //
+                    // Reaching the manager needs the outer lock, and `block_on`
+                    // is forbidden on this path, so take it with `try_read`, clone
+                    // the manager out (it is an `Arc` over its own state) and drop
+                    // the guard before spinning.
+                    let manager_for_activity = session_mgr_for_exit
+                        .try_read()
+                        .ok()
+                        .map(|guard| guard.clone());
+                    let working_snapshot = match manager_for_activity {
+                        Some(manager) => {
+                            // Bounded at 500 ms, and it holds no lock the writer
+                            // needs while it sleeps, so it can never starve the
+                            // writer it waits on. It can only fail to observe a
+                            // gap, and that failure is already correct: the
+                            // consumer closes every open interval at `app_stop`'s
+                            // timestamp regardless of enumeration.
+                            let deadline = std::time::Instant::now()
+                                + std::time::Duration::from_millis(500);
+                            loop {
+                                if let Some(rows) = manager.try_snapshot_working_sessions() {
+                                    break Some(rows);
+                                }
+                                if std::time::Instant::now() >= deadline {
+                                    break None;
+                                }
+                                std::thread::sleep(std::time::Duration::from_millis(2));
+                            }
+                        }
+                        // The outer lock has no production writer, so unreachable
+                        // in practice; falls through to the degraded path.
+                        None => None,
+                    };
+                    let activity_batch = match &working_snapshot {
+                        Some(rows) => {
+                            let mut batch: Vec<_> = rows
+                                .iter()
+                                .map(|row| {
+                                    crate::config::activity_log::build_idle_from_snapshot(
+                                        row,
+                                        crate::config::activity_log::IdleReason::AppStop,
+                                    )
+                                })
+                                .collect();
+                            batch.push(crate::config::activity_log::build_app_stop(
+                                true,
+                                rows.len(),
+                            ));
+                            batch
+                        }
+                        // The degraded path is a designed outcome, not a fallback
+                        // to optimise away: the spin may legitimately exhaust
+                        // under teardown load, and the enumerated records are pure
+                        // precision on top of a close that happens either way.
+                        None => vec![crate::config::activity_log::build_app_stop(false, 0)],
+                    };
+                    // One open, write and close for all N+1 lines.
+                    crate::config::activity_log::append_batch(&activity_batch);
 
                     // #632 B1 - trigger background-task shutdown FIRST so the resource
                     // watchdog stops dispatching NEW ticks and the idle detectors stop.

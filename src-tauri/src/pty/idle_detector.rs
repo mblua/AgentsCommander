@@ -8,6 +8,12 @@ use crate::session::profile::IdleTuning;
 
 const CHECK_INTERVAL: Duration = Duration::from_millis(500);
 
+/// #1149 - watcher ticks between `app_alive` heartbeats. At `CHECK_INTERVAL`
+/// that is one record per minute, which is also the worst-case granularity of
+/// the backstop that closes intervals no mutation site ever closes: a session
+/// that exits or is removed while working simply stops being listed.
+const HEARTBEAT_TICKS: u64 = 120;
+
 type Callback = Arc<dyn Fn(Uuid) + Send + Sync>;
 
 pub struct IdleDetector {
@@ -465,6 +471,7 @@ impl IdleDetector {
     pub fn start(self: &Arc<Self>, shutdown: crate::shutdown::ShutdownSignal) {
         let detector = Arc::clone(self);
         std::thread::spawn(move || {
+            let mut ticks: u64 = 0;
             loop {
                 std::thread::sleep(CHECK_INTERVAL);
 
@@ -473,6 +480,7 @@ impl IdleDetector {
                     break;
                 }
 
+                ticks = ticks.wrapping_add(1);
                 let now = Instant::now();
                 // Snapshot tuning (clone, lock released) so it is never held
                 // across the activity/idle_set critical section. Lock order:
@@ -492,6 +500,39 @@ impl IdleDetector {
                     // Callback inside the lock scope preserves delivery order:
                     // on_idle always fires before any on_busy for new activity.
                     (detector.on_idle)(session_id);
+                }
+
+                // #1149 - the heartbeat, and the universal backstop for closing
+                // edges. A session that exits or is removed while working never
+                // reaches `mark_idle`, so it emits no closing record; it simply
+                // stops appearing here and the consumer closes it at the last
+                // heartbeat that listed it. This is the detector's own view
+                // deliberately, because this loop is a native thread and must not
+                // take the async manager lock. It may therefore list a session
+                // still pending creation, which is inert: the closing rule only
+                // ever closes an interval a `busy` record opened.
+                let heartbeat = ticks.is_multiple_of(HEARTBEAT_TICKS).then(|| {
+                    activity
+                        .keys()
+                        .copied()
+                        .filter(|id| !idle_set.contains(id))
+                        .collect::<Vec<Uuid>>()
+                });
+                // Both guards MUST be released before the append. These are the
+                // two the PTY reader threads take together on every output chunk,
+                // so appending under them would stall every terminal in the fleet
+                // on a 60 s beat for the length of a file open, write and close,
+                // and once per rotation for four renames. On Windows the config
+                // directory is a real-time-scan target and may sit under a file
+                // watcher, so a rename that normally costs 1 ms can cost
+                // hundreds. Fleet-wide terminal jank with no log line explaining
+                // it is the one failure here a user would actually feel.
+                drop(idle_set);
+                drop(activity);
+                if let Some(working_session_ids) = heartbeat {
+                    crate::config::activity_log::append(
+                        crate::config::activity_log::build_app_alive(working_session_ids),
+                    );
                 }
             }
         });

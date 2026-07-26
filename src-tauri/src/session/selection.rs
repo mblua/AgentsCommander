@@ -1891,10 +1891,25 @@ impl<R: Runtime> SelectionTransaction<R> {
         cause: SelectionCause,
         mutations: LifecycleMutations,
     ) -> Result<CommitResult, String> {
-        self.manager()
+        // #1149 - the single funnel that returns a `CommitResult` outward, so the
+        // only place the birth-edge records can be appended.
+        //
+        // The `let` binding is load-bearing. As a tail expression the temporary
+        // `SessionManager` would live across the append. It is harmless today
+        // only because `manager()` returns by value, cloning out of the outer
+        // lock and releasing that guard before it returns, so `append_batch`
+        // holds neither the outer nor the inner lock. That stops being true if
+        // `manager()` is ever changed to return a guard.
+        //
+        // The `?` means an `Err` returns before the append and drops `result`
+        // whole, so no record survives for a session that was never finalized.
+        let result = self
+            .manager()
             .await
             .commit_selection_transition(&self.capability, decision, cause, mutations)
-            .await
+            .await?;
+        crate::config::activity_log::append_batch(&result.activity);
+        Ok(result)
     }
 
     pub(crate) async fn persist(&self, source: SelectionSource, session_id: Option<Uuid>) {
@@ -3724,6 +3739,17 @@ mod tests {
         (!name.is_empty()).then_some(name)
     }
 
+    /// #1149 - the only functions allowed to write `Session::status` in
+    /// production. Each one either records the working-state edge it causes or is
+    /// covered by the heartbeat backstop; an assignment anywhere else silently
+    /// reintroduces an unrecorded edge.
+    const STATUS_WRITER_OWNERS: [&str; 4] = [
+        "mark_idle",
+        "mark_busy",
+        "prepare_pty_input_boundary",
+        "commit_selection_transition",
+    ];
+
     fn ownership_violations(files: &[(String, String)]) -> Vec<String> {
         let mut violations = Vec::new();
         for (path, source) in files {
@@ -3737,14 +3763,24 @@ mod tests {
                 if trimmed.starts_with("//") {
                     continue;
                 }
-                if line.contains("= SessionStatus::Active")
-                    && !(path.ends_with("session/manager.rs")
-                        && function == "commit_selection_transition")
-                {
-                    violations.push(format!(
-                        "{path}:{} Active assignment in {function}",
-                        index + 1
-                    ));
+                // #1149 - all four variants, not only `Active`. The birth-edge
+                // writer, `record.status = SessionStatus::Running` in
+                // `commit_selection_transition`, was unguarded, so a future
+                // assignment of exactly that shape would have passed CI and
+                // silently reintroduced the unrecorded-birth defect. The guard's
+                // reach ends where `production_prefix` cuts, so it protects the
+                // writer table only above the `#[cfg(test)] impl SessionManager`
+                // marker, which is exactly what A12 complements.
+                for variant in ["Active", "Running", "Idle", "Exited"] {
+                    if line.contains(&format!("= SessionStatus::{variant}"))
+                        && !(path.ends_with("session/manager.rs")
+                            && STATUS_WRITER_OWNERS.contains(&function.as_str()))
+                    {
+                        violations.push(format!(
+                            "{path}:{} {variant} assignment in {function}",
+                            index + 1
+                        ));
+                    }
                 }
 
                 for event in [
@@ -3886,6 +3922,46 @@ mod tests {
             !ownership_violations(&web_forgery).is_empty(),
             "sentinel accepted a lifecycle name in the client allowlist"
         );
+    }
+
+    #[test]
+    fn the_status_writer_guard_rejects_a_rogue_running_assignment() {
+        for variant in ["Active", "Running", "Idle", "Exited(0)"] {
+            let rogue = format!("fn rogue() {{ row.status = SessionStatus::{variant}; }}");
+            for path in ["src/commands/session.rs", "src/session/manager.rs"] {
+                let files = vec![(path.to_string(), rogue.clone())];
+                assert!(
+                    !ownership_violations(&files).is_empty(),
+                    "sentinel accepted {rogue} in {path}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_status_writer_guard_accepts_the_four_allowlisted_functions() {
+        let owned = "\
+fn mark_idle() { s.status = SessionStatus::Idle; }
+fn mark_busy() { s.status = SessionStatus::Running; }
+fn prepare_pty_input_boundary() { session.status = SessionStatus::Running; }
+fn commit_selection_transition() {
+    record.status = SessionStatus::Running;
+    record.status = SessionStatus::Exited(exit_code);
+    if previous.status == SessionStatus::Active { previous.status = SessionStatus::Running; }
+    target.status = SessionStatus::Active;
+}
+";
+        let owning = vec![("src/session/manager.rs".to_string(), owned.to_string())];
+        assert_eq!(
+            ownership_violations(&owning),
+            Vec::<String>::new(),
+            "the four allowlisted writers must pass"
+        );
+
+        // The same bodies anywhere else are violations, one per assignment plus
+        // the tolerated `==` comparison the substring check also matches.
+        let elsewhere = vec![("src/commands/session.rs".to_string(), owned.to_string())];
+        assert_eq!(ownership_violations(&elsewhere).len(), 8);
     }
 
     #[test]
