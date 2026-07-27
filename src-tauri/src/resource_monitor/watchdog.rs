@@ -828,7 +828,11 @@ mod tests {
     /// #1151 - drives one group from launch to an orphaned quarantine: register, quarantine
     /// on the stubborn child, then let the blocker disappear. The public session row never
     /// exists, which is what makes it an orphan.
-    fn orphan_one_group(
+    ///
+    /// #1160 - the retry backoff is deliberately NOT satisfied here. Callers that want a
+    /// DUE group use `orphan_one_group`, which is this plus the backdate; the not-yet-due
+    /// shape is the only one that can observe the `quarantine_retry_due` gate at all.
+    fn orphan_one_group_not_yet_due(
         monitor: &ResourceMonitorState,
         backend: &QuarantineWatchdogBackend,
         limits: ResourceLimits,
@@ -845,6 +849,28 @@ mod tests {
         assert!(quarantine.quarantined);
         assert_eq!(quarantine.state, ResourceGroupState::Quarantined);
         backend.mark_gone(child_pid);
+        root
+    }
+
+    /// #1151 - the same orphaned quarantine with its retry backoff already satisfied, which
+    /// is what every test that needs the retry to DISPATCH depends on. Behavior is identical
+    /// to the pre-#1160 helper of this name, so its existing callers are unaffected.
+    fn orphan_one_group(
+        monitor: &ResourceMonitorState,
+        backend: &QuarantineWatchdogBackend,
+        limits: ResourceLimits,
+        session_id: Uuid,
+        root_pid: u32,
+        identity_triple: Option<(&str, &str, &str)>,
+    ) -> ProcessIdentity {
+        let root = orphan_one_group_not_yet_due(
+            monitor,
+            backend,
+            limits,
+            session_id,
+            root_pid,
+            identity_triple,
+        );
         monitor.test_backdate_quarantine_retry(session_id);
         root
     }
@@ -877,6 +903,86 @@ mod tests {
 
         assert!(!monitor.group_counts_toward_admission(session_id));
         assert_eq!(monitor.active_agent_groups(), 0);
+        let permit = monitor
+            .try_reserve_agent_slot(group_limits)
+            .expect("the reclaimed slot admits the next launch")
+            .expect("supported backend issues a permit");
+        monitor.release_unregistered_permit(permit);
+        coordinator.close_and_join().await;
+    }
+
+    // #1160 - the pin for the 15s quarantine-retry backoff gate: the
+    // `&& monitor.quarantine_retry_due(*session_id)` clause in run_quarantine_retries.
+    // Phase 1 is the half no other test can express, because every other orphan test
+    // backdates the group DUE before ticking: an orphan whose blocker has already cleared
+    // is still not retried while its backoff is unelapsed. Phase 2 re-ticks the same group
+    // with only the backoff satisfied, so this fails if the gate is inverted as well as if
+    // it is deleted.
+    //
+    // observe_tree is deliberately NOT pinned: sample_for_watchdog re-observes Quarantined
+    // groups on every snapshot by design (#647 C), so it moves even on a correctly skipped
+    // tick. Pinning it would fail on correct code.
+    #[tokio::test]
+    async fn not_yet_due_quarantine_is_skipped_then_retried_after_backoff() {
+        let backend = Arc::new(QuarantineWatchdogBackend::default());
+        let monitor = Arc::new(ResourceMonitorState::with_backend(
+            backend.clone() as Arc<dyn ProcessTreeBackend>
+        ));
+        let cfg = orphan_settings(1);
+        let group_limits = ResourceLimits::from(&cfg);
+
+        let session_id = Uuid::new_v4();
+        orphan_one_group_not_yet_due(&monitor, &backend, group_limits, session_id, 260, None);
+        assert_eq!(monitor.active_agent_groups(), 1);
+
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let (_app, coordinator) = running_coordinator(manager, Arc::clone(&monitor)).await;
+        let settings = Arc::new(tokio::sync::RwLock::new(cfg));
+
+        // Phase 1: kill_started_at was set microseconds ago by the setup's kill_group, so
+        // the 15s backoff cannot have elapsed and the gate must skip this group.
+        let (_, identity_before, terminate_before) = backend.call_counts();
+        run_tick(&monitor, &settings, &coordinator).await;
+        let (_, identity_after, terminate_after) = backend.call_counts();
+
+        assert_eq!(
+            terminate_after, terminate_before,
+            "a not-yet-due quarantine must not reach kill_group"
+        );
+        assert_eq!(
+            identity_after, identity_before,
+            "a skipped tick performs no identity syscall either"
+        );
+        assert!(
+            monitor.group_counts_toward_admission(session_id),
+            "the skipped group keeps holding its admission slot"
+        );
+        assert_eq!(monitor.active_agent_groups(), 1);
+        assert!(
+            monitor.try_reserve_agent_slot(group_limits).is_err(),
+            "the permit is still held at cap 1"
+        );
+        let state = monitor
+            .sample_for_watchdog(group_limits)
+            .into_iter()
+            .find(|(id, _)| *id == session_id)
+            .map(|(_, group)| group.state);
+        assert_eq!(state, Some(ResourceGroupState::Quarantined));
+
+        // Phase 2: same group, same tick, only the backoff satisfied.
+        monitor.test_backdate_quarantine_retry(session_id);
+        run_tick(&monitor, &settings, &coordinator).await;
+
+        assert!(
+            !monitor.group_counts_toward_admission(session_id),
+            "the due retry reclaims the slot"
+        );
+        assert_eq!(monitor.active_agent_groups(), 0);
+        let (_, _, terminate_final) = backend.call_counts();
+        assert!(
+            terminate_final > terminate_after,
+            "the due retry actually ran a cleanup pass"
+        );
         let permit = monitor
             .try_reserve_agent_slot(group_limits)
             .expect("the reclaimed slot admits the next launch")
