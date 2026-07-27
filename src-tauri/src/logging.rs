@@ -360,6 +360,10 @@ fn install_format(builder: &mut env_logger::Builder, log_state: Arc<Option<Arc<A
 }
 
 fn init_logger_inner() {
+    if let Err(error) = crate::config::instance_gitignore::ensure_instance_gitignore() {
+        eprintln!("[instance-gitignore] warning: {error}");
+    }
+
     let log_state: Option<Arc<AppLogFile>> = crate::config::config_dir().and_then(|dir| {
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("app.log");
