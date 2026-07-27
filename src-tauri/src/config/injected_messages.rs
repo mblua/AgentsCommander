@@ -233,6 +233,49 @@ fn expand_tokens(template: &str, values: &[(&str, &str)]) -> (String, Vec<String
     (out, unknown)
 }
 
+const RESPONSE_MARKER_BODY: &str = "AC_RESPONSE::";
+
+/// Collapses, for every occurrence of `AC_RESPONSE::`, the maximal run of `%`
+/// immediately preceding it down to a single `%` when that run is two
+/// characters or longer. Runs of length 0 or 1 are left untouched and nothing
+/// else in the text changes.
+///
+/// A single `replace("%%AC_RESPONSE::", "%AC_RESPONSE::")` is not sufficient:
+/// `%%%AC_RESPONSE::` becomes `%%AC_RESPONSE::` and matches the scanner again,
+/// and the bar is low because expansion runs first, so `%OBSERVED%` expands to
+/// `91%` and gets a third `%` from an operator who typed two. The obvious
+/// `while contains { replace }` repair is prohibited as a denial of service:
+/// truncation is step 4, so at step 3 the text is still the operator's whole
+/// template with no bound on its length.
+///
+/// This form is O(n) and a fixed point by construction: the runs it produces
+/// are already of length 1 or 0, so sanitizing twice equals sanitizing once.
+fn collapse_response_marker_prefix(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(input.len());
+    let mut cursor = 0usize;
+    while let Some(hit) = input[cursor..].find(RESPONSE_MARKER_BODY) {
+        let at = cursor + hit;
+        let mut run_start = at;
+        // `%` is ASCII 0x25, a byte no multi-byte UTF-8 scalar can contain, so
+        // walking back over bytes can never land inside a scalar. Bounding the
+        // walk at `cursor` also keeps it inside the not-yet-copied region; it
+        // changes no result, since the byte before `cursor` is always the `:`
+        // ending the previous marker.
+        while run_start > cursor && bytes[run_start - 1] == b'%' {
+            run_start -= 1;
+        }
+        out.push_str(&input[cursor..run_start]);
+        if run_start < at {
+            out.push('%');
+        }
+        out.push_str(RESPONSE_MARKER_BODY);
+        cursor = at + RESPONSE_MARKER_BODY.len();
+    }
+    out.push_str(&input[cursor..]);
+    out
+}
+
 /// Applied to the fully expanded string, in the order below.
 ///
 /// Step 2 is the correctness core: the internal-notice path reaches
@@ -249,9 +292,11 @@ fn sanitize(value: &str) -> String {
         .filter(|ch| matches!(ch, '\n' | '\t') || !crate::pty::inject::is_forbidden_pty_scalar(*ch))
         .collect();
     // 3. Neutralize the reply-marker prefix `pty/output.rs` scans for in PTY
-    //    output, which injected text echoes into.
-    if out.contains("%%AC_RESPONSE::") {
-        out = out.replace("%%AC_RESPONSE::", "%AC_RESPONSE::");
+    //    output, which injected text echoes into. Stays after step 2, which can
+    //    bring two `%` together that a stripped scalar separated, as in
+    //    `%\u{202e}%AC_RESPONSE::`.
+    if out.contains(RESPONSE_MARKER_BODY) {
+        out = collapse_response_marker_prefix(&out);
     }
     // 4. Truncate on a character boundary. `str::floor_char_boundary` is
     //    unstable on the pinned toolchain.
@@ -280,18 +325,59 @@ pub(crate) fn render_with_template(template: &str, values: &[(&str, &str)]) -> S
     sanitize(&expanded)
 }
 
+/// Blankness gate 2, after rendering. `sanitize` can empty a template that
+/// `trim()` called non-blank at the parse boundary, because the bidi and format
+/// scalars it strips are not `White_Space`: a template made only of U+202E, of
+/// U+200E and U+200F, of U+061C, of U+2066 through U+2069, or of a
+/// non-whitespace C0 scalar such as BEL passes gate 1 and renders to nothing.
+/// Without this the alert is lost with no warning at all, `format_wake_content`
+/// injects a bare `"\n\n\r"`, and `validate_pty_input_text("")` is `Err(Empty)`.
+///
+/// A pure seam on purpose, so it is testable without installing anything in the
+/// process-global registry, which is empty under `cfg(test)` by rule.
+fn render_resolved(
+    id: &str,
+    template: &str,
+    from_registry: bool,
+    values: &[(&str, &str)],
+) -> String {
+    let rendered = render_with_template(template, values);
+    if !rendered.is_empty() {
+        return rendered;
+    }
+    // One retry, never a loop: a shipped default can never render empty (N17),
+    // so no second failure is reachable. `from_registry` is what distinguishes
+    // an operator's template from an embedded default rendering empty, and an
+    // id absent from `KNOWN_MESSAGES` never reaches here.
+    if from_registry {
+        if let Some(spec) = spec_for(id) {
+            warn_once(
+                format!("empty:{}", id),
+                &format!(
+                    "[injected-messages] the `{}` template renders to nothing after sanitization; the built-in default is used instead",
+                    id
+                ),
+            );
+            return render_with_template(spec.default_template, values);
+        }
+    }
+    rendered
+}
+
 /// Resolves `id` from the registry, or from the embedded default, then renders.
-/// Never fails and never blocks an alert.
+/// Never fails and never blocks an alert. Returns a non-empty string for every
+/// id in `KNOWN_MESSAGES`; it returns `""` only for an id this binary does not
+/// know, which no production call site can produce.
 pub(crate) fn render(id: &str, values: &[(&str, &str)]) -> String {
-    let template = match registry().get(id) {
-        Some(template) => template.clone(),
+    let (template, from_registry) = match registry().get(id) {
+        Some(template) => (template.clone(), true),
         None => match spec_for(id) {
-            Some(spec) => spec.default_template.to_string(),
+            Some(spec) => (spec.default_template.to_string(), false),
             // Not a message this binary knows; there is nothing to render.
             None => return String::new(),
         },
     };
-    render_with_template(&template, values)
+    render_resolved(id, &template, from_registry, values)
 }
 
 fn spec_for(id: &str) -> Option<&'static MessageSpec> {
@@ -542,17 +628,27 @@ fn display_path(path: &Path) -> String {
         .to_string()
 }
 
-fn warn_once(key: String, message: &str) {
+/// Returns whether it emitted: `true` on the first use of `key`, `false`
+/// afterwards. That return value is the only observable this mechanism has, and
+/// the log is the only channel this feature has to the operator, so without it
+/// nothing about that channel is testable.
+fn warn_once(key: String, message: &str) -> bool {
     static WARNED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     let warned = WARNED.get_or_init(|| Mutex::new(HashSet::new()));
     match warned.lock() {
         Ok(mut guard) => {
             if guard.insert(key) {
                 log::warn!("{}", message);
+                true
+            } else {
+                false
             }
         }
         // A poisoned warn-once set must never cost the caller its message.
-        Err(_) => log::warn!("{}", message),
+        Err(_) => {
+            log::warn!("{}", message);
+            true
+        }
     }
 }
 
@@ -1164,7 +1260,20 @@ pub(crate) fn reseed(dir: &Path, target: ReseedTarget) -> Result<Vec<String>, St
                 | EntryOutcome::Appended
                 | EntryOutcome::AlreadyCurrent,
             ) => reset.push(id.clone()),
-            _ => return Err(format!("`{}` could not be reset; it is left untouched", id)),
+            // 4.8 forbids repairing a deliberately deleted `template`, and a
+            // forced run must not become a back door around it. The log is the
+            // only channel to the operator, so the message states both the
+            // cause and the remedy rather than only that nothing changed.
+            _ => {
+                let path = display_path(&dir.join(INJECTED_MESSAGES_FILENAME));
+                return Err(format!(
+                    "`{id}` could not be reset and {path} was left untouched: its \
+                     `[messages.{id}]` table exists but `template` is absent or is not a \
+                     string, and re-adding it would clobber a deliberate deletion. Delete \
+                     the whole `[messages.{id}]` entry and run this command again to \
+                     rebuild it from the shipped default."
+                ));
+            }
         }
     }
     Ok(reset)
@@ -1189,11 +1298,76 @@ mod tests {
     const EXTRA_MESSAGE_ID: &str = "test-extra-message";
     const EXTRA_TEMPLATE: &str = "extra `%MEMBER%` body";
 
+    /// The exact seeded bytes, transcribed from the plan rather than produced
+    /// by the code under test. Comparing the written file against
+    /// `canonical_seed_bytes` cannot fail, so an edit to a header constant
+    /// would drift from the specification with nothing going red.
+    const EXPECTED_SEED: &str = r##"# AgentsCommander injected PTY message templates.
+# Managed by AgentsCommander. Edit the `template` values freely.
+#
+# Markdown is preserved byte for byte and passed through to the receiving
+# agent as raw text; AgentsCommander does not render it. Use ''' literal
+# strings so backticks, asterisks and line breaks survive unchanged.
+#
+# Delete a `template` value, an entry, or this whole file to fall back to the
+# built-in default. An entry you have not edited is refreshed automatically
+# when a new AgentsCommander version ships a better default; an entry you HAVE
+# edited is never overwritten.
+#
+# Placeholders are %UPPERCASE% words between percent signs. There is no escape:
+# a literal %MEMBER% cannot survive expansion. A lone % is ordinary text, so
+# "100%" is safe. AgentsCommander's path placeholders (%AC_REPLICA_ROOT% and
+# friends) do NOT apply here.
+#
+# See injected-messages.default.toml for the current canonical set.
+schema_version = 1
+coverage_version = 1
+
+[messages.context-alert]
+# Injected into the coordinator's terminal when a member crosses a configured
+# context-usage threshold.
+# Placeholders:
+#   %MEMBER%      name of the observed member, e.g. dev-rust
+#   %WORKGROUP%   workgroup name, e.g. wg-2-dev-team
+#   %THRESHOLDS%  thresholds just crossed, already formatted, e.g. 50%, 75%
+#   %OBSERVED%    observed context use, e.g. 91% (best-effort human signal)
+template = '''
+[AC context alert] `%MEMBER%` in `%WORKGROUP%` reached threshold(s): %THRESHOLDS%. No action taken; you decide any follow-up.
+'''
+"##;
+
     fn next_specs() -> [MessageSpec; 1] {
         [MessageSpec {
             id: CONTEXT_ALERT_MESSAGE_ID,
             default_template: NEXT_CONTEXT_ALERT_TEMPLATE,
             known_default_sha256: &[PINNED_SHA256],
+            tokens: &[
+                TOKEN_MEMBER,
+                TOKEN_WORKGROUP,
+                TOKEN_THRESHOLDS,
+                TOKEN_OBSERVED,
+            ],
+            doc_comment: CONTEXT_ALERT_DOC_COMMENT,
+        }]
+    }
+
+    /// sha256 of `NEXT_CONTEXT_ALERT_TEMPLATE`. Pinned because
+    /// `known_default_sha256` is `&'static [&'static str]`; the test that uses
+    /// it recomputes the value so the pin cannot drift.
+    const NEXT_SHA256: &str = "8bfd1f123875b2b1397695a77086ed1361f0351e6d77c9d342290ae7be6a813e";
+
+    /// A third shipped default, with BOTH earlier ones recorded. N16 needs it:
+    /// a second pass that reuses `next_specs` lands in `AlreadyCurrent`, which
+    /// passes even with no recognizer at all, so it would assert a capability
+    /// it never exercises.
+    const THIRD_CONTEXT_ALERT_TEMPLATE: &str =
+        "[AC context alert] `%MEMBER%` in `%WORKGROUP%` is at %THRESHOLDS%.";
+
+    fn third_specs() -> [MessageSpec; 1] {
+        [MessageSpec {
+            id: CONTEXT_ALERT_MESSAGE_ID,
+            default_template: THIRD_CONTEXT_ALERT_TEMPLATE,
+            known_default_sha256: &[PINNED_SHA256, NEXT_SHA256],
             tokens: &[
                 TOKEN_MEMBER,
                 TOKEN_WORKGROUP,
@@ -1405,6 +1579,53 @@ mod tests {
             "x %AC_RESPONSE::abc::START%% y %AC_RESPONSE::abc::END%% z"
         );
         assert!(!out.contains("%%AC_RESPONSE::"));
+
+        // The two literals `scan_response_markers` reconstructs per in-flight
+        // rid. Neither may survive, for any run length.
+        let start_marker = format!("%%AC_RESPONSE::{}::START%%", "abc");
+        let end_marker = format!("%%AC_RESPONSE::{}::END%%", "abc");
+        assert!(!out.contains(&start_marker));
+        assert!(!out.contains(&end_marker));
+
+        // Runs of two, three and four. A single `replace` turns the run of
+        // three back into a match, which is exactly why the collapse has to be
+        // a fixed point rather than one pass of substitution.
+        for run in 2..=4 {
+            let hostile = format!("{}AC_RESPONSE::abc::START%%", "%".repeat(run));
+            let out = sanitize(&hostile);
+            assert_eq!(out, "%AC_RESPONSE::abc::START%%", "run of {}", run);
+            assert!(!out.contains("%%AC_RESPONSE::"), "run of {}", run);
+            assert!(!out.contains(&start_marker), "run of {}", run);
+            assert_eq!(sanitize(&out), out, "not idempotent for run of {}", run);
+        }
+
+        // Expansion runs before sanitization, so `%OBSERVED%` hands a third `%`
+        // to an operator who only typed two.
+        let expanded =
+            render_with_template("%OBSERVED%%%AC_RESPONSE::abc::START%%", &alert_values());
+        assert_eq!(expanded, "91%AC_RESPONSE::abc::START%%");
+        assert!(!expanded.contains("%%AC_RESPONSE::"));
+        assert!(!expanded.contains(&start_marker));
+        assert_eq!(sanitize(&expanded), expanded);
+
+        // Runs of length 0 and 1 are left exactly as they are.
+        assert_eq!(sanitize("AC_RESPONSE::x"), "AC_RESPONSE::x");
+        assert_eq!(sanitize("%AC_RESPONSE::x"), "%AC_RESPONSE::x");
+
+        // Idempotence over the whole set, including adjacent occurrences, where
+        // the backward walk of one must not eat the other's text.
+        for probe in [
+            "x %%AC_RESPONSE::abc::START%% y %%AC_RESPONSE::abc::END%% z",
+            "%%%%AC_RESPONSE::",
+            "AC_RESPONSE::%%AC_RESPONSE::",
+            "%%AC_RESPONSE::%%%AC_RESPONSE::",
+            "no marker here",
+            "",
+        ] {
+            let once = sanitize(probe);
+            assert_eq!(sanitize(&once), once, "not idempotent: {:?}", probe);
+            assert!(!once.contains("%%AC_RESPONSE::"), "survived: {:?}", probe);
+        }
     }
 
     #[test]
@@ -1435,8 +1656,11 @@ mod tests {
             Some(&EntryOutcome::Seeded)
         );
 
+        // Against the transcribed literal, never against the generator.
+        assert_eq!(EXPECTED_SEED.len(), 1533, "the pinned seed is 1533 bytes");
+        assert!(!EXPECTED_SEED.contains('\r'), "the pinned seed is LF");
         let written = read(&main_path(dir.path()));
-        assert_eq!(written, canonical_seed_bytes(&KNOWN_MESSAGES));
+        assert_eq!(written, EXPECTED_SEED);
         assert!(!written.contains("\r\n"), "seeded file must be LF");
         assert!(written.ends_with("'''\n"));
         assert!(!written.ends_with("\n\n"), "exactly one trailing newline");
@@ -2141,6 +2365,37 @@ mod tests {
         assert!(
             validate_pty_input_text(&render(CONTEXT_ALERT_MESSAGE_ID, &alert_values())).is_ok()
         );
+
+        // The 6.1 gate-2 class: templates `trim()` calls non-blank because the
+        // bidi and format scalars are not `White_Space`, but which `sanitize`
+        // empties. Exercised through `render_resolved`, because
+        // `render_with_template` deliberately has no blank gate, so requiring
+        // it there would be requiring the wrong thing.
+        for template in [
+            "\u{202e}",
+            "\u{200e}\u{200f}",
+            "\u{7}",
+            "\u{61c}\u{2066}\u{2069}",
+        ] {
+            assert!(
+                !template.trim().is_empty(),
+                "fixture must survive gate 1: {:?}",
+                template
+            );
+            assert!(
+                render_with_template(template, &alert_values()).is_empty(),
+                "fixture must sanitize to empty: {:?}",
+                template
+            );
+            let rendered =
+                render_resolved(CONTEXT_ALERT_MESSAGE_ID, template, true, &alert_values());
+            assert!(!rendered.is_empty(), "gate 2 left it empty: {:?}", template);
+            assert!(
+                validate_pty_input_text(&rendered).is_ok(),
+                "gate-2 fallback rejected by AC's own validator for {:?}",
+                template
+            );
+        }
     }
 
     #[test]
@@ -2210,17 +2465,167 @@ mod tests {
         assert!(read(&main_path(dir.path())).contains(NEXT_CONTEXT_ALERT_TEMPLATE));
 
         // With the sidecar still unwritable, the next run converges through the
-        // recognizer rather than freezing the entry as a user edit.
-        let report = provision(dir.path(), &specs, None).expect("second run");
+        // recognizer rather than freezing the entry as a user edit. The pass
+        // must ship a THIRD default that lists the on-disk content among its
+        // known ones: reusing `specs` would land in `AlreadyCurrent`, which
+        // passes even when no recognizer exists.
+        assert_eq!(
+            sha256_hex(NEXT_CONTEXT_ALERT_TEMPLATE.as_bytes()),
+            NEXT_SHA256,
+            "the pinned hash of the second default drifted"
+        );
+        let third = third_specs();
+        assert!(
+            third[0].known_default_sha256.contains(&NEXT_SHA256),
+            "the recognizer must list the on-disk content"
+        );
+        let report = provision(dir.path(), &third, None).expect("second run");
         assert_eq!(
             report.outcomes.get(CONTEXT_ALERT_MESSAGE_ID),
-            Some(&EntryOutcome::AlreadyCurrent)
+            Some(&EntryOutcome::Refreshed),
+            "recognized content one version behind must refresh, not freeze"
         );
+        assert!(read(&main_path(dir.path())).contains(THIRD_CONTEXT_ALERT_TEMPLATE));
+
         let report = provision(dir.path(), &KNOWN_MESSAGES, None).expect("downgrade run");
         assert_eq!(
             report.outcomes.get(CONTEXT_ALERT_MESSAGE_ID),
             Some(&EntryOutcome::PreservedUserEdit),
             "an unrecognized hash is still preserved"
+        );
+    }
+
+    /// N17. What makes the single retry in gate 2 total: the fallback can never
+    /// itself render empty, so no second failure is reachable and the gate
+    /// needs no loop.
+    #[test]
+    fn every_shipped_default_renders_non_empty() {
+        for spec in KNOWN_MESSAGES.iter() {
+            let rendered = render_with_template(spec.default_template, &alert_values());
+            assert!(!rendered.is_empty(), "`{}` rendered empty", spec.id);
+            assert!(
+                validate_pty_input_text(&rendered).is_ok(),
+                "`{}` rejected by AC's own validator: {:?}",
+                spec.id,
+                validate_pty_input_text(&rendered)
+            );
+        }
+    }
+
+    /// N18. The gate itself, on the pure seam, with no global registry involved.
+    #[test]
+    fn template_that_sanitizes_to_empty_falls_back_to_default() {
+        let values = alert_values();
+        let expected = render_with_template(DEFAULT_CONTEXT_ALERT_TEMPLATE, &values);
+
+        let rendered = render_resolved(CONTEXT_ALERT_MESSAGE_ID, "\u{202e}", true, &values);
+        assert_eq!(rendered, expected);
+        assert!(!rendered.is_empty());
+
+        // It warned: the key is registered afterwards, whatever the test order.
+        assert!(
+            !warn_once(
+                format!("empty:{}", CONTEXT_ALERT_MESSAGE_ID),
+                "probe, never emitted"
+            ),
+            "gate 2 must register its warn-once key"
+        );
+
+        // With `from_registry = false` the same input returns "". The gate is
+        // deliberately not applied to an embedded default: a shipped default
+        // that sanitizes to nothing is a bug to be caught by N17, not a
+        // condition to paper over at runtime.
+        assert_eq!(
+            render_resolved(CONTEXT_ALERT_MESSAGE_ID, "\u{202e}", false, &values),
+            ""
+        );
+    }
+
+    /// N19. `warn_once`'s return value is the only observable the mechanism has,
+    /// and the log is this feature's only channel to the operator.
+    ///
+    /// Every key and token below is unique to this test, because the set is
+    /// process-global and shared across the whole test binary.
+    #[test]
+    fn warn_once_fires_once_per_key() {
+        assert!(warn_once("n19-unique-key-alpha".to_string(), "first"));
+        assert!(!warn_once("n19-unique-key-alpha".to_string(), "second"));
+        assert!(warn_once(
+            "n19-unique-key-beta".to_string(),
+            "different key"
+        ));
+
+        // The key is the token, including its `%` delimiters, so the set cannot
+        // grow with the number of templates.
+        let rendered = render_with_template("%N19_ALPHA% and %N19_BETA% and %N19_ALPHA%", &[]);
+        assert_eq!(rendered, "%N19_ALPHA% and %N19_BETA% and %N19_ALPHA%");
+        for token in ["%N19_ALPHA%", "%N19_BETA%"] {
+            assert!(
+                !warn_once(format!("token:{}", token), "probe, never emitted"),
+                "{} did not register exactly once",
+                token
+            );
+        }
+    }
+
+    /// N20. The Windows reparse-point branch of `is_link_or_reparse`, exercised
+    /// with a junction, which needs no privileges.
+    ///
+    /// Recorded residue: this pins the class "a real reparse point occupies the
+    /// path" and that `is_link_or_reparse` rejects it. It does not pin WHICH of
+    /// that function's two branches fires, since whether `std` classifies a
+    /// mount point as a symlink is not asserted here either way.
+    #[cfg(windows)]
+    #[test]
+    fn reparse_point_in_the_path_is_rejected() {
+        use std::os::windows::fs::MetadataExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+        let dir = tempdir();
+        let target = dir.path().join("junction-target");
+        std::fs::create_dir(&target).expect("junction target");
+        let link = main_path(dir.path());
+
+        let status = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&link)
+            .arg(&target)
+            .output()
+            .expect("run mklink");
+        // Failing rather than skipping, so the coverage cannot silently
+        // evaporate on a machine where the junction cannot be created.
+        assert!(
+            status.status.success(),
+            "mklink /J failed: {}{}",
+            String::from_utf8_lossy(&status.stdout),
+            String::from_utf8_lossy(&status.stderr)
+        );
+
+        let metadata = std::fs::symlink_metadata(&link).expect("symlink_metadata");
+        assert!(
+            metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0,
+            "the path does not carry FILE_ATTRIBUTE_REPARSE_POINT"
+        );
+        assert!(is_link_or_reparse(&metadata));
+
+        let report = ensure_injected_messages(dir.path()).expect("provision");
+        assert!(report.writer_disabled.is_some());
+        assert!(load_registry_from_dir(dir.path()).is_empty());
+        assert_eq!(
+            render(CONTEXT_ALERT_MESSAGE_ID, &alert_values()),
+            render_with_template(DEFAULT_CONTEXT_ALERT_TEMPLATE, &alert_values())
+        );
+
+        // Neither followed nor replaced.
+        let after = std::fs::symlink_metadata(&link).expect("still there");
+        assert!(is_link_or_reparse(&after));
+        assert!(target.is_dir());
+        assert!(
+            std::fs::read_dir(&target)
+                .expect("read target")
+                .next()
+                .is_none(),
+            "nothing was written through the junction"
         );
     }
 
