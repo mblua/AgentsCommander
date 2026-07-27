@@ -71,19 +71,35 @@ fn ensure_instance_gitignore_at(config_dir: &Path, agent_local_dir: &str) -> Res
     }
 }
 
-fn required_rules(agent_local_dir: &str) -> Result<[String; 10], String> {
-    if agent_local_dir
-        .as_bytes()
-        .iter()
-        .any(|byte| matches!(byte, b'\r' | b'\n'))
-    {
-        return Err("agent local directory name contains a line break".to_string());
+fn escape_gitignore_path_segment(segment: &str) -> Result<String, String> {
+    let mut escaped = String::with_capacity(segment.len());
+    for character in segment.chars() {
+        match character {
+            '\r' | '\n' => {
+                return Err("agent local directory name contains a line break".to_string());
+            }
+            '/' => {
+                return Err("agent local directory name contains a path separator".to_string());
+            }
+            '\0' => return Err("agent local directory name contains NUL".to_string()),
+            '\\' | '*' | '?' | '[' => {
+                escaped.push('\\');
+                escaped.push(character);
+            }
+            _ => escaped.push(character),
+        }
     }
+    Ok(escaped)
+}
+
+fn required_rules(agent_local_dir: &str) -> Result<[String; 10], String> {
+    let escaped_agent_local_dir = escape_gitignore_path_segment(agent_local_dir)?;
 
     Ok([
         format!(
-            "/{}/{agent_local_dir}/config.json",
-            super::root_agent::ROOT_AGENT_DIR_NAME
+            "/{}/{}/config.json",
+            super::root_agent::ROOT_AGENT_DIR_NAME,
+            escaped_agent_local_dir
         ),
         format!("/{}/config.json", super::root_agent::ROOT_AGENT_DIR_NAME),
         FIXED_RULES[0].to_string(),
@@ -416,6 +432,20 @@ mod tests {
         output
     }
 
+    fn assert_git_ignore_status(repo: &Path, relative_path: &str, expected_code: i32) {
+        let output = git(
+            repo,
+            &["check-ignore", "--no-index", "--quiet", "--", relative_path],
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(expected_code),
+            "unexpected ignore status for {relative_path}; stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     #[test]
     fn fresh_file_has_exact_ten_rules_and_dynamic_name() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -743,5 +773,205 @@ mod tests {
             std::fs::read(repo.join(".git/info/exclude")).expect("read info exclude"),
             info_exclude
         );
+    }
+
+    #[test]
+    fn literal_gitignore_segment_encoding_is_canonical() {
+        for (input, expected) in [("\\", "\\\\"), ("*", "\\*"), ("?", "\\?"), ("[", "\\[")] {
+            assert_eq!(
+                escape_gitignore_path_segment(input).expect("encode metacharacter"),
+                expected
+            );
+        }
+        assert_eq!(
+            escape_gitignore_path_segment(r"\*?[]-^#! spaced._(), café 東京")
+                .expect("encode combined segment"),
+            r"\\\*\?\[]-^#! spaced._(), café 東京"
+        );
+
+        for invalid in [
+            ".agents\rinjected",
+            ".agents\ninjected",
+            ".agents/injected",
+            ".agents\0injected",
+        ] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let result = ensure_instance_gitignore_at(temp.path(), invalid);
+            assert!(result.is_err(), "invalid segment was accepted: {invalid:?}");
+            assert!(
+                !temp.path().join(".gitignore").exists(),
+                "invalid segment touched .gitignore: {invalid:?}"
+            );
+        }
+
+        let agent_local_dir = r".agents\*?[]-^#! café";
+        let escaped_agent_local_dir =
+            escape_gitignore_path_segment(agent_local_dir).expect("encode agent local dir");
+        let rules = required_rules(agent_local_dir).expect("construct canonical rules");
+        assert_eq!(rules.len(), 10);
+        assert_eq!(
+            rules[0],
+            format!(
+                "/{}/{escaped_agent_local_dir}/config.json",
+                super::super::root_agent::ROOT_AGENT_DIR_NAME
+            )
+        );
+        assert_eq!(
+            &rules[1..],
+            &[
+                "/ac-root-agent/config.json",
+                "/app-outbox-path.txt",
+                "/app.log",
+                "/daemon.pid",
+                "/master-token.txt",
+                "/sessions.json",
+                "/settings.json",
+                "/update-check.json",
+                "/web-token.txt",
+            ]
+        );
+        assert_eq!(
+            rules
+                .iter()
+                .filter(|rule| rule.contains(&escaped_agent_local_dir))
+                .count(),
+            1
+        );
+        let raw_companion = format!(
+            "/{}/{agent_local_dir}/config.json",
+            super::super::root_agent::ROOT_AGENT_DIR_NAME
+        );
+        assert!(!rules.contains(&raw_companion));
+    }
+
+    #[test]
+    fn git_fixture_treats_bracketed_agent_name_as_literal() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path();
+        assert_git_success(repo, &["init", "--quiet"]);
+        let config_dir = repo.join("instance");
+        std::fs::create_dir(&config_dir).expect("create config dir");
+
+        let agent_local_dir = ".agents[1]";
+        ensure_instance_gitignore_at(&config_dir, agent_local_dir)
+            .expect("ensure bracketed fixture");
+        let rules = required_rules(agent_local_dir).expect("canonical bracketed rules");
+        assert_eq!(rules[0], r"/ac-root-agent/.agents\[1]/config.json");
+        let generated = std::fs::read(config_dir.join(".gitignore")).expect("read .gitignore");
+        assert_eq!(generated, fresh_file_bytes(&rules));
+        assert_eq!(
+            generated
+                .split(|byte| *byte == b'\n')
+                .filter(|line| !line.is_empty())
+                .count(),
+            10
+        );
+
+        let literal = "instance/ac-root-agent/.agents[1]/config.json";
+        let sibling = "instance/ac-root-agent/.agents1/config.json";
+        for relative in [literal, sibling] {
+            let path = repo.join(relative);
+            std::fs::create_dir_all(path.parent().expect("fixture parent"))
+                .expect("create fixture parent");
+            std::fs::write(path, b"fixture").expect("write fixture");
+        }
+        assert_git_ignore_status(repo, literal, 0);
+        assert_git_ignore_status(repo, sibling, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_fixture_treats_unix_metacharacter_agent_names_as_literal() {
+        let cases = [
+            (".agents*literal", ".agentsZZliteral"),
+            (".agents?literal", ".agentsXliteral"),
+            (".agents\\literal", ".agentsliteral"),
+        ];
+
+        for (agent_local_dir, unintended_sibling) in cases {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let repo = temp.path();
+            assert_git_success(repo, &["init", "--quiet"]);
+            let config_dir = repo.join("instance");
+            std::fs::create_dir(&config_dir).expect("create config dir");
+
+            ensure_instance_gitignore_at(&config_dir, agent_local_dir)
+                .expect("ensure metacharacter fixture");
+            let rules = required_rules(agent_local_dir).expect("canonical metacharacter rules");
+            let generated = std::fs::read(config_dir.join(".gitignore")).expect("read .gitignore");
+            assert_eq!(generated, fresh_file_bytes(&rules));
+            assert_eq!(
+                generated
+                    .split(|byte| *byte == b'\n')
+                    .filter(|line| !line.is_empty())
+                    .count(),
+                10
+            );
+            let raw_companion = format!(
+                "/{}/{agent_local_dir}/config.json",
+                super::super::root_agent::ROOT_AGENT_DIR_NAME
+            );
+            assert!(!rules.contains(&raw_companion));
+
+            let literal = format!(
+                "instance/{}/{agent_local_dir}/config.json",
+                super::super::root_agent::ROOT_AGENT_DIR_NAME
+            );
+            let sibling = format!(
+                "instance/{}/{unintended_sibling}/config.json",
+                super::super::root_agent::ROOT_AGENT_DIR_NAME
+            );
+            for relative in [&literal, &sibling] {
+                let path = repo.join(relative);
+                std::fs::create_dir_all(path.parent().expect("fixture parent"))
+                    .expect("create fixture parent");
+                std::fs::write(path, b"fixture").expect("write fixture");
+            }
+            assert_git_ignore_status(repo, &literal, 0);
+            assert_git_ignore_status(repo, &sibling, 1);
+        }
+    }
+
+    #[test]
+    fn escaped_canonical_line_controls_detection_and_repair() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(".gitignore");
+        let agent_local_dir = ".agents[1]";
+        let rules = required_rules(agent_local_dir).expect("canonical rules");
+        let canonical_first = &rules[0];
+        let raw_first = format!(
+            "/{}/{agent_local_dir}/config.json",
+            super::super::root_agent::ROOT_AGENT_DIR_NAME
+        );
+
+        assert!(!contains_exact_line(
+            format!("{raw_first}\n").as_bytes(),
+            canonical_first.as_bytes()
+        ));
+        assert!(contains_exact_line(
+            format!("{canonical_first}\n").as_bytes(),
+            canonical_first.as_bytes()
+        ));
+
+        let mut seed = Vec::new();
+        seed.extend_from_slice(raw_first.as_bytes());
+        seed.push(b'\n');
+        for rule in &rules[1..] {
+            seed.extend_from_slice(rule.as_bytes());
+            seed.push(b'\n');
+        }
+        assert_eq!(missing_rule_indexes(&seed, &rules), vec![0]);
+        std::fs::write(&path, &seed).expect("seed raw predecessor");
+
+        ensure_instance_gitignore_at(temp.path(), agent_local_dir).expect("repair raw predecessor");
+        let repaired = std::fs::read(&path).expect("read repaired file");
+        let mut expected = seed.clone();
+        expected.extend_from_slice(canonical_first.as_bytes());
+        expected.push(b'\n');
+        assert_eq!(repaired, expected);
+        assert_eq!(missing_rule_indexes(&repaired, &rules), Vec::<usize>::new());
+
+        ensure_instance_gitignore_at(temp.path(), agent_local_dir).expect("repeat repaired ensure");
+        assert_eq!(std::fs::read(path).expect("read repeated result"), repaired);
     }
 }
