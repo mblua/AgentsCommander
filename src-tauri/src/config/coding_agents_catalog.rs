@@ -424,7 +424,14 @@ pub fn reseedable_command_basenames() -> Vec<String> {
 
 /// Reduce a coding-agent command to its executable basename (lowercase), mirroring
 /// the settings save path. `None` if the command does not tokenize.
-fn command_executable_basename(command: &str) -> Option<String> {
+///
+/// #1171 promoted this from private to `pub(crate)`. It is now the ONLY stem rule in the
+/// tree and a second one must not be written, in Rust or in TypeScript: the `starts_with`
+/// rule in the frontend's `suggestedContextRegex` must not be ported here or reused, for the
+/// reason `reseed_master_for_command` states below - `pi` and `agent` false-match under a
+/// prefix rule. The watcher Settings UI gets its reach from `preview_watcher_reach` rather
+/// than reimplementing this.
+pub(crate) fn command_executable_basename(command: &str) -> Option<String> {
     let normalized = crate::config::agent_command::normalize_legacy_agent_command(command).ok()?;
     Some(crate::config::settings::command_token_basename(
         &normalized.shell,

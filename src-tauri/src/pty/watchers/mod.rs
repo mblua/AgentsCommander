@@ -36,6 +36,273 @@
 //! numbers are not comparable to either; `--release` does not build the test target in this
 //! tree, because `load_sessions_raw_from_dir_for_test` is `#[cfg(debug_assertions)]`.
 
+pub mod pattern;
+
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex};
+
+use crate::config::coding_agents_catalog::command_executable_basename;
+use crate::config::settings::{WatcherEntry, WatcherMode};
+
+pub use crate::config::settings::WatcherDedupe;
+
+/// How many watchers may run on one agent. Resolution takes the first 8 in `BTreeMap` key
+/// order, which is alphabetical over user-chosen ids, so adding a watcher named `aaa-test`
+/// really can displace the eighth. That is why the dropped ones are both logged and reported
+/// per row by `preview_watcher_reach`, instead of leaving the user with a log line.
+pub const WATCHERS_PER_AGENT_BUDGET: usize = 8;
+
+/// `dedupeWindowMs` is clamped to this on read.
+///
+/// Without it, a large window plus a `row` key would grow the key set to every distinct row
+/// seen in that window; the 256-key bound per `(watcher, session)` is the other half of the
+/// same defence.
+pub const MAX_DEDUPE_WINDOW_MS: u64 = 60_000;
+
+/// One enabled, well-formed watcher, ready for a tick.
+///
+/// Shared behind an `Arc` because the same watcher usually reaches many agents and its
+/// pattern string must not be cloned once per agent per tick.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedWatcher {
+    pub id: String,
+    pub mode: WatcherMode,
+    pub pattern: String,
+    pub dedupe: WatcherDedupe,
+    /// Already clamped to `MAX_DEDUPE_WINDOW_MS`.
+    pub dedupe_window_ms: u64,
+}
+
+/// What resolution needs to know about one configured agent: `settings.agents[i]`, reduced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatcherAgent {
+    pub id: String,
+    pub command: String,
+}
+
+/// The watchers that apply to one agent right now.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentResolution {
+    /// In `BTreeMap` key order, at most `WATCHERS_PER_AGENT_BUDGET`.
+    pub running: Vec<Arc<ResolvedWatcher>>,
+    /// The ids that reach this agent but fell outside the budget, in the same order.
+    pub over_budget: Vec<String>,
+}
+
+/// Something resolution wants to say, at most once per changed value.
+///
+/// Returned rather than logged, so the preview commands can run the exact same rule on every
+/// keystroke without writing anything to `app.log`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolutionNotice {
+    /// What the notice is ABOUT, kind-prefixed: a watcher id or an agent id. The log-once
+    /// map is keyed by this and holds one entry per subject, so it is bounded by the number
+    /// of configured watchers and agents. Keying by the message instead would let a user
+    /// typing in Settings accumulate one entry per keystroke, which is the mistake
+    /// `context_scrape`'s compile cache documents at `mod.rs:127-132`.
+    pub subject: String,
+    /// The value the message was derived from. A changed detail logs again; an unchanged one
+    /// stays silent however many ticks pass.
+    pub detail: String,
+    pub message: String,
+}
+
+/// Cross the configured agents with the configured watchers.
+///
+/// Pure: no logging, no locks, no I/O. Called every tick by the engine's pattern source and
+/// on every keystroke by `preview_watcher_reach`, and both get the same answer because there
+/// is only one rule.
+///
+/// An agent appears in the map only when at least one watcher reaches it, so "the map is
+/// empty" is exactly "there is nothing to do this tick" - which is what lets the tick return
+/// before touching any session.
+pub fn resolve_watchers(
+    agents: &[WatcherAgent],
+    watchers: &BTreeMap<String, WatcherEntry>,
+) -> (HashMap<String, AgentResolution>, Vec<ResolutionNotice>) {
+    let mut notices = Vec::new();
+    let mut usable: Vec<(Arc<ResolvedWatcher>, Option<Vec<String>>)> = Vec::new();
+
+    for (id, entry) in watchers {
+        let config = match entry {
+            WatcherEntry::Valid(config) => config,
+            WatcherEntry::Invalid(value) => {
+                let detail = value.to_string();
+                notices.push(ResolutionNotice {
+                    subject: format!("invalid:{id}"),
+                    message: format!(
+                        "[watchers] watcher '{id}' is not a valid watcher and is being skipped; \
+                         every other watcher and every other setting is unaffected: {detail}"
+                    ),
+                    detail,
+                });
+                continue;
+            }
+        };
+
+        // Disabled is a state the user chose, not a problem. It keeps its configuration and
+        // says nothing.
+        if !config.enabled {
+            continue;
+        }
+
+        // A selector that does not tokenize skips the WHOLE watcher. Never "reaches
+        // everything": a typo in one entry must not silently widen a pattern to every agent.
+        let selector = match &config.commands {
+            None => None,
+            Some(list) => {
+                let mut stems = Vec::with_capacity(list.len());
+                let mut broken: Option<String> = None;
+                for token in list {
+                    match command_executable_basename(token) {
+                        Some(stem) => stems.push(stem),
+                        None => {
+                            broken = Some(token.clone());
+                            break;
+                        }
+                    }
+                }
+                if let Some(token) = broken {
+                    let detail = list.join("\u{1f}");
+                    notices.push(ResolutionNotice {
+                        subject: format!("commands:{id}"),
+                        message: format!(
+                            "[watchers] watcher '{id}' is being skipped: its commands selector \
+                             entry '{token}' is not a command. A watcher with an unreadable \
+                             selector reaches nobody, never everybody"
+                        ),
+                        detail,
+                    });
+                    continue;
+                }
+                Some(stems)
+            }
+        };
+
+        let mut dedupe_window_ms = config.dedupe_window_ms;
+        if dedupe_window_ms > MAX_DEDUPE_WINDOW_MS {
+            notices.push(ResolutionNotice {
+                subject: format!("clamp:{id}"),
+                message: format!(
+                    "[watchers] watcher '{id}' asks for a {dedupe_window_ms} ms dedupe window; \
+                     clamping to {MAX_DEDUPE_WINDOW_MS} ms"
+                ),
+                detail: dedupe_window_ms.to_string(),
+            });
+            dedupe_window_ms = MAX_DEDUPE_WINDOW_MS;
+        }
+
+        usable.push((
+            Arc::new(ResolvedWatcher {
+                id: id.clone(),
+                mode: config.mode,
+                pattern: config.pattern.clone(),
+                dedupe: config.dedupe,
+                dedupe_window_ms,
+            }),
+            selector,
+        ));
+    }
+
+    let mut resolved: HashMap<String, AgentResolution> = HashMap::new();
+    if usable.is_empty() {
+        return (resolved, notices);
+    }
+
+    for agent in agents {
+        // An agent whose own command does not tokenize is reached by selectorless watchers
+        // and by no watcher with a selector: there is no stem to compare against, and
+        // guessing one would be inventing a match. `validate_agent_commands`
+        // (`settings.rs:1473-1475`) already rejects such a command on save.
+        let agent_stem = command_executable_basename(&agent.command);
+
+        let mut running = Vec::new();
+        let mut over_budget = Vec::new();
+        for (watcher, selector) in &usable {
+            let reaches = match selector {
+                None => true,
+                Some(stems) => agent_stem
+                    .as_ref()
+                    .is_some_and(|stem| stems.iter().any(|candidate| candidate == stem)),
+            };
+            if !reaches {
+                continue;
+            }
+            if running.len() < WATCHERS_PER_AGENT_BUDGET {
+                running.push(Arc::clone(watcher));
+            } else {
+                over_budget.push(watcher.id.clone());
+            }
+        }
+
+        if running.is_empty() {
+            continue;
+        }
+        if !over_budget.is_empty() {
+            let detail = over_budget.join(",");
+            notices.push(ResolutionNotice {
+                subject: format!("budget:{}", agent.id),
+                message: format!(
+                    "[watchers] agent '{}' is over the {WATCHERS_PER_AGENT_BUDGET}-watcher \
+                     budget; these are configured but not running on it: {detail}",
+                    agent.id
+                ),
+                detail,
+            });
+        }
+        resolved.insert(
+            agent.id.clone(),
+            AgentResolution {
+                running,
+                over_budget,
+            },
+        );
+    }
+
+    (resolved, notices)
+}
+
+/// Log-once bookkeeping for `ResolutionNotice`s, across ticks.
+///
+/// Resolution runs five times a second, so every one of these messages would otherwise be a
+/// five-per-second log line for as long as the configuration stays wrong. Keyed by subject
+/// and holding the last detail logged for it: an unchanged problem stays silent, a CHANGED
+/// one speaks again, and the map cannot grow past one entry per watcher and agent.
+#[derive(Default)]
+pub struct ResolutionLog {
+    last: Mutex<HashMap<String, String>>,
+}
+
+impl ResolutionLog {
+    /// Log the notices whose subject is new or whose detail changed. Returns how many lines
+    /// were actually written, so "logged once across N ticks" is something a test can assert
+    /// rather than something a reader has to trust.
+    pub fn publish(&self, notices: Vec<ResolutionNotice>) -> usize {
+        if notices.is_empty() {
+            return 0;
+        }
+        let mut written = 0;
+        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        for notice in notices {
+            let changed = last
+                .get(&notice.subject)
+                .is_none_or(|previous| previous != &notice.detail);
+            if changed {
+                log::warn!("{}", notice.message);
+                last.insert(notice.subject, notice.detail);
+                written += 1;
+            }
+        }
+        written
+    }
+
+    /// Number of subjects currently remembered. The bound this type exists to keep.
+    #[cfg(test)]
+    fn remembered(&self) -> usize {
+        self.last.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+}
+
 /// Identifies one frame of one session's screen mirror.
 ///
 /// **The size is part of the stamp on purpose.** `resize_screen_and_broadcast` reflows the
@@ -131,6 +398,261 @@ pub(crate) fn frame_from_screen_rows_read(
 }
 
 #[cfg(test)]
+mod resolution_tests {
+    use super::*;
+    use crate::config::settings::WatcherConfig;
+
+    fn agent(id: &str, command: &str) -> WatcherAgent {
+        WatcherAgent {
+            id: id.to_string(),
+            command: command.to_string(),
+        }
+    }
+
+    fn watcher(commands: Option<&[&str]>) -> WatcherEntry {
+        WatcherEntry::Valid(WatcherConfig {
+            enabled: true,
+            mode: WatcherMode::Occurrence,
+            pattern: "x".to_string(),
+            commands: commands.map(|list| list.iter().map(|s| s.to_string()).collect()),
+            dedupe: WatcherDedupe::Row,
+            dedupe_window_ms: 2000,
+            captured_against: None,
+        })
+    }
+
+    fn map(entries: Vec<(&str, WatcherEntry)>) -> BTreeMap<String, WatcherEntry> {
+        entries
+            .into_iter()
+            .map(|(id, entry)| (id.to_string(), entry))
+            .collect()
+    }
+
+    fn running_ids(resolved: &HashMap<String, AgentResolution>, agent_id: &str) -> Vec<String> {
+        resolved
+            .get(agent_id)
+            .map(|entry| entry.running.iter().map(|w| w.id.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// 9.2.10 - the configuration the issue says cannot be expressed today: one watcher, every
+    /// agent. And its exact opposite, which only exists because `commands` is an `Option`.
+    #[test]
+    fn commands_absent_reaches_every_agent_and_an_empty_list_reaches_none() {
+        let agents = [agent("a1", "claude"), agent("a2", "codex")];
+
+        let (all, _) = resolve_watchers(&agents, &map(vec![("w", watcher(None))]));
+        assert_eq!(running_ids(&all, "a1"), vec!["w"]);
+        assert_eq!(running_ids(&all, "a2"), vec!["w"]);
+
+        let (none, _) = resolve_watchers(&agents, &map(vec![("w", watcher(Some(&[])))]));
+        assert!(
+            none.is_empty(),
+            "`[]` is the opposite of absent and must reach nobody"
+        );
+    }
+
+    /// 9.2.11 and 9.2.12 - the stem rule, in full. EXACT equality on the executable stem,
+    /// never a prefix: the catalog rejects `starts_with` in writing because `pi` and `agent`
+    /// false-match under it (`coding_agents_catalog.rs:494-497`), and this is the rule that
+    /// must not be re-derived anywhere else, in Rust or in TypeScript.
+    #[test]
+    fn a_commands_selector_matches_the_executable_stem_exactly() {
+        let agents = [
+            agent("plain", "claude"),
+            agent("shouting", "CLAUDE.EXE"),
+            agent("full-path", r"C:\Users\x\claude-sandbox-runtime\claude.cmd"),
+            agent("pi", "pi --provider claude"),
+            agent("through-cmd", "cmd /c claude"),
+            agent("through-npx", "npx claude"),
+            agent("prefix", "claude-phi"),
+        ];
+
+        let (resolved, _) =
+            resolve_watchers(&agents, &map(vec![("w", watcher(Some(&["claude"])))]));
+        let mut reached: Vec<&String> = resolved.keys().collect();
+        reached.sort();
+        assert_eq!(reached, vec!["full-path", "plain", "shouting"]);
+    }
+
+    /// 9.2.13 - disabled is a state the user chose. It reaches nobody and keeps every byte of
+    /// its configuration, so re-enabling it is one flag and not a re-entry.
+    #[test]
+    fn a_disabled_watcher_reaches_nobody_and_keeps_its_configuration() {
+        let mut entry = watcher(None);
+        if let WatcherEntry::Valid(config) = &mut entry {
+            config.enabled = false;
+        }
+        let watchers = map(vec![("w", entry)]);
+
+        let (resolved, notices) = resolve_watchers(&[agent("a1", "claude")], &watchers);
+        assert!(resolved.is_empty());
+        assert!(
+            notices.is_empty(),
+            "disabled is not a problem and must not produce a log line"
+        );
+        assert_eq!(watchers["w"].valid().expect("still valid").pattern, "x");
+    }
+
+    /// 9.2.14 - a selector entry that is not a command skips the WHOLE watcher. The failure
+    /// direction matters: "reaches nobody" loses a detection, "reaches everybody" would run a
+    /// user's pattern on agents they never selected.
+    #[test]
+    fn a_selector_entry_that_does_not_tokenize_skips_the_whole_watcher() {
+        let agents = [agent("a1", "claude"), agent("a2", "codex")];
+        let watchers = map(vec![("w", watcher(Some(&["claude", ""])))]);
+
+        let (resolved, notices) = resolve_watchers(&agents, &watchers);
+        assert!(
+            resolved.is_empty(),
+            "not even the readable half of the selector may reach anything"
+        );
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].subject, "commands:w");
+
+        // ...and the notice is written once, however many ticks resolve the same thing.
+        let log = ResolutionLog::default();
+        assert_eq!(log.publish(notices.clone()), 1);
+        for _ in 0..10 {
+            assert_eq!(log.publish(notices.clone()), 0);
+        }
+        assert_eq!(log.remembered(), 1, "one subject, not one per tick");
+    }
+
+    /// 9.2.15 - an agent whose own command does not tokenize has no stem to compare against.
+    /// Selectorless watchers still reach it; no watcher WITH a selector does, because the
+    /// alternative would be inventing a stem and matching on the guess.
+    #[test]
+    fn an_agent_whose_command_does_not_tokenize_is_reached_only_without_a_selector() {
+        let agents = [agent("broken", "\"unterminated")];
+        let watchers = map(vec![
+            ("selectorless", watcher(None)),
+            ("selected", watcher(Some(&["claude"]))),
+        ]);
+
+        let (resolved, _) = resolve_watchers(&agents, &watchers);
+        assert_eq!(running_ids(&resolved, "broken"), vec!["selectorless"]);
+    }
+
+    /// 9.2.16 - the budget, and the fact that it resolves by alphabetical id order. Declared
+    /// debt (10.8), surfaced rather than fixed: the dropped ids come back in `over_budget` so
+    /// Settings can show "not running on <agent> (budget)" per row.
+    #[test]
+    fn only_the_first_eight_watchers_in_key_order_run_on_one_agent() {
+        let entries: Vec<(String, WatcherEntry)> = (1..=12)
+            .map(|i| (format!("w{i:02}"), watcher(None)))
+            .collect();
+        let watchers: BTreeMap<String, WatcherEntry> = entries.into_iter().collect();
+
+        let (resolved, notices) = resolve_watchers(&[agent("a1", "claude")], &watchers);
+        let entry = resolved.get("a1").expect("reached");
+        assert_eq!(
+            entry
+                .running
+                .iter()
+                .map(|w| w.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["w01", "w02", "w03", "w04", "w05", "w06", "w07", "w08"]
+        );
+        assert_eq!(entry.over_budget, vec!["w09", "w10", "w11", "w12"]);
+
+        assert_eq!(notices.len(), 1, "the four dropped ids are ONE line");
+        assert!(notices[0].message.contains("w09,w10,w11,w12"));
+        let log = ResolutionLog::default();
+        assert_eq!(log.publish(notices.clone()), 1);
+        assert_eq!(log.publish(notices), 0);
+    }
+
+    /// 9.2.20 - the clamp, and its one log line. Without it a large window plus a `row` key
+    /// grows the dedupe key set to every distinct row seen inside the window.
+    #[test]
+    fn a_dedupe_window_over_the_maximum_is_clamped_and_logged_once() {
+        let mut entry = watcher(None);
+        if let WatcherEntry::Valid(config) = &mut entry {
+            config.dedupe_window_ms = 3_600_000;
+        }
+
+        let (resolved, notices) =
+            resolve_watchers(&[agent("a1", "claude")], &map(vec![("w", entry)]));
+        assert_eq!(
+            resolved["a1"].running[0].dedupe_window_ms,
+            MAX_DEDUPE_WINDOW_MS
+        );
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].subject, "clamp:w");
+
+        let log = ResolutionLog::default();
+        assert_eq!(log.publish(notices.clone()), 1);
+        assert_eq!(log.publish(notices), 0);
+    }
+
+    /// An entry that did not deserialize is skipped and logged once, and every OTHER watcher
+    /// still resolves. The settings half of this is pinned in `settings.rs`; this is the
+    /// resolution half.
+    #[test]
+    fn an_invalid_entry_is_skipped_and_logged_once_while_the_others_resolve() {
+        let watchers = map(vec![
+            (
+                "bad",
+                WatcherEntry::Invalid(serde_json::json!({ "mode": "State" })),
+            ),
+            ("good", watcher(None)),
+        ]);
+
+        let (resolved, notices) = resolve_watchers(&[agent("a1", "claude")], &watchers);
+        assert_eq!(running_ids(&resolved, "a1"), vec!["good"]);
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].subject, "invalid:bad");
+
+        let log = ResolutionLog::default();
+        assert_eq!(log.publish(notices.clone()), 1);
+        assert_eq!(log.publish(notices), 0);
+    }
+
+    /// The log-once map is keyed by SUBJECT, so a user typing a selector in Settings cannot
+    /// accumulate one entry per keystroke - and a CHANGED value still speaks again, because a
+    /// second mistake is not the first one.
+    #[test]
+    fn the_log_once_map_holds_one_entry_per_subject_and_speaks_again_on_a_change() {
+        let log = ResolutionLog::default();
+        for attempt in 0..50 {
+            let notice = ResolutionNotice {
+                subject: "commands:w".to_string(),
+                detail: format!("half-typed-{attempt}"),
+                message: "…".to_string(),
+            };
+            assert_eq!(log.publish(vec![notice]), 1, "a changed value speaks again");
+        }
+        assert_eq!(log.remembered(), 1);
+    }
+
+    /// Two watchers reaching the same agent both run: there is no "most specific wins" rule,
+    /// because it would silently discard a pattern the user configured.
+    #[test]
+    fn two_watchers_reaching_the_same_agent_both_run() {
+        let watchers = map(vec![
+            ("a", watcher(Some(&["claude"]))),
+            ("b", watcher(None)),
+        ]);
+
+        let (resolved, _) = resolve_watchers(&[agent("a1", "claude")], &watchers);
+        assert_eq!(running_ids(&resolved, "a1"), vec!["a", "b"]);
+    }
+
+    /// A stem no agent has is not an error, it just reaches nobody. Settings shows
+    /// "reaches 0 agents" so the typo is visible where it was made.
+    #[test]
+    fn a_stem_no_agent_has_reaches_nobody_and_is_not_an_error() {
+        let (resolved, notices) = resolve_watchers(
+            &[agent("a1", "claude")],
+            &map(vec![("w", watcher(Some(&["gemni"])))]),
+        );
+        assert!(resolved.is_empty());
+        assert!(notices.is_empty());
+    }
+}
+
+#[cfg(test)]
 mod read_seam_tests {
     use super::*;
     use crate::pty::output::{PtyOutputTarget, SessionIoFanout};
@@ -153,7 +675,12 @@ mod read_seam_tests {
     }
 
     fn feed(fanout: &SessionIoFanout, id: Uuid, chunk: &[u8]) {
-        fanout.handle_output(&PtyOutputTarget::noop(), id, &id.to_string(), chunk.to_vec());
+        fanout.handle_output(
+            &PtyOutputTarget::noop(),
+            id,
+            &id.to_string(),
+            chunk.to_vec(),
+        );
     }
 
     /// #1171, section 7.3 - the three numbers recorded in this module's doc comment.
@@ -179,8 +706,11 @@ mod read_seam_tests {
             feed(
                 &fanout,
                 id,
-                format!("\x1b[{};1Hrow {row} of a coding agent's screen, wide enough to be real\r\n", row + 1)
-                    .as_bytes(),
+                format!(
+                    "\x1b[{};1Hrow {row} of a coding agent's screen, wide enough to be real\r\n",
+                    row + 1
+                )
+                .as_bytes(),
             );
         }
 

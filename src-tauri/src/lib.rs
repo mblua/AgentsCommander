@@ -2304,6 +2304,7 @@ pub fn run(
             commands::window::attach_terminal,
             commands::window::list_detached_sessions,
             commands::window::set_detached_geometry,
+            commands::window::set_watchers_geometry,
             commands::window::open_in_explorer,
             commands::window::open_guide_window,
             commands::window::open_spec_board_window,

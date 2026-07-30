@@ -537,6 +537,26 @@ pub async fn set_detached_geometry(
     Ok(())
 }
 
+/// #1171 - record the geometry of the watcher activity window.
+///
+/// A DEDICATED single-field command, following `set_detached_geometry` above, and
+/// deliberately not `initWindowGeometry` (`src/shared/window-geometry.ts:26-47`), which
+/// performs a debounced read-modify-write of the WHOLE `AppSettings`. That race is already
+/// documented in this repository (`commands/config.rs:653-655`) and defended against with an
+/// explicit list of fields restored from live memory (`config.rs:611-624`, `:647-655`);
+/// adding `watchers` to that list would make it six fields long and would leave the new
+/// window as a whole-object writer. This touches one field and cannot clobber another.
+#[tauri::command]
+pub async fn set_watchers_geometry(
+    settings: State<'_, crate::config::settings::SettingsState>,
+    geometry: WindowGeometry,
+) -> Result<(), String> {
+    crate::commands::config::persist_narrow_settings_update(settings.inner(), |candidate| {
+        candidate.watchers_geometry = Some(geometry);
+    })
+    .await
+}
+
 /// Open a path in the system file explorer (Explorer, Finder, xdg-open).
 #[tauri::command]
 pub fn open_in_explorer(path: String) -> Result<(), String> {

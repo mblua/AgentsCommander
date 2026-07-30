@@ -24,9 +24,9 @@ use crate::pty::container_runtime::{
 };
 use crate::pty::container_tokens::{ContainerApiToken, ContainerApiTokenManager};
 use crate::pty::context_scrape::ScreenRowsRead;
-use crate::pty::watchers::{FrameStamp, ScreenRowsSince};
 use crate::pty::idle_detector::IdleDetector;
 use crate::pty::output::{PtyOutputTarget, PtyScreenSnapshot, SessionIoFanout};
+use crate::pty::watchers::{FrameStamp, ScreenRowsSince};
 use crate::resource_monitor::ResourceLogicalAgentSlot;
 use crate::session::selection::ContainerLifecycleSender;
 use crate::telegram::manager::OutputSenderMap;
