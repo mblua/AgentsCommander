@@ -24,6 +24,7 @@ use crate::pty::container_runtime::{
 };
 use crate::pty::container_tokens::{ContainerApiToken, ContainerApiTokenManager};
 use crate::pty::context_scrape::ScreenRowsRead;
+use crate::pty::watchers::{FrameStamp, ScreenRowsSince};
 use crate::pty::idle_detector::IdleDetector;
 use crate::pty::output::{PtyOutputTarget, PtyScreenSnapshot, SessionIoFanout};
 use crate::resource_monitor::ResourceLogicalAgentSlot;
@@ -3178,6 +3179,21 @@ impl PtyBackend for ContainerTransportBackend {
         }
     }
 
+    /// #1171 - the same read as `get_screen_rows` above, on the seam that can also say
+    /// "nothing changed", and with the same oracle: parser-absent IS this backend's liveness
+    /// answer, so it maps to `Gone` rather than to `Missing`.
+    ///
+    /// This is the whole reason `ScreenRowsSince` has four variants instead of three. The
+    /// local backend, whose parser-absence is NOT conclusive, returns `Missing` from the same
+    /// fanout call; keeping one mapping for both backends would have forced one of them to
+    /// lie.
+    fn screen_rows_since(&self, id: Uuid, seen: Option<FrameStamp>) -> ScreenRowsSince {
+        match self.fanout.get_screen_rows_since(id, seen) {
+            ScreenRowsSince::Missing => ScreenRowsSince::Gone,
+            other => other,
+        }
+    }
+
     fn register_response_watcher(
         &self,
         session_id: Uuid,
@@ -5539,6 +5555,28 @@ mod tests {
             assert!(!backend.has_session(session.id));
             assert!(!backend.has_session(session.id));
         }
+    }
+
+    /// #1171, 9.1.4 (container half) - an id this backend has no parser for is `Gone`, not
+    /// `Missing`.
+    ///
+    /// This backend tears down on a natural exit and `close_transport` drops the parser before
+    /// anyone could read it, so parser-absent IS its liveness oracle - the same reading its
+    /// `get_screen_rows` already gives (`:3171-3179`). The local backend answers `Missing` to
+    /// the identical question, which is the whole reason `ScreenRowsSince` has four variants.
+    #[test]
+    fn screen_rows_since_reports_gone_for_an_unknown_id() {
+        let backend = ContainerTransportBackend::new(
+            Arc::new(Mutex::new(HashMap::new())),
+            IdleDetector::new(|_| {}, |_| {}),
+            None,
+            None,
+        );
+
+        assert!(matches!(
+            backend.screen_rows_since(Uuid::new_v4(), None),
+            ScreenRowsSince::Gone
+        ));
     }
 
     #[tokio::test]
