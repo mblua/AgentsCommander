@@ -29,6 +29,11 @@ type Compound = { file: string; selector: string };
 const COMMENT_RE = /\/\*[\s\S]*?\*\//g;
 const BRACE_RE = /[{}]/g;
 const MODAL_ANCHOR = ".agent-modal-item-badges";
+// Stands in for every character that sits inside parentheses. All it has to be is a
+// character that occurs in no needle and is NOT whitespace to the [\s>+~] test below.
+// A space would be wrong: it would let a masked functional pseudo-class stand in for
+// the combinator the anchor has to be followed by, which is half of what F1 was.
+const MASKED = "\u0000";
 
 // Every rule opening in the file, not just the first one on each line. A line-anchored
 // scan is what used to make this guard blind to `.a { } .evil[data-agent="X"] { }` and
@@ -64,27 +69,52 @@ function normaliseSelector(selector: string): string {
     .trim();
 }
 
+// ONE parenthesis-depth pass, and the only one in this file. Returns a copy of `text`
+// of exactly the same length in which every character strictly inside parentheses is
+// replaced by MASKED, so an index into the mask is an index into the original, and a
+// needle found in the mask is a needle at depth 0. The parentheses themselves are kept,
+// so `:is(...)` stays visible as text without its contents being searchable.
+//
+// Everything below that has to tell "at the top level of this selector" from "inside a
+// functional pseudo-class" goes through here. Having one check that knew about depth
+// and another that did not is exactly what F1 was, so there is deliberately no second
+// way to ask this question.
+function maskNested(text: string): string {
+  let depth = 0;
+  let masked = "";
+  for (let index = 0; index < text.length; index += 1) {
+    const ch = text.charAt(index);
+    if (ch === "(") {
+      depth += 1;
+      masked += ch;
+    } else if (ch === ")") {
+      depth = Math.max(0, depth - 1);
+      masked += ch;
+    } else {
+      masked += depth === 0 ? ch : MASKED;
+    }
+  }
+  return masked;
+}
+
 // Criterion 5 is about individual compound selectors, not selector lists: a rule is
 // widened back into the sidebar by adding one comma-separated compound next to the
 // modal-anchored one, and a check that only asks whether the whole list mentions the
-// anchor cannot see that. Depth-aware because the commas in :is(a, b) / :has(a, b) are
-// not list separators. No functional pseudo-class in the tree contains a comma today,
-// so this costs nothing now and cannot silently mangle a compound later.
+// anchor cannot see that. Split on the mask rather than on the raw text, because the
+// commas in :is(a, b) / :has(a, b) are not list separators. No functional pseudo-class
+// in the tree contains a comma today, so this costs nothing now and cannot silently
+// mangle a compound later. The compounds themselves are sliced out of the ORIGINAL, so
+// nothing downstream ever sees a masked character.
 function splitSelectorList(selectorList: string): string[] {
+  const mask = maskNested(selectorList);
   const compounds: string[] = [];
-  let depth = 0;
-  let current = "";
-  for (const ch of selectorList) {
-    if (ch === "(") depth += 1;
-    else if (ch === ")") depth = Math.max(0, depth - 1);
-    if (ch === "," && depth === 0) {
-      compounds.push(current);
-      current = "";
-      continue;
-    }
-    current += ch;
+  let start = 0;
+  for (let index = 0; index < mask.length; index += 1) {
+    if (mask.charAt(index) !== ",") continue;
+    compounds.push(selectorList.slice(start, index));
+    start = index + 1;
   }
-  compounds.push(current);
+  compounds.push(selectorList.slice(start));
   return compounds.map(normaliseSelector).filter((compound) => compound.length > 0);
 }
 
@@ -108,14 +138,35 @@ const DATA_AGENT_COMPOUNDS = ALL_COMPOUNDS.filter((compound) =>
   compound.selector.toLowerCase().includes("[data-agent"),
 );
 
-// Scoped means the attribute selector is a DESCENDANT of the modal container: the
-// anchor must be present, be followed by a combinator, and come before the
-// [data-agent] part. `.session-item-meta [data-agent="X"]` fails, and so does
+// Scoped means the attribute selector is a DESCENDANT of the modal container, with BOTH
+// halves at parenthesis depth 0: the anchor must be present at the top level, be
+// followed by a combinator, and come before a [data-agent] part that is also at the top
+// level. `.session-item-meta [data-agent="X"]` fails, and so does
 // `[data-agent="X"] .agent-modal-item-badges`.
+//
+// Searching the mask instead of the raw selector is what closes F1. This check used to
+// locate the anchor with a plain indexOf, so wrapping it in a functional pseudo-class
+// satisfied both halves and the whole guard stayed green on three real violations:
+// `:is(.agent-modal-item-badges *, .session-item-meta *) [data-agent="Claude"]`, which
+// is the criterion-5 comma-list widening rewritten with :is() and whose second branch
+// reaches sidebar rows; `:not(.agent-modal-item-badges *) [data-agent="Claude"]`, which
+// is the violation stated as a selector; and
+// `.session-item:has(.agent-modal-item-badges .chip) [data-agent="Claude"]`. All three
+// are in-place rewrites of one of the four existing rules, so the count of 4 does not
+// move and cannot catch them. In the mask the anchor inside those parentheses is simply
+// not there, so indexOf returns -1 and the compound is reported as escaped.
+//
+// Conservative on purpose, in the safe direction: a [data-agent] part nested inside a
+// functional pseudo-class that is itself a descendant of the anchor - say
+// `.agent-modal-item-badges :is([data-agent="Claude"], .chip)` - is genuinely scoped and
+// is still rejected here, because the mask hides its needle too. No rule in the tree has
+// that shape, the failure is red rather than green, and adding a fifth [data-agent] rule
+// already needs a plan revision because of the count pin below.
 function isModalScoped(selector: string): boolean {
-  const at = selector.indexOf(MODAL_ANCHOR);
+  const mask = maskNested(selector);
+  const at = mask.indexOf(MODAL_ANCHOR);
   if (at === -1) return false;
-  const afterAnchor = selector.slice(at + MODAL_ANCHOR.length);
+  const afterAnchor = mask.slice(at + MODAL_ANCHOR.length);
   return /^[\s>+~]/.test(afterAnchor) && afterAnchor.toLowerCase().includes("[data-agent");
 }
 
