@@ -36,6 +36,7 @@
 //! numbers are not comparable to either; `--release` does not build the test target in this
 //! tree, because `load_sessions_raw_from_dir_for_test` is `#[cfg(debug_assertions)]`.
 
+pub mod dedupe;
 pub mod frame;
 pub mod pattern;
 
@@ -66,6 +67,22 @@ pub const LIVENESS_PROBE_EVERY_TICKS: u64 = 25;
 
 /// The `row` field of a payload is capped at this many bytes, on a char boundary.
 pub const MAX_ROW_BYTES: usize = 256;
+
+/// At most this many matches per `(watcher, session)` per tick.
+pub const MATCHES_PER_WATCHER_PER_TICK: usize = 8;
+
+/// At most this many matches per session per tick, across all its watchers.
+pub const MATCHES_PER_SESSION_PER_TICK: usize = 16;
+
+/// The caps bound the RATE but not the duration, so a watcher that stays saturated would emit
+/// 40 events a second forever and turn the 500-entry ring over in 0.31 seconds - making the
+/// "older activations were dropped" banner permanent and useless. After this many consecutive
+/// degraded ticks the pair is suspended, then retried.
+pub const DEGRADED_TICKS_BEFORE_SUSPENSION: u32 = 25;
+
+/// How long a saturated `(watcher, session)` pair stays suspended before being retried.
+/// `degraded` stays true throughout, so the UI never claims it recovered.
+pub const SUSPENSION: Duration = Duration::from_secs(5);
 
 /// How many watchers may run on one agent. Resolution takes the first 8 in `BTreeMap` key
 /// order, which is alphabetical over user-chosen ids, so adding a watcher named `aaa-test`
@@ -510,7 +527,10 @@ pub struct WatcherMatchPayload {
 }
 
 /// Cap a row at `MAX_ROW_BYTES`, never splitting a character.
-fn truncate_row(text: &str) -> (String, bool) {
+///
+/// `pub(crate)` so `preview_watcher_pattern` shows the user exactly the string a real payload
+/// would carry, rather than a second truncation rule that happens to agree today.
+pub(crate) fn truncate_row(text: &str) -> (String, bool) {
     if text.len() <= MAX_ROW_BYTES {
         return (text.to_string(), false);
     }
@@ -545,16 +565,17 @@ impl Cached {
     }
 }
 
-/// The `state`-mode gate for one `(session, watcher)` pair.
+/// One `(session, watcher)` pair's whole state: the `state` gate, the `occurrence` dedupe
+/// keys, and the saturation bookkeeping.
 ///
-/// The gate is NOT `(captures, row)` alone. With only that pair, a second instance of a
-/// condition appearing while the first is still visible never emits: the lowest match still
-/// reads the same text, so the tuple never changes. That is the failure mode of the
+/// **The `state` gate is NOT `(captures, row)` alone.** With only that pair, a second instance
+/// of a condition appearing while the first is still visible never emits: the lowest match
+/// still reads the same text, so the tuple never changes. That is the failure mode of the
 /// permission-prompt watcher, which is the strongest argument for this engine existing.
 #[derive(Default)]
-struct StateGate {
-    /// What the watcher looked like when this gate was built. A watcher whose pattern or mode
-    /// was edited gets a fresh gate, because the old one describes a question no longer asked.
+struct WatcherSessionState {
+    /// What the watcher looked like when this state was built. A watcher whose pattern or mode
+    /// was edited starts again, because the old state describes a question no longer asked.
     signature: Option<(String, WatcherMode)>,
     last: Option<(Vec<Option<String>>, String, u64)>,
     /// Incremented whenever the number of matching logical rows RISES. Incrementing only on a
@@ -562,6 +583,14 @@ struct StateGate {
     /// change as the screen moves under it.
     generation: u64,
     last_match_count: usize,
+    keys: dedupe::DedupeKeys,
+    /// True while this pair is hitting a per-tick cap or is suspended.
+    degraded: bool,
+    degraded_ticks: u32,
+    degraded_logged: bool,
+    suspended_until: Option<std::time::Instant>,
+    /// Matches emitted for this pair since the session started.
+    count: u64,
 }
 
 /// One session the engine is sampling.
@@ -573,7 +602,12 @@ struct RegisteredSession {
     stamp: Option<FrameStamp>,
     /// Monotonic per session. The identity of a match, in the event and in the ring alike.
     seq: u64,
-    gates: HashMap<String, StateGate>,
+    /// Maintained for EVERY session regardless of configured modes, so switching a watcher's
+    /// mode at runtime needs no reseed.
+    diff: frame::FrameDiffState,
+    watchers: HashMap<String, WatcherSessionState>,
+    /// False until the engine has ticked this session at least once.
+    warmed_up: bool,
 }
 
 /// Runs every configured watcher over every registered session, five times a second.
@@ -661,7 +695,9 @@ impl WatcherEngine {
                     reader,
                     stamp: None,
                     seq: 0,
-                    gates: HashMap::new(),
+                    diff: frame::FrameDiffState::default(),
+                    watchers: HashMap::new(),
+                    warmed_up: false,
                 },
             );
     }
@@ -802,34 +838,121 @@ impl WatcherEngine {
             ScreenRowsSince::Frame(frame) => frame,
         };
         session.stamp = frame.stamp;
+        session.warmed_up = true;
 
-        // A watcher that stopped reaching this agent leaves no gate behind, so re-creating it
+        // A watcher that stopped reaching this agent leaves no state behind, so re-creating it
         // later starts from nothing - which is what "renaming is delete plus create" means.
         session
-            .gates
-            .retain(|gate_id, _| agent.running.iter().any(|w| &w.id == gate_id));
+            .watchers
+            .retain(|watcher_id, _| agent.running.iter().any(|w| &w.id == watcher_id));
 
-        let needs_state = agent
-            .running
-            .iter()
-            .any(|watcher| watcher.mode == WatcherMode::State);
-        if !needs_state {
-            return (None, false);
-        }
-
+        // The diff is advanced for EVERY session on every changed frame, whatever modes are
+        // configured, so switching a watcher to `occurrence` at runtime needs no reseed.
+        let evaluable = session.diff.advance(&frame);
         let logical = frame::logical_rows(&frame);
+        let selected = frame::select_logical(&logical, &evaluable);
+
+        let now = std::time::Instant::now();
+        let mut next_seq = session.seq;
+        let mut used_by_session = 0usize;
         let mut matches = Vec::new();
+
         for watcher in &agent.running {
-            if watcher.mode != WatcherMode::State {
-                continue;
-            }
             let Some(Some(compiled)) = compiled.get(&watcher.id) else {
                 continue;
             };
-            if let Some(payload) = evaluate_state(session, id, watcher, compiled, &logical, at) {
-                matches.push(payload);
+            let state = session.watchers.entry(watcher.id.clone()).or_default();
+
+            let signature = (watcher.pattern.clone(), watcher.mode);
+            if state.signature.as_ref() != Some(&signature) {
+                let count = state.count;
+                *state = WatcherSessionState {
+                    signature: Some(signature),
+                    count,
+                    ..WatcherSessionState::default()
+                };
+            }
+
+            // A suspended pair is skipped whole, and stays marked degraded while it is: the UI
+            // must never read "recovered" from a pair that is only being left alone.
+            if let Some(until) = state.suspended_until {
+                if now < until {
+                    continue;
+                }
+                state.suspended_until = None;
+                state.degraded_ticks = 0;
+            }
+
+            // The caps live HERE, immediately before the sink call, which is exactly where
+            // `ContextScraper`'s equality gate lives. Everything that passes them reaches both
+            // the event and the ring, and nothing else reaches either.
+            let budget = MATCHES_PER_WATCHER_PER_TICK
+                .min(MATCHES_PER_SESSION_PER_TICK.saturating_sub(used_by_session));
+
+            let (found, capped) = match watcher.mode {
+                WatcherMode::State => {
+                    let found = evaluate_state(state, compiled, &logical);
+                    match found {
+                        Some(_) if budget == 0 => (Vec::new(), true),
+                        Some(found) => (vec![found], false),
+                        None => (Vec::new(), false),
+                    }
+                }
+                WatcherMode::Occurrence => {
+                    let outcome =
+                        evaluate_occurrence(state, watcher, compiled, &selected, now, budget);
+                    state
+                        .keys
+                        .prune(now, Duration::from_millis(watcher.dedupe_window_ms));
+                    outcome
+                }
+            };
+
+            for (captures, row, row_truncated) in found {
+                next_seq += 1;
+                used_by_session += 1;
+                state.count += 1;
+                matches.push(WatcherMatchPayload {
+                    session_id: id.to_string(),
+                    seq: next_seq,
+                    watcher_id: watcher.id.clone(),
+                    mode: watcher.mode,
+                    at,
+                    captures,
+                    row,
+                    row_truncated,
+                });
+            }
+
+            if capped {
+                state.degraded = true;
+                if !state.degraded_logged {
+                    log::warn!(
+                        "[watchers] watcher '{}' on session {id} is over its per-tick cap; \
+                         matches beyond it are counted and dropped",
+                        watcher.id
+                    );
+                    state.degraded_logged = true;
+                }
+                state.degraded_ticks += 1;
+                if state.degraded_ticks >= DEGRADED_TICKS_BEFORE_SUSPENSION {
+                    state.suspended_until = Some(now + SUSPENSION);
+                    log::warn!(
+                        "[watchers] watcher '{}' on session {id} has been saturated for {} ticks; \
+                         suspending it for {}s, then retrying",
+                        watcher.id,
+                        state.degraded_ticks,
+                        SUSPENSION.as_secs()
+                    );
+                }
+            } else {
+                state.degraded = false;
+                state.degraded_ticks = 0;
+                state.degraded_logged = false;
             }
         }
+
+        session.seq = next_seq;
 
         if matches.is_empty() {
             return (None, false);
@@ -870,32 +993,61 @@ impl WatcherEngine {
     fn compile_count(&self) -> usize {
         self.compiles.load(Ordering::Relaxed)
     }
+
+    /// `(degraded, suspended, count)` for one `(session, watcher)` pair.
+    #[cfg(test)]
+    fn watcher_state(&self, id: Uuid, watcher_id: &str) -> Option<(bool, bool, u64)> {
+        let registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
+        let state = registered.get(&id)?.watchers.get(watcher_id)?;
+        Some((state.degraded, state.suspended_until.is_some(), state.count))
+    }
+
+    /// Bring a suspension forward to now, so the retry can be observed without a test that
+    /// sleeps for the suspension window.
+    #[cfg(test)]
+    fn expire_suspension_for_test(&self, id: Uuid, watcher_id: &str) {
+        let mut registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(state) = registered
+            .get_mut(&id)
+            .and_then(|session| session.watchers.get_mut(watcher_id))
+        {
+            state.suspended_until = Some(std::time::Instant::now());
+        }
+    }
 }
 
-/// `state` mode over one frame: the LOWEST matching logical row wins, mirroring
+/// What a match contributes to a payload, before the engine stamps identity on it.
+type Found = (Vec<Option<String>>, String, bool);
+
+/// Pull the capture groups 1..n out of a match, in order, without group 0.
+fn captures_of(regex: &regex::Regex, text: &str) -> Vec<Option<String>> {
+    regex
+        .captures(text)
+        .map(|found| {
+            found
+                .iter()
+                .skip(1)
+                .map(|group| group.map(|m| m.as_str().to_string()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+/// `state` mode over the FULL frame: the LOWEST matching logical row wins, mirroring
 /// `rows::extract` (`context_scrape/rows.rs:19-26`), because a statusline always sits below
 /// the transcript.
+///
+/// State mode does not use the frame diff at all: the whole frame is the reading, and the
+/// engine already holds it whenever the stamp changed.
 ///
 /// A transition to "no match" CLEARS the gate and emits nothing. The only consumer here is an
 /// activity log, and "the prompt disappeared" is not a log entry; clearing is what lets an
 /// identical re-appearance emit again, and it is why the payload needs no `present` field.
 fn evaluate_state(
-    session: &mut RegisteredSession,
-    id: Uuid,
-    watcher: &ResolvedWatcher,
+    state: &mut WatcherSessionState,
     compiled: &pattern::WatcherPattern,
     logical: &[frame::LogicalRow],
-    at: chrono::DateTime<chrono::Utc>,
-) -> Option<WatcherMatchPayload> {
-    let gate = session.gates.entry(watcher.id.clone()).or_default();
-    let signature = (watcher.pattern.clone(), watcher.mode);
-    if gate.signature.as_ref() != Some(&signature) {
-        *gate = StateGate {
-            signature: Some(signature),
-            ..StateGate::default()
-        };
-    }
-
+) -> Option<Found> {
     let regex = compiled.regex();
     let mut count = 0usize;
     let mut lowest: Option<&frame::LogicalRow> = None;
@@ -906,45 +1058,76 @@ fn evaluate_state(
         }
     }
 
-    if count > gate.last_match_count {
-        gate.generation += 1;
+    if count > state.last_match_count {
+        state.generation += 1;
     }
-    gate.last_match_count = count;
+    state.last_match_count = count;
 
     let Some(lowest) = lowest else {
-        gate.last = None;
+        state.last = None;
         return None;
     };
 
-    let captures = regex
-        .captures(&lowest.text)
-        .map(|found| {
-            found
-                .iter()
-                .skip(1)
-                .map(|group| group.map(|m| m.as_str().to_string()))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
     let (row, row_truncated) = truncate_row(&lowest.text);
-
-    let candidate = (captures, row, gate.generation);
-    if gate.last.as_ref() == Some(&candidate) {
+    let candidate = (captures_of(regex, &lowest.text), row, state.generation);
+    if state.last.as_ref() == Some(&candidate) {
         return None;
     }
-    gate.last = Some(candidate.clone());
+    state.last = Some(candidate.clone());
+    Some((candidate.0, candidate.1, row_truncated))
+}
 
-    session.seq += 1;
-    Some(WatcherMatchPayload {
-        session_id: id.to_string(),
-        seq: session.seq,
-        watcher_id: watcher.id.clone(),
-        mode: watcher.mode,
-        at,
-        captures: candidate.0,
-        row: candidate.1,
-        row_truncated,
-    })
+/// `occurrence` mode over the rows the diff declared evaluable: every match that survives the
+/// dedupe layer and the cap is an event. There is no equality gate, by definition.
+///
+/// Returns the matches to emit and whether the cap cut the tick short.
+fn evaluate_occurrence(
+    state: &mut WatcherSessionState,
+    watcher: &ResolvedWatcher,
+    compiled: &pattern::WatcherPattern,
+    selected: &[&frame::LogicalRow],
+    now: std::time::Instant,
+    budget: usize,
+) -> (Vec<Found>, bool) {
+    let regex = compiled.regex();
+    let window = Duration::from_millis(watcher.dedupe_window_ms);
+    let mut found = Vec::new();
+
+    for row in selected {
+        if !regex.is_match(&row.text) {
+            continue;
+        }
+        let captures = captures_of(regex, &row.text);
+
+        // Layer 2. The key is over the FULL logical row or its captures, never over the
+        // 256-byte payload row: two rows that differ only past the cap are two rows.
+        let admitted = match watcher.dedupe {
+            WatcherDedupe::None => true,
+            WatcherDedupe::Row => state.keys.admit(&row.text, now, window),
+            WatcherDedupe::Capture => {
+                let key = captures
+                    .iter()
+                    .map(|group| group.as_deref().unwrap_or("\u{0}"))
+                    .collect::<Vec<_>>()
+                    .join("\u{1f}");
+                state.keys.admit(&key, now, window)
+            }
+        };
+        if !admitted {
+            continue;
+        }
+
+        // Checked AFTER the dedupe so a suppressed repeat does not consume the budget, and
+        // BEFORE the push so the overflow reaches neither the event nor the ring.
+        if found.len() >= budget {
+            return (found, true);
+        }
+
+        let (text, row_truncated) = truncate_row(&row.text);
+        found.push((captures, text, row_truncated));
+    }
+
+    (found, false)
 }
 
 #[cfg(test)]
@@ -954,14 +1137,14 @@ mod engine_tests {
 
     /// What the scripted backend paints on the next read.
     enum Painted {
-        Frame(Vec<String>, Vec<bool>),
+        Frame(Vec<String>, Vec<bool>, u16),
         Unchanged,
         Missing,
         Gone,
     }
 
-    /// The rows of a frame with their wrap flags: what a repaint replays.
-    type PaintedRows = (Vec<String>, Vec<bool>);
+    /// The rows of a frame with their wrap flags and cursor row: what a repaint replays.
+    type PaintedRows = (Vec<String>, Vec<bool>, u16);
 
     /// A `PtyBackend` whose only real method is the watcher seam. Every other method is a
     /// stub, which is exactly the point: the engine never calls one.
@@ -974,12 +1157,20 @@ mod engine_tests {
     }
 
     impl ScriptedBackend {
+        /// Paint a screen with the cursor parked on row 0, so a row arriving by scroll is
+        /// evaluated on arrival. `paint_with_cursor` is for the tests that are ABOUT the
+        /// cursor rule.
         fn paint(&self, id: Uuid, rows: &[&str]) {
+            self.paint_with_cursor(id, rows, 0);
+        }
+
+        fn paint_with_cursor(&self, id: Uuid, rows: &[&str], cursor_row: u16) {
             self.push(
                 id,
                 Painted::Frame(
                     rows.iter().map(|r| r.to_string()).collect(),
                     vec![false; rows.len()],
+                    cursor_row,
                 ),
             );
         }
@@ -1052,16 +1243,16 @@ mod engine_tests {
                 .unwrap()
                 .get_mut(&id)
                 .and_then(|queue| queue.pop_front());
-            let (rows, wrapped) = match next {
+            let (rows, wrapped, cursor_row) = match next {
                 Some(Painted::Missing) => return ScreenRowsSince::Missing,
                 Some(Painted::Gone) => return ScreenRowsSince::Gone,
                 Some(Painted::Unchanged) => return ScreenRowsSince::Unchanged,
-                Some(Painted::Frame(rows, wrapped)) => {
+                Some(Painted::Frame(rows, wrapped, cursor_row)) => {
                     self.last
                         .lock()
                         .unwrap()
-                        .insert(id, (rows.clone(), wrapped.clone()));
-                    (rows, wrapped)
+                        .insert(id, (rows.clone(), wrapped.clone(), cursor_row));
+                    (rows, wrapped, cursor_row)
                 }
                 // A script that ran out repaints the same screen with a NEW sequence, which is
                 // what a session with a live spinner does several times per second.
@@ -1079,7 +1270,7 @@ mod engine_tests {
             ScreenRowsSince::Frame(ScreenFrame {
                 rows: rows.clone(),
                 wrapped,
-                cursor_row: rows.len().saturating_sub(1) as u16,
+                cursor_row,
                 stamp: Some(FrameStamp {
                     sequence: *sequence,
                     rows: rows.len() as u16,
@@ -1542,6 +1733,7 @@ mod engine_tests {
                     "th/to/main.rs)".to_string(),
                 ],
                 vec![false, true, false],
+                0,
             ),
         );
 
@@ -1571,6 +1763,275 @@ mod engine_tests {
         assert!(emitted[0].row_truncated);
         assert!(emitted[0].row.len() <= MAX_ROW_BYTES);
         assert!(long.starts_with(&emitted[0].row));
+    }
+
+    fn as_refs(rows: &[String]) -> Vec<&str> {
+        rows.iter().map(|row| row.as_str()).collect()
+    }
+
+    fn occurrence_watcher(
+        id: &str,
+        pattern: &str,
+        dedupe: WatcherDedupe,
+        window_ms: u64,
+    ) -> ResolvedWatcher {
+        ResolvedWatcher {
+            id: id.to_string(),
+            mode: WatcherMode::Occurrence,
+            pattern: pattern.to_string(),
+            dedupe,
+            dedupe_window_ms: window_ms,
+        }
+    }
+
+    /// 9.4.45 (the engine half) - **the cursor-row rule, end to end.**
+    ///
+    /// A path is written in two chunks across a tick boundary. Without the rule this produces
+    /// two events - one with `C:/repo/very/long/pa` and one with the whole path - and no
+    /// dedupe setting can merge them, because both the row AND the captures differ. With it,
+    /// exactly one event carries the complete capture.
+    #[tokio::test]
+    async fn a_row_written_in_two_chunks_produces_one_event_with_the_complete_capture() {
+        let harness = Harness::new();
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, "a1".to_string());
+        harness.configure(
+            "a1",
+            vec![occurrence_watcher(
+                "read",
+                r"Read \((.+)\)",
+                WatcherDedupe::None,
+                2000,
+            )],
+        );
+
+        // Seed, then scroll the half-written row in UNDER THE CURSOR, then finish it, then
+        // hold still. The cursor on the bottom row is what a terminal that just printed a
+        // newline really looks like.
+        harness.backend.paint_with_cursor(id, &["a", "b", "c"], 2);
+        harness
+            .backend
+            .paint_with_cursor(id, &["b", "c", "Read (C:/repo/very/long/pa"], 2);
+        harness.backend.paint_with_cursor(
+            id,
+            &["b", "c", "Read (C:/repo/very/long/path/to/main.rs)"],
+            2,
+        );
+        harness.backend.paint_with_cursor(
+            id,
+            &["b", "c", "Read (C:/repo/very/long/path/to/main.rs)"],
+            2,
+        );
+
+        harness.ticks(4).await;
+
+        let emitted = harness.emitted();
+        assert_eq!(emitted.len(), 1, "got {emitted:#?}");
+        assert_eq!(
+            emitted[0].captures[0].as_deref(),
+            Some("C:/repo/very/long/path/to/main.rs")
+        );
+    }
+
+    /// 9.4.50 - the same text at two positions at two times counts TWICE, and the two events
+    /// are told apart by `seq`. Layer 1 must not confuse them for each other; `at` cannot tell
+    /// them apart, which is why `seq` exists.
+    #[tokio::test]
+    async fn the_same_text_arriving_twice_counts_twice_with_different_seq() {
+        let harness = Harness::new();
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, "a1".to_string());
+        harness.configure(
+            "a1",
+            vec![occurrence_watcher(
+                "done",
+                "Done",
+                WatcherDedupe::None,
+                2000,
+            )],
+        );
+        harness.backend.paint(id, &["a", "b", "c"]);
+        harness.backend.paint(id, &["b", "c", "Done"]);
+        harness.backend.paint(id, &["c", "Done", "Done"]);
+
+        harness.ticks(3).await;
+
+        let emitted = harness.emitted();
+        assert_eq!(emitted.len(), 2);
+        assert_eq!(emitted[0].row, emitted[1].row);
+        assert_ne!(emitted[0].seq, emitted[1].seq);
+    }
+
+    /// 9.4.52 - the three dedupe keys, on the residual case layer 1 cannot separate: the same
+    /// path printed twice, truncated differently by the terminal.
+    #[tokio::test]
+    async fn the_capture_key_collapses_differently_truncated_rows_and_none_lets_everything_through()
+    {
+        for (dedupe, expected) in [(WatcherDedupe::Capture, 1), (WatcherDedupe::None, 2)] {
+            let harness = Harness::new();
+            let id = Uuid::new_v4();
+            harness.engine.register_session(id, "a1".to_string());
+            harness.configure(
+                "a1",
+                vec![occurrence_watcher("read", r"Read (\S+)", dedupe, 60_000)],
+            );
+            harness.backend.paint(id, &["a", "b", "c"]);
+            harness
+                .backend
+                .paint(id, &["b", "c", "Read C:/repo/main.rs"]);
+            harness.backend.paint(
+                id,
+                &["c", "Read C:/repo/main.rs", "Read C:/repo/main.rs (2)"],
+            );
+
+            harness.ticks(3).await;
+
+            assert_eq!(
+                harness.emitted().len(),
+                expected,
+                "dedupe={dedupe:?} should have produced {expected}"
+            );
+        }
+    }
+
+    /// ...and the window is a DEDUPLICATION window, not a mute button: the same key comes back
+    /// once it has passed.
+    #[tokio::test]
+    async fn a_repeated_key_is_admitted_again_once_the_dedupe_window_has_passed() {
+        let harness = Harness::new();
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, "a1".to_string());
+        harness.configure(
+            "a1",
+            vec![occurrence_watcher("done", "Done", WatcherDedupe::Row, 1)],
+        );
+        harness.backend.paint(id, &["a", "b", "c"]);
+        harness.backend.paint(id, &["b", "c", "Done"]);
+        harness.ticks(2).await;
+        assert_eq!(harness.emitted().len(), 1);
+
+        std::thread::sleep(Duration::from_millis(5));
+        harness.backend.paint(id, &["c", "Done", "Done"]);
+        harness.ticks(1).await;
+
+        assert_eq!(harness.emitted().len(), 2);
+    }
+
+    /// 9.4.54 and 9.4.55 - **the caps, and where the overflow goes: nowhere.**
+    ///
+    /// A pattern that matches every row, against a full-screen repaint that stabilizes. Three
+    /// watchers would produce 90 matches; the per-watcher cap holds each to 8 and the
+    /// per-session cap holds the tick to 16, and every match beyond them reaches neither the
+    /// event nor anything else.
+    #[tokio::test]
+    async fn the_per_tick_caps_bound_the_batch_and_mark_the_watchers_degraded() {
+        let harness = Harness::new();
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, "a1".to_string());
+        harness.configure(
+            "a1",
+            vec![
+                occurrence_watcher("w1", "row", WatcherDedupe::None, 2000),
+                occurrence_watcher("w2", "row", WatcherDedupe::None, 2000),
+                occurrence_watcher("w3", "row", WatcherDedupe::None, 2000),
+            ],
+        );
+
+        let seed: Vec<String> = (0..30).map(|i| format!("seed {i}")).collect();
+        let painted: Vec<String> = (0..30).map(|i| format!("row {i}")).collect();
+        harness.backend.paint(id, &as_refs(&seed));
+        harness.backend.paint(id, &as_refs(&painted));
+        harness.backend.paint(id, &as_refs(&painted));
+
+        harness.ticks(3).await;
+
+        let emitted = harness.emitted();
+        assert_eq!(
+            emitted.len(),
+            MATCHES_PER_SESSION_PER_TICK,
+            "the session cap is the outer bound"
+        );
+        let w1 = emitted.iter().filter(|m| m.watcher_id == "w1").count();
+        assert_eq!(w1, MATCHES_PER_WATCHER_PER_TICK, "the per-watcher cap");
+        assert_eq!(
+            emitted.iter().filter(|m| m.watcher_id == "w3").count(),
+            0,
+            "the session budget was already spent when w3 was reached"
+        );
+
+        for watcher in ["w1", "w2", "w3"] {
+            let (degraded, _, _) = harness.engine.watcher_state(id, watcher).expect("state");
+            assert!(degraded, "{watcher} must be marked degraded");
+        }
+    }
+
+    /// 9.4.56 - the caps bound the RATE but not the duration, so a pair that stays saturated is
+    /// suspended, stays marked degraded while it is, and is retried afterwards.
+    #[tokio::test]
+    async fn a_pair_saturated_for_twenty_five_ticks_is_suspended_and_then_retried() {
+        let harness = Harness::new();
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, "a1".to_string());
+        harness.configure(
+            "a1",
+            vec![occurrence_watcher(
+                "flood",
+                "row",
+                WatcherDedupe::None,
+                2000,
+            )],
+        );
+
+        // A transcript scrolling ten rows a tick: every tick brings ten new matching rows, so
+        // every tick is over the eight-per-watcher cap. A repaint would only degrade every
+        // other tick and the counter would reset in between, which is the whole point of
+        // requiring the ticks to be CONSECUTIVE.
+        let transcript: Vec<String> = (0..1000).map(|i| format!("row {i}")).collect();
+        for tick in 0..60usize {
+            let start = tick * 10;
+            harness
+                .backend
+                .paint(id, &as_refs(&transcript[start..start + 30]));
+        }
+
+        harness.ticks(40).await;
+
+        let (degraded, suspended, _) = harness.engine.watcher_state(id, "flood").expect("state");
+        assert!(suspended, "25 degraded ticks must suspend the pair");
+        assert!(degraded, "suspension must not read as recovery");
+
+        let before = harness.emitted().len();
+        harness.ticks(1).await;
+        assert_eq!(
+            harness.emitted().len(),
+            before,
+            "a suspended pair emits nothing at all"
+        );
+
+        harness.engine.expire_suspension_for_test(id, "flood");
+        harness.ticks(1).await;
+        assert!(
+            harness.emitted().len() > before,
+            "and it is retried once the suspension passes"
+        );
+    }
+
+    /// An occurrence watcher never fires on the tick a row is merely painted: the row has to
+    /// have arrived from below, or held still for a tick. That is layer 1 doing the work.
+    #[tokio::test]
+    async fn an_occurrence_watcher_fires_only_when_the_diff_declares_a_row_evaluable() {
+        let harness = Harness::new();
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, "a1".to_string());
+        harness.configure(
+            "a1",
+            vec![occurrence_watcher("hit", "hit", WatcherDedupe::None, 2000)],
+        );
+        // The first tick seeds and evaluates nothing, even though the row is right there.
+        harness.backend.paint(id, &["hit", "hit", "hit"]);
+        harness.ticks(1).await;
+
+        assert!(harness.emitted().is_empty());
     }
 
     /// 9.3.24 - **a session with no agent is never registered**, so a plain shell costs this

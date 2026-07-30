@@ -2478,6 +2478,8 @@ pub fn run(
             commands::pty::pty_resize,
             commands::pty::get_screen_snapshot,
             commands::pty::get_session_context,
+            commands::pty::preview_watcher_pattern,
+            commands::pty::preview_watcher_reach,
             commands::config::get_settings,
             commands::config::get_coding_agent_catalog,
             commands::config::list_reseedable_agent_commands,
