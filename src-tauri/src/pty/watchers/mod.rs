@@ -36,15 +36,36 @@
 //! numbers are not comparable to either; `--release` does not build the test target in this
 //! tree, because `load_sessions_raw_from_dir_for_test` is `#[cfg(debug_assertions)]`.
 
+pub mod frame;
 pub mod pattern;
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use futures::future::BoxFuture;
+use uuid::Uuid;
 
 use crate::config::coding_agents_catalog::command_executable_basename;
 use crate::config::settings::{WatcherEntry, WatcherMode};
+use crate::pty::backend::PtyBackend;
+use crate::pty::context_scrape::ContextSessionLiveness;
 
 pub use crate::config::settings::WatcherDedupe;
+
+/// 200 ms, against `ContextScraper`'s 5 s. The engine has to catch rows in transit, and a row
+/// that scrolls past between two samples is gone: the mirror keeps zero scrollback.
+pub const TICK_INTERVAL: Duration = Duration::from_millis(200);
+
+/// Liveness is probed on every 25th tick, that is once per 5 seconds per session - exactly
+/// the rate `ContextScraper` already probes at. The probe is the expensive part of the old
+/// read path (it takes the `ptys` mutex and asks the OS about the child), and running it at
+/// the tick rate would make this engine 25x more expensive than the one it sits beside.
+pub const LIVENESS_PROBE_EVERY_TICKS: u64 = 25;
+
+/// The `row` field of a payload is capped at this many bytes, on a char boundary.
+pub const MAX_ROW_BYTES: usize = 256;
 
 /// How many watchers may run on one agent. Resolution takes the first 8 in `BTreeMap` key
 /// order, which is alphabetical over user-chosen ids, so adding a watcher named `aaa-test`
@@ -394,6 +415,1252 @@ pub(crate) fn frame_from_screen_rows_read(
         }
         crate::pty::context_scrape::ScreenRowsRead::Unavailable
         | crate::pty::context_scrape::ScreenRowsRead::SessionOver => ScreenRowsSince::Missing,
+    }
+}
+
+// ---- the engine ------------------------------------------------------------------------
+
+/// One session's backend, narrowed to the ONE call the engine is allowed to make on it.
+///
+/// The engine resolves this once at registration and keeps it, so the tick never touches the
+/// `PtyManager` mutex - "the one every terminal write, resize and kill locks on"
+/// (`local_backend.rs:1116-1117`) - nor the route registry inside `kind_for_session`. What is
+/// left per session per tick is a single `screen_parsers` acquisition, and that map is per
+/// backend, so local and container sessions do not contend with each other at all.
+///
+/// It is a wrapper and not a bare `Arc<dyn PtyBackend>` because a bare one would hand the
+/// engine `write`, `kill` and `spawn` along with the read it actually needs. The field is
+/// private and there is no accessor, so the capability boundary this module claims is
+/// expressed in the type rather than in a comment.
+pub struct SessionFrameReader(Arc<dyn PtyBackend>);
+
+impl SessionFrameReader {
+    pub fn new(backend: Arc<dyn PtyBackend>) -> Self {
+        Self(backend)
+    }
+
+    pub fn read(&self, id: Uuid, seen: Option<FrameStamp>) -> ScreenRowsSince {
+        self.0.screen_rows_since(id, seen)
+    }
+}
+
+/// Where a session's frame reader and its lightweight liveness come from.
+///
+/// The concrete implementation (`lib.rs`) owns the `PtyManager` handle; the engine holds only
+/// this, exactly as `ContextScraper` holds only `ScreenRowsSource`.
+pub trait WatcherBackendSource: Send + Sync {
+    fn reader_for(&self, id: Uuid) -> Option<SessionFrameReader>;
+
+    fn liveness(&self, id: Uuid) -> ContextSessionLiveness;
+}
+
+/// The configured watchers, resolved per agent, read fresh every tick.
+///
+/// `BoxFuture` and not a sync fn for the reason `ContextPatternSource` documents
+/// (`context_scrape/mod.rs:65-72`): the settings live behind a `tokio::sync::RwLock` whose
+/// `blocking_read` panics inside a runtime, and the tick is inside one.
+pub trait WatcherPatternSource: Send + Sync {
+    fn resolve(&self) -> BoxFuture<'_, HashMap<String, AgentResolution>>;
+}
+
+/// Where a tick's matches go. The concrete implementation holds the `AppHandle` and decides
+/// whether anyone is listening; the engine never learns either.
+pub trait WatcherEventSink: Send + Sync {
+    fn emit(&self, batch: WatcherMatchBatch);
+}
+
+/// One tick's matches for one session. Coalesced on purpose: `app.emit` reaches every window,
+/// so an uncoalesced per-match event would deliver thousands of payloads per second to four
+/// windows and make every detached terminal pay to deserialize events it discards.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WatcherMatchBatch {
+    pub session_id: String,
+    pub matches: Vec<WatcherMatchPayload>,
+}
+
+/// The IPC contract. Mould: `ContextUsagePayload` (`context_scrape/mod.rs:104-115`).
+///
+/// **No `skip_serializing_if` on any field**, for the reason that payload documents in
+/// writing: an absent key must never become a third state beside null and the value. A
+/// frontend row is self-contained once inserted, which is why `session_id` is repeated on
+/// every match rather than read from the batch.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WatcherMatchPayload {
+    pub session_id: String,
+    /// Monotonic per session, assigned by the engine as the match passes the caps. The SAME
+    /// value the ring stores, so the window merges snapshot and stream on `(sessionId, seq)`
+    /// instead of guessing. Without it two matches from one tick are indistinguishable, and
+    /// identical rows at two positions are required to count twice.
+    pub seq: u64,
+    /// The key of the root `watchers` map. The same grouping key everywhere.
+    pub watcher_id: String,
+    pub mode: WatcherMode,
+    /// The TICK's instant, not the match's: a match has no instant of its own.
+    pub at: chrono::DateTime<chrono::Utc>,
+    /// Groups 1..n IN ORDER, without group 0. `Option` per element because an optional group
+    /// may not participate, and `""` is not "did not capture".
+    pub captures: Vec<Option<String>>,
+    /// The logical row, truncated to `MAX_ROW_BYTES` on a char boundary.
+    pub row: String,
+    /// Whether `row` lost bytes to the cap. `row.length >= 256` cannot answer this in
+    /// TypeScript, because the cap is on bytes and the row is multibyte.
+    pub row_truncated: bool,
+}
+
+/// Cap a row at `MAX_ROW_BYTES`, never splitting a character.
+fn truncate_row(text: &str) -> (String, bool) {
+    if text.len() <= MAX_ROW_BYTES {
+        return (text.to_string(), false);
+    }
+    let mut end = MAX_ROW_BYTES;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (text[..end].to_string(), true)
+}
+
+/// A compiled pattern kept against the source it came from, so a recompile is decided by a
+/// changed string and a failure is STICKY: logged once per change, never once per tick.
+/// Mould: `Cached` (`context_scrape/mod.rs:127-156`).
+enum Cached {
+    Ok(Arc<pattern::WatcherPattern>),
+    Failed { source: String },
+}
+
+impl Cached {
+    fn source(&self) -> &str {
+        match self {
+            Cached::Ok(compiled) => compiled.source(),
+            Cached::Failed { source } => source,
+        }
+    }
+
+    fn pattern(&self) -> Option<Arc<pattern::WatcherPattern>> {
+        match self {
+            Cached::Ok(compiled) => Some(Arc::clone(compiled)),
+            Cached::Failed { .. } => None,
+        }
+    }
+}
+
+/// The `state`-mode gate for one `(session, watcher)` pair.
+///
+/// The gate is NOT `(captures, row)` alone. With only that pair, a second instance of a
+/// condition appearing while the first is still visible never emits: the lowest match still
+/// reads the same text, so the tuple never changes. That is the failure mode of the
+/// permission-prompt watcher, which is the strongest argument for this engine existing.
+#[derive(Default)]
+struct StateGate {
+    /// What the watcher looked like when this gate was built. A watcher whose pattern or mode
+    /// was edited gets a fresh gate, because the old one describes a question no longer asked.
+    signature: Option<(String, WatcherMode)>,
+    last: Option<(Vec<Option<String>>, String, u64)>,
+    /// Incremented whenever the number of matching logical rows RISES. Incrementing only on a
+    /// rise is what makes the gate scroll-stable: the count of a persistent condition does not
+    /// change as the screen moves under it.
+    generation: u64,
+    last_match_count: usize,
+}
+
+/// One session the engine is sampling.
+struct RegisteredSession {
+    agent_id: String,
+    /// Resolved at registration; re-resolved only when a read comes back `Missing` or `Gone`,
+    /// which covers a session that changed route.
+    reader: Option<SessionFrameReader>,
+    stamp: Option<FrameStamp>,
+    /// Monotonic per session. The identity of a match, in the event and in the ring alike.
+    seq: u64,
+    gates: HashMap<String, StateGate>,
+}
+
+/// Runs every configured watcher over every registered session, five times a second.
+///
+/// Its total capability is: read one session's screen through a narrowed reader, ask for that
+/// session's lightweight liveness, read the resolved watcher set, and hand a batch of matches
+/// to a sink. It cannot route, inject, wake, or destroy anything.
+pub struct WatcherEngine {
+    backends: Arc<dyn WatcherBackendSource>,
+    patterns: Arc<dyn WatcherPatternSource>,
+    sink: Arc<dyn WatcherEventSink>,
+    /// Linearizes registration and retirement against evaluation and emission. Lock order is
+    /// always sequence, then registered.
+    sequence: Mutex<()>,
+    registered: Mutex<HashMap<Uuid, RegisteredSession>>,
+    compiled: Mutex<HashMap<String, Cached>>,
+    ticks: AtomicU64,
+    /// Test-visible: the number of `pattern::compile` calls. The compile site is also the log
+    /// site, so this is what "logged once per change, not once per tick" is measured by.
+    compiles: AtomicUsize,
+}
+
+impl WatcherEngine {
+    pub fn new(
+        backends: Arc<dyn WatcherBackendSource>,
+        patterns: Arc<dyn WatcherPatternSource>,
+        sink: Arc<dyn WatcherEventSink>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            backends,
+            patterns,
+            sink,
+            sequence: Mutex::new(()),
+            registered: Mutex::new(HashMap::new()),
+            compiled: Mutex::new(HashMap::new()),
+            ticks: AtomicU64::new(0),
+            compiles: AtomicUsize::new(0),
+        })
+    }
+
+    /// Own thread, own runtime, shutdown token: `ContextScraper::start`'s shape
+    /// (`context_scrape/mod.rs:207-227`), which is `GitWatcher`'s.
+    pub fn start(self: &Arc<Self>, shutdown: crate::shutdown::ShutdownSignal) {
+        let engine = Arc::clone(self);
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new()
+                .expect("Failed to create tokio runtime for WatcherEngine");
+            rt.block_on(async move {
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = shutdown.token().cancelled() => {
+                            log::info!("[watchers] Shutdown signal received, stopping");
+                            break;
+                        }
+                        _ = tokio::time::sleep(TICK_INTERVAL) => {
+                            engine.tick().await;
+                        }
+                    }
+                }
+            });
+        });
+    }
+
+    /// Start sampling a session. Called once per AGENT session at the spawn chokepoint;
+    /// sessions with no agent are never registered, so a plain shell costs nothing - the same
+    /// rule `ContextScraper` follows (`commands/session.rs:2268-2274`).
+    ///
+    /// A fresh entry can never meet an existing one: session ids are minted per spawn and AC
+    /// never reuses one, not even on respawn. That is also what makes `FrameStamp` safe.
+    pub fn register_session(&self, id: Uuid, agent_id: String) {
+        let reader = self.backends.reader_for(id);
+        if reader.is_none() {
+            // Not fatal and not worth a warning per tick: the first read re-resolves it.
+            log::debug!("[watchers] session {id} has no backend route yet; will resolve on read");
+        }
+        let _sequence = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
+        self.registered
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                id,
+                RegisteredSession {
+                    agent_id,
+                    reader,
+                    stamp: None,
+                    seq: 0,
+                    gates: HashMap::new(),
+                },
+            );
+    }
+
+    /// Stop sampling a session. Idempotent, so every caller can just call it.
+    pub fn retire_session(&self, id: Uuid) {
+        let _sequence = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
+        self.registered
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id);
+    }
+
+    pub fn is_session_registered(&self, id: Uuid) -> bool {
+        self.registered
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&id)
+    }
+
+    /// Compile every watcher this tick resolved, once each, and drop the cache entries of
+    /// watchers that are no longer configured.
+    fn compile_for_tick(
+        &self,
+        resolved: &HashMap<String, AgentResolution>,
+    ) -> HashMap<String, Option<Arc<pattern::WatcherPattern>>> {
+        let mut wanted: HashMap<&str, &Arc<ResolvedWatcher>> = HashMap::new();
+        for agent in resolved.values() {
+            for watcher in &agent.running {
+                wanted.entry(watcher.id.as_str()).or_insert(watcher);
+            }
+        }
+
+        let mut cache = self.compiled.lock().unwrap_or_else(|e| e.into_inner());
+        cache.retain(|id, _| wanted.contains_key(id.as_str()));
+
+        let mut out = HashMap::with_capacity(wanted.len());
+        for (id, watcher) in wanted {
+            if let Some(cached) = cache.get(id) {
+                if cached.source() == watcher.pattern {
+                    out.insert(id.to_string(), cached.pattern());
+                    continue;
+                }
+            }
+
+            self.compiles.fetch_add(1, Ordering::Relaxed);
+            let cached = match pattern::compile(&watcher.pattern) {
+                Ok(compiled) => Cached::Ok(Arc::new(compiled)),
+                Err(err) => {
+                    // Once per change, not once per tick: the cache below makes it sticky.
+                    log::warn!("[watchers] watcher '{id}' has an unusable pattern: {err}");
+                    Cached::Failed {
+                        source: watcher.pattern.clone(),
+                    }
+                }
+            };
+            out.insert(id.to_string(), cached.pattern());
+            cache.insert(id.to_string(), cached);
+        }
+        out
+    }
+
+    pub(crate) async fn tick(&self) {
+        let tick_number = self.ticks.fetch_add(1, Ordering::Relaxed) + 1;
+
+        // Settings FIRST, and the early exit is on the RESOLVED set rather than on an empty
+        // registry: registration is per session, not per watcher, so a running agent with no
+        // watcher configured would keep any registry non-empty. This is what actually
+        // delivers "zero cost when unconfigured" - no `screen_parsers` lock, no allocation.
+        let resolved = self.patterns.resolve().await;
+        if resolved.is_empty() {
+            return;
+        }
+
+        let compiled = self.compile_for_tick(&resolved);
+
+        // Snapshot first: the loop must not mutate `registered` while iterating it.
+        let mut ids: Vec<(Uuid, String)> = {
+            let registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
+            registered
+                .iter()
+                .map(|(id, session)| (*id, session.agent_id.clone()))
+                .collect()
+        };
+        ids.sort_unstable_by_key(|(id, _)| *id);
+
+        let probe_liveness = tick_number.is_multiple_of(LIVENESS_PROBE_EVERY_TICKS);
+        let at = chrono::Utc::now();
+
+        for (id, agent_id) in ids {
+            let Some(agent) = resolved.get(&agent_id) else {
+                continue;
+            };
+
+            if probe_liveness
+                && matches!(
+                    self.backends.liveness(id),
+                    ContextSessionLiveness::SessionOver
+                )
+            {
+                self.retire_session(id);
+                continue;
+            }
+
+            let (batch, retire) = self.tick_session(id, agent, &compiled, at);
+            if retire {
+                self.retire_session(id);
+            }
+            if let Some(batch) = batch {
+                self.sink.emit(batch);
+            }
+        }
+    }
+
+    /// One session's whole tick, with both locks scoped inside so retirement and emission
+    /// happen outside them.
+    fn tick_session(
+        &self,
+        id: Uuid,
+        agent: &AgentResolution,
+        compiled: &HashMap<String, Option<Arc<pattern::WatcherPattern>>>,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> (Option<WatcherMatchBatch>, bool) {
+        let _sequence = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
+        let mut registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(session) = registered.get_mut(&id) else {
+            return (None, false);
+        };
+
+        let frame = match self.read_frame(id, session) {
+            // Nothing changed, so nothing can have started or stopped matching. No rows were
+            // cloned to reach this arm.
+            ScreenRowsSince::Unchanged => return (None, false),
+            // No reading this tick and NO claim about the session: keep it.
+            ScreenRowsSince::Missing => return (None, false),
+            // The backend says there is nothing behind this id. Retire it now.
+            ScreenRowsSince::Gone => return (None, true),
+            ScreenRowsSince::Frame(frame) => frame,
+        };
+        session.stamp = frame.stamp;
+
+        // A watcher that stopped reaching this agent leaves no gate behind, so re-creating it
+        // later starts from nothing - which is what "renaming is delete plus create" means.
+        session
+            .gates
+            .retain(|gate_id, _| agent.running.iter().any(|w| &w.id == gate_id));
+
+        let needs_state = agent
+            .running
+            .iter()
+            .any(|watcher| watcher.mode == WatcherMode::State);
+        if !needs_state {
+            return (None, false);
+        }
+
+        let logical = frame::logical_rows(&frame);
+        let mut matches = Vec::new();
+        for watcher in &agent.running {
+            if watcher.mode != WatcherMode::State {
+                continue;
+            }
+            let Some(Some(compiled)) = compiled.get(&watcher.id) else {
+                continue;
+            };
+            if let Some(payload) = evaluate_state(session, id, watcher, compiled, &logical, at) {
+                matches.push(payload);
+            }
+        }
+
+        if matches.is_empty() {
+            return (None, false);
+        }
+        (
+            Some(WatcherMatchBatch {
+                session_id: id.to_string(),
+                matches,
+            }),
+            false,
+        )
+    }
+
+    /// Read a session's frame, re-resolving its backend once when the read says the route may
+    /// have changed. The re-resolution is the only thing on this path that touches
+    /// `PtyManager`, and it does not run on a healthy tick.
+    fn read_frame(&self, id: Uuid, session: &mut RegisteredSession) -> ScreenRowsSince {
+        let first = match &session.reader {
+            Some(reader) => reader.read(id, session.stamp),
+            None => ScreenRowsSince::Missing,
+        };
+        match first {
+            ScreenRowsSince::Missing | ScreenRowsSince::Gone => {
+                match self.backends.reader_for(id) {
+                    Some(reader) => {
+                        let again = reader.read(id, session.stamp);
+                        session.reader = Some(reader);
+                        again
+                    }
+                    None => first,
+                }
+            }
+            other => other,
+        }
+    }
+
+    #[cfg(test)]
+    fn compile_count(&self) -> usize {
+        self.compiles.load(Ordering::Relaxed)
+    }
+}
+
+/// `state` mode over one frame: the LOWEST matching logical row wins, mirroring
+/// `rows::extract` (`context_scrape/rows.rs:19-26`), because a statusline always sits below
+/// the transcript.
+///
+/// A transition to "no match" CLEARS the gate and emits nothing. The only consumer here is an
+/// activity log, and "the prompt disappeared" is not a log entry; clearing is what lets an
+/// identical re-appearance emit again, and it is why the payload needs no `present` field.
+fn evaluate_state(
+    session: &mut RegisteredSession,
+    id: Uuid,
+    watcher: &ResolvedWatcher,
+    compiled: &pattern::WatcherPattern,
+    logical: &[frame::LogicalRow],
+    at: chrono::DateTime<chrono::Utc>,
+) -> Option<WatcherMatchPayload> {
+    let gate = session.gates.entry(watcher.id.clone()).or_default();
+    let signature = (watcher.pattern.clone(), watcher.mode);
+    if gate.signature.as_ref() != Some(&signature) {
+        *gate = StateGate {
+            signature: Some(signature),
+            ..StateGate::default()
+        };
+    }
+
+    let regex = compiled.regex();
+    let mut count = 0usize;
+    let mut lowest: Option<&frame::LogicalRow> = None;
+    for row in logical {
+        if regex.is_match(&row.text) {
+            count += 1;
+            lowest = Some(row);
+        }
+    }
+
+    if count > gate.last_match_count {
+        gate.generation += 1;
+    }
+    gate.last_match_count = count;
+
+    let Some(lowest) = lowest else {
+        gate.last = None;
+        return None;
+    };
+
+    let captures = regex
+        .captures(&lowest.text)
+        .map(|found| {
+            found
+                .iter()
+                .skip(1)
+                .map(|group| group.map(|m| m.as_str().to_string()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let (row, row_truncated) = truncate_row(&lowest.text);
+
+    let candidate = (captures, row, gate.generation);
+    if gate.last.as_ref() == Some(&candidate) {
+        return None;
+    }
+    gate.last = Some(candidate.clone());
+
+    session.seq += 1;
+    Some(WatcherMatchPayload {
+        session_id: id.to_string(),
+        seq: session.seq,
+        watcher_id: watcher.id.clone(),
+        mode: watcher.mode,
+        at,
+        captures: candidate.0,
+        row: candidate.1,
+        row_truncated,
+    })
+}
+
+#[cfg(test)]
+mod engine_tests {
+    use super::*;
+    use std::collections::VecDeque;
+
+    /// What the scripted backend paints on the next read.
+    enum Painted {
+        Frame(Vec<String>, Vec<bool>),
+        Unchanged,
+        Missing,
+        Gone,
+    }
+
+    /// The rows of a frame with their wrap flags: what a repaint replays.
+    type PaintedRows = (Vec<String>, Vec<bool>);
+
+    /// A `PtyBackend` whose only real method is the watcher seam. Every other method is a
+    /// stub, which is exactly the point: the engine never calls one.
+    #[derive(Default)]
+    struct ScriptedBackend {
+        script: Mutex<HashMap<Uuid, VecDeque<Painted>>>,
+        last: Mutex<HashMap<Uuid, PaintedRows>>,
+        sequence: Mutex<HashMap<Uuid, u64>>,
+        reads: AtomicUsize,
+    }
+
+    impl ScriptedBackend {
+        fn paint(&self, id: Uuid, rows: &[&str]) {
+            self.push(
+                id,
+                Painted::Frame(
+                    rows.iter().map(|r| r.to_string()).collect(),
+                    vec![false; rows.len()],
+                ),
+            );
+        }
+
+        fn push(&self, id: Uuid, painted: Painted) {
+            self.script
+                .lock()
+                .unwrap()
+                .entry(id)
+                .or_default()
+                .push_back(painted);
+        }
+    }
+
+    impl PtyBackend for ScriptedBackend {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn spawn(
+            &self,
+            _spec: crate::pty::backend::BackendSpawnSpec,
+        ) -> BoxFuture<'_, Result<(), crate::errors::AppError>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn write(
+            &self,
+            _authority: &crate::pty::manager::BackendWriteAuthority,
+            _id: Uuid,
+            _data: &[u8],
+        ) -> Result<(), crate::errors::AppError> {
+            unreachable!("the engine must never be able to write to a PTY")
+        }
+        fn resize(&self, _id: Uuid, _cols: u16, _rows: u16) -> Result<(), crate::errors::AppError> {
+            unreachable!("the engine must never be able to resize a PTY")
+        }
+        fn kill(&self, _id: Uuid) -> Result<(), crate::errors::AppError> {
+            unreachable!("the engine must never be able to kill a session")
+        }
+        fn has_session(&self, _id: Uuid) -> bool {
+            true
+        }
+        fn get_screen_snapshot(&self, _id: Uuid) -> Option<crate::pty::output::PtyScreenSnapshot> {
+            None
+        }
+        fn get_pty_size(&self, _id: Uuid) -> Option<(u16, u16)> {
+            None
+        }
+        fn get_screen_rows(&self, _id: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
+            unreachable!("the engine reads through the #1171 seam, never the 5 s one")
+        }
+        fn register_response_watcher(
+            &self,
+            _session_id: Uuid,
+            _request_id: String,
+            _response_dir: std::path::PathBuf,
+        ) {
+        }
+        fn terminate_job_for_session(&self, _id: Uuid) -> bool {
+            false
+        }
+        fn kill_all_jobs(&self) -> (usize, usize) {
+            (0, 0)
+        }
+
+        fn screen_rows_since(&self, id: Uuid, _seen: Option<FrameStamp>) -> ScreenRowsSince {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            let next = self
+                .script
+                .lock()
+                .unwrap()
+                .get_mut(&id)
+                .and_then(|queue| queue.pop_front());
+            let (rows, wrapped) = match next {
+                Some(Painted::Missing) => return ScreenRowsSince::Missing,
+                Some(Painted::Gone) => return ScreenRowsSince::Gone,
+                Some(Painted::Unchanged) => return ScreenRowsSince::Unchanged,
+                Some(Painted::Frame(rows, wrapped)) => {
+                    self.last
+                        .lock()
+                        .unwrap()
+                        .insert(id, (rows.clone(), wrapped.clone()));
+                    (rows, wrapped)
+                }
+                // A script that ran out repaints the same screen with a NEW sequence, which is
+                // what a session with a live spinner does several times per second.
+                None => self
+                    .last
+                    .lock()
+                    .unwrap()
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_default(),
+            };
+            let mut sequences = self.sequence.lock().unwrap();
+            let sequence = sequences.entry(id).or_insert(0);
+            *sequence += 1;
+            ScreenRowsSince::Frame(ScreenFrame {
+                rows: rows.clone(),
+                wrapped,
+                cursor_row: rows.len().saturating_sub(1) as u16,
+                stamp: Some(FrameStamp {
+                    sequence: *sequence,
+                    rows: rows.len() as u16,
+                    cols: 120,
+                }),
+            })
+        }
+    }
+
+    struct FakeBackends {
+        backend: Arc<ScriptedBackend>,
+        liveness: Mutex<HashMap<Uuid, ContextSessionLiveness>>,
+        resolutions: AtomicUsize,
+        liveness_calls: AtomicUsize,
+    }
+
+    impl WatcherBackendSource for FakeBackends {
+        fn reader_for(&self, _id: Uuid) -> Option<SessionFrameReader> {
+            self.resolutions.fetch_add(1, Ordering::Relaxed);
+            Some(SessionFrameReader::new(
+                Arc::clone(&self.backend) as Arc<dyn PtyBackend>
+            ))
+        }
+
+        fn liveness(&self, id: Uuid) -> ContextSessionLiveness {
+            self.liveness_calls.fetch_add(1, Ordering::Relaxed);
+            self.liveness
+                .lock()
+                .unwrap()
+                .get(&id)
+                .copied()
+                .unwrap_or(ContextSessionLiveness::Live)
+        }
+    }
+
+    #[derive(Default)]
+    struct FakePatterns(Mutex<HashMap<String, AgentResolution>>);
+
+    impl WatcherPatternSource for FakePatterns {
+        fn resolve(&self) -> BoxFuture<'_, HashMap<String, AgentResolution>> {
+            Box::pin(async move { self.0.lock().unwrap().clone() })
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeSink(Mutex<Vec<WatcherMatchBatch>>);
+
+    impl WatcherEventSink for FakeSink {
+        fn emit(&self, batch: WatcherMatchBatch) {
+            self.0.lock().unwrap().push(batch);
+        }
+    }
+
+    struct Harness {
+        engine: Arc<WatcherEngine>,
+        backend: Arc<ScriptedBackend>,
+        backends: Arc<FakeBackends>,
+        patterns: Arc<FakePatterns>,
+        sink: Arc<FakeSink>,
+    }
+
+    impl Harness {
+        fn new() -> Self {
+            let backend = Arc::new(ScriptedBackend::default());
+            let backends = Arc::new(FakeBackends {
+                backend: Arc::clone(&backend),
+                liveness: Mutex::new(HashMap::new()),
+                resolutions: AtomicUsize::new(0),
+                liveness_calls: AtomicUsize::new(0),
+            });
+            let patterns = Arc::new(FakePatterns::default());
+            let sink = Arc::new(FakeSink::default());
+            Self {
+                engine: WatcherEngine::new(
+                    Arc::clone(&backends) as Arc<dyn WatcherBackendSource>,
+                    Arc::clone(&patterns) as Arc<dyn WatcherPatternSource>,
+                    Arc::clone(&sink) as Arc<dyn WatcherEventSink>,
+                ),
+                backend,
+                backends,
+                patterns,
+                sink,
+            }
+        }
+
+        fn configure(&self, agent_id: &str, watchers: Vec<ResolvedWatcher>) {
+            self.patterns.0.lock().unwrap().insert(
+                agent_id.to_string(),
+                AgentResolution {
+                    running: watchers.into_iter().map(Arc::new).collect(),
+                    over_budget: Vec::new(),
+                },
+            );
+        }
+
+        async fn ticks(&self, count: usize) {
+            for _ in 0..count {
+                self.engine.tick().await;
+            }
+        }
+
+        fn emitted(&self) -> Vec<WatcherMatchPayload> {
+            self.sink
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .flat_map(|batch| batch.matches.clone())
+                .collect()
+        }
+
+        fn batches(&self) -> usize {
+            self.sink.0.lock().unwrap().len()
+        }
+    }
+
+    fn state_watcher(id: &str, pattern: &str) -> ResolvedWatcher {
+        ResolvedWatcher {
+            id: id.to_string(),
+            mode: WatcherMode::State,
+            pattern: pattern.to_string(),
+            dedupe: WatcherDedupe::Row,
+            dedupe_window_ms: 2000,
+        }
+    }
+
+    /// 9.3.25 and 9.3.26 - **the zero-cost promise, and the lock promise, together.**
+    ///
+    /// With a session registered and no watcher reaching its agent, the tick returns before
+    /// touching the session: no read, so no `screen_parsers` lock and no row allocation. And
+    /// the backend `Arc` is resolved exactly ONCE, at registration, so the tick path never
+    /// goes through `PtyManager` or the route registry however many times it runs.
+    #[tokio::test]
+    async fn an_unconfigured_app_touches_no_session_and_resolves_no_backend_per_tick() {
+        let harness = Harness::new();
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, "a1".to_string());
+
+        harness.ticks(10).await;
+
+        assert_eq!(harness.backend.reads.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            harness.backends.resolutions.load(Ordering::Relaxed),
+            1,
+            "registration resolves the backend; no tick may resolve it again"
+        );
+
+        // ...and with a watcher configured, the reads happen and the resolution count is still 1.
+        harness.configure("a1", vec![state_watcher("w", "never")]);
+        harness.ticks(5).await;
+        assert_eq!(harness.backend.reads.load(Ordering::Relaxed), 5);
+        assert_eq!(harness.backends.resolutions.load(Ordering::Relaxed), 1);
+    }
+
+    /// 9.3.27 - a state reading is idempotent. Five ticks of a screen that keeps being
+    /// repainted with the same content produce ONE event.
+    #[tokio::test]
+    async fn a_state_watcher_emits_once_for_a_value_that_does_not_change() {
+        let harness = Harness::new();
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, "a1".to_string());
+        harness.configure("a1", vec![state_watcher("ctx", r"Context (\d+)%")]);
+        harness.backend.paint(id, &["idle", "Context 42%"]);
+
+        harness.ticks(5).await;
+
+        let emitted = harness.emitted();
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].captures, vec![Some("42".to_string())]);
+        assert_eq!(emitted[0].row, "Context 42%");
+        assert_eq!(emitted[0].mode, WatcherMode::State);
+        assert_eq!(emitted[0].seq, 1);
+    }
+
+    /// 9.3.28 - ...and it emits again the moment the reading changes.
+    #[tokio::test]
+    async fn a_state_watcher_emits_again_when_the_matched_row_changes() {
+        let harness = Harness::new();
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, "a1".to_string());
+        harness.configure("a1", vec![state_watcher("ctx", r"Context (\d+)%")]);
+        harness.backend.paint(id, &["Context 42%"]);
+        harness.backend.paint(id, &["Context 42%"]);
+        harness.backend.paint(id, &["Context 39%"]);
+
+        harness.ticks(3).await;
+
+        let captures: Vec<_> = harness
+            .emitted()
+            .iter()
+            .map(|m| m.captures[0].clone().unwrap())
+            .collect();
+        assert_eq!(captures, vec!["42", "39"]);
+    }
+
+    /// 9.3.29 - a state watcher that stops matching emits NOTHING. "The prompt disappeared" is
+    /// not a log entry, and clearing the gate is exactly what lets an identical re-appearance
+    /// emit again.
+    #[tokio::test]
+    async fn a_state_watcher_that_stops_matching_emits_nothing_and_re_emits_on_reappearance() {
+        let harness = Harness::new();
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, "a1".to_string());
+        harness.configure("a1", vec![state_watcher("perm", "Permission required")]);
+        harness.backend.paint(id, &["Permission required"]);
+        harness.backend.paint(id, &["gone"]);
+        harness.backend.paint(id, &["Permission required"]);
+
+        harness.ticks(3).await;
+
+        let emitted = harness.emitted();
+        assert_eq!(emitted.len(), 2, "appearance, silence, appearance");
+        assert_eq!(emitted[0].row, "Permission required");
+        assert_eq!(emitted[1].row, "Permission required");
+        assert_ne!(emitted[0].seq, emitted[1].seq);
+    }
+
+    /// 9.3.30 - **the case a `(captures, row)` gate cannot express, and the strongest argument
+    /// for this engine existing.** A second permission prompt appears while the first is still
+    /// on screen: the lowest match reads the same text, so only the generation can tell them
+    /// apart.
+    #[tokio::test]
+    async fn a_second_identical_match_appearing_above_an_existing_one_emits() {
+        let harness = Harness::new();
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, "a1".to_string());
+        harness.configure("a1", vec![state_watcher("perm", "Permission required")]);
+        harness.backend.paint(id, &["Permission required", "idle"]);
+        harness
+            .backend
+            .paint(id, &["Permission required", "Permission required"]);
+
+        harness.ticks(2).await;
+
+        let emitted = harness.emitted();
+        assert_eq!(emitted.len(), 2);
+        assert_eq!(
+            emitted[0].row, emitted[1].row,
+            "identical text: a (captures, row) gate would have suppressed the second"
+        );
+    }
+
+    /// 9.3.31 - a scroll that leaves the match count unchanged emits nothing. This is what
+    /// "incrementing the generation only on a RISE" buys: the count of a persistent condition
+    /// does not change as the screen moves under it.
+    #[tokio::test]
+    async fn a_scroll_that_leaves_the_match_count_unchanged_emits_nothing() {
+        let harness = Harness::new();
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, "a1".to_string());
+        harness.configure("a1", vec![state_watcher("perm", "Permission required")]);
+        harness
+            .backend
+            .paint(id, &["Permission required", "a", "b"]);
+        harness
+            .backend
+            .paint(id, &["a", "Permission required", "b"]);
+        harness
+            .backend
+            .paint(id, &["a", "b", "Permission required"]);
+
+        harness.ticks(3).await;
+
+        assert_eq!(harness.emitted().len(), 1);
+    }
+
+    /// 9.3.32 - the LOWEST match wins, mirroring `rows::extract`, because a statusline always
+    /// sits below the transcript.
+    #[tokio::test]
+    async fn the_lowest_matching_logical_row_wins() {
+        let harness = Harness::new();
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, "a1".to_string());
+        harness.configure("a1", vec![state_watcher("ctx", r"Context (\d+)%")]);
+        harness
+            .backend
+            .paint(id, &["Context 99%", "middle", "Context 42%"]);
+
+        harness.ticks(1).await;
+
+        assert_eq!(harness.emitted()[0].captures[0].as_deref(), Some("42"));
+    }
+
+    /// 9.3.33 - a pattern that does not compile is compiled ONCE and logged once, however many
+    /// ticks pass. The compile site is the log site, so the compile count IS the log count.
+    #[tokio::test]
+    async fn an_uncompilable_pattern_is_compiled_once_across_ten_ticks() {
+        let harness = Harness::new();
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, "a1".to_string());
+        harness.configure("a1", vec![state_watcher("broken", r"Read \((.+")]);
+        harness.backend.paint(id, &["anything"]);
+
+        harness.ticks(10).await;
+
+        assert_eq!(harness.engine.compile_count(), 1);
+        assert!(harness.emitted().is_empty());
+    }
+
+    /// A watcher whose pattern is edited recompiles, and its gate starts again - so the first
+    /// match under the new pattern is an event even if the old one had already emitted.
+    #[tokio::test]
+    async fn editing_a_pattern_recompiles_and_clears_that_watchers_gate() {
+        let harness = Harness::new();
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, "a1".to_string());
+        harness.configure("a1", vec![state_watcher("w", "alpha")]);
+        harness.backend.paint(id, &["alpha beta"]);
+        harness.ticks(3).await;
+        assert_eq!(harness.engine.compile_count(), 1);
+        assert_eq!(harness.emitted().len(), 1);
+
+        harness.configure("a1", vec![state_watcher("w", "beta")]);
+        harness.ticks(3).await;
+
+        assert_eq!(harness.engine.compile_count(), 2);
+        assert_eq!(
+            harness.emitted().len(),
+            2,
+            "the row is the same, but the question is not: the gate must not suppress it"
+        );
+    }
+
+    /// 9.3.34 (first half) - `Gone` retires the session on that tick, with no waiting for the
+    /// 5 s probe.
+    #[tokio::test]
+    async fn a_session_reported_gone_is_retired_on_that_tick() {
+        let harness = Harness::new();
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, "a1".to_string());
+        harness.configure("a1", vec![state_watcher("w", "x")]);
+        harness.backend.push(id, Painted::Gone);
+        harness.backend.push(id, Painted::Gone);
+
+        harness.ticks(1).await;
+
+        assert!(!harness.engine.is_session_registered(id));
+    }
+
+    /// `Missing` says NOTHING about the session, so it is kept and sampled again. Retiring on
+    /// it would strand a live session whose parser was momentarily unreadable.
+    #[tokio::test]
+    async fn a_session_reported_missing_is_kept() {
+        let harness = Harness::new();
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, "a1".to_string());
+        harness.configure("a1", vec![state_watcher("w", "x")]);
+        harness.backend.push(id, Painted::Missing);
+        harness.backend.push(id, Painted::Missing);
+
+        harness.ticks(1).await;
+
+        assert!(harness.engine.is_session_registered(id));
+    }
+
+    /// 9.3.34 (second half) and 9.3.35 - liveness is probed on tick 25 and on no tick before
+    /// it, which is once per 5 s per session: exactly the rate the 5 s scraper probes at, and
+    /// the reason this engine is cheaper than the one it sits beside rather than 25x dearer.
+    #[tokio::test]
+    async fn liveness_is_probed_on_the_twenty_fifth_tick_and_retires_a_dead_session() {
+        let harness = Harness::new();
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, "a1".to_string());
+        harness.configure("a1", vec![state_watcher("w", "never")]);
+        harness.backend.paint(id, &["idle"]);
+        harness
+            .backends
+            .liveness
+            .lock()
+            .unwrap()
+            .insert(id, ContextSessionLiveness::SessionOver);
+
+        harness.ticks(24).await;
+        assert_eq!(harness.backends.liveness_calls.load(Ordering::Relaxed), 0);
+        assert!(harness.engine.is_session_registered(id));
+
+        harness.ticks(1).await;
+        assert_eq!(harness.backends.liveness_calls.load(Ordering::Relaxed), 1);
+        assert!(!harness.engine.is_session_registered(id));
+    }
+
+    /// 9.3.37 - one event per `(session, tick)`, carrying every match that tick produced. The
+    /// coalescing is what keeps the IPC load off the per-tick caps.
+    #[tokio::test]
+    async fn one_event_carries_all_of_a_ticks_matches_for_a_session() {
+        let harness = Harness::new();
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, "a1".to_string());
+        harness.configure(
+            "a1",
+            vec![
+                state_watcher("perm", "Permission required"),
+                state_watcher("ctx", r"Context (\d+)%"),
+            ],
+        );
+        harness
+            .backend
+            .paint(id, &["Permission required", "Context 42%"]);
+
+        harness.ticks(1).await;
+
+        assert_eq!(harness.batches(), 1);
+        let batch = &harness.sink.0.lock().unwrap()[0];
+        assert_eq!(batch.session_id, id.to_string());
+        assert_eq!(batch.matches.len(), 2);
+        assert_eq!(batch.matches[0].seq, 1);
+        assert_eq!(batch.matches[1].seq, 2);
+    }
+
+    /// An `Unchanged` read evaluates nothing: the screen the caller last saw cannot have
+    /// started or stopped matching.
+    #[tokio::test]
+    async fn an_unchanged_frame_produces_no_event() {
+        let harness = Harness::new();
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, "a1".to_string());
+        harness.configure("a1", vec![state_watcher("w", "match me")]);
+        harness.backend.push(id, Painted::Unchanged);
+        harness.backend.push(id, Painted::Unchanged);
+
+        harness.ticks(2).await;
+
+        assert!(harness.emitted().is_empty());
+    }
+
+    /// A session whose agent no watcher reaches is skipped, even while another session on a
+    /// configured agent is being sampled.
+    #[tokio::test]
+    async fn a_session_whose_agent_has_no_watcher_is_skipped() {
+        let harness = Harness::new();
+        let watched = Uuid::new_v4();
+        let ignored = Uuid::new_v4();
+        harness.engine.register_session(watched, "a1".to_string());
+        harness.engine.register_session(ignored, "a2".to_string());
+        harness.configure("a1", vec![state_watcher("w", "hit")]);
+        harness.backend.paint(watched, &["hit"]);
+        harness.backend.paint(ignored, &["hit"]);
+
+        harness.ticks(1).await;
+
+        let emitted = harness.emitted();
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].session_id, watched.to_string());
+    }
+
+    /// A wrapped path is matched as ONE logical row, which is the whole reason evaluation is
+    /// not on physical rows.
+    #[tokio::test]
+    async fn a_state_watcher_matches_across_a_wrapped_row() {
+        let harness = Harness::new();
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, "a1".to_string());
+        harness.configure("a1", vec![state_watcher("read", r"Read \((.+)\)")]);
+        harness.backend.push(
+            id,
+            Painted::Frame(
+                vec![
+                    "idle".to_string(),
+                    "Read (C:/repo/very/long/pa".to_string(),
+                    "th/to/main.rs)".to_string(),
+                ],
+                vec![false, true, false],
+            ),
+        );
+
+        harness.ticks(1).await;
+
+        assert_eq!(
+            harness.emitted()[0].captures[0].as_deref(),
+            Some("C:/repo/very/long/path/to/main.rs")
+        );
+    }
+
+    /// 9.6.38 - a row past the byte cap is truncated on a char boundary and SAYS so, because
+    /// `row.length >= 256` cannot answer that question in TypeScript.
+    #[tokio::test]
+    async fn an_over_long_row_is_truncated_on_a_char_boundary_and_flagged() {
+        let harness = Harness::new();
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, "a1".to_string());
+        harness.configure("a1", vec![state_watcher("w", "start")]);
+        // 3-byte chars, so the cap lands mid-character unless the boundary is respected.
+        let long = format!("start{}", "\u{4e2d}".repeat(200));
+        harness.backend.paint(id, &[&long]);
+
+        harness.ticks(1).await;
+
+        let emitted = harness.emitted();
+        assert!(emitted[0].row_truncated);
+        assert!(emitted[0].row.len() <= MAX_ROW_BYTES);
+        assert!(long.starts_with(&emitted[0].row));
+    }
+
+    /// 9.3.24 - **a session with no agent is never registered**, so a plain shell costs this
+    /// engine nothing, ever: no entry, no read, no allocation.
+    ///
+    /// Asserted against the real registration site, which is one helper shared with the #1032
+    /// scraper, rather than against a re-implementation of its condition.
+    #[test]
+    fn a_session_with_no_agent_is_never_registered() {
+        let harness = Harness::new();
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&harness.engine))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build a mock app");
+
+        let shell = Uuid::new_v4();
+        crate::commands::session::register_session_samplers(app.handle(), shell, None);
+        assert!(!harness.engine.is_session_registered(shell));
+
+        let agent = Uuid::new_v4();
+        crate::commands::session::register_session_samplers(
+            app.handle(),
+            agent,
+            Some("a1".to_string()),
+        );
+        assert!(harness.engine.is_session_registered(agent));
+    }
+
+    /// 9.6.74 and 9.6.75 - **the Rust half of the TypeScript mirror.** The exact camelCase
+    /// JSON, field for field, with EVERY field present: no `skip_serializing_if` anywhere, so
+    /// absent can never become a third state beside null and the value.
+    #[test]
+    fn the_payload_serializes_to_the_exact_camel_case_contract() {
+        let batch = WatcherMatchBatch {
+            session_id: "11111111-2222-3333-4444-555555555555".to_string(),
+            matches: vec![WatcherMatchPayload {
+                session_id: "11111111-2222-3333-4444-555555555555".to_string(),
+                seq: 7,
+                watcher_id: "permission-prompt".to_string(),
+                mode: WatcherMode::Occurrence,
+                at: chrono::DateTime::parse_from_rfc3339("2026-07-30T22:31:05Z")
+                    .expect("fixed instant")
+                    .with_timezone(&chrono::Utc),
+                captures: vec![Some("C:/repo/main.rs".to_string()), None],
+                row: "Read (C:/repo/main.rs)".to_string(),
+                row_truncated: false,
+            }],
+        };
+
+        assert_eq!(
+            serde_json::to_value(&batch).expect("serializes"),
+            serde_json::json!({
+                "sessionId": "11111111-2222-3333-4444-555555555555",
+                "matches": [{
+                    "sessionId": "11111111-2222-3333-4444-555555555555",
+                    "seq": 7,
+                    "watcherId": "permission-prompt",
+                    "mode": "occurrence",
+                    "at": "2026-07-30T22:31:05Z",
+                    "captures": ["C:/repo/main.rs", null],
+                    "row": "Read (C:/repo/main.rs)",
+                    "rowTruncated": false
+                }]
+            })
+        );
+    }
+
+    /// The empty cases are present too, and are not elided: `captures: []` is a pattern with
+    /// no groups, and the UI falls back to the raw row on it.
+    #[test]
+    fn an_empty_capture_list_and_a_false_flag_are_both_written() {
+        let payload = WatcherMatchPayload {
+            session_id: "s".to_string(),
+            seq: 1,
+            watcher_id: "w".to_string(),
+            mode: WatcherMode::State,
+            at: chrono::DateTime::parse_from_rfc3339("2026-07-30T00:00:00Z")
+                .expect("fixed instant")
+                .with_timezone(&chrono::Utc),
+            captures: Vec::new(),
+            row: "Permission required".to_string(),
+            row_truncated: false,
+        };
+
+        let json = serde_json::to_value(&payload).expect("serializes");
+        let object = json.as_object().expect("object");
+        assert_eq!(object.len(), 8, "every field, always: {json}");
+        assert_eq!(object["captures"], serde_json::json!([]));
+        assert_eq!(object["rowTruncated"], serde_json::json!(false));
+        assert_eq!(object["mode"], serde_json::json!("state"));
     }
 }
 

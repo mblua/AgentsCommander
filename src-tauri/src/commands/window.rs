@@ -32,6 +32,12 @@ impl WindowDestroyAudit {
 
 const MAIN_WINDOW_LABEL: &str = "main";
 const RESOURCE_MONITOR_WINDOW_LABEL: &str = "resource-monitor";
+/// #1171 - the singleton watcher activity window.
+///
+/// `pub(crate)` because the watcher sink checks for this window before emitting: when it does
+/// not exist, no `watcher_matches` event is produced at all, which is the case that holds
+/// most of the time.
+pub(crate) const WATCHERS_WINDOW_LABEL: &str = "watchers";
 const RESOURCE_MONITOR_FLOATING_WIDTH: u32 = 760;
 const RESOURCE_MONITOR_FLOATING_HEIGHT: u32 = 560;
 const RESOURCE_MONITOR_DOCK_WIDTH: u32 = 420;

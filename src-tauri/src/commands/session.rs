@@ -53,6 +53,33 @@ fn classify_existing_root(status: &SessionStatus, has_pty: bool) -> ExistingRoot
     }
 }
 
+/// #1032 + #1171 - start sampling a freshly spawned session, with both engines.
+///
+/// **Sessions with no agent are never registered**, and that rule lives HERE, once, for both:
+/// a plain shell costs neither engine anything, ever. `try_state` and not `state`, because
+/// `state` panics when unmanaged and a test app manages neither engine - an absent engine is
+/// simply the feature being off.
+///
+/// There is no race with the screen parser: `PtyManager::spawn` has already returned `Ok` at
+/// the call site and the parser is registered during the spawn. The scraper's first sample is
+/// 5 s away and the first watcher tick is 200 ms away, and neither can arrive before the
+/// parser exists.
+pub(crate) fn register_session_samplers<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    id: Uuid,
+    agent_id: Option<String>,
+) {
+    let Some(agent_id) = agent_id else {
+        return;
+    };
+    if let Some(scraper) = app.try_state::<Arc<crate::pty::context_scrape::ContextScraper>>() {
+        scraper.register_session(id, agent_id.clone());
+    }
+    if let Some(watchers) = app.try_state::<Arc<crate::pty::watchers::WatcherEngine>>() {
+        watchers.register_session(id, agent_id);
+    }
+}
+
 async fn rollback_pre_created_session<R: tauri::Runtime>(
     _app: &AppHandle<R>,
     _session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
@@ -2258,20 +2285,7 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             return Err(err);
         }
 
-        // #1032 - start sampling this session's context reading. This sits above the backend
-        // split and covers local and container alike, with no backend plumbing. `try_state`,
-        // not `state`: `state` panics when unmanaged, and test apps do not manage the scraper.
-        // An absent scraper is simply the feature being off.
-        //
-        // Sessions with no agent are never registered, so a plain shell costs nothing. There is
-        // no race with the parser here: the first sample is 5s away.
-        if let Some(agent_id) = agent_id.clone() {
-            if let Some(scraper) =
-                app.try_state::<Arc<crate::pty::context_scrape::ContextScraper>>()
-            {
-                scraper.register_session(id, agent_id);
-            }
-        }
+        register_session_samplers(app, id, agent_id.clone());
 
         // Auto-inject optional non-credential bootstrap text for agent sessions
         // after PTY spawn. Credentials are already present in child environment
