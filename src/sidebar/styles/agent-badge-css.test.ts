@@ -30,9 +30,11 @@ const COMMENT_RE = /\/\*[\s\S]*?\*\//g;
 const BRACE_RE = /[{}]/g;
 const MODAL_ANCHOR = ".agent-modal-item-badges";
 // Stands in for every character that sits inside parentheses. All it has to be is a
-// character that occurs in no needle and is NOT whitespace to the [\s>+~] test below.
-// A space would be wrong: it would let a masked functional pseudo-class stand in for
-// the combinator the anchor has to be followed by, which is half of what F1 was.
+// character that occurs in no needle and is outside the [\s>+~] combinator run that
+// isModalScoped scans below. A space would be wrong: it would let a masked functional
+// pseudo-class stand in for the combinator the anchor has to be followed by, which is
+// half of what F1 was. U+0000 is in no needle and in no combinator class, so a masked
+// region both fails the needles and terminates the combinator run.
 const MASKED = "\u0000";
 
 // Every rule opening in the file, not just the first one on each line. A line-anchored
@@ -140,9 +142,22 @@ const DATA_AGENT_COMPOUNDS = ALL_COMPOUNDS.filter((compound) =>
 
 // Scoped means the attribute selector is a DESCENDANT of the modal container, with BOTH
 // halves at parenthesis depth 0: the anchor must be present at the top level, be
-// followed by a combinator, and come before a [data-agent] part that is also at the top
-// level. `.session-item-meta [data-agent="X"]` fails, and so does
+// followed by a DESCENDANT-OR-CHILD combinator, and come before a [data-agent] part that
+// is also at the top level. `.session-item-meta [data-agent="X"]` fails, and so does
 // `[data-agent="X"] .agent-modal-item-badges`.
+//
+// Only the DESCENDANT and CHILD combinators are accepted, and that is B1. `+` and `~` are
+// SIBLING combinators: `.agent-modal-item-badges + [data-agent="Claude"]` matches an
+// element that is a sibling of the anchor and a descendant of none, so it does not have
+// the property this function's name claims, and the guard used to report it green. So did
+// `.agent-modal-item-badges ~ .session-item-meta [data-agent="Claude"]`, which names a
+// sidebar container in the rule. Descendant and child are the only two combinators that
+// put the matched element inside the anchor. No rule in the tree uses `+` or `~` next to
+// the anchor, so rejecting them costs nothing; `>` stays accepted (probe M19).
+//
+// Only the combinator ADJACENT to the anchor is restricted. `+` and `~` further along are
+// none of this check's business: in `.agent-modal-item-badges > .a + .b [data-agent="X"]`
+// the sibling of a child of the anchor is still inside the anchor.
 //
 // Searching the mask instead of the raw selector is what closes F1. This check used to
 // locate the anchor with a plain indexOf, so wrapping it in a functional pseudo-class
@@ -167,7 +182,15 @@ function isModalScoped(selector: string): boolean {
   const at = mask.indexOf(MODAL_ANCHOR);
   if (at === -1) return false;
   const afterAnchor = mask.slice(at + MODAL_ANCHOR.length);
-  return /^[\s>+~]/.test(afterAnchor) && afterAnchor.toLowerCase().includes("[data-agent");
+  // The WHOLE combinator run adjacent to the anchor, not just its first character. By
+  // this point the selector is whitespace-collapsed, so a sibling combinator is spelled
+  // ` + ` far more often than `+`, and a first-character test sees only the leading space
+  // and accepts it. Measured: narrowing the first-character class from [\s>+~] to [\s>]
+  // turns `.agent-modal-item-badges+[data-agent="X"]` red and leaves
+  // `.agent-modal-item-badges + [data-agent="X"]` green. Testing the run catches both.
+  const combinator = afterAnchor.match(/^[\s>+~]*/)?.[0] ?? "";
+  if (combinator.length === 0 || /[+~]/.test(combinator)) return false;
+  return afterAnchor.toLowerCase().includes("[data-agent");
 }
 
 // The declarations of the first rule whose selector list contains `wanted` as a whole
