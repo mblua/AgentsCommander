@@ -726,6 +726,13 @@ html, body, #root {
   gap: 4px;
   margin-top: 2px;
 }
+/* #1167 - after the sidebar coding-agent badge moved to .ac-discovery-badge.agent,
+   the ONLY consumer of .agent-badge left in the app is the Open-Agent modal's
+   repo-tooling chip (OpenAgentModal.tsx:156-167), which never sets `running`.
+   The `.running` variant that used to brighten a live session row is therefore
+   unreachable and was deleted with the migration. Per-tool colours for the modal
+   live further down, on .agent-modal-item-badges. Do not repurpose this rule for
+   a sidebar badge: that is the divergence #1167 removed. */
 .agent-badge {
   font-size: 9px;
   font-weight: 600;
@@ -735,11 +742,6 @@ html, body, #root {
   background: var(--sidebar-border);
   color: var(--sidebar-fg-dim);
   opacity: 0.4;
-}
-.agent-badge.running {
-  opacity: 1;
-  background: var(--sidebar-hover);
-  color: var(--sidebar-fg);
 }
 
 .profile-badge {
@@ -803,11 +805,13 @@ html, body, #root {
   vertical-align: middle;
 }
 
-/* #624 - spacing for the coding-agent badge inside the inline root subtitle
-   (the badge itself only carries color/size via .agent-badge).
-   text-transform:none overrides the uppercase inherited from
-   .root-agent-subtitle so the badge reads mixed-case (e.g. "Claude Code AMP"),
-   matching the session/coordinator rows. */
+/* #624 / #1167 - spacing for the coding-agent badge inside the inline root
+   subtitle. Colour and size now come from .ac-discovery-badge.agent, the same
+   pair the Coordinator rows use, so this rule carries only inline placement.
+   text-transform:none is kept deliberately, as a local guarantee against the
+   uppercase on .root-agent-subtitle: .ac-discovery-badge.agent already sets none
+   and wins on specificity, but the banner should not depend on a rule 4800 lines
+   away to read mixed-case (e.g. "Claude Code AMP"). */
 .root-agent-badge {
   margin-left: 6px;
   vertical-align: middle;
@@ -3784,16 +3788,29 @@ html.light-theme .settings-hint-warning {
   flex-wrap: wrap;
 }
 
-/* Agent-specific badge colors (non-running only) */
-.agent-badge:not(.running)[data-agent="Claude"] { background: rgba(217, 119, 6, 0.15); color: #d97706; }
-.agent-badge:not(.running)[data-agent="Codex"] { background: rgba(16, 185, 129, 0.15); color: #10b981; }
-.agent-badge:not(.running)[data-agent="OpenCode"] { background: rgba(59, 130, 246, 0.15); color: #3b82f6; }
-.agent-badge:not(.running)[data-agent="Cursor"] { background: rgba(139, 92, 246, 0.15); color: #8b5cf6; }
-/* Running badge: brighter version of agent color */
-.agent-badge.running[data-agent="Claude"] { background: rgba(217, 119, 6, 0.3); color: #fbbf24; }
-.agent-badge.running[data-agent="Codex"] { background: rgba(16, 185, 129, 0.3); color: #34d399; }
-.agent-badge.running[data-agent="OpenCode"] { background: rgba(59, 130, 246, 0.3); color: #60a5fa; }
-.agent-badge.running[data-agent="Cursor"] { background: rgba(139, 92, 246, 0.3); color: #a78bfa; }
+/* #1167 - per-TOOL colours for the Open-Agent modal's repo chips, and ONLY those.
+   These are NOT coding-agent labels: the four values come from AGENT_DETECTORS in
+   src-tauri/src/commands/repos.rs:9-14 ("Claude", "Codex", "OpenCode", "Cursor"),
+   which reports which tooling directories a repo contains. That vocabulary is
+   closed and exhaustive, so every chip the modal renders is coloured here and none
+   falls through to the grey .agent-badge base.
+
+   Anchored on .agent-modal-item-badges, which occurs exactly once in the repo
+   (OpenAgentModal.tsx:156), so these rules cannot reach a sidebar row. Before
+   #1167 they were written as `.agent-badge:not(.running)[data-agent=...]` and were
+   shared with the sidebar badge, which is what produced the divergence the issue
+   fixes; the sidebar badge no longer emits data-agent at all.
+
+   Specificity: (0,2,0), still above the .agent-badge base (0,1,0) for background
+   and color, while opacity: 0.4 keeps coming from that base exactly as before. The
+   rendered chip is unchanged.
+
+   The four `.running` variants that used to follow were deleted: nothing in the app
+   emits `running` on an .agent-badge any more. */
+.agent-modal-item-badges [data-agent="Claude"] { background: rgba(217, 119, 6, 0.15); color: #d97706; }
+.agent-modal-item-badges [data-agent="Codex"] { background: rgba(16, 185, 129, 0.15); color: #10b981; }
+.agent-modal-item-badges [data-agent="OpenCode"] { background: rgba(59, 130, 246, 0.15); color: #3b82f6; }
+.agent-modal-item-badges [data-agent="Cursor"] { background: rgba(139, 92, 246, 0.15); color: #8b5cf6; }
 
 /* Agent choice (after repo selected) */
 .agent-choice {

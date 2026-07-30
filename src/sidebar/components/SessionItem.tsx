@@ -360,14 +360,15 @@ const SessionItem: Component<{
         <Show when={!isRecording() && !isProcessing() && !isAutoExecuting() && !isTypingWarning() && !voiceRecorder.micError()}>
           <Show when={sessionAgentLabel() || (props.session.isCoordinator && !isInactive() && props.session.gitRepos.length > 0)}>
             <div class="session-item-meta">
+              {/* #1167 - one constant coding-agent style for every sidebar row.
+                  This emits the same class pair the workgroup/Coordinator rows
+                  emit (ProjectPanel.tsx:2271), so the two cannot drift apart
+                  again. No data-agent and no `running`: the badge must not vary
+                  by label or by PTY liveness. Liveness is still carried by the
+                  row status dot and .session-item.inactive-member. */}
               <Show when={sessionAgentLabel()}>
                 {(agentLabel) => (
-                  <span
-                    class={`agent-badge ${sessionHasLivePty() ? "running" : ""}`}
-                    data-agent={agentLabel()}
-                  >
-                    {agentLabel()}
-                  </span>
+                  <span class="ac-discovery-badge agent">{agentLabel()}</span>
                 )}
               </Show>
               <Show when={profileBadge()}>

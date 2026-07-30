@@ -399,19 +399,15 @@ const RootAgentBanner: Component = () => {
           <Show when={!isRecording() && !isProcessing() && !isAutoExecuting() && !isTypingWarning() && !voiceRecorder.micError()}>
             <span class="root-agent-subtitle">
               {subtitle()}
-              {/* #624 - coding-agent badge, mirroring SessionItem. Non-running
-                  styling falls out of hasLivePty() so a dormant/exited root still
-                  shows the badge (no `running` class). data-agent drives the same
-                  per-agent coloring as the session rows; custom labels fall back
-                  to the base .agent-badge. */}
+              {/* #624 / #1167 - coding-agent badge, mirroring SessionItem. Both
+                  now emit the Coordinator row's class pair
+                  (.ac-discovery-badge.agent), so the badge is one constant style
+                  everywhere: no data-agent, no `running`, and identical for a
+                  live and a dormant root. root-agent-badge adds only the inline
+                  placement inside the uppercase .root-agent-subtitle. */}
               <Show when={agentLabel()}>
                 {(label) => (
-                  <span
-                    class={`agent-badge root-agent-badge ${hasLivePty() ? "running" : ""}`}
-                    data-agent={label()}
-                  >
-                    {label()}
-                  </span>
+                  <span class="ac-discovery-badge agent root-agent-badge">{label()}</span>
                 )}
               </Show>
               <Show when={profileBadge()}>
