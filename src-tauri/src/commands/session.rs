@@ -1973,6 +1973,11 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             let context_result = coordinator
                 .run_blocking_seed_work({
                     let cwd = cwd.clone();
+                    // #1172 D5: capture the FINAL fresh-versus-resume decision. `skip_auto_resume`
+                    // is a `mut` parameter of this function whose only mutation is the #756 mirror
+                    // at :1470, ~500 lines above, so the value read here is final. `true` means AC
+                    // is deliberately NOT resuming: a fresh conversation begins.
+                    let start_fresh = skip_auto_resume;
                     let target_filename = target_filename.clone();
                     let managed_filenames = managed_filenames.clone();
                     let container_repos = container_repos.clone();
@@ -1989,15 +1994,34 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                         let activation: Option<
                             crate::config::seed_manifest::ManifestActivationToken,
                         > = None;
-                        crate::config::session_context::materialize_agent_context_file_with_filename_activated(
-                            &cwd,
-                            &target_filename,
-                            &managed_filenames,
-                            is_coordinator,
-                            auto_self_clear,
-                            container_repos.as_ref(),
-                            activation.as_ref(),
-                        )
+                        let context_result =
+                            crate::config::session_context::materialize_agent_context_file_with_filename_activated(
+                                &cwd,
+                                &target_filename,
+                                &managed_filenames,
+                                is_coordinator,
+                                auto_self_clear,
+                                container_repos.as_ref(),
+                                activation.as_ref(),
+                            );
+                        // #1172 - rotate the origin Agent Matrix's `memory/` for the fresh session
+                        // about to start, so it begins with a clean write target and the previous
+                        // session's memory is preserved under `memory_<ts>/`.
+                        //
+                        // Two gates, both load-bearing (D5):
+                        //   - `start_fresh`: a RESUME never rotates. This chokepoint also serves the
+                        //     app-startup restore path (`create_session_inner_for_restore`, :1239),
+                        //     which continues an existing conversation; emptying `memory/` under a
+                        //     resumed agent is the one outcome the user ruled out.
+                        //   - `is_ok()`: a launch that is about to roll back (:2016-2036) leaves no
+                        //     rotation behind.
+                        //
+                        // Never fails a launch: `rotate_origin_memory_at_spawn` returns `()` and every
+                        // error path inside it warns and returns.
+                        if start_fresh && context_result.is_ok() {
+                            crate::config::agent_memory::rotate_origin_memory_at_spawn(&cwd);
+                        }
+                        context_result
                     }
                 })
                 .await;
@@ -7224,6 +7248,45 @@ mod tests {
         assert_eq!(
             count, 2,
             "create_session_inner must keep both archive activation gates"
+        );
+    }
+
+    // T16 (#1172 D5). The fresh-versus-resume gate is one boolean at a call site
+    // inside a large async function the suite does not drive end to end, so it
+    // has no natural unit test: deleting `start_fresh &&` compiles, passes every
+    // other test, and silently starts rotating memory on every app-startup
+    // restore, which is the exact outcome the user ruled out.
+    #[test]
+    fn memory_rotation_stays_gated_on_a_fresh_launch() {
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/session.rs"
+        ))
+        .expect("read session.rs");
+        let production = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production session source");
+        let normalized = production.split_whitespace().collect::<String>();
+        let gated_call = "ifstart_fresh&&context_result.is_ok(){crate::config::agent_memory::rotate_origin_memory_at_spawn(&cwd);}";
+
+        assert_eq!(
+            normalized.matches(gated_call).count(),
+            1,
+            "#1172 D5: the memory rotation must stay behind `start_fresh && context_result.is_ok()`. \
+             A resume must NEVER rotate: this chokepoint also serves the app-startup restore path."
+        );
+        // Counting the call WITH its argument rather than the bare identifier:
+        // the production comment above the gate names the function too, so a
+        // bare-identifier count can never be 1. This needle is the property that
+        // actually matters, namely zero ungated calls.
+        assert_eq!(
+            normalized
+                .matches("rotate_origin_memory_at_spawn(&cwd);")
+                .count(),
+            1,
+            "#1172 D5: exactly one rotation call site, and it is the gated one. \
+             A resume must NEVER rotate."
         );
     }
 
