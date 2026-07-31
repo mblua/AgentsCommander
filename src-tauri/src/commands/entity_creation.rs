@@ -892,17 +892,6 @@ fn normalized_team_config_bytes(
         .map_err(|e| format!("Failed to serialize config.json: {}", e))
 }
 
-// Standalone synchronous wrapper for non-compound callers and focused writer tests.
-#[allow(dead_code)]
-pub(crate) fn write_team_config(
-    workspace_dir: &Path,
-    team_name: &str,
-    config: &TeamConfigResult,
-) -> Result<PathBuf, String> {
-    let guard = TeamConfigMutationGuard::acquire(workspace_dir)?;
-    write_team_config_guarded(workspace_dir, team_name, config, &guard)
-}
-
 pub(crate) fn write_team_config_guarded(
     workspace_dir: &Path,
     team_name: &str,
@@ -4476,6 +4465,17 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering as TestOrdering};
+
+    // Test-only synchronous wrapper: acquires the mutation guard around
+    // write_team_config_guarded.
+    pub(crate) fn write_team_config(
+        workspace_dir: &Path,
+        team_name: &str,
+        config: &TeamConfigResult,
+    ) -> Result<PathBuf, String> {
+        let guard = TeamConfigMutationGuard::acquire(workspace_dir)?;
+        write_team_config_guarded(workspace_dir, team_name, config, &guard)
+    }
 
     #[test]
     #[cfg(windows)]
