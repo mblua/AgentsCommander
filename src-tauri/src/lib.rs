@@ -2590,6 +2590,7 @@ pub fn run(
             commands::window::open_spec_board_window,
             commands::window::open_resource_monitor_window,
             commands::window::dock_resource_monitor_window,
+            commands::window::open_watchers_window,
             commands::window::open_external_url,
             commands::window::focus_main_window,
             commands::spec_board::spec_board_new,

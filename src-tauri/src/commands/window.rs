@@ -43,6 +43,13 @@ const RESOURCE_MONITOR_FLOATING_HEIGHT: u32 = 560;
 const RESOURCE_MONITOR_DOCK_WIDTH: u32 = 420;
 const RESOURCE_MONITOR_MIN_WIDTH: u32 = 520;
 const RESOURCE_MONITOR_MIN_HEIGHT: u32 = 420;
+/// #1171 - the size the activity window opens at when no geometry was ever saved. Wider
+/// than tall because the table is four columns (time, watcher, session, captures) and the
+/// captures cell is the one that must not be cramped.
+const WATCHERS_DEFAULT_WIDTH: f64 = 980.0;
+const WATCHERS_DEFAULT_HEIGHT: f64 = 640.0;
+const WATCHERS_MIN_WIDTH: f64 = 640.0;
+const WATCHERS_MIN_HEIGHT: f64 = 420.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PhysicalWindowRect {
@@ -829,11 +836,88 @@ pub async fn dock_resource_monitor_window(app: AppHandle) -> Result<(), String> 
     Ok(())
 }
 
+/// #1171 - open the singleton watcher activity window, or focus it and re-scope it to
+/// `session_id`.
+///
+/// Mould: `open_resource_monitor_window` above, minus the main-window-relative placement,
+/// which exists for the Resource Monitor's dock gesture and has no counterpart here.
+///
+/// Focus-if-exists is not the whole behavior for this window, because every caller names a
+/// session: an already-open window is ALSO told to re-scope, through `watchers_scope_request`
+/// (plan 4.12). The query parameter is read only on first creation, since the label is a
+/// singleton and its URL never changes afterwards.
+///
+/// Generic over the runtime like its #1171 sibling `get_watcher_activity`
+/// (`commands/pty.rs:545`) and `kill_resource_group` (`commands/resource_monitor.rs:45`), so
+/// the singleton and re-scope halves are reachable from a `MockRuntime` test.
+#[tauri::command]
+pub async fn open_watchers_window<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    session_id: String,
+) -> Result<(), String> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+
+    // Parsed and re-rendered rather than interpolated as received: the value lands in a URL
+    // query string, and the canonical hyphenated form cannot carry an `&` or a `#`. Rejecting
+    // a non-UUID also matches `get_watcher_activity` (`commands/pty.rs:550`).
+    let session_id = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
+
+    if let Some(existing) = app.get_webview_window(WATCHERS_WINDOW_LABEL) {
+        // A focus that fails must not swallow the re-scope, which is the substantive half of
+        // this call and the only one the user can see go wrong.
+        if let Err(error) = existing.set_focus() {
+            log::warn!("[watchers] focusing the activity window failed: {}", error);
+        }
+        app.emit_to(
+            WATCHERS_WINDOW_LABEL,
+            "watchers_scope_request",
+            serde_json::json!({ "sessionId": session_id.to_string() }),
+        )
+        .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    // Geometry is restored here rather than by `initWindowGeometry`, which this window stays
+    // away from (plan 4.12); `focus_main_window` (`:635-641`) is the precedent for reading a
+    // persisted rect straight into the builder.
+    let saved = crate::config::settings::load_settings();
+
+    let icon = tauri::image::Image::from_bytes(include_bytes!("../../icons/icon.png"))
+        .expect("Failed to load app icon");
+
+    let mut builder = WebviewWindowBuilder::new(
+        &app,
+        WATCHERS_WINDOW_LABEL,
+        WebviewUrl::App(format!("index.html?window=watchers&sessionId={}", session_id).into()),
+    )
+    .title(format!(
+        "Watcher Activity - {}",
+        crate::config::profile::app_title_suffix()
+    ))
+    .icon(icon)
+    .map_err(|e| e.to_string())?
+    .min_inner_size(WATCHERS_MIN_WIDTH, WATCHERS_MIN_HEIGHT)
+    .decorations(false)
+    .zoom_hotkeys_enabled(false);
+
+    if let Some(geo) = &saved.watchers_geometry {
+        builder = builder
+            .inner_size(geo.width, geo.height)
+            .position(geo.x, geo.y);
+    } else {
+        builder = builder.inner_size(WATCHERS_DEFAULT_WIDTH, WATCHERS_DEFAULT_HEIGHT);
+    }
+
+    builder.build().map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        resource_monitor_placement_for_main, PhysicalWindowRect, WindowDestroyAudit,
-        RESOURCE_MONITOR_DOCK_WIDTH,
+        open_watchers_window, resource_monitor_placement_for_main, PhysicalWindowRect,
+        WindowDestroyAudit, RESOURCE_MONITOR_DOCK_WIDTH, WATCHERS_WINDOW_LABEL,
     };
     use crate::config::settings::WindowGeometry;
     use crate::pty::backend::{BackendSpawnSpec, PtyBackend, SessionBackendKind};
@@ -1190,5 +1274,57 @@ mod tests {
         );
         assert!(events_rx.try_recv().is_err());
         coordinator.close_and_join().await;
+    }
+
+    /// #1171, criterion 79 (backend half): a second open does not build a second window, and
+    /// it does re-scope the one that is already there.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reopening_the_watchers_window_re_scopes_it_instead_of_building_a_second_one() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build watchers re-scope app");
+        WebviewWindowBuilder::new(
+            app.handle(),
+            WATCHERS_WINDOW_LABEL,
+            WebviewUrl::App("index.html?window=watchers".into()),
+        )
+        .build()
+        .unwrap();
+
+        let (payloads_tx, payloads_rx) = std::sync::mpsc::channel();
+        app.listen_any("watchers_scope_request", move |event| {
+            let _ = payloads_tx.send(event.payload().to_string());
+        });
+
+        let session_id = Uuid::new_v4();
+        open_watchers_window(app.handle().clone(), session_id.to_string())
+            .await
+            .unwrap();
+
+        let windows = app.webview_windows();
+        assert_eq!(windows.len(), 1);
+        assert!(windows.contains_key(WATCHERS_WINDOW_LABEL));
+
+        let payload: serde_json::Value =
+            serde_json::from_str(&payloads_rx.recv_timeout(Duration::from_secs(1)).unwrap())
+                .unwrap();
+        assert_eq!(payload["sessionId"], session_id.to_string());
+        assert!(payloads_rx.try_recv().is_err());
+    }
+
+    /// The session id is interpolated into the window URL, so anything that is not a UUID is
+    /// refused before a window exists to carry it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn open_watchers_window_refuses_a_session_id_that_is_not_a_uuid() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build watchers rejection app");
+
+        assert!(
+            open_watchers_window(app.handle().clone(), "not-a-uuid&window=main".to_string())
+                .await
+                .is_err()
+        );
+        assert!(app.webview_windows().is_empty());
     }
 }
