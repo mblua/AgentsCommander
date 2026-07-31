@@ -21,6 +21,7 @@ use crate::pty::git_watcher::GitWatcher;
 use crate::pty::idle_detector::IdleDetector;
 use crate::pty::output::{PtyScreenSnapshot, SessionIoFanout};
 use crate::pty::spawn_diagnostics::{self, ChildLiveness, ExitCause, SpawnRecord, SpawnRecordInit};
+use crate::pty::watchers::{FrameStamp, ScreenRowsSince};
 use crate::telegram::manager::OutputSenderMap;
 
 struct PtyInstance {
@@ -1472,6 +1473,23 @@ impl PtyBackend for LocalProcessBackend {
         screen_rows_if_child_alive(&self.ptys, &self.fanout, id)
     }
 
+    /// #1171 - straight to the fanout, with **no child liveness probe**.
+    ///
+    /// `get_screen_rows` above probes the child under the `ptys` guard, "the one every
+    /// terminal write, resize and kill locks on" (`:1116-1117`). At 200 ms that probe would be
+    /// taken 25x more often than the 5 s scraper takes it, on the hottest lock in the PTY
+    /// layer, for a question the watcher engine does not ask on this path: it runs its own
+    /// liveness probe once every 25th tick, that is once per 5 s per session, exactly today's
+    /// rate. What remains here is one `screen_parsers` acquisition, and that map is per
+    /// backend rather than per process.
+    ///
+    /// An absent parser is `Missing` and not `Gone`: for a local process, parser-absence is a
+    /// desync or a poisoned lock, never a statement about the child. Only the 5 s probe, or
+    /// the child oracle behind `get_screen_rows`, may retire a local session.
+    fn screen_rows_since(&self, id: Uuid, seen: Option<FrameStamp>) -> ScreenRowsSince {
+        self.fanout.get_screen_rows_since(id, seen)
+    }
+
     fn register_response_watcher(
         &self,
         session_id: Uuid,
@@ -2162,6 +2180,28 @@ mod context_gate_tests {
                 ScreenRowsRead::Unavailable
             ),
             "the child is alive, so nothing here may claim the session is over"
+        );
+    }
+
+    /// #1171, 9.1.4 (local half) - an unknown id is `Missing` here, where the container
+    /// backend answers `Gone` to the identical question.
+    ///
+    /// Asserted against the fanout call the `screen_rows_since` override delegates to, and not
+    /// against a `LocalProcessBackend`, because that type cannot be built in a unit test: its
+    /// `GitWatcher` needs a Tauri `AppHandle` (`:95-96`), which is the same reason
+    /// `screen_rows_if_child_alive` above is a free function. The override adds nothing to
+    /// this call on purpose - **no child liveness probe** - so this is the whole of its
+    /// behavior for an unknown id.
+    #[test]
+    fn the_watcher_seam_reports_missing_for_an_unknown_id() {
+        let fanout = fanout();
+
+        assert!(
+            matches!(
+                fanout.get_screen_rows_since(Uuid::new_v4(), None),
+                crate::pty::watchers::ScreenRowsSince::Missing
+            ),
+            "for a local process, parser-absence is a desync, never a statement about the child"
         );
     }
 }

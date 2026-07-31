@@ -9,6 +9,7 @@
     "guide",
     "spec-board",
     "resource-monitor",
+    "watchers",
     "screenshot-overlay-*"
   ],
   "permissions": [

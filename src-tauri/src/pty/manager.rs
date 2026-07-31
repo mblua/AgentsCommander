@@ -579,6 +579,25 @@ impl PtyManager {
         self.backend_for_kind(kind).get_screen_rows(id)
     }
 
+    /// #1171 - forwards to the routed backend. A missing route is `Gone` for the same reason
+    /// it is `SessionOver` above: every route removal is preceded by parser removal, so the
+    /// session really is over.
+    ///
+    /// **The watcher engine does not call this on its tick.** It resolves the backend `Arc`
+    /// once at registration through `backend_for_kind` and calls the backend directly, which
+    /// is what keeps both this mutex and the `registry` mutex out of a 200 ms loop. This
+    /// exists for completeness and for callers that hold no `Arc` of their own.
+    pub fn screen_rows_since(
+        &self,
+        id: Uuid,
+        seen: Option<crate::pty::watchers::FrameStamp>,
+    ) -> crate::pty::watchers::ScreenRowsSince {
+        let Ok(kind) = self.kind_for_session(id) else {
+            return crate::pty::watchers::ScreenRowsSince::Gone;
+        };
+        self.backend_for_kind(kind).screen_rows_since(id, seen)
+    }
+
     pub fn register_response_watcher(
         &self,
         session_id: Uuid,
@@ -1143,6 +1162,107 @@ mod tests {
             manager.context_session_liveness(missing_id),
             ContextSessionLiveness::SessionOver
         );
+    }
+
+    /// #1171, 9.1.9 - a session with no route is `Gone`, not `Missing`.
+    ///
+    /// Same reading `get_screen_rows` already gives a routeless id (`:573-580`): every route
+    /// removal is preceded by parser removal, so the session really is over. The engine
+    /// retires on `Gone`, which is exactly what should happen here; `Missing` would keep it
+    /// sampling an id that can never come back.
+    #[test]
+    fn screen_rows_since_reports_gone_for_a_session_with_no_route() {
+        let manager = PtyManager::new_for_test(Arc::new(RecordingBackend::default()));
+
+        assert!(matches!(
+            manager.screen_rows_since(Uuid::new_v4(), None),
+            crate::pty::watchers::ScreenRowsSince::Gone
+        ));
+    }
+
+    /// #1171, 9.1.8 - a backend that never heard of the seam keeps working through the trait
+    /// default: it reports a frame with NO stamp, and it never reports `Unchanged`, whatever
+    /// stamp it is handed. That is the property that lets `stamp` be an `Option` instead of a
+    /// fabricated value, and it is what keeps the two `PtyBackend` test fakes compiling.
+    #[test]
+    fn the_defaulted_seam_reports_no_stamp_and_never_reports_unchanged() {
+        use crate::pty::watchers::{FrameStamp, ScreenRowsSince};
+
+        struct DefaultSeamBackend;
+
+        impl PtyBackend for DefaultSeamBackend {
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+            fn spawn(
+                &self,
+                _spec: BackendSpawnSpec,
+            ) -> futures::future::BoxFuture<'_, Result<(), AppError>> {
+                Box::pin(async { Ok(()) })
+            }
+            fn write(
+                &self,
+                _authority: &BackendWriteAuthority,
+                _id: Uuid,
+                _data: &[u8],
+            ) -> Result<(), AppError> {
+                Ok(())
+            }
+            fn resize(&self, _id: Uuid, _cols: u16, _rows: u16) -> Result<(), AppError> {
+                Ok(())
+            }
+            fn kill(&self, _id: Uuid) -> Result<(), AppError> {
+                Ok(())
+            }
+            fn has_session(&self, _id: Uuid) -> bool {
+                true
+            }
+            fn get_screen_snapshot(&self, _id: Uuid) -> Option<PtyScreenSnapshot> {
+                None
+            }
+            fn get_pty_size(&self, _id: Uuid) -> Option<(u16, u16)> {
+                None
+            }
+            fn get_screen_rows(&self, _id: Uuid) -> ScreenRowsRead {
+                ScreenRowsRead::Rows(vec!["only row".to_string()])
+            }
+            fn register_response_watcher(
+                &self,
+                _session_id: Uuid,
+                _request_id: String,
+                _response_dir: std::path::PathBuf,
+            ) {
+            }
+            fn terminate_job_for_session(&self, _id: Uuid) -> bool {
+                false
+            }
+            fn kill_all_jobs(&self) -> (usize, usize) {
+                (0, 0)
+            }
+        }
+
+        let id = Uuid::new_v4();
+        let manager = PtyManager::new_for_test(Arc::new(DefaultSeamBackend));
+        manager.record_route(id, SessionBackendKind::LocalProcess);
+
+        let first = manager.screen_rows_since(id, None);
+        let frame = first.frame().expect("the default must produce a frame");
+        assert!(frame.stamp.is_none());
+        assert_eq!(frame.rows, vec!["only row".to_string()]);
+        assert_eq!(frame.wrapped, vec![false]);
+        assert_eq!(frame.cursor_row, 0);
+
+        // Handed a stamp that would match anything, it still refuses to claim "unchanged":
+        // it has no sequence of its own to compare against.
+        let seen = FrameStamp {
+            sequence: 0,
+            rows: 1,
+            cols: 1,
+        };
+        assert!(matches!(
+            manager.screen_rows_since(id, Some(seen)),
+            ScreenRowsSince::Frame(_)
+        ));
     }
 
     #[test]

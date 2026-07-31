@@ -300,10 +300,81 @@ impl SessionIoFanout {
         Some(screen.rows(0, cols).collect())
     }
 
+    /// #1171 - the same live grid `get_screen_rows` clones, but only when it CHANGED since
+    /// the caller last looked, plus the two O(1) facts the watcher engine needs from the same
+    /// guard: the per-row wrap flags and the cursor row.
+    ///
+    /// The unchanged path clones nothing and allocates nothing: `ScreenRowsSince::Unchanged`
+    /// carries no rows, so that property is enforced by the type rather than by a comment.
+    /// This is what lets a 200 ms sampler cost less than the 5 s one it sits beside.
+    ///
+    /// `seen` is compared against the WHOLE stamp, sequence and size, because
+    /// `resize_screen_and_broadcast` reflows the grid without bumping `output_sequence`
+    /// (`:202-212`) - a sequence-only comparison would report `Unchanged` over a screen that
+    /// was just re-laid at a new width. `output_sequence` is only READ here; its semantics
+    /// are #955's and are untouched.
+    ///
+    /// TWO-state on the negative side for the same reason `get_screen_rows` is: `Missing`
+    /// means "no parser for this id" and says NOTHING about whether the session is over. Only
+    /// a backend holds the liveness oracle, so only a backend can turn this into `Gone`.
+    ///
+    /// Sync, and everything is cloned out: the guard is a local and is released at the return,
+    /// so no caller can hold it across an await.
+    pub fn get_screen_rows_since(
+        &self,
+        id: Uuid,
+        seen: Option<crate::pty::watchers::FrameStamp>,
+    ) -> crate::pty::watchers::ScreenRowsSince {
+        use crate::pty::watchers::{FrameStamp, ScreenFrame, ScreenRowsSince};
+
+        let Ok(parsers) = self.screen_parsers.lock() else {
+            return ScreenRowsSince::Missing;
+        };
+        let Some(state) = parsers.get(&id) else {
+            return ScreenRowsSince::Missing;
+        };
+        let screen = state.parser.screen();
+        let (grid_rows, cols) = screen.size();
+        let stamp = FrameStamp {
+            sequence: state.output_sequence,
+            rows: grid_rows,
+            cols,
+        };
+        if seen == Some(stamp) {
+            return ScreenRowsSince::Unchanged;
+        }
+
+        let rows: Vec<String> = screen.rows(0, cols).collect();
+        // Indexed off the cloned rows and not off `size().0`, so `wrapped.len() == rows.len()`
+        // holds by construction: the frame diff indexes the two together.
+        let wrapped: Vec<bool> = (0..rows.len() as u16)
+            .map(|row| screen.row_wrapped(row))
+            .collect();
+        ScreenRowsSince::Frame(ScreenFrame {
+            rows,
+            wrapped,
+            cursor_row: screen.cursor_position().0,
+            stamp: Some(stamp),
+        })
+    }
+
     pub fn get_pty_size(&self, id: Uuid) -> Option<(u16, u16)> {
         let parsers = self.screen_parsers.lock().ok()?;
         let state = parsers.get(&id)?;
         Some(state.parser.screen().size())
+    }
+
+    /// #1171 - poison `screen_parsers` deterministically, so the "a lock we could not take
+    /// makes no claim about the session" arm is covered by a test rather than by reasoning.
+    /// Mould: `PtyManager::poison_route_registry_for_test` (`manager.rs:346-355`).
+    #[cfg(test)]
+    pub(crate) fn poison_screen_parsers_for_test(&self) {
+        let parsers = Arc::clone(&self.screen_parsers);
+        let result = std::panic::catch_unwind(move || {
+            let _guard = parsers.lock().unwrap();
+            panic!("poison the screen parser map for deterministic test coverage");
+        });
+        assert!(result.is_err(), "screen-parser poison fixture must panic");
     }
 
     pub fn register_response_watcher(

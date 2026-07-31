@@ -535,6 +535,114 @@ pub struct AppSettings {
     /// themselves (e.g. a CLAUDE_CODE_OAUTH_TOKEN env row).
     #[serde(default = "default_true")]
     pub container_credentials_from_host: bool,
+    /// #1171 - root-level watcher patterns, keyed by watcher id.
+    ///
+    /// Root-level and not a field on `AgentConfig`, so the 20-plus struct-construction sites
+    /// that already had to write `context_regex: None` are untouched, AND so a pattern can
+    /// apply to every agent - which is exactly what the per-agent shape cannot express. Same
+    /// shape as `auto_self_clear_by_agent` (`:530-531`). `BTreeMap` for a stable on-disk
+    /// order and clean diffs, and because the 8-watcher budget resolves in key order.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub watchers: BTreeMap<String, WatcherEntry>,
+    /// #1171 - geometry of the watcher activity window.
+    ///
+    /// `skip_serializing_if` and deliberately NOT a copy of `main_geometry` (`:367-369`),
+    /// which lacks it: without the skip, `"watchersGeometry": null` would appear in every
+    /// user's file on the next save, so configuring nothing would still leave a trace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watchers_geometry: Option<WindowGeometry>,
+}
+
+/// #1171 - one entry of the root `watchers` map, or whatever the user wrote there.
+///
+/// **This wrapper is what stops a malformed watcher from destroying the settings file.**
+/// `parse_settings_json` (`:870-871`) deserializes `AppSettings` in ONE shot and
+/// `load_settings_from_path` (`:1661-1664`) replaces any failure with
+/// `AppSettings::default()`, leaving one log line. A hand-written `"mode": "State"`,
+/// `"commands": "claude"` or `"dedupeWindowMs": "2000"` would therefore start
+/// AgentsCommander with NO AGENTS CONFIGURED, and every later save would be refused by the
+/// #1077 write gate (`read_disk_object_for_write`, `:2565-2591`). With the wrapper the
+/// consequence is one skipped watcher.
+///
+/// `untagged` tries `Valid` first, so `Invalid` only ever catches what `WatcherConfig`
+/// rejected. The value is kept verbatim so a save round-trips the user's bytes instead of
+/// deleting what it could not read.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum WatcherEntry {
+    Valid(WatcherConfig),
+    /// Anything that did not deserialize as a `WatcherConfig`. Skipped by resolution and
+    /// logged once per changed value.
+    Invalid(serde_json::Value),
+}
+
+impl WatcherEntry {
+    pub fn valid(&self) -> Option<&WatcherConfig> {
+        match self {
+            WatcherEntry::Valid(config) => Some(config),
+            WatcherEntry::Invalid(_) => None,
+        }
+    }
+}
+
+/// #1171 - one user-configured watcher.
+///
+/// `mode` and `pattern` stay REQUIRED. A watcher without either is not a watcher, and with
+/// the wrapper above the consequence of omitting one is a single skipped entry rather than a
+/// lost configuration. A defaulted `mode` would silently run a watcher the user never
+/// described.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WatcherConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    pub mode: WatcherMode,
+    pub pattern: String,
+    /// Absent or null: reaches every configured agent. Present: only entries whose `command`
+    /// executable stem matches EXACTLY. Present and empty: reaches none.
+    ///
+    /// `Option` and not `#[serde(default)] Vec`, because absent and `[]` are opposites here
+    /// and only `Option` lets serde tell them apart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commands: Option<Vec<String>>,
+    #[serde(default)]
+    pub dedupe: WatcherDedupe,
+    #[serde(default = "default_dedupe_window_ms")]
+    pub dedupe_window_ms: u64,
+    /// Free text, e.g. "claude 2.1.212". Never validated, never parsed. It exists because
+    /// `context_scrape/rows.rs:183-186` documents that a TUI format already had to be
+    /// re-captured once, and that fact currently lives only in a Rust comment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub captured_against: Option<String>,
+}
+
+/// #1171 - what a match means.
+///
+/// `state` is a reading: idempotent, gated, taken over the whole frame. `occurrence` is an
+/// event: every match the frame diff declares evaluable counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WatcherMode {
+    State,
+    Occurrence,
+}
+
+/// #1171 - what makes two `occurrence` matches "the same one" inside the dedupe window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WatcherDedupe {
+    /// The matched logical row text.
+    #[default]
+    Row,
+    /// The joined capture groups: two rows truncated differently that capture the same path
+    /// are one event.
+    Capture,
+    /// Every match counts.
+    None,
+}
+
+fn default_dedupe_window_ms() -> u64 {
+    2000
 }
 
 fn default_true() -> bool {
@@ -761,6 +869,8 @@ impl Default for AppSettings {
             auto_self_clear_enabled: true,
             auto_self_clear_by_agent: std::collections::BTreeMap::new(),
             container_credentials_from_host: true,
+            watchers: BTreeMap::new(),
+            watchers_geometry: None,
         }
     }
 }
@@ -5063,6 +5173,157 @@ mod tests {
 
         let lists = super::read_project_paths_from_disk(&path).unwrap().unwrap();
         assert_eq!(lists.project_paths, vec![a, b]);
+    }
+
+    /// #1171, 9.2.17 - **the regression a plain `BTreeMap<String, WatcherConfig>` would let
+    /// through, and whose failure mode is the whole settings file.**
+    ///
+    /// Three hand-written mistakes, one per entry: a capitalized enum variant, a scalar where
+    /// a list belongs, and a quoted number. Without the per-entry wrapper, ONE of them makes
+    /// `serde_json::from_value::<AppSettings>` fail, `load_settings_from_path` replaces
+    /// everything with `AppSettings::default()`, and AgentsCommander starts with no agents
+    /// configured and one log line - after which every save is refused by the #1077 gate.
+    #[test]
+    fn one_malformed_watcher_does_not_take_the_settings_file_down() {
+        let contents = serde_json::json!({
+            "defaultShell": "powershell.exe",
+            "defaultShellArgs": ["-NoLogo"],
+            "agents": [
+                { "id": "a1", "label": "Claude", "command": "claude", "color": "#fff" },
+                { "id": "a2", "label": "Codex", "command": "codex", "color": "#000" }
+            ],
+            "watchers": {
+                "bad-mode": { "mode": "State", "pattern": "x" },
+                "bad-commands": { "mode": "occurrence", "pattern": "x", "commands": "claude" },
+                "bad-window": { "mode": "occurrence", "pattern": "x", "dedupeWindowMs": "2000" },
+                "good": { "mode": "state", "pattern": "Permission required" }
+            }
+        })
+        .to_string();
+
+        let (settings, _) = super::parse_settings_json(&contents, "test").expect(
+            "a malformed watcher must never fail the whole file: that is what the wrapper is for",
+        );
+
+        // Every OTHER setting survived.
+        assert_eq!(settings.agents.len(), 2);
+        assert_eq!(settings.default_shell, "powershell.exe");
+
+        // Every entry is still there, and exactly one of them resolved.
+        assert_eq!(settings.watchers.len(), 4);
+        let valid: Vec<&str> = settings
+            .watchers
+            .iter()
+            .filter(|(_, entry)| entry.valid().is_some())
+            .map(|(id, _)| id.as_str())
+            .collect();
+        assert_eq!(valid, vec!["good"]);
+
+        // ...and the three bad ones are kept VERBATIM, so a save writes back the user's bytes
+        // instead of deleting what it could not read.
+        let round_tripped = serde_json::to_value(&settings.watchers).expect("serializes");
+        assert_eq!(
+            round_tripped["bad-mode"],
+            serde_json::json!({ "mode": "State", "pattern": "x" })
+        );
+        assert_eq!(
+            round_tripped["bad-commands"],
+            serde_json::json!({ "mode": "occurrence", "pattern": "x", "commands": "claude" })
+        );
+        assert_eq!(
+            round_tripped["bad-window"],
+            serde_json::json!({ "mode": "occurrence", "pattern": "x", "dedupeWindowMs": "2000" })
+        );
+    }
+
+    /// #1171, 9.2.18 - a user who configures nothing never sees either new key appear.
+    #[test]
+    fn a_settings_file_with_no_watchers_round_trips_without_the_new_keys() {
+        let contents = serde_json::json!({
+            "defaultShell": "powershell.exe",
+            "defaultShellArgs": [],
+            "agents": []
+        })
+        .to_string();
+
+        let (settings, _) = super::parse_settings_json(&contents, "test").expect("parses");
+        assert!(settings.watchers.is_empty());
+        assert!(settings.watchers_geometry.is_none());
+
+        let written = serde_json::to_value(&settings).expect("serializes");
+        let root = written.as_object().expect("object");
+        assert!(
+            !root.contains_key("watchers"),
+            "an empty map must not appear"
+        );
+        assert!(
+            !root.contains_key("watchersGeometry"),
+            "this is why watchersGeometry carries skip_serializing_if and mainGeometry does not"
+        );
+    }
+
+    /// #1171, 9.2.19 - a configured watcher round-trips value for value, INCLUDING the
+    /// absent-against-`[]` distinction for `commands`, which is the one place where the two
+    /// are opposites: absent reaches every agent, `[]` reaches none.
+    #[test]
+    fn watchers_round_trip_through_save_and_load_including_absent_versus_empty() {
+        let contents = serde_json::json!({
+            "defaultShell": "powershell.exe",
+            "defaultShellArgs": [],
+            "agents": [],
+            "watchers": {
+                "all-agents": { "mode": "state", "pattern": "  Permission" },
+                "nobody": { "mode": "occurrence", "pattern": "Read", "commands": [] },
+                "claude-only": {
+                    "enabled": false,
+                    "mode": "occurrence",
+                    "pattern": "Read \\((.+)\\)",
+                    "commands": ["claude"],
+                    "dedupe": "capture",
+                    "dedupeWindowMs": 5000,
+                    "capturedAgainst": "claude 2.1.212"
+                }
+            }
+        })
+        .to_string();
+
+        let (settings, _) = super::parse_settings_json(&contents, "test").expect("parses");
+
+        let all = settings.watchers["all-agents"].valid().expect("valid");
+        assert!(all.enabled, "enabled defaults to true");
+        assert_eq!(all.mode, super::WatcherMode::State);
+        assert_eq!(all.pattern, "  Permission");
+        assert!(all.commands.is_none(), "absent means every agent");
+        assert_eq!(all.dedupe, super::WatcherDedupe::Row);
+        assert_eq!(all.dedupe_window_ms, 2000);
+
+        let nobody = settings.watchers["nobody"].valid().expect("valid");
+        assert_eq!(
+            nobody.commands.as_deref(),
+            Some(&[] as &[String]),
+            "`[]` must survive as `[]` and never collapse into absent"
+        );
+
+        let claude = settings.watchers["claude-only"].valid().expect("valid");
+        assert!(!claude.enabled);
+        assert_eq!(claude.mode, super::WatcherMode::Occurrence);
+        assert_eq!(claude.dedupe, super::WatcherDedupe::Capture);
+        assert_eq!(claude.dedupe_window_ms, 5000);
+        assert_eq!(claude.captured_against.as_deref(), Some("claude 2.1.212"));
+
+        // Byte-stable: what comes back out is what went in, key for key.
+        let written = serde_json::to_value(&settings.watchers).expect("serializes");
+        let original: serde_json::Value = serde_json::from_str(&contents).expect("parses");
+        let mut expected = original["watchers"].clone();
+        // The two defaulted fields the input omitted are written explicitly, since neither
+        // carries `skip_serializing_if`: they are settings with a value, not absent ones.
+        expected["all-agents"]["enabled"] = serde_json::json!(true);
+        expected["all-agents"]["dedupe"] = serde_json::json!("row");
+        expected["all-agents"]["dedupeWindowMs"] = serde_json::json!(2000);
+        expected["nobody"]["enabled"] = serde_json::json!(true);
+        expected["nobody"]["dedupe"] = serde_json::json!("row");
+        expected["nobody"]["dedupeWindowMs"] = serde_json::json!(2000);
+        assert_eq!(written, expected);
     }
 
     #[test]
