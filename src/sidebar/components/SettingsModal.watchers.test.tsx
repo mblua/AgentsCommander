@@ -910,6 +910,66 @@ describe("the birth state of a watcher row and how it reads (#1171)", () => {
     }
   });
 
+  /**
+   * Rename is the other writer, and it was a way out of the state that editing is not.
+   *
+   * A hand-written `{ enabled: true, pattern: "" }` stays as written until the editor touches
+   * it, which is deliberate. But the id is what the 8-per-agent budget resolves in: a `zzz`
+   * sitting outside the first eight, renamed to `aaa` from this control, walks into budget,
+   * displaces a useful watcher and runs the global regex -- without anybody going near the
+   * pattern. Renaming is delete plus create, so the row it creates owes what every created
+   * row owes.
+   */
+  it("does not let Rename carry an enabled empty pattern into a new id", async () => {
+    const fake = transport([reachRow("zzz")], {
+      zzz: { ...newWatcherConfig(), pattern: "", enabled: true },
+    });
+    const rendered = renderWithFakeTransport(
+      () => <SettingsModal section="watchers" onClose={() => {}} />,
+      fake
+    );
+    try {
+      await waitFor(() =>
+        expect(
+          rendered.root
+            .querySelector('[data-ac-testid="settings.watchers.row.zzz"]')
+            ?.getAttribute("data-ac-state")
+        ).toBe("enabled")
+      );
+
+      click(rendered.root.querySelector('[data-ac-testid="settings.watchers.renameStart.zzz"]')!);
+      const field = await waitForElement<HTMLInputElement>(
+        rendered.root,
+        '[data-ac-testid="settings.watchers.renameInput.zzz"]'
+      );
+      input(field, "aaa");
+      click(
+        rendered.root.querySelector('[data-ac-testid="settings.watchers.renameConfirm.zzz"]')!
+      );
+
+      await waitFor(() =>
+        expect(
+          rendered.root.querySelector('[data-ac-testid="settings.watchers.row.aaa"]')
+        ).toBeTruthy()
+      );
+      expect(
+        rendered.root
+          .querySelector('[data-ac-testid="settings.watchers.row.aaa"]')
+          ?.getAttribute("data-ac-state")
+      ).toBe("disabled");
+
+      click(rendered.root.querySelector('[data-ac-testid="settings.save"]')!);
+      await waitFor(() => expect(fake.lastCall("save_settings_draft")).toBeTruthy());
+      const watchers = (fake.lastCall("save_settings_draft")!.args as { draft: AppSettings })
+        .draft.watchers;
+      expect(watchers?.zzz).toBeUndefined();
+      expect((watchers?.aaa as WatcherConfig).enabled).toBe(false);
+      expect((watchers?.aaa as WatcherConfig).pattern).toBe("");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
   it("lets the row be enabled once it has a pattern", async () => {
     const fake = transport([reachRow("probe")], {
       probe: { ...newWatcherConfig(), pattern: "Read" },

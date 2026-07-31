@@ -211,6 +211,17 @@ export function distinctCommandStems(agents: readonly AgentConfig[]): string[] {
  * This really is delete plus create: the id is the map key and the same grouping key the
  * activity window and the history counters use, so activations already recorded under the
  * old id keep it. The UI says so next to the control.
+ *
+ * **And because it is a create, the row it produces goes through `withWatcherInvariant` like
+ * every other row the editor creates.** Without that, Rename is a way out of a state that
+ * editing has no way out of: a hand-written `{ enabled: true, pattern: "" }` is deliberately
+ * left as written until the editor touches it, but the id is exactly what the 8-per-agent
+ * budget resolves in, so a `zzz` sitting outside the first eight, renamed to `aaa`, walks
+ * into budget, displaces a useful watcher and runs the global regex -- with nobody having
+ * gone near the pattern.
+ *
+ * An entry this build could not read still moves byte for byte: there is no config to hold
+ * an invariant over, and preserving what it cannot read is the contract.
  */
 export function renameWatcherEntry(
   watchers: Readonly<Record<string, WatcherEntry>>,
@@ -219,8 +230,11 @@ export function renameWatcherEntry(
 ): Record<string, WatcherEntry> {
   const renamed: Record<string, WatcherEntry> = {};
   for (const [id, entry] of Object.entries(watchers)) {
-    if (id === fromId) renamed[toId] = entry;
-    else renamed[id] = entry;
+    if (id !== fromId) {
+      renamed[id] = entry;
+      continue;
+    }
+    renamed[toId] = isWatcherConfig(entry) ? withWatcherInvariant(entry) : entry;
   }
   return renamed;
 }

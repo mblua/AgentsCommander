@@ -1031,9 +1031,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     }));
   };
 
-  // The single writer of a watcher config into the map, which is where the editor's one
-  // invariant belongs: no call path can enable a row without a pattern, and none can leave an
-  // enabled row behind by emptying one.
+  // One of the two places the editor puts a row into the map, and each applies the editor's
+  // invariant: no path can enable a row without a pattern, and none can leave an enabled row
+  // behind by emptying one. The other is `renameWatcherEntry`, which creates a row under a
+  // new id and is where an earlier "there is only one writer" reading was wrong.
   const setWatcherConfig = (id: string, config: WatcherConfig) => {
     const next = withWatcherInvariant(config);
     mutateWatchers((map) => {

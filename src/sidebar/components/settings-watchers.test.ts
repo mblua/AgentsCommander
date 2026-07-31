@@ -378,6 +378,40 @@ describe("renaming a watcher (#1171)", () => {
     const watchers: Record<string, WatcherEntry> = { a: config() };
     expect(renameWatcherEntry(watchers, "missing", "new")).toEqual(watchers);
   });
+
+  /**
+   * Renaming IS delete plus create, which the editor states next to the control, so the row
+   * it creates has to satisfy what every other created row satisfies.
+   *
+   * A hand-written `{ enabled: true, pattern: "" }` is deliberately legal for Rust and stays
+   * as written until the editor touches it. But moving it is the editor writing a row, and
+   * the id is what the 8-per-agent budget resolves in: a `zzz` sitting outside the first
+   * eight, renamed to `aaa`, walks into budget, displaces a useful watcher and runs the
+   * global regex -- with nobody having gone near the pattern.
+   */
+  it("applies the editor's invariant to the row it creates", () => {
+    const renamed = renameWatcherEntry(
+      { zzz: config({ enabled: true, pattern: "" }) },
+      "zzz",
+      "aaa"
+    );
+    expect((renamed["aaa"] as WatcherConfig).enabled).toBe(false);
+    expect((renamed["aaa"] as WatcherConfig).pattern).toBe("");
+  });
+
+  it("leaves a renamed row with a pattern exactly as it was", () => {
+    const original = config({ enabled: true, pattern: "Read" });
+    const renamed = renameWatcherEntry({ old: original }, "old", "new");
+    expect(renamed["new"]).toEqual(original);
+  });
+
+  it("still moves an unreadable entry byte for byte, invariant or not", () => {
+    // There is no config to hold an invariant over, and the contract is that what this build
+    // could not read comes back exactly as written.
+    const unreadable: WatcherEntry = { enabled: true, pattern: "", mode: "State" };
+    const renamed = renameWatcherEntry({ old: unreadable }, "old", "new");
+    expect(renamed["new"]).toBe(unreadable);
+  });
 });
 
 describe("command stems for the Selected options (#1171)", () => {
