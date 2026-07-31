@@ -700,39 +700,135 @@ async fn read_watcher_preview_frame(
     .flatten()
 }
 
-/// #1171 - which agents a watcher reaches, and which of them it is out of budget for.
+/// #1171 - one watcher row of the draft the Settings modal holds in memory.
+///
+/// Only the three fields `reaches` and the budget depend on (plan 4.8). `pattern`, `mode`,
+/// `dedupe` and `capturedAgainst` take part in neither and are deliberately not sent: the row
+/// already shows its pattern, and `preview_watcher_pattern` answers compilability separately,
+/// so carrying it here would inflate every debounced payload to restate an answer that is
+/// already on screen next to this one.
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WatcherDraftEntry {
+    pub id: String,
+    pub enabled: bool,
+    #[serde(default)]
+    pub commands: Option<Vec<String>>,
+}
+
+/// #1171 - one agent row of the same draft.
+///
+/// The modal edits agents and watchers in ONE store and one Save writes both, so resolving
+/// against the SAVED agent list would answer about a state the user has already left. Two of
+/// the three agent edits over-report that way: deleting an agent leaves it named in a reach
+/// list it will not be in, and changing an agent's `command` leaves a watcher reported as
+/// reaching it under the old stem. Only adding an agent under-reports.
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WatcherAgentDraftEntry {
+    pub id: String,
+    pub label: String,
+    pub command: String,
+}
+
+/// #1171 - one agent that a draft row's selector reaches.
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WatcherReachEntry {
     pub agent_id: String,
     pub agent_label: String,
     pub command_stem: String,
-    /// False when this watcher reaches the agent but falls outside its 8-watcher budget.
-    pub in_budget: bool,
+    /// Whether this row is enabled in the draft AND holds one of this agent's 8 slots once
+    /// every other ENABLED row of the draft is counted. It is membership of the engine's own
+    /// `running` list, and NOT a promise that the watcher will emit anything: a resolved
+    /// watcher whose pattern does not compile is allocated a slot and is inert. Compilability
+    /// is a separate dimension, answered per row by `preview_watcher_pattern`, and this field
+    /// deliberately does not restate it. A disabled row is always false here, and the editor,
+    /// which owns `enabled`, must say "disabled" rather than "budget".
+    pub allocated: bool,
 }
 
-/// #1171 - resolve a CANDIDATE selector against the configured agents.
+/// #1171 - the reach of one draft row.
 ///
-/// This exists so the Settings UI never reimplements stem normalization. There is exactly one
-/// stem rule in the tree (`command_executable_basename`), the catalog rejects prefix matching
-/// in writing because `pi` and `agent` false-match under it, and the frontend's existing
-/// `starts_with` rule in `suggestedContextRegex` must not be ported. Asking the backend is the
-/// only way to keep that true.
+/// Exactly one per requested row, in request order. It carries `id` back because the editor
+/// filters unrecognised rows out of the request, so its table positions do not match the
+/// response positions.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WatcherReachRow {
+    pub id: String,
+    /// Every agent this row's SELECTOR reaches, whether or not the row is enabled. Reach is a
+    /// property of the selector alone; `allocated` is where enablement and budget land.
+    pub entries: Vec<WatcherReachEntry>,
+}
+
+/// #1171 - resolve the WHOLE Settings draft, watchers and agents, and report per row which
+/// agents its selector reaches and which of those it holds a slot on.
 ///
-/// The candidate replaces the saved entry of the same id before resolving, so the budget is
-/// computed against the map the user is about to save rather than the one on disk.
+/// This exists so the Settings UI reimplements neither stem normalization nor the budget rule.
+/// There is exactly one stem rule in the tree (`command_executable_basename`), the catalog
+/// rejects prefix matching in writing because `pi` and `agent` false-match under it, and the
+/// frontend's existing `starts_with` rule in `suggestedContextRegex` must not be ported.
+/// Neither the `BTreeMap` key order nor the number 8 is written a second time in TypeScript.
+///
+/// It takes the whole draft and not one row because allocation is a property of the SET:
+/// resolution walks the map in key order and takes the first 8 that reach an agent. A command
+/// receiving a single row could only answer by inventing what the rest of the set is, and the
+/// only set available to it is the saved one, which is not the one the user is editing. With
+/// an empty saved map, adding nine rows before Save would make all nine report that they run,
+/// and then only eight would - a positive claim about a watcher that will not run, which is
+/// the opposite of the fail-closed direction this feature takes everywhere else.
+///
+/// Both halves come from the draft and nothing comes from disk: no settings are read and **no
+/// lock is taken**, so a preview can never contend with a save.
 #[tauri::command]
 pub async fn preview_watcher_reach(
-    settings: State<'_, crate::config::settings::SettingsState>,
-    watcher_id: String,
-    commands: Option<Vec<String>>,
-) -> Result<Vec<WatcherReachEntry>, String> {
+    watchers: Vec<WatcherDraftEntry>,
+    agents: Vec<WatcherAgentDraftEntry>,
+) -> Result<Vec<WatcherReachRow>, String> {
+    // Synchronous CPU over an input the caller controls: one pass is O(agents x total selector
+    // ENTRIES), and nothing bounds either, so one row carrying ten thousand selector entries
+    // costs what ten thousand rows carrying one each cost. Off the async worker, following
+    // `preview_watcher_pattern` above. No cap is introduced here on purpose: the engine
+    // already runs exactly this resolution over exactly this data every 200 ms, so a payload
+    // big enough to make two debounced passes expensive is already costing five times as much
+    // per second inside the tick, and a cap only on the preview would feel like a fix while
+    // leaving the cost where it is.
+    //
+    // The command owns its inputs and takes no lock, so the move is a wrapper and nothing else.
+    tokio::task::spawn_blocking(move || resolve_draft_reach(&watchers, &agents))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// The two passes behind `preview_watcher_reach`, pure and off the runtime.
+///
+/// Reach and allocation are different questions, and each gets its own pass over the SAME
+/// draft, so no counterfactual budget is computed and no set of answers can disagree with
+/// itself:
+///
+/// - **Pass A, every row forced enabled**, supplies `entries`. Reach does not depend on any
+///   other row, so forcing enablement changes no row's answer but its own presence, and a
+///   disabled row still shows the agents its selector reaches - the state where the control is
+///   needed most.
+/// - **Pass B, every row at its real draft `enabled`**, is the engine's own resolution and
+///   supplies `allocated`.
+///
+/// Running one forced-enabled pass PER ROW instead would let nine rows all report a slot on an
+/// agent that has eight, because each row's own pass silently displaces a different one.
+///
+/// Fixed points that the editor cannot produce but the contract still defines: a duplicate id
+/// means the later row wins when the map is built and both response rows report that one
+/// resolution, and an empty id is a legal key that sorts first and is not special-cased.
+fn resolve_draft_reach(
+    watchers: &[WatcherDraftEntry],
+    agents: &[WatcherAgentDraftEntry],
+) -> Vec<WatcherReachRow> {
     use crate::config::settings::{WatcherConfig, WatcherEntry, WatcherMode};
     use crate::pty::watchers::{resolve_watchers, WatcherAgent};
+    use std::collections::BTreeMap;
 
-    let settings = settings.read().await;
-    let agents: Vec<WatcherAgent> = settings
-        .agents
+    let resolution_agents: Vec<WatcherAgent> = agents
         .iter()
         .map(|agent| WatcherAgent {
             id: agent.id.clone(),
@@ -740,112 +836,128 @@ pub async fn preview_watcher_reach(
         })
         .collect();
 
-    // Start from whatever the saved entry says, so mode, pattern and dedupe are the user's,
-    // and override exactly two things.
-    //
-    // `commands` is the selector being previewed, which is the whole point of the call.
-    //
-    // `enabled` is forced ON because the question this command answers is "which agents WOULD
-    // this selector reach", not "which agents does it reach right now". A disabled watcher
-    // would otherwise always answer "reaches 0 agents", which makes the reach control useless
-    // in the one editor state where the user most needs it - configuring a watcher before
-    // turning it on. Forcing it also makes the budget honest: it reports whether enabling this
-    // watcher WOULD leave it outside some agent's 8-watcher budget.
-    //
-    // Nothing here is written back: the map below is a local copy used to resolve and dropped.
-    let mut candidate = match settings.watchers.get(&watcher_id).and_then(|e| e.valid()) {
-        Some(saved) => saved.clone(),
-        None => WatcherConfig {
-            enabled: true,
-            mode: WatcherMode::Occurrence,
-            pattern: String::new(),
-            commands: None,
-            dedupe: Default::default(),
-            dedupe_window_ms: 2000,
-            captured_against: None,
-        },
+    // `mode`, `pattern`, `dedupe` and `dedupeWindowMs` take no part in resolution and do not
+    // travel, so they are placeholders here and are never read back out.
+    let draft_map = |force_enabled: bool| -> BTreeMap<String, WatcherEntry> {
+        watchers
+            .iter()
+            .map(|row| {
+                (
+                    row.id.clone(),
+                    WatcherEntry::Valid(WatcherConfig {
+                        enabled: force_enabled || row.enabled,
+                        mode: WatcherMode::Occurrence,
+                        pattern: String::new(),
+                        commands: row.commands.clone(),
+                        dedupe: Default::default(),
+                        dedupe_window_ms: 0,
+                        captured_against: None,
+                    }),
+                )
+            })
+            .collect()
     };
-    candidate.commands = commands;
-    candidate.enabled = true;
 
-    let mut watchers = settings.watchers.clone();
-    watchers.insert(watcher_id.clone(), WatcherEntry::Valid(candidate));
-    let labels: std::collections::HashMap<&str, (&str, &str)> = settings
-        .agents
-        .iter()
-        .map(|agent| {
-            (
-                agent.id.as_str(),
-                (agent.label.as_str(), agent.command.as_str()),
-            )
-        })
-        .collect();
+    let (reach_pass, _notices) = resolve_watchers(&resolution_agents, &draft_map(true));
+    let (allocation_pass, _notices) = resolve_watchers(&resolution_agents, &draft_map(false));
 
-    let (resolved, _notices) = resolve_watchers(&agents, &watchers);
+    // Keyed by agent id and not iterated straight off `agents`, so a draft that names the same
+    // agent twice produces one entry rather than two, matching the map `resolve_watchers`
+    // itself builds.
+    let mut agent_meta: BTreeMap<String, (String, String)> = BTreeMap::new();
+    for agent in agents {
+        let stem =
+            crate::config::coding_agents_catalog::command_executable_basename(&agent.command)
+                .unwrap_or_default();
+        agent_meta.insert(agent.id.clone(), (agent.label.clone(), stem));
+    }
 
-    let mut out: Vec<WatcherReachEntry> = Vec::new();
-    for (agent_id, resolution) in &resolved {
-        let running = resolution.running.iter().any(|w| w.id == watcher_id);
-        let over_budget = resolution.over_budget.iter().any(|id| id == &watcher_id);
-        if !running && !over_budget {
-            continue;
+    let mut rows = Vec::with_capacity(watchers.len());
+    for row in watchers {
+        let mut entries: Vec<WatcherReachEntry> = Vec::new();
+        for (agent_id, (label, stem)) in &agent_meta {
+            // Reach is `running` OR `over_budget`: together they hold everything whose selector
+            // matches this agent.
+            let reaches = reach_pass.get(agent_id).is_some_and(|resolution| {
+                resolution.running.iter().any(|w| w.id == row.id)
+                    || resolution.over_budget.iter().any(|id| id == &row.id)
+            });
+            if !reaches {
+                continue;
+            }
+            let allocated = allocation_pass
+                .get(agent_id)
+                .is_some_and(|resolution| resolution.running.iter().any(|w| w.id == row.id));
+            entries.push(WatcherReachEntry {
+                agent_id: agent_id.clone(),
+                agent_label: label.clone(),
+                command_stem: stem.clone(),
+                allocated,
+            });
         }
-        let (label, command) = labels.get(agent_id.as_str()).copied().unwrap_or(("", ""));
-        out.push(WatcherReachEntry {
-            agent_id: agent_id.clone(),
-            agent_label: label.to_string(),
-            command_stem: crate::config::coding_agents_catalog::command_executable_basename(
-                command,
-            )
-            .unwrap_or_default(),
-            in_budget: running,
+        // `resolve_watchers` returns a `HashMap`, so a stable order has to be imposed here
+        // rather than assumed: the Settings list must not reshuffle between keystrokes.
+        entries.sort_by(|left, right| {
+            left.agent_label
+                .cmp(&right.agent_label)
+                .then_with(|| left.agent_id.cmp(&right.agent_id))
+        });
+        rows.push(WatcherReachRow {
+            id: row.id.clone(),
+            entries,
         });
     }
-    // `resolve_watchers` returns a HashMap, so a stable order has to be imposed here rather
-    // than assumed: the Settings list must not reshuffle between keystrokes.
-    out.sort_by(|left, right| {
-        left.agent_label
-            .cmp(&right.agent_label)
-            .then_with(|| left.agent_id.cmp(&right.agent_id))
-    });
-    Ok(out)
+    rows
 }
 
 #[cfg(test)]
 mod watcher_preview_tests {
     use super::*;
-    use crate::config::settings::{
-        AgentConfig, AppSettings, SettingsState, WatcherConfig, WatcherEntry, WatcherMode,
-    };
+    use crate::config::settings::{AppSettings, SettingsState};
     use crate::errors::AppError;
     use crate::pty::backend::{BackendSpawnSpec, PtyBackend, SessionBackendKind};
     use crate::pty::watchers::{FrameStamp, ScreenFrame, ScreenRowsSince};
 
-    fn agent(id: &str, label: &str, command: &str) -> AgentConfig {
-        AgentConfig {
+    /// One watcher row of the Settings draft. `preview_watcher_reach` takes the whole draft,
+    /// so every reach test below builds a set and never a single row.
+    fn draft(id: &str, enabled: bool, commands: Option<&[&str]>) -> WatcherDraftEntry {
+        WatcherDraftEntry {
             id: id.to_string(),
-            label: label.to_string(),
-            command: command.to_string(),
-            color: "#fff".to_string(),
-            envs: Vec::new(),
-            isolated_home: false,
-            instructions_filename: None,
-            config_seed: None,
-            context_regex: None,
-            backend: Default::default(),
+            enabled,
+            commands: commands.map(|list| list.iter().map(|s| s.to_string()).collect()),
         }
     }
 
-    fn watcher(commands: Option<&[&str]>) -> WatcherEntry {
-        WatcherEntry::Valid(WatcherConfig {
-            enabled: true,
-            mode: WatcherMode::Occurrence,
-            pattern: "x".to_string(),
-            commands: commands.map(|list| list.iter().map(|s| s.to_string()).collect()),
-            dedupe: Default::default(),
-            dedupe_window_ms: 2000,
-            captured_against: None,
-        })
+    fn draft_agent(id: &str, label: &str, command: &str) -> WatcherAgentDraftEntry {
+        WatcherAgentDraftEntry {
+            id: id.to_string(),
+            label: label.to_string(),
+            command: command.to_string(),
+        }
+    }
+
+    /// The row of `id` in a reach response, which is addressed by id and never by position.
+    fn row<'a>(rows: &'a [WatcherReachRow], id: &str) -> &'a WatcherReachRow {
+        rows.iter()
+            .find(|row| row.id == id)
+            .unwrap_or_else(|| panic!("no reach row for '{id}'"))
+    }
+
+    fn allocated_on(rows: &[WatcherReachRow], id: &str, agent_id: &str) -> bool {
+        row(rows, id)
+            .entries
+            .iter()
+            .find(|entry| entry.agent_id == agent_id)
+            .unwrap_or_else(|| panic!("watcher '{id}' does not reach agent '{agent_id}'"))
+            .allocated
+    }
+
+    fn reached_agents(rows: &[WatcherReachRow], id: &str) -> Vec<String> {
+        row(rows, id)
+            .entries
+            .iter()
+            .map(|entry| entry.agent_id.clone())
+            .collect()
     }
 
     fn settings_app(settings: AppSettings) -> tauri::App<tauri::test::MockRuntime> {
@@ -1217,79 +1329,318 @@ mod watcher_preview_tests {
         .is_err());
     }
 
-    /// 9.4.58 - `preview_watcher_reach` names the agents a selector reaches, resolving stems
-    /// through the ONE rule in the tree rather than a second one written in TypeScript.
+    /// 9.4.58a - nine enabled selectorless rows against one agent: the first eight in ID order
+    /// hold a slot and the ninth does not, with nothing on disk contributing.
+    ///
+    /// The rows are sent in an order deliberately different from lexicographic, so an
+    /// implementation that honours request order instead of `BTreeMap` key order fails here.
+    /// Its failure mode is the UI telling the user that a watcher holds a slot it does not.
     #[tokio::test]
-    async fn preview_reach_reports_the_agents_a_selector_reaches() {
-        let app = settings_app(AppSettings {
-            agents: vec![
-                agent("a1", "Claude", "claude"),
-                agent("a2", "Claude Sandbox", r"C:\rt\claude.cmd"),
-                agent("a3", "Codex", "codex"),
-                agent("a4", "Pi via Claude", "pi --provider claude"),
-            ],
-            ..AppSettings::default()
-        });
-
-        let reach = preview_watcher_reach(
-            app.state(),
-            "w".to_string(),
-            Some(vec!["claude".to_string()]),
+    async fn a_draft_of_nine_rows_allocates_the_first_eight_in_id_order() {
+        let ids = ["w3", "w9", "w1", "w7", "w5", "w2", "w8", "w4", "w6"];
+        let rows = preview_watcher_reach(
+            ids.iter().map(|id| draft(id, true, None)).collect(),
+            vec![draft_agent("a1", "Claude", "claude")],
         )
         .await
         .expect("reach");
 
-        let ids: Vec<&str> = reach.iter().map(|entry| entry.agent_id.as_str()).collect();
-        assert_eq!(ids, vec!["a1", "a2"]);
-        assert!(reach.iter().all(|entry| entry.in_budget));
-        assert_eq!(reach[0].agent_label, "Claude");
-        assert_eq!(reach[1].command_stem, "claude");
-    }
-
-    /// ...and it marks a watcher that reaches an agent but falls outside its budget, so the
-    /// user sees "not running on <agent>" in the row where they made the choice instead of in
-    /// a log line they will never read.
-    #[tokio::test]
-    async fn preview_reach_marks_a_watcher_that_is_out_of_budget() {
-        let mut settings = AppSettings {
-            agents: vec![agent("a1", "Claude", "claude")],
-            ..AppSettings::default()
-        };
-        for i in 0..8 {
-            settings.watchers.insert(format!("aaa-{i}"), watcher(None));
+        assert_eq!(
+            rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            ids,
+            "one response row per request row, in request order"
+        );
+        for id in ["w1", "w2", "w3", "w4", "w5", "w6", "w7", "w8"] {
+            assert!(allocated_on(&rows, id, "a1"), "{id} is within the budget");
         }
-        let app = settings_app(settings);
-
-        let reach = preview_watcher_reach(app.state(), "zzz-mine".to_string(), None)
-            .await
-            .expect("reach");
-
-        assert_eq!(reach.len(), 1);
-        assert_eq!(reach[0].agent_id, "a1");
         assert!(
-            !reach[0].in_budget,
-            "eight watchers already run on this agent, so the ninth is configured but idle"
+            !allocated_on(&rows, "w9", "a1"),
+            "w9 sorts ninth and the agent has eight slots"
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.entries.iter().any(|entry| entry.allocated))
+                .count(),
+            crate::pty::watchers::WATCHERS_PER_AGENT_BUDGET,
+            "no draft yields more allocated rows on one agent than that agent has slots"
         );
     }
 
-    /// A selector no agent has is not an error: it simply reaches nobody, and Settings shows
-    /// "reaches 0 agents" so the typo is visible where it was made.
+    /// 9.4.58b - the draft is the whole input. A row the user deleted contributes nothing to
+    /// any agent's budget, however many rows the saved map still holds.
     #[tokio::test]
-    async fn preview_reach_of_a_stem_no_agent_has_is_empty_and_not_an_error() {
-        let app = settings_app(AppSettings {
-            agents: vec![agent("a1", "Claude", "claude")],
-            ..AppSettings::default()
-        });
-
-        let reach = preview_watcher_reach(
-            app.state(),
-            "w".to_string(),
-            Some(vec!["gemni".to_string()]),
+    async fn rows_absent_from_the_draft_consume_no_budget() {
+        let rows = preview_watcher_reach(
+            ["w1", "w2", "w3", "w4"]
+                .iter()
+                .map(|id| draft(id, true, None))
+                .collect(),
+            vec![draft_agent("a1", "Claude", "claude")],
         )
         .await
         .expect("reach");
 
-        assert!(reach.is_empty());
+        assert_eq!(rows.len(), 4);
+        for id in ["w1", "w2", "w3", "w4"] {
+            assert!(allocated_on(&rows, id, "a1"));
+        }
+    }
+
+    /// 9.4.58c - the displacement fixture: one disabled row plus eight enabled ones.
+    ///
+    /// This is the case a per-row forced-enabled pass gets wrong. There, `a`'s own pass
+    /// displaced `i` while every other row's pass displaced nobody, so all nine reported
+    /// themselves in budget on an agent with eight slots.
+    #[tokio::test]
+    async fn a_disabled_row_reaches_everything_and_allocates_nothing() {
+        let mut watchers = vec![draft("a", false, None)];
+        for id in ["b", "c", "d", "e", "f", "g", "h", "i"] {
+            watchers.push(draft(id, true, None));
+        }
+        let rows = preview_watcher_reach(watchers, vec![draft_agent("a1", "Claude", "claude")])
+            .await
+            .expect("reach");
+
+        assert_eq!(
+            reached_agents(&rows, "a"),
+            vec!["a1"],
+            "a disabled row still reports the agents its selector reaches"
+        );
+        assert!(
+            !allocated_on(&rows, "a", "a1"),
+            "a disabled row holds no slot, and the editor must call that 'disabled', not 'budget'"
+        );
+        for id in ["b", "c", "d", "e", "f", "g", "h", "i"] {
+            assert!(
+                allocated_on(&rows, id, "a1"),
+                "{id} is one of the eight enabled rows and the disabled row displaces none of them"
+            );
+        }
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.entries.iter().any(|entry| entry.allocated))
+                .count(),
+            crate::pty::watchers::WATCHERS_PER_AGENT_BUDGET
+        );
+    }
+
+    /// 9.4.58d - reach does not depend on enablement. The `entries` of a row are identical
+    /// whether it is enabled or disabled, all else equal; only `allocated` moves.
+    #[tokio::test]
+    async fn reach_does_not_depend_on_enablement() {
+        let agents = vec![
+            draft_agent("a1", "Claude", "claude"),
+            draft_agent("a2", "Codex", "codex"),
+        ];
+        let others = || {
+            vec![
+                draft("w1", true, Some(&["claude"])),
+                draft("w2", true, None),
+            ]
+        };
+
+        let mut enabled = others();
+        enabled.push(draft("w3", true, Some(&["claude", "codex"])));
+        let enabled = preview_watcher_reach(enabled, agents.clone())
+            .await
+            .expect("reach");
+
+        let mut disabled = others();
+        disabled.push(draft("w3", false, Some(&["claude", "codex"])));
+        let disabled = preview_watcher_reach(disabled, agents)
+            .await
+            .expect("reach");
+
+        assert_eq!(reached_agents(&enabled, "w3"), vec!["a1", "a2"]);
+        assert_eq!(
+            reached_agents(&disabled, "w3"),
+            reached_agents(&enabled, "w3")
+        );
+        assert!(allocated_on(&enabled, "w3", "a1"));
+        assert!(!allocated_on(&disabled, "w3", "a1"));
+        assert_eq!(
+            reached_agents(&disabled, "w1"),
+            reached_agents(&enabled, "w1"),
+            "and no other row's reach moved either"
+        );
+    }
+
+    /// 9.4.58e - the selector rules, unchanged: absent reaches every agent, `[]` reaches none,
+    /// a selector that does not tokenize skips the whole watcher, and the reported stem is the
+    /// AGENT's. In both reach-nobody cases the response row is still present, with no entries.
+    #[tokio::test]
+    async fn the_selector_rules_survive_the_draft_shape() {
+        let rows = preview_watcher_reach(
+            vec![
+                draft("all", true, None),
+                draft("none", true, Some(&[])),
+                draft("broken", true, Some(&["claude", "   "])),
+                draft("claude-only", true, Some(&["claude"])),
+                draft("typo", true, Some(&["gemni"])),
+            ],
+            vec![
+                draft_agent("a1", "Claude", "claude"),
+                draft_agent("a2", "Claude Sandbox", r"C:\rt\claude.cmd"),
+                draft_agent("a3", "Codex", "codex"),
+                draft_agent("a4", "Pi via Claude", "pi --provider claude"),
+            ],
+        )
+        .await
+        .expect("reach");
+
+        assert_eq!(reached_agents(&rows, "all"), vec!["a1", "a2", "a3", "a4"]);
+        assert!(
+            row(&rows, "none").entries.is_empty(),
+            "an empty selector reaches nobody and is the opposite of an absent one"
+        );
+        assert!(
+            row(&rows, "broken").entries.is_empty(),
+            "one unreadable selector entry skips the WHOLE watcher, never 'reaches everybody'"
+        );
+        assert!(row(&rows, "typo").entries.is_empty());
+        assert_eq!(reached_agents(&rows, "claude-only"), vec!["a1", "a2"]);
+
+        let claude_only = &row(&rows, "claude-only").entries;
+        assert_eq!(claude_only[0].agent_label, "Claude");
+        assert_eq!(
+            claude_only[1].command_stem, "claude",
+            "the stem reported is the agent's, resolved through the one rule in the tree"
+        );
+    }
+
+    /// 9.4.58f - the agents come from the draft too. Each of these three is a case where
+    /// resolving against the saved agent list would have answered about a state the user had
+    /// already left, and two of the three would have over-reported.
+    #[tokio::test]
+    async fn the_agent_half_of_the_draft_decides_the_reach() {
+        let watchers = || {
+            vec![
+                draft("on-claude", true, Some(&["claude"])),
+                draft("on-codex", true, Some(&["codex"])),
+            ]
+        };
+
+        let before = preview_watcher_reach(
+            watchers(),
+            vec![
+                draft_agent("a1", "Claude", "claude"),
+                draft_agent("a2", "Second", "claude"),
+            ],
+        )
+        .await
+        .expect("reach");
+        assert_eq!(reached_agents(&before, "on-claude"), vec!["a1", "a2"]);
+        assert!(row(&before, "on-codex").entries.is_empty());
+
+        // The command changed in the draft: the agent leaves one watcher and joins the other.
+        let retargeted = preview_watcher_reach(
+            watchers(),
+            vec![
+                draft_agent("a1", "Claude", "claude"),
+                draft_agent("a2", "Second", "codex"),
+            ],
+        )
+        .await
+        .expect("reach");
+        assert_eq!(reached_agents(&retargeted, "on-claude"), vec!["a1"]);
+        assert_eq!(reached_agents(&retargeted, "on-codex"), vec!["a2"]);
+
+        // The agent was deleted in the draft: it is named by nobody.
+        let removed = preview_watcher_reach(
+            watchers(),
+            vec![draft_agent("a1", "Claude", "claude")],
+        )
+        .await
+        .expect("reach");
+        assert_eq!(reached_agents(&removed, "on-claude"), vec!["a1"]);
+
+        // The agent was added in the draft: it is reached before it is ever saved.
+        let added = preview_watcher_reach(
+            watchers(),
+            vec![
+                draft_agent("a1", "Claude", "claude"),
+                draft_agent("a2", "Second", "claude"),
+                draft_agent("a3", "Third", "codex"),
+            ],
+        )
+        .await
+        .expect("reach");
+        assert_eq!(reached_agents(&added, "on-claude"), vec!["a1", "a2"]);
+        assert_eq!(reached_agents(&added, "on-codex"), vec!["a3"]);
+    }
+
+    /// 9.4.58j - the fixed points of the contract that the editor cannot produce but the
+    /// command still has to define: duplicate ids, an empty id, response order, entry order.
+    #[tokio::test]
+    async fn the_defined_behavior_for_drafts_the_editor_cannot_produce() {
+        let rows = preview_watcher_reach(
+            vec![
+                draft("dup", true, Some(&["codex"])),
+                draft("", true, None),
+                draft("dup", true, Some(&["claude"])),
+            ],
+            vec![
+                // Labels out of alphabetical order and one pair sharing a label, so the
+                // entry sort is exercised on both keys.
+                draft_agent("a2", "Zed", "claude"),
+                draft_agent("a3", "Alpha", "claude"),
+                draft_agent("a1", "Alpha", "claude"),
+            ],
+        )
+        .await
+        .expect("reach");
+
+        assert_eq!(
+            rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            vec!["dup", "", "dup"],
+            "one response row per request row, in request order, id carried back"
+        );
+        assert_eq!(
+            reached_agents(&rows, "dup"),
+            vec!["a1", "a3", "a2"],
+            "entries sort by label with the agent id as tie-break"
+        );
+        assert_eq!(
+            rows[0].entries.len(),
+            rows[2].entries.len(),
+            "a duplicate id is later-wins in the map and BOTH response rows report that one \
+             resolution"
+        );
+        assert_eq!(reached_agents(&rows, ""), vec!["a1", "a3", "a2"]);
+        assert!(
+            allocated_on(&rows, "", "a1"),
+            "an empty id is a legal key that sorts first, and is not special-cased"
+        );
+    }
+
+    /// 9.4.58l - allocation is slot assignment and not a promise of output.
+    ///
+    /// The pattern does not travel to the reach command at all, so a row whose regex does not
+    /// compile is allocated a slot and is inert. The two dimensions are asserted together, so
+    /// nobody later reads `allocated` as a promise that the watcher will emit.
+    #[tokio::test]
+    async fn an_uncompilable_pattern_is_allocated_and_inert() {
+        let app = settings_app(AppSettings::default());
+
+        let rows = preview_watcher_reach(
+            vec![draft("broken-regex", true, None)],
+            vec![draft_agent("a1", "Claude", "claude")],
+        )
+        .await
+        .expect("reach");
+        assert!(
+            allocated_on(&rows, "broken-regex", "a1"),
+            "an enabled row within budget holds its slot whatever its pattern is"
+        );
+
+        let compile = preview_watcher_pattern(app.handle().clone(), None, "Read (".to_string())
+            .await
+            .expect("preview");
+        assert!(
+            !compile.compiles,
+            "and the other dimension is answered next to it, by the row's own pattern preview"
+        );
+        assert!(compile.error.is_some());
     }
 }
 
