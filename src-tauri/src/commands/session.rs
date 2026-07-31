@@ -5939,6 +5939,140 @@ mod tests {
         )
     }
 
+    /// #1175. The bytes every rotation fixture seeds into `memory/MEMORY.md`.
+    /// Asserted verbatim on both sides of every differential, so a green test can
+    /// never mean "an archive directory exists but is empty".
+    const ROTATION_SENTINEL: &str = "remembered bytes";
+
+    /// #1175. One replica and the origin Agent Matrix its `config.json` identity
+    /// points at.
+    struct RotationSide {
+        replica_cwd: String,
+        matrix: std::path::PathBuf,
+    }
+
+    /// #1175. `strict_target_fixture` (`:5896`) already builds two symmetric
+    /// replicas under `<temp>/project/.ac/wg-1-team/` whose `config.json` identity
+    /// names `<temp>/project/.ac/_agent_dev-one` and `_agent_dev-two`. Those two
+    /// directories sit directly under a `.ac` workspace, so they satisfy
+    /// `is_canonical_agent_matrix_dir`, which is what `resolve_rotatable_matrix_root`
+    /// (`config/agent_memory.rs:83`) resolves a replica session to.
+    ///
+    /// Seed a non-empty `memory/` in each: #1172 D2 makes an EMPTY `memory/` a
+    /// no-op, so the sentinel is what gives the fresh half of each differential
+    /// something to rotate.
+    fn rotation_fixture() -> (tempfile::TempDir, RotationSide, RotationSide) {
+        let (temp, first_replica, second_replica) = strict_target_fixture();
+        let workspace = temp.path().join("project").join(".ac");
+        let mut sides = Vec::new();
+        for (replica_cwd, agent) in [
+            (first_replica, "_agent_dev-one"),
+            (second_replica, "_agent_dev-two"),
+        ] {
+            let matrix = workspace.join(agent);
+            std::fs::create_dir_all(matrix.join("memory")).expect("create origin memory/");
+            std::fs::write(matrix.join("memory").join("MEMORY.md"), ROTATION_SENTINEL)
+                .expect("seed origin memory/");
+            sides.push(RotationSide {
+                replica_cwd,
+                matrix,
+            });
+        }
+        let second = sides.pop().expect("second side");
+        let first = sides.pop().expect("first side");
+        (temp, first, second)
+    }
+
+    /// #1175. Every rotated sibling of `memory/`, sorted. Same shape as
+    /// `agent_memory.rs:180-189`.
+    fn rotated_memory_dirs(matrix: &std::path::Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(matrix)
+            .expect("read origin matrix")
+            .map(|entry| entry.expect("dir entry").file_name())
+            .filter_map(|name| name.to_str().map(str::to_string))
+            .filter(|name| name.starts_with("memory_"))
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// #1175. "Nothing has happened to this side." Used for the resume side AND
+    /// for a side whose own launch has not run yet, which is what stops the second
+    /// launch from laundering a side effect of the first (D3, hole 2).
+    fn assert_memory_pristine(side: &RotationSide, case: &str) {
+        assert_eq!(
+            std::fs::read_to_string(side.matrix.join("memory").join("MEMORY.md")).ok(),
+            Some(ROTATION_SENTINEL.to_string()),
+            "#1175 ({case}): the origin matrix's live memory/ must be exactly as it was"
+        );
+        let rotated = rotated_memory_dirs(&side.matrix);
+        assert!(
+            rotated.is_empty(),
+            "#1175 ({case}): nothing may have rotated, and this created {rotated:?} in {}",
+            side.matrix.display()
+        );
+        let replica = std::path::Path::new(&side.replica_cwd);
+        assert!(
+            rotated_memory_dirs(replica).is_empty() && !replica.join("memory").exists(),
+            "#1175 ({case}): the replica itself must gain no memory* entry"
+        );
+    }
+
+    /// #1175. The RESUME assertion: pristine, PLUS a witness that the launch
+    /// actually entered the context block.
+    ///
+    /// The witness is not decoration. `:2041` is an `if let`, and a launch that
+    /// skips it still reaches the spawn, so `spawn_count` cannot see the
+    /// difference; without this, "nothing rotated" is satisfiable by a resume that
+    /// never reached the gate at all.
+    /// `materialize_agent_context_file_with_filename_activated`
+    /// (`config/session_context.rs:2215`) writes `cwd.join(target_filename)`, and
+    /// the fixture seeds only `config.json` into a replica, so this file existing
+    /// means the block ran. Measured in probe 14 and in 2.7.
+    fn assert_resume_left_memory_alone(side: &RotationSide, case: &str) {
+        assert!(
+            std::path::Path::new(&side.replica_cwd)
+                .join("AGENTS.md")
+                .is_file(),
+            "#1175 ({case}): the resume must have ENTERED the context block; without \
+             this witness the no-rotation assertion below can pass vacuously"
+        );
+        assert_memory_pristine(side, case);
+    }
+
+    /// #1175. The FRESH assertion, which is also the POSITIVE CONTROL: it fails if
+    /// the launch never reached the rotation chokepoint, which is what makes a green
+    /// `assert_resume_left_memory_alone` on the resume side attributable to the gate
+    /// rather than to an unreached call site.
+    fn assert_memory_rotated_once(side: &RotationSide, case: &str) {
+        let rotated = rotated_memory_dirs(&side.matrix);
+        assert_eq!(
+            rotated.len(),
+            1,
+            "#1175 ({case}): a fresh launch must rotate exactly once, found {rotated:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(side.matrix.join(&rotated[0]).join("MEMORY.md")).ok(),
+            Some(ROTATION_SENTINEL.to_string()),
+            "#1175 ({case}): the archive must carry the previous session's bytes"
+        );
+        let live = side.matrix.join("memory");
+        assert!(
+            live.is_dir(),
+            "#1175 ({case}): the fresh session must get a live memory/ back"
+        );
+        assert_eq!(
+            std::fs::read_dir(&live).expect("read live memory/").count(),
+            0,
+            "#1175 ({case}): the recreated memory/ starts empty"
+        );
+        let replica = std::path::Path::new(&side.replica_cwd);
+        assert!(
+            rotated_memory_dirs(replica).is_empty() && !replica.join("memory").exists(),
+            "#1175 ({case}): the replica itself must gain no memory* entry"
+        );
+    }
+
     async fn create_target_for_test(
         app: &tauri::App<tauri::test::MockRuntime>,
         session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
@@ -7310,13 +7444,47 @@ mod tests {
         );
     }
 
-    // T16 (#1172 D5). The fresh-versus-resume gate is one boolean at a call site
-    // inside a large async function the suite does not drive end to end, so it
-    // has no natural unit test: deleting `start_fresh &&` compiles, passes every
-    // other test, and silently starts rotating memory on every app-startup
-    // restore, which is the exact outcome the user ruled out.
+    // T16 (#1172 D5), rescoped by #1175. READ THIS BEFORE TRUSTING IT.
+    //
+    // This is a SOURCE-LEVEL INVENTORY over `session.rs` alone. It does NOT prove
+    // that a resume never rotates, and it does not close the class of changes that
+    // retarget the rotation. Three measured facts bound it:
+    //
+    //   - A cross-file alias (`pub(crate) use ... as <alias>;` in `config/mod.rs`
+    //     plus an ungated call to the alias here) keeps assertions 1 to 3 intact
+    //     while a resume rotates. Recorded in the issue.
+    //   - A cross-file CALL added in `lib.rs` before the restore at `:2350` is
+    //     invisible to every assertion here and to both behavioral tests below.
+    //   - `skip_auto_resume |= is_coordinator;` inserted immediately above the
+    //     binding leaves ALL FIVE assertions and BOTH behavioral tests green while
+    //     a coordinator resume rotates. Measured; plan 2.8.
+    //
+    // What it DOES enforce, and what nothing else in this suite can:
+    //   - assertions 1 to 3: `rotate_origin_memory_at_spawn` is REFERENCED exactly
+    //     twice in this file, once in the comment and once in the gated call. A
+    //     third occurrence is an UNBUDGETED REFERENCE; it need not be a call. This
+    //     is what catches an ungated second call added on a launch branch the
+    //     behavioral tests do not drive (`execute_restart_transaction` at `:3897`,
+    //     the Root Agent launch at `:4703`).
+    //   - assertions 4 and 5: the name `start_fresh` is bound exactly once, and its
+    //     right-hand side is exactly the resume flag. That is a complete statement
+    //     about ONE LINE. It says nothing about the value flowing into that line,
+    //     which is the residual named above and in plan D5.
+    //
+    // The normative property is guarded behaviorally by
+    // `a_production_shaped_startup_restore_never_rotates_while_a_fresh_launch_does`
+    // and `create_session_inner_rotates_the_fresh_target_and_not_the_resumed_one`,
+    // for the entry points and argument shapes those tests drive and no further.
+    // Plan section 4.5 enumerates what neither side covers.
+    //
+    // One invisible dependency, already satisfied: the split needle below uses
+    // `\n`. This repository sets `core.autocrlf=true` on Windows checkouts, and
+    // `.gitattributes` `*.rs text eol=lf` is what keeps `session.rs` LF on disk
+    // (measured: 0 CRLF, 9344 LF). If that attribute were ever dropped, this test
+    // fails LOUD rather than silent: assertion 1 would count 2, because the needle
+    // also appears as this test's own `let gated_call = "..."` literal.
     #[test]
-    fn memory_rotation_stays_gated_on_a_fresh_launch() {
+    fn rotate_origin_memory_at_spawn_has_one_gated_call_in_session_rs() {
         let source = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/src/commands/session.rs"
@@ -7333,7 +7501,9 @@ mod tests {
             normalized.matches(gated_call).count(),
             1,
             "#1172 D5: the memory rotation must stay behind `start_fresh && context_result.is_ok()`. \
-             A resume must NEVER rotate: this chokepoint also serves the app-startup restore path."
+             This pins the gate's exact spelling at the single call site in this file; it does not \
+             prove the resume property, and the behavioral tests named above prove it only for the \
+             entry points they drive."
         );
         // Now close the CLASS of ungated second calls, rather than one spelling
         // of one. Any needle shaped like an invocation loses this game: the
@@ -7359,15 +7529,253 @@ mod tests {
             normalized.matches(comment_mention).count(),
             1,
             "#1172 D5: the comment above the gate must keep naming the rotation exactly once; \
-             it is the one non-call mention the identifier count below budgets for."
+             it is the one non-call mention the reference budget below accounts for."
         );
         assert_eq!(
             normalized.matches("rotate_origin_memory_at_spawn").count(),
             2,
-            "#1172 D5: the rotation must be named exactly twice in production - once in the \
-             comment above the gate, once in the gated call itself. A third mention means a \
-             second call site, and an ungated rotation makes a RESUME empty the agent's memory."
+            "#1172 D5: within THIS FILE the rotation entry point must be REFERENCED exactly twice - \
+             once in the comment above the gate, once in the gated call itself. A third occurrence \
+             is unbudgeted: it may be a second call site, an import, or any other reference, and \
+             each of those is a change this inventory deliberately refuses to absorb silently. A \
+             cross-file alias evades this count entirely; see the header comment."
         );
+        // #1175 D2 part 4. The gate's INPUT, not just its shape. Bounded claim: this
+        // pins ONE LINE. It cannot see how `skip_auto_resume` got its value; see the
+        // header and plan D5 residual 3.
+        assert_eq!(
+            normalized
+                .matches("letstart_fresh=skip_auto_resume;")
+                .count(),
+            1,
+            "#1175: `start_fresh` must be bound to the resume flag ALONE. Appending `|| <extra>` \
+             here makes a RESUME rotate on the production launches that supply the extra input. \
+             Measured (plan 2.7): `|| pending_start_fresh.is_some()` reds this assertion AND the \
+             production-shaped restore test; the `|| is_coordinator` variant reds only this one, \
+             because no cwd in this test binary can be a coordinator."
+        );
+        // #1175 round 2. Assertion 4 alone is defeated by ordinary shadowing:
+        // `let start_fresh = skip_auto_resume; let start_fresh = start_fresh || X;`
+        // preserves its needle exactly. MEASURED (plan 2.8): this assertion is the
+        // only thing in the suite that reds on that form.
+        assert_eq!(
+            normalized.matches("letstart_fresh=").count(),
+            1,
+            "#1175: `start_fresh` must be bound EXACTLY ONCE. A second binding shadows the first \
+             and can compose any additional input into the rotation decision while assertion 4's \
+             needle stays intact."
+        );
+    }
+
+    /// #1175 B1. The behavioral guard on #1172 D5's normative property, within the
+    /// scope D5 of this plan declares. This EXECUTES the launch path and looks at
+    /// the filesystem, so unlike the reference inventory above it reds under the
+    /// cross-file alias the issue built.
+    ///
+    /// The resume half is PRODUCTION-SHAPED, not merely nominal. Round 0 passed
+    /// `pending_start_fresh = None`, `resolved_spawn = None`, `agent_id = None` and
+    /// `skip_tooling_save = true`, none of which is what `lib.rs:2313-2372` passes
+    /// on an ordinary startup restore. Grinch showed the cost: a one-line
+    /// `let start_fresh = skip_auto_resume || pending_start_fresh.is_some();`
+    /// left every round-0 guard green while a real restore rotated, because
+    /// production passes `Some(false)` there and round 0 passed `None`. Each
+    /// argument below is annotated with the production line it mirrors.
+    ///
+    /// The fresh half is the POSITIVE CONTROL and is not optional: without it, a
+    /// green resume half would also be produced by a launch that never reached the
+    /// rotation chokepoint, or by the feature having been deleted outright.
+    ///
+    /// Observation happens at every boundary, never only at the end. See D3.
+    #[tokio::test]
+    async fn a_production_shaped_startup_restore_never_rotates_while_a_fresh_launch_does() {
+        let (_fixture, resumed, fresh) = rotation_fixture();
+        // `lib.rs:2314` rebuilds the spawn recipe from settings before restoring.
+        let settings = test_settings();
+        let spawn = super::build_configured_agent_spawn_for_cwd(
+            &settings,
+            "codex",
+            &resumed.replica_cwd,
+            None,
+        )
+        .expect("resolve the configured codex spawn")
+        .expect("codex is configured in test_settings");
+        // `lib.rs:2334-2340` takes shell, args and label from the rebuilt spawn.
+        let shell = spawn.shell.clone();
+        let shell_args = spawn.shell_args.clone();
+        let agent_label = Some(spawn.trusted_agent_label.clone());
+
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(ScriptedSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(settings, Arc::clone(&session_mgr), Arc::clone(&pty_mgr));
+
+        let restore =
+            crate::session::selection::SelectionTransaction::for_test(app.handle().clone());
+        let restored = super::create_session_inner_for_restore(
+            &restore,
+            &session_mgr,
+            &pty_mgr,
+            shell,
+            shell_args,
+            resumed.replica_cwd.clone(),
+            Some("startup restore".to_string()),
+            Some("codex".to_string()), // lib.rs:2358, ps.agent_id
+            agent_label,               // lib.rs:2339, spawn.trusted_agent_label
+            false,                     // lib.rs:2360, "Persist tooling on restore"
+            Vec::new(),
+            false,       // lib.rs:2362, skip_auto_resume_for_restore(false): RESUME
+            Some(spawn), // lib.rs:2363, the rebuilt recipe
+            None,        // lib.rs:2365, headless caller keeps 120x30
+            Some(false), // lib.rs:2366, Some(ps.start_fresh_on_restore). LOAD-BEARING.
+            None,
+        )
+        .await;
+        let restored = restored.expect("the production-shaped restore must launch");
+
+        // The launch must be an ACTUAL provider resume, not just a `false` argument.
+        // The Codex injection at `:1999` gates on `agent_kind`, and its body gates
+        // again on `if let Some(ref aid) = agent_id` at `:2000`, so this only holds
+        // because the rebuilt spawn supplies the agent id at `:1446-1450`.
+        let effective = restored
+            .effective_shell_args
+            .clone()
+            .unwrap_or_else(|| restored.shell_args.clone());
+        assert!(
+            effective.iter().any(|arg| arg == "resume"),
+            "#1175: the restore must be an ACTUAL Codex provider resume, got {effective:?}"
+        );
+
+        // Boundary 1: observe BOTH sides before the second cause runs.
+        assert_resume_left_memory_alone(&resumed, "production-shaped startup restore");
+        assert_memory_pristine(&fresh, "fresh side, before its own launch");
+
+        let created = super::create_session_inner(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            "codex".to_string(),
+            Vec::new(),
+            fresh.replica_cwd.clone(),
+            Some("fresh launch".to_string()),
+            None,
+            None,
+            true,
+            Vec::new(),
+            true, // a fresh create
+            None,
+            None,
+            CreateSelectionIntent::User,
+        )
+        .await;
+        assert!(created.is_ok(), "the fresh launch must launch: {created:?}");
+        assert_eq!(
+            backend.spawn_count.load(Ordering::SeqCst),
+            2,
+            "both launches must reach the PTY (this proves nothing about the context block)"
+        );
+
+        // Boundary 2: the fresh side rotated, and the resume side is STILL untouched.
+        assert_memory_rotated_once(&fresh, "fresh create");
+        assert_resume_left_memory_alone(&resumed, "restore, rechecked after the fresh launch");
+        close_test_coordinator(&app).await;
+    }
+
+    /// #1175 B2. The same function twice with matched arguments and the same
+    /// session label, one launch fresh and one launch resuming, in the OPPOSITE
+    /// order from B1.
+    ///
+    /// It is deliberately NOT called a one-boolean experiment, and it never was
+    /// one: the cwd differs, and the second launch runs against a `SessionManager`,
+    /// selection coordinator and backend the first already mutated. Naming that
+    /// "the flag alone" would grant exactly the false confidence #1175 exists to
+    /// remove. What it does establish, together with B1, is that no discriminator
+    /// based solely on first-versus-second launch explains the result: B1 runs
+    /// resume then fresh, this runs fresh then resume.
+    ///
+    /// The cwd differs for a positive reason, not because it has to. Two
+    /// same-target `CreateSelectionIntent::User` creates are supported and are
+    /// already exercised by `sequential_user_same_target_creates_remain_compatible`
+    /// (`:6958`); the dedup gate at `:1609` applies to Background and Suppress
+    /// only. Separate replicas are used so each side has its own independently
+    /// seeded, non-empty `memory/` to observe.
+    ///
+    /// Its resume half uses the same `false` polarity as the #599 reopen of a
+    /// closed coordinator, but it is NOT that scenario: `is_coordinator` is
+    /// deterministically false for every cwd in this binary, and the Tauri
+    /// `create_session` producer is bypassed. Plan D5 records coordinator polarity
+    /// and outer composition as untested.
+    ///
+    /// The rotating role is assigned to the OPPOSITE replica from B1's, so no
+    /// single fixture directory is the one that always rotates.
+    #[tokio::test]
+    async fn create_session_inner_rotates_the_fresh_target_and_not_the_resumed_one() {
+        let (_fixture, fresh, resumed) = rotation_fixture();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(ScriptedSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(
+            test_settings(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+
+        let created = super::create_session_inner(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            "codex".to_string(),
+            Vec::new(),
+            fresh.replica_cwd.clone(),
+            Some("matched differential".to_string()),
+            Some("codex".to_string()),
+            Some("Codex".to_string()),
+            true,
+            Vec::new(),
+            true, // FRESH first: the opposite order from B1
+            None,
+            None,
+            CreateSelectionIntent::User,
+        )
+        .await;
+        assert!(created.is_ok(), "the fresh create must launch: {created:?}");
+
+        // Boundary 1.
+        assert_memory_rotated_once(&fresh, "fresh create, observed immediately");
+        assert_memory_pristine(&resumed, "resume side, before its own launch");
+
+        let reopened = super::create_session_inner(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            "codex".to_string(),
+            Vec::new(),
+            resumed.replica_cwd.clone(),
+            Some("matched differential".to_string()),
+            Some("codex".to_string()),
+            Some("Codex".to_string()),
+            true,
+            Vec::new(),
+            false, // the #599 reopen value: this launch RESUMES
+            None,
+            None,
+            CreateSelectionIntent::User,
+        )
+        .await;
+        assert!(reopened.is_ok(), "the reopen must launch: {reopened:?}");
+        assert_eq!(
+            backend.spawn_count.load(Ordering::SeqCst),
+            2,
+            "both launches must reach the PTY"
+        );
+
+        // Boundary 2.
+        assert_resume_left_memory_alone(&resumed, "reopen that resumes");
+        assert_memory_rotated_once(&fresh, "fresh side, rechecked after the resume");
+        close_test_coordinator(&app).await;
     }
 
     #[test]
