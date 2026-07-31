@@ -124,6 +124,138 @@ export interface SessionContextPayload {
   percent: number | null;
 }
 
+/** #1171 - what a watcher match means. Mirrors `WatcherMode` (`config/settings.rs`). */
+export type WatcherMode = "state" | "occurrence";
+
+/** #1171 - what makes two `occurrence` matches the same one inside the dedupe window. */
+export type WatcherDedupe = "row" | "capture" | "none";
+
+/**
+ * #1171 - one watcher activation.
+ *
+ * Mirrors `WatcherMatchPayload` (`pty/watchers/mod.rs`), pinned field for field by
+ * `the_payload_serializes_to_the_exact_camel_case_contract`. **No field is ever absent**:
+ * the Rust struct carries no `skip_serializing_if`, so absent never becomes a third state
+ * beside null and the value.
+ */
+export interface WatcherMatchPayload {
+  sessionId: string;
+  /**
+   * Monotonic per session. The same value the ring stores, so the window merges snapshot
+   * and stream on `(sessionId, seq)`. Two matches from one tick share `at` and are only
+   * distinguishable by this.
+   */
+  seq: number;
+  /** The key of the root `watchers` map. The same grouping key everywhere. */
+  watcherId: string;
+  mode: WatcherMode;
+  /** RFC3339 UTC. The tick's instant, not the match's: a match has no instant of its own. */
+  at: string;
+  /** Groups 1..n in order, without group 0. `null` per element means "did not capture". */
+  captures: (string | null)[];
+  /** The logical row, truncated to 256 bytes on a char boundary. */
+  row: string;
+  /** Whether `row` lost bytes to the cap; `row.length` cannot answer it, the cap is on bytes. */
+  rowTruncated: boolean;
+}
+
+/** #1171 - one tick's matches for one session, coalesced. Payload of `watcher_matches`. */
+export interface WatcherMatchBatch {
+  sessionId: string;
+  matches: WatcherMatchPayload[];
+}
+
+/** #1171 - one watcher's standing on one session. Present even when `count` is 0. */
+export interface WatcherActivityCounter {
+  watcherId: string;
+  mode: WatcherMode;
+  count: number;
+  /** True while this watcher is hitting a per-tick cap or is suspended. */
+  degraded: boolean;
+}
+
+/** #1171 - everything `get_watcher_activity` answers with. */
+export interface WatcherActivitySnapshot {
+  /** Oldest first. `limit` trims from the new end: the n most recent, still oldest first. */
+  matches: WatcherMatchPayload[];
+  /** The highest `seq` ever inserted for this session; the merge fence against the stream. */
+  lastSeq: number;
+  /** The ring dropped at least one entry since the session started. */
+  truncated: boolean;
+  /** Monotonic since the session started. NOT a count of lost matches. */
+  possiblyMissedFrames: number;
+  /**
+   * False until the engine has ticked this session at least once. Without it an empty
+   * `activeWatchers` cannot tell "no watcher reaches this agent" from "the engine has not
+   * run yet".
+   */
+  warmedUp: boolean;
+  activeWatchers: WatcherActivityCounter[];
+}
+
+/** #1171 - what a candidate pattern does, before it is saved. */
+export interface WatcherPatternPreview {
+  compiles: boolean;
+  error: string | null;
+  /**
+   * False when no session was given, or the session had no readable frame. This is what
+   * distinguishes "matched nothing" from "could not look".
+   */
+  sampled: boolean;
+  matchedRows: number;
+  totalRows: number;
+  /** Up to 3 matched logical rows, each truncated to 256 bytes. */
+  samples: string[];
+  /**
+   * True when the captures of the lowest match differed between two samples taken about a
+   * second apart: a pattern capturing a clock matches one row and still emits constantly.
+   */
+  capturesVolatile: boolean;
+}
+
+/** #1171 - which agents a candidate selector reaches. */
+export interface WatcherReachEntry {
+  agentId: string;
+  agentLabel: string;
+  commandStem: string;
+  /** False when the watcher reaches the agent but falls outside its 8-watcher budget. */
+  inBudget: boolean;
+}
+
+/** #1171 - one user-configured watcher. Mirrors `WatcherConfig` (`config/settings.rs`). */
+export interface WatcherConfig {
+  enabled: boolean;
+  mode: WatcherMode;
+  pattern: string;
+  /**
+   * Absent or null reaches every configured agent; present reaches only entries whose
+   * command executable stem matches exactly; `[]` reaches none. **Absent and `[]` are
+   * opposites**, which is why this is not a plain `string[]`.
+   */
+  commands?: string[] | null;
+  dedupe: WatcherDedupe;
+  dedupeWindowMs: number;
+  /** Free text, e.g. "claude 2.1.212". Never validated, never parsed. */
+  capturedAgainst?: string | null;
+}
+
+/**
+ * #1171 - one entry of the root `watchers` map, valid or not.
+ *
+ * Mirrors the untagged `WatcherEntry` (`config/settings.rs`), which exists so a hand-written
+ * `"mode": "State"` skips one watcher instead of failing the whole `AppSettings` parse and
+ * starting with no agents configured. The invalid value is kept verbatim so a save
+ * round-trips the user's bytes; typing this map as `WatcherConfig` alone would claim a
+ * guarantee the backend deliberately does not make, and an editor built on that claim would
+ * delete what it could not read.
+ */
+export type WatcherEntry = WatcherConfig | UnrecognizedWatcherEntry;
+
+/** An entry that did not deserialize as a `WatcherConfig`, preserved as-is. */
+export interface UnrecognizedWatcherEntry {
+  readonly [key: string]: unknown;
+}
+
 export interface SessionGroup {
   id: string;
   name: string;
@@ -484,6 +616,14 @@ export interface AppSettings {
   containerCredentialsFromHost: boolean;
   logLevel: LogLevel | null;
   screenshotCaptureHotkey?: string;
+  /**
+   * #1171 - root-level watcher patterns, keyed by watcher id. Optional because the Rust
+   * field skips serializing while the map is empty, so a user who configures nothing never
+   * sees the key appear.
+   */
+  watchers?: Record<string, WatcherEntry>;
+  /** #1171 - geometry of the watcher activity window; skipped while unset. */
+  watchersGeometry?: WindowGeometry;
 }
 
 // ── #1077 Portable dual project paths: get_settings resolution report ────────
