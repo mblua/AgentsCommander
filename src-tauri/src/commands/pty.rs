@@ -1546,12 +1546,10 @@ mod watcher_preview_tests {
         assert_eq!(reached_agents(&retargeted, "on-codex"), vec!["a2"]);
 
         // The agent was deleted in the draft: it is named by nobody.
-        let removed = preview_watcher_reach(
-            watchers(),
-            vec![draft_agent("a1", "Claude", "claude")],
-        )
-        .await
-        .expect("reach");
+        let removed =
+            preview_watcher_reach(watchers(), vec![draft_agent("a1", "Claude", "claude")])
+                .await
+                .expect("reach");
         assert_eq!(reached_agents(&removed, "on-claude"), vec!["a1"]);
 
         // The agent was added in the draft: it is reached before it is ever saved.
