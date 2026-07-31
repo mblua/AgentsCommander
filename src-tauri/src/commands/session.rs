@@ -7505,25 +7505,28 @@ mod tests {
              prove the resume property, and the behavioral tests named above prove it only for the \
              entry points they drive."
         );
-        // Now close the CLASS of ungated second calls, rather than one spelling
-        // of one. Any needle shaped like an invocation loses this game: the
-        // callee text can be rewritten indefinitely - a different argument, the
-        // path wrapped in parens so it reads `..._at_spawn)(`, a block comment
-        // between the identifier and the paren, an alias bound by `use .. as ..`
-        // or `let f = ..` and invoked under another name - and each rewrite needs
-        // a new needle.
+        // What assertions 2 and 3 add to assertion 1, stated as the bounded
+        // property they actually enforce.
         //
-        // What NO such rewrite can avoid is naming the function. So count the
-        // BARE identifier, which is invariant under all of them, and pin the one
-        // legitimate mention that is not a call: the comment 5.4 requires above
-        // the gate. Two assertions, and together they leave no room:
-        //   - the comment mention appears exactly once, so it cannot be
-        //     duplicated to absorb the budget of a smuggled-in call;
-        //   - the identifier appears exactly twice in total, which is that
-        //     comment plus the single call inside the gated block the first
-        //     assertion already pinned.
-        // Two minus one minus one is zero occurrences left over, whatever they
-        // would have been spelled like.
+        // Assertion 1 pins one exact spelling of the gated call, so a second
+        // call spelled differently would not match its needle: a different
+        // argument, the path wrapped in parens so it reads `..._at_spawn)(`, or
+        // a block comment between the identifier and the paren. Assertions 2
+        // and 3 reach those by counting the BARE identifier rather than an
+        // invocation shape, and by pinning the one legitimate occurrence that
+        // is not a call, the comment 5.4 requires above the gate.
+        //
+        // The property they enforce, and nothing broader: within `session.rs`
+        // the exact identifier `rotate_origin_memory_at_spawn` occurs exactly
+        // twice, once in that comment and once in the call assertion 1 already
+        // pinned. A third occurrence is unbudgeted.
+        //
+        // That is a count of one identifier in one file. It does NOT establish
+        // that every route to the rotation is accounted for. A call reached
+        // through a cross-file alias, and a call added in another file, both
+        // leave this count at two; both are recorded in the header above, and
+        // the second is plan 9.2's M9, measured green against all five
+        // assertions here and both behavioral tests below.
         let comment_mention = "`rotate_origin_memory_at_spawn`returns`()`";
         assert_eq!(
             normalized.matches(comment_mention).count(),
