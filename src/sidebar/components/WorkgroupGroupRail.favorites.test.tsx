@@ -53,18 +53,6 @@ function project(): ProjectState {
   };
 }
 
-function otherProject(): ProjectState {
-  return {
-    path: otherProjectPath,
-    folderName: "OtherProject",
-    workgroups: [wg("wg-9-ops-team", otherProjectPath)],
-    agents: [],
-    teams: [],
-    loops: [],
-    contextTemplateUpdates: [],
-  };
-}
-
 /** A session that makes the given workgroup "working" (running dot). */
 function replicaSession(wgName: string): Session {
   return session({

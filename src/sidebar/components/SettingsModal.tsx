@@ -665,8 +665,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const [profileCellErrors, setProfileCellErrors] = createStore<Record<string, string>>({});
   const [profileCellEnvRows, setProfileCellEnvRows] = createStore<Record<string, ProfileCellEnvRow[]>>({});
 
-  const s = () => settings.data;
-
   const apiServerChecked = () =>
     apiServerBusy() ? apiServerRunning() : settings.data?.apiServerEnabled ?? false;
   const apiServerBindWarning = () => {

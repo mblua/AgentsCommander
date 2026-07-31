@@ -17,7 +17,7 @@ function target<T extends Element>(testId: string): T | null {
   return document.querySelector<T>(`[data-ac-testid="${testId}"]`);
 }
 
-function mountModal(fake: FakeTransport) {
+function mountModal() {
   const root = document.createElement("div");
   document.body.appendChild(root);
   const dispose = render(
@@ -63,7 +63,7 @@ describe("#777 WorkgroupGroupsModal Non-stop section", () => {
     restoreTransport = __setTransportForTests(fake);
 
     await workgroupGroupsStore.ensureLoaded(projectPath);
-    const unmount = mountModal(fake);
+    const unmount = mountModal();
     try {
       // Save immediately, without touching the Non-stop section.
       click(target<HTMLButtonElement>("workgroupGroups.save")!);
@@ -93,7 +93,7 @@ describe("#777 WorkgroupGroupsModal Non-stop section", () => {
     restoreTransport = __setTransportForTests(fake);
 
     await workgroupGroupsStore.ensureLoaded(projectPath);
-    const unmount = mountModal(fake);
+    const unmount = mountModal();
     try {
       await waitFor(() => expect(target("workgroupGroups.nonstop.telegramNoBots")).not.toBeNull());
     } finally {
