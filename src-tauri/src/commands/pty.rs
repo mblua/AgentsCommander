@@ -584,11 +584,13 @@ const WATCHER_PREVIEW_SAMPLES: usize = 3;
 /// a regex with no agent session running, and without this the only signal for a syntax error
 /// would be the absence of activations.
 ///
-/// `async` and doing the PTY reads inside `spawn_blocking`, because this path deliberately
-/// goes through `PtyManager::screen_rows_since` - taking the manager mutex, the route registry
-/// and, on the local backend, a child liveness probe - while a session may be producing heavy
-/// output. The engine's own tick avoids all of that; a debounced preview can afford it, and
-/// blocking the async runtime on it could not.
+/// `async` and doing the PTY reads inside `spawn_blocking`, because this path goes through
+/// `PtyManager::screen_rows_since` and therefore takes the manager mutex and the route
+/// registry - "the one every terminal write, resize and kill locks on" - while a session may
+/// be producing heavy output. The engine's own tick avoids both by holding its backend `Arc`;
+/// a preview debounced at 300 ms can afford them, and blocking the async runtime on them could
+/// not. (No child liveness probe is involved: the watcher seam deliberately has none, see
+/// `local_backend.rs`'s `screen_rows_since`.)
 #[tauri::command]
 pub async fn preview_watcher_pattern<R: tauri::Runtime>(
     app: AppHandle<R>,
@@ -738,8 +740,19 @@ pub async fn preview_watcher_reach(
         })
         .collect();
 
-    // Keep whatever the saved entry already says, and override only the selector: a preview
-    // must not silently re-enable a disabled watcher or change its mode.
+    // Start from whatever the saved entry says, so mode, pattern and dedupe are the user's,
+    // and override exactly two things.
+    //
+    // `commands` is the selector being previewed, which is the whole point of the call.
+    //
+    // `enabled` is forced ON because the question this command answers is "which agents WOULD
+    // this selector reach", not "which agents does it reach right now". A disabled watcher
+    // would otherwise always answer "reaches 0 agents", which makes the reach control useless
+    // in the one editor state where the user most needs it - configuring a watcher before
+    // turning it on. Forcing it also makes the budget honest: it reports whether enabling this
+    // watcher WOULD leave it outside some agent's 8-watcher budget.
+    //
+    // Nothing here is written back: the map below is a local copy used to resolve and dropped.
     let mut candidate = match settings.watchers.get(&watcher_id).and_then(|e| e.valid()) {
         Some(saved) => saved.clone(),
         None => WatcherConfig {

@@ -771,14 +771,31 @@ impl WatcherPatternSource for WatcherPatterns {
     {
         Box::pin(async move {
             let settings = self.settings.read().await;
-            let agents: Vec<crate::pty::watchers::WatcherAgent> = settings
-                .agents
-                .iter()
-                .map(|agent| crate::pty::watchers::WatcherAgent {
-                    id: agent.id.clone(),
-                    command: agent.command.clone(),
-                })
-                .collect();
+
+            // The agent list is cloned only when at least one watcher could possibly use it.
+            // Otherwise this ran five times a second, forever, in every installation that
+            // never touches the feature: at twelve agents that is 24 `String` allocations per
+            // tick, 120 a second, for an answer that is always empty.
+            //
+            // Resolution is still CALLED with an empty agent slice rather than skipped, so a
+            // malformed or unreadable watcher entry keeps producing its one log line even when
+            // nothing is enabled.
+            let has_enabled_watcher = settings
+                .watchers
+                .values()
+                .any(|entry| entry.valid().is_some_and(|config| config.enabled));
+            let agents: Vec<crate::pty::watchers::WatcherAgent> = if has_enabled_watcher {
+                settings
+                    .agents
+                    .iter()
+                    .map(|agent| crate::pty::watchers::WatcherAgent {
+                        id: agent.id.clone(),
+                        command: agent.command.clone(),
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
             let (resolved, notices) =
                 crate::pty::watchers::resolve_watchers(&agents, &settings.watchers);
             drop(settings);

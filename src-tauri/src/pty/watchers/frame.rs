@@ -224,7 +224,13 @@ impl FrameDiffState {
         // reseeds every tick and never evaluates. Only the defaulted trait method is in that
         // position, and it already cannot report `Unchanged` either.
         let first_tick = self.prev_hashes.is_empty();
-        let reflowed = size.is_none() || self.size != size;
+        // A frame whose row count disagrees with the state carried over is a reseed too, and
+        // NOT an assumption to index on. The stamp's `rows` and the actual row count agree for
+        // both real backends today, but nothing in the type says they must: a backend
+        // reporting an unchanged stamp with a different number of rows would otherwise index
+        // `dirty` out of bounds and take the whole engine down with a panic.
+        let desynced = self.prev_hashes.len() != curr.len() || self.dirty.len() != curr.len();
+        let reflowed = size.is_none() || self.size != size || desynced;
         if first_tick || reflowed {
             if !first_tick && self.evaluated_since_reseed {
                 self.possibly_missed_frames += 1;
@@ -250,10 +256,16 @@ impl FrameDiffState {
         let mut evaluate = Vec::new();
 
         for (row, hash) in curr.iter().enumerate() {
+            // `.get_mut` and not indexing: the reseed above already guarantees the lengths
+            // agree, and this is the one loop where being wrong about that would be a panic
+            // inside the engine thread rather than a missed evaluation.
+            let Some(dirty) = self.dirty.get_mut(row) else {
+                continue;
+            };
             let arrived_by_scroll = k >= 1 && row >= scrolled_in;
             if arrived_by_scroll && row != cursor_row {
                 evaluate.push(row);
-                self.dirty[row] = false;
+                *dirty = false;
                 continue;
             }
 
@@ -266,13 +278,13 @@ impl FrameDiffState {
             };
             match previous {
                 Some(previous) if previous == *hash => {
-                    if self.dirty[row] {
+                    if *dirty {
                         // Stable for one full tick: whatever was being written is finished.
                         evaluate.push(row);
-                        self.dirty[row] = false;
+                        *dirty = false;
                     }
                 }
-                _ => self.dirty[row] = true,
+                _ => *dirty = true,
             }
         }
 
@@ -655,6 +667,49 @@ mod tests {
             }),
         });
         assert_eq!(later.possibly_missed_frames(), 1);
+    }
+
+    /// A frame whose row count disagrees with the stamp it carries reseeds instead of indexing
+    /// off the end.
+    ///
+    /// Both real backends build the stamp from the same grid they clone the rows from, so this
+    /// cannot happen today - but nothing in the TYPE says so, and the cost of being wrong here
+    /// is a panic on the engine thread, which stops every session's sampling for the life of
+    /// the process. Reseeding is the fail-closed answer: lose a tick, not the engine.
+    #[test]
+    fn a_frame_whose_row_count_contradicts_its_stamp_reseeds_instead_of_panicking() {
+        let mut state = FrameDiffState::default();
+        state.advance(&tick_frame(&["a", "b", "c"], 1, 0));
+        state.advance(&tick_frame(&["b", "c", "d"], 2, 0));
+
+        // Same stamp size, fewer rows than it claims.
+        let lying = ScreenFrame {
+            rows: vec!["b".into()],
+            wrapped: vec![false],
+            cursor_row: 0,
+            stamp: Some(FrameStamp {
+                sequence: 3,
+                rows: 3,
+                cols: 120,
+            }),
+        };
+        assert!(
+            state.advance(&lying).is_empty(),
+            "a reseed evaluates nothing"
+        );
+
+        // ...and the state is coherent afterwards, so the next real frame works normally.
+        let evaluated = state.advance(&ScreenFrame {
+            rows: vec!["z".into()],
+            wrapped: vec![false],
+            cursor_row: 5,
+            stamp: Some(FrameStamp {
+                sequence: 4,
+                rows: 3,
+                cols: 120,
+            }),
+        });
+        assert!(evaluated.is_empty());
     }
 
     /// 9.4.51 - a row shifted up by a scroll is not re-evaluated. It is the same row, at a new

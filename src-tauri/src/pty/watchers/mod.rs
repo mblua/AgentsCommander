@@ -609,8 +609,10 @@ struct RegisteredSession {
     /// mode at runtime needs no reseed.
     diff: frame::FrameDiffState,
     watchers: HashMap<String, WatcherSessionState>,
-    /// False until the engine has ticked this session at least once.
-    warmed_up: bool,
+    // Deliberately NO `warmed_up` flag here. "The engine has ticked this session" is already
+    // expressed by the existence of the session's `WatcherHistory` entry, which is the value
+    // the snapshot actually answers with; a second copy nobody reads is a fact that can only
+    // ever drift out of step with the one that counts.
 }
 
 /// Runs every configured watcher over every registered session, five times a second.
@@ -660,25 +662,42 @@ impl WatcherEngine {
 
     /// Own thread, own runtime, shutdown token: `ContextScraper::start`'s shape
     /// (`context_scrape/mod.rs:207-227`), which is `GitWatcher`'s.
+    ///
+    /// The loop is wrapped so a panic in a tick cannot end the engine SILENTLY. Without this,
+    /// the thread would unwind, every snapshot would freeze at its last value for the life of
+    /// the process, and nothing anywhere would say why: the window would keep answering, with
+    /// stale counters, which is worse than answering nothing. Containing at this boundary
+    /// follows `probe_child_contained` (`local_backend.rs:1119-1124`), which catches for the
+    /// same reason - a diagnostic path must not take something else down without a word.
     pub fn start(self: &Arc<Self>, shutdown: crate::shutdown::ShutdownSignal) {
         let engine = Arc::clone(self);
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new()
                 .expect("Failed to create tokio runtime for WatcherEngine");
-            rt.block_on(async move {
-                loop {
-                    tokio::select! {
-                        biased;
-                        _ = shutdown.token().cancelled() => {
-                            log::info!("[watchers] Shutdown signal received, stopping");
-                            break;
-                        }
-                        _ = tokio::time::sleep(TICK_INTERVAL) => {
-                            engine.tick().await;
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                rt.block_on(async move {
+                    loop {
+                        tokio::select! {
+                            biased;
+                            _ = shutdown.token().cancelled() => {
+                                log::info!("[watchers] Shutdown signal received, stopping");
+                                break;
+                            }
+                            _ = tokio::time::sleep(TICK_INTERVAL) => {
+                                engine.tick().await;
+                            }
                         }
                     }
-                }
-            });
+                });
+            }));
+            if outcome.is_err() {
+                log::error!(
+                    "[watchers] the watcher engine thread PANICKED and has stopped. No further \
+                     activity will be sampled and every snapshot is frozen at its last value \
+                     until AgentsCommander restarts. Nothing else is affected: the engine holds \
+                     no PTY and no session state."
+                );
+            }
         });
     }
 
@@ -707,7 +726,6 @@ impl WatcherEngine {
                     seq: 0,
                     diff: frame::FrameDiffState::default(),
                     watchers: HashMap::new(),
-                    warmed_up: false,
                 },
             );
     }
@@ -770,25 +788,63 @@ impl WatcherEngine {
         out
     }
 
+    /// Publish "the engine reached you, and nothing watches you" for every registered session
+    /// no watcher applies to.
+    ///
+    /// **This is what makes the window's day-one empty state reachable at all.** Without it,
+    /// an unconfigured app and a session whose agent no watcher selects both answer
+    /// `warmedUp: false` FOREVER rather than for 200 ms. The condition the window uses for
+    /// "no watcher reaches this agent, here is the Configure button" is
+    /// `warmedUp && activeWatchers == []`, so it would never hold, and the two cases
+    /// `warmedUp` exists to tell apart would return byte-identical snapshots.
+    ///
+    /// It touches the registry and the history, and NOT the session: no backend is resolved,
+    /// no PTY is read, no `screen_parsers` lock is taken and no row is allocated - which is
+    /// what "the tick returns before touching any session" is protecting, and what the
+    /// zero-cost criterion measures. `Vec::new()` does not allocate either.
+    ///
+    /// Held under the same registration lock the tick uses, so the "creation requires
+    /// registration" rule that stops a purged session from being resurrected still holds.
+    fn publish_unwatched(&self, resolved: &HashMap<String, AgentResolution>) {
+        let _sequence = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
+        let registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
+        for (id, session) in registered.iter() {
+            if resolved.contains_key(&session.agent_id) {
+                continue;
+            }
+            self.history.publish(
+                *id,
+                history::SessionStatus {
+                    possibly_missed_frames: session.diff.possibly_missed_frames(),
+                    active_watchers: Vec::new(),
+                },
+            );
+        }
+    }
+
     pub(crate) async fn tick(&self) {
         let tick_number = self.ticks.fetch_add(1, Ordering::Relaxed) + 1;
 
         // Settings FIRST, and the early exit is on the RESOLVED set rather than on an empty
         // registry: registration is per session, not per watcher, so a running agent with no
         // watcher configured would keep any registry non-empty. This is what actually
-        // delivers "zero cost when unconfigured" - no `screen_parsers` lock, no allocation.
+        // delivers "zero cost when unconfigured" - no `screen_parsers` lock, no row allocated,
+        // no backend resolved, no liveness probed.
         let resolved = self.patterns.resolve().await;
         if resolved.is_empty() {
+            self.publish_unwatched(&resolved);
             return;
         }
 
         let compiled = self.compile_for_tick(&resolved);
+        self.publish_unwatched(&resolved);
 
         // Snapshot first: the loop must not mutate `registered` while iterating it.
         let mut ids: Vec<(Uuid, String)> = {
             let registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
             registered
                 .iter()
+                .filter(|(_, session)| resolved.contains_key(&session.agent_id))
                 .map(|(id, session)| (*id, session.agent_id.clone()))
                 .collect()
         };
@@ -843,7 +899,6 @@ impl WatcherEngine {
             // cloned to reach this arm - but the session HAS been ticked, so its status is
             // published and `warmedUp` becomes true.
             ScreenRowsSince::Unchanged | ScreenRowsSince::Missing => {
-                session.warmed_up = true;
                 self.history.publish(id, status_of(session, agent));
                 return (None, false);
             }
@@ -853,7 +908,6 @@ impl WatcherEngine {
             ScreenRowsSince::Frame(frame) => frame,
         };
         session.stamp = frame.stamp;
-        session.warmed_up = true;
 
         // A watcher that stopped reaching this agent leaves no state behind, so re-creating it
         // later starts from nothing - which is what "renaming is delete plus create" means.
@@ -905,14 +959,19 @@ impl WatcherEngine {
                 .min(MATCHES_PER_SESSION_PER_TICK.saturating_sub(used_by_session));
 
             let (found, capped) = match watcher.mode {
-                WatcherMode::State => {
-                    let found = evaluate_state(state, compiled, &logical);
-                    match found {
-                        Some(_) if budget == 0 => (Vec::new(), true),
-                        Some(found) => (vec![found], false),
-                        None => (Vec::new(), false),
+                WatcherMode::State => match evaluate_state(state, compiled, &logical) {
+                    // Dropped by the cap: the gate is NOT committed, so the same activation is
+                    // offered again next tick. Committing it here would turn the plan's "emits
+                    // nothing further for that key THIS TICK" into "never again", silently -
+                    // `degraded` clears on the next tick, so nothing would ever say the
+                    // activation was lost.
+                    Some(_) if budget == 0 => (Vec::new(), true),
+                    Some((found, commit)) => {
+                        state.commit_gate(commit);
+                        (vec![found], false)
                     }
-                }
+                    None => (Vec::new(), false),
+                },
                 WatcherMode::Occurrence => {
                     let outcome =
                         evaluate_occurrence(state, watcher, compiled, &selected, now, budget);
@@ -1077,6 +1136,22 @@ fn captures_of(regex: &regex::Regex, text: &str) -> Vec<Option<String>> {
         .unwrap_or_default()
 }
 
+/// The gate movement a `state` match would make **if it is actually emitted**.
+///
+/// Returned rather than applied, so a match the per-tick cap throws away cannot burn the gate
+/// it never passed through. The caller commits it with `commit_gate`, on the one path that
+/// emits.
+struct StateGateCommit {
+    last: (Vec<Option<String>>, String, u64),
+}
+
+impl WatcherSessionState {
+    /// Record that this `state` match was emitted. Called only after the caps let it through.
+    fn commit_gate(&mut self, commit: StateGateCommit) {
+        self.last = Some(commit.last);
+    }
+}
+
 /// `state` mode over the FULL frame: the LOWEST matching logical row wins, mirroring
 /// `rows::extract` (`context_scrape/rows.rs:19-26`), because a statusline always sits below
 /// the transcript.
@@ -1087,11 +1162,18 @@ fn captures_of(regex: &regex::Regex, text: &str) -> Vec<Option<String>> {
 /// A transition to "no match" CLEARS the gate and emits nothing. The only consumer here is an
 /// activity log, and "the prompt disappeared" is not a log entry; clearing is what lets an
 /// identical re-appearance emit again, and it is why the payload needs no `present` field.
+///
+/// **What is committed here and what is not.** `generation` and `last_match_count` describe
+/// the SCREEN, so they move on every tick that looked at one - and they must, or a count that
+/// rose during a dropped tick would rise a second time on the next one. `last` describes what
+/// was EMITTED, so it is handed back as a `StateGateCommit` and applied only when the match
+/// really goes out; otherwise a match dropped by the cap would match the gate on the next tick
+/// and the activation would never reappear.
 fn evaluate_state(
     state: &mut WatcherSessionState,
     compiled: &pattern::WatcherPattern,
     logical: &[frame::LogicalRow],
-) -> Option<Found> {
+) -> Option<(Found, StateGateCommit)> {
     let regex = compiled.regex();
     let mut count = 0usize;
     let mut lowest: Option<&frame::LogicalRow> = None;
@@ -1108,6 +1190,7 @@ fn evaluate_state(
     state.last_match_count = count;
 
     let Some(lowest) = lowest else {
+        // Nothing matched, so there is no match for a cap to drop: clearing is unconditional.
         state.last = None;
         return None;
     };
@@ -1117,8 +1200,10 @@ fn evaluate_state(
     if state.last.as_ref() == Some(&candidate) {
         return None;
     }
-    state.last = Some(candidate.clone());
-    Some((candidate.0, candidate.1, row_truncated))
+    Some((
+        (candidate.0.clone(), candidate.1.clone(), row_truncated),
+        StateGateCommit { last: candidate },
+    ))
 }
 
 /// `occurrence` mode over the rows the diff declared evaluable: every match that survives the
@@ -2015,6 +2100,125 @@ mod engine_tests {
         }
     }
 
+    /// **The regression that made a permission prompt vanish forever.**
+    ///
+    /// Two saturated `occurrence` watchers ahead of a `state` one in `BTreeMap` order spend the
+    /// whole 16-per-session budget, so the `state` watcher is handed `budget == 0` and its match
+    /// is dropped. If the gate were committed while evaluating, the next tick would find the
+    /// candidate equal to the gate and return nothing: the activation would never reappear
+    /// while the text and the generation held - and silently, because `degraded` clears on the
+    /// tick after.
+    ///
+    /// The plan says "emits nothing further for that key THIS TICK". This is the test that the
+    /// word "tick" is honoured.
+    #[tokio::test]
+    async fn a_state_match_dropped_by_the_session_cap_still_emits_on_the_next_tick() {
+        let harness = Harness::new();
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, "a1".to_string());
+        harness.configure(
+            "a1",
+            vec![
+                occurrence_watcher("a-reads", "row", WatcherDedupe::None, 2000),
+                occurrence_watcher("b-tools", "row", WatcherDedupe::None, 2000),
+                state_watcher("z-permission", "Permission required"),
+            ],
+        );
+
+        // Seed, then a full repaint that settles nothing, then the tick where 29 rows become
+        // evaluable AT THE SAME TIME as the prompt appears on the bottom row. That coincidence
+        // is the whole scenario: the prompt has to arrive while the budget is already gone.
+        let seed: Vec<String> = (0..30).map(|i| format!("seed {i}")).collect();
+        let burst: Vec<String> = (0..30).map(|i| format!("row {i}")).collect();
+        let mut prompted = burst.clone();
+        prompted[29] = "Permission required".to_string();
+
+        harness.backend.paint(id, &as_refs(&seed));
+        harness.backend.paint(id, &as_refs(&burst));
+        harness.backend.paint(id, &as_refs(&prompted));
+
+        harness.ticks(3).await;
+
+        let during = harness.emitted();
+        assert_eq!(
+            during.len(),
+            MATCHES_PER_SESSION_PER_TICK,
+            "the two occurrence watchers must have spent the whole session budget"
+        );
+        assert!(
+            during.iter().all(|m| m.watcher_id != "z-permission"),
+            "the prompt was dropped by the cap on this tick, which is what the plan allows"
+        );
+        let (degraded, _, _) = harness
+            .engine
+            .watcher_state(id, "z-permission")
+            .expect("state");
+        assert!(degraded, "and it must say so");
+
+        // The screen holds still. The occurrence watchers take no budget - the only row that
+        // stabilizes is the prompt, which their pattern does not match - and the prompt is
+        // still on screen, so it MUST come through.
+        harness.backend.paint(id, &as_refs(&prompted));
+        harness.ticks(1).await;
+
+        let after: Vec<_> = harness
+            .emitted()
+            .into_iter()
+            .filter(|m| m.watcher_id == "z-permission")
+            .collect();
+        assert_eq!(
+            after.len(),
+            1,
+            "the activation the cap dropped has to reappear, or it is lost forever"
+        );
+        assert_eq!(after[0].row, "Permission required");
+    }
+
+    /// **P1-2's regression: the day-one empty state has to be reachable.**
+    ///
+    /// A registered agent session that no watcher reaches must answer `warmedUp: true` with
+    /// `activeWatchers: []`. That pair IS the window's "no watcher reaches this agent, here is
+    /// the Configure button" state, and it is what everybody sees on day one. Publishing
+    /// nothing left both this case and "the engine has not run yet" answering `warmedUp: false`
+    /// forever - byte-identical snapshots for the two cases the field exists to tell apart.
+    #[tokio::test]
+    async fn a_session_no_watcher_reaches_is_warmed_up_with_no_active_watchers() {
+        let harness = Harness::new();
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, "a1".to_string());
+        harness.backend.paint(id, &["idle"]);
+
+        // Before the first tick: the engine really has not run.
+        assert!(!harness.history.snapshot(id, None).warmed_up);
+
+        // Day one: nothing configured at all, so the tick takes the early exit.
+        harness.ticks(1).await;
+
+        let snapshot = harness.history.snapshot(id, None);
+        assert!(snapshot.warmed_up);
+        assert!(snapshot.active_watchers.is_empty());
+        assert!(snapshot.matches.is_empty());
+        assert_eq!(
+            harness.backend.reads.load(Ordering::Relaxed),
+            0,
+            "and it must still not have touched the session: no read, no rows"
+        );
+        assert_eq!(
+            harness.backends.liveness_calls.load(Ordering::Relaxed),
+            0,
+            "nor probed a child nobody is watching"
+        );
+
+        // Watchers configured, but for a DIFFERENT agent: same answer, same reason.
+        harness.configure("other-agent", vec![state_watcher("w", "x")]);
+        harness.ticks(1).await;
+
+        let snapshot = harness.history.snapshot(id, None);
+        assert!(snapshot.warmed_up);
+        assert!(snapshot.active_watchers.is_empty());
+        assert_eq!(harness.backend.reads.load(Ordering::Relaxed), 0);
+    }
+
     /// 9.4.56 - the caps bound the RATE but not the duration, so a pair that stays saturated is
     /// suspended, stays marked degraded while it is, and is retried afterwards.
     #[tokio::test]
@@ -2269,8 +2473,12 @@ mod engine_tests {
             .split("fn publish_restart_destroyed")
             .nth(1)
             .expect("publish_restart_destroyed must exist");
+        // Delimited by the closing brace at column 0, which is where a top-level function ends
+        // whatever comes after it. Splitting on the NEXT declaration would let an unrelated
+        // function inserted in between extend this "body" downwards, and the guard would then
+        // pass with the purge living somewhere else entirely.
         let restart_body = restart
-            .split("\nasync fn ")
+            .split("\n}")
             .next()
             .expect("its body must end somewhere");
         assert!(
