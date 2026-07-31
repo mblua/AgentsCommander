@@ -40,8 +40,11 @@ const WATCHER_DEDUPES: readonly WatcherDedupe[] = ["row", "capture", "none"];
  * budget -- and it is unreachable in practice, because the frontend never sees the file's
  * bytes but what Rust re-serialized, and those three fields carry no `skip_serializing_if`.
  */
-export function isWatcherConfig(entry: WatcherEntry): entry is WatcherConfig {
-  if (typeof entry !== "object" || entry === null) return false;
+export function isWatcherConfig(entry: unknown): entry is WatcherConfig {
+  // `unknown` and not `WatcherEntry`: the value really is a `serde_json::Value`, so it can be
+  // a string, a number, `null` or an array as easily as an object, and a decoder that only
+  // accepts what it already believes is not a decoder.
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return false;
   const candidate = entry as Partial<WatcherConfig>;
   if (typeof candidate.enabled !== "boolean") return false;
   if (!WATCHER_MODES.includes(candidate.mode as WatcherMode)) return false;
@@ -126,6 +129,25 @@ export function newWatcherConfig(): WatcherConfig {
  */
 export function canEnableWatcher(config: WatcherConfig): boolean {
   return config.pattern !== "";
+}
+
+/**
+ * The editor's one invariant, applied to every write: an enabled watcher has a pattern.
+ *
+ * Gating the checkbox alone is not enough, because `enabled` is not the only field that can
+ * break the pair. Type a pattern, enable the row, then delete the pattern, and the row is
+ * left `enabled: true` with `pattern: ""` -- the global regex that matches every row on every
+ * agent, which is the flood the whole rule exists to prevent. Save does not validate
+ * watchers, so it would be persisted.
+ *
+ * Auto-disabling rather than blocking the edit is deliberate: clearing a pattern to rewrite
+ * it is ordinary work, and refusing the keystroke would fight the user over a field they are
+ * in the middle of. The row says why it turned off, in the sentence
+ * `watcherReachSummary` gives it.
+ */
+export function withWatcherInvariant(config: WatcherConfig): WatcherConfig {
+  if (config.enabled && !canEnableWatcher(config)) return { ...config, enabled: false };
+  return config;
 }
 
 /** An id no existing watcher holds, so "Add watcher" never collides. */

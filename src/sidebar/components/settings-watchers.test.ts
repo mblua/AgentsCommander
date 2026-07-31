@@ -49,31 +49,59 @@ describe("isWatcherConfig (#1171)", () => {
     expect(isWatcherConfig(config({ commands: [] }))).toBe(true);
   });
 
-  // The exact hand-written mistakes the Rust wrapper exists to survive.
+  // The exact hand-written mistakes the Rust wrapper exists to survive. Written as plain
+  // JSON, with no cast, because that is what the file holds and what `WatcherEntry` now says.
   it('rejects a capitalized mode, which is what "mode": "State" deserializes to', () => {
-    expect(isWatcherConfig({ ...config(), mode: "State" } as WatcherEntry)).toBe(false);
+    const entry: WatcherEntry = {
+      enabled: true,
+      mode: "State",
+      pattern: "x",
+      dedupe: "row",
+      dedupeWindowMs: 2000,
+    };
+    expect(isWatcherConfig(entry)).toBe(false);
   });
 
   it("rejects a string where commands must be a list", () => {
-    expect(isWatcherConfig({ ...config(), commands: "claude" } as WatcherEntry)).toBe(false);
+    const entry: WatcherEntry = {
+      enabled: true,
+      mode: "state",
+      pattern: "x",
+      commands: "claude",
+      dedupe: "row",
+      dedupeWindowMs: 2000,
+    };
+    expect(isWatcherConfig(entry)).toBe(false);
   });
 
   it("rejects a stringly-typed dedupe window", () => {
-    expect(
-      isWatcherConfig({ ...config(), dedupeWindowMs: "2000" } as WatcherEntry)
-    ).toBe(false);
+    const entry: WatcherEntry = {
+      enabled: true,
+      mode: "state",
+      pattern: "x",
+      dedupe: "row",
+      dedupeWindowMs: "2000",
+    };
+    expect(isWatcherConfig(entry)).toBe(false);
   });
 
   it("rejects a missing pattern and a missing mode", () => {
     const { pattern: _pattern, ...noPattern } = config();
     const { mode: _mode, ...noMode } = config();
-    expect(isWatcherConfig(noPattern as WatcherEntry)).toBe(false);
-    expect(isWatcherConfig(noMode as WatcherEntry)).toBe(false);
+    expect(isWatcherConfig(noPattern)).toBe(false);
+    expect(isWatcherConfig(noMode)).toBe(false);
   });
 
-  it("rejects a non-object entry", () => {
-    expect(isWatcherConfig("claude" as unknown as WatcherEntry)).toBe(false);
-    expect(isWatcherConfig(null as unknown as WatcherEntry)).toBe(false);
+  /**
+   * `WatcherEntry::Invalid` holds a `serde_json::Value`, so the entry Rust preserved and
+   * handed back can be any JSON value at all. A predicate that only ever sees objects is one
+   * whose callers had to lie to it with a cast.
+   */
+  it("rejects every non-object JSON value Rust can just as easily preserve", () => {
+    const entries: WatcherEntry[] = [null, 7, -1.5, "claude", true, false, ["claude"], []];
+    for (const entry of entries) {
+      expect(isWatcherConfig(entry)).toBe(false);
+    }
   });
 
   /**
@@ -163,7 +191,15 @@ describe("the reach request (#1171)", () => {
         fractional: config({ dedupeWindowMs: 1.5 }),
         huge: config({ dedupeWindowMs: 1e30 }),
         unsafe: config({ dedupeWindowMs: Number.MAX_SAFE_INTEGER + 2 }),
-        capitalized: { ...config(), mode: "State" } as WatcherEntry,
+        capitalized: {
+          enabled: true,
+          mode: "State",
+          pattern: "x",
+          dedupe: "row",
+          dedupeWindowMs: 2000,
+        },
+        scalar: "claude",
+        nothing: null,
       },
       agents
     );
@@ -312,16 +348,27 @@ describe("renaming a watcher (#1171)", () => {
   // Renaming is delete plus create, so what must be proven is that it takes nothing else
   // with it -- above all the entry this build could not read.
   it("moves one key and preserves every other entry, unreadable ones included", () => {
-    const unreadable = { mode: "State", pattern: 7 } as WatcherEntry;
+    const unreadable: WatcherEntry = { mode: "State", pattern: 7 };
     const watchers: Record<string, WatcherEntry> = {
       keep: config({ pattern: "keep" }),
       old: config({ pattern: "moved" }),
       broken: unreadable,
+      // The shapes a hand-written file can hold that are not objects at all.
+      scalar: "claude",
+      nothing: null,
     };
 
     const renamed = renameWatcherEntry(watchers, "old", "new");
 
-    expect(Object.keys(renamed).sort()).toEqual(["broken", "keep", "new"]);
+    expect(Object.keys(renamed).sort()).toEqual([
+      "broken",
+      "keep",
+      "new",
+      "nothing",
+      "scalar",
+    ]);
+    expect(renamed["scalar"]).toBe("claude");
+    expect(renamed["nothing"]).toBeNull();
     expect(renamed["new"]).toEqual(config({ pattern: "moved" }));
     expect(renamed["keep"]).toEqual(config({ pattern: "keep" }));
     expect(renamed["broken"]).toBe(unreadable);

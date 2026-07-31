@@ -47,6 +47,7 @@ import {
   watcherReachRequest,
   watcherReachSummary,
   withSelectorMode,
+  withWatcherInvariant,
 } from "./settings-watchers";
 import {
   AC_MATRIX_ROOT_PLACEHOLDER,
@@ -248,12 +249,15 @@ const WatcherRow: Component<{
   createEffect(() => {
     const pattern = props.config.pattern;
     const sessionId = testSessionId();
+    // Taken BEFORE the empty-pattern branch. Clearing the preview without advancing the
+    // generation leaves an answer for the previous pattern still entitled to paint, so a
+    // slow "Compiles. Matches 30 of 30 rows." lands on a row that no longer has a pattern.
+    const generation = (previewGeneration += 1);
     if (!pattern) {
       setPreview(null);
       setPreviewError("");
       return;
     }
-    const generation = (previewGeneration += 1);
     const timer = setTimeout(() => {
       PtyAPI.previewWatcherPattern(pattern, sessionId || undefined)
         .then((result) => {
@@ -1027,9 +1031,13 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     }));
   };
 
+  // The single writer of a watcher config into the map, which is where the editor's one
+  // invariant belongs: no call path can enable a row without a pattern, and none can leave an
+  // enabled row behind by emptying one.
   const setWatcherConfig = (id: string, config: WatcherConfig) => {
+    const next = withWatcherInvariant(config);
     mutateWatchers((map) => {
-      map[id] = config;
+      map[id] = next;
     });
   };
 

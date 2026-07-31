@@ -305,10 +305,17 @@ export interface WatcherConfig {
  */
 export type WatcherEntry = WatcherConfig | UnrecognizedWatcherEntry;
 
-/** An entry that did not deserialize as a `WatcherConfig`, preserved as-is. */
-export interface UnrecognizedWatcherEntry {
-  readonly [key: string]: unknown;
-}
+/**
+ * An entry that did not deserialize as a `WatcherConfig`, preserved verbatim.
+ *
+ * This is `serde_json::Value` and therefore **any** JSON value, not only an object: a
+ * hand-written `"permission": "claude"`, `"permission": 7`, `"permission": null` or
+ * `"permission": ["claude"]` all land here and are all written back unchanged. Modelling
+ * only objects made the contract claim a narrowness Rust does not have, and forced every
+ * test of a real case through `as unknown as WatcherEntry` -- a cast is what a type says
+ * when it is wrong.
+ */
+export type UnrecognizedWatcherEntry = JsonValue;
 
 export interface SessionGroup {
   id: string;

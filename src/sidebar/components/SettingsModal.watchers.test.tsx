@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AgentConfig,
   AppSettings,
+  JsonValue,
   WatcherConfig,
   WatcherEntry,
   WatcherReachRow,
@@ -59,7 +60,7 @@ describe("resolveSettingsSection (#1171)", () => {
  * save path carries the entry through untouched, which is what this pins.
  */
 describe("saving a settings draft that holds an unreadable watcher (#1171)", () => {
-  const unreadable = { mode: "State", commands: "claude" } as WatcherEntry;
+  const unreadable = { mode: "State", commands: "claude" };
 
   it("carries the unreadable entry and the valid one through the save merge", () => {
     const draft = baseSettings({
@@ -193,7 +194,7 @@ describe("the watcher commands selector, through a real save (#1171)", () => {
       "get_settings",
       baseSettings({
         watchers: {
-          broken: { mode: "State", commands: "claude" } as WatcherEntry,
+          broken: { mode: "State", commands: "claude" },
           good: { ...newWatcherConfig(), pattern: "Read" },
         },
       })
@@ -431,6 +432,48 @@ describe("the reach preview, keyed on the request fingerprint (#1171 test 58h)",
   });
 
   /**
+   * Emptying the pattern clears the preview, but clearing without advancing the generation
+   * leaves an older answer entitled to paint: the row then reads "Compiles" over a pattern
+   * that no longer exists.
+   */
+  it("discards a pattern preview in flight when the pattern is emptied", async () => {
+    const pending = deferred<unknown>();
+    const fake = transport();
+    fake.onInvoke("preview_watcher_pattern", () => pending.promise);
+    const rendered = await mounted(fake);
+    try {
+      expect(fake.callsFor("preview_watcher_pattern").length).toBeGreaterThan(0);
+
+      input(
+        rendered.root.querySelector<HTMLInputElement>(
+          '[data-ac-testid="settings.watchers.pattern.alpha"]'
+        )!,
+        ""
+      );
+      await vi.advanceTimersByTimeAsync(0);
+
+      pending.resolve({
+        compiles: true,
+        error: null,
+        sampled: true,
+        matchedRows: 30,
+        totalRows: 30,
+        samples: [],
+        capturesVolatile: false,
+      });
+      await vi.advanceTimersByTimeAsync(REACH_DEBOUNCE_MS * 2);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(
+        rendered.root.querySelector('[data-ac-testid="settings.watchers.preview.alpha"]')
+          ?.textContent
+      ).not.toContain("Compiles");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  /**
    * The permanent-pending case. A `pattern` keystroke changes the draft but NOT the request,
    * so it must change nothing at all: no call, and above all no clearing.
    */
@@ -621,12 +664,26 @@ describe("the reach preview, keyed on the request fingerprint (#1171 test 58h)",
    * unrecognised, is not sent, consumes no budget slot, and survives a save verbatim.
    */
   it("leaves rows the decoder would reject out of the request and intact in the save", async () => {
+    // Written as the JSON the file holds, with no cast: `WatcherEntry` now admits any
+    // `serde_json::Value`, which is exactly what Rust preserves and hands back.
+    const raw = (over: Record<string, JsonValue>): WatcherEntry => ({
+      enabled: false,
+      mode: "occurrence",
+      pattern: "",
+      dedupe: "row",
+      dedupeWindowMs: 2000,
+      ...over,
+    });
     const rejected: Record<string, WatcherEntry> = {
-      badcommands: { ...newWatcherConfig(), commands: [1] } as unknown as WatcherEntry,
-      negative: { ...newWatcherConfig(), dedupeWindowMs: -1 },
-      fractional: { ...newWatcherConfig(), dedupeWindowMs: 1.5 },
-      huge: { ...newWatcherConfig(), dedupeWindowMs: 1e30 },
-      unsafe: { ...newWatcherConfig(), dedupeWindowMs: Number.MAX_SAFE_INTEGER + 2 },
+      badcommands: raw({ commands: [1] }),
+      negative: raw({ dedupeWindowMs: -1 }),
+      fractional: raw({ dedupeWindowMs: 1.5 }),
+      huge: raw({ dedupeWindowMs: 1e30 }),
+      unsafe: raw({ dedupeWindowMs: Number.MAX_SAFE_INTEGER + 2 }),
+      // The non-object shapes, which the old mirror could not even express.
+      scalar: "claude",
+      nothing: null,
+      listed: ["claude"],
     };
     const accepted = {
       boundary: { ...newWatcherConfig(), dedupeWindowMs: Number.MAX_SAFE_INTEGER },
@@ -741,6 +798,113 @@ describe("the birth state of a watcher row and how it reads (#1171)", () => {
       const draft = (fake.lastCall("save_settings_draft")!.args as { draft: AppSettings })
         .draft;
       expect((draft.watchers?.["watcher-1"] as WatcherConfig).enabled).toBe(false);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  /**
+   * The invariant is `enabled => pattern !== ""`, and it has to hold on EVERY edit.
+   *
+   * Gating only the checkbox leaves this sequence open: type a pattern, enable, then delete
+   * the pattern. Save does not validate watchers, so it persists `enabled: true` with
+   * `pattern: ""` -- the global regex that matches every row on every agent, which is the
+   * flood this whole rule exists to prevent.
+   */
+  it("cannot be walked into an enabled watcher with an empty pattern", async () => {
+    const fake = transport([reachRow("watcher-1")], {});
+    const rendered = renderWithFakeTransport(
+      () => <SettingsModal section="watchers" onClose={() => {}} />,
+      fake
+    );
+    try {
+      await waitFor(() =>
+        expect(
+          rendered.root.querySelector('[data-ac-testid="settings.watchers.add"]')
+        ).toBeTruthy()
+      );
+      click(rendered.root.querySelector('[data-ac-testid="settings.watchers.add"]')!);
+
+      const pattern = await waitForElement<HTMLInputElement>(
+        rendered.root,
+        '[data-ac-testid="settings.watchers.pattern.watcher-1"]'
+      );
+      input(pattern, "Read");
+
+      const checkbox = rendered.root.querySelector<HTMLInputElement>(
+        '[data-ac-testid="settings.watchers.enabled.watcher-1"]'
+      )!;
+      await waitFor(() => expect(checkbox.disabled).toBe(false));
+      click(checkbox);
+      await waitFor(() =>
+        expect(
+          rendered.root
+            .querySelector('[data-ac-testid="settings.watchers.row.watcher-1"]')
+            ?.getAttribute("data-ac-state")
+        ).toBe("enabled")
+      );
+
+      // And now the step the checkbox guard never saw.
+      input(pattern, "");
+
+      await waitFor(() =>
+        expect(
+          rendered.root
+            .querySelector('[data-ac-testid="settings.watchers.row.watcher-1"]')
+            ?.getAttribute("data-ac-state")
+        ).toBe("disabled")
+      );
+
+      click(rendered.root.querySelector('[data-ac-testid="settings.save"]')!);
+      await waitFor(() => expect(fake.lastCall("save_settings_draft")).toBeTruthy());
+      const saved = (fake.lastCall("save_settings_draft")!.args as { draft: AppSettings })
+        .draft.watchers?.["watcher-1"] as WatcherConfig;
+      expect(saved.pattern).toBe("");
+      expect(saved.enabled).toBe(false);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("disables a watcher loaded enabled the moment its pattern is emptied", async () => {
+    const fake = transport([reachRow("probe")], {
+      probe: { ...newWatcherConfig(), pattern: "Read", enabled: true },
+    });
+    const rendered = renderWithFakeTransport(
+      () => <SettingsModal section="watchers" onClose={() => {}} />,
+      fake
+    );
+    try {
+      const pattern = await waitForElement<HTMLInputElement>(
+        rendered.root,
+        '[data-ac-testid="settings.watchers.pattern.probe"]'
+      );
+      await waitFor(() =>
+        expect(
+          rendered.root
+            .querySelector('[data-ac-testid="settings.watchers.row.probe"]')
+            ?.getAttribute("data-ac-state")
+        ).toBe("enabled")
+      );
+
+      input(pattern, "");
+
+      await waitFor(() =>
+        expect(
+          rendered.root
+            .querySelector('[data-ac-testid="settings.watchers.row.probe"]')
+            ?.getAttribute("data-ac-state")
+        ).toBe("disabled")
+      );
+      // Auto-disabling flips `enabled`, which is part of the reach request, so the answer is
+      // cleared and re-asked. Once it lands, the line names the missing condition rather than
+      // blaming the budget.
+      await waitFor(() =>
+        expect(
+          rendered.root.querySelector('[data-ac-testid="settings.watchers.reach.probe"]')
+            ?.textContent
+        ).toContain("Add a pattern to enable it.")
+      );
     } finally {
       rendered.cleanup();
     }
