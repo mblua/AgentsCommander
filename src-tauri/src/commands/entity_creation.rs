@@ -828,7 +828,6 @@ pub(crate) enum TeamConfigReadError {
 
 impl TeamConfigReadError {
     // Consumed by the Phase 2 runtime; Phase 1 pins the stable classification contract.
-    #[allow(dead_code)]
     pub(crate) fn class(&self) -> &'static str {
         match self {
             Self::NotFound { .. } => "not_found",
@@ -4375,8 +4374,6 @@ async fn git_clone_async(url: &str, target: &Path) -> Result<(), String> {
 
     #[cfg(windows)]
     {
-        #[allow(unused_imports)]
-        use std::os::windows::process::CommandExt;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
@@ -4413,8 +4410,6 @@ async fn git_clone_async(url: &str, target: &Path) -> Result<(), String> {
         reset_cmd.kill_on_drop(true);
         #[cfg(windows)]
         {
-            #[allow(unused_imports)]
-            use std::os::windows::process::CommandExt;
             reset_cmd.creation_flags(CREATE_NO_WINDOW);
         }
         match tokio::time::timeout(GIT_RESET_TIMEOUT, reset_cmd.output()).await {
