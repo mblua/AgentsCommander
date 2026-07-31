@@ -532,6 +532,29 @@ pub fn get_session_context(app: AppHandle, session_id: String) -> Result<Option<
     Ok(scraper.last_reading(uuid))
 }
 
+/// #1171 - one session's watcher activity, for the window on mount and on every poll.
+///
+/// SYNCHRONOUS, and it takes exactly one per-session mutex. That is possible only because the
+/// engine publishes `activeWatchers`, `possiblyMissedFrames` and `warmedUp` into the history at
+/// the end of each tick, instead of this command resolving settings and the session manager
+/// itself - which would put a read of the session lock on the window's polling path.
+///
+/// A session with no buffer returns an EMPTY snapshot, not `None` and not an error: the window
+/// distinguishes its four states from the values here, with no nullability to reason about.
+#[tauri::command]
+pub fn get_watcher_activity<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    session_id: String,
+    limit: Option<usize>,
+) -> Result<crate::pty::watchers::history::WatcherActivitySnapshot, String> {
+    let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
+    let Some(history) = app.try_state::<crate::pty::watchers::history::WatcherHistoryState>()
+    else {
+        return Ok(crate::pty::watchers::history::WatcherActivitySnapshot::empty());
+    };
+    Ok(history.snapshot(uuid, limit))
+}
+
 /// #1171 - what a pattern does, before it is saved.
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -900,6 +923,77 @@ mod watcher_preview_tests {
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build a pty preview test app");
         (app, id)
+    }
+
+    /// 9.5.65 - a `session_id` that is not a UUID is an error, exactly like
+    /// `get_session_context`. Everything else about this command answers with values.
+    #[test]
+    fn a_session_id_that_is_not_a_uuid_is_rejected() {
+        let app = settings_app(AppSettings::default());
+
+        assert!(get_watcher_activity(app.handle().clone(), "nope".into(), None).is_err());
+    }
+
+    /// 9.5.64 - with no history managed at all - a test app, a build without the engine - the
+    /// command answers with the EMPTY snapshot rather than an error. `warmedUp: false` is what
+    /// tells the window it is looking at a session the engine has not reached, so it shows a
+    /// neutral starting state instead of "no watcher reaches this agent".
+    #[test]
+    fn an_unmanaged_history_answers_with_the_empty_snapshot() {
+        let app = settings_app(AppSettings::default());
+
+        let snapshot = get_watcher_activity(app.handle().clone(), Uuid::new_v4().to_string(), None)
+            .expect("never an error");
+
+        assert!(snapshot.matches.is_empty());
+        assert!(!snapshot.warmed_up);
+        assert!(!snapshot.truncated);
+        assert_eq!(snapshot.last_seq, 0);
+        assert_eq!(snapshot.possibly_missed_frames, 0);
+        assert!(snapshot.active_watchers.is_empty());
+    }
+
+    /// 9.5.63 - the command hands `limit` straight to the ring, which trims from the NEW end
+    /// and keeps the order.
+    #[test]
+    fn the_command_reads_the_ring_and_honours_the_limit() {
+        use crate::pty::watchers::history::{SessionStatus, WatcherHistory, WatcherHistoryState};
+        use crate::pty::watchers::WatcherMatchPayload;
+
+        let id = Uuid::new_v4();
+        let history: WatcherHistoryState = Arc::new(WatcherHistory::default());
+        history.publish(id, SessionStatus::default());
+        for seq in 1..=5u64 {
+            history.record(
+                id,
+                &[WatcherMatchPayload {
+                    session_id: id.to_string(),
+                    seq,
+                    watcher_id: "w".to_string(),
+                    mode: crate::pty::watchers::WatcherMode::Occurrence,
+                    at: chrono::Utc::now(),
+                    captures: Vec::new(),
+                    row: format!("row {seq}"),
+                    row_truncated: false,
+                }],
+            );
+        }
+        let app = tauri::test::mock_builder()
+            .manage(history)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build a watcher activity test app");
+
+        let all = get_watcher_activity(app.handle().clone(), id.to_string(), None).expect("all");
+        assert_eq!(all.matches.len(), 5);
+        assert!(all.warmed_up);
+
+        let recent =
+            get_watcher_activity(app.handle().clone(), id.to_string(), Some(2)).expect("recent");
+        assert_eq!(
+            recent.matches.iter().map(|m| m.seq).collect::<Vec<_>>(),
+            vec![4, 5]
+        );
+        assert_eq!(recent.last_seq, 5);
     }
 
     /// 9.6.86 (first case) - **the common case**: a user writes a regex in Settings with no

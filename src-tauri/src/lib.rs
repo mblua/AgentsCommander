@@ -830,17 +830,29 @@ impl WatcherDelivery {
     }
 }
 
-/// Where a tick's matches go.
+/// Where a tick's matches go: into the ring ALWAYS, and out to the window only when there is
+/// one.
 ///
-/// The window check lives HERE and not in the engine, exactly as `ScraperSink` holds the
-/// `AppHandle` the scraper is not allowed to have. Adding a second consumer later means
-/// adding its label or falling back to broadcast, which is a one-line change in this type.
+/// The ring lives here, in the concrete sink, and the caps live in the engine loop immediately
+/// before the call that reaches this type. Consequence: everything that passes the caps
+/// reaches both the event and the buffer, and nothing else reaches either - and that ordering
+/// is a property of WHERE each piece lives rather than a rule someone has to maintain.
+///
+/// The window check lives here too, and not in the engine, exactly as `ScraperSink` holds the
+/// `AppHandle` the scraper is not allowed to have. Adding a second consumer later means adding
+/// its label or falling back to broadcast, which is a one-line change in this type.
 struct WatcherSink {
+    history: crate::pty::watchers::history::WatcherHistoryState,
     delivery: WatcherDelivery,
 }
 
 impl WatcherEventSink for WatcherSink {
     fn emit(&self, batch: crate::pty::watchers::WatcherMatchBatch) {
+        if let Ok(id) = uuid::Uuid::parse_str(&batch.session_id) {
+            // Recorded whether or not anyone is listening, so opening the window later shows
+            // the history rather than starting from nothing.
+            self.history.record(id, &batch.matches);
+        }
         self.delivery.deliver(batch);
     }
 }
@@ -851,41 +863,74 @@ mod watcher_sink_tests {
     use crate::pty::watchers::WatcherMatchBatch;
     use std::sync::Mutex as StdMutex;
 
-    fn recording(present: bool) -> (WatcherSink, Arc<StdMutex<Vec<WatcherMatchBatch>>>) {
+    use crate::pty::watchers::history::{SessionStatus, WatcherHistory};
+    use crate::pty::watchers::{WatcherMatchPayload, WatcherMode};
+
+    type Recorded = (
+        WatcherSink,
+        Arc<StdMutex<Vec<WatcherMatchBatch>>>,
+        crate::pty::watchers::history::WatcherHistoryState,
+    );
+
+    fn recording(present: bool) -> Recorded {
         let delivered = Arc::new(StdMutex::new(Vec::new()));
         let sink_delivered = Arc::clone(&delivered);
+        let history: crate::pty::watchers::history::WatcherHistoryState =
+            Arc::new(WatcherHistory::default());
         (
             WatcherSink {
+                history: Arc::clone(&history),
                 delivery: WatcherDelivery {
                     window_present: Arc::new(move || present),
                     emit: Arc::new(move |batch| sink_delivered.lock().unwrap().push(batch)),
                 },
             },
             delivered,
+            history,
         )
     }
 
-    fn batch() -> WatcherMatchBatch {
+    fn batch(session_id: uuid::Uuid) -> WatcherMatchBatch {
         WatcherMatchBatch {
-            session_id: "s".to_string(),
-            matches: Vec::new(),
+            session_id: session_id.to_string(),
+            matches: vec![WatcherMatchPayload {
+                session_id: session_id.to_string(),
+                seq: 1,
+                watcher_id: "w".to_string(),
+                mode: WatcherMode::Occurrence,
+                at: chrono::Utc::now(),
+                captures: Vec::new(),
+                row: "hit".to_string(),
+                row_truncated: false,
+            }],
         }
     }
 
-    /// #1171, 9.3.36 - with the activity window closed, NOTHING is emitted. Not a broadcast
-    /// nobody reads, not an emit to a label that does not exist: nothing.
+    /// #1171, 9.3.36 - with the activity window closed, NOTHING is emitted - not a broadcast
+    /// nobody reads, not an emit to a label that does not exist - **and the ring still
+    /// records**, so opening the window later shows the history.
     #[test]
-    fn no_event_is_emitted_when_the_watchers_window_does_not_exist() {
-        let (sink, delivered) = recording(false);
-        sink.emit(batch());
+    fn no_event_is_emitted_when_the_window_is_closed_and_the_ring_still_records() {
+        let id = uuid::Uuid::new_v4();
+        let (sink, delivered, history) = recording(false);
+        history.publish(id, SessionStatus::default());
+
+        sink.emit(batch(id));
+
         assert!(delivered.lock().unwrap().is_empty());
+        assert_eq!(history.snapshot(id, None).matches.len(), 1);
     }
 
     #[test]
-    fn the_batch_is_delivered_when_the_window_is_open() {
-        let (sink, delivered) = recording(true);
-        sink.emit(batch());
+    fn the_batch_is_delivered_and_recorded_when_the_window_is_open() {
+        let id = uuid::Uuid::new_v4();
+        let (sink, delivered, history) = recording(true);
+        history.publish(id, SessionStatus::default());
+
+        sink.emit(batch(id));
+
         assert_eq!(delivered.lock().unwrap().len(), 1);
+        assert_eq!(history.snapshot(id, None).matches.len(), 1);
     }
 }
 
@@ -1266,6 +1311,8 @@ pub fn run(
             // #1171 watcher engine. A SIBLING of the scraper above, not an extension of it:
             // different interval, different modes, its own history. Same construction shape,
             // and for the same reason it must come after `.manage(settings)`.
+            let watcher_history: crate::pty::watchers::history::WatcherHistoryState =
+                Arc::new(crate::pty::watchers::history::WatcherHistory::default());
             let watcher_engine = WatcherEngine::new(
                 Arc::new(WatcherBackends {
                     pty_mgr: pty_mgr.clone(),
@@ -1276,11 +1323,14 @@ pub fn run(
                     log: Default::default(),
                 }),
                 Arc::new(WatcherSink {
+                    history: Arc::clone(&watcher_history),
                     delivery: WatcherDelivery::to_watchers_window(app.handle().clone()),
                 }),
+                Arc::clone(&watcher_history),
             );
             watcher_engine.start(shutdown_for_setup.clone());
             app.manage(Arc::clone(&watcher_engine));
+            app.manage(watcher_history);
 
             // Start web server if enabled in settings
             {
@@ -2478,6 +2528,7 @@ pub fn run(
             commands::pty::pty_resize,
             commands::pty::get_screen_snapshot,
             commands::pty::get_session_context,
+            commands::pty::get_watcher_activity,
             commands::pty::preview_watcher_pattern,
             commands::pty::preview_watcher_reach,
             commands::config::get_settings,

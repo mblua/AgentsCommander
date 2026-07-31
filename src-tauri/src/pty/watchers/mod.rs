@@ -38,6 +38,7 @@
 
 pub mod dedupe;
 pub mod frame;
+pub mod history;
 pub mod pattern;
 
 use std::collections::{BTreeMap, HashMap};
@@ -49,11 +50,13 @@ use futures::future::BoxFuture;
 use uuid::Uuid;
 
 use crate::config::coding_agents_catalog::command_executable_basename;
-use crate::config::settings::{WatcherEntry, WatcherMode};
+use crate::config::settings::WatcherEntry;
 use crate::pty::backend::PtyBackend;
 use crate::pty::context_scrape::ContextSessionLiveness;
 
-pub use crate::config::settings::WatcherDedupe;
+/// Re-exported so every watcher type reads from one module. They are DEFINED in
+/// `config/settings.rs`, because that is where the user writes them.
+pub use crate::config::settings::{WatcherDedupe, WatcherMode};
 
 /// 200 ms, against `ContextScraper`'s 5 s. The engine has to catch rows in transit, and a row
 /// that scrolls past between two samples is gone: the mirror keeps zero scrollback.
@@ -619,6 +622,11 @@ pub struct WatcherEngine {
     backends: Arc<dyn WatcherBackendSource>,
     patterns: Arc<dyn WatcherPatternSource>,
     sink: Arc<dyn WatcherEventSink>,
+    /// The engine publishes each session's STATUS here at the end of its tick, so
+    /// `get_watcher_activity` can be synchronous and take one per-session mutex instead of
+    /// resolving settings and the session manager itself. The MATCHES are written by the sink,
+    /// which is where the ring belongs.
+    history: history::WatcherHistoryState,
     /// Linearizes registration and retirement against evaluation and emission. Lock order is
     /// always sequence, then registered.
     sequence: Mutex<()>,
@@ -635,11 +643,13 @@ impl WatcherEngine {
         backends: Arc<dyn WatcherBackendSource>,
         patterns: Arc<dyn WatcherPatternSource>,
         sink: Arc<dyn WatcherEventSink>,
+        history: history::WatcherHistoryState,
     ) -> Arc<Self> {
         Arc::new(Self {
             backends,
             patterns,
             sink,
+            history,
             sequence: Mutex::new(()),
             registered: Mutex::new(HashMap::new()),
             compiled: Mutex::new(HashMap::new()),
@@ -827,13 +837,18 @@ impl WatcherEngine {
             return (None, false);
         };
 
-        let frame = match self.read_frame(id, session) {
+        let read = self.read_frame(id, session);
+        let frame = match read {
             // Nothing changed, so nothing can have started or stopped matching. No rows were
-            // cloned to reach this arm.
-            ScreenRowsSince::Unchanged => return (None, false),
-            // No reading this tick and NO claim about the session: keep it.
-            ScreenRowsSince::Missing => return (None, false),
-            // The backend says there is nothing behind this id. Retire it now.
+            // cloned to reach this arm - but the session HAS been ticked, so its status is
+            // published and `warmedUp` becomes true.
+            ScreenRowsSince::Unchanged | ScreenRowsSince::Missing => {
+                session.warmed_up = true;
+                self.history.publish(id, status_of(session, agent));
+                return (None, false);
+            }
+            // The backend says there is nothing behind this id. Retire it now, and publish
+            // nothing: an entry created here is one the purge that follows would have to race.
             ScreenRowsSince::Gone => return (None, true),
             ScreenRowsSince::Frame(frame) => frame,
         };
@@ -954,6 +969,11 @@ impl WatcherEngine {
 
         session.seq = next_seq;
 
+        // Published while the registration lock is still held, so a retirement cannot
+        // interleave: `purge_session_side_state` retires first and then purges, and creation
+        // requires registration, so a tick in flight can never resurrect a purged session.
+        self.history.publish(id, status_of(session, agent));
+
         if matches.is_empty() {
             return (None, false);
         }
@@ -1018,6 +1038,30 @@ impl WatcherEngine {
 
 /// What a match contributes to a payload, before the engine stamps identity on it.
 type Found = (Vec<Option<String>>, String, bool);
+
+/// The status of one session at the end of a tick.
+///
+/// Built from the RESOLVED watcher set rather than from the state map, so a watcher that
+/// reaches this agent but has never matched is still listed with a count of 0 - which is what
+/// lets the window say "configured and waiting" instead of "nothing reaches this session".
+fn status_of(session: &RegisteredSession, agent: &AgentResolution) -> history::SessionStatus {
+    history::SessionStatus {
+        possibly_missed_frames: session.diff.possibly_missed_frames(),
+        active_watchers: agent
+            .running
+            .iter()
+            .map(|watcher| {
+                let state = session.watchers.get(&watcher.id);
+                history::WatcherActivityCounter {
+                    watcher_id: watcher.id.clone(),
+                    mode: watcher.mode,
+                    count: state.map(|state| state.count).unwrap_or(0),
+                    degraded: state.is_some_and(|state| state.degraded),
+                }
+            })
+            .collect(),
+    }
+}
 
 /// Pull the capture groups 1..n out of a match, in order, without group 0.
 fn captures_of(regex: &regex::Regex, text: &str) -> Vec<Option<String>> {
@@ -1330,6 +1374,7 @@ mod engine_tests {
         backends: Arc<FakeBackends>,
         patterns: Arc<FakePatterns>,
         sink: Arc<FakeSink>,
+        history: history::WatcherHistoryState,
     }
 
     impl Harness {
@@ -1343,16 +1388,20 @@ mod engine_tests {
             });
             let patterns = Arc::new(FakePatterns::default());
             let sink = Arc::new(FakeSink::default());
+            let history: history::WatcherHistoryState =
+                Arc::new(history::WatcherHistory::default());
             Self {
                 engine: WatcherEngine::new(
                     Arc::clone(&backends) as Arc<dyn WatcherBackendSource>,
                     Arc::clone(&patterns) as Arc<dyn WatcherPatternSource>,
                     Arc::clone(&sink) as Arc<dyn WatcherEventSink>,
+                    Arc::clone(&history),
                 ),
                 backend,
                 backends,
                 patterns,
                 sink,
+                history,
             }
         }
 
@@ -2058,6 +2107,156 @@ mod engine_tests {
             Some("a1".to_string()),
         );
         assert!(harness.engine.is_session_registered(agent));
+    }
+
+    /// 9.5.62 and 9.5.66 - the engine publishes each session's STATUS at the end of every
+    /// tick, so the snapshot command can be synchronous, and the `seq` in the ring is the same
+    /// value the event carried. That shared identity is what lets the window merge a snapshot
+    /// with a live stream instead of guessing.
+    #[tokio::test]
+    async fn the_engine_publishes_status_every_tick_and_the_ring_shares_the_events_seq() {
+        let harness = Harness::new();
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, "a1".to_string());
+        harness.configure(
+            "a1",
+            vec![
+                state_watcher("perm", "Permission required"),
+                occurrence_watcher("read", "Read", WatcherDedupe::None, 2000),
+            ],
+        );
+
+        // One tick with no match at all: the status is still published.
+        harness.backend.paint(id, &["idle"]);
+        harness.ticks(1).await;
+
+        let snapshot = harness.history.snapshot(id, None);
+        assert!(snapshot.warmed_up);
+        assert!(snapshot.matches.is_empty());
+        let counters: Vec<(&str, u64)> = snapshot
+            .active_watchers
+            .iter()
+            .map(|counter| (counter.watcher_id.as_str(), counter.count))
+            .collect();
+        assert_eq!(counters, vec![("perm", 0), ("read", 0)]);
+
+        harness.backend.paint(id, &["Permission required"]);
+        harness.ticks(1).await;
+
+        // The engine hands the batch to the sink; the ring is the SINK's job, so mirror what
+        // the production sink does and assert the identity that makes the merge possible.
+        let emitted = harness.emitted();
+        assert_eq!(emitted.len(), 1);
+        harness.history.record(id, &emitted);
+        let snapshot = harness.history.snapshot(id, None);
+        assert_eq!(snapshot.matches[0].seq, emitted[0].seq);
+        assert_eq!(snapshot.last_seq, emitted[0].seq);
+        assert_eq!(
+            snapshot
+                .active_watchers
+                .iter()
+                .find(|counter| counter.watcher_id == "perm")
+                .expect("counter")
+                .count,
+            1
+        );
+    }
+
+    /// 9.5.72 - **a session whose child exits on its own KEEPS its buffer.** It is retired from
+    /// sampling and nothing else: an API error or a CLI crash is exactly when the evidence is
+    /// worth keeping, and it is the only thing left to look at.
+    #[tokio::test]
+    async fn a_session_that_dies_on_its_own_is_retired_but_keeps_its_history() {
+        let harness = Harness::new();
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, "a1".to_string());
+        harness.configure("a1", vec![state_watcher("perm", "Permission required")]);
+        harness.backend.paint(id, &["Permission required"]);
+        harness.ticks(1).await;
+        harness.history.record(id, &harness.emitted());
+
+        // Twice: a read that says `Gone` makes the engine re-resolve the backend once and ask
+        // again, which is what covers a session that changed route.
+        harness.backend.push(id, Painted::Gone);
+        harness.backend.push(id, Painted::Gone);
+        harness.ticks(1).await;
+
+        assert!(!harness.engine.is_session_registered(id));
+        let snapshot = harness.history.snapshot(id, None);
+        assert_eq!(snapshot.matches.len(), 1, "the evidence must survive");
+        assert!(snapshot.warmed_up);
+    }
+
+    /// 9.5.68 and 9.5.70 - `purge_session_side_state` retires FIRST and purges second, and the
+    /// entry cannot come back: only the engine creates entries, and only while holding its
+    /// registration lock.
+    #[tokio::test]
+    async fn purging_a_destroyed_session_retires_it_first_and_the_entry_never_returns() {
+        let harness = Harness::new();
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, "a1".to_string());
+        harness.configure("a1", vec![state_watcher("perm", "Permission required")]);
+        harness.backend.paint(id, &["Permission required"]);
+        harness.ticks(1).await;
+        harness.history.record(id, &harness.emitted());
+        assert!(harness.history.snapshot(id, None).warmed_up);
+
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&harness.engine))
+            .manage(Arc::clone(&harness.history))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build a mock app");
+        crate::commands::session::purge_session_side_state(app.handle(), id);
+
+        assert!(!harness.engine.is_session_registered(id));
+        assert!(!harness.history.snapshot(id, None).warmed_up);
+
+        // Whatever else ticks, the entry stays gone: the session is no longer registered, so
+        // no tick can publish it back.
+        harness.backend.paint(id, &["Permission required"]);
+        harness.ticks(5).await;
+        assert!(!harness.history.snapshot(id, None).warmed_up);
+    }
+
+    /// 9.5.68 and 9.5.69 (call-site guard) - **the finding revision 1 of the plan missed.**
+    ///
+    /// There are three production exits from `SessionManager`, not one, and the post-commit
+    /// cleanup is two parallel copies. A restart is a normal flow - the invoke handler, the
+    /// mailbox and a bulk settings save all reach it - so a purge wired into only the destroy
+    /// path would orphan up to 500 ring entries on every restart, under an id already gone
+    /// from the session list and therefore unreachable from the UI.
+    ///
+    /// This pins BOTH call sites against the source, so removing either one fails here rather
+    /// than leaking silently.
+    #[test]
+    fn both_post_commit_cleanups_purge_the_per_session_side_state() {
+        const SOURCE: &str = include_str!("../../commands/session.rs");
+
+        let restart = SOURCE
+            .split("fn publish_restart_destroyed")
+            .nth(1)
+            .expect("publish_restart_destroyed must exist");
+        let restart_body = restart
+            .split("\nasync fn ")
+            .next()
+            .expect("its body must end somewhere");
+        assert!(
+            restart_body.contains("purge_session_side_state("),
+            "the restart cleanup must purge; both restart paths publish through it"
+        );
+
+        let destroy = SOURCE
+            .split("for session_id in outcome.destroyed_ids.iter().copied()")
+            .nth(1)
+            .expect("the destroy transaction must purge over destroyed_ids ONLY");
+        assert!(
+            destroy
+                .split("\n    }")
+                .next()
+                .expect("its body must end somewhere")
+                .contains("purge_session_side_state("),
+            "the destroyed-only loop must be the one that purges"
+        );
     }
 
     /// 9.6.74 and 9.6.75 - **the Rust half of the TypeScript mirror.** The exact camelCase

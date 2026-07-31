@@ -80,6 +80,48 @@ pub(crate) fn register_session_samplers<R: tauri::Runtime>(
     }
 }
 
+/// #1171 - purge every per-session side structure a DESTROYED session leaves behind.
+///
+/// One helper with two call sites, because the per-session side-state purge is already
+/// duplicated in this file: the destroy loop and `publish_restart_destroyed` are parallel
+/// copies of each other, and adding a third thing to purge to only one of them is how a leak
+/// gets written.
+///
+/// **The order is load-bearing.** The engine is retired FIRST, so no tick still in flight can
+/// republish this session's status and recreate the entry step 2 removes. `WatcherHistory`
+/// creates entries only from the engine's publish, and the engine publishes only while holding
+/// its registration lock, so once `retire_session` returns nothing can bring the entry back.
+///
+/// **Destroyed sessions only.** A session that exits on its own is NOT destroyed: the engine
+/// stops sampling it and its buffer stays, which is the case that matters - an API error or a
+/// CLI crash is exactly when the evidence is worth keeping. Root-agent sessions retained as
+/// `Exited` keep theirs too, because their row is still in the list.
+pub(crate) fn purge_session_side_state<R: tauri::Runtime>(app: &AppHandle<R>, session_id: Uuid) {
+    if let Some(watchers) = app.try_state::<Arc<crate::pty::watchers::WatcherEngine>>() {
+        watchers.retire_session(session_id);
+    }
+    if let Some(history) = app.try_state::<crate::pty::watchers::history::WatcherHistoryState>() {
+        history.purge(session_id);
+    }
+    reset_substantive_input(app, session_id);
+}
+
+/// #871 - clear a session's substantive-input marker.
+///
+/// Extracted by #1171 so it has ONE definition rather than the two inline copies the destroy
+/// and restart cleanups each carried. It is a map removal, so calling it twice for the same
+/// session is a no-op and not a second effect - which is what lets the destroy path keep
+/// resetting every id it publishes, retained-exited ones included, while the destroyed-only
+/// purge below also resets the ones it owns.
+fn reset_substantive_input<R: tauri::Runtime>(app: &AppHandle<R>, session_id: Uuid) {
+    if let Some(activity) = app.try_state::<crate::pty::input_activity::SubstantiveInputState>() {
+        activity
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .reset(session_id);
+    }
+}
+
 async fn rollback_pre_created_session<R: tauri::Runtime>(
     _app: &AppHandle<R>,
     _session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
@@ -3210,16 +3252,22 @@ pub(crate) async fn execute_destroy_transaction<R: tauri::Runtime>(
                 );
             }
         }
-        if let Some(activity) = transaction
-            .app()
-            .try_state::<crate::pty::input_activity::SubstantiveInputState>()
-        {
-            activity
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .reset(session_id);
-        }
+        reset_substantive_input(transaction.app(), session_id);
     }
+
+    // #1171 - a SEPARATE loop over `destroyed_ids` only, rather than a membership test inside
+    // the loop above. That loop iterates `destroyed_ids.chain(retained_exited_ids)`, so a
+    // `contains` check would be O(n squared) and, worse, would express a business rule as a
+    // condition inside a loop that does something else. A separate loop makes "destroyed only"
+    // structural.
+    //
+    // Root-agent sessions retained as `Exited` are deliberately NOT purged: they stay in the
+    // manager and their row is still in the list, so their post-mortem view still has a place
+    // to be shown.
+    for session_id in outcome.destroyed_ids.iter().copied() {
+        purge_session_side_state(transaction.app(), session_id);
+    }
+
     for row in committed.changed_rows.iter().filter(|row| {
         Uuid::parse_str(&row.id)
             .ok()
@@ -3769,6 +3817,11 @@ async fn teardown_old_for_restart<R: tauri::Runtime>(
     Ok(true)
 }
 
+/// #1171 - this covers BOTH restart paths: `execute_restart_transaction`'s success path and
+/// `finalize_failed_restart`. A restart is a normal flow - it is in the invoke handler, the
+/// mailbox calls it, and a bulk settings save can restart sessions - so without the purge here
+/// every restart would orphan up to 500 ring entries under an id that is already gone from the
+/// session list, unreachable from the UI.
 fn publish_restart_destroyed<R: tauri::Runtime>(
     transaction: &SelectionTransaction<R>,
     session_id: Uuid,
@@ -3784,15 +3837,7 @@ fn publish_restart_destroyed<R: tauri::Runtime>(
             );
         }
     }
-    if let Some(activity) = transaction
-        .app()
-        .try_state::<crate::pty::input_activity::SubstantiveInputState>()
-    {
-        activity
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .reset(session_id);
-    }
+    purge_session_side_state(transaction.app(), session_id);
 }
 
 async fn finalize_failed_restart<R: tauri::Runtime>(
