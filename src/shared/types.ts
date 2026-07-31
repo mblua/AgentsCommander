@@ -213,13 +213,67 @@ export interface WatcherPatternPreview {
   capturesVolatile: boolean;
 }
 
-/** #1171 - which agents a candidate selector reaches. */
+/**
+ * #1171 - one watcher row of the draft the Settings modal holds in memory.
+ *
+ * Only the three fields `reaches` and the budget depend on. `pattern`, `mode`, `dedupe` and
+ * `capturedAgainst` take part in neither and are deliberately not sent: the row already shows
+ * its pattern, and `previewWatcherPattern` answers compilability separately, so carrying it
+ * here would inflate every debounced payload to restate an answer already on screen.
+ */
+export interface WatcherDraftEntry {
+  id: string;
+  enabled: boolean;
+  commands?: string[] | null;
+}
+
+/**
+ * #1171 - one agent row of the same draft.
+ *
+ * The modal edits agents and watchers in ONE store and one Save writes both, so resolving
+ * against the SAVED agent list would answer about a state the user has already left. Two of
+ * the three agent edits over-report that way: deleting an agent leaves it named in a reach
+ * list it will not be in, and changing an agent's `command` leaves a watcher reported as
+ * reaching it under the old stem. Only adding an agent under-reports.
+ */
+export interface WatcherAgentDraftEntry {
+  id: string;
+  label: string;
+  command: string;
+}
+
+/** #1171 - one agent that a draft row's selector reaches. */
 export interface WatcherReachEntry {
   agentId: string;
   agentLabel: string;
   commandStem: string;
-  /** False when the watcher reaches the agent but falls outside its 8-watcher budget. */
-  inBudget: boolean;
+  /**
+   * Whether this row is enabled in the draft AND holds one of this agent's 8 slots once every
+   * other enabled row of the draft is counted. It is slot assignment, **not** a promise that
+   * the watcher will emit anything: a resolved watcher whose pattern does not compile is
+   * allocated a slot and is inert, and compilability is answered separately by
+   * `previewWatcherPattern`. A disabled row is always false here, and the editor, which owns
+   * `enabled`, says "disabled" rather than "budget".
+   */
+  allocated: boolean;
+}
+
+/**
+ * #1171 - the reach of one draft row.
+ *
+ * Exactly one per requested row, in request order. It carries `id` back because the editor
+ * filters unrecognised rows out of the request, so its table positions do not match the
+ * response positions. A row that reaches nobody is still present, with `entries: []`.
+ */
+export interface WatcherReachRow {
+  id: string;
+  /**
+   * Every agent this row's selector reaches, whether or not the row is enabled: reach is a
+   * property of the selector alone, and `allocated` is where enablement and budget land.
+   * Ordered by `agentLabel` with `agentId` as the tie-break, so the list does not reshuffle
+   * between keystrokes.
+   */
+  entries: WatcherReachEntry[];
 }
 
 /** #1171 - one user-configured watcher. Mirrors `WatcherConfig` (`config/settings.rs`). */

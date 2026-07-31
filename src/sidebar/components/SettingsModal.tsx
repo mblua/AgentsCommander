@@ -17,6 +17,7 @@ import type {
   WatcherEntry,
   WatcherPatternPreview,
   WatcherReachEntry,
+  WatcherReachRow,
 } from "../../shared/types";
 import { SettingsAPI, TelegramAPI, ReposAPI, CodingAgentsAPI, PtyAPI } from "../../shared/ipc";
 import { toastStore } from "../../shared/stores/toasts";
@@ -31,15 +32,20 @@ import TrashIcon from "./TrashIcon";
 import XMarkIcon from "./XMarkIcon";
 import { mergeSettingsForSavePreservingProjects } from "./settings-save";
 import {
+  canEnableWatcher,
   distinctCommandStems,
   isWatcherConfig,
   newWatcherConfig,
   nextWatcherId,
+  reachRequestFingerprint,
   renameWatcherEntry,
   selectorMode,
   sortedWatcherIds,
   toggleCommandStem,
   validateWatcherId,
+  watcherBudgetNotice,
+  watcherReachRequest,
+  watcherReachSummary,
   withSelectorMode,
 } from "./settings-watchers";
 import {
@@ -183,9 +189,13 @@ const WATCHER_NO_SESSION = "";
 /**
  * #1171 - one row of the Watchers tab.
  *
- * A component rather than a `render*` helper because each row owns two debounced backend
- * previews and their timers; inside `<For>` every row gets its own reactive scope, so the
- * cleanup is the framework's job instead of a bookkeeping map keyed by watcher id.
+ * A component rather than a `render*` helper because each row owns a debounced pattern
+ * preview and its timer; inside `<For>` every row gets its own reactive scope, so the cleanup
+ * is the framework's job instead of a bookkeeping map keyed by watcher id.
+ *
+ * Reach is NOT owned here. Whether a row holds one of an agent's 8 slots depends on every
+ * other row of the draft and on the draft's agents, so one call for the whole section answers
+ * every row at once and each row renders the `entries` its `id` indexes.
  */
 const WatcherRow: Component<{
   id: string;
@@ -193,6 +203,9 @@ const WatcherRow: Component<{
   otherIds: string[];
   stems: string[];
   sessions: Session[];
+  /** This row's half of the section's answer; `null` while none is displayed. */
+  reach: WatcherReachEntry[] | null;
+  reachError: string;
   onChange: (next: WatcherConfig) => void;
   onRename: (nextId: string) => void;
   onRemove: () => void;
@@ -201,15 +214,24 @@ const WatcherRow: Component<{
   const [renaming, setRenaming] = createSignal(false);
   const [preview, setPreview] = createSignal<WatcherPatternPreview | null>(null);
   const [previewError, setPreviewError] = createSignal("");
-  const [reach, setReach] = createSignal<WatcherReachEntry[] | null>(null);
   const [testSessionId, setTestSessionId] = createSignal(WATCHER_NO_SESSION);
 
   // Preselect the active session when it qualifies, i.e. when it is an agent session. A
   // plain shell has a screen but nothing a watcher would ever be configured against.
-  onMount(() => {
+  //
+  // Reactive rather than read once on mount: the modal is opened by `emitOpenSettings` and by
+  // tests before the session store has hydrated, and a one-shot read would then preselect
+  // nothing for the rest of the modal's life. It stops the moment the user picks, so a later
+  // hydration never overrides a deliberate choice.
+  let sessionPickedByUser = false;
+  createEffect(() => {
+    if (sessionPickedByUser) return;
     const active = props.sessions.find((s) => s.id === sessionsStore.activeId);
     if (active) setTestSessionId(active.id);
   });
+
+  /** An empty pattern is a valid regex that matches every row, so enabling is gated on one. */
+  const enableBlocked = () => !props.config.enabled && !canEnableWatcher(props.config);
 
   const renameError = () =>
     renameDraft() === props.id ? null : validateWatcherId(renameDraft(), props.otherIds);
@@ -220,8 +242,8 @@ const WatcherRow: Component<{
     setRenaming(false);
   };
 
-  // Both previews are debounced and generation-guarded: the user types, and a slow answer
-  // for an older pattern must never overwrite the answer for the current one.
+  // Debounced and generation-guarded: the user types, and a slow answer for an older pattern
+  // must never overwrite the answer for the current one.
   let previewGeneration = 0;
   createEffect(() => {
     const pattern = props.config.pattern;
@@ -248,26 +270,6 @@ const WatcherRow: Component<{
     onCleanup(() => clearTimeout(timer));
   });
 
-  let reachGeneration = 0;
-  createEffect(() => {
-    const commands = props.config.commands;
-    const watcherId = props.id;
-    const generation = (reachGeneration += 1);
-    const timer = setTimeout(() => {
-      PtyAPI.previewWatcherReach(watcherId, commands)
-        .then((entries) => {
-          if (generation === reachGeneration) setReach(entries);
-        })
-        .catch(() => {
-          if (generation === reachGeneration) setReach(null);
-        });
-    }, WATCHER_PREVIEW_DEBOUNCE_MS);
-    onCleanup(() => clearTimeout(timer));
-  });
-
-  const reachedCount = () => reach()?.filter((entry) => entry.inBudget).length ?? null;
-  const outOfBudget = () => reach()?.filter((entry) => !entry.inBudget) ?? [];
-
   const update = <K extends keyof WatcherConfig>(key: K, value: WatcherConfig[K]) =>
     props.onChange({ ...props.config, [key]: value });
 
@@ -292,14 +294,26 @@ const WatcherRow: Component<{
         </button>
       </div>
 
+      {/* Refused rather than merely discouraged: an empty pattern matches every row, so
+          enabling one would fill the per-tick caps, turn the ring over, go degraded and
+          displace a useful watcher out of an agent's budget. Disabling stays available even
+          when the pattern is empty, which is the state a hand-written file can arrive in. */}
       <label class="settings-checkbox-field">
         <input
           type="checkbox"
           class="settings-checkbox"
           checked={props.config.enabled}
-          onChange={(e) => update("enabled", e.currentTarget.checked)}
+          disabled={enableBlocked()}
+          onChange={(e) => {
+            if (e.currentTarget.checked && !canEnableWatcher(props.config)) {
+              e.currentTarget.checked = false;
+              return;
+            }
+            update("enabled", e.currentTarget.checked);
+          }}
           data-ac-testid={`settings.watchers.enabled.${props.id}`}
           data-ac-role="checkbox"
+          data-ac-state={enableBlocked() ? "blocked" : "available"}
         />
         <span>Enabled</span>
       </label>
@@ -407,18 +421,29 @@ const WatcherRow: Component<{
         </label>
       </Show>
 
+      {/* Reach and allocation answer different questions, so they are worded differently:
+          `entries` is what this selector reaches, `allocated` is whether the row holds a slot
+          after Save. A rejected call renders the error rather than the previous answer, which
+          would belong to a draft that no longer exists. */}
       <div
         class="settings-label-hint"
         data-ac-testid={`settings.watchers.reach.${props.id}`}
         data-ac-role="status"
       >
-        <Show when={reachedCount() !== null} fallback="Resolving reach...">
-          {`Reaches ${reachedCount()} agent${reachedCount() === 1 ? "" : "s"}.`}
-          <Show when={outOfBudget().length > 0}>
-            {` Not running on ${outOfBudget()
-              .map((entry) => entry.agentLabel || entry.agentId)
-              .join(", ")} (budget).`}
-          </Show>
+        <Show
+          when={props.reachError}
+          fallback={
+            <Show when={props.reach} fallback="Resolving reach...">
+              {(entries) => (
+                <>
+                  {watcherReachSummary(props.config, entries())}
+                  {watcherBudgetNotice(props.config, entries())}
+                </>
+              )}
+            </Show>
+          }
+        >
+          {`Reach unknown: ${props.reachError}`}
         </Show>
       </div>
 
@@ -449,7 +474,13 @@ const WatcherRow: Component<{
             value={props.config.dedupeWindowMs}
             onInput={(e) => {
               const value = parseInt(e.currentTarget.value, 10);
-              if (!Number.isNaN(value)) update("dedupeWindowMs", value);
+              // The editor must not be able to write a value the Rust decoder would reject:
+              // a negative or unrepresentable one reclassifies this very row as unrecognised,
+              // which would take it out of the editor in the middle of being edited and leave
+              // the user with a warning naming an id they can no longer reach.
+              if (Number.isSafeInteger(value) && value >= 0) {
+                update("dedupeWindowMs", value);
+              }
             }}
             data-ac-testid={`settings.watchers.dedupeWindow.${props.id}`}
             data-ac-role="spinbutton"
@@ -479,7 +510,10 @@ const WatcherRow: Component<{
         <select
           class="settings-input"
           value={testSessionId()}
-          onChange={(e) => setTestSessionId(e.currentTarget.value)}
+          onChange={(e) => {
+            sessionPickedByUser = true;
+            setTestSessionId(e.currentTarget.value);
+          }}
           data-ac-testid={`settings.watchers.testSession.${props.id}`}
           data-ac-role="combobox"
         >
@@ -1018,6 +1052,69 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       if (draft) draft.watchers = renamed;
     }));
   };
+
+  // ── #1171 Reach, held by the section rather than by each row ───────────────
+  // Whether a watcher holds one of an agent's 8 slots cannot be answered from that watcher
+  // alone: it depends on every other enabled row, on where their ids fall in key order, and
+  // on the agents, which this same modal edits in this same draft. So one debounced call
+  // carries the whole draft and every row renders the `entries` its `id` indexes.
+
+  const reachRequest = createMemo(() =>
+    watcherReachRequest(settings.data?.watchers, settings.data?.agents ?? [])
+  );
+  const reachFingerprint = createMemo(() => reachRequestFingerprint(reachRequest()));
+  const [reachAnswer, setReachAnswer] = createSignal<WatcherReachRow[] | null>(null);
+  const [reachError, setReachError] = createSignal("");
+  /** Fingerprints whose call has been issued and has not settled. */
+  const reachInFlight = new Set<string>();
+
+  const reachByWatcherId = createMemo(() => {
+    const byId = new Map<string, WatcherReachEntry[]>();
+    for (const row of reachAnswer() ?? []) byId.set(row.id, row.entries);
+    return byId;
+  });
+
+  // One rule, keyed on the REQUEST and not on the draft. A `pattern` keystroke changes the
+  // draft but not the request, so it must change nothing at all: pairing an idempotence guard
+  // with a clear-on-any-change rule contradicts itself and leaves the row pending forever.
+  //
+  // The memo only re-runs this effect when the fingerprint actually differs, which is the
+  // "while the current fingerprint equals the displayed one, nothing is cleared and no call is
+  // made" half. The rest is here.
+  createEffect(() => {
+    const fingerprint = reachFingerprint();
+
+    // Cleared SYNCHRONOUSLY. A commit-time guard stops a stale answer from being written, not
+    // from being read: on its own it leaves the old answer on screen for the debounce plus the
+    // round trip, and a user who presses Save in that gap decides against an indicator
+    // belonging to a draft that no longer exists. Save itself is not blocked -- the
+    // requirement is that the indicator never states something false, not that the user waits.
+    setReachAnswer(null);
+    setReachError("");
+
+    // A call for this exact request is already out; its answer is the one to wait for. This is
+    // what makes A to B and back to A settle on A instead of re-clearing forever.
+    if (reachInFlight.has(fingerprint)) return;
+
+    const timer = setTimeout(() => {
+      const request = reachRequest();
+      reachInFlight.add(fingerprint);
+      PtyAPI.previewWatcherReach(request.watchers, request.agents)
+        .then((rows) => {
+          reachInFlight.delete(fingerprint);
+          if (reachFingerprint() !== fingerprint) return;
+          setReachAnswer(rows);
+          setReachError("");
+        })
+        .catch((err: unknown) => {
+          reachInFlight.delete(fingerprint);
+          if (reachFingerprint() !== fingerprint) return;
+          setReachAnswer(null);
+          setReachError(errorMessage(err));
+        });
+    }, WATCHER_PREVIEW_DEBOUNCE_MS);
+    onCleanup(() => clearTimeout(timer));
+  });
 
   const updateAgent = (
     index: number,
@@ -2781,6 +2878,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                   otherIds={watcherIds().filter((other) => other !== id)}
                   stems={commandStems()}
                   sessions={agentSessions()}
+                  // Indexed by id, not by position: the request leaves unrecognised rows out,
+                  // so response positions do not match table positions.
+                  reach={reachAnswer() ? reachByWatcherId().get(id) ?? [] : null}
+                  reachError={reachError()}
                   onChange={(next) => setWatcherConfig(id, next)}
                   onRename={(nextId) => renameWatcher(id, nextId)}
                   onRemove={() => removeWatcher(id)}

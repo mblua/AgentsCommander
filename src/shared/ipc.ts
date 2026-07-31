@@ -76,9 +76,11 @@ import type {
   ApiClientMintResponse,
   SessionSelection,
   WatcherActivitySnapshot,
+  WatcherAgentDraftEntry,
+  WatcherDraftEntry,
   WatcherMatchBatch,
   WatcherPatternPreview,
-  WatcherReachEntry,
+  WatcherReachRow,
 } from "./types";
 import { decodeSessionSelection } from "./session-selection";
 
@@ -263,16 +265,29 @@ export const PtyAPI = {
       pattern,
     }),
 
-  /** #1171 - which agents a candidate selector reaches, and which of them it is out of
-   *  budget for. Exists so the Settings UI never reimplements stem normalization: the one
-   *  stem rule lives in Rust and the frontend's `starts_with` rule must not be ported. */
-  previewWatcherReach: (watcherId: string, commands?: string[] | null) =>
-    transport.invoke<WatcherReachEntry[]>("preview_watcher_reach", {
-      watcherId,
-      // `null` and an absent selector both mean "every agent"; `[]` means "none". The
-      // three stay distinct all the way to Rust's `Option<Vec<String>>`.
-      commands: commands ?? null,
-    }),
+  /**
+   * #1171 - resolve the WHOLE Settings draft, watchers and agents, and answer per row which
+   * agents its selector reaches and which of those it holds a slot on.
+   *
+   * Both halves travel because both are properties of the set, not of one row. Whether a
+   * watcher is inside an agent's 8 slots depends on every other enabled row and on where
+   * their ids fall in key order; and the modal edits agents and watchers in one store that
+   * one Save writes together, so resolving against the saved agent list would answer about a
+   * state the user has already left. A row-level call could only answer by inventing the rest
+   * of the set, and with an empty saved map nine rows added before Save would all report that
+   * they run while only eight do -- a positive claim about a watcher that will not run.
+   *
+   * Neither the stem rule nor the `BTreeMap` key order nor the number 8 is written a second
+   * time here: they stay in Rust, and the frontend's `starts_with` rule must not be ported.
+   *
+   * `null` and an absent selector both mean "every agent"; `[]` means "none". The three stay
+   * distinct all the way to Rust's `Option<Vec<String>>`.
+   */
+  previewWatcherReach: (
+    watchers: WatcherDraftEntry[],
+    agents: WatcherAgentDraftEntry[]
+  ) =>
+    transport.invoke<WatcherReachRow[]>("preview_watcher_reach", { watchers, agents }),
 
   subscribe: (sessionId: string) =>
     transport.invoke<{ rows: number; cols: number } | null>("subscribe_session", { sessionId }),
@@ -524,6 +539,20 @@ export const WindowAPI = {
    *  so callers gate on `isTauri`. */
   openWatchers: (sessionId: string) =>
     transport.invoke<void>("open_watchers_window", { sessionId }),
+
+  /**
+   * #1171 - the durable half of the scope handover: what `open_watchers_window` last asked
+   * for, whether or not a listener existed at the time.
+   *
+   * The window label exists the moment the builder returns, while the JavaScript listener
+   * exists only after the bundle loads, Solid mounts and the subscription completes a round
+   * trip. Tauri queues nothing for a listener that does not exist yet and the emit returns
+   * `Ok` either way, so a second open during the load would drop the user's order in silence.
+   * The window therefore subscribes first and then pulls this, exactly as it does for
+   * matches. `null` means nothing has been requested yet.
+   */
+  getWatchersScope: () =>
+    transport.invoke<string | null>("get_watchers_scope"),
 
   /** #1171 - persist the watcher window's geometry through a dedicated one-field command
    *  rather than `initWindowGeometry`, whose read-modify-write of the whole AppSettings
