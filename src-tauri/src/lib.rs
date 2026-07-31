@@ -1348,6 +1348,10 @@ pub fn run(
             watcher_engine.start(shutdown_for_setup.clone());
             app.manage(Arc::clone(&watcher_engine));
             app.manage(watcher_history);
+            // The authoritative scope of the activity window. `open_watchers_window` writes it
+            // before every emit and the window pulls it after subscribing, so a re-scope that
+            // races the window's own load is recovered instead of dropped in silence.
+            app.manage(commands::window::WatchersScopeState::default());
 
             // Start web server if enabled in settings
             {
@@ -2591,6 +2595,7 @@ pub fn run(
             commands::window::open_resource_monitor_window,
             commands::window::dock_resource_monitor_window,
             commands::window::open_watchers_window,
+            commands::window::get_watchers_scope,
             commands::window::open_external_url,
             commands::window::focus_main_window,
             commands::spec_board::spec_board_new,

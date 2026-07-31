@@ -836,6 +836,42 @@ pub async fn dock_resource_monitor_window(app: AppHandle) -> Result<(), String> 
     Ok(())
 }
 
+/// #1171 - the most recently requested scope of the watcher activity window, and the one
+/// critical section that keeps it and the last emitted `watchers_scope_request` in agreement.
+///
+/// An event alone cannot carry a re-scope. The window label exists the moment
+/// `WebviewWindowBuilder::build` returns, while the JavaScript listener exists only after the
+/// bundle loads, Solid mounts and the subscription completes an IPC round trip. Tauri queues
+/// nothing for a listener that does not exist yet and `emit_to` returns `Ok` either way, so
+/// the backend cannot even observe the loss: a second open during the load focuses a window
+/// that is not listening, emits, and the user's order is dropped in silence.
+///
+/// The fix is the shape the matches already use, subscribe first and then reconcile with a
+/// pull, applied to the scope: this state holds the authoritative value, it is written before
+/// every emit, and `get_watchers_scope` lets the window read it after its subscribe.
+///
+/// The mutex is `tokio`'s and is private to this module, so it can be held across the whole
+/// body of `open_watchers_window` and cannot deadlock against anything else. It is contended
+/// only by a second open.
+#[derive(Default)]
+pub struct WatchersScopeState {
+    scope: tokio::sync::Mutex<Option<Uuid>>,
+}
+
+/// #1171 - the durable half of the scope handover: what `open_watchers_window` last asked for.
+///
+/// The window calls this in `onMount`, AFTER registering its `watchers_scope_request`
+/// listener, and adopts the answer unless an event has been handled since the call was issued.
+/// An emit that raced the subscribe is recovered here; an emit after this call reaches a
+/// listener that exists.
+#[tauri::command]
+pub async fn get_watchers_scope(
+    scope: State<'_, WatchersScopeState>,
+) -> Result<Option<String>, String> {
+    let scope = scope.scope.lock().await;
+    Ok(scope.as_ref().map(|id| id.to_string()))
+}
+
 /// #1171 - open the singleton watcher activity window, or focus it and re-scope it to
 /// `session_id`.
 ///
@@ -845,7 +881,8 @@ pub async fn dock_resource_monitor_window(app: AppHandle) -> Result<(), String> 
 /// Focus-if-exists is not the whole behavior for this window, because every caller names a
 /// session: an already-open window is ALSO told to re-scope, through `watchers_scope_request`
 /// (plan 4.12). The query parameter is read only on first creation, since the label is a
-/// singleton and its URL never changes afterwards.
+/// singleton and its URL never changes afterwards, and it is the window's INITIAL scope only -
+/// `get_watchers_scope` is the authoritative one.
 ///
 /// Generic over the runtime like its #1171 sibling `get_watcher_activity`
 /// (`commands/pty.rs:545`) and `kill_resource_group` (`commands/resource_monitor.rs:45`), so
@@ -853,14 +890,27 @@ pub async fn dock_resource_monitor_window(app: AppHandle) -> Result<(), String> 
 #[tauri::command]
 pub async fn open_watchers_window<R: tauri::Runtime>(
     app: AppHandle<R>,
+    scope: State<'_, WatchersScopeState>,
     session_id: String,
 ) -> Result<(), String> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
 
     // Parsed and re-rendered rather than interpolated as received: the value lands in a URL
     // query string, and the canonical hyphenated form cannot carry an `&` or a `#`. Rejecting
-    // a non-UUID also matches `get_watcher_activity` (`commands/pty.rs:550`).
+    // a non-UUID also matches `get_watcher_activity` (`commands/pty.rs:550`). It happens
+    // before the guard is taken, so a rejected id contends with nothing and leaves the
+    // authoritative scope alone.
     let session_id = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
+
+    // ONE critical section, from the state write through the existence check and whichever
+    // branch runs, including the emit. Not two regions: splitting it leaves this interleaving.
+    // A writes scope A and pauses; B writes scope B, creates the window with B in its URL; A
+    // resumes, finds a window, and emits A. The authoritative state then says B while the last
+    // event says A, so a window that is already listening lands on A and disagrees with
+    // `get_watchers_scope`. Holding one guard across the whole body makes the last write and
+    // the last emit the same call by construction.
+    let mut scope = scope.scope.lock().await;
+    *scope = Some(session_id);
 
     if let Some(existing) = app.get_webview_window(WATCHERS_WINDOW_LABEL) {
         // A focus that fails must not swallow the re-scope, which is the substantive half of
@@ -916,8 +966,9 @@ pub async fn open_watchers_window<R: tauri::Runtime>(
 #[cfg(test)]
 mod tests {
     use super::{
-        open_watchers_window, resource_monitor_placement_for_main, PhysicalWindowRect,
-        WindowDestroyAudit, RESOURCE_MONITOR_DOCK_WIDTH, WATCHERS_WINDOW_LABEL,
+        get_watchers_scope, open_watchers_window, resource_monitor_placement_for_main,
+        PhysicalWindowRect, WatchersScopeState, WindowDestroyAudit, RESOURCE_MONITOR_DOCK_WIDTH,
+        WATCHERS_WINDOW_LABEL,
     };
     use crate::config::settings::WindowGeometry;
     use crate::pty::backend::{BackendSpawnSpec, PtyBackend, SessionBackendKind};
@@ -1276,13 +1327,19 @@ mod tests {
         coordinator.close_and_join().await;
     }
 
-    /// #1171, criterion 79 (backend half): a second open does not build a second window, and
-    /// it does re-scope the one that is already there.
+    /// An app that manages the scope state, which every `open_watchers_window` call needs.
+    fn watchers_app(label: &str) -> tauri::App<tauri::test::MockRuntime> {
+        tauri::test::mock_builder()
+            .manage(WatchersScopeState::default())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap_or_else(|_| panic!("build {label} app"))
+    }
+
+    /// #1171, test 79a: a second open does not build a second window, and it does re-scope the
+    /// one that is already there.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reopening_the_watchers_window_re_scopes_it_instead_of_building_a_second_one() {
-        let app = tauri::test::mock_builder()
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("build watchers re-scope app");
+        let app = watchers_app("watchers re-scope");
         WebviewWindowBuilder::new(
             app.handle(),
             WATCHERS_WINDOW_LABEL,
@@ -1297,7 +1354,7 @@ mod tests {
         });
 
         let session_id = Uuid::new_v4();
-        open_watchers_window(app.handle().clone(), session_id.to_string())
+        open_watchers_window(app.handle().clone(), app.state(), session_id.to_string())
             .await
             .unwrap();
 
@@ -1312,19 +1369,121 @@ mod tests {
         assert!(payloads_rx.try_recv().is_err());
     }
 
+    /// #1171, test 79b: two opens leave the authoritative scope at the SECOND one, whether or
+    /// not any listener exists.
+    ///
+    /// This is the property a Rust-side listener cannot certify. `app.listen_any` registers in
+    /// the Rust registry, which is always durable, so no reordering of a `listen_any` test can
+    /// model a JavaScript listener that has not been registered yet. Test 79a certifies that
+    /// the emit is issued; this one certifies that the pull recovers it when it was not heard.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_last_open_wins_the_scope_with_no_listener_and_with_one() {
+        let app = watchers_app("watchers scope pull");
+        WebviewWindowBuilder::new(
+            app.handle(),
+            WATCHERS_WINDOW_LABEL,
+            WebviewUrl::App("index.html?window=watchers".into()),
+        )
+        .build()
+        .unwrap();
+
+        assert_eq!(
+            get_watchers_scope(app.state()).await.unwrap(),
+            None,
+            "nothing has been requested yet"
+        );
+
+        // No listener at all: the emits go nowhere, exactly as they do while the bundle loads.
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        open_watchers_window(app.handle().clone(), app.state(), first.to_string())
+            .await
+            .unwrap();
+        open_watchers_window(app.handle().clone(), app.state(), second.to_string())
+            .await
+            .unwrap();
+        assert_eq!(
+            get_watchers_scope(app.state()).await.unwrap(),
+            Some(second.to_string()),
+            "the window that subscribes late still pulls the LAST order, not the first"
+        );
+
+        // And with a listener the two halves agree: the pull returns what the last emit said.
+        let (payloads_tx, payloads_rx) = std::sync::mpsc::channel();
+        app.listen_any("watchers_scope_request", move |event| {
+            let _ = payloads_tx.send(event.payload().to_string());
+        });
+        let third = Uuid::new_v4();
+        open_watchers_window(app.handle().clone(), app.state(), third.to_string())
+            .await
+            .unwrap();
+
+        let payload: serde_json::Value =
+            serde_json::from_str(&payloads_rx.recv_timeout(Duration::from_secs(1)).unwrap())
+                .unwrap();
+        assert_eq!(payload["sessionId"], third.to_string());
+        assert_eq!(
+            get_watchers_scope(app.state()).await.unwrap(),
+            Some(third.to_string())
+        );
+    }
+
+    /// #1171, test 79c: two concurrent opens for two different sessions produce exactly one
+    /// window, two `Ok`s and no duplicate-label failure, AND the authoritative scope agrees
+    /// with the event the loser emitted.
+    ///
+    /// Counting windows and `Ok`s is not enough. The defect this test exists for is the
+    /// interleaving that leaves the state at one session and the last emitted event at the
+    /// other, and a count-only assertion passes straight through it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn two_concurrent_opens_build_one_window_and_agree_on_the_scope() {
+        let app = watchers_app("watchers concurrent open");
+
+        let (payloads_tx, payloads_rx) = std::sync::mpsc::channel();
+        app.listen_any("watchers_scope_request", move |event| {
+            let _ = payloads_tx.send(event.payload().to_string());
+        });
+
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        let (left, right) = tokio::join!(
+            open_watchers_window(app.handle().clone(), app.state(), first.to_string()),
+            open_watchers_window(app.handle().clone(), app.state(), second.to_string()),
+        );
+        assert!(left.is_ok(), "the losing call must not fail on the label");
+        assert!(right.is_ok());
+
+        let windows = app.webview_windows();
+        assert_eq!(windows.len(), 1);
+        assert!(windows.contains_key(WATCHERS_WINDOW_LABEL));
+
+        // Exactly one of the two built the window; the other found it and emitted. Whichever
+        // that was, it ran second under the one guard, so it is also the last state write.
+        let emitted: serde_json::Value =
+            serde_json::from_str(&payloads_rx.recv_timeout(Duration::from_secs(1)).unwrap())
+                .unwrap();
+        assert!(payloads_rx.try_recv().is_err(), "the builder emits nothing");
+        assert_eq!(
+            get_watchers_scope(app.state()).await.unwrap(),
+            Some(emitted["sessionId"].as_str().unwrap().to_string()),
+            "the authoritative scope and the last emitted event are the same call"
+        );
+    }
+
     /// The session id is interpolated into the window URL, so anything that is not a UUID is
-    /// refused before a window exists to carry it.
+    /// refused before a window exists to carry it, and before the scope state is touched.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn open_watchers_window_refuses_a_session_id_that_is_not_a_uuid() {
-        let app = tauri::test::mock_builder()
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("build watchers rejection app");
+        let app = watchers_app("watchers rejection");
 
-        assert!(
-            open_watchers_window(app.handle().clone(), "not-a-uuid&window=main".to_string())
-                .await
-                .is_err()
-        );
+        assert!(open_watchers_window(
+            app.handle().clone(),
+            app.state(),
+            "not-a-uuid&window=main".to_string()
+        )
+        .await
+        .is_err());
         assert!(app.webview_windows().is_empty());
+        assert_eq!(get_watchers_scope(app.state()).await.unwrap(), None);
     }
 }
