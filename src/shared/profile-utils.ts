@@ -23,13 +23,6 @@ export interface ArgvParseResult {
   error: string | null;
 }
 
-const EMPTY_CELL: ProfileCellConfig = {
-  enabled: true,
-  command: "",
-  env: {},
-  notes: "",
-};
-
 export const AC_REPLICA_ROOT_PLACEHOLDER = "%AC_REPLICA_ROOT%";
 export const AC_WORKSPACE_ROOT_PLACEHOLDER = "%AC_WORKSPACE_ROOT%";
 export const AC_MATRIX_ROOT_PLACEHOLDER = "%AC_MATRIX_ROOT%";
@@ -94,14 +87,6 @@ function cellForLetter(
   const cell = profiles.profilesByAgent[agentId]?.[letter] ?? null;
   if (!cell || !cell.enabled) return null;
   return cell;
-}
-
-export function profileCellOrDefault(
-  profiles: CodingAgentProfilesConfig,
-  agentId: string,
-  letter: string,
-): ProfileCellConfig {
-  return profiles.profilesByAgent[agentId]?.[letter] ?? EMPTY_CELL;
 }
 
 export function profileCellCommandText(cell: ProfileCellConfig | null | undefined): string {

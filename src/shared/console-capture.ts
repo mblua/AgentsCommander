@@ -103,23 +103,3 @@ export function getConsoleText(): string {
     .map((e) => `[${e.ts}] [${e.level.toUpperCase()}] ${e.args}`)
     .join("\n");
 }
-
-export function getErrorsOnly(): string {
-  return captured
-    .filter((e) => e.level === "error" || e.level === "warn")
-    .map((e) => `[${e.ts}] [${e.level.toUpperCase()}] ${e.args}`)
-    .join("\n");
-}
-
-export async function copyConsoleLogs(): Promise<number> {
-  const text = getConsoleText();
-  await navigator.clipboard.writeText(text);
-  return captured.length;
-}
-
-export async function copyErrors(): Promise<number> {
-  const errors = captured.filter((e) => e.level === "error" || e.level === "warn");
-  const text = getErrorsOnly();
-  await navigator.clipboard.writeText(text);
-  return errors.length;
-}

@@ -153,21 +153,6 @@ pub fn exe_name() -> &'static str {
     })
 }
 
-/// Product name as installed in LOCALAPPDATA (matches Tauri productName).
-/// Runtime suffix: "Agents Commander <Suffix>".
-/// Falls back to BUILD_PROFILE mapping.
-pub fn product_name() -> &'static str {
-    static NAME: OnceLock<String> = OnceLock::new();
-    NAME.get_or_init(|| match binary_suffix() {
-        Some(suffix) => format!("Agents Commander {}", capitalize_suffix(suffix)),
-        None => match BUILD_PROFILE {
-            "dev" => "Agents Commander".to_string(),
-            "stage" => "Agents Commander Stage".to_string(),
-            _ => "Agents Commander".to_string(),
-        },
-    })
-}
-
 /// Default web server port. Each instance gets a distinct port.
 /// Known suffixes get hardcoded ports; unknown suffixes get a deterministic hash
 /// in the 9880-9899 range.
@@ -209,11 +194,6 @@ pub fn api_server_port() -> u16 {
             _ => 9887, // prod
         },
     }
-}
-
-/// Whether this is the STAGE profile (via suffix or BUILD_PROFILE fallback).
-pub fn is_stage() -> bool {
-    binary_suffix() == Some("stage") || (binary_suffix().is_none() && BUILD_PROFILE == "stage")
 }
 
 /// Runtime instance label for the titlebar badge.

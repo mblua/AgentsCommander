@@ -317,56 +317,6 @@ export type WatcherEntry = WatcherConfig | UnrecognizedWatcherEntry;
  */
 export type UnrecognizedWatcherEntry = JsonValue;
 
-export interface SessionGroup {
-  id: string;
-  name: string;
-  color: string;
-  collapsed: boolean;
-  order: string[];
-}
-
-export interface ShellProfile {
-  name: string;
-  command: string;
-  args: string[];
-  icon: string;
-  color: string;
-  env: Record<string, string>;
-  workingDirectory: string;
-}
-
-export interface AppConfig {
-  general: GeneralConfig;
-  sidebar: SidebarConfig;
-  terminal: TerminalConfig;
-  keybindings: Record<string, string>;
-}
-
-export interface GeneralConfig {
-  defaultShell: string;
-  defaultShellArgs: string[];
-  theme: string;
-  confirmOnClose: boolean;
-}
-
-export interface SidebarConfig {
-  width: number;
-  alwaysOnTop: boolean;
-  opacity: number;
-  showShellType: boolean;
-  showStatusIcon: boolean;
-}
-
-export interface TerminalConfig {
-  fontFamily: string;
-  fontSize: number;
-  lineHeight: number;
-  scrollback: number;
-  cursorStyle: "block" | "underline" | "bar";
-  cursorBlink: boolean;
-  webglRenderer: boolean;
-}
-
 export interface PtyOutputEvent {
   sessionId: string;
   data: number[];
@@ -1036,13 +986,6 @@ export interface PhoneMessage {
   content: string;
   timestamp: string;
   status: "pending" | "delivered" | "error";
-}
-
-export interface PhoneConversation {
-  id: string;
-  participants: string[];
-  createdAt: string;
-  messages: PhoneMessage[];
 }
 
 export interface AgentInfo {

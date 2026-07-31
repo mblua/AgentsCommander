@@ -1,5 +1,5 @@
 
-import { Component, createEffect, onMount, onCleanup, createSignal } from "solid-js";
+import { Component, createEffect, onMount, createSignal } from "solid-js";
 import { specBoardStore, setSpecBoardStore } from "../stores/spec-board";
 
 const MermaidPreview: Component = () => {
