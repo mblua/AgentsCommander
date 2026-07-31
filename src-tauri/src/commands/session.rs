@@ -7276,17 +7276,38 @@ mod tests {
             "#1172 D5: the memory rotation must stay behind `start_fresh && context_result.is_ok()`. \
              A resume must NEVER rotate: this chokepoint also serves the app-startup restore path."
         );
-        // Count INVOCATIONS, argument-independent: the needle stops at the open
-        // paren, so a second ungated call spelled any other way
-        // (`..._at_spawn(cwd.as_str())`, `..._at_spawn(&cwd.clone())`) is still
-        // caught. A bare-identifier count cannot be used here, because the
-        // production comment above the gate names the function too; that comment
-        // writes it WITHOUT a paren, so it stays out of this count.
+        // Now close the CLASS of ungated second calls, rather than one spelling
+        // of one. Any needle shaped like an invocation loses this game: the
+        // callee text can be rewritten indefinitely - a different argument, the
+        // path wrapped in parens so it reads `..._at_spawn)(`, a block comment
+        // between the identifier and the paren, an alias bound by `use .. as ..`
+        // or `let f = ..` and invoked under another name - and each rewrite needs
+        // a new needle.
+        //
+        // What NO such rewrite can avoid is naming the function. So count the
+        // BARE identifier, which is invariant under all of them, and pin the one
+        // legitimate mention that is not a call: the comment 5.4 requires above
+        // the gate. Two assertions, and together they leave no room:
+        //   - the comment mention appears exactly once, so it cannot be
+        //     duplicated to absorb the budget of a smuggled-in call;
+        //   - the identifier appears exactly twice in total, which is that
+        //     comment plus the single call inside the gated block the first
+        //     assertion already pinned.
+        // Two minus one minus one is zero occurrences left over, whatever they
+        // would have been spelled like.
+        let comment_mention = "`rotate_origin_memory_at_spawn`returns`()`";
         assert_eq!(
-            normalized.matches("rotate_origin_memory_at_spawn(").count(),
+            normalized.matches(comment_mention).count(),
             1,
-            "#1172 D5: exactly one rotation call site, and it is the gated one. \
-             A resume must NEVER rotate."
+            "#1172 D5: the comment above the gate must keep naming the rotation exactly once; \
+             it is the one non-call mention the identifier count below budgets for."
+        );
+        assert_eq!(
+            normalized.matches("rotate_origin_memory_at_spawn").count(),
+            2,
+            "#1172 D5: the rotation must be named exactly twice in production - once in the \
+             comment above the gate, once in the gated call itself. A third mention means a \
+             second call site, and an ungated rotation makes a RESUME empty the agent's memory."
         );
     }
 
