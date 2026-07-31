@@ -8,11 +8,10 @@ use clap::{Args, Subcommand};
 use serde::Serialize;
 
 use crate::commands::role_templates::{
-    agency_manifest_path, agency_template_metas_from_cache, agency_templates_dir,
-    agency_templates_status, collect_agency_templates_from_dir, parse_agency_template_frontmatter,
-    slug_segment, strip_yaml_frontmatter_for_role_template, title_case_slug,
-    validate_role_template_body, AgencyTemplatesManifest, AGENCY_MANIFEST_FILE,
-    AGENCY_TEMPLATES_DIR,
+    agency_template_metas_from_cache, agency_templates_dir, agency_templates_status,
+    collect_agency_templates_from_dir, parse_agency_template_frontmatter, slug_segment,
+    strip_yaml_frontmatter_for_role_template, title_case_slug, validate_role_template_body,
+    AgencyTemplatesManifest, AGENCY_MANIFEST_FILE, AGENCY_TEMPLATES_DIR,
 };
 
 pub const DEFAULT_REPO: &str = "https://github.com/msitarzewski/agency-agents";
@@ -999,11 +998,6 @@ fn cleanup_publish_residue(config_dir: &Path) {
             }
         }
     }
-}
-
-#[allow(dead_code)]
-fn _manifest_path_for_docs(config_dir: &Path) -> PathBuf {
-    agency_manifest_path(config_dir)
 }
 
 #[cfg(test)]
