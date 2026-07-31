@@ -7,6 +7,8 @@ import type {
 import {
   type ActivityRow,
   anyTruncated,
+  capPerSession,
+  degradedWatchers,
   filterRows,
   freezeRow,
   keepSessions,
@@ -131,6 +133,96 @@ describe("merging the snapshot with the stream (#1171)", () => {
   });
 });
 
+/**
+ * #1171 - the 500/100 limits are not only fetch parameters.
+ *
+ * The ring caps what a SNAPSHOT returns; the event stream keeps appending for as long as the
+ * window is open, so without a structural bound after every merge the frontend grows without
+ * one. A single session can deliver dozens of rows a second.
+ */
+describe("bounding what the window holds (#1171)", () => {
+  const burst = (sessionId: string, count: number, from = 0) =>
+    Array.from({ length: count }, (_, i) =>
+      freezeRow(match({ sessionId, seq: from + i }), session({ id: sessionId }))
+    );
+
+  it("keeps at most the limit per session and drops the oldest", () => {
+    const capped = capPerSession(mergeRows([], burst("s1", 250)), 100);
+    expect(capped).toHaveLength(100);
+    // Newest first, so the survivors are the highest seqs.
+    expect(capped[0].seq).toBe(249);
+    expect(Math.min(...capped.map((r) => r.seq))).toBe(150);
+  });
+
+  it("bounds each session on its own, not the table as a whole", () => {
+    const both = mergeRows(burst("s1", 30), burst("s2", 30));
+    const capped = capPerSession(both, 10);
+    expect(capped.filter((r) => r.sessionId === "s1")).toHaveLength(10);
+    expect(capped.filter((r) => r.sessionId === "s2")).toHaveLength(10);
+  });
+
+  /** Hours of streaming, one small batch at a time, is the shape that actually happens. */
+  it("stays bounded across many merges rather than only at the end", () => {
+    let held: ActivityRow[] = [];
+    for (let round = 0; round < 200; round += 1) {
+      held = capPerSession(mergeRows(held, burst("s1", 20, round * 20)), 100);
+      expect(held.length).toBeLessThanOrEqual(100);
+    }
+    expect(held[0].seq).toBe(200 * 20 - 1);
+  });
+
+  it("leaves a table under the limit untouched", () => {
+    const rows = mergeRows([], burst("s1", 5));
+    expect(capPerSession(rows, 100).map((r) => r.seq)).toEqual(rows.map((r) => r.seq));
+  });
+});
+
+/**
+ * #1171 - Solid's `<For>` keys on object identity, not on the logical key, so a poll that
+ * rebuilds the whole ring would rebuild and re-animate every row on screen every ten seconds.
+ */
+describe("row identity across merges (#1171)", () => {
+  it("keeps the object it already held for a key it already has", () => {
+    const held = freezeRow(match({ seq: 1 }), session());
+    const identicalSnapshot = freezeRow(match({ seq: 1 }), session());
+    expect(identicalSnapshot).not.toBe(held);
+
+    const merged = mergeRows([held], [identicalSnapshot]);
+    expect(merged[0]).toBe(held);
+  });
+
+  it("takes the newer object when the older one was frozen before its session was known", () => {
+    const orphan = freezeRow(match({ seq: 1 }), undefined);
+    const resolved = freezeRow(match({ seq: 1 }), session());
+    const merged = mergeRows([orphan], [resolved]);
+    expect(merged[0]).toBe(resolved);
+    expect(merged[0].agentId).toBe("agent_1");
+  });
+});
+
+describe("surfacing degraded watchers (#1171)", () => {
+  /**
+   * A degraded watcher has BY DEFINITION already emitted matches, so a marker that only
+   * renders inside the "configured and waiting" branch is exactly where it can never be
+   * reached: one visible row sends the window to the table instead.
+   */
+  it("reports a degraded watcher that has already matched", () => {
+    const degraded = degradedWatchers([
+      snapshot({
+        activeWatchers: [
+          { watcherId: "reads", mode: "occurrence", count: 4000, degraded: true },
+          { watcherId: "quiet", mode: "state", count: 1, degraded: false },
+        ],
+      }),
+    ]);
+    expect(degraded.map((c) => c.watcherId)).toEqual(["reads"]);
+  });
+
+  it("reports nothing when no watcher is capped", () => {
+    expect(degradedWatchers([snapshot()])).toEqual([]);
+  });
+});
+
 describe("filtering (#1171)", () => {
   const rows = [
     row({ sessionId: "s1", seq: 1, watcherId: "reads", agentId: "a1", workgroup: "WG-1" }),
@@ -173,17 +265,17 @@ describe("filtering (#1171)", () => {
 });
 
 /**
- * #1171 test 81. Four states, told apart from snapshot VALUES with no nullability -- and
- * `warming` is its own state so the day-one message never flickers before the first tick.
+ * #1171 test 81. The empty states, told apart from snapshot VALUES with no nullability --
+ * and `warming` is its own state so the day-one message never flickers before the first tick.
  */
 describe("resolving which state the window shows (#1171)", () => {
   it("shows warming until the engine has ticked, even with no watchers", () => {
-    expect(resolveView([snapshot({ warmedUp: false })], 0)).toBe("warming");
-    expect(resolveView([], 0)).toBe("warming");
+    expect(resolveView([snapshot({ warmedUp: false })], 0, 0)).toBe("warming");
+    expect(resolveView([], 0, 0)).toBe("warming");
   });
 
   it("shows the unconfigured state only once warmed up with nothing reaching", () => {
-    expect(resolveView([snapshot({ warmedUp: true, activeWatchers: [] })], 0)).toBe(
+    expect(resolveView([snapshot({ warmedUp: true, activeWatchers: [] })], 0, 0)).toBe(
       "unconfigured"
     );
   });
@@ -192,16 +284,41 @@ describe("resolving which state the window shows (#1171)", () => {
     const waiting = snapshot({
       activeWatchers: [{ watcherId: "reads", mode: "occurrence", count: 0, degraded: false }],
     });
-    expect(resolveView([waiting], 0)).toBe("waiting");
+    expect(resolveView([waiting], 0, 0)).toBe("waiting");
   });
 
   it("shows the table as soon as a row is visible", () => {
-    expect(resolveView([snapshot({ warmedUp: false })], 1)).toBe("rows");
+    expect(resolveView([snapshot({ warmedUp: false })], 1, 1)).toBe("rows");
   });
 
   it("counts a scope as warmed when any of its sessions has ticked", () => {
-    const view = resolveView([snapshot({ warmedUp: false }), snapshot({ warmedUp: true })], 0);
+    const view = resolveView(
+      [snapshot({ warmedUp: false }), snapshot({ warmedUp: true })],
+      0,
+      0
+    );
     expect(view).toBe("unconfigured");
+  });
+
+  /**
+   * The empty states are statements about the ACTIVATIONS. Deciding them from filtered rows
+   * makes a filter that happens to hide everything say "nothing has matched yet", which is
+   * false and which the user cannot attribute to the filter they just set.
+   */
+  it("blames the filters, not the watchers, when a filter hides every activation", () => {
+    const waiting = snapshot({
+      activeWatchers: [{ watcherId: "reads", mode: "occurrence", count: 4, degraded: false }],
+    });
+    expect(resolveView([waiting], 4, 0)).toBe("filtered");
+  });
+
+  it("still says filtered when nothing reaches but activations are held", () => {
+    // Rows outlive the watcher that produced them: deleting a watcher empties
+    // `activeWatchers` while the ring keeps its activations, and a filter over those must
+    // not be reported as "no configured watcher reaches this agent".
+    expect(resolveView([snapshot({ warmedUp: true, activeWatchers: [] })], 3, 0)).toBe(
+      "filtered"
+    );
   });
 });
 

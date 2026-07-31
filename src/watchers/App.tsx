@@ -23,12 +23,14 @@ import { isTauri } from "../shared/platform";
 import { settingsStore } from "../shared/stores/settings";
 import { formatClockTime } from "../shared/time-format";
 import type { UnlistenFn } from "../shared/transport";
-import type { Session, WatcherActivitySnapshot } from "../shared/types";
+import type { Session, WatcherActivitySnapshot, WindowGeometry } from "../shared/types";
 import {
   ALL_SESSIONS_LIMIT,
   SINGLE_SESSION_LIMIT,
   type ActivityRow,
   anyTruncated,
+  capPerSession,
+  degradedWatchers,
   distinct,
   filterRows,
   freezeRow,
@@ -50,11 +52,63 @@ import "./styles/watchers.css";
 const POLL_FOCUSED_MS = 10_000;
 const POLL_UNFOCUSED_MS = 15_000;
 
+/** How long a move or resize settles before the rect is persisted. */
+const GEOMETRY_SAVE_DEBOUNCE_MS = 500;
+
 /** How close to the top still counts as pinned, in pixels. */
 const PIN_TO_TOP_SLACK_PX = 8;
 
+/**
+ * Physical device pixels to the logical ones the window builder takes.
+ *
+ * `outerPosition()` and `innerSize()` answer in `Physical*`, while `WebviewWindowBuilder`'s
+ * `position` and `inner_size` are documented as logical, so persisting what was read would
+ * multiply the rect by the scale factor on every save-and-reopen cycle: at 150% DPI a
+ * 1470-wide window reopens 2205 wide, then 3307, and walks off the screen. Rounded because
+ * `WindowGeometry` is integral on both sides of the IPC and a half pixel means nothing here.
+ *
+ * Exported for the conversion test: it is pure arithmetic and the defect it fixes is
+ * invisible at a scale factor of 1, which is the only one a headless run ever has.
+ */
+export function logicalGeometry(
+  physical: WindowGeometry,
+  scaleFactor: number
+): WindowGeometry {
+  // A zero or absent factor would turn every coordinate into Infinity or NaN. Treating an
+  // impossible factor as 1 keeps the previous rect rather than persisting nonsense.
+  const factor = scaleFactor > 0 ? scaleFactor : 1;
+  return {
+    x: Math.round(physical.x / factor),
+    y: Math.round(physical.y / factor),
+    width: Math.round(physical.width / factor),
+    height: Math.round(physical.height / factor),
+  };
+}
+
 const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
-  // `null` is the "All sessions" scope.
+  // ── Lifecycle ──────────────────────────────────────────────────────────────
+  // `onMount` crosses several awaits and the window can be closed inside any of them, so
+  // every registration goes through `register`, which unlistens immediately when its
+  // continuation lands after teardown, and every await is followed by a `disposed` check.
+  // The shape is `terminal/App.tsx`'s. Without it a fast close leaves listeners, a fetch and
+  // a poll running against a component that is already gone.
+  const listeners: UnlistenFn[] = [];
+  let disposed = false;
+  let cleanupGeometry: (() => void) | null = null;
+  let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  const mountDisposed = Symbol("watchersMountDisposed");
+
+  const register = async (registration: Promise<UnlistenFn>): Promise<void> => {
+    const unlisten = await registration;
+    if (disposed) {
+      unlisten();
+      throw mountDisposed;
+    }
+    listeners.push(unlisten);
+  };
+
+  // `null` is the "All sessions" scope. The query parameter is the INITIAL value only, so the
+  // first paint has a scope without waiting for a round trip; the pull below is authoritative.
   const [scopeSessionId, setScopeSessionId] = createSignal<string | null>(
     props.initialSessionId ?? null
   );
@@ -62,6 +116,8 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
   const [rows, setRows] = createSignal<ActivityRow[]>([]);
   const [snapshots, setSnapshots] = createSignal<WatcherActivitySnapshot[]>([]);
   const [loadError, setLoadError] = createSignal("");
+  /** False until the mount has settled the scope. Nothing may be fetched before it. */
+  const [scopeSettled, setScopeSettled] = createSignal(false);
 
   const [watcherFilter, setWatcherFilter] = createSignal<Set<string>>(new Set());
   const [agentFilter, setAgentFilter] = createSignal<Set<string>>(new Set());
@@ -84,6 +140,7 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
     return agentSessions().map((s) => s.id);
   });
   const isAllSessions = () => scopeSessionId() === null;
+  const scopeLimit = () => (isAllSessions() ? ALL_SESSIONS_LIMIT : SINGLE_SESSION_LIMIT);
 
   /** Live agent label by id, falling back to what was frozen into the row, so renaming an
    *  entry updates old rows instead of leaving them lying. Precedent: `liveAgentLabel`. */
@@ -93,6 +150,16 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
       : null;
     return live || row.frozenAgentLabel || row.agentId || "";
   };
+
+  // The window loads its own settings and never applied the theme, so a user on light got a
+  // dark window. Hung off the store rather than a mount-time read because the poll already
+  // refreshes it, which makes a theme change land within one poll instead of at the next open.
+  createEffect(() => {
+    document.documentElement.classList.toggle(
+      "light-theme",
+      !!settingsStore.current?.themeLight
+    );
+  });
 
   // The scope select is driven by an effect rather than by `value=`, because the window
   // opens scoped to a session whose `<option>` does not exist yet: the list arrives with
@@ -117,8 +184,12 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
     })
   );
 
-  const view = createMemo(() => resolveView(snapshots(), visibleRows().length));
+  // Resolved from the UNFILTERED count as well as the visible one: the empty states are
+  // statements about the activations, so a filter that hides everything must not be able to
+  // say "nothing has matched yet".
+  const view = createMemo(() => resolveView(snapshots(), rows().length, visibleRows().length));
   const activeWatchers = createMemo(() => mergeActiveWatchers(snapshots()));
+  const degraded = createMemo(() => degradedWatchers(snapshots()));
   const truncated = createMemo(() => anyTruncated(snapshots()));
   const missedFrames = createMemo(() => totalPossiblyMissedFrames(snapshots()));
 
@@ -168,130 +239,240 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
     set(next);
   };
 
+  /**
+   * One monotonic counter over every fetch, and the only thing that decides whether a
+   * response may paint.
+   *
+   * It covers the scope selector, the re-scope event, the adoption of the pull, the mount's
+   * first fetch and the poll, and it also covers two fetches of the SAME scope racing each
+   * other, which a scope-keyed generation lets through: the older poll response would
+   * otherwise commit an older `lastSeq`, `warmedUp`, `degraded` and counters over the newer
+   * ones, leaving the table and the counters describing two different instants.
+   */
+  let requestCounter = 0;
+
   const refresh = async () => {
+    const request = (requestCounter += 1);
     const ids = scopeIds();
-    const limit = isAllSessions() ? ALL_SESSIONS_LIMIT : SINGLE_SESSION_LIMIT;
+    const limit = scopeLimit();
     try {
       const fetched = await Promise.all(
         ids.map((id) => PtyAPI.getWatcherActivity(id, limit))
       );
+      if (disposed || request !== requestCounter) return;
       setSnapshots(fetched);
       setLoadError("");
       const incoming = fetched.flatMap((snapshot, index) =>
         snapshot.matches.map((match) => freezeRow(match, sessionById(ids[index])))
       );
-      setRows((prev) => mergeRows(keepSessions(prev, ids), incoming));
+      setRows((prev) => capPerSession(mergeRows(keepSessions(prev, ids), incoming), limit));
     } catch (err) {
+      if (disposed || request !== requestCounter) return;
       setLoadError(err instanceof Error ? err.message : String(err));
     }
   };
 
   const reloadSessions = async () => {
     try {
-      setSessions(await SessionAPI.list());
+      const listed = await SessionAPI.list();
+      if (disposed) return;
+      setSessions(listed);
     } catch (err) {
+      if (disposed) return;
       console.error("[watchers] failed to list sessions:", err);
     }
   };
 
-  const listeners: UnlistenFn[] = [];
-  let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * The scope-adoption guard, which is NOT the request counter.
+   *
+   * This one decides which scope is adopted; that one decides which fetch may paint. They
+   * protect different things and each leaves the other's failure open, so they must not be
+   * merged.
+   */
+  let scopeEventGeneration = 0;
+
+  /**
+   * What a fetch is actually parameterised by: the ids AND the per-session limit.
+   *
+   * Stated over `scopeIds()` rather than over a list of callers, because every enumeration of
+   * "the callers that must refetch" has been short by one. In "All sessions" the three session
+   * listeners rewrite the derived set without touching the selection, and a generation keyed
+   * on the selected session would miss exactly that; reloading the session list under a
+   * single-session scope leaves this key alone and correctly changes nothing.
+   */
+  const fetchScopeKey = createMemo(() => `${scopeLimit()}|${scopeIds().join(",")}`);
+  let paintedScopeKey: string | null = null;
+
+  createEffect(() => {
+    // Nothing is fetched until the mount has settled the scope: a fetch before that issues a
+    // round of calls for a session the window is about to leave.
+    if (!scopeSettled()) return;
+    const key = fetchScopeKey();
+    if (key === paintedScopeKey) return;
+    paintedScopeKey = key;
+
+    // A scope change drops the content it invalidates, SYNCHRONOUSLY. A commit-time check
+    // stops a stale result from being written; it does not remove rows already on screen,
+    // which would otherwise stay for the whole round trip and stay forever if the new fetch
+    // fails. "A correct selector over stale rows" is the failure this exists to prevent.
+    const ids = scopeIds();
+    setSnapshots([]);
+    setRows((prev) => keepSessions(prev, ids));
+    setLoadError("");
+    void refresh();
+  });
 
   const schedulePoll = () => {
+    if (disposed) return;
     if (pollTimer) clearTimeout(pollTimer);
     const delay = document.hasFocus() ? POLL_FOCUSED_MS : POLL_UNFOCUSED_MS;
     pollTimer = setTimeout(() => {
-      void refresh();
-      // The poll also refreshes the settings store, so a watcher saved from the modal turns
-      // the "no watcher reaches this agent" state into "configured and waiting" without the
-      // user reopening the window. There is no cross-window settings event to use instead.
-      settingsStore.refresh();
-      schedulePoll();
+      pollTimer = null;
+      // Chained rather than fired: a round that outlives its own period would otherwise stack
+      // against a per-session mutex, and in "All sessions" one round is already N calls.
+      void refresh().then(() => {
+        if (disposed) return;
+        // The poll also refreshes the settings store, so a watcher saved from the modal turns
+        // the "no watcher reaches this agent" state into "configured and waiting" without the
+        // user reopening the window. There is no cross-window settings event to use instead.
+        settingsStore.refresh();
+        schedulePoll();
+      });
     }, delay);
   };
 
   onMount(async () => {
-    // The store does not autoload, and the live agent-label fallback needs it.
-    settingsStore.load().catch((err) => console.error("[watchers] settings load:", err));
+    try {
+      // The store does not autoload, and both the live agent-label fallback and the theme
+      // need it. A failure here costs labels and the theme, not the window.
+      await settingsStore
+        .load()
+        .catch((err) => console.error("[watchers] settings load:", err));
+      if (disposed) return;
 
-    // Subscribe BEFORE fetching: a match landing between the two would otherwise be lost.
-    // The overlap it creates is exact rather than heuristic, because the merge keys on
-    // `(sessionId, seq)`.
-    listeners.push(
-      await onWatcherMatches((batch) => {
-        if (!scopeIds().includes(batch.sessionId)) return;
-        const session = sessionById(batch.sessionId);
-        const incoming = batch.matches.map((match) => freezeRow(match, session));
-        setRows((prev) => mergeRows(prev, incoming));
-        if (pinnedTop() && scrollEl) scrollEl.scrollTop = 0;
-      })
-    );
-    listeners.push(
-      await onWatchersScopeRequest(({ sessionId }) => {
-        setScopeSessionId(sessionId);
-        void refresh();
-      })
-    );
-    listeners.push(
-      await onSessionCreated(() => {
-        void reloadSessions();
-      })
-    );
-    listeners.push(
-      await onSessionDestroyed(() => {
-        void reloadSessions();
-      })
-    );
-    listeners.push(
-      await onSessionRenamed(() => {
-        void reloadSessions();
-      })
-    );
+      // Subscribe BEFORE fetching: a match landing between the two would otherwise be lost.
+      // The overlap it creates is exact rather than heuristic, because the merge keys on
+      // `(sessionId, seq)`.
+      await register(
+        onWatcherMatches((batch) => {
+          if (!scopeIds().includes(batch.sessionId)) return;
+          const session = sessionById(batch.sessionId);
+          const incoming = batch.matches.map((match) => freezeRow(match, session));
+          setRows((prev) => capPerSession(mergeRows(prev, incoming), scopeLimit()));
+          if (pinnedTop() && scrollEl) scrollEl.scrollTop = 0;
+        })
+      );
+      await register(
+        onWatchersScopeRequest(({ sessionId }) => {
+          scopeEventGeneration += 1;
+          setScopeSessionId(sessionId);
+          // No fetch is issued here. Every fetch is issued by the scope effect, keyed on the
+          // fetch scope itself.
+        })
+      );
+      await register(onSessionCreated(() => void reloadSessions()));
+      await register(onSessionDestroyed(() => void reloadSessions()));
+      await register(onSessionRenamed(() => void reloadSessions()));
 
-    await reloadSessions();
-    await refresh();
-    schedulePoll();
+      await reloadSessions();
+      if (disposed) return;
 
-    if (isTauri) void trackGeometry();
+      // The pull, issued AFTER the subscribe and adopted unless an event has been handled
+      // since. The window label exists the moment the builder returns while this listener
+      // exists only now, and Tauri queues nothing for a listener that did not exist yet, so an
+      // emit that raced the subscribe is recovered exactly here. A failure leaves the query
+      // parameter standing, which is the scope the window was opened with.
+      const generationAtIssue = scopeEventGeneration;
+      try {
+        const pulled = await WindowAPI.getWatchersScope();
+        if (disposed) return;
+        if (pulled && scopeEventGeneration === generationAtIssue) setScopeSessionId(pulled);
+      } catch (err) {
+        if (disposed) return;
+        console.error("[watchers] failed to pull the requested scope:", err);
+      }
+
+      // Only now may anything be fetched.
+      setScopeSettled(true);
+      schedulePoll();
+
+      if (isTauri) {
+        // Held in a variable that the SYNCHRONOUS `onCleanup` below runs. Calling `onCleanup`
+        // from an async continuation would attach to no owner at all, and these listeners
+        // would outlive the window.
+        cleanupGeometry = await trackGeometry();
+        if (disposed) {
+          cleanupGeometry?.();
+          cleanupGeometry = null;
+        }
+      }
+    } catch (error) {
+      if (error !== mountDisposed) throw error;
+    }
   });
 
   /** Persist through the dedicated one-field command, never `initWindowGeometry`: that one
    *  read-modify-writes the whole AppSettings on a debounce, which races the Settings save
-   *  that edits the watcher map. */
-  const trackGeometry = async () => {
+   *  that edits the watcher map. The rect is converted to logical pixels first; see
+   *  `logicalGeometry`. */
+  const trackGeometry = async (): Promise<(() => void) | null> => {
     const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    if (disposed) return null;
     const win = getCurrentWindow();
     let saveTimer: ReturnType<typeof setTimeout> | null = null;
+
     const save = () => {
       if (saveTimer) clearTimeout(saveTimer);
-      saveTimer = setTimeout(async () => {
-        try {
-          const position = await win.outerPosition();
-          const size = await win.outerSize();
-          await WindowAPI.setWatchersGeometry({
-            x: position.x,
-            y: position.y,
-            width: size.width,
-            height: size.height,
-          });
-        } catch (err) {
-          console.error("[watchers] failed to save geometry:", err);
-        }
-      }, 500);
+      saveTimer = setTimeout(() => {
+        void (async () => {
+          try {
+            const factor = await win.scaleFactor();
+            const position = await win.outerPosition();
+            // `innerSize`, because the builder restores through `inner_size`.
+            const size = await win.innerSize();
+            if (disposed) return;
+            await WindowAPI.setWatchersGeometry(
+              logicalGeometry(
+                { x: position.x, y: position.y, width: size.width, height: size.height },
+                factor
+              )
+            );
+          } catch (err) {
+            console.error("[watchers] failed to save geometry:", err);
+          }
+        })();
+      }, GEOMETRY_SAVE_DEBOUNCE_MS);
     };
+
     const unlistenMoved = await win.onMoved(save);
+    if (disposed) {
+      unlistenMoved();
+      return null;
+    }
     const unlistenResized = await win.onResized(save);
-    onCleanup(() => {
+    if (disposed) {
+      unlistenMoved();
+      unlistenResized();
+      return null;
+    }
+    return () => {
       unlistenMoved();
       unlistenResized();
       if (saveTimer) clearTimeout(saveTimer);
-    });
+    };
   };
 
   onCleanup(() => {
+    disposed = true;
     for (const unlisten of listeners) unlisten();
     listeners.length = 0;
-    if (pollTimer) clearTimeout(pollTimer);
+    if (pollTimer) {
+      clearTimeout(pollTimer);
+      pollTimer = null;
+    }
+    cleanupGeometry?.();
+    cleanupGeometry = null;
   });
 
   const onScroll = () => {
@@ -300,8 +481,9 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
   };
 
   const changeScope = (value: string) => {
+    // No fetch here either: changing the scope changes `fetchScopeKey`, and that is what
+    // invalidates, drops and refetches.
     setScopeSessionId(value === "all" ? null : value);
-    void refresh();
   };
 
   const openWatcherSettings = () => {
@@ -444,6 +626,17 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
           Some screen output was not sampled
         </div>
       </Show>
+      {/* Outside the table states on purpose. A degraded watcher has by definition already
+          emitted matches, so a marker living inside the "configured and waiting" branch is
+          exactly where it can never be reached: one visible row sends the window to the
+          table instead. */}
+      <Show when={degraded().length > 0}>
+        <div class="watchers-note watchers-note-degraded" data-ac-testid="watchers.degraded">
+          {`Degraded: ${degraded()
+            .map((counter) => counter.watcherId)
+            .join(", ")} hit a per-tick cap, so some activations were not recorded.`}
+        </div>
+      </Show>
 
       <div
         class="watchers-body"
@@ -497,6 +690,27 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
                 )}
               </For>
             </ul>
+          </div>
+        </Show>
+
+        {/* Its own state, because saying "nothing has matched yet" over activations the user
+            is filtering out is false and gives them nothing to act on. */}
+        <Show when={view() === "filtered"}>
+          <div
+            class="watchers-empty"
+            data-ac-testid="watchers.empty.filtered"
+            data-ac-role="status"
+          >
+            <p>{`No activations match the current filters (${rows().length} hidden).`}</p>
+            <button
+              type="button"
+              class="watchers-cta"
+              onClick={clearFilters}
+              data-ac-testid="watchers.filtered.clear"
+              data-ac-role="button"
+            >
+              Clear filters
+            </button>
           </div>
         </Show>
 

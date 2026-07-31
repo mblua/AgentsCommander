@@ -78,6 +78,11 @@ export function freezeRow(
  * The window subscribes before it fetches, so the snapshot and the stream overlap on
  * purpose: losing that overlap would lose matches, and not deduplicating it would show them
  * twice. Keying on `(sessionId, seq)` makes the overlap exact rather than heuristic.
+ *
+ * **A key already held keeps its existing object.** Solid's `<For>` keys on object identity,
+ * not on the logical key, and every poll builds fresh `freezeRow` results for the whole ring;
+ * replacing the held object with an identical snapshot would rebuild and re-animate every row
+ * on screen every ten seconds. The one deliberate exception is below.
  */
 export function mergeRows(
   existing: readonly ActivityRow[],
@@ -85,8 +90,52 @@ export function mergeRows(
 ): ActivityRow[] {
   const byKey = new Map<string, ActivityRow>();
   for (const row of existing) byKey.set(rowKey(row), row);
-  for (const row of incoming) byKey.set(rowKey(row), row);
+  for (const row of incoming) {
+    const key = rowKey(row);
+    const held = byKey.get(key);
+    byKey.set(key, held ? keepIdentity(held, row) : row);
+  }
   return [...byKey.values()].sort(compareRowsNewestFirst);
+}
+
+/**
+ * The one metadata update worth losing identity over.
+ *
+ * A match frozen before its session list had loaded carries no agent and no workgroup, and
+ * `sessionName` falls back to the raw id. The same match arriving again once the list is in
+ * hand is the one case where replacing the object is an improvement rather than churn.
+ * `agentId` is the exact test: every session this window scopes has one, so a null can only
+ * mean the session was not found when the row was frozen.
+ */
+function keepIdentity(held: ActivityRow, incoming: ActivityRow): ActivityRow {
+  return held.agentId === null && incoming.agentId !== null ? incoming : held;
+}
+
+/**
+ * Keep at most `limit` rows per session, newest first, and drop the rest.
+ *
+ * The 500 and 100 limits are not only fetch parameters: without this the frontend grows
+ * without a bound the backend has, because the ring caps what a SNAPSHOT returns while the
+ * event stream keeps appending for as long as the window stays open. One session can deliver
+ * dozens of rows a second, so an afternoon's uptime is hundreds of thousands of objects, a
+ * `sort` whose cost climbs with every batch, and a `<For>` rendering all of it. It also makes
+ * the truncation the banner announces true of the window and not only of the buffer.
+ *
+ * `rows` is expected newest-first, which is what `mergeRows` returns.
+ */
+export function capPerSession(
+  rows: readonly ActivityRow[],
+  limit: number
+): ActivityRow[] {
+  const seen = new Map<string, number>();
+  const kept: ActivityRow[] = [];
+  for (const row of rows) {
+    const count = seen.get(row.sessionId) ?? 0;
+    if (count >= limit) continue;
+    seen.set(row.sessionId, count + 1);
+    kept.push(row);
+  }
+  return kept;
 }
 
 /** Newest first; `seq` breaks the tie between two matches of the same tick. */
@@ -151,14 +200,28 @@ export function distinct<T>(values: readonly T[]): T[] {
  * `warming` is its own state and not empty state 1: until the engine has ticked a session
  * once, an empty `activeWatchers` means "not known yet", and showing "no watcher reaches
  * this agent" for the first 200 ms of every session would be a lie that flickers.
+ *
+ * `filtered` is the fifth state and it exists because the other four are statements about the
+ * ACTIVATIONS, not about the table. Deciding them from filtered rows means a filter that
+ * happens to hide everything produces "Configured and waiting. Nothing has matched yet.",
+ * which is false and which the user cannot even attribute to the filter they just set.
  */
-export type ActivityView = "warming" | "unconfigured" | "waiting" | "rows";
+export type ActivityView =
+  | "warming"
+  | "unconfigured"
+  | "waiting"
+  | "filtered"
+  | "rows";
 
 export function resolveView(
   snapshots: readonly WatcherActivitySnapshot[],
+  totalRows: number,
   visibleRows: number
 ): ActivityView {
   if (visibleRows > 0) return "rows";
+  // There ARE activations; the filters are what is hiding them. Said before the snapshot is
+  // consulted, because no reading of the snapshot can make "nothing has matched" true here.
+  if (totalRows > 0) return "filtered";
   if (snapshots.length === 0 || !snapshots.some((snapshot) => snapshot.warmedUp)) {
     return "warming";
   }
@@ -187,6 +250,19 @@ export function mergeActiveWatchers(
     }
   }
   return [...byId.values()].sort((a, b) => a.watcherId.localeCompare(b.watcherId));
+}
+
+/**
+ * The watchers currently hitting a per-tick cap or suspended, across the scope.
+ *
+ * Surfaced on its own because a degraded watcher has, by definition, already emitted matches:
+ * hanging the marker off the "configured and waiting" branch puts it exactly where it can
+ * never be reached, since one visible row sends the window to the table instead.
+ */
+export function degradedWatchers(
+  snapshots: readonly WatcherActivitySnapshot[]
+): WatcherActivityCounter[] {
+  return mergeActiveWatchers(snapshots).filter((counter) => counter.degraded);
 }
 
 /** True when any session in scope dropped entries, i.e. the table is missing older rows. */

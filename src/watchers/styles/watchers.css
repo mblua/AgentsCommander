@@ -182,6 +182,12 @@ body,
   flex-shrink: 0;
 }
 
+/* Louder than the sampling note and quieter than the loss banner: a degraded watcher IS
+   dropping activations, but only while it stays saturated. */
+.watchers-note-degraded {
+  color: var(--status-pending);
+}
+
 /* ── Table ────────────────────────────────────────────────────────────────── */
 
 .watchers-body {

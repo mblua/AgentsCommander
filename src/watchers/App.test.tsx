@@ -1,15 +1,20 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import WatchersApp from "./App";
+import WatchersApp, { logicalGeometry } from "./App";
 import { FakeTransport } from "../shared/testing/fake-transport";
 import {
+  input,
   installBrowserDomStubs,
   renderWithFakeTransport,
   resetUiStoresForTests,
   session,
   waitFor,
 } from "../shared/testing/ui-harness";
-import type { WatcherActivitySnapshot, WatcherMatchPayload } from "../shared/types";
+import type {
+  Session,
+  WatcherActivitySnapshot,
+  WatcherMatchPayload,
+} from "../shared/types";
 
 function snapshot(
   overrides: Partial<WatcherActivitySnapshot> = {}
@@ -61,7 +66,26 @@ function transportWith(snap: WatcherActivitySnapshot): FakeTransport {
   fake.resolve("list_sessions", AGENT_SESSIONS);
   fake.resolve("get_settings", { agents: [] });
   fake.resolve("get_watcher_activity", snap);
+  // The authoritative scope, pulled after the subscribe. `null` is "nothing was requested",
+  // which leaves the query parameter standing.
+  fake.resolve("get_watchers_scope", null);
   return fake;
+}
+
+/** A promise this test resolves by hand, so an ordering can be pinned instead of raced. */
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (reason: unknown) => void } {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/** Let every already-resolved microtask run, without waiting on a condition. */
+async function flush(): Promise<void> {
+  for (let i = 0; i < 8; i += 1) await Promise.resolve();
 }
 
 describe("the watcher activity window (#1171)", () => {
@@ -322,5 +346,359 @@ describe("the watcher activity window (#1171)", () => {
     } finally {
       rendered.cleanup();
     }
+  });
+
+  /**
+   * #1171 test 77, the race the earlier version of this test did not run.
+   *
+   * Waiting for the snapshot row to be in the DOM and only then emitting proves nothing: it
+   * passes even if the window fetched before it subscribed, or dropped whatever arrived
+   * first. The overlap has to land while the invoke is still pending.
+   */
+  it("merges an overlap that arrives while the snapshot fetch is still in flight", async () => {
+    const activity = deferred<WatcherActivitySnapshot>();
+    const fake = transportWith(snapshot());
+    fake.onInvoke("get_watcher_activity", () => activity.promise);
+
+    const rendered = renderWithFakeTransport(() => <WatchersApp initialSessionId="s1" />, fake);
+    try {
+      // The fetch is out, so the subscribe that precedes it has completed.
+      await waitFor(() => expect(fake.callsFor("get_watcher_activity")).toHaveLength(1));
+      expect(rendered.root.querySelector('[data-ac-testid="watchers.table"]')).toBeNull();
+
+      // seq 7 overlaps the snapshot; seq 8 is only on the stream.
+      fake.emitFromBackend("watcher_matches", {
+        sessionId: "s1",
+        matches: [match({ seq: 7 }), match({ seq: 8 })],
+      });
+
+      activity.resolve(snapshot({ matches: [match({ seq: 6 }), match({ seq: 7 })], lastSeq: 7 }));
+
+      await waitFor(() =>
+        expect(rendered.root.querySelector('[data-ac-testid="watchers.row.s1:6"]')).toBeTruthy()
+      );
+      expect(
+        rendered.root.querySelectorAll('[data-ac-testid="watchers.row.s1:7"]')
+      ).toHaveLength(1);
+      expect(rendered.root.querySelector('[data-ac-testid="watchers.row.s1:8"]')).toBeTruthy();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  /**
+   * #1171 test 79d, both orderings of the same race. They fail differently, which is why
+   * neither one alone is enough.
+   */
+  describe("settling the scope on mount (#1171 test 79d)", () => {
+    it("adopts the event and never fetches the scope it was about to leave", async () => {
+      const pull = deferred<string | null>();
+      const fake = transportWith(snapshot());
+      fake.onInvoke("get_watchers_scope", () => pull.promise);
+
+      const rendered = renderWithFakeTransport(
+        () => <WatchersApp initialSessionId="s1" />,
+        fake
+      );
+      try {
+        await waitFor(() => expect(fake.callsFor("get_watchers_scope")).toHaveLength(1));
+        // Nothing at all is fetched before the scope is settled.
+        expect(fake.callsFor("get_watcher_activity")).toHaveLength(0);
+
+        fake.emitFromBackend("watchers_scope_request", { sessionId: "s2" });
+        // The pull answers a THIRD session, and it lost: an event was handled since it was
+        // issued.
+        pull.resolve("s1");
+
+        await waitFor(() => expect(fake.callsFor("get_watcher_activity")).toHaveLength(1));
+        expect(fake.callsFor("get_watcher_activity")[0].args.sessionId).toBe("s2");
+      } finally {
+        rendered.cleanup();
+      }
+    });
+
+    it("re-scopes on an event that arrives during the first fetch, without waiting for the poll", async () => {
+      const first = deferred<WatcherActivitySnapshot>();
+      const fake = transportWith(snapshot());
+      fake.onInvoke("get_watcher_activity", (args) =>
+        args.sessionId === "s1" ? first.promise : snapshot({ matches: [match({ sessionId: "s2", seq: 4 })] })
+      );
+
+      const rendered = renderWithFakeTransport(
+        () => <WatchersApp initialSessionId="s1" />,
+        fake
+      );
+      try {
+        await waitFor(() => expect(fake.callsFor("get_watcher_activity")).toHaveLength(1));
+
+        fake.emitFromBackend("watchers_scope_request", { sessionId: "s2" });
+
+        await waitFor(() =>
+          expect(rendered.root.querySelector('[data-ac-testid="watchers.row.s2:4"]')).toBeTruthy()
+        );
+
+        // The first scope's answer lands last and must change nothing.
+        first.resolve(snapshot({ matches: [match({ sessionId: "s1", seq: 1 })] }));
+        await flush();
+        expect(rendered.root.querySelector('[data-ac-testid="watchers.row.s1:1"]')).toBeNull();
+      } finally {
+        rendered.cleanup();
+      }
+    });
+  });
+
+  /**
+   * #1171 test 79e, the content guard. Three assertions that fail independently, because a
+   * correct selector over the previous session's rows is the failure this exists to prevent.
+   */
+  describe("guarding what is painted (#1171 test 79e)", () => {
+    it("drops the previous scope's rows synchronously, before the new fetch resolves and when it rejects", async () => {
+      const second = deferred<WatcherActivitySnapshot>();
+      const fake = transportWith(snapshot());
+      fake.onInvoke("get_watcher_activity", (args) =>
+        args.sessionId === "s1"
+          ? snapshot({ matches: [match({ sessionId: "s1", seq: 1 })] })
+          : second.promise
+      );
+
+      const rendered = renderWithFakeTransport(
+        () => <WatchersApp initialSessionId="s1" />,
+        fake
+      );
+      try {
+        await waitFor(() =>
+          expect(rendered.root.querySelector('[data-ac-testid="watchers.row.s1:1"]')).toBeTruthy()
+        );
+
+        const scope = rendered.root.querySelector<HTMLSelectElement>(
+          '[data-ac-testid="watchers.scope"]'
+        )!;
+        scope.value = "s2";
+        scope.dispatchEvent(new Event("change", { bubbles: true }));
+
+        // Already gone, with the new answer still in flight.
+        await waitFor(() =>
+          expect(rendered.root.querySelector('[data-ac-testid="watchers.row.s1:1"]')).toBeNull()
+        );
+
+        // And still gone once the new fetch fails outright.
+        second.reject(new Error("backend said no"));
+        await waitFor(() =>
+          expect(rendered.root.querySelector('[data-ac-testid="watchers.error"]')).toBeTruthy()
+        );
+        expect(rendered.root.querySelector('[data-ac-testid="watchers.row.s1:1"]')).toBeNull();
+      } finally {
+        rendered.cleanup();
+      }
+    });
+
+    it("keeps the newer counters when two fetches of the SAME scope resolve out of order", async () => {
+      // Both deferred answers are for s1, so only the request counter can tell them apart: a
+      // generation keyed on the SCOPE sees one value and lets the older one commit its
+      // `lastSeq`, `warmedUp`, `degraded` and counters over the newer ones, leaving the table
+      // and the counters describing two different instants.
+      const older = deferred<WatcherActivitySnapshot>();
+      const newer = deferred<WatcherActivitySnapshot>();
+      const forS1 = [older.promise, newer.promise];
+      const fake = transportWith(snapshot());
+      fake.onInvoke("get_watcher_activity", (args) =>
+        args.sessionId === "s1" ? forS1.shift() ?? snapshot() : snapshot()
+      );
+
+      const rendered = renderWithFakeTransport(
+        () => <WatchersApp initialSessionId="s1" />,
+        fake
+      );
+      try {
+        // Round one for s1, left in flight.
+        await waitFor(() => expect(fake.callsFor("get_watcher_activity")).toHaveLength(1));
+
+        fake.emitFromBackend("watchers_scope_request", { sessionId: "s2" });
+        await waitFor(() => expect(fake.callsFor("get_watcher_activity")).toHaveLength(2));
+
+        // Back to s1: round two for the same scope, also left in flight.
+        fake.emitFromBackend("watchers_scope_request", { sessionId: "s1" });
+        await waitFor(() => expect(fake.callsFor("get_watcher_activity")).toHaveLength(3));
+
+        newer.resolve(
+          snapshot({
+            activeWatchers: [
+              { watcherId: "reads", mode: "occurrence", count: 9, degraded: true },
+            ],
+          })
+        );
+        await waitFor(() =>
+          expect(rendered.root.querySelector('[data-ac-testid="watchers.degraded"]')).toBeTruthy()
+        );
+
+        older.resolve(
+          snapshot({
+            activeWatchers: [
+              { watcherId: "reads", mode: "occurrence", count: 0, degraded: false },
+            ],
+          })
+        );
+        await flush();
+        expect(
+          rendered.root.querySelector('[data-ac-testid="watchers.degraded"]')
+        ).toBeTruthy();
+      } finally {
+        rendered.cleanup();
+      }
+    });
+  });
+
+  /**
+   * #1171 test 79f. In "All sessions" the scope is a SET derived from the session list, and
+   * the session listeners rewrite it without touching the selection. A generation keyed on
+   * the selected session passes every other test here and fails this one.
+   */
+  it("refetches when a session enters the scope in All sessions, keeping its rows", async () => {
+    const fake = new FakeTransport();
+    let listed = [AGENT_SESSIONS[0]];
+    fake.onInvoke("list_sessions", () => listed);
+    fake.resolve("get_settings", { agents: [] });
+    fake.resolve("get_watchers_scope", null);
+    fake.onInvoke("get_watcher_activity", (args) =>
+      snapshot({ matches: [match({ sessionId: String(args.sessionId), seq: 1 })] })
+    );
+
+    const rendered = renderWithFakeTransport(() => <WatchersApp />, fake);
+    try {
+      await waitFor(() =>
+        expect(rendered.root.querySelector('[data-ac-testid="watchers.row.s1:1"]')).toBeTruthy()
+      );
+
+      listed = AGENT_SESSIONS;
+      fake.emitFromBackend("session_created", { sessionId: "s2" });
+
+      await waitFor(() =>
+        expect(rendered.root.querySelector('[data-ac-testid="watchers.row.s2:1"]')).toBeTruthy()
+      );
+      expect(rendered.root.querySelector('[data-ac-testid="watchers.row.s1:1"]')).toBeTruthy();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  /**
+   * A degraded watcher has by definition already emitted matches, so the marker that only
+   * lived inside the "configured and waiting" branch could never be reached.
+   */
+  it("shows the degraded marker while the table is showing rows", async () => {
+    const fake = transportWith(
+      snapshot({
+        matches: [match()],
+        activeWatchers: [{ watcherId: "reads", mode: "occurrence", count: 40, degraded: true }],
+      })
+    );
+    const rendered = renderWithFakeTransport(() => <WatchersApp initialSessionId="s1" />, fake);
+    try {
+      await waitFor(() =>
+        expect(rendered.root.querySelector('[data-ac-testid="watchers.table"]')).toBeTruthy()
+      );
+      const marker = rendered.root.querySelector('[data-ac-testid="watchers.degraded"]');
+      expect(marker?.textContent).toContain("reads");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  /** "Nothing has matched yet" over activations a filter is hiding is a false statement. */
+  it("says the filters are hiding the activations rather than that none exist", async () => {
+    const fake = transportWith(
+      snapshot({
+        matches: [match()],
+        activeWatchers: [{ watcherId: "reads", mode: "occurrence", count: 1, degraded: false }],
+      })
+    );
+    const rendered = renderWithFakeTransport(() => <WatchersApp initialSessionId="s1" />, fake);
+    try {
+      await waitFor(() =>
+        expect(rendered.root.querySelector('[data-ac-testid="watchers.table"]')).toBeTruthy()
+      );
+
+      const search = rendered.root.querySelector<HTMLInputElement>(
+        '[data-ac-testid="watchers.filter.text"]'
+      )!;
+      input(search, "nothing will ever match this");
+
+      await waitFor(() =>
+        expect(
+          rendered.root.querySelector('[data-ac-testid="watchers.empty.filtered"]')
+        ).toBeTruthy()
+      );
+      expect(
+        rendered.root.querySelector('[data-ac-testid="watchers.empty.waiting"]')
+      ).toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  /**
+   * The P0 this suite itself used to expose: `onMount` crosses several awaits, and a window
+   * closed inside one of them left the continuation registering listeners, fetching and
+   * starting a poll against a component that no longer existed.
+   */
+  it("stops the mount where it is when the window closes mid-flight", async () => {
+    const sessions = deferred<Session[]>();
+    const fake = transportWith(snapshot());
+    fake.onInvoke("list_sessions", () => sessions.promise);
+
+    const rendered = renderWithFakeTransport(() => <WatchersApp initialSessionId="s1" />, fake);
+    await waitFor(() => expect(fake.callsFor("list_sessions")).toHaveLength(1));
+
+    rendered.cleanup();
+    sessions.resolve(AGENT_SESSIONS);
+    await flush();
+
+    expect(fake.callsFor("get_watchers_scope")).toHaveLength(0);
+    expect(fake.callsFor("get_watcher_activity")).toHaveLength(0);
+
+    // And the listeners are gone with it: this must reach nobody rather than throw.
+    fake.emitFromBackend("watcher_matches", { sessionId: "s1", matches: [match()] });
+    await flush();
+    expect(fake.callsFor("get_watcher_activity")).toHaveLength(0);
+  });
+});
+
+/**
+ * #1171 - the pure conversion behind the geometry the activity window persists.
+ *
+ * `outerPosition()` and `innerSize()` answer in PHYSICAL pixels while the window builder's
+ * `position` and `inner_size` take LOGICAL ones, so writing back what was read multiplies the
+ * rect by the scale factor on every save-and-reopen cycle. The defect is invisible at a scale
+ * factor of 1, which is the only one a headless run ever has, so it is pinned here.
+ */
+describe("persisting the activity window's geometry (#1171)", () => {
+  it("converts a physical rect to the logical one the builder restores", () => {
+    expect(logicalGeometry({ x: 300, y: 150, width: 2205, height: 1200 }, 1.5)).toEqual({
+      x: 200,
+      y: 100,
+      width: 1470,
+      height: 800,
+    });
+  });
+
+  it("round-trips at 100%, where the two units coincide", () => {
+    const rect = { x: 10, y: 20, width: 1470, height: 800 };
+    expect(logicalGeometry(rect, 1)).toEqual(rect);
+  });
+
+  it("is stable under repeated save-and-reopen at a fractional factor", () => {
+    // The reopened window reports the same physical rect the logical one asks for, so a
+    // second save must produce the same numbers rather than shrink or grow them.
+    const once = logicalGeometry({ x: 0, y: 0, width: 2205, height: 1200 }, 1.5);
+    const twice = logicalGeometry(
+      { x: 0, y: 0, width: once.width * 1.5, height: once.height * 1.5 },
+      1.5
+    );
+    expect(twice).toEqual(once);
+  });
+
+  it("treats an impossible scale factor as 1 rather than producing Infinity", () => {
+    const rect = { x: 1, y: 2, width: 3, height: 4 };
+    expect(logicalGeometry(rect, 0)).toEqual(rect);
   });
 });
