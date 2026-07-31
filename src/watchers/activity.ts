@@ -112,7 +112,7 @@ function keepIdentity(held: ActivityRow, incoming: ActivityRow): ActivityRow {
 }
 
 /**
- * Keep at most `limit` rows per session, newest first, and drop the rest.
+ * Keep at most `limit` rows per session and drop the rest, preserving the input order.
  *
  * The 500 and 100 limits are not only fetch parameters: without this the frontend grows
  * without a bound the backend has, because the ring caps what a SNAPSHOT returns while the
@@ -121,28 +121,59 @@ function keepIdentity(held: ActivityRow, incoming: ActivityRow): ActivityRow {
  * `sort` whose cost climbs with every batch, and a `<For>` rendering all of it. It also makes
  * the truncation the banner announces true of the window and not only of the buffer.
  *
- * `rows` is expected newest-first, which is what `mergeRows` returns.
+ * **The survivors are chosen by `seq`, never by the order the rows are displayed in.** `at`
+ * is the tick's instant and it comes from the machine's clock; let that clock step back --
+ * NTP, a manual change, a VM resume -- with the table already full, and every new match
+ * arrives sorting BEHIND everything already held. Keeping the first N of the display order
+ * would then discard precisely the newest activity, on every event and every snapshot, until
+ * the clock caught up to where it had been. `seq` is monotonic per session by contract and
+ * has no such failure.
+ *
+ * The cost is one sort of the seqs of each over-limit session, which is bounded by `limit`
+ * plus the batch that pushed it over.
  */
 export function capPerSession(
   rows: readonly ActivityRow[],
   limit: number
 ): ActivityRow[] {
-  const seen = new Map<string, number>();
-  const kept: ActivityRow[] = [];
+  const seqsBySession = new Map<string, number[]>();
   for (const row of rows) {
-    const count = seen.get(row.sessionId) ?? 0;
-    if (count >= limit) continue;
-    seen.set(row.sessionId, count + 1);
-    kept.push(row);
+    const seqs = seqsBySession.get(row.sessionId);
+    if (seqs) seqs.push(row.seq);
+    else seqsBySession.set(row.sessionId, [row.seq]);
   }
-  return kept;
+
+  // The lowest `seq` that still survives, per session. Absent means that session is under
+  // the limit and keeps everything.
+  const survivesFrom = new Map<string, number>();
+  for (const [sessionId, seqs] of seqsBySession) {
+    if (seqs.length <= limit) continue;
+    seqs.sort((a, b) => b - a);
+    survivesFrom.set(sessionId, seqs[limit - 1]);
+  }
+  if (survivesFrom.size === 0) return rows.slice();
+
+  // `(sessionId, seq)` is the row key, so no session holds a `seq` twice and this keeps
+  // exactly `limit` of them.
+  return rows.filter((row) => {
+    const threshold = survivesFrom.get(row.sessionId);
+    return threshold === undefined || row.seq >= threshold;
+  });
 }
 
-/** Newest first; `seq` breaks the tie between two matches of the same tick. */
+/**
+ * Newest first.
+ *
+ * Within one session `seq` decides on its own: it is monotonic and exact, while `at` is the
+ * TICK's instant, shared by every match of that tick, and its RFC3339 text does not even
+ * compare correctly against a fractional-second sibling -- `.` sorts before `Z`, so
+ * `...00.100Z` reads as older than `...00Z`. Across sessions there is no shared counter, so
+ * time is what is left, with the id as a stable tie-break.
+ */
 export function compareRowsNewestFirst(a: ActivityRow, b: ActivityRow): number {
+  if (a.sessionId === b.sessionId) return b.seq - a.seq;
   if (a.at !== b.at) return a.at < b.at ? 1 : -1;
-  if (a.sessionId !== b.sessionId) return a.sessionId < b.sessionId ? -1 : 1;
-  return b.seq - a.seq;
+  return a.sessionId < b.sessionId ? -1 : 1;
 }
 
 /** Drop rows whose session left the scope, so switching scope does not keep stale rows. */

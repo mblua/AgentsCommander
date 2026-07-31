@@ -85,6 +85,42 @@ export function logicalGeometry(
   };
 }
 
+/**
+ * Register a set of listeners as one unit, and hand back a single release for all of them.
+ *
+ * Registering them one at a time with each unlisten in its own local is what leaks: a later
+ * registration that REJECTS leaves the earlier one alive and unreachable, attached to a
+ * window that is on its way out, because nothing ever puts it where the cleanup can see it.
+ * Here everything that succeeded is held in one place and the `finally` releases it on every
+ * path that does not hand it over -- a rejection, or the window closing on any await.
+ *
+ * `null` means the set was released rather than handed over, so the caller owns nothing.
+ * Exported for its own test: the failure it exists for needs a registration that rejects,
+ * which no real Tauri window produces on demand.
+ */
+export async function registerAll(
+  registrations: readonly (() => Promise<UnlistenFn>)[],
+  isDisposed: () => boolean
+): Promise<(() => void) | null> {
+  const registered: UnlistenFn[] = [];
+  const release = () => {
+    for (const unlisten of registered.splice(0)) unlisten();
+  };
+  let handedOver = false;
+  try {
+    for (const registration of registrations) {
+      if (isDisposed()) return null;
+      registered.push(await registration());
+    }
+    // Checked again after the last await, which the loop's own guard never reaches.
+    if (isDisposed()) return null;
+    handedOver = true;
+    return release;
+  } finally {
+    if (!handedOver) release();
+  }
+}
+
 const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
   // ── Lifecycle ──────────────────────────────────────────────────────────────
   // `onMount` crosses several awaits and the window can be closed inside any of them, so
@@ -272,13 +308,25 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
     }
   };
 
+  /**
+   * The same monotonic rule as the activity fetch, and for a worse reason.
+   *
+   * The three session listeners each fire their own `list_sessions`, unserialized, and
+   * nothing polls the list afterwards. So an older answer that resolves last does not cause a
+   * flicker: it resurrects a session that was destroyed, or removes one that was just
+   * created, and the window stays wrong until it is reopened. In "All sessions" that list
+   * also IS the scope, so a wrong list is a wrong set of fetches.
+   */
+  let sessionsRequestCounter = 0;
+
   const reloadSessions = async () => {
+    const request = (sessionsRequestCounter += 1);
     try {
       const listed = await SessionAPI.list();
-      if (disposed) return;
+      if (disposed || request !== sessionsRequestCounter) return;
       setSessions(listed);
     } catch (err) {
-      if (disposed) return;
+      if (disposed || request !== sessionsRequestCounter) return;
       console.error("[watchers] failed to list sessions:", err);
     }
   };
@@ -316,9 +364,14 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
     // stops a stale result from being written; it does not remove rows already on screen,
     // which would otherwise stay for the whole round trip and stay forever if the new fetch
     // fails. "A correct selector over stale rows" is the failure this exists to prevent.
+    //
+    // The drop is as wide as the key that triggered it: leaving one session for "All
+    // sessions" narrows the per-session limit from 500 to 100, so dropping only what left the
+    // scope would keep 500 rows of a session now entitled to 100.
     const ids = scopeIds();
+    const limit = scopeLimit();
     setSnapshots([]);
-    setRows((prev) => keepSessions(prev, ids));
+    setRows((prev) => capPerSession(keepSessions(prev, ids), limit));
     setLoadError("");
     void refresh();
   });
@@ -408,7 +461,13 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
         }
       }
     } catch (error) {
-      if (error !== mountDisposed) throw error;
+      // Never re-thrown. Solid does not await the promise this `onMount` returns, so anything
+      // that escapes here is an unhandled rejection instead of an error somebody sees, and
+      // the window would sit half-started with nothing on screen saying so. The sentinel is
+      // not a failure at all: it means the window closed while the mount was still running.
+      if (error === mountDisposed || disposed) return;
+      console.error("[watchers] the window failed to finish starting up:", error);
+      setLoadError(error instanceof Error ? error.message : String(error));
     }
   });
 
@@ -445,22 +504,31 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
       }, GEOMETRY_SAVE_DEBOUNCE_MS);
     };
 
-    const unlistenMoved = await win.onMoved(save);
-    if (disposed) {
-      unlistenMoved();
-      return null;
-    }
-    const unlistenResized = await win.onResized(save);
-    if (disposed) {
-      unlistenMoved();
-      unlistenResized();
-      return null;
-    }
-    return () => {
-      unlistenMoved();
-      unlistenResized();
+    const stopSaving = () => {
       if (saveTimer) clearTimeout(saveTimer);
+      saveTimer = null;
     };
+
+    try {
+      const release = await registerAll(
+        [() => win.onMoved(save), () => win.onResized(save)],
+        () => disposed
+      );
+      if (!release) {
+        stopSaving();
+        return null;
+      }
+      return () => {
+        release();
+        stopSaving();
+      };
+    } catch (err) {
+      // Geometry tracking is best-effort: losing it costs a persisted rect, not the window.
+      // What must not happen is escaping into `onMount`, whose promise nobody awaits.
+      stopSaving();
+      console.error("[watchers] failed to track the window geometry:", err);
+      return null;
+    }
   };
 
   onCleanup(() => {

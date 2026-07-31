@@ -175,6 +175,74 @@ describe("bounding what the window holds (#1171)", () => {
     const rows = mergeRows([], burst("s1", 5));
     expect(capPerSession(rows, 100).map((r) => r.seq)).toEqual(rows.map((r) => r.seq));
   });
+
+  /**
+   * The survivors are chosen by `seq`, which is monotonic per session, and NOT by the wall
+   * clock the rows are displayed in order of.
+   *
+   * `at` is the TICK's instant and comes from the machine's clock. Let that clock step back
+   * -- NTP, a manual change, a VM resume -- with the array already full, and every new match
+   * arrives with an `at` that sorts BEHIND everything already held. A cap that keeps the
+   * first N of the time sort then discards precisely the newest activity, on every event and
+   * every snapshot, until the clock catches up to where it was.
+   */
+  it("keeps the newest activity when the system clock steps backwards", () => {
+    const held = Array.from({ length: 5 }, (_, i) =>
+      freezeRow(match({ seq: i, at: `2026-07-30T22:00:0${i}Z` }), session())
+    );
+    // The clock went back a minute; this is the most recent match all the same.
+    const afterTheStep = freezeRow(
+      match({ seq: 99, at: "2026-07-30T21:59:00Z" }),
+      session()
+    );
+
+    const capped = capPerSession(mergeRows(held, [afterTheStep]), 5);
+
+    expect(capped).toHaveLength(5);
+    expect([...capped.map((r) => r.seq)].sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 99]);
+  });
+
+  it("drops the lowest seqs of each session independently under a clock step", () => {
+    const stepped = [
+      freezeRow(match({ sessionId: "s1", seq: 7, at: "2026-07-30T21:00:00Z" }), session({ id: "s1" })),
+      freezeRow(match({ sessionId: "s2", seq: 7, at: "2026-07-30T21:00:00Z" }), session({ id: "s2" })),
+    ];
+    const older = [
+      freezeRow(match({ sessionId: "s1", seq: 1, at: "2026-07-30T22:00:00Z" }), session({ id: "s1" })),
+      freezeRow(match({ sessionId: "s2", seq: 1, at: "2026-07-30T22:00:00Z" }), session({ id: "s2" })),
+    ];
+    const capped = capPerSession(mergeRows(older, stepped), 1);
+    expect(capped.map((r) => `${r.sessionId}:${r.seq}`).sort()).toEqual(["s1:7", "s2:7"]);
+  });
+});
+
+/**
+ * Within one session `seq` is monotonic and exact. `at` is the tick's instant, shared by
+ * every match of that tick, and its RFC3339 TEXT does not even sort correctly against a
+ * fractional-second sibling: `.` sorts before `Z`, so `...00.100Z` reads as older than
+ * `...00Z`.
+ */
+describe("ordering rows for display (#1171)", () => {
+  it("orders one session by seq, not by the text of its timestamps", () => {
+    const whole = freezeRow(match({ seq: 1, at: "2026-07-30T22:00:00Z" }), session());
+    const fractional = freezeRow(
+      match({ seq: 2, at: "2026-07-30T22:00:00.100Z" }),
+      session()
+    );
+    expect(mergeRows([], [whole, fractional]).map((r) => r.seq)).toEqual([2, 1]);
+  });
+
+  it("still orders two sessions against each other by time", () => {
+    const older = freezeRow(
+      match({ sessionId: "s1", seq: 50, at: "2026-07-30T22:00:00Z" }),
+      session({ id: "s1" })
+    );
+    const newer = freezeRow(
+      match({ sessionId: "s2", seq: 1, at: "2026-07-30T23:00:00Z" }),
+      session({ id: "s2" })
+    );
+    expect(mergeRows([], [older, newer]).map((r) => r.sessionId)).toEqual(["s2", "s1"]);
+  });
 });
 
 /**

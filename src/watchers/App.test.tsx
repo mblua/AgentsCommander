@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import WatchersApp, { logicalGeometry } from "./App";
+import WatchersApp, { logicalGeometry, registerAll } from "./App";
+import { ALL_SESSIONS_LIMIT } from "./activity";
 import { FakeTransport } from "../shared/testing/fake-transport";
 import {
   input,
@@ -637,6 +638,151 @@ describe("the watcher activity window (#1171)", () => {
   });
 
   /**
+   * The synchronous drop has to be as wide as the fetch key that triggered it.
+   *
+   * Leaving a single session for "All sessions" narrows the per-session limit from 500 to
+   * 100, and `keepSessions` alone keeps every one of the 500 painted for the whole round
+   * trip -- and forever if the new fetch fails, which is exactly the "correct selector over
+   * stale rows" this guard exists to prevent.
+   */
+  it("drops what the new scope's limit no longer allows, before the new fetch resolves", async () => {
+    const held = snapshot({
+      matches: Array.from({ length: 150 }, (_, i) => match({ seq: i })),
+    });
+    const second = deferred<WatcherActivitySnapshot>();
+    let round = 0;
+    const fake = transportWith(held);
+    fake.onInvoke("get_watcher_activity", () => {
+      round += 1;
+      return round === 1 ? held : second.promise;
+    });
+
+    const rendered = renderWithFakeTransport(() => <WatchersApp initialSessionId="s1" />, fake);
+    try {
+      await waitFor(() =>
+        expect(rendered.root.querySelectorAll("tr.watchers-row")).toHaveLength(150)
+      );
+
+      const scope = rendered.root.querySelector<HTMLSelectElement>(
+        '[data-ac-testid="watchers.scope"]'
+      )!;
+      scope.value = "all";
+      scope.dispatchEvent(new Event("change", { bubbles: true }));
+
+      await waitFor(() =>
+        expect(rendered.root.querySelectorAll("tr.watchers-row")).toHaveLength(
+          ALL_SESSIONS_LIMIT
+        )
+      );
+      // And what survived is the newest, not whatever the filter happened to reach first.
+      expect(rendered.root.querySelector('[data-ac-testid="watchers.row.s1:149"]')).toBeTruthy();
+      expect(rendered.root.querySelector('[data-ac-testid="watchers.row.s1:0"]')).toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  /**
+   * The three session listeners each fire their own `list_sessions`, and nothing polls the
+   * list afterwards, so an answer that resolves out of order is not a flicker: it is wrong
+   * permanently.
+   */
+  describe("reloading the session list (#1171)", () => {
+    const optionValues = (root: HTMLElement) =>
+      [
+        ...root.querySelectorAll<HTMLOptionElement>(
+          '[data-ac-testid="watchers.scope"] option'
+        ),
+      ].map((option) => option.value);
+
+    it("does not let a stale list resurrect a session that was destroyed", async () => {
+      const stale = deferred<Session[]>();
+      const lists: (Session[] | Promise<Session[]>)[] = [
+        [AGENT_SESSIONS[0]], // mount
+        stale.promise, // the create's reload, left in flight
+        [AGENT_SESSIONS[0]], // the destroy's reload, which answers first
+      ];
+      const fake = transportWith(snapshot());
+      fake.onInvoke("list_sessions", () => lists.shift() ?? [AGENT_SESSIONS[0]]);
+
+      const rendered = renderWithFakeTransport(() => <WatchersApp />, fake);
+      try {
+        await waitFor(() => expect(fake.callsFor("list_sessions")).toHaveLength(1));
+
+        fake.emitFromBackend("session_created", AGENT_SESSIONS[1]);
+        await waitFor(() => expect(fake.callsFor("list_sessions")).toHaveLength(2));
+
+        fake.emitFromBackend("session_destroyed", { id: "s2" });
+        await waitFor(() => expect(fake.callsFor("list_sessions")).toHaveLength(3));
+        await waitFor(() => expect(optionValues(rendered.root)).toEqual(["all", "s1"]));
+
+        // The create's answer arrives last, describing a world that no longer exists.
+        stale.resolve(AGENT_SESSIONS);
+        await flush();
+        expect(optionValues(rendered.root)).toEqual(["all", "s1"]);
+      } finally {
+        rendered.cleanup();
+      }
+    });
+
+    it("does not let a stale list remove a session that was just created", async () => {
+      const stale = deferred<Session[]>();
+      const lists: (Session[] | Promise<Session[]>)[] = [
+        [AGENT_SESSIONS[0]], // mount
+        stale.promise, // the rename's reload, left in flight
+        AGENT_SESSIONS, // the create's reload, which answers first
+      ];
+      const fake = transportWith(snapshot());
+      fake.onInvoke("list_sessions", () => lists.shift() ?? AGENT_SESSIONS);
+
+      const rendered = renderWithFakeTransport(() => <WatchersApp />, fake);
+      try {
+        await waitFor(() => expect(fake.callsFor("list_sessions")).toHaveLength(1));
+
+        fake.emitFromBackend("session_renamed", { id: "s1", name: "renamed" });
+        await waitFor(() => expect(fake.callsFor("list_sessions")).toHaveLength(2));
+
+        fake.emitFromBackend("session_created", AGENT_SESSIONS[1]);
+        await waitFor(() => expect(fake.callsFor("list_sessions")).toHaveLength(3));
+        await waitFor(() => expect(optionValues(rendered.root)).toEqual(["all", "s1", "s2"]));
+
+        stale.resolve([AGENT_SESSIONS[0]]);
+        await flush();
+        expect(optionValues(rendered.root)).toEqual(["all", "s1", "s2"]);
+      } finally {
+        rendered.cleanup();
+      }
+    });
+  });
+
+  /**
+   * Solid does not await the promise `onMount(async ...)` returns, so anything that escapes
+   * its `catch` is an unhandled rejection rather than an error anyone sees. A setup that
+   * fails has to stop the mount AND say so.
+   */
+  it("reports a failed setup instead of leaving an unhandled rejection behind", async () => {
+    const fake = transportWith(snapshot());
+    const realListen = fake.listen.bind(fake);
+    fake.listen = ((event: string, callback: (payload: never) => void) =>
+      event === "session_renamed"
+        ? Promise.reject(new Error("transport closed mid-subscribe"))
+        : realListen(event, callback)) as FakeTransport["listen"];
+
+    const rendered = renderWithFakeTransport(() => <WatchersApp initialSessionId="s1" />, fake);
+    try {
+      await waitFor(() =>
+        expect(
+          rendered.root.querySelector('[data-ac-testid="watchers.error"]')?.textContent
+        ).toContain("transport closed mid-subscribe")
+      );
+      // The mount stopped where it stood: nothing was fetched behind the failure.
+      expect(fake.callsFor("get_watcher_activity")).toHaveLength(0);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  /**
    * The P0 this suite itself used to expose: `onMount` crosses several awaits, and a window
    * closed inside one of them left the continuation registering listeners, fetching and
    * starting a poll against a component that no longer existed.
@@ -660,6 +806,76 @@ describe("the watcher activity window (#1171)", () => {
     fake.emitFromBackend("watcher_matches", { sessionId: "s1", matches: [match()] });
     await flush();
     expect(fake.callsFor("get_watcher_activity")).toHaveLength(0);
+  });
+});
+
+/**
+ * #1171 - the setup sequence behind the geometry listeners.
+ *
+ * Registering them one at a time and keeping each unlisten in its own local means a later
+ * registration that REJECTS strands the earlier one: it never reaches the component's
+ * cleanup, and the window is gone with a live move handler still attached to it.
+ */
+describe("registering a set of listeners as one unit (#1171)", () => {
+  it("hands over a single release when every registration succeeds", async () => {
+    const released: string[] = [];
+    const release = await registerAll(
+      [
+        () => Promise.resolve(() => released.push("moved")),
+        () => Promise.resolve(() => released.push("resized")),
+      ],
+      () => false
+    );
+    expect(release).toBeTruthy();
+    release!();
+    expect(released).toEqual(["moved", "resized"]);
+  });
+
+  it("releases what it already holds when a later registration rejects", async () => {
+    const released: string[] = [];
+    await expect(
+      registerAll(
+        [
+          () => Promise.resolve(() => released.push("moved")),
+          () => Promise.reject(new Error("the window is gone")),
+        ],
+        () => false
+      )
+    ).rejects.toThrow("the window is gone");
+    expect(released).toEqual(["moved"]);
+  });
+
+  it("releases what it already holds when the window closes mid-sequence", async () => {
+    const released: string[] = [];
+    let closed = false;
+    const release = await registerAll(
+      [
+        () =>
+          Promise.resolve(() => released.push("moved")).finally(() => {
+            closed = true;
+          }),
+        () => Promise.resolve(() => released.push("resized")),
+      ],
+      () => closed
+    );
+    expect(release).toBeNull();
+    expect(released).toEqual(["moved"]);
+  });
+
+  it("releases a fully registered set when the window closed on the LAST await", async () => {
+    const released: string[] = [];
+    let closed = false;
+    const release = await registerAll(
+      [
+        () =>
+          Promise.resolve(() => released.push("moved")).finally(() => {
+            closed = true;
+          }),
+      ],
+      () => closed
+    );
+    expect(release).toBeNull();
+    expect(released).toEqual(["moved"]);
   });
 });
 
