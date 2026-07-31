@@ -1474,8 +1474,9 @@ mod engine_tests {
         assert_eq!(harness.backends.resolutions.load(Ordering::Relaxed), 1);
     }
 
-    /// 9.3.27 - a state reading is idempotent. Five ticks of a screen that keeps being
-    /// repainted with the same content produce ONE event.
+    /// 9.3.27 and acceptance criterion A4 - a state reading is idempotent. Twenty-five ticks -
+    /// five seconds of a screen being repainted with the same content, which is what a live
+    /// spinner does - produce ONE event.
     #[tokio::test]
     async fn a_state_watcher_emits_once_for_a_value_that_does_not_change() {
         let harness = Harness::new();
@@ -1484,7 +1485,7 @@ mod engine_tests {
         harness.configure("a1", vec![state_watcher("ctx", r"Context (\d+)%")]);
         harness.backend.paint(id, &["idle", "Context 42%"]);
 
-        harness.ticks(5).await;
+        harness.ticks(25).await;
 
         let emitted = harness.emitted();
         assert_eq!(emitted.len(), 1);
@@ -2065,6 +2066,38 @@ mod engine_tests {
         );
     }
 
+    /// Acceptance criterion A5 - a transcript of more than a screenful delivered in ONE burst
+    /// reports its matches AND a non-zero `possiblyMissedFrames`, never a silent zero.
+    ///
+    /// A jump larger than the screen has no alignment that explains it, so the honest answer
+    /// is "the sampler could not follow" plus whatever the next stable frame turns out to hold.
+    #[tokio::test]
+    async fn a_burst_larger_than_the_screen_reports_matches_and_admits_it_may_have_missed_some() {
+        let harness = Harness::new();
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, "a1".to_string());
+        harness.configure(
+            "a1",
+            vec![occurrence_watcher("row", "row", WatcherDedupe::None, 2000)],
+        );
+
+        let seed: Vec<String> = (0..30).map(|i| format!("seed {i}")).collect();
+        // 60 rows arrived between two samples: only the last 30 are still on the screen.
+        let after: Vec<String> = (30..60).map(|i| format!("row {i}")).collect();
+        harness.backend.paint(id, &as_refs(&seed));
+        harness.backend.paint(id, &as_refs(&after));
+        harness.backend.paint(id, &as_refs(&after));
+
+        harness.ticks(3).await;
+
+        assert!(!harness.emitted().is_empty(), "the burst must still report");
+        let snapshot = harness.history.snapshot(id, None);
+        assert!(
+            snapshot.possibly_missed_frames > 0,
+            "a jump larger than the screen must never report a silent zero"
+        );
+    }
+
     /// An occurrence watcher never fires on the tick a row is merely painted: the row has to
     /// have arrived from below, or held still for a tick. That is layer 1 doing the work.
     #[tokio::test]
@@ -2249,13 +2282,20 @@ mod engine_tests {
             .split("for session_id in outcome.destroyed_ids.iter().copied()")
             .nth(1)
             .expect("the destroy transaction must purge over destroyed_ids ONLY");
+        let loop_body = destroy
+            .split("\n    }")
+            .next()
+            .expect("its body must end somewhere");
         assert!(
-            destroy
-                .split("\n    }")
-                .next()
-                .expect("its body must end somewhere")
-                .contains("purge_session_side_state("),
+            loop_body.contains("purge_session_side_state("),
             "the destroyed-only loop must be the one that purges"
+        );
+        // 9.5.71 - and it must stay destroyed-ONLY. A root-agent session retained as `Exited`
+        // stays in the manager and its row is still in the list, so its post-mortem view still
+        // has a place to be shown and its buffer must survive.
+        assert!(
+            !loop_body.contains("retained_exited_ids"),
+            "retained-exited sessions keep their buffer; the purge loop must not reach them"
         );
     }
 

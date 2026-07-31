@@ -1061,6 +1061,118 @@ mod watcher_preview_tests {
         );
     }
 
+    /// 9.6.87 - **the pattern that looks fine and is not.** A regex capturing a clock matches
+    /// one row of thirty, so `matchedRows` says nothing is wrong, and in `state` mode it emits
+    /// five events a second forever. The two samples a second apart are what catch it.
+    ///
+    /// Takes about a second in real time by construction: the interval between the samples IS
+    /// the measurement.
+    #[tokio::test]
+    async fn a_pattern_capturing_a_clock_is_reported_as_volatile() {
+        struct TickingClockBackend {
+            reads: std::sync::atomic::AtomicUsize,
+        }
+
+        impl PtyBackend for TickingClockBackend {
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+            fn spawn(
+                &self,
+                _spec: BackendSpawnSpec,
+            ) -> futures::future::BoxFuture<'_, Result<(), AppError>> {
+                Box::pin(async { Ok(()) })
+            }
+            fn write(
+                &self,
+                _authority: &crate::pty::manager::BackendWriteAuthority,
+                _id: Uuid,
+                _data: &[u8],
+            ) -> Result<(), AppError> {
+                unreachable!("a preview must never write to a PTY")
+            }
+            fn resize(&self, _id: Uuid, _cols: u16, _rows: u16) -> Result<(), AppError> {
+                unreachable!("a preview must never resize a PTY")
+            }
+            fn kill(&self, _id: Uuid) -> Result<(), AppError> {
+                unreachable!("a preview must never kill a session")
+            }
+            fn has_session(&self, _id: Uuid) -> bool {
+                true
+            }
+            fn get_screen_snapshot(
+                &self,
+                _id: Uuid,
+            ) -> Option<crate::pty::output::PtyScreenSnapshot> {
+                None
+            }
+            fn get_pty_size(&self, _id: Uuid) -> Option<(u16, u16)> {
+                None
+            }
+            fn get_screen_rows(&self, _id: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
+                crate::pty::context_scrape::ScreenRowsRead::Unavailable
+            }
+            fn register_response_watcher(
+                &self,
+                _session_id: Uuid,
+                _request_id: String,
+                _response_dir: std::path::PathBuf,
+            ) {
+            }
+            fn terminate_job_for_session(&self, _id: Uuid) -> bool {
+                false
+            }
+            fn kill_all_jobs(&self) -> (usize, usize) {
+                (0, 0)
+            }
+            fn screen_rows_since(&self, _id: Uuid, _seen: Option<FrameStamp>) -> ScreenRowsSince {
+                let tick = self
+                    .reads
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let rows = vec!["idle".to_string(), format!("elapsed 00:0{tick}")];
+                ScreenRowsSince::Frame(ScreenFrame {
+                    wrapped: vec![false; rows.len()],
+                    cursor_row: 0,
+                    stamp: Some(FrameStamp {
+                        sequence: tick as u64 + 1,
+                        rows: rows.len() as u16,
+                        cols: 120,
+                    }),
+                    rows,
+                })
+            }
+        }
+
+        let backend = Arc::new(TickingClockBackend {
+            reads: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let manager = PtyManager::new_for_test(backend);
+        let id = Uuid::new_v4();
+        manager.record_route(id, SessionBackendKind::LocalProcess);
+        let app = tauri::test::mock_builder()
+            .manage(Arc::new(Mutex::new(manager)))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build a clock preview test app");
+
+        let preview = preview_watcher_pattern(
+            app.handle().clone(),
+            Some(id.to_string()),
+            r"elapsed (\d\d:\d\d)".into(),
+        )
+        .await
+        .expect("preview");
+
+        assert!(preview.sampled);
+        assert_eq!(
+            preview.matched_rows, 1,
+            "one row of two: nothing looks wrong"
+        );
+        assert!(
+            preview.captures_volatile,
+            "...and yet in state mode this would emit five events a second, forever"
+        );
+    }
+
     /// 9.6.86 (third case) - a session that cannot be read reports `sampled: false` and KEEPS
     /// the compile result. "Could not look" must never read as "looked and found nothing".
     #[tokio::test]
