@@ -12,8 +12,13 @@ import type {
   ApiClientMintResponse,
   ApiClientMintScope,
   SessionBackendKind,
+  Session,
+  WatcherConfig,
+  WatcherEntry,
+  WatcherPatternPreview,
+  WatcherReachEntry,
 } from "../../shared/types";
-import { SettingsAPI, TelegramAPI, ReposAPI, CodingAgentsAPI } from "../../shared/ipc";
+import { SettingsAPI, TelegramAPI, ReposAPI, CodingAgentsAPI, PtyAPI } from "../../shared/ipc";
 import { toastStore } from "../../shared/stores/toasts";
 import { validateScreenshotHotkeySyntax } from "../../shared/screenshot-hotkey";
 import { settingsStore } from "../../shared/stores/settings";
@@ -25,6 +30,18 @@ import { codingAgentsStore } from "../stores/coding-agents";
 import TrashIcon from "./TrashIcon";
 import XMarkIcon from "./XMarkIcon";
 import { mergeSettingsForSavePreservingProjects } from "./settings-save";
+import {
+  distinctCommandStems,
+  isWatcherConfig,
+  newWatcherConfig,
+  nextWatcherId,
+  renameWatcherEntry,
+  selectorMode,
+  sortedWatcherIds,
+  toggleCommandStem,
+  validateWatcherId,
+  withSelectorMode,
+} from "./settings-watchers";
 import {
   AC_MATRIX_ROOT_PLACEHOLDER,
   AC_REPLICA_ROOT_PLACEHOLDER,
@@ -93,21 +110,34 @@ const API_CLIENT_EXPIRY_MS: Record<Exclude<ApiClientExpiryOption, "default">, nu
 const errorMessage = (err: unknown): string =>
   err instanceof Error ? err.message : String(err);
 
-type SettingsTab = "general" | "agents" | "resources" | "integrations";
+type SettingsTab = "general" | "agents" | "resources" | "integrations" | "watchers";
 
 const TABS: { key: SettingsTab; label: string }[] = [
   { key: "general", label: "General" },
   { key: "agents", label: "Coding Agents" },
   { key: "resources", label: "Resources" },
+  { key: "watchers", label: "Watchers" },
   { key: "integrations", label: "Integrations" },
 ];
 
-const resolveSettingsSection = (s: string | undefined): SettingsTab =>
+/**
+ * Map an `open_settings` section to a tab.
+ *
+ * Exported for #1171's test: an unknown section falls back to `"general"` **silently**, so
+ * a caller asking for a tab that was never wired here opens the wrong one with no error and
+ * no log. That is exactly what happens today for `"resources"`, which the Resource Monitor
+ * asks for (`resource-monitor/App.tsx:422`) and which is missing below, so the one existing
+ * precedent for an auxiliary window requesting its own section is broken. `"watchers"` is
+ * wired because the activity window's day-one empty state depends on it.
+ */
+export const resolveSettingsSection = (s: string | undefined): SettingsTab =>
   s === "agents" || s === "profiles"
     ? "agents"
     : s === "integrations"
       ? "integrations"
-      : "general";
+      : s === "watchers"
+        ? "watchers"
+        : "general";
 
 const BYTES_PER_GIB = 1024 ** 3;
 const CONTAINER_IMAGE_EXAMPLE = "agentscommander/ac-claude:latest";
@@ -142,6 +172,413 @@ const cloneSettings = (value: AppSettings | null): AppSettings | null => {
   if (!value) return null;
   if (typeof structuredClone === "function") return structuredClone(value);
   return JSON.parse(JSON.stringify(value)) as AppSettings;
+};
+
+/** #1171 - how long the pattern and reach previews wait before asking the backend. */
+const WATCHER_PREVIEW_DEBOUNCE_MS = 300;
+
+/** #1171 - the sentinel of the "no session" option, which exercises the compile-only path. */
+const WATCHER_NO_SESSION = "";
+
+/**
+ * #1171 - one row of the Watchers tab.
+ *
+ * A component rather than a `render*` helper because each row owns two debounced backend
+ * previews and their timers; inside `<For>` every row gets its own reactive scope, so the
+ * cleanup is the framework's job instead of a bookkeeping map keyed by watcher id.
+ */
+const WatcherRow: Component<{
+  id: string;
+  config: WatcherConfig;
+  otherIds: string[];
+  stems: string[];
+  sessions: Session[];
+  onChange: (next: WatcherConfig) => void;
+  onRename: (nextId: string) => void;
+  onRemove: () => void;
+}> = (props) => {
+  const [renameDraft, setRenameDraft] = createSignal(props.id);
+  const [renaming, setRenaming] = createSignal(false);
+  const [preview, setPreview] = createSignal<WatcherPatternPreview | null>(null);
+  const [previewError, setPreviewError] = createSignal("");
+  const [reach, setReach] = createSignal<WatcherReachEntry[] | null>(null);
+  const [testSessionId, setTestSessionId] = createSignal(WATCHER_NO_SESSION);
+
+  // Preselect the active session when it qualifies, i.e. when it is an agent session. A
+  // plain shell has a screen but nothing a watcher would ever be configured against.
+  onMount(() => {
+    const active = props.sessions.find((s) => s.id === sessionsStore.activeId);
+    if (active) setTestSessionId(active.id);
+  });
+
+  const renameError = () =>
+    renameDraft() === props.id ? null : validateWatcherId(renameDraft(), props.otherIds);
+
+  const applyRename = () => {
+    if (renameError() || renameDraft() === props.id) return;
+    props.onRename(renameDraft());
+    setRenaming(false);
+  };
+
+  // Both previews are debounced and generation-guarded: the user types, and a slow answer
+  // for an older pattern must never overwrite the answer for the current one.
+  let previewGeneration = 0;
+  createEffect(() => {
+    const pattern = props.config.pattern;
+    const sessionId = testSessionId();
+    if (!pattern) {
+      setPreview(null);
+      setPreviewError("");
+      return;
+    }
+    const generation = (previewGeneration += 1);
+    const timer = setTimeout(() => {
+      PtyAPI.previewWatcherPattern(pattern, sessionId || undefined)
+        .then((result) => {
+          if (generation !== previewGeneration) return;
+          setPreview(result);
+          setPreviewError("");
+        })
+        .catch((err: unknown) => {
+          if (generation !== previewGeneration) return;
+          setPreview(null);
+          setPreviewError(errorMessage(err));
+        });
+    }, WATCHER_PREVIEW_DEBOUNCE_MS);
+    onCleanup(() => clearTimeout(timer));
+  });
+
+  let reachGeneration = 0;
+  createEffect(() => {
+    const commands = props.config.commands;
+    const watcherId = props.id;
+    const generation = (reachGeneration += 1);
+    const timer = setTimeout(() => {
+      PtyAPI.previewWatcherReach(watcherId, commands)
+        .then((entries) => {
+          if (generation === reachGeneration) setReach(entries);
+        })
+        .catch(() => {
+          if (generation === reachGeneration) setReach(null);
+        });
+    }, WATCHER_PREVIEW_DEBOUNCE_MS);
+    onCleanup(() => clearTimeout(timer));
+  });
+
+  const reachedCount = () => reach()?.filter((entry) => entry.inBudget).length ?? null;
+  const outOfBudget = () => reach()?.filter((entry) => !entry.inBudget) ?? [];
+
+  const update = <K extends keyof WatcherConfig>(key: K, value: WatcherConfig[K]) =>
+    props.onChange({ ...props.config, [key]: value });
+
+  return (
+    <div
+      class="settings-section"
+      data-ac-testid={`settings.watchers.row.${props.id}`}
+      data-ac-role="group"
+      data-ac-state={props.config.enabled ? "enabled" : "disabled"}
+    >
+      <div class="settings-color-row">
+        <span class="settings-section-title">{props.id}</span>
+        <button
+          class="settings-agent-remove"
+          onClick={props.onRemove}
+          title={`Delete "${props.id}"`}
+          aria-label={`Delete watcher ${props.id}`}
+          data-ac-testid={`settings.watchers.remove.${props.id}`}
+          data-ac-role="button"
+        >
+          <TrashIcon />
+        </button>
+      </div>
+
+      <label class="settings-checkbox-field">
+        <input
+          type="checkbox"
+          class="settings-checkbox"
+          checked={props.config.enabled}
+          onChange={(e) => update("enabled", e.currentTarget.checked)}
+          data-ac-testid={`settings.watchers.enabled.${props.id}`}
+          data-ac-role="checkbox"
+        />
+        <span>Enabled</span>
+      </label>
+
+      <label class="settings-field">
+        <span class="settings-label">Mode</span>
+        <select
+          class="settings-input"
+          value={props.config.mode}
+          onChange={(e) =>
+            update("mode", e.currentTarget.value as WatcherConfig["mode"])
+          }
+          data-ac-testid={`settings.watchers.mode.${props.id}`}
+          data-ac-role="combobox"
+        >
+          <option value="occurrence">Occurrence — every match is an event</option>
+          <option value="state">State — a reading, re-reported only when it changes</option>
+        </select>
+      </label>
+
+      <label class="settings-field">
+        <span class="settings-label">Pattern</span>
+        <input
+          class="settings-input"
+          type="text"
+          value={props.config.pattern}
+          onInput={(e) => update("pattern", e.currentTarget.value)}
+          placeholder="Read \((.+)\)"
+          spellcheck={false}
+          data-ac-testid={`settings.watchers.pattern.${props.id}`}
+          data-ac-role="textbox"
+        />
+      </label>
+      {/* The pattern is handed to the engine verbatim, never trimmed: a leading space is an
+          anchor, and the pattern is the only thing keeping a watcher narrow. */}
+      <div class="settings-label-hint">
+        Taken exactly as written, including leading and trailing spaces.
+      </div>
+
+      <div class="settings-field">
+        <span class="settings-label">Applies to</span>
+        <select
+          class="settings-input"
+          value={selectorMode(props.config)}
+          onChange={(e) =>
+            props.onChange(
+              withSelectorMode(
+                props.config,
+                e.currentTarget.value === "all" ? "all" : "selected"
+              )
+            )
+          }
+          data-ac-testid={`settings.watchers.selectorMode.${props.id}`}
+          data-ac-role="combobox"
+        >
+          <option value="all">All agents</option>
+          <option value="selected">Selected commands</option>
+        </select>
+      </div>
+
+      <Show when={selectorMode(props.config) === "selected"}>
+        <div
+          class="settings-api-client-scopes"
+          data-ac-testid={`settings.watchers.stems.${props.id}`}
+          data-ac-role="group"
+        >
+          <For each={props.stems}>
+            {(stem) => (
+              <label class="settings-api-client-scope">
+                <input
+                  type="checkbox"
+                  class="settings-checkbox"
+                  checked={(props.config.commands ?? []).includes(stem)}
+                  onChange={() => props.onChange(toggleCommandStem(props.config, stem))}
+                  data-ac-testid={`settings.watchers.stem.${props.id}.${stem}`}
+                  data-ac-role="checkbox"
+                />
+                <span>{stem}</span>
+              </label>
+            )}
+          </For>
+        </div>
+        {/* A stem no agent currently has is not an error: it simply reaches nobody until
+            such an agent exists. Free text is how that case is expressible at all. */}
+        <label class="settings-field">
+          <span class="settings-label">Commands</span>
+          <input
+            class="settings-input"
+            type="text"
+            value={(props.config.commands ?? []).join(", ")}
+            onInput={(e) =>
+              update(
+                "commands",
+                e.currentTarget.value
+                  .split(",")
+                  .map((entry) => entry.trim())
+                  .filter(Boolean)
+              )
+            }
+            placeholder="claude, codex"
+            spellcheck={false}
+            data-ac-testid={`settings.watchers.commands.${props.id}`}
+            data-ac-role="textbox"
+          />
+        </label>
+      </Show>
+
+      <div
+        class="settings-label-hint"
+        data-ac-testid={`settings.watchers.reach.${props.id}`}
+        data-ac-role="status"
+      >
+        <Show when={reachedCount() !== null} fallback="Resolving reach...">
+          {`Reaches ${reachedCount()} agent${reachedCount() === 1 ? "" : "s"}.`}
+          <Show when={outOfBudget().length > 0}>
+            {` Not running on ${outOfBudget()
+              .map((entry) => entry.agentLabel || entry.agentId)
+              .join(", ")} (budget).`}
+          </Show>
+        </Show>
+      </div>
+
+      <Show when={props.config.mode === "occurrence"}>
+        <label class="settings-field">
+          <span class="settings-label">Deduplicate by</span>
+          <select
+            class="settings-input"
+            value={props.config.dedupe}
+            onChange={(e) =>
+              update("dedupe", e.currentTarget.value as WatcherConfig["dedupe"])
+            }
+            data-ac-testid={`settings.watchers.dedupe.${props.id}`}
+            data-ac-role="combobox"
+          >
+            <option value="row">Row text</option>
+            <option value="capture">Captured groups</option>
+            <option value="none">Nothing — count every match</option>
+          </select>
+        </label>
+        <label class="settings-field">
+          <span class="settings-label">Dedupe window (ms)</span>
+          <input
+            class="settings-input settings-input-sm"
+            type="number"
+            min="0"
+            step="100"
+            value={props.config.dedupeWindowMs}
+            onInput={(e) => {
+              const value = parseInt(e.currentTarget.value, 10);
+              if (!Number.isNaN(value)) update("dedupeWindowMs", value);
+            }}
+            data-ac-testid={`settings.watchers.dedupeWindow.${props.id}`}
+            data-ac-role="spinbutton"
+          />
+        </label>
+      </Show>
+
+      <label class="settings-field">
+        <span class="settings-label">Captured against</span>
+        <input
+          class="settings-input"
+          type="text"
+          value={props.config.capturedAgainst ?? ""}
+          onInput={(e) => update("capturedAgainst", e.currentTarget.value || null)}
+          placeholder="claude 2.1.212"
+          data-ac-testid={`settings.watchers.capturedAgainst.${props.id}`}
+          data-ac-role="textbox"
+        />
+      </label>
+      <div class="settings-label-hint">
+        Free text. A TUI's layout changes between versions, and this is where the version
+        the pattern was written against is recorded.
+      </div>
+
+      <label class="settings-field">
+        <span class="settings-label">Test against</span>
+        <select
+          class="settings-input"
+          value={testSessionId()}
+          onChange={(e) => setTestSessionId(e.currentTarget.value)}
+          data-ac-testid={`settings.watchers.testSession.${props.id}`}
+          data-ac-role="combobox"
+        >
+          <option value={WATCHER_NO_SESSION}>No session (check syntax only)</option>
+          <For each={props.sessions}>
+            {(session) => <option value={session.id}>{session.name}</option>}
+          </For>
+        </select>
+      </label>
+
+      <div
+        class="settings-label-hint"
+        data-ac-testid={`settings.watchers.preview.${props.id}`}
+        data-ac-role="status"
+      >
+        <Show when={previewError()}>{`Preview failed: ${previewError()}`}</Show>
+        <Show when={!previewError() && preview()}>
+          {(result) => (
+            <Show
+              when={result().compiles}
+              fallback={`Does not compile: ${result().error ?? "unknown error"}`}
+            >
+              <Show
+                when={result().sampled}
+                fallback="Compiles. No session read, so nothing was matched against."
+              >
+                {`Compiles. Matches ${result().matchedRows} of ${result().totalRows} rows.`}
+                <Show when={result().capturesVolatile}>
+                  {" The capture changes between samples: in state mode this fires constantly."}
+                </Show>
+                <For each={result().samples}>
+                  {(sample) => <div class="settings-hint">{sample}</div>}
+                </For>
+              </Show>
+            </Show>
+          )}
+        </Show>
+      </div>
+
+      <Show
+        when={renaming()}
+        fallback={
+          <button
+            class="settings-add-btn"
+            onClick={() => {
+              setRenameDraft(props.id);
+              setRenaming(true);
+            }}
+            data-ac-testid={`settings.watchers.renameStart.${props.id}`}
+            data-ac-role="button"
+          >
+            Rename
+          </button>
+        }
+      >
+        <label class="settings-field">
+          <span class="settings-label">New id</span>
+          <input
+            class="settings-input"
+            type="text"
+            value={renameDraft()}
+            onInput={(e) => setRenameDraft(e.currentTarget.value)}
+            spellcheck={false}
+            data-ac-testid={`settings.watchers.renameInput.${props.id}`}
+            data-ac-role="textbox"
+          />
+        </label>
+        {/* Stated rather than implied: the id is the map key AND the grouping key the
+            activity window and the history counters use, so this really is delete plus
+            create and already-recorded activations keep the old id. */}
+        <div class="settings-label-hint">
+          Renaming deletes this watcher and creates a new one. Activations already recorded
+          keep the old id.
+        </div>
+        <Show when={renameError()}>
+          <div class="settings-api-client-error">{renameError()}</div>
+        </Show>
+        <div class="settings-color-row">
+          <button
+            class="settings-add-btn"
+            onClick={applyRename}
+            disabled={!!renameError() || renameDraft() === props.id}
+            data-ac-testid={`settings.watchers.renameConfirm.${props.id}`}
+            data-ac-role="button"
+          >
+            Rename
+          </button>
+          <button
+            class="settings-add-btn"
+            onClick={() => setRenaming(false)}
+            data-ac-testid={`settings.watchers.renameCancel.${props.id}`}
+            data-ac-role="button"
+          >
+            Cancel
+          </button>
+        </div>
+      </Show>
+    </div>
+  );
 };
 
 const SettingsModal: Component<{ onClose: () => void; section?: string }> = (props) => {
@@ -523,6 +960,63 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     if (!settings.data) return;
     setDraftDirty(true);
     setSettings("data", key as any, value as any);
+  };
+
+  // ── #1171 Watchers ────────────────────────────────────────────────────────
+  // The map is `Record<string, WatcherEntry>`, not of `WatcherConfig`: the Rust side keeps
+  // an entry it could not parse verbatim so one malformed watcher costs one watcher instead
+  // of the whole settings file. Everything below therefore reads through `isWatcherConfig`
+  // and writes only the keys it understood, so an unrecognized entry survives a save
+  // untouched — it rides along in the draft and out through `{...draft}` at save time.
+
+  const watcherMap = (): Record<string, WatcherEntry> => settings.data?.watchers ?? {};
+  const watcherIds = createMemo(() => sortedWatcherIds(settings.data?.watchers));
+  const unreadableWatcherIds = createMemo(() =>
+    watcherIds().filter((id) => !isWatcherConfig(watcherMap()[id]))
+  );
+  const commandStems = createMemo(() => distinctCommandStems(settings.data?.agents ?? []));
+  // `?? []` because these memos are eager and the modal is also mounted by tests and by
+  // `emitOpenSettings` before the session store has hydrated.
+  const agentSessions = createMemo(() =>
+    (sessionsStore.sessions ?? []).filter(
+      (session): session is Session => !!session.agentId
+    )
+  );
+
+  const mutateWatchers = (mutate: (map: Record<string, WatcherEntry>) => void) => {
+    if (!settings.data) return;
+    setDraftDirty(true);
+    setSettings("data", produce((draft) => {
+      if (!draft) return;
+      draft.watchers ??= {};
+      mutate(draft.watchers);
+    }));
+  };
+
+  const setWatcherConfig = (id: string, config: WatcherConfig) => {
+    mutateWatchers((map) => {
+      map[id] = config;
+    });
+  };
+
+  const addWatcher = () => {
+    const id = nextWatcherId(watcherIds());
+    setWatcherConfig(id, newWatcherConfig());
+  };
+
+  const removeWatcher = (id: string) => {
+    mutateWatchers((map) => {
+      delete map[id];
+    });
+  };
+
+  const renameWatcher = (fromId: string, toId: string) => {
+    if (!settings.data) return;
+    setDraftDirty(true);
+    const renamed = renameWatcherEntry(watcherMap(), fromId, toId);
+    setSettings("data", produce((draft) => {
+      if (draft) draft.watchers = renamed;
+    }));
   };
 
   const updateAgent = (
@@ -2250,6 +2744,71 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     </div>
   );
 
+  const renderWatchersTab = () => (
+    <>
+      <div class="settings-section">
+        <div class="settings-section-title">Watchers</div>
+        <div class="settings-label-hint">
+          Regular expressions run over what a coding agent prints, every 200 ms. Matches
+          appear in the watcher activity window. Best-effort: activations can be missed, so
+          this is an indicator and not an audit log.
+        </div>
+      </div>
+
+      <Show when={unreadableWatcherIds().length > 0}>
+        {/* Named rather than hidden, and deliberately not offered for editing: the backend
+            preserves what it could not parse, and so does this editor. */}
+        <div
+          class="settings-section"
+          data-ac-testid="settings.watchers.unreadable"
+          data-ac-role="status"
+        >
+          <div class="settings-api-client-warning">
+            {`Not shown because this version could not read them: ${unreadableWatcherIds().join(", ")}. They are left exactly as written in settings.json.`}
+          </div>
+        </div>
+      </Show>
+
+      <For each={watcherIds()}>
+        {(id) => {
+          const entry = () => watcherMap()[id];
+          return (
+            <Show when={isWatcherConfig(entry()) ? (entry() as WatcherConfig) : null}>
+              {(config) => (
+                <WatcherRow
+                  id={id}
+                  config={config()}
+                  otherIds={watcherIds().filter((other) => other !== id)}
+                  stems={commandStems()}
+                  sessions={agentSessions()}
+                  onChange={(next) => setWatcherConfig(id, next)}
+                  onRename={(nextId) => renameWatcher(id, nextId)}
+                  onRemove={() => removeWatcher(id)}
+                />
+              )}
+            </Show>
+          );
+        }}
+      </For>
+
+      <Show when={watcherIds().length === 0}>
+        <div class="settings-label-hint" data-ac-testid="settings.watchers.empty">
+          No watchers configured. Nothing is evaluated and nothing costs anything until you
+          add one.
+        </div>
+      </Show>
+
+      <button
+        class="settings-add-btn"
+        onClick={addWatcher}
+        data-ac-testid="settings.watchers.add"
+        data-ac-role="button"
+      >
+        Add Watcher
+      </button>
+    </>
+  );
+
   const renderResourcesTab = () => (
     <>
       <div class="settings-section">
@@ -3066,6 +3625,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             <Show when={activeTab() === "resources"}>
               {renderResourcesTab()}
             </Show>
+            <Show when={activeTab() === "watchers"}>{renderWatchersTab()}</Show>
             <Show when={activeTab() === "integrations"}>
               {renderIntegrationsTab()}
             </Show>
