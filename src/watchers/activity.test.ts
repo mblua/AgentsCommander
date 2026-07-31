@@ -243,6 +243,95 @@ describe("ordering rows for display (#1171)", () => {
     );
     expect(mergeRows([], [older, newer]).map((r) => r.sessionId)).toEqual(["s2", "s1"]);
   });
+
+  /**
+   * The same RFC3339 defect, on the branch that compares two SESSIONS. Moving only the
+   * intra-session branch off the text left this one exactly as it was: `.` sorts before `Z`,
+   * so a fractional second reads as older than the whole second it comes after.
+   */
+  it("compares two sessions as instants, not as the text of their timestamps", () => {
+    const whole = freezeRow(
+      match({ sessionId: "s1", seq: 1, at: "2026-07-30T22:00:00Z" }),
+      session({ id: "s1" })
+    );
+    const fractional = freezeRow(
+      match({ sessionId: "s2", seq: 1, at: "2026-07-30T22:00:00.100Z" }),
+      session({ id: "s2" })
+    );
+    expect(mergeRows([], [whole, fractional]).map((r) => r.sessionId)).toEqual(["s2", "s1"]);
+  });
+
+  it("puts a timezone offset in its real place rather than where its text falls", () => {
+    // 21:30-01:00 IS 22:30Z, later than 22:00Z, and no text comparison can see that.
+    const utc = freezeRow(
+      match({ sessionId: "s1", seq: 1, at: "2026-07-30T22:00:00Z" }),
+      session({ id: "s1" })
+    );
+    const offset = freezeRow(
+      match({ sessionId: "s2", seq: 1, at: "2026-07-30T21:30:00-01:00" }),
+      session({ id: "s2" })
+    );
+    expect(mergeRows([], [utc, offset]).map((r) => r.sessionId)).toEqual(["s2", "s1"]);
+  });
+
+  /**
+   * The order has to be TOTAL and TRANSITIVE, not merely right on the pairs anyone thought
+   * of. Mixing "by seq inside a session" with "by time across sessions" builds a cycle: with
+   * a clock step, A precedes B by seq, B precedes C by time, and C precedes A by time.
+   * `Array.prototype.sort` is entitled to return anything at all for a comparator like that,
+   * so the same rows can come back in a different order depending only on the order they were
+   * merged in -- which means the poll can reshuffle the table on its own, with no new data.
+   */
+  it("returns one order for the same rows however they arrive, under a clock step", () => {
+    const late = freezeRow(
+      match({ sessionId: "s1", seq: 2, at: "2026-07-30T21:00:00Z" }),
+      session({ id: "s1" })
+    );
+    const early = freezeRow(
+      match({ sessionId: "s1", seq: 1, at: "2026-07-30T23:00:00Z" }),
+      session({ id: "s1" })
+    );
+    const other = freezeRow(
+      match({ sessionId: "s2", seq: 1, at: "2026-07-30T22:00:00Z" }),
+      session({ id: "s2" })
+    );
+
+    const permutations = [
+      [late, early, other],
+      [late, other, early],
+      [early, late, other],
+      [early, other, late],
+      [other, late, early],
+      [other, early, late],
+    ];
+    const orders = permutations.map((rows) =>
+      mergeRows([], rows).map((r) => `${r.sessionId}:${r.seq}`)
+    );
+
+    // Every permutation agrees, and they agree on what the Time column shows.
+    for (const order of orders) {
+      expect(order).toEqual(["s1:1", "s2:1", "s1:2"]);
+    }
+  });
+
+  it("gives an unparseable timestamp a definite place instead of a broken comparison", () => {
+    const broken = freezeRow(
+      match({ sessionId: "s1", seq: 1, at: "not a timestamp" }),
+      session({ id: "s1" })
+    );
+    const alsoBroken = freezeRow(
+      match({ sessionId: "s2", seq: 1, at: "" }),
+      session({ id: "s2" })
+    );
+    const good = freezeRow(
+      match({ sessionId: "s3", seq: 1, at: "2026-07-30T22:00:00Z" }),
+      session({ id: "s3" })
+    );
+    const order = mergeRows([], [broken, alsoBroken, good]).map((r) => r.sessionId);
+    // Oldest, so they sink rather than claiming to be the newest activity; and the two
+    // unparseable ones still order against each other rather than comparing as NaN.
+    expect(order).toEqual(["s3", "s1", "s2"]);
+  });
 });
 
 /**

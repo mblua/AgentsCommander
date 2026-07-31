@@ -95,7 +95,7 @@ export function mergeRows(
     const held = byKey.get(key);
     byKey.set(key, held ? keepIdentity(held, row) : row);
   }
-  return [...byKey.values()].sort(compareRowsNewestFirst);
+  return sortRowsNewestFirst([...byKey.values()]);
 }
 
 /**
@@ -162,18 +162,52 @@ export function capPerSession(
 }
 
 /**
- * Newest first.
+ * When a row is displayed at, in milliseconds, as an INSTANT rather than as text.
  *
- * Within one session `seq` decides on its own: it is monotonic and exact, while `at` is the
- * TICK's instant, shared by every match of that tick, and its RFC3339 text does not even
- * compare correctly against a fractional-second sibling -- `.` sorts before `Z`, so
- * `...00.100Z` reads as older than `...00Z`. Across sessions there is no shared counter, so
- * time is what is left, with the id as a stable tie-break.
+ * RFC3339 does not sort correctly as a string: `.` comes before `Z`, so `...00.100Z` reads
+ * as older than the `...00Z` it actually follows, and an offset like `21:30-01:00` -- which
+ * is 22:30Z -- lands wherever its digits happen to fall.
+ *
+ * An `at` this build cannot parse is treated as the oldest thing there is. It has to get a
+ * definite value: `NaN` would make every comparison involving it return `false` both ways,
+ * which is precisely how a comparator stops being a comparator. Oldest is also the
+ * fail-closed choice, since the alternative is a row of unknown age claiming to be the
+ * newest activity.
  */
-export function compareRowsNewestFirst(a: ActivityRow, b: ActivityRow): number {
-  if (a.sessionId === b.sessionId) return b.seq - a.seq;
-  if (a.at !== b.at) return a.at < b.at ? 1 : -1;
-  return a.sessionId < b.sessionId ? -1 : 1;
+function displayInstant(row: ActivityRow): number {
+  const parsed = Date.parse(row.at);
+  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
+}
+
+/**
+ * Newest first, as a total and transitive order.
+ *
+ * **Choosing which rows survive and choosing how they are shown are two different jobs.**
+ * `capPerSession` picks survivors by `seq`, because that is the only value a clock step
+ * cannot lie about. This picks a position on screen, and it is keyed on the instant first,
+ * because the table has a Time column and an order that contradicts its own visible column
+ * is worse than one that follows it.
+ *
+ * The key is one tuple of totally ordered scalars -- `(instant desc, sessionId asc, seq
+ * desc)` -- and that is what makes the order transitive. Mixing "by `seq` inside a session"
+ * with "by time across sessions" does not: under a clock step A precedes B by `seq`, B
+ * precedes C by time and C precedes A by time, a cycle, and `Array.prototype.sort` is
+ * entitled to return anything at all for a comparator like that. The visible consequence is
+ * that the same rows come back in a different order depending only on the order they were
+ * merged in, so a poll carrying no new data can reshuffle the table under the user.
+ */
+function sortRowsNewestFirst(rows: readonly ActivityRow[]): ActivityRow[] {
+  // Decorate, sort, undecorate: `Date.parse` runs once per row rather than once per
+  // comparison, which over 500 rows is 500 parses instead of some 4500.
+  const decorated = rows.map((row) => ({ row, instant: displayInstant(row) }));
+  decorated.sort((a, b) => {
+    if (a.instant !== b.instant) return a.instant < b.instant ? 1 : -1;
+    if (a.row.sessionId !== b.row.sessionId) {
+      return a.row.sessionId < b.row.sessionId ? -1 : 1;
+    }
+    return b.row.seq - a.row.seq;
+  });
+  return decorated.map((entry) => entry.row);
 }
 
 /** Drop rows whose session left the scope, so switching scope does not keep stale rows. */
