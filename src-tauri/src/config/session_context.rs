@@ -1449,7 +1449,16 @@ fn path_parent_is_workspace(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn is_canonical_agent_matrix_dir(cwd: &str) -> bool {
+/// True only for an ORIGIN Agent Matrix: a real (non-symlink) `_agent_*`
+/// directory whose canonical parent is a workspace directory.
+///
+/// #1172's memory rotation (`config::agent_memory`) is the second consumer and
+/// depends on both halves of that contract. It relies on the `_agent_` prefix to
+/// reject every `__agent_*` replica, including the `role_experiment` replicas
+/// that do carry a `memory/` of their own (`cli/role_experiment.rs:2259-2267`),
+/// and on the `ac-root-agent` name failing the prefix so the Root Agent is never
+/// rotated (D6). Widening either half silently widens what rotation may move.
+pub(crate) fn is_canonical_agent_matrix_dir(cwd: &str) -> bool {
     let path = Path::new(cwd);
     if !has_agent_matrix_dir_name(path) {
         return false;
@@ -3434,7 +3443,7 @@ fn default_context_dynamic_values(
 
     let matrix_section = match matrix_root {
         Some(matrix_root) => format!(
-            "3. **Your origin Agent Matrix, but only for the canonical agent state listed below:**\n   ```\n   {matrix_root}\n   ```\n   Allowed there:\n   - `memory/`\n   - `plans/`\n   - `skills/`\n   - `Role.md`\n\n",
+            "3. **Your origin Agent Matrix, but only for the canonical agent state listed below:**\n   ```\n   {matrix_root}\n   ```\n   Read-only there: every rotated `memory_YYYYMMDD_hhmmss/` archive of your own memory. Read them freely; never modify or delete them.\n   Allowed for reading and writing there:\n   - `memory/`\n   - `plans/`\n   - `skills/`\n   - `Role.md`\n\n",
             matrix_root = matrix_root,
         ),
         None => String::new(),
@@ -3531,7 +3540,7 @@ fn default_context_dynamic_values(
         )
     } else {
         format!(
-            "the entries listed above{ms}, except for explicitly requested AgentsCommander CLI operations covered by the exception below. This includes other agents' replica directories, and any other agent's `memory/`, `plans/`, `skills/`, or `Role.md`: another agent's memory is private; do not read, list, search, or summarize it, even if asked. If you need information another agent holds, message that agent and ask.",
+            "the entries listed above{ms}, except for explicitly requested AgentsCommander CLI operations covered by the exception below. This includes other agents' replica directories, and any other agent's `memory*` directories (the live `memory/` and every rotated `memory_YYYYMMDD_hhmmss/`), `plans/`, `skills/`, or `Role.md`: another agent's memory is private whether it is live or rotated; do not read, list, search, or summarize it, even if asked. If you need information another agent holds, message that agent and ask.",
             ms = messaging_read_phrase,
         )
     };
@@ -4182,7 +4191,7 @@ fn normalize_context_for_compat(value: &str) -> String {
     value.replace("\r\n", "\n").trim_end().to_string()
 }
 
-fn is_replica_agent_dir(cwd: &str) -> bool {
+pub(crate) fn is_replica_agent_dir(cwd: &str) -> bool {
     std::path::Path::new(cwd)
         .file_name()
         .and_then(|name| name.to_str())
@@ -5029,6 +5038,96 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(out.contains("`agency-templates status` and `agency-templates list` report on"));
         assert!(out
             .contains("those two reads are grants, while direct writes to them stay CLI-managed"));
+    }
+
+    // T10 (#1172, acceptance criterion 6): another agent's memory is private
+    // whether it is live or rotated, so the peer-privacy clause covers the whole
+    // `memory*` glob rather than the live directory alone.
+    #[test]
+    fn default_context_marks_every_memory_directory_private() {
+        let out = default_context(
+            "C:/fake/wg-7-dev-team/__agent_architect",
+            Some("C:/fake/_agent_architect"),
+            &no_skill_section(),
+        );
+        assert!(
+            out.contains("`memory*` directories"),
+            "expected the peer-privacy clause to cover the memory* glob, got:\n{}",
+            out
+        );
+        assert!(
+            out.contains("every rotated `memory_YYYYMMDD_hhmmss/`"),
+            "expected rotated archives named explicitly, got:\n{}",
+            out
+        );
+        assert!(
+            out.contains("private whether it is live or rotated"),
+            "expected privacy to hold for both live and rotated memory, got:\n{}",
+            out
+        );
+    }
+
+    // T11 (#1172): locks the invariant documented above `DefaultContextDynamicValues`
+    // - the Root Agent holds a project-wide read grant and must never receive the
+    // peer-privacy clause. The #1172 copy edit must not leak into that branch.
+    #[test]
+    fn root_context_still_omits_the_peer_memory_privacy_clause() {
+        let out = default_context_as_root("C:/fake/ac-root-agent", None, &no_skill_section());
+        assert!(
+            !out.contains("memory is private"),
+            "the Root Agent branch must stay free of the peer-privacy clause, got:\n{}",
+            out
+        );
+    }
+
+    // T15 (#1172 D4, O1): the own-archive grant is READ-ONLY and lives INSIDE
+    // numbered entry 3, which is `String::new()` when the agent has no origin
+    // matrix. An agent must never be promised a grant its own document does not
+    // print, which is the failure #923 D8 exists to prevent.
+    #[test]
+    fn own_archive_read_grant_renders_only_with_an_origin_matrix() {
+        const GRANT: &str =
+            "Read-only there: every rotated `memory_YYYYMMDD_hhmmss/` archive of your own memory";
+
+        let wg = default_context(
+            "C:/fake/wg-7-dev-team/__agent_architect",
+            Some("C:/fake/_agent_architect"),
+            &no_skill_section(),
+        );
+        let entry_3 = wg
+            .find("3. **Your origin Agent Matrix")
+            .expect("entry 3 renders when the agent has an origin matrix");
+        let grant = wg.find(GRANT).expect("the own-archive grant renders");
+        let role_md = entry_3
+            + wg[entry_3..]
+                .find("- `Role.md`")
+                .expect("entry 3 carries the canonical-state list");
+        assert!(
+            grant > entry_3 && grant < role_md,
+            "the read-only archive clause must sit inside entry 3, above its list, got:\n{}",
+            wg
+        );
+
+        // O1: no origin matrix, so no entry 3, so no grant - but the peer-privacy
+        // half is unconditional and must still render.
+        let none = default_context("C:/fake/plain/agent", None, &no_skill_section());
+        assert!(
+            !none.contains("Read-only there"),
+            "an agent with no origin matrix must not be promised an archive grant, got:\n{}",
+            none
+        );
+        assert!(
+            none.contains("`memory*` directories"),
+            "the peer-privacy half renders for every non-root agent, got:\n{}",
+            none
+        );
+
+        let root = default_context_as_root("C:/fake/ac-root-agent", None, &no_skill_section());
+        assert!(
+            !root.contains("Read-only there"),
+            "the Root Agent has no origin matrix and no entry 3, got:\n{}",
+            root
+        );
     }
 
     fn read_forbidden_bullet(out: &str) -> &str {

@@ -2042,6 +2042,11 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             let context_result = coordinator
                 .run_blocking_seed_work({
                     let cwd = cwd.clone();
+                    // #1172 D5: capture the FINAL fresh-versus-resume decision. `skip_auto_resume`
+                    // is a `mut` parameter of this function whose only mutation is the #756 mirror
+                    // at :1470, ~500 lines above, so the value read here is final. `true` means AC
+                    // is deliberately NOT resuming: a fresh conversation begins.
+                    let start_fresh = skip_auto_resume;
                     let target_filename = target_filename.clone();
                     let managed_filenames = managed_filenames.clone();
                     let container_repos = container_repos.clone();
@@ -2058,15 +2063,34 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                         let activation: Option<
                             crate::config::seed_manifest::ManifestActivationToken,
                         > = None;
-                        crate::config::session_context::materialize_agent_context_file_with_filename_activated(
-                            &cwd,
-                            &target_filename,
-                            &managed_filenames,
-                            is_coordinator,
-                            auto_self_clear,
-                            container_repos.as_ref(),
-                            activation.as_ref(),
-                        )
+                        let context_result =
+                            crate::config::session_context::materialize_agent_context_file_with_filename_activated(
+                                &cwd,
+                                &target_filename,
+                                &managed_filenames,
+                                is_coordinator,
+                                auto_self_clear,
+                                container_repos.as_ref(),
+                                activation.as_ref(),
+                            );
+                        // #1172 - rotate the origin Agent Matrix's `memory/` for the fresh session
+                        // about to start, so it begins with a clean write target and the previous
+                        // session's memory is preserved under `memory_<ts>/`.
+                        //
+                        // Two gates, both load-bearing (D5):
+                        //   - `start_fresh`: a RESUME never rotates. This chokepoint also serves the
+                        //     app-startup restore path (`create_session_inner_for_restore`, :1239),
+                        //     which continues an existing conversation; emptying `memory/` under a
+                        //     resumed agent is the one outcome the user ruled out.
+                        //   - `is_ok()`: a launch that is about to roll back (:2016-2036) leaves no
+                        //     rotation behind.
+                        //
+                        // Never fails a launch: `rotate_origin_memory_at_spawn` returns `()` and every
+                        // error path inside it warns and returns.
+                        if start_fresh && context_result.is_ok() {
+                            crate::config::agent_memory::rotate_origin_memory_at_spawn(&cwd);
+                        }
+                        context_result
                     }
                 })
                 .await;
@@ -7283,6 +7307,66 @@ mod tests {
         assert_eq!(
             count, 2,
             "create_session_inner must keep both archive activation gates"
+        );
+    }
+
+    // T16 (#1172 D5). The fresh-versus-resume gate is one boolean at a call site
+    // inside a large async function the suite does not drive end to end, so it
+    // has no natural unit test: deleting `start_fresh &&` compiles, passes every
+    // other test, and silently starts rotating memory on every app-startup
+    // restore, which is the exact outcome the user ruled out.
+    #[test]
+    fn memory_rotation_stays_gated_on_a_fresh_launch() {
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/session.rs"
+        ))
+        .expect("read session.rs");
+        let production = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production session source");
+        let normalized = production.split_whitespace().collect::<String>();
+        let gated_call = "ifstart_fresh&&context_result.is_ok(){crate::config::agent_memory::rotate_origin_memory_at_spawn(&cwd);}";
+
+        assert_eq!(
+            normalized.matches(gated_call).count(),
+            1,
+            "#1172 D5: the memory rotation must stay behind `start_fresh && context_result.is_ok()`. \
+             A resume must NEVER rotate: this chokepoint also serves the app-startup restore path."
+        );
+        // Now close the CLASS of ungated second calls, rather than one spelling
+        // of one. Any needle shaped like an invocation loses this game: the
+        // callee text can be rewritten indefinitely - a different argument, the
+        // path wrapped in parens so it reads `..._at_spawn)(`, a block comment
+        // between the identifier and the paren, an alias bound by `use .. as ..`
+        // or `let f = ..` and invoked under another name - and each rewrite needs
+        // a new needle.
+        //
+        // What NO such rewrite can avoid is naming the function. So count the
+        // BARE identifier, which is invariant under all of them, and pin the one
+        // legitimate mention that is not a call: the comment 5.4 requires above
+        // the gate. Two assertions, and together they leave no room:
+        //   - the comment mention appears exactly once, so it cannot be
+        //     duplicated to absorb the budget of a smuggled-in call;
+        //   - the identifier appears exactly twice in total, which is that
+        //     comment plus the single call inside the gated block the first
+        //     assertion already pinned.
+        // Two minus one minus one is zero occurrences left over, whatever they
+        // would have been spelled like.
+        let comment_mention = "`rotate_origin_memory_at_spawn`returns`()`";
+        assert_eq!(
+            normalized.matches(comment_mention).count(),
+            1,
+            "#1172 D5: the comment above the gate must keep naming the rotation exactly once; \
+             it is the one non-call mention the identifier count below budgets for."
+        );
+        assert_eq!(
+            normalized.matches("rotate_origin_memory_at_spawn").count(),
+            2,
+            "#1172 D5: the rotation must be named exactly twice in production - once in the \
+             comment above the gate, once in the gated call itself. A third mention means a \
+             second call site, and an ungated rotation makes a RESUME empty the agent's memory."
         );
     }
 

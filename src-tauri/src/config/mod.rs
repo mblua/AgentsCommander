@@ -2,6 +2,7 @@ pub mod activity_log;
 pub mod agent_command;
 pub mod agent_config;
 pub mod agent_creation;
+pub(crate) mod agent_memory;
 pub mod archive_gate;
 pub mod coding_agent_mutations;
 pub mod coding_agent_profiles;
