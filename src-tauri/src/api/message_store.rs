@@ -2756,18 +2756,6 @@ impl MessageStore {
             .map_err(|error| MessageStoreError::BlockingTask(error.to_string()))?
     }
 
-    pub async fn due_pty_input_ids_offloaded(
-        &self,
-        source_plane: crate::phone::types::PtyInputSourcePlane,
-        now: DateTime<Utc>,
-        limit: usize,
-    ) -> Result<Vec<String>, MessageStoreError> {
-        let store = self.clone();
-        tokio::task::spawn_blocking(move || store.due_pty_input_ids(source_plane, now, limit))
-            .await
-            .map_err(|error| MessageStoreError::BlockingTask(error.to_string()))?
-    }
-
     pub(crate) async fn due_container_pty_input_candidates_fair_offloaded(
         &self,
         now: DateTime<Utc>,

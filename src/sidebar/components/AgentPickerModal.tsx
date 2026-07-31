@@ -368,7 +368,7 @@ const AgentPickerModal: Component<{
   };
 
   createEffect(() => {
-    const scope = selectedScope();
+    selectedScope();
     const agent = selectedAgent();
     const profile = selectedProfile();
     restartSessions();

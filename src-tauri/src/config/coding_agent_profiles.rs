@@ -374,10 +374,6 @@ pub fn read_replica_profile_result(launch_path: &Path) -> ReplicaProfileRead {
     }
 }
 
-pub fn read_instance_profile_override(launch_path: &Path) -> Option<String> {
-    read_replica_profile_result(launch_path).profile
-}
-
 pub fn read_replica_profile(launch_path: &Path) -> Option<String> {
     read_replica_profile_result(launch_path).profile
 }
@@ -422,14 +418,6 @@ pub fn set_replica_profile_content_hash(launch_path: &Path, hash: &str) -> Resul
         launch_path.display(),
     );
     write_tooling_string(launch_path, "profileContentHash", Some(hash))
-}
-
-pub fn read_origin_default_profile(launch_path: &Path) -> Result<Option<String>, String> {
-    let Some(origin) = origin_matrix_dir_for_launch_path(launch_path)? else {
-        return Ok(None);
-    };
-    Ok(read_tooling_string(&origin, "defaultProfile")
-        .and_then(|value| normalize_profile_letter(&value)))
 }
 
 pub fn set_agent_default_profile(

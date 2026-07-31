@@ -1380,10 +1380,6 @@ pub fn validate_expanded_codex_home_value(value: &str, context: &str) -> Result<
     Ok(path)
 }
 
-pub fn validate_codex_home_value(value: &str, context: &str) -> Result<PathBuf, String> {
-    validate_expanded_codex_home_value(value, context)
-}
-
 fn reject_unknown_codex_home_template_markers(value: &str, context: &str) -> Result<(), String> {
     let mut rest = value;
     while let Some(start) = rest.find('%') {

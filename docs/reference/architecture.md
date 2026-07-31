@@ -173,13 +173,13 @@ graph TD
     SA["sidebar/App.tsx<br/>Root: shortcuts, events,<br/>settings, bridge subs"]
 
     SA --> TB["Titlebar.tsx<br/>Drag region, icon, version<br/>DEV badge, minimize, close"]
-    SA --> SL["SessionList.tsx<br/>For each session → SessionItem"]
-    SA --> TL["Toolbar.tsx<br/>Open Agent + New Session + Settings"]
+    SA --> PP["ProjectPanel.tsx<br/>Projects, workgroups, replicas → SessionItem"]
+    SA --> AB["ActionBar.tsx<br/>Project creation + Settings gear"]
 
-    SL --> SI["SessionItem.tsx<br/>Status dot, name (inline rename)<br/>git branch, shell path<br/>mic button, detach, telegram, close"]
+    PP --> SI["SessionItem.tsx<br/>Status dot, name (inline rename)<br/>git branch, shell path<br/>mic button, detach, telegram, close"]
 
-    TL --> SM["SettingsModal.tsx<br/>4 tabs: General, Agents,<br/>Integrations, Dark Factory"]
-    TL --> OA["OpenAgentModal.tsx<br/>Repo search → Agent picker<br/>git pull option → launch"]
+    AB --> SM["SettingsModal.tsx<br/>4 tabs: General, Agents,<br/>Integrations, Dark Factory"]
+    SI --> OA["OpenAgentModal.tsx<br/>Repo search → Agent picker<br/>git pull option → launch"]
 
     subgraph "Stores"
         SS["sessions.ts<br/>createStore: sessions[], activeId"]
@@ -716,9 +716,9 @@ graph TD
 | `sidebar/stores/sessions.ts` | Session rows plus authoritative selection epoch, revision, mode, and highlight |
 | `sidebar/stores/bridges.ts` | `bridges[]` reactive store |
 | `sidebar/components/Titlebar.tsx` | Drag region, icon, version, controls |
-| `sidebar/components/SessionList.tsx` | `<For>` over sessions → `SessionItem` |
+| `sidebar/components/ProjectPanel.tsx` | Projects, workgroups and replicas → `SessionItem` |
 | `sidebar/components/SessionItem.tsx` | Status dot, name, git branch, mic, telegram, detach, close |
-| `sidebar/components/Toolbar.tsx` | Open Agent + New Session + Settings gear |
+| `sidebar/components/ActionBar.tsx` | Project creation + Settings gear |
 | `sidebar/components/SettingsModal.tsx` | 4-tab settings: General, Agents, Integrations, Dark Factory |
 | `sidebar/components/OpenAgentModal.tsx` | Repo search → agent picker → launch |
 | `terminal/App.tsx` | Terminal root: authoritative selection reconciliation and detached mode |

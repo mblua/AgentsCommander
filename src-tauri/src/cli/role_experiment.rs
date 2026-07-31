@@ -2139,14 +2139,6 @@ fn write_attempt_prompt_file(
     Ok(path)
 }
 
-#[allow(dead_code)]
-fn build_attempt_injection(prompt_path: &Path) -> String {
-    format!(
-        "Role experiment attempt.\n\nRead the prompt file at the exact path below. The path is delimited and quoted for Windows shells:\n\n```role-experiment-path\n\"{}\"\n```\n\nWhen complete, include a concise final answer in this session.\n",
-        prompt_path.to_string_lossy()
-    )
-}
-
 fn next_attempt_output_path(
     run_dir: &Path,
     attempt: &AttemptArtifact,
