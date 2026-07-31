@@ -75,6 +75,12 @@ import type {
   ApiClientMintRequest,
   ApiClientMintResponse,
   SessionSelection,
+  WatcherActivitySnapshot,
+  WatcherAgentDraftEntry,
+  WatcherDraftEntry,
+  WatcherMatchBatch,
+  WatcherPatternPreview,
+  WatcherReachRow,
 } from "./types";
 import { decodeSessionSelection } from "./session-selection";
 
@@ -239,6 +245,49 @@ export const PtyAPI = {
 
   getSessionContext: (sessionId: string) =>
     transport.invoke<number | null>("get_session_context", { sessionId }),
+
+  /** #1171 - the session's watcher activity ring plus its loss and warm-up signals.
+   *  A session with no buffer answers with an empty snapshot, never null and never an
+   *  error, so the window's states are read from values and not from nullability. */
+  getWatcherActivity: (sessionId: string, limit?: number) =>
+    transport.invoke<WatcherActivitySnapshot>("get_watcher_activity", {
+      sessionId,
+      limit: limit ?? null,
+    }),
+
+  /** #1171 - compile a candidate pattern and, with a session, run it against its live rows.
+   *  Omitting `sessionId` compiles only, which is the common case: writing a regex in
+   *  Settings with no agent session running. A pattern that does not compile comes back as
+   *  `compiles: false` with the message, not as a rejected call. */
+  previewWatcherPattern: (pattern: string, sessionId?: string) =>
+    transport.invoke<WatcherPatternPreview>("preview_watcher_pattern", {
+      sessionId: sessionId ?? null,
+      pattern,
+    }),
+
+  /**
+   * #1171 - resolve the WHOLE Settings draft, watchers and agents, and answer per row which
+   * agents its selector reaches and which of those it holds a slot on.
+   *
+   * Both halves travel because both are properties of the set, not of one row. Whether a
+   * watcher is inside an agent's 8 slots depends on every other enabled row and on where
+   * their ids fall in key order; and the modal edits agents and watchers in one store that
+   * one Save writes together, so resolving against the saved agent list would answer about a
+   * state the user has already left. A row-level call could only answer by inventing the rest
+   * of the set, and with an empty saved map nine rows added before Save would all report that
+   * they run while only eight do -- a positive claim about a watcher that will not run.
+   *
+   * Neither the stem rule nor the `BTreeMap` key order nor the number 8 is written a second
+   * time here: they stay in Rust, and the frontend's `starts_with` rule must not be ported.
+   *
+   * `null` and an absent selector both mean "every agent"; `[]` means "none". The three stay
+   * distinct all the way to Rust's `Option<Vec<String>>`.
+   */
+  previewWatcherReach: (
+    watchers: WatcherDraftEntry[],
+    agents: WatcherAgentDraftEntry[]
+  ) =>
+    transport.invoke<WatcherReachRow[]>("preview_watcher_reach", { watchers, agents }),
 
   subscribe: (sessionId: string) =>
     transport.invoke<{ rows: number; cols: number } | null>("subscribe_session", { sessionId }),
@@ -484,6 +533,32 @@ export const WindowAPI = {
 
   dockResourceMonitor: () =>
     transport.invoke<void>("dock_resource_monitor_window"),
+
+  /** #1171 - open the watcher activity window, or focus it and re-scope it to this session.
+   *  Tauri-only: the web client has no such window and this command has no no-op arm there,
+   *  so callers gate on `isTauri`. */
+  openWatchers: (sessionId: string) =>
+    transport.invoke<void>("open_watchers_window", { sessionId }),
+
+  /**
+   * #1171 - the durable half of the scope handover: what `open_watchers_window` last asked
+   * for, whether or not a listener existed at the time.
+   *
+   * The window label exists the moment the builder returns, while the JavaScript listener
+   * exists only after the bundle loads, Solid mounts and the subscription completes a round
+   * trip. Tauri queues nothing for a listener that does not exist yet and the emit returns
+   * `Ok` either way, so a second open during the load would drop the user's order in silence.
+   * The window therefore subscribes first and then pulls this, exactly as it does for
+   * matches. `null` means nothing has been requested yet.
+   */
+  getWatchersScope: () =>
+    transport.invoke<string | null>("get_watchers_scope"),
+
+  /** #1171 - persist the watcher window's geometry through a dedicated one-field command
+   *  rather than `initWindowGeometry`, whose read-modify-write of the whole AppSettings
+   *  races the Settings save that edits the watcher map. */
+  setWatchersGeometry: (geometry: WindowGeometry) =>
+    transport.invoke<void>("set_watchers_geometry", { geometry }),
 };
 
 export const ScreenshotAPI = {
@@ -669,6 +744,31 @@ export function onSessionContext(
   callback: (data: SessionContextPayload) => void
 ): Promise<UnlistenFn> {
   return transport.listen<SessionContextPayload>("session_context", callback);
+}
+
+/**
+ * #1171 - one tick's watcher matches for one session.
+ *
+ * Delivery is directed at the `watchers` window label and coalesced into one batch per
+ * `(session, tick)`, and nothing is emitted at all while that window does not exist. The
+ * ring still records, so opening the window later shows the history.
+ */
+export function onWatcherMatches(
+  callback: (data: WatcherMatchBatch) => void
+): Promise<UnlistenFn> {
+  return transport.listen<WatcherMatchBatch>("watcher_matches", callback);
+}
+
+/**
+ * #1171 - re-scope an already-open watcher window.
+ *
+ * The window is a singleton, so its `?sessionId=` query parameter is only read on first
+ * creation; every later open focuses the existing window and arrives through here instead.
+ */
+export function onWatchersScopeRequest(
+  callback: (data: { sessionId: string }) => void
+): Promise<UnlistenFn> {
+  return transport.listen<{ sessionId: string }>("watchers_scope_request", callback);
 }
 
 export function onTelegramBridgeAttached(

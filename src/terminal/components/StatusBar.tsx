@@ -2,7 +2,8 @@ import { Component, Show, createMemo, onCleanup } from "solid-js";
 import { terminalStore } from "../stores/terminal";
 import { settingsStore } from "../../shared/stores/settings";
 import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder";
-import { PtyAPI, emitOpenSettings } from "../../shared/ipc";
+import { PtyAPI, WindowAPI, emitOpenSettings } from "../../shared/ipc";
+import { isTauri } from "../../shared/platform";
 
 const MIC_DISABLED_TITLE =
   "Enable voice-to-text in Settings and set a Gemini API key to use this.";
@@ -54,6 +55,16 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
   };
 
   onCleanup(cleanup);
+
+  // #1171 - opens the activity window scoped to this session, or focuses and re-scopes it
+  // when it is already open. Tauri-only: the web client renders this same StatusBar but has
+  // no such window and no arm for the command, and a button that returns a raw error is
+  // worse than an absent one.
+  const handleOpenWatchers = () => {
+    const sessionId = terminalStore.activeSessionId;
+    if (!sessionId) return;
+    WindowAPI.openWatchers(sessionId).catch(console.error);
+  };
 
   const handleClearInput = () => {
     const sessionId = terminalStore.activeSessionId;
@@ -123,6 +134,17 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
           >
             &#x1F399;
           </button>
+          <Show when={isTauri}>
+            <button
+              class="status-bar-btn"
+              onClick={handleOpenWatchers}
+              title="Watcher activity"
+              data-ac-testid="statusBar.watchers"
+              data-ac-role="button"
+            >
+              &#x1F4E1;
+            </button>
+          </Show>
           <button
             class="status-bar-btn status-bar-btn-clear"
             onClick={handleClearInput}

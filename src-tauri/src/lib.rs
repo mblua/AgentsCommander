@@ -35,6 +35,9 @@ use pty::context_scrape::{
 use pty::git_watcher::GitWatcher;
 use pty::idle_detector::IdleDetector;
 use pty::manager::PtyManager;
+use pty::watchers::{
+    SessionFrameReader, WatcherBackendSource, WatcherEngine, WatcherEventSink, WatcherPatternSource,
+};
 use session::manager::SessionManager;
 use shutdown::ShutdownSignal;
 use tauri::{Emitter, Manager};
@@ -698,6 +701,256 @@ impl ContextPersistSink for ScraperPersist {
     }
 }
 
+// ---- #1171: the three narrow watcher adapters -------------------------------------------
+//
+// The same capability boundary the scrape adapters draw. The engine can read one session's
+// screen through a narrowed reader, ask for its lightweight liveness, read the resolved
+// watcher set, and hand a batch to a sink. It holds no `AppHandle` and no `PtyManager`.
+
+/// The per-session frame reader and the lightweight liveness, via the routed backend.
+///
+/// `reader_for` is called ONCE per session at registration, and again only when a read comes
+/// back `Missing` or `Gone`. That is what keeps the `PtyManager` mutex out of a 200 ms loop:
+/// the tick calls the backend directly through the `Arc` this handed over.
+struct WatcherBackends {
+    pty_mgr: Arc<Mutex<PtyManager>>,
+    /// A poisoned `PtyManager` is app-wide and permanent, so the warning is worth exactly one
+    /// line, not one per registered session five times a second.
+    poison_logged: AtomicBool,
+}
+
+impl WatcherBackends {
+    fn warn_poisoned_once(&self, what: &str) {
+        if !self
+            .poison_logged
+            .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            log::warn!("[watchers] PtyManager lock is poisoned; {what} is unavailable");
+        }
+    }
+}
+
+impl WatcherBackendSource for WatcherBackends {
+    fn reader_for(&self, id: uuid::Uuid) -> Option<SessionFrameReader> {
+        match self.pty_mgr.lock() {
+            Ok(mgr) => {
+                let kind = mgr.backend_kind(id)?;
+                Some(SessionFrameReader::new(mgr.backend_for_kind(kind)))
+            }
+            Err(_) => {
+                self.warn_poisoned_once("watcher sampling");
+                None
+            }
+        }
+    }
+
+    fn liveness(&self, id: uuid::Uuid) -> ContextSessionLiveness {
+        match self.pty_mgr.lock() {
+            Ok(mgr) => mgr.context_session_liveness(id),
+            Err(_) => {
+                self.warn_poisoned_once("watcher liveness");
+                ContextSessionLiveness::Unavailable
+            }
+        }
+    }
+}
+
+/// The configured watchers crossed with the configured agents, read fresh each tick. One
+/// `RwLock` read per tick for all sessions, not one per session.
+struct WatcherPatterns {
+    settings: SettingsState,
+    /// Log-once bookkeeping for the resolution notices, so a configuration that stays wrong
+    /// costs one line rather than five per second.
+    log: crate::pty::watchers::ResolutionLog,
+}
+
+impl WatcherPatternSource for WatcherPatterns {
+    fn resolve(
+        &self,
+    ) -> futures::future::BoxFuture<'_, HashMap<String, crate::pty::watchers::AgentResolution>>
+    {
+        Box::pin(async move {
+            let settings = self.settings.read().await;
+
+            // The agent list is cloned only when at least one watcher could possibly use it.
+            // Otherwise this ran five times a second, forever, in every installation that
+            // never touches the feature: at twelve agents that is 24 `String` allocations per
+            // tick, 120 a second, for an answer that is always empty.
+            //
+            // Resolution is still CALLED with an empty agent slice rather than skipped, so a
+            // malformed or unreadable watcher entry keeps producing its one log line even when
+            // nothing is enabled.
+            let has_enabled_watcher = settings
+                .watchers
+                .values()
+                .any(|entry| entry.valid().is_some_and(|config| config.enabled));
+            let agents: Vec<crate::pty::watchers::WatcherAgent> = if has_enabled_watcher {
+                settings
+                    .agents
+                    .iter()
+                    .map(|agent| crate::pty::watchers::WatcherAgent {
+                        id: agent.id.clone(),
+                        command: agent.command.clone(),
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let (resolved, notices) =
+                crate::pty::watchers::resolve_watchers(&agents, &settings.watchers);
+            drop(settings);
+            self.log.publish(notices);
+            resolved
+        })
+    }
+}
+
+/// Delivery of one coalesced batch, behind two plain `Fn`s.
+///
+/// Mould: `PtyOutputTarget` (`output.rs:58-92`), which wraps an `AppHandle` the same way and
+/// for the same reason - the DECISION is testable, an `AppHandle` is not.
+///
+/// **Directed, and silent when nobody is listening.** `app.emit` reaches every window, so at
+/// 50 saturated sessions a broadcast would deliver thousands of payloads per second to four
+/// windows and make every detached terminal pay to deserialize events it discards. The
+/// activity window is closed most of the time, and this makes that case cost nothing at all.
+#[derive(Clone)]
+struct WatcherDelivery {
+    window_present: Arc<dyn Fn() -> bool + Send + Sync>,
+    emit: Arc<dyn Fn(crate::pty::watchers::WatcherMatchBatch) + Send + Sync>,
+}
+
+impl WatcherDelivery {
+    fn to_watchers_window(app_handle: tauri::AppHandle) -> Self {
+        let present = app_handle.clone();
+        Self {
+            window_present: Arc::new(move || {
+                present
+                    .get_webview_window(commands::window::WATCHERS_WINDOW_LABEL)
+                    .is_some()
+            }),
+            emit: Arc::new(move |batch| {
+                let _ = app_handle.emit_to(
+                    commands::window::WATCHERS_WINDOW_LABEL,
+                    "watcher_matches",
+                    batch,
+                );
+            }),
+        }
+    }
+
+    fn deliver(&self, batch: crate::pty::watchers::WatcherMatchBatch) {
+        if !(self.window_present)() {
+            return;
+        }
+        (self.emit)(batch);
+    }
+}
+
+/// Where a tick's matches go: into the ring ALWAYS, and out to the window only when there is
+/// one.
+///
+/// The ring lives here, in the concrete sink, and the caps live in the engine loop immediately
+/// before the call that reaches this type. Consequence: everything that passes the caps
+/// reaches both the event and the buffer, and nothing else reaches either - and that ordering
+/// is a property of WHERE each piece lives rather than a rule someone has to maintain.
+///
+/// The window check lives here too, and not in the engine, exactly as `ScraperSink` holds the
+/// `AppHandle` the scraper is not allowed to have. Adding a second consumer later means adding
+/// its label or falling back to broadcast, which is a one-line change in this type.
+struct WatcherSink {
+    history: crate::pty::watchers::history::WatcherHistoryState,
+    delivery: WatcherDelivery,
+}
+
+impl WatcherEventSink for WatcherSink {
+    fn emit(&self, batch: crate::pty::watchers::WatcherMatchBatch) {
+        if let Ok(id) = uuid::Uuid::parse_str(&batch.session_id) {
+            // Recorded whether or not anyone is listening, so opening the window later shows
+            // the history rather than starting from nothing.
+            self.history.record(id, &batch.matches);
+        }
+        self.delivery.deliver(batch);
+    }
+}
+
+#[cfg(test)]
+mod watcher_sink_tests {
+    use super::*;
+    use crate::pty::watchers::WatcherMatchBatch;
+    use std::sync::Mutex as StdMutex;
+
+    use crate::pty::watchers::history::{SessionStatus, WatcherHistory};
+    use crate::pty::watchers::{WatcherMatchPayload, WatcherMode};
+
+    type Recorded = (
+        WatcherSink,
+        Arc<StdMutex<Vec<WatcherMatchBatch>>>,
+        crate::pty::watchers::history::WatcherHistoryState,
+    );
+
+    fn recording(present: bool) -> Recorded {
+        let delivered = Arc::new(StdMutex::new(Vec::new()));
+        let sink_delivered = Arc::clone(&delivered);
+        let history: crate::pty::watchers::history::WatcherHistoryState =
+            Arc::new(WatcherHistory::default());
+        (
+            WatcherSink {
+                history: Arc::clone(&history),
+                delivery: WatcherDelivery {
+                    window_present: Arc::new(move || present),
+                    emit: Arc::new(move |batch| sink_delivered.lock().unwrap().push(batch)),
+                },
+            },
+            delivered,
+            history,
+        )
+    }
+
+    fn batch(session_id: uuid::Uuid) -> WatcherMatchBatch {
+        WatcherMatchBatch {
+            session_id: session_id.to_string(),
+            matches: vec![WatcherMatchPayload {
+                session_id: session_id.to_string(),
+                seq: 1,
+                watcher_id: "w".to_string(),
+                mode: WatcherMode::Occurrence,
+                at: chrono::Utc::now(),
+                captures: Vec::new(),
+                row: "hit".to_string(),
+                row_truncated: false,
+            }],
+        }
+    }
+
+    /// #1171, 9.3.36 - with the activity window closed, NOTHING is emitted - not a broadcast
+    /// nobody reads, not an emit to a label that does not exist - **and the ring still
+    /// records**, so opening the window later shows the history.
+    #[test]
+    fn no_event_is_emitted_when_the_window_is_closed_and_the_ring_still_records() {
+        let id = uuid::Uuid::new_v4();
+        let (sink, delivered, history) = recording(false);
+        history.publish(id, SessionStatus::default());
+
+        sink.emit(batch(id));
+
+        assert!(delivered.lock().unwrap().is_empty());
+        assert_eq!(history.snapshot(id, None).matches.len(), 1);
+    }
+
+    #[test]
+    fn the_batch_is_delivered_and_recorded_when_the_window_is_open() {
+        let id = uuid::Uuid::new_v4();
+        let (sink, delivered, history) = recording(true);
+        history.publish(id, SessionStatus::default());
+
+        sink.emit(batch(id));
+
+        assert_eq!(delivered.lock().unwrap().len(), 1);
+        assert_eq!(history.snapshot(id, None).matches.len(), 1);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run(
     test_window_placement: Option<crate::testability::window_placement::TestWindowPlacement>,
@@ -1071,6 +1324,34 @@ pub fn run(
             );
             context_scraper.start(shutdown_for_setup.clone());
             app.manage(Arc::clone(&context_scraper));
+
+            // #1171 watcher engine. A SIBLING of the scraper above, not an extension of it:
+            // different interval, different modes, its own history. Same construction shape,
+            // and for the same reason it must come after `.manage(settings)`.
+            let watcher_history: crate::pty::watchers::history::WatcherHistoryState =
+                Arc::new(crate::pty::watchers::history::WatcherHistory::default());
+            let watcher_engine = WatcherEngine::new(
+                Arc::new(WatcherBackends {
+                    pty_mgr: pty_mgr.clone(),
+                    poison_logged: AtomicBool::new(false),
+                }),
+                Arc::new(WatcherPatterns {
+                    settings: app.state::<SettingsState>().inner().clone(),
+                    log: Default::default(),
+                }),
+                Arc::new(WatcherSink {
+                    history: Arc::clone(&watcher_history),
+                    delivery: WatcherDelivery::to_watchers_window(app.handle().clone()),
+                }),
+                Arc::clone(&watcher_history),
+            );
+            watcher_engine.start(shutdown_for_setup.clone());
+            app.manage(Arc::clone(&watcher_engine));
+            app.manage(watcher_history);
+            // The authoritative scope of the activity window. `open_watchers_window` writes it
+            // before every emit and the window pulls it after subscribing, so a re-scope that
+            // races the window's own load is recovered instead of dropped in silence.
+            app.manage(commands::window::WatchersScopeState::default());
 
             // Start web server if enabled in settings
             {
@@ -2268,6 +2549,9 @@ pub fn run(
             commands::pty::pty_resize,
             commands::pty::get_screen_snapshot,
             commands::pty::get_session_context,
+            commands::pty::get_watcher_activity,
+            commands::pty::preview_watcher_pattern,
+            commands::pty::preview_watcher_reach,
             commands::config::get_settings,
             commands::config::get_coding_agent_catalog,
             commands::config::list_reseedable_agent_commands,
@@ -2304,11 +2588,14 @@ pub fn run(
             commands::window::attach_terminal,
             commands::window::list_detached_sessions,
             commands::window::set_detached_geometry,
+            commands::window::set_watchers_geometry,
             commands::window::open_in_explorer,
             commands::window::open_guide_window,
             commands::window::open_spec_board_window,
             commands::window::open_resource_monitor_window,
             commands::window::dock_resource_monitor_window,
+            commands::window::open_watchers_window,
+            commands::window::get_watchers_scope,
             commands::window::open_external_url,
             commands::window::focus_main_window,
             commands::spec_board::spec_board_new,
