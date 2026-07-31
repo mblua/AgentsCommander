@@ -7276,14 +7276,14 @@ mod tests {
             "#1172 D5: the memory rotation must stay behind `start_fresh && context_result.is_ok()`. \
              A resume must NEVER rotate: this chokepoint also serves the app-startup restore path."
         );
-        // Counting the call WITH its argument rather than the bare identifier:
-        // the production comment above the gate names the function too, so a
-        // bare-identifier count can never be 1. This needle is the property that
-        // actually matters, namely zero ungated calls.
+        // Count INVOCATIONS, argument-independent: the needle stops at the open
+        // paren, so a second ungated call spelled any other way
+        // (`..._at_spawn(cwd.as_str())`, `..._at_spawn(&cwd.clone())`) is still
+        // caught. A bare-identifier count cannot be used here, because the
+        // production comment above the gate names the function too; that comment
+        // writes it WITHOUT a paren, so it stays out of this count.
         assert_eq!(
-            normalized
-                .matches("rotate_origin_memory_at_spawn(&cwd);")
-                .count(),
+            normalized.matches("rotate_origin_memory_at_spawn(").count(),
             1,
             "#1172 D5: exactly one rotation call site, and it is the gated one. \
              A resume must NEVER rotate."
