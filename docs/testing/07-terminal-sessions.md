@@ -1,6 +1,6 @@
 # 07 Terminal Sessions
 
-These cases validate terminal creation, PTY output, keyboard input, terminal resize/reflow, session switching, detached terminal windows, and terminal cleanup when sessions stop or close.
+These cases validate terminal creation, PTY output, keyboard input, terminal resize/reflow, session switching, detached terminal windows, terminal cleanup, and authorized JSON/PNG backend viewport snapshots that do not mutate the target.
 
 Use clearly disposable test projects, workgroups, agents, sessions, terminal commands, and settings state. Prefer creating test data in the tester's allowed scratch/evidence area. If no safe in-app cleanup exists, record residual state rather than deleting user data manually.
 
@@ -10,7 +10,7 @@ Current deterministic mode: use `agentscommander_testeable.exe` with explicit pl
 
 Use only harmless local shell/no-op terminal fixtures. Do not launch real Codex, Claude, Gemini, Telegram, paid, account-backed, or real model workflows. Commands must be read-only or write only into the disposable evidence/project area.
 
-Required evidence categories for this suite: `window-info` JSON, before and after terminal screenshots, command input/output screenshots, resize/window-state captures, detached terminal `window-info` or title evidence, and session/status snapshots if available.
+Required evidence categories for this suite: `window-info` JSON, before and after terminal screenshots, command input/output screenshots, resize/window-state captures, detached terminal `window-info` or title evidence, session/status snapshots if available, raw snapshot JSON, PNG receipts and files, decoded PNG metadata and hashes, command stdout/stderr/exit logs, and non-mutation state comparisons.
 
 ## Execution Log
 
@@ -35,6 +35,9 @@ Test data: TBD
 | TRM-005 | NOT RUN | No evidence because NOT RUN. | Session switching terminal preservation not executed in this run. |
 | TRM-006 | NOT RUN | No evidence because NOT RUN. | Detached terminal window checks not executed in this run. |
 | TRM-007 | NOT RUN | No evidence because NOT RUN. | Terminal cleanup checks not executed in this run. |
+| TRM-008 | NOT RUN | No evidence because NOT RUN. | Authorized JSON terminal snapshot checks not executed in this run. |
+| TRM-009 | NOT RUN | No evidence because NOT RUN. | Deterministic PNG terminal snapshot checks not executed in this run. |
+| TRM-010 | NOT RUN | No evidence because NOT RUN. | Snapshot non-mutation and hidden-frontend checks not executed in this run. |
 
 Residual test data:
 
@@ -295,3 +298,167 @@ Evidence Required:
 Pass/Fail Criteria:
 
 PASS if terminal cleanup behavior is predictable and limited to the disposable session. PARTIAL if cleanup is correct but one confirmation capture is unavailable. FAIL if terminal remains interactively attached to a stopped process, wrong session closes, or UI state is contradictory. BLOCKED if no safe stop/close path exists for the fixture.
+
+### TRM-008: Authorized JSON snapshot represents the backend viewport
+
+Purpose:
+
+Verify that an authorized host requester receives one complete version-1 JSON model of the live target's current backend viewport, including fidelity metadata, without ANSI or non-ASCII control injection on stdout.
+
+Preconditions:
+
+- A disposable local-process or protocol-fake container target has one eligible persistent live session.
+- The requester is either a verified same-workgroup Coordinator or canonical host Root with a live session UUID-v4 token.
+- `terminalSnapshotsEnabled` is explicitly enabled for this disposable run.
+- The target viewport contains only harmless deterministic markers and no account-backed or personal content.
+- The evidence directory is private and approved for terminal content.
+
+Steps:
+
+1. Write a deterministic harmless marker such as `TRM-SNAPSHOT-JSON-001` to the target and let the prompt become stable.
+2. Record the target session ID, backend, status, dimensions, and visible frontend state if one exists.
+3. Run `list-peers-lean --snapshot-targets` from the requester and save stdout, stderr, and exit code.
+4. Confirm the returned exact target FQN without using runtime fields as a liveness claim.
+5. Run `agentscommander terminal-snapshot --token <live-token> --root <exact-root> --to <exact-fqn> --format json --timeout 15` through a direct noninteractive process invocation. Save stdout as bytes before parsing.
+6. Assert exit 0, empty stderr, exactly one LF-terminated ASCII-only JSON document, and no update or logger notice.
+7. Parse the document and assert `schemaVersion == 1`, canonical request/session IDs and millisecond UTC capture time, exact requester and target, expected backend, nonzero dimensions, `lines.length == rows`, and every `cells.length == columns`.
+8. Assert color, width, wide-pair, cursor, sequence, parser error, wrap, and style values are structurally valid. Confirm blank cells are present instead of truncated.
+9. Assert the full `fidelity` object equals the documented version-1 constants, including `scope=currentBackendViewport`, `backendParser=vt100-0.15.2`, zero backend scrollback, `applicationFrameAtomic=false`, and the exact ordered `omitted` and `unsupported` arrays.
+10. Confirm the harmless marker is represented when it remains inside the current viewport. Do not fail a coherent capture merely because concurrent output moved the marker before the parser-lock boundary.
+
+Expected Result:
+
+The command returns one closed, complete, bounded JSON model of one active backend viewport at its reported sequence. It contains no raw ANSI replay, frontend state, transcript, or omitted blank-cell compression.
+
+Evidence Required:
+
+- `TRM-008-target-before.png` or equivalent safe target-state evidence.
+- `TRM-008-snapshot-targets.stdout.json`, stderr, command, and exit record.
+- `TRM-008-terminal-snapshot.stdout.json`, raw-byte hash, stderr, command, and exit record.
+- `TRM-008-schema-validation.json` with each asserted count and constant.
+- The exact app version, commit, platform, requester kind, target backend, and setting state.
+
+Pass/Fail Criteria:
+
+PASS if every structural, identity, fidelity, ASCII, and output assertion succeeds. FAIL if fields are missing or extra, counts mismatch, raw controls leak, unauthorized data appears, or the model contradicts one capture boundary. BLOCKED if no safe authorized disposable route can be provisioned. Do not mark PARTIAL for a schema or privacy assertion.
+
+### TRM-009: PNG snapshot follows the fixed renderer contract
+
+Purpose:
+
+Verify that PNG output is validated before create-new persistence, that stdout contains metadata only, and that checked-in renderer goldens retain their fixed portable classification.
+
+Preconditions:
+
+- Depends on TRM-008 authorization and safe target data.
+- The chosen absolute output path has an existing non-linked parent and the leaf does not exist.
+- The platform can decode RGB8 PNG without rewriting it.
+- The repository's renderer fixtures and hashes are unchanged.
+
+Steps:
+
+1. Record that the output leaf does not exist.
+2. Run `agentscommander terminal-snapshot` with `--format png --output <absolute-new-file.png> --timeout 15`. Save stdout, stderr, and exit code separately.
+3. Assert exit 0, empty stderr, one ASCII JSON metadata line on stdout, and no PNG signature or base64 payload on stdout.
+4. Assert the output now exists as one regular non-linked file. On Unix assert mode `0600`.
+5. Parse the receipt. Assert `schemaVersion == 1`, `format == png`, exact request/requester/target/session metadata, the full fidelity constants, `renderer.id == ac-terminal-png-v1`, palette `ac-dark-v1`, fixed DejaVu font metadata, cell 10 by 20, baseline 15, padding 8, and a nonnegative `fallbackGlyphCount`.
+6. Assert file length equals `png.bytes`, width equals `columns * 10 + 16`, and height equals `rows * 20 + 16`.
+7. Scan the PNG bytes. Require RGB8, noninterlaced IHDR; one IHDR first; one or more consecutive IDAT chunks; one zero-length IEND last; correct CRCs; no ancillary or trailing chunks; and successful full decoder finish.
+8. Decode and inspect the image without resaving it. Classify cursor, backgrounds, wide spans, clipping, underline, and any fallback according to the visual classes below.
+9. Run `cargo test --locked -p terminal-snapshot-renderer`. Record the checked-in hashes `97bac516626c41f8253afd6958607943274a58785b7afd5ec2bb158707dbe06b` for `blank-cursor.png` and `756915b2b24f0f092dbc0e171b9867c18f0756eb1fbfb8a43dc57103e83cfc05` for `style-grid.png`.
+10. Attempt the same existing output path again. Assert failure and no overwrite. Separately test a new path for any retry.
+
+Expected Result:
+
+The client validates one deterministic bounded PNG before creating the caller-owned output, prints only metadata, and preserves byte-exact renderer goldens across supported portable runners.
+
+Evidence Required:
+
+- `TRM-009-command.txt`, stdout receipt, empty stderr, and exit record.
+- Original `TRM-009-snapshot.png`, SHA-256, size, mode/identity data, and decoded PNG report.
+- `TRM-009-visual-classification.md` naming Class A, B, C, or D with reasons.
+- Complete locked renderer test output and runner architecture.
+- Existing-path negative result proving no overwrite.
+
+Pass/Fail Criteria:
+
+PASS if output, metadata, PNG structure, path behavior, golden hashes, and visual classification satisfy the contract. FAIL for any Class A regression, malformed PNG, stdout payload leak, overwrite, or output opened before validation. A deliberate Class B fixture passes only when its fallback count matches. Class C is documented and does not fail. Class D invalidates the evidence and requires recollection.
+
+### TRM-010: Snapshot capture does not mutate the target
+
+Purpose:
+
+Verify that successful and failed snapshots do not focus, select, resize, wake, spawn, repaint, write to, or otherwise mutate a target, including when no frontend terminal is mounted.
+
+Preconditions:
+
+- One harmless target session can remain stable without producing autonomous output.
+- The tester can observe session IDs, backend route, dimensions, sequence, focus/window state, and session count.
+- A hidden, minimized, detached, or never-mounted frontend state is available where supported.
+- Separate authorized, unauthorized, disabled, and invalid-output fixtures are available without real model workflows.
+
+Steps:
+
+1. Record target session count, exact selected session ID/backend, dimensions, sequence, status, working state, focus, active UI selection, window state, and harmless viewport marker.
+2. Hide, minimize, detach, or avoid mounting the target frontend. Record the chosen condition.
+3. Capture JSON, then capture PNG to a new safe path while no target output is expected.
+4. Record the same target fields immediately after each request. Confirm session ID/backend and dimensions did not change; sequence remains unchanged unless independently observed PTY output occurred.
+5. Confirm the frontend did not focus, raise, select, repaint, or switch active session because of the request.
+6. Confirm no input marker, Enter, wake, spawn, resize, screenshot overlay, notification, ordinary message, conversation entry, PTY-input row, or standard delivered/rejected artifact was created.
+7. Repeat with the setting disabled, an unauthorized shape-valid route, and an unsafe existing PNG path. Confirm zero snapshot content bytes and the same no-mutation properties.
+8. Inspect only metadata-safe audit and logs. Confirm snapshot content, ANSI, target title, token, nonce, PNG/base64 prefix, and output path are absent.
+9. Confirm a consumed host response is removed. After 60 seconds, confirm identity-stable protocol files are swept where the requester directories remain discoverable. Record, rather than conceal, any documented crash/unregistration residual.
+
+Expected Result:
+
+Authorized reads succeed from backend state regardless of frontend visibility. Every success and failure leaves target lifecycle, PTY input, dimensions, focus, UI selection, and ordinary messaging unchanged.
+
+Evidence Required:
+
+- `TRM-010-before-state.json`, `TRM-010-after-json-state.json`, and `TRM-010-after-png-state.json`.
+- Frontend hidden/minimized/detached/unmounted evidence that does not serve as renderer golden evidence.
+- Authorized and negative command stdout/stderr/exit records.
+- Metadata-only audit/log sentinel report.
+- Dedicated protocol-directory before, consumed, and TTL observations.
+
+Pass/Fail Criteria:
+
+PASS if all successful and negative paths are non-mutating and leak no content outside the declared output. FAIL on any target write, lifecycle action, focus/select/resize side effect, OS capture invocation, ordinary-message artifact, or disabled/unauthorized content byte. BLOCKED if target state cannot be observed safely.
+
+## Terminal snapshot evidence contract
+
+### Automated portable evidence
+
+The PR workflow must run these locked package tests on `windows-latest`, `ubuntu-latest`, `macos-15`, and `macos-15-intel`:
+
+```text
+cargo test --locked -p terminal-snapshot-renderer
+cargo test --locked -p session-bridge --bin agentscommander-api-helper terminal_snapshot
+```
+
+The renderer test decodes each golden, asserts exact RGB8 dimensions and allowed chunks, verifies embedded font/license hashes, samples contract pixels, and compares the same checked-in PNG hashes on every runner. The helper tests cover strict request/response, no-proxy/no-redirect/no-retry behavior, bounds, corruption, deadlines, and validate-before-create output.
+
+Windows also retains full daemon/CLI/API Rust gates, frontend gates, and release CLI smoke. The release smoke directly invokes root `--help` and `terminal-snapshot --help` under both `powershell.exe` and `pwsh.exe` for both release binaries. It asserts exit 0, expected syntax, and empty stderr without attempting a live capture.
+
+### Manual platform record
+
+Record each tested OS image and architecture separately:
+
+| Platform | Required manual observations |
+|---|---|
+| Windows 10 1809+ or Windows 11 x86_64 | ConPTY local target; Docker target/requester when available; hidden/minimized/unmounted UI; NTFS create-new, reparse, ACL, and cleanup behavior; PNG decode and classification. |
+| Ubuntu latest x86_64 | Unix PTY local target; optional Docker target/requester; headless capture; protocol directory `0700` and file/output `0600`; PNG decode and classification. |
+| macOS arm64 and x86_64 | Unix PTY local target; headless capture; file mode and cleanup; PNG decode and classification. Record the current project support caveat instead of claiming broad macOS certification. |
+
+Docker-dependent manual evidence may be `SKIP` only when Docker is unavailable, with the exact reason. Pure in-process local/container backend automation may not skip.
+
+### Visual review classes
+
+- **Class A, contract regression:** Byte hash, dimensions, cell placement, palette, cursor, wide pairing, clipping, or chunk set differs. This blocks merge.
+- **Class B, declared fallback:** U+FFFD or the fixed hollow-box replacement appears and `fallbackGlyphCount` matches. Accept only for a fixture intentionally missing a font glyph.
+- **Class C, documented frontend difference:** The fixed font, palette, or cursor differs from xterm/WebGL, or unsupported images, selection, or ligatures are absent while fidelity is correct. This is not a renderer defect.
+- **Class D, invalid evidence:** The claimed golden came from OS window, monitor, desktop, or WebView capture, or depends on an installed font. Reject and recollect the evidence from renderer bytes.
+
+Do not silently update a golden hash. A deliberate renderer change requires a renderer-version change, reviewed golden update, third-party notice review, and schema/documentation review.
+
+A normal app screenshot can document frontend visibility or non-mutation, but it cannot prove PNG golden fidelity. Preserve the generated PNG bytes, hash, decoder report, runner identity, and classification as the renderer evidence.

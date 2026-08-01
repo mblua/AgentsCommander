@@ -42,6 +42,12 @@ container transport binding. Manual clients remain unbound even if they request
 the `pty-input` scope. Workers do not receive that scope automatically, and a
 handcrafted registry row cannot substitute for live runtime provenance.
 
+Terminal snapshots use the separate `terminal-snapshot` scope and the same
+fresh automatic live-container binding requirement. A valid `send` or
+`pty-input` scope does not imply this read capability. Manual clients remain
+unauthorized even if their requested scope list contains `terminal-snapshot`.
+Workers never receive it automatically.
+
 Identity is the token's bound replica: `from` is derived at request time from
 `boundRoot`, never from the request body. The Root Agent is rejected from HTTP
 at mint time and request time. Auth is unconditional in all build profiles (no
@@ -114,6 +120,51 @@ probing.
   selected session/backend when known, canonical timestamps, and fixed reason
   metadata only. They never contain text, bearer credentials, raw nonce, host
   path, argv, environment, or arbitrary parser/OS error text.
+
+### Terminal snapshots
+
+`POST /api/v1/terminal-snapshot` reads the current backend terminal viewport
+  for a live automatically bound container Coordinator. It requires the
+  distinct `terminal-snapshot` scope and the default-off
+  `terminalSnapshotsEnabled` security gate. Root is host-only. The strict body
+  rejects unknown and duplicate fields:
+  ```json
+  {
+    "apiVersion": "1",
+    "requestId": "22222222-2222-4222-8222-222222222222",
+    "to": "project:wg-1-team/member",
+    "format": "json"
+  }
+  ```
+  `format` is `json` or `png`. The target must be a verified non-Coordinator
+  member in the requester's same exact physical project and workgroup. Requester
+  and route identity are proven before target session, backend, parser, or
+  liveness lookup. A shape-valid unauthorized target therefore cannot act as a
+  target-liveness oracle.
+
+  The route rejects query strings, missing or duplicate authorization and
+  content headers, a content type other than JSON with at most
+  `charset=utf-8`, non-identity content encoding, mismatched content length,
+  and bodies over 8 KiB. Success is exactly HTTP 200. JSON success contains
+  `{ "apiVersion":"1", "result": { "format":"json", "snapshot": ... } }`.
+  PNG success contains `metadata` and bounded standard `pngBase64`; it never
+  contains cell rows in metadata. The success envelope is capped at 24 MiB,
+  decoded JSON and PNG at 16 MiB, and errors at 8 KiB.
+
+  Every handler-produced success and error has exactly
+  `Content-Type: application/json; charset=utf-8`, `Cache-Control: no-store`,
+  and `Pragma: no-cache`. The operation is a fresh point-in-time read and is
+  not idempotent; `requestId` is correlation, not replay authority.
+
+  Use `agentscommander-api-helper terminal-snapshot --to <exact-fqn>`.
+  For PNG, add `--format png --output <absolute-new-file.png>`. The helper reads
+  `AGENTSCOMMANDER_API_URL` and `AGENTSCOMMANDER_API_TOKEN`, sends one request
+  with no proxy, redirect, compression, or retry fallback, validates the closed
+  response and PNG before output creation, and prints JSON metadata only.
+  Complete schema, fidelity, renderer, limits, stable error mapping, and
+  cleanup are documented in
+  [`docs/features/terminal-snapshots.md`](../../../docs/features/terminal-snapshots.md).
+
 - `GET /api/v1/peers[?peer=<fqn>...]` - `list-peers-lean` for the caller's bound
   replica; `reachable` is computed from the bound identity.
 - `GET /api/v1/healthz` - unauthenticated liveness, body exactly `{"ok":true}`.
@@ -129,6 +180,9 @@ the host `messaging/` directory, or the Docker socket.
 - `AGENTSCOMMANDER_SESSION_ID=<uuid>`
 - `AGENTSCOMMANDER_SESSION_REGISTRATION_TOKEN=<one-time ticket>`
 - `AGENTSCOMMANDER_ROOT=<host replica root bound to the token>`
+
+`agentscommander-api-helper terminal-snapshot` uses only the API URL and token
+for authority. It does not accept a host `--root` or `--token` argument.
 
 Docker Desktop containers cannot reach a daemon bound only to `127.0.0.1`.
 For local container sessions, enable the API server and set `apiServerBind` to
@@ -146,6 +200,14 @@ stay in v1; a breaking change introduces `/api/v2` mounted alongside. The
 Every mint/revoke and authenticated request appends `(ts, clientId, boundFqn,
 op, outcome)` to `api-audit.log` (host-only, 10 MB cap + one rotation, never
 fails closed). Secrets and hashes are never logged.
+
+Terminal snapshots use one metadata-only `terminal_snapshot` event instead of
+the generic authenticated-request event. It may record verified identities,
+format, selected session/backend, dimensions, sequence, capture time, payload
+byte count, status, and a fixed reason code. It never records cell text, JSON,
+PNG/base64, ANSI, title, bearer value or hash, nonce, output path, or content
+hash. Audit is fail-soft operational metadata, not compliance-grade fail-closed
+audit.
 
 The message bus database is stored plaintext at
 `config_dir()/api-message-bus.sqlite3`. It is host-only and sensitive because it

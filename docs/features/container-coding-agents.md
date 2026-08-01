@@ -29,6 +29,37 @@ If AC finds no host credential, or if the destination directory or file is a sym
 
 First-run stamping means AC pre-accepts Claude Code's **"do you trust this folder?"** dialog for the container's `/workspace`. That is a safety prompt, and AC answers it on your behalf so the agent does not stall at launch. The folder is the workspace you chose to open, and AC already bind-mounts it read-write. This is deliberate, it is stated in the Settings hint, and it is stated here.
 
+## Terminal snapshots from a container Coordinator
+
+An automatically bound live container Coordinator receives the distinct `terminal-snapshot` API scope in addition to its ordinary bridge scopes. It can read one verified non-Coordinator member in the same exact physical project and workgroup. A worker token never receives the scope, and a manual API client remains unauthorized even if its registry entry lists the string.
+
+Enable the default-off **Settings > General > Terminal snapshots** gate first. The screen can contain credentials, source, prompts, and personal data, and AgentsCommander does not redact it.
+
+Use the helper with the automatically injected environment:
+
+```bash
+agentscommander-api-helper terminal-snapshot \
+  --to "project:wg-1-team/member"
+```
+
+For PNG:
+
+```bash
+agentscommander-api-helper terminal-snapshot \
+  --to "project:wg-1-team/member" \
+  --format png \
+  --output "/workspace/evidence/snapshot.png" \
+  --timeout 15
+```
+
+The helper reads only `AGENTSCOMMANDER_API_URL` and `AGENTSCOMMANDER_API_TOKEN` for authority. Do not pass `--token` or `--root`. It sends one non-idempotent `POST /api/v1/terminal-snapshot`, bypasses ambient proxies, disables redirect and retry behavior, requests identity encoding, and uses one absolute deadline. JSON is the default; PNG requires an absolute new `.png` path inside the container filesystem.
+
+A successful JSON read writes one compact ASCII-only document plus LF. PNG writes a fully validated file and prints metadata only, never bytes or base64. The API caps the request and error body at 8 KiB, success transport at 24 MiB, and decoded JSON or PNG content at 16 MiB. Every route-produced response has `Content-Type: application/json; charset=utf-8`, `Cache-Control: no-store`, and `Pragma: no-cache`.
+
+Root snapshot authority is deliberately host-only. Root must use `agentscommander terminal-snapshot` with a live Root session token and never receives an API identity.
+
+This read does not depend on frontend visibility or access to the target's repository. The separate [repo mount limitation](#1-container-agents-cannot-reach-their-repos-935) still prevents normal container repo work. See [Terminal snapshots](terminal-snapshots.md) for authorization, schema, fidelity, renderer, privacy, errors, and cleanup.
+
 ## Known limitations
 
 All of the following are current. Host login reuse does not fix any of them.
@@ -97,4 +128,5 @@ Every step logs under the `[container-cred]` prefix. Set `logLevel` to `info` (t
 - [Settings reference → Container coding agents](../reference/settings.md#container-coding-agents): the `containerCredentialsFromHost` field
 - [Security model](../security.md#container-coding-agents-copied-host-credentials): threat model for the copied credential
 - [Coding agents](../integrations/coding-agents.md): which CLIs AC drives and how it finds them
+- [Terminal snapshots](terminal-snapshots.md): the separate authorized backend-viewport read capability
 - [ac-claude image README](../../docker/ac-claude/README.md): building the container image and supplying credentials by hand
