@@ -28,7 +28,7 @@ When the user activates voice recording:
 
 ### Inter-Agent Messaging
 
-The internal messaging system between agents is **entirely local**. Messages are written as Markdown files to `messaging/` directories on your own disk, inside each workgroup and inside the Root Agent directory. No external network calls are made.
+The internal messaging system between agents is **local by default**: the file-based path writes Markdown files into `messaging/` directories inside each workgroup and inside the Root Agent directory, and other delivery paths keep message content in queues of their own. AC sends message content to no service of its own. A destination you select yourself, such as `send --outbox`, can place a message outside those locations, including on another machine.
 
 ## What Is NOT Transmitted
 
