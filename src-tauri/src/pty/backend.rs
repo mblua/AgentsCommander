@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::errors::AppError;
 use crate::pty::context_scrape::{ContextSessionLiveness, ScreenRowsRead};
 use crate::pty::output::{PtyOutputTarget, PtyScreenSnapshot};
+use crate::pty::watchers::{FrameStamp, ScreenRowsSince};
 use crate::resource_monitor::{ResourceLaunchRegistration, ResourceLogicalAgentSlot};
 use crate::session::profile::{CodingAgentKind, IdleTuning};
 
@@ -167,6 +168,26 @@ pub trait PtyBackend: Any + Send + Sync {
     /// - `SessionOver`: there is no session here any more. Report unavailable once, then
     ///   stop sampling it.
     fn get_screen_rows(&self, id: Uuid) -> ScreenRowsRead;
+
+    /// #1171 - the session's screen, but only when it CHANGED since `seen`, plus the wrap
+    /// flags and cursor row the watcher engine's frame diff needs.
+    ///
+    /// **Defaulted**, following `context_session_liveness` above, so the two `PtyBackend` test
+    /// fakes (`pty/manager.rs:926`, `:1025`) and any out-of-tree implementor keep compiling.
+    /// The default delegates to `get_screen_rows` and reports `stamp: None`, which reads as
+    /// "changed": the property "the default never reports `Unchanged`" therefore falls out of
+    /// the type instead of out of a rule an implementor has to remember.
+    ///
+    /// - `Unchanged`: the stamp matched. No rows were cloned.
+    /// - `Frame`: the live grid.
+    /// - `Missing`: no reading this tick, and NO claim about the session. Keep sampling it.
+    /// - `Gone`: there is no session behind this id. Retire it now.
+    ///
+    /// The `Missing` / `Gone` split is the same distinction `get_screen_rows` draws between
+    /// `Unavailable` and `SessionOver`, carried on a type that can also say "nothing changed".
+    fn screen_rows_since(&self, id: Uuid, _seen: Option<FrameStamp>) -> ScreenRowsSince {
+        crate::pty::watchers::frame_from_screen_rows_read(self.get_screen_rows(id))
+    }
 
     fn register_response_watcher(
         &self,

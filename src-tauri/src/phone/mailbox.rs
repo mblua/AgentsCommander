@@ -6223,10 +6223,12 @@ impl MailboxPoller {
         // postcondition. This is a BACKSTOP, not the primary defense: the DB
         // dispatcher must skip its tick before leasing (see `api/dispatcher.rs`,
         // #885 F-5); reaching this Err from there would burn an attempt and can
-        // POISON the message. The two callers for which this Err is safe:
+        //   POISON the message. The one caller for which this Err is safe:
         //   - filesystem poller: non-permanent error, retried at the 3s poll
         //     interval up to MAX_DELIVERY_ATTEMPTS. Deferred, not lost.
-        //   - inline API send: mapped to DeliveryOutcome::Rejected. No retry.
+        //   The inline API send that used to map this to a rejected outcome no
+        //   longer exists (#1177), so the DB dispatcher is now the only other
+        //   caller, and it is exactly the one F-5 must keep out of this window.
         if let Some(g) = app.try_state::<std::sync::Arc<crate::session::purge_guard::PurgeGuard>>()
         {
             if g.blocks_agent(&msg.to) {

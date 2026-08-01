@@ -53,6 +53,75 @@ fn classify_existing_root(status: &SessionStatus, has_pty: bool) -> ExistingRoot
     }
 }
 
+/// #1032 + #1171 - start sampling a freshly spawned session, with both engines.
+///
+/// **Sessions with no agent are never registered**, and that rule lives HERE, once, for both:
+/// a plain shell costs neither engine anything, ever. `try_state` and not `state`, because
+/// `state` panics when unmanaged and a test app manages neither engine - an absent engine is
+/// simply the feature being off.
+///
+/// There is no race with the screen parser: `PtyManager::spawn` has already returned `Ok` at
+/// the call site and the parser is registered during the spawn. The scraper's first sample is
+/// 5 s away and the first watcher tick is 200 ms away, and neither can arrive before the
+/// parser exists.
+pub(crate) fn register_session_samplers<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    id: Uuid,
+    agent_id: Option<String>,
+) {
+    let Some(agent_id) = agent_id else {
+        return;
+    };
+    if let Some(scraper) = app.try_state::<Arc<crate::pty::context_scrape::ContextScraper>>() {
+        scraper.register_session(id, agent_id.clone());
+    }
+    if let Some(watchers) = app.try_state::<Arc<crate::pty::watchers::WatcherEngine>>() {
+        watchers.register_session(id, agent_id);
+    }
+}
+
+/// #1171 - purge every per-session side structure a DESTROYED session leaves behind.
+///
+/// One helper with two call sites, because the per-session side-state purge is already
+/// duplicated in this file: the destroy loop and `publish_restart_destroyed` are parallel
+/// copies of each other, and adding a third thing to purge to only one of them is how a leak
+/// gets written.
+///
+/// **The order is load-bearing.** The engine is retired FIRST, so no tick still in flight can
+/// republish this session's status and recreate the entry step 2 removes. `WatcherHistory`
+/// creates entries only from the engine's publish, and the engine publishes only while holding
+/// its registration lock, so once `retire_session` returns nothing can bring the entry back.
+///
+/// **Destroyed sessions only.** A session that exits on its own is NOT destroyed: the engine
+/// stops sampling it and its buffer stays, which is the case that matters - an API error or a
+/// CLI crash is exactly when the evidence is worth keeping. Root-agent sessions retained as
+/// `Exited` keep theirs too, because their row is still in the list.
+pub(crate) fn purge_session_side_state<R: tauri::Runtime>(app: &AppHandle<R>, session_id: Uuid) {
+    if let Some(watchers) = app.try_state::<Arc<crate::pty::watchers::WatcherEngine>>() {
+        watchers.retire_session(session_id);
+    }
+    if let Some(history) = app.try_state::<crate::pty::watchers::history::WatcherHistoryState>() {
+        history.purge(session_id);
+    }
+    reset_substantive_input(app, session_id);
+}
+
+/// #871 - clear a session's substantive-input marker.
+///
+/// Extracted by #1171 so it has ONE definition rather than the two inline copies the destroy
+/// and restart cleanups each carried. It is a map removal, so calling it twice for the same
+/// session is a no-op and not a second effect - which is what lets the destroy path keep
+/// resetting every id it publishes, retained-exited ones included, while the destroyed-only
+/// purge below also resets the ones it owns.
+fn reset_substantive_input<R: tauri::Runtime>(app: &AppHandle<R>, session_id: Uuid) {
+    if let Some(activity) = app.try_state::<crate::pty::input_activity::SubstantiveInputState>() {
+        activity
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .reset(session_id);
+    }
+}
+
 async fn rollback_pre_created_session<R: tauri::Runtime>(
     _app: &AppHandle<R>,
     _session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
@@ -1973,6 +2042,11 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             let context_result = coordinator
                 .run_blocking_seed_work({
                     let cwd = cwd.clone();
+                    // #1172 D5: capture the FINAL fresh-versus-resume decision. `skip_auto_resume`
+                    // is a `mut` parameter of this function whose only mutation is the #756 mirror
+                    // at :1470, ~500 lines above, so the value read here is final. `true` means AC
+                    // is deliberately NOT resuming: a fresh conversation begins.
+                    let start_fresh = skip_auto_resume;
                     let target_filename = target_filename.clone();
                     let managed_filenames = managed_filenames.clone();
                     let container_repos = container_repos.clone();
@@ -1989,15 +2063,34 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                         let activation: Option<
                             crate::config::seed_manifest::ManifestActivationToken,
                         > = None;
-                        crate::config::session_context::materialize_agent_context_file_with_filename_activated(
-                            &cwd,
-                            &target_filename,
-                            &managed_filenames,
-                            is_coordinator,
-                            auto_self_clear,
-                            container_repos.as_ref(),
-                            activation.as_ref(),
-                        )
+                        let context_result =
+                            crate::config::session_context::materialize_agent_context_file_with_filename_activated(
+                                &cwd,
+                                &target_filename,
+                                &managed_filenames,
+                                is_coordinator,
+                                auto_self_clear,
+                                container_repos.as_ref(),
+                                activation.as_ref(),
+                            );
+                        // #1172 - rotate the origin Agent Matrix's `memory/` for the fresh session
+                        // about to start, so it begins with a clean write target and the previous
+                        // session's memory is preserved under `memory_<ts>/`.
+                        //
+                        // Two gates, both load-bearing (D5):
+                        //   - `start_fresh`: a RESUME never rotates. This chokepoint also serves the
+                        //     app-startup restore path (`create_session_inner_for_restore`, :1239),
+                        //     which continues an existing conversation; emptying `memory/` under a
+                        //     resumed agent is the one outcome the user ruled out.
+                        //   - `is_ok()`: a launch that is about to roll back (:2016-2036) leaves no
+                        //     rotation behind.
+                        //
+                        // Never fails a launch: `rotate_origin_memory_at_spawn` returns `()` and every
+                        // error path inside it warns and returns.
+                        if start_fresh && context_result.is_ok() {
+                            crate::config::agent_memory::rotate_origin_memory_at_spawn(&cwd);
+                        }
+                        context_result
                     }
                 })
                 .await;
@@ -2258,20 +2351,7 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             return Err(err);
         }
 
-        // #1032 - start sampling this session's context reading. This sits above the backend
-        // split and covers local and container alike, with no backend plumbing. `try_state`,
-        // not `state`: `state` panics when unmanaged, and test apps do not manage the scraper.
-        // An absent scraper is simply the feature being off.
-        //
-        // Sessions with no agent are never registered, so a plain shell costs nothing. There is
-        // no race with the parser here: the first sample is 5s away.
-        if let Some(agent_id) = agent_id.clone() {
-            if let Some(scraper) =
-                app.try_state::<Arc<crate::pty::context_scrape::ContextScraper>>()
-            {
-                scraper.register_session(id, agent_id);
-            }
-        }
+        register_session_samplers(app, id, agent_id.clone());
 
         // Auto-inject optional non-credential bootstrap text for agent sessions
         // after PTY spawn. Credentials are already present in child environment
@@ -3196,16 +3276,22 @@ pub(crate) async fn execute_destroy_transaction<R: tauri::Runtime>(
                 );
             }
         }
-        if let Some(activity) = transaction
-            .app()
-            .try_state::<crate::pty::input_activity::SubstantiveInputState>()
-        {
-            activity
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .reset(session_id);
-        }
+        reset_substantive_input(transaction.app(), session_id);
     }
+
+    // #1171 - a SEPARATE loop over `destroyed_ids` only, rather than a membership test inside
+    // the loop above. That loop iterates `destroyed_ids.chain(retained_exited_ids)`, so a
+    // `contains` check would be O(n squared) and, worse, would express a business rule as a
+    // condition inside a loop that does something else. A separate loop makes "destroyed only"
+    // structural.
+    //
+    // Root-agent sessions retained as `Exited` are deliberately NOT purged: they stay in the
+    // manager and their row is still in the list, so their post-mortem view still has a place
+    // to be shown.
+    for session_id in outcome.destroyed_ids.iter().copied() {
+        purge_session_side_state(transaction.app(), session_id);
+    }
+
     for row in committed.changed_rows.iter().filter(|row| {
         Uuid::parse_str(&row.id)
             .ok()
@@ -3755,6 +3841,11 @@ async fn teardown_old_for_restart<R: tauri::Runtime>(
     Ok(true)
 }
 
+/// #1171 - this covers BOTH restart paths: `execute_restart_transaction`'s success path and
+/// `finalize_failed_restart`. A restart is a normal flow - it is in the invoke handler, the
+/// mailbox calls it, and a bulk settings save can restart sessions - so without the purge here
+/// every restart would orphan up to 500 ring entries under an id that is already gone from the
+/// session list, unreachable from the UI.
 fn publish_restart_destroyed<R: tauri::Runtime>(
     transaction: &SelectionTransaction<R>,
     session_id: Uuid,
@@ -3770,15 +3861,7 @@ fn publish_restart_destroyed<R: tauri::Runtime>(
             );
         }
     }
-    if let Some(activity) = transaction
-        .app()
-        .try_state::<crate::pty::input_activity::SubstantiveInputState>()
-    {
-        activity
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .reset(session_id);
-    }
+    purge_session_side_state(transaction.app(), session_id);
 }
 
 async fn finalize_failed_restart<R: tauri::Runtime>(
@@ -5856,6 +5939,140 @@ mod tests {
         )
     }
 
+    /// #1175. The bytes every rotation fixture seeds into `memory/MEMORY.md`.
+    /// Asserted verbatim on both sides of every differential, so a green test can
+    /// never mean "an archive directory exists but is empty".
+    const ROTATION_SENTINEL: &str = "remembered bytes";
+
+    /// #1175. One replica and the origin Agent Matrix its `config.json` identity
+    /// points at.
+    struct RotationSide {
+        replica_cwd: String,
+        matrix: std::path::PathBuf,
+    }
+
+    /// #1175. `strict_target_fixture` (`:5896`) already builds two symmetric
+    /// replicas under `<temp>/project/.ac/wg-1-team/` whose `config.json` identity
+    /// names `<temp>/project/.ac/_agent_dev-one` and `_agent_dev-two`. Those two
+    /// directories sit directly under a `.ac` workspace, so they satisfy
+    /// `is_canonical_agent_matrix_dir`, which is what `resolve_rotatable_matrix_root`
+    /// (`config/agent_memory.rs:83`) resolves a replica session to.
+    ///
+    /// Seed a non-empty `memory/` in each: #1172 D2 makes an EMPTY `memory/` a
+    /// no-op, so the sentinel is what gives the fresh half of each differential
+    /// something to rotate.
+    fn rotation_fixture() -> (tempfile::TempDir, RotationSide, RotationSide) {
+        let (temp, first_replica, second_replica) = strict_target_fixture();
+        let workspace = temp.path().join("project").join(".ac");
+        let mut sides = Vec::new();
+        for (replica_cwd, agent) in [
+            (first_replica, "_agent_dev-one"),
+            (second_replica, "_agent_dev-two"),
+        ] {
+            let matrix = workspace.join(agent);
+            std::fs::create_dir_all(matrix.join("memory")).expect("create origin memory/");
+            std::fs::write(matrix.join("memory").join("MEMORY.md"), ROTATION_SENTINEL)
+                .expect("seed origin memory/");
+            sides.push(RotationSide {
+                replica_cwd,
+                matrix,
+            });
+        }
+        let second = sides.pop().expect("second side");
+        let first = sides.pop().expect("first side");
+        (temp, first, second)
+    }
+
+    /// #1175. Every rotated sibling of `memory/`, sorted. Same shape as
+    /// `agent_memory.rs:180-189`.
+    fn rotated_memory_dirs(matrix: &std::path::Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(matrix)
+            .expect("read origin matrix")
+            .map(|entry| entry.expect("dir entry").file_name())
+            .filter_map(|name| name.to_str().map(str::to_string))
+            .filter(|name| name.starts_with("memory_"))
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// #1175. "Nothing has happened to this side." Used for the resume side AND
+    /// for a side whose own launch has not run yet, which is what stops the second
+    /// launch from laundering a side effect of the first (D3, hole 2).
+    fn assert_memory_pristine(side: &RotationSide, case: &str) {
+        assert_eq!(
+            std::fs::read_to_string(side.matrix.join("memory").join("MEMORY.md")).ok(),
+            Some(ROTATION_SENTINEL.to_string()),
+            "#1175 ({case}): the origin matrix's live memory/ must be exactly as it was"
+        );
+        let rotated = rotated_memory_dirs(&side.matrix);
+        assert!(
+            rotated.is_empty(),
+            "#1175 ({case}): nothing may have rotated, and this created {rotated:?} in {}",
+            side.matrix.display()
+        );
+        let replica = std::path::Path::new(&side.replica_cwd);
+        assert!(
+            rotated_memory_dirs(replica).is_empty() && !replica.join("memory").exists(),
+            "#1175 ({case}): the replica itself must gain no memory* entry"
+        );
+    }
+
+    /// #1175. The RESUME assertion: pristine, PLUS a witness that the launch
+    /// actually entered the context block.
+    ///
+    /// The witness is not decoration. `:2041` is an `if let`, and a launch that
+    /// skips it still reaches the spawn, so `spawn_count` cannot see the
+    /// difference; without this, "nothing rotated" is satisfiable by a resume that
+    /// never reached the gate at all.
+    /// `materialize_agent_context_file_with_filename_activated`
+    /// (`config/session_context.rs:2215`) writes `cwd.join(target_filename)`, and
+    /// the fixture seeds only `config.json` into a replica, so this file existing
+    /// means the block ran. Measured in probe 14 and in 2.7.
+    fn assert_resume_left_memory_alone(side: &RotationSide, case: &str) {
+        assert!(
+            std::path::Path::new(&side.replica_cwd)
+                .join("AGENTS.md")
+                .is_file(),
+            "#1175 ({case}): the resume must have ENTERED the context block; without \
+             this witness the no-rotation assertion below can pass vacuously"
+        );
+        assert_memory_pristine(side, case);
+    }
+
+    /// #1175. The FRESH assertion, which is also the POSITIVE CONTROL: it fails if
+    /// the launch never reached the rotation chokepoint, which is what makes a green
+    /// `assert_resume_left_memory_alone` on the resume side attributable to the gate
+    /// rather than to an unreached call site.
+    fn assert_memory_rotated_once(side: &RotationSide, case: &str) {
+        let rotated = rotated_memory_dirs(&side.matrix);
+        assert_eq!(
+            rotated.len(),
+            1,
+            "#1175 ({case}): a fresh launch must rotate exactly once, found {rotated:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(side.matrix.join(&rotated[0]).join("MEMORY.md")).ok(),
+            Some(ROTATION_SENTINEL.to_string()),
+            "#1175 ({case}): the archive must carry the previous session's bytes"
+        );
+        let live = side.matrix.join("memory");
+        assert!(
+            live.is_dir(),
+            "#1175 ({case}): the fresh session must get a live memory/ back"
+        );
+        assert_eq!(
+            std::fs::read_dir(&live).expect("read live memory/").count(),
+            0,
+            "#1175 ({case}): the recreated memory/ starts empty"
+        );
+        let replica = std::path::Path::new(&side.replica_cwd);
+        assert!(
+            rotated_memory_dirs(replica).is_empty() && !replica.join("memory").exists(),
+            "#1175 ({case}): the replica itself must gain no memory* entry"
+        );
+    }
+
     async fn create_target_for_test(
         app: &tauri::App<tauri::test::MockRuntime>,
         session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
@@ -7225,6 +7442,343 @@ mod tests {
             count, 2,
             "create_session_inner must keep both archive activation gates"
         );
+    }
+
+    // T16 (#1172 D5), rescoped by #1175. READ THIS BEFORE TRUSTING IT.
+    //
+    // This is a SOURCE-LEVEL INVENTORY over `session.rs` alone. It does NOT prove
+    // that a resume never rotates, and it does not close the class of changes that
+    // retarget the rotation. Three measured facts bound it:
+    //
+    //   - A cross-file alias (`pub(crate) use ... as <alias>;` in `config/mod.rs`
+    //     plus an ungated call to the alias here) keeps assertions 1 to 3 intact
+    //     while a resume rotates. Recorded in the issue.
+    //   - A cross-file CALL added in `lib.rs` before the restore at `:2350` is
+    //     invisible to every assertion here and to both behavioral tests below.
+    //   - `skip_auto_resume |= is_coordinator;` inserted immediately above the
+    //     binding leaves ALL FIVE assertions and BOTH behavioral tests green while
+    //     a coordinator resume rotates. Measured; plan 2.8.
+    //
+    // What it DOES enforce, and what nothing else in this suite can:
+    //   - assertions 1 to 3: `rotate_origin_memory_at_spawn` is REFERENCED exactly
+    //     twice in this file, once in the comment and once in the gated call. A
+    //     third occurrence is an UNBUDGETED REFERENCE; it need not be a call. This
+    //     is what catches an ungated second call added on a launch branch the
+    //     behavioral tests do not drive (`execute_restart_transaction` at `:3897`,
+    //     the Root Agent launch at `:4703`).
+    //   - assertions 4 and 5: the name `start_fresh` is bound exactly once, and its
+    //     right-hand side is exactly the resume flag. That is a complete statement
+    //     about ONE LINE. It says nothing about the value flowing into that line,
+    //     which is the residual named above and in plan D5.
+    //
+    // The normative property is guarded behaviorally by
+    // `a_production_shaped_startup_restore_never_rotates_while_a_fresh_launch_does`
+    // and `create_session_inner_rotates_the_fresh_target_and_not_the_resumed_one`,
+    // for the entry points and argument shapes those tests drive and no further.
+    // Plan section 4.5 enumerates what neither side covers.
+    //
+    // One invisible dependency, already satisfied: the split needle below uses
+    // `\n`. This repository sets `core.autocrlf=true` on Windows checkouts, and
+    // `.gitattributes` `*.rs text eol=lf` is what keeps `session.rs` LF on disk
+    // (measured: 0 CRLF, 9344 LF). If that attribute were ever dropped, this test
+    // fails LOUD rather than silent: assertion 1 would count 2, because the needle
+    // also appears as this test's own `let gated_call = "..."` literal.
+    #[test]
+    fn rotate_origin_memory_at_spawn_has_one_gated_call_in_session_rs() {
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/session.rs"
+        ))
+        .expect("read session.rs");
+        let production = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production session source");
+        let normalized = production.split_whitespace().collect::<String>();
+        let gated_call = "ifstart_fresh&&context_result.is_ok(){crate::config::agent_memory::rotate_origin_memory_at_spawn(&cwd);}";
+
+        assert_eq!(
+            normalized.matches(gated_call).count(),
+            1,
+            "#1172 D5: the memory rotation must stay behind `start_fresh && context_result.is_ok()`. \
+             This pins the gate's exact spelling at the single call site in this file; it does not \
+             prove the resume property, and the behavioral tests named above prove it only for the \
+             entry points they drive."
+        );
+        // What assertions 2 and 3 add to assertion 1, stated as the bounded
+        // property they actually enforce.
+        //
+        // Assertion 1 pins one exact spelling of the gated call, so a second
+        // call spelled differently would not match its needle: a different
+        // argument, the path wrapped in parens so it reads `..._at_spawn)(`, or
+        // a block comment between the identifier and the paren. Assertions 2
+        // and 3 reach those by counting the BARE identifier rather than an
+        // invocation shape, and by pinning the one legitimate occurrence that
+        // is not a call, the comment 5.4 requires above the gate.
+        //
+        // The property they enforce, and nothing broader: within `session.rs`
+        // the exact identifier `rotate_origin_memory_at_spawn` occurs exactly
+        // twice, once in that comment and once in the call assertion 1 already
+        // pinned. A third occurrence is unbudgeted.
+        //
+        // That is a count of one identifier in one file. It does NOT establish
+        // that every route to the rotation is accounted for. A call reached
+        // through a cross-file alias, and a call added in another file, both
+        // leave this count at two; both are recorded in the header above, and
+        // the second is plan 9.2's M9, measured green against all five
+        // assertions here and both behavioral tests below.
+        let comment_mention = "`rotate_origin_memory_at_spawn`returns`()`";
+        assert_eq!(
+            normalized.matches(comment_mention).count(),
+            1,
+            "#1172 D5: the comment above the gate must keep naming the rotation exactly once; \
+             it is the one non-call mention the reference budget below accounts for."
+        );
+        assert_eq!(
+            normalized.matches("rotate_origin_memory_at_spawn").count(),
+            2,
+            "#1172 D5: within THIS FILE the rotation entry point must be REFERENCED exactly twice - \
+             once in the comment above the gate, once in the gated call itself. A third occurrence \
+             is unbudgeted: it may be a second call site, an import, or any other reference, and \
+             each of those is a change this inventory deliberately refuses to absorb silently. A \
+             cross-file alias evades this count entirely; see the header comment."
+        );
+        // #1175 D2 part 4. The gate's INPUT, not just its shape. Bounded claim: this
+        // pins ONE LINE. It cannot see how `skip_auto_resume` got its value; see the
+        // header and plan D5 residual 3.
+        assert_eq!(
+            normalized
+                .matches("letstart_fresh=skip_auto_resume;")
+                .count(),
+            1,
+            "#1175: `start_fresh` must be bound to the resume flag ALONE. Appending `|| <extra>` \
+             here makes a RESUME rotate on the production launches that supply the extra input. \
+             Measured (plan 2.7): `|| pending_start_fresh.is_some()` reds this assertion AND the \
+             production-shaped restore test; the `|| is_coordinator` variant reds only this one, \
+             because no cwd in this test binary can be a coordinator."
+        );
+        // #1175 round 2. Assertion 4 alone is defeated by ordinary shadowing:
+        // `let start_fresh = skip_auto_resume; let start_fresh = start_fresh || X;`
+        // preserves its needle exactly. MEASURED (plan 2.8): this assertion is the
+        // only thing in the suite that reds on that form.
+        assert_eq!(
+            normalized.matches("letstart_fresh=").count(),
+            1,
+            "#1175: `start_fresh` must be bound EXACTLY ONCE. A second binding shadows the first \
+             and can compose any additional input into the rotation decision while assertion 4's \
+             needle stays intact."
+        );
+    }
+
+    /// #1175 B1. The behavioral guard on #1172 D5's normative property, within the
+    /// scope D5 of this plan declares. This EXECUTES the launch path and looks at
+    /// the filesystem, so unlike the reference inventory above it reds under the
+    /// cross-file alias the issue built.
+    ///
+    /// The resume half is PRODUCTION-SHAPED, not merely nominal. Round 0 passed
+    /// `pending_start_fresh = None`, `resolved_spawn = None`, `agent_id = None` and
+    /// `skip_tooling_save = true`, none of which is what `lib.rs:2313-2372` passes
+    /// on an ordinary startup restore. Grinch showed the cost: a one-line
+    /// `let start_fresh = skip_auto_resume || pending_start_fresh.is_some();`
+    /// left every round-0 guard green while a real restore rotated, because
+    /// production passes `Some(false)` there and round 0 passed `None`. Each
+    /// argument below is annotated with the production line it mirrors.
+    ///
+    /// The fresh half is the POSITIVE CONTROL and is not optional: without it, a
+    /// green resume half would also be produced by a launch that never reached the
+    /// rotation chokepoint, or by the feature having been deleted outright.
+    ///
+    /// Observation happens at every boundary, never only at the end. See D3.
+    #[tokio::test]
+    async fn a_production_shaped_startup_restore_never_rotates_while_a_fresh_launch_does() {
+        let (_fixture, resumed, fresh) = rotation_fixture();
+        // `lib.rs:2314` rebuilds the spawn recipe from settings before restoring.
+        let settings = test_settings();
+        let spawn = super::build_configured_agent_spawn_for_cwd(
+            &settings,
+            "codex",
+            &resumed.replica_cwd,
+            None,
+        )
+        .expect("resolve the configured codex spawn")
+        .expect("codex is configured in test_settings");
+        // `lib.rs:2334-2340` takes shell, args and label from the rebuilt spawn.
+        let shell = spawn.shell.clone();
+        let shell_args = spawn.shell_args.clone();
+        let agent_label = Some(spawn.trusted_agent_label.clone());
+
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(ScriptedSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(settings, Arc::clone(&session_mgr), Arc::clone(&pty_mgr));
+
+        let restore =
+            crate::session::selection::SelectionTransaction::for_test(app.handle().clone());
+        let restored = super::create_session_inner_for_restore(
+            &restore,
+            &session_mgr,
+            &pty_mgr,
+            shell,
+            shell_args,
+            resumed.replica_cwd.clone(),
+            Some("startup restore".to_string()),
+            Some("codex".to_string()), // lib.rs:2358, ps.agent_id
+            agent_label,               // lib.rs:2339, spawn.trusted_agent_label
+            false,                     // lib.rs:2360, "Persist tooling on restore"
+            Vec::new(),
+            false,       // lib.rs:2362, skip_auto_resume_for_restore(false): RESUME
+            Some(spawn), // lib.rs:2363, the rebuilt recipe
+            None,        // lib.rs:2365, headless caller keeps 120x30
+            Some(false), // lib.rs:2366, Some(ps.start_fresh_on_restore). LOAD-BEARING.
+            None,
+        )
+        .await;
+        let restored = restored.expect("the production-shaped restore must launch");
+
+        // The launch must be an ACTUAL provider resume, not just a `false` argument.
+        // The Codex injection at `:1999` gates on `agent_kind`, and its body gates
+        // again on `if let Some(ref aid) = agent_id` at `:2000`, so this only holds
+        // because the rebuilt spawn supplies the agent id at `:1446-1450`.
+        let effective = restored
+            .effective_shell_args
+            .clone()
+            .unwrap_or_else(|| restored.shell_args.clone());
+        assert!(
+            effective.iter().any(|arg| arg == "resume"),
+            "#1175: the restore must be an ACTUAL Codex provider resume, got {effective:?}"
+        );
+
+        // Boundary 1: observe BOTH sides before the second cause runs.
+        assert_resume_left_memory_alone(&resumed, "production-shaped startup restore");
+        assert_memory_pristine(&fresh, "fresh side, before its own launch");
+
+        let created = super::create_session_inner(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            "codex".to_string(),
+            Vec::new(),
+            fresh.replica_cwd.clone(),
+            Some("fresh launch".to_string()),
+            None,
+            None,
+            true,
+            Vec::new(),
+            true, // a fresh create
+            None,
+            None,
+            CreateSelectionIntent::User,
+        )
+        .await;
+        assert!(created.is_ok(), "the fresh launch must launch: {created:?}");
+        assert_eq!(
+            backend.spawn_count.load(Ordering::SeqCst),
+            2,
+            "both launches must reach the PTY (this proves nothing about the context block)"
+        );
+
+        // Boundary 2: the fresh side rotated, and the resume side is STILL untouched.
+        assert_memory_rotated_once(&fresh, "fresh create");
+        assert_resume_left_memory_alone(&resumed, "restore, rechecked after the fresh launch");
+        close_test_coordinator(&app).await;
+    }
+
+    /// #1175 B2. The same function twice with matched arguments and the same
+    /// session label, one launch fresh and one launch resuming, in the OPPOSITE
+    /// order from B1.
+    ///
+    /// It is deliberately NOT called a one-boolean experiment, and it never was
+    /// one: the cwd differs, and the second launch runs against a `SessionManager`,
+    /// selection coordinator and backend the first already mutated. Naming that
+    /// "the flag alone" would grant exactly the false confidence #1175 exists to
+    /// remove. What it does establish, together with B1, is that no discriminator
+    /// based solely on first-versus-second launch explains the result: B1 runs
+    /// resume then fresh, this runs fresh then resume.
+    ///
+    /// The cwd differs for a positive reason, not because it has to. Two
+    /// same-target `CreateSelectionIntent::User` creates are supported and are
+    /// already exercised by `sequential_user_same_target_creates_remain_compatible`
+    /// (`:6958`); the dedup gate at `:1609` applies to Background and Suppress
+    /// only. Separate replicas are used so each side has its own independently
+    /// seeded, non-empty `memory/` to observe.
+    ///
+    /// Its resume half uses the same `false` polarity as the #599 reopen of a
+    /// closed coordinator, but it is NOT that scenario: `is_coordinator` is
+    /// deterministically false for every cwd in this binary, and the Tauri
+    /// `create_session` producer is bypassed. Plan D5 records coordinator polarity
+    /// and outer composition as untested.
+    ///
+    /// The rotating role is assigned to the OPPOSITE replica from B1's, so no
+    /// single fixture directory is the one that always rotates.
+    #[tokio::test]
+    async fn create_session_inner_rotates_the_fresh_target_and_not_the_resumed_one() {
+        let (_fixture, fresh, resumed) = rotation_fixture();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(ScriptedSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(
+            test_settings(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+
+        let created = super::create_session_inner(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            "codex".to_string(),
+            Vec::new(),
+            fresh.replica_cwd.clone(),
+            Some("matched differential".to_string()),
+            Some("codex".to_string()),
+            Some("Codex".to_string()),
+            true,
+            Vec::new(),
+            true, // FRESH first: the opposite order from B1
+            None,
+            None,
+            CreateSelectionIntent::User,
+        )
+        .await;
+        assert!(created.is_ok(), "the fresh create must launch: {created:?}");
+
+        // Boundary 1.
+        assert_memory_rotated_once(&fresh, "fresh create, observed immediately");
+        assert_memory_pristine(&resumed, "resume side, before its own launch");
+
+        let reopened = super::create_session_inner(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            "codex".to_string(),
+            Vec::new(),
+            resumed.replica_cwd.clone(),
+            Some("matched differential".to_string()),
+            Some("codex".to_string()),
+            Some("Codex".to_string()),
+            true,
+            Vec::new(),
+            false, // the #599 reopen value: this launch RESUMES
+            None,
+            None,
+            CreateSelectionIntent::User,
+        )
+        .await;
+        assert!(reopened.is_ok(), "the reopen must launch: {reopened:?}");
+        assert_eq!(
+            backend.spawn_count.load(Ordering::SeqCst),
+            2,
+            "both launches must reach the PTY"
+        );
+
+        // Boundary 2.
+        assert_resume_left_memory_alone(&resumed, "reopen that resumes");
+        assert_memory_rotated_once(&fresh, "fresh side, rechecked after the resume");
+        close_test_coordinator(&app).await;
     }
 
     #[test]

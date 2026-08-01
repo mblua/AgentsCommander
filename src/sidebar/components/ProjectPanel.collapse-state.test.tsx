@@ -13,7 +13,6 @@ import {
 } from "../../shared/testing/ui-harness";
 import { projectStore } from "../stores/project";
 import { defaultGroupsConfig } from "../stores/workgroup-groups";
-import { projectCollapseStore } from "../stores/project-collapse";
 import type { AcDiscoveryResult, AcLoopSummary } from "../../shared/types";
 
 const projectPath = "C:\\Project";

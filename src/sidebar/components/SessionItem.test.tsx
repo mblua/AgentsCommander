@@ -507,11 +507,60 @@ describe("SessionItem profile-outdated badge (#592)", () => {
     );
     try {
       // The agent badge renders, so the meta container is present; the outdated
-      // badge specifically must not be.
-      await waitFor(() => expect(rendered.root.querySelector(".agent-badge")).not.toBeNull());
+      // badge specifically must not be. #1167 moved the badge to the Coordinator
+      // row's class pair.
+      await waitFor(() =>
+        expect(rendered.root.querySelector(".ac-discovery-badge.agent")).not.toBeNull(),
+      );
       expect(rendered.root.querySelector(".profile-outdated-badge")).toBeNull();
     } finally {
       rendered.cleanup();
     }
   });
+});
+
+// #1167 - the badge must be one constant style in every row. jsdom does not apply
+// sidebar.css, so the pin is on the emitted classes and attributes, which is what
+// the CSS keys off: exactly `ac-discovery-badge agent`, no data-agent, no running.
+describe("SessionItem coding-agent badge is style-invariant (#1167)", () => {
+  let cleanupDom: (() => void) | null = null;
+
+  beforeEach(() => {
+    cleanupDom = installBrowserDomStubs();
+    resetUiStoresForTests();
+  });
+
+  afterEach(() => {
+    cleanupDom?.();
+    cleanupDom = null;
+    resetUiStoresForTests();
+    document.body.replaceChildren();
+  });
+
+  const CASES: { name: string; props: Partial<Session> }[] = [
+    { name: "live session, preset label", props: { agentId: "codex", agentLabel: "Codex", status: "running" } },
+    { name: "live session, custom label", props: { agentId: "claude", agentLabel: "Isolated Claude", status: "running" } },
+    { name: "exited session", props: { agentId: "codex", agentLabel: "Codex", status: { exited: 0 } } },
+    { name: "inactive member row", props: { id: "inactive-1", agentId: "codex", agentLabel: "Codex", status: { exited: 0 } } },
+  ];
+
+  for (const testCase of CASES) {
+    it(`renders the same badge markup: ${testCase.name}`, async () => {
+      const settings = baseSettings({ agents: TWO_AGENTS, codingAgentProfiles: profiles({}) });
+      const rendered = await renderRow(testCase.props, settings);
+      try {
+        await waitFor(() =>
+          expect(rendered.root.querySelector(".ac-discovery-badge.agent")).not.toBeNull(),
+        );
+        const el = rendered.root.querySelector<HTMLElement>(".ac-discovery-badge.agent")!;
+        expect(el.className).toBe("ac-discovery-badge agent");
+        expect(el.hasAttribute("data-agent")).toBe(false);
+        expect(el.classList.contains("running")).toBe(false);
+        expect(el.classList.contains("agent-badge")).toBe(false);
+        expect(rendered.root.querySelector(".agent-badge")).toBeNull();
+      } finally {
+        rendered.cleanup();
+      }
+    });
+  }
 });

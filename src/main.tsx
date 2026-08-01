@@ -6,6 +6,7 @@ import GuideApp from "./guide/App";
 import BrowserApp from "./browser/App";
 import SpecBoardApp from "./spec-board/App";
 import ResourceMonitorApp from "./resource-monitor/App";
+import WatchersApp from "./watchers/App";
 import ScreenshotOverlayApp from "./screenshot-overlay/App";
 import MainApp from "./main/App";
 import { initAutomationBridge } from "./shared/automation-bridge";
@@ -43,6 +44,11 @@ if (!isTauri) {
   render(() => <GuideApp />, root);
 } else if (windowType === "resource-monitor") {
   render(() => <ResourceMonitorApp />, root);
+} else if (windowType === "watchers") {
+  // #1171 - the query parameter is only read here, on the window's first creation. The
+  // window is a singleton, so every later open focuses it and re-scopes it through the
+  // `watchers_scope_request` event instead.
+  render(() => <WatchersApp initialSessionId={params.get("sessionId") || undefined} />, root);
 } else if (windowType === "screenshot-overlay") {
   document.documentElement.setAttribute("data-window", "screenshot-overlay");
   render(() => <ScreenshotOverlayApp />, root);
