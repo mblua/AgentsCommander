@@ -67,6 +67,7 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     apiServerEnabled: false,
     apiServerPort: 8766,
     apiServerBind: "127.0.0.1",
+    terminalSnapshotsEnabled: false,
     voiceToTextEnabled: false,
     voiceAutoExecute: false,
     voiceAutoExecuteDelay: 15,

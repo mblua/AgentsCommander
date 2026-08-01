@@ -451,6 +451,7 @@ export interface AppSettings {
   apiServerEnabled: boolean;
   apiServerPort: number;
   apiServerBind: string;
+  terminalSnapshotsEnabled: boolean;
   projectPath: string | null;
   projectPaths: string[];
   archivedProjectPaths: string[];

@@ -43,6 +43,7 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     apiServerEnabled: false,
     apiServerPort: 8766,
     apiServerBind: "127.0.0.1",
+    terminalSnapshotsEnabled: false,
     voiceToTextEnabled: false,
     voiceAutoExecute: false,
     voiceAutoExecuteDelay: 15,
@@ -258,6 +259,28 @@ describe("mergeSettingsForSavePreservingProjects (#868 backend normalization)", 
     const merged = mergeSettingsForSavePreservingProjects(draft, settings());
 
     expect(merged.agents[0]).not.toHaveProperty("backend");
+  });
+});
+
+describe("mergeSettingsForSavePreservingProjects terminal snapshot ownership", () => {
+  it("rebases the protected gate from fresh settings while preserving ordinary edits", () => {
+    const modalSeed = settings({
+      terminalSnapshotsEnabled: true,
+      npmUpdateNotificationsEnabled: true,
+    });
+    const draft = settings({
+      terminalSnapshotsEnabled: true,
+      npmUpdateNotificationsEnabled: false,
+    });
+    const fresh = settings({
+      terminalSnapshotsEnabled: false,
+      npmUpdateNotificationsEnabled: true,
+    });
+
+    const merged = mergeSettingsForSavePreservingProjects(draft, fresh, modalSeed);
+
+    expect(merged.terminalSnapshotsEnabled).toBe(false);
+    expect(merged.npmUpdateNotificationsEnabled).toBe(false);
   });
 });
 

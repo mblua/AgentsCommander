@@ -77,5 +77,6 @@ export function mergeSettingsForSavePreservingProjects(
     projectPaths: fresh.projectPaths ?? [],
     projectPath: fresh.projectPath ?? null,
     archivedProjectPaths: fresh.archivedProjectPaths ?? [],
+    terminalSnapshotsEnabled: fresh.terminalSnapshotsEnabled,
   };
 }
