@@ -1190,7 +1190,153 @@ This is load-bearing rather than cosmetic, because §4.1 uses the ordering as an
 
 ### dev-rust-grinch (Step 6)
 
-*pending*
+Adversarial review by `dev-rust-grinch`, reading this plan end to end and checking the production tree at `d7285ce`. The review deliberately concentrated on acceptance semantics, text/reflection-like test coupling, multi-owner recovery, documentation truthfulness, and claims that a normal compiler gate cannot prove. Findings G1 through G6 require Step 7 resolution; G7 closes the hidden-coupling audit with additional evidence. This is an enrichment, not a certification verdict.
+
+---
+
+#### G1. BLOCKING correction to E1: `git ls-tree` cannot be converted to a working-tree check by deleting `d7285ce`
+
+- **What:** E1 correctly requires acceptance greps and line counts to inspect the post-change tree, but its instruction to delete `d7285ce` from **every `git ls-tree`** is not executable. `git ls-tree` always requires a tree-ish. Also, a valid `git ls-tree HEAD -- <missing-path>` exits **0**, not 1, so E4's proposed "must return exit 1" expectation for the two deleted files is wrong.
+- **Why:** Demonstrated on this branch:
+
+  ```text
+  git ls-tree -r --name-only -- src-tauri/src/phone/
+      -> exit 128: fatal: Not a valid object name src-tauri/src/phone/
+
+  git ls-tree -r --name-only HEAD -- does/not/exist
+      -> exit 0, zero output
+  ```
+
+  If Step 7 applies E1 mechanically, both deleted-file checks become syntax failures. A hurried implementer can mistake that non-zero syntax failure for the requested proof of absence, while the surviving-directory inventory cannot run at all.
+- **Fix:** Keep E1's working-tree/`HEAD` correction for `git grep` and line counts, but replace the three `ls-tree` checks explicitly. Under E5's commit-before-gate order, use `HEAD` and assert output, not exit status:
+
+  ```bash
+  test ! -e src-tauri/src/phone/manager.rs
+  test ! -e src-tauri/src/commands/phone.rs
+  test -z "$(git ls-tree -r --name-only HEAD -- src-tauri/src/phone/manager.rs)"
+  test -z "$(git ls-tree -r --name-only HEAD -- src-tauri/src/commands/phone.rs)"
+
+  expected_phone_files="$(printf '%s\n' \
+    src-tauri/src/phone/consumption.rs \
+    src-tauri/src/phone/mailbox.rs \
+    src-tauri/src/phone/messaging.rs \
+    src-tauri/src/phone/mod.rs \
+    src-tauri/src/phone/types.rs)"
+  actual_phone_files="$(git ls-tree -r --name-only HEAD -- src-tauri/src/phone/)"
+  test "$actual_phone_files" = "$expected_phone_files"
+  ```
+
+  If Step 7 chooses gate-before-commit instead, use filesystem checks for the working tree and do not use `ls-tree` until the commit exists. In either ordering, no acceptance rule may treat a Git usage error as proof of deletion.
+
+---
+
+#### G2. The coordinator's strict order is load-bearing for the current per-batch gates; E6's proposed independence is operationally false
+
+- **What:** The Rust source edits are compile-independent of batch 1, but the **batch-2 and batch-3 acceptance commands are not**. They intentionally search both `src-tauri/` and `src/`. Therefore §4.1's statement that TypeScript-first is only a coherence preference, and E6's request to say Rust may proceed independently, conflict with §9.4.
+- **Why:** If batch 2 lands before batch 1, a correct Rust deletion still fails its gate:
+  - `PhoneMessage` has three surviving TypeScript hits (`ipc.ts:28,:811`, `types.ts:981`).
+  - `AgentInfo` has three TypeScript hits, so the promised total is 7 rather than the required four live Rust homonym hits.
+
+  If batch 3 also runs before batch 1, `git grep -w sync_workgroup_repos -- src-tauri/ src/` sees the live inner-helper log **and** `ipc.ts`'s invoke string, two hits rather than one. The implementer is told to stop on exactly those results.
+- **Fix:** Apply the coordinator decision verbatim in §8: batch 1 `dev-webpage-ui` -> batches 2 and 3 `dev-rust` -> batch 4 `technical-writer`, strictly sequential, one owner in the shared clone at a time. Resolve E6 by saying only that the **source changes compile independently**; with the chosen cross-tree gates, their execution order is mandatory. Alternatively the per-batch greps could be narrowed by language and only the final gate made cross-tree, but that is not the chosen coordination model.
+
+  The ownership split itself is sound. Keeping batches 2 and 3 with the same Rust owner also preserves the incremental Cargo target cache assumed by E5.
+
+---
+
+#### G3. D4's proposed `docs/security.md` sentence remains factually false after removing `conversations`
+
+- **What:** D4 changes the line to say that configuration, sessions, teams **and messages all live under** `~/.agentscommander/` (or the portable config directory). The deleted word is stale, but the surviving location claim for messages is also false and directly contradicts §4.2's evidence.
+- **Why:** Canonical inter-agent message bodies live under project-workspace directories:
+  - `phone/messaging.rs:160-164` creates `<workgroup-root>/messaging/`.
+  - `phone/messaging.rs:166-170` creates the Root Agent's `messaging/` directory.
+
+  Delivery also uses JSON outbox/artifact directories under an agent root or the app-selected outbox (`cli/send.rs:1078-1091`), not universally the user's home config directory. Shipping D4 as written tells a security-conscious user to secure, back up, or erase the wrong location. The same plan correctly refuses to repeat this error in `PRIVACY.md`, so the two documents would disagree after batch 4.
+- **Fix:** Step 7 must give D4 exact replacement wording that distinguishes config/session/team files in the instance config directory from Markdown messages in workspace `messaging/` directories (and, if the threat-model enumeration intends to be exhaustive, the local outbox artifacts). Do not merely delete `conversations, `. Add a positive batch-4 check for the corrected `messaging/` location in `docs/security.md`, as well as the existing negative `conversations` check. D2's retargeted privacy guarantee is otherwise accurate; its acceptance checks should additionally assert the literal `No external network calls are made.` because criterion 20 currently claims that clause without testing it.
+
+---
+
+#### G4. Scope has no binding final gate; an unrelated tracked edit can satisfy all 24 criteria
+
+- **What:** §8 prohibits scope expansion and formatting churn, but §9.5 only checks that `CHANGELOG.md` is absent. It never asserts the complete changed-path set or a clean handoff tree.
+- **Why:** For example, an editor can rewrite `docs/style-guide.md` during batch 4. Every symbol grep, line count, build, test, commit-count criterion, and the narrow `CHANGELOG.md` criterion still passes, so an unauthorized change ships despite §3's closed scope. The same problem applies to an unrelated source edit that happens to compile.
+- **Fix:** Add a final scope gate against `d7285ce`, excluding the plan workflow itself:
+
+  ```bash
+  git diff --check d7285ce..HEAD -- . ':!plans/1179-remove-dead-phone-and-sync-repos.md'
+  git diff --name-status d7285ce..HEAD -- . ':!plans/1179-remove-dead-phone-and-sync-repos.md'
+  ```
+
+  The second command must contain exactly these 13 paths and statuses, and nothing else:
+
+  ```text
+  M  PRIVACY.md
+  M  docs/agents/inter-agent-messaging.md
+  M  docs/reference/architecture.md
+  M  docs/security.md
+  M  src-tauri/src/commands/entity_creation.rs
+  M  src-tauri/src/commands/mod.rs
+  D  src-tauri/src/commands/phone.rs
+  M  src-tauri/src/lib.rs
+  D  src-tauri/src/phone/manager.rs
+  M  src-tauri/src/phone/mod.rs
+  M  src-tauri/src/phone/types.rs
+  M  src/shared/ipc.ts
+  M  src/shared/types.ts
+  ```
+
+  Require `git status --porcelain` to be empty before every owner handoff, and require the final production diff to be read against §5's exact cuts. The path whitelist catches unrelated files; the diff read catches same-file reformatting or an extra edit hidden behind a correct line count.
+
+---
+
+#### G5. Commit-before-gate needs an explicit durable handoff protocol
+
+- **What:** E5's commit-before-gate correction protects batch bytes during a long build, but in a multi-owner plan the presence of the expected commit does not prove its gate completed. No durable rule currently distinguishes "committed and accepted" from "committed, then the session died during the gate."
+- **Why:** A batch-1 owner can commit, start `npm test`, and lose the session. The next owner sees the exact expected commit and a clean tree and can begin batch 2 on code that was never accepted. The same risk is greatest after batch 2's pre-gate commit and cold Rust build. This defeats the reason for strict handoff and makes recovery state ambiguous from repository inspection alone.
+- **Fix:** State in §8 that no next owner is dispatched until the prior owner reports the complete gate as passed. On a session loss after commit, the recovering owner reruns the entire batch gate on that `HEAD`; commit existence is never treated as gate evidence. On a gate failure, the same owner fixes and amends the batch commit (or squashes any temporary fixup **before handoff**) and reruns the full gate. Do not proceed or create a fifth implementation commit. A failure outside §6.4 remains stop-and-report, as the plan already requires.
+
+---
+
+#### G6. The Mermaid gate has the wrong count and no cold-start executable procedure
+
+- **What:** §9.4 says to confirm "all five diagrams" in `architecture.md`. The file has 15 Mermaid fences, and D1 changes exactly four diagrams: §2 Rust Backend Modules, §3.3 Shared Layer, §4 IPC Contract, and §8 Persistence. The plan supplies neither a command nor a named preview environment; `package.json` has the Mermaid runtime library but no `mmdc`/documentation-render script.
+- **Why:** A purged-context terminal agent cannot objectively decide which fifth diagram was intended or execute "open ... in a Mermaid-capable preview." This contradicts §9.5's claim that every acceptance item is command-decidable. A manual glance can also silently use a different Mermaid version from the in-product runtime.
+- **Fix:** Correct the count to the four affected diagrams and either provide a reproducible parser/render command using an already available project harness, or label this explicitly as a non-binding manual QA item and retain the objective node-reference checks as the gate. Do not add a new dependency solely for this deletion without a separate scope decision.
+
+---
+
+#### G7. Additional reflection/generated/fixture coupling audit: three omitted readers are clean
+
+- **What:** E2 correctly opened the source-introspection test class, but its table was not exhaustive. Three more tests read affected production files without naming the removed symbols in an ordinary grep:
+  1. `session/selection.rs:3838-3899` recursively reads **every** Rust source file for lifecycle-ownership violations.
+  2. `src-tauri/tests/cli_workgroup_team.rs:1781-1869` reads `commands/entity_creation.rs` and asserts the production activation-token count and call shapes.
+  3. `testability/ui_automation.rs:2592-2638` reads `../src/shared/types.ts` and parses the `UiAutomationAction` union.
+- **Why:** These are exactly the hidden-coupling class named in the Step 6 dispatch. They do not fail this change, but omitting them leaves the claim "all are clean" under-evidenced.
+- **Fix/evidence:** No implementation edit is required:
+  - Deleting Rust files cannot add an ownership violation, and R7 contains none of the ownership sentinel's event/mutator patterns.
+  - R7 contains no `ManifestActivationToken::production()` construction, so the entity-creation source count remains exactly three.
+  - `UiAutomationAction` starts at `types.ts:847` and its terminating semicolon is before the deleted interfaces at `:981-998`, so that parser reads byte-identical text.
+
+  I also checked the adjacent variants: `ipc.transport.test.ts` dynamically imports the whole IPC module but never enumerates exports; the capability-reading integration test only asserts the `resource-monitor` window; no serialized JSON fixture/snapshot contains the deleted conversation shape; no Rust doctest names a removed item; and the companion `repo-agentscommander_webpage` contains no removed symbol or `conversations/` reference. This closes the hidden-coupling line of attack with no new batch edit.
+
+---
+
+#### Risk claims and mandatory disciplines that yielded no further defect
+
+- **Capabilities/config:** The default capability, `tauri.conf.json`, `tauri.prod.conf.json`, and `tauri.stage.conf.json` contain no removed command name. No capability edit is needed.
+- **Platform/Windows:** Neither deleted file nor its module declarations/registrations are cfg-gated. All inbound references are unconditional and deleted in the same batches. #1177's platform-only residue scenario does not apply.
+- **Concurrency/resources:** `phone/manager.rs` is synchronous filesystem code with no spawned task, channel, process, lock, or handle lifetime; the sync wrapper only delegates to the retained inner helper. The deletion introduces no cancellation, PTY, lock-order, or cleanup obligation.
+- **CHANGELOG/user surface:** I found no supported product caller and no separately documented public client contract. The Rust items are technically public, as §7 says; the strongest supportable wording is "no supported or known external consumer," not an absolute proof that no private Git dependency exists. That caveat does not overturn the decided no-CHANGELOG result under this repository's user-facing release-note policy.
+
+---
+
+#### Step 6 verdict
+
+**As written, the plan is not cold-start implementable**, already because of E1. Applying E1 mechanically would still leave G1's broken `ls-tree` commands, and D4 would ship a false security location.
+
+**Once the architect applies E1 with G1's command semantics; formalizes the strict owner/order and gate handoff in G2/G5; corrects D4; and closes the scope and Mermaid acceptance gaps in G4/G6, the plan is implementable from a purged context.** I found no missing production deletion, no seventh batch-2 edit, no hidden caller, and no platform/resource blocker.
+
+**Ownership verdict:** approve `dev-webpage-ui` for batch 1, `dev-rust` for batches 2 and 3, and `technical-writer` for batch 4. Approve only the coordinator's **strict sequential** order. With the current cross-tree per-batch greps, allowing Rust to run independently of batch 1 is not valid.
 
 ### Architect resolution and certification (Step 7)
 
