@@ -1037,7 +1037,156 @@ The change should proceed as specified. Every "dead" claim was re-verified indep
 
 ### dev-rust (Step 5)
 
-*pending*
+Enrichment by `dev-rust`, from a purged context, re-deriving every coordinate from `d7285ce` rather than from the Step 4 text. Seven items follow. **E1 is blocking and plan-wide; E2 through E4 are confirmations with new evidence; E5 through E7 are additions.**
+
+---
+
+#### E1. BLOCKING: every verification command in §9.4 is written against the baseline commit and can never pass
+
+**§9.3 rule 1, and therefore all of §9.4 and criteria 7 through 22 of §9.5, verify the state the change is meant to remove.** `git grep <sym> d7285ce` reads the commit object at `d7285ce`, which is the tree *before* any edit. It returns the same result whether the implementation is complete, half-applied, or never started.
+
+Demonstrated, not inferred:
+
+```
+$ git grep -n -w PhoneAPI d7285ce -- src/
+d7285ce:src/shared/ipc.ts:807:export const PhoneAPI = {
+exit=0
+```
+
+§9.4 requires that command to return exit 1. It cannot, at any point in the implementation. The same holds for the line counts:
+
+```
+$ git show d7285ce:src/shared/ipc.ts   | wc -l   ->  1252   (§9.4 expects 1235)
+$ git show d7285ce:src/shared/types.ts | wc -l   ->  1463   (§9.4 expects 1445)
+```
+
+**Root cause.** The `d7285ce` discipline is correct for *revalidation*, which is what the two Step 3 reports were doing: proving the baseline state before anything is touched. It was carried into *acceptance*, which proves the post-change state. The revision is inverted for that purpose.
+
+**The stated justification does not hold for the per-batch greps.** §9.3 rule 1 defends pinning to `d7285ce` on the grounds that a working-tree grep would match this plan file. Every per-batch grep in §9.4 is pathspec-scoped to `src/`, `src-tauri/`, `docs/`, `PRIVACY.md` or `docs/security.md`. None of those pathspecs can reach `plans/`. The pollution risk exists only for the two repo-wide greps in §9.4 "Final", and both already carry `':!plans/'`, which is the correct and sufficient guard.
+
+**Correction to apply.**
+
+1. §9.3 rule 1 becomes: *run every completeness grep against the working tree (or `HEAD` once the batch is committed). Keep the `':!plans/'` exclusion on the two repo-wide greps in "Final"; the per-batch greps are pathspec-scoped and need no exclusion. Use `d7285ce` only to re-read the baseline for orientation, never as an acceptance check.*
+2. In §9.4, delete the `d7285ce` argument from every `git grep` and every `git ls-tree`.
+3. In §9.4, the line-count checks become `wc -l < <path>` against the working tree, or `git show HEAD:<path> | wc -l` after the batch commit.
+4. §6.2's "stale plan text" row and §9.6's second consequence should be reworded to match: the protection is the pathspec, not the revision.
+
+**Cost if missed.** The implementer applies six correct edits, runs the batch-2 completeness greps, sees every one of them report hits it was told must be absent, and concludes the deletion failed. The most likely reactions are reverting correct work or hunting a defect that does not exist. This is the single largest session-burn risk in the plan, it affects 16 of the 24 acceptance criteria, and the fix is one line in §9.3 plus deleting one token per command in §9.4.
+
+---
+
+#### E2. Batch 2 atomicity: confirmed. Six edits, genuinely complete, no seventh edit
+
+The claim in §4.1 holds. Each of the four cited intermediate failures is real, and I found no additional edit needed to reach a compiling state. Evidence for every way a seventh edit could have been required:
+
+| Closure | Evidence |
+| --- | --- |
+| Nothing outside the two deleted files reaches the deleted symbols | `git grep -E 'phone::manager\|commands::phone\|super::manager' -- src-tauri/` -> `commands/phone.rs:2` plus `lib.rs:2612-2615`, nothing else |
+| `super::manager` cannot false-fail the batch-2 grep | **zero hits repo-wide under `src-tauri/`, even at baseline.** The Step 3 report only checked `src-tauri/src/phone/`; this plan widened the pathspec, and the wider form is still clean |
+| `types.rs:4` `use serde::{Deserialize, Serialize};` must stay | `Deserialize` appears 12 times and `Serialize` 12 times in the surviving `:1-777`. Neither becomes an unused import, so clippy `-D warnings` is not tripped. §3.2 is right |
+| No surviving item is stranded by R1/R2 | The two deleted files reach out to exactly four things: `config::config_dir` (~50 files use it), `config::teams::discover_teams`, `config::teams::can_communicate` (9 callers), `config::teams::DiscoveredTeam`. All survive with many other users |
+| `--all-targets` holds no hidden target | `src-tauri/Cargo.toml` has no `[[bin]]` section; there is no `src-tauri/src/bin/`, no `benches/`, no `examples/`. `--all-targets` resolves to the lib, one default bin, and 19 integration tests |
+
+**New check the plan does not run: source-introspection tests.** This crate contains several tests that read production `.rs` files off disk and assert on their content. They are invisible to symbol greps and are the most likely source of a batch-2 or batch-3 gate failure that §6.4 would not explain. All are clean, and this is worth recording so the next reader does not have to re-derive it:
+
+| Test | What it reads | Why this change cannot break it |
+| --- | --- | --- |
+| `lib.rs:3241` `restore_loop_normalizes_archived_roots_before_persisted_session_loop` | `src/lib.rs`, split at `#[cfg(test)]\nmod tests` | Compares the byte offsets of `let archived_roots = sessions_persistence::normalize_project_roots` and `for ps in &persisted`. Both sit around `:1200`, far above the `invoke_handler` at `:2532`. Deleting 5 registrations does not reorder them |
+| `config/local_config_io.rs:429` `agent_replica_root_config_writes_go_through_shared_helper` | walks `src/config` **and `src/commands`** on the live filesystem | Offender-detection (`assert!(offenders.is_empty())`), not exhaustiveness. Deleting a file cannot add an offender. Its allowlist at `:613` names `src/commands/entity_creation.rs` only for lines containing `write_team_config`, `create_new_team_config_on_disk` or `team_dir.join("config.json")`; the wrapper R7 deletes contains none of them, so R7 does not disturb it either |
+| `tests/pty_writer_inventory.rs:67` `every_production_pty_writer_is_in_the_explicit_permit_inventory` | walks every `.rs` under `src/`; permits `src/phone/mailbox.rs` | Neither deleted file contains a PTY write, so the found set shrinks by nothing. `mailbox.rs`, the only phone entry in the permit list, is untouched |
+| `pty/watchers/mod.rs:2470`, `commands/session.rs:7432/:7492/:7790/:8012`, `loops/scheduler.rs:644`, `session/selection.rs:3980`, `phone/mailbox.rs:11320` | each `include_str!`s or reads one specific unrelated file | None reads `lib.rs`, `commands/phone.rs`, `phone/manager.rs`, `phone/types.rs`, `commands/mod.rs` or `phone/mod.rs` |
+
+There is no test asserting a registered-command count and no desktop/web command-parity test. `git grep -i -E 'generate_handler|command_count|registered_commands|invoke_handler' -- src-tauri/src/ src-tauri/tests/` returns three hits: the real handler at `lib.rs:2532`, an unrelated single-command mock at `commands/resource_monitor.rs:466`, and a prose comment at `web/commands.rs:442`.
+
+**Verdict: R1 through R6 are complete and atomic as written. §10.4's "apply all six, then gate" is correct and should be followed literally.**
+
+---
+
+#### E3. Cut boundaries: all confirmed byte-exact, and all 13 line counts confirmed
+
+Every boundary in §5.1, §5.2 and §5.3 was re-read out of `d7285ce`. No correction.
+
+| Cut | Boundary confirmed | Arithmetic |
+| --- | --- | --- |
+| `phone/types.rs:779-808` | `:777` `}`, `:778` blank, `:779` `#[derive(Debug, Clone, Serialize, Deserialize)]`; `:807` `}`, `:808` blank, `:809` `#[cfg(test)]` | 913 - 30 = **883** |
+| `entity_creation.rs:3664-3696` | `:3662` `}`, `:3663` blank, `:3664` `/// Sync repo assignments...`; `:3695` `}`, `:3696` blank, `:3697` `/// Refresh \`is_coordinator\`...` | 7826 - 33 = **7793** |
+| `lib.rs:2612-2615` | `:2611` `spec_board_close,`, `:2616` `voice_transcribe,` | |
+| `lib.rs:2667` | `:2666` `delete_workgroup,`, `:2668` `list_role_templates,` | 3594 - 4 - 1 = **3589** |
+| `lib.rs:1254` | exactly ``// (e.g. `update_team`, `sync_workgroup_repos`). Must happen BEFORE the`` | unchanged |
+| `commands/mod.rs:9` | `:8` `pub mod non_stop;`, `:10` `pub mod project_settings;` | 23 - 1 = **22** |
+| `phone/mod.rs:3` | 5-line file, exactly as §5.1 R4 prints it | 5 - 1 = **4** |
+| `ipc.ts:806-815`, `:1071-1075`, `:28-29` | `:805` `}`, `:816` blank, `:817` `AcDiscoveryAPI`; `:1070` `delete_workgroup` call, `:1076` `};` | 1252 - 17 = **1235** |
+| `types.ts:981-998` | `:978` `}`, `:979`/`:980` the two-blank separator; `:999` `export interface AcAgentMatrix {` | 1463 - 18 = **1445** |
+| `architecture.md` | 738 at baseline; 13 deletions + 4 label edits | 738 - 13 = **725** |
+| `PRIVACY.md` / `inter-agent-messaging.md` / `security.md` | 54 / 218 / 121 at baseline | 54 / 214 / 121 |
+
+The §1.3 table is correct in all 13 rows and is safe to use as an acceptance check, **once E1 is applied** so the counts are taken from the working tree instead of `d7285ce`.
+
+One note on §5.1 R6: the plan is right that `use serde::{Deserialize, Serialize};` at `:4` must stay, and right about the reason. Also confirmed that `lib.rs:3 pub mod commands;`, `:4 pub mod config;` and `:11 pub mod phone;` are all plain `pub mod`, which is what makes §2.4's "no `dead_code` warning for `pub` items" true rather than merely likely.
+
+---
+
+#### E4. Grep audit: no criterion fails on correct work, and one grep must not be "improved"
+
+Each completeness grep in §9.4 was run in its corrected (working-tree) form against the known post-change state. Beyond E1's revision-level defect, **I found no criterion that fails on a correct implementation.** The specific traps checked, with the ones worth knowing about called out:
+
+| Grep | Result |
+| --- | --- |
+| `-w Conversation -- src-tauri/src/phone/ src/` | **Safe, but fragile. Do not add `-i`.** The surviving `phone/mailbox.rs` contains "conversation" on 3 lines, always lowercase, so the case-sensitive `-w Conversation` does not match them. Adding `-i` to "make it stricter" converts criterion 10 into a guaranteed false failure. §6.2 correctly identified the `pty/container_paths.rs` and `docs/comparison.md` prose; this is the same hazard one directory deeper, inside the pathspec the plan chose |
+| `-w -E '...\|A10\|R9' -- docs/reference/architecture.md` | **Safe. This was the highest-risk item in batch 4.** `A10` and `R9` are short generic Mermaid ids that could easily have been reused by another diagram in a 738-line file. They are not: `A10` appears only at `:269` and `:294`, `R9` only at `:282` and `:294`, and all three lines are deleted by D1. The remaining terms resolve to `:115`, `:228`, `:230`, `:686`, all of which D1 edits |
+| `-i -E 'phone\|conversations' -- PRIVACY.md` | Safe. Only `:29` and `:31`, both inside the block D2 replaces. No `telephone`/`headphone`/`microphone` substring trap in the file |
+| `'conversations' -- docs/agents/inter-agent-messaging.md docs/security.md` | Safe. Exactly one hit each, `:131` and `:14`, both targeted by D3 and D4 |
+| `-w PhoneMessage`, `-w AgentInfo`, `phone_`, `-w syncWorkgroupRepos` over `src/` | Safe. Baseline hit sets are exactly the lines T1 through T4 delete: `PhoneMessage` at `ipc.ts:28,:811` and `types.ts:981`; `AgentInfo` at `ipc.ts:29,:812` and `types.ts:991`; `phone_` only the four `invoke` string literals; `syncWorkgroupRepos` only `ipc.ts:1072`. No component, test or story mentions any of them |
+| criterion 12, `-w sync_workgroup_repos -- src-tauri/ src/` | Safe. Baseline is 5 hits (`entity_creation.rs:3629,:3666`, `lib.rs:1254,:2667`, `ipc.ts:1074`); R7, R8, R9 and T4 remove four, leaving exactly `:3629`. Confirmed the `:3629` log string matches `-w` |
+| criteria 11, 14, 15 | Safe, and none of the coordinates shift. `AgentInfo` -> 4 hits at `entity_creation.rs:39,:2705,:2706,:2756`; `sync_workgroup_repos_inner` 4 -> 3 at `:3399,:3449,:3462`; `SyncResult` 4 -> 3 at `:91,:3470,:3471`; `SyncError` 3 unchanged at `:84,:94,:3598`. Every one of these lines is above the `:3664` cut, so R7 moves none of them |
+| final repo-wide sweep | Safe. Run at baseline it returns exactly 16 hits, and every one is a line this plan deletes or edits. Nothing outside `commands/phone.rs`, `lib.rs`, `ipc.ts` and `architecture.md` touches the surface. `src-tauri/src/web/`, `src-tauri/src/api/` and `src-tauri/src/cli/` return zero non-`messaging`/`mailbox`/`types` phone hits |
+
+Two smaller items in §9.4 batch 2: the two `git ls-tree ... phone/manager.rs` and `... commands/phone.rs` lines carry no stated expectation. Under E1's fix they should read "must return exit 1, no output". As written against `d7285ce` they always print the path, which reads as a pass to a hurried eye.
+
+---
+
+#### E5. Gate commands are exact. Gate cost, and the one thing that would make the four-batch split expensive
+
+**The commands are right.** Verified against `.github/workflows/pr-regression-gates.yml`: `:77 cargo check --all-targets`, `:81 cargo clippy --all-targets -- -D warnings`, `:85 cargo test --lib --bins --tests`. §11 decision 12 is correct and the issue's `--workspace --all-features` form is indeed a harmless superset.
+
+**The batch-2 gate is a cold build in this replica, and it will be long.** `src-tauri/target/` currently contains only `fw/` (2.1 GB, written by something that set a non-default target directory). There is no `src-tauri/target/debug/`, and neither `src-tauri/.cargo/config.toml` nor `CARGO_TARGET_DIR` redirects the default. So `cd src-tauri && cargo check --all-targets` compiles the whole dependency tree from scratch, including `rusqlite` with `features = ["bundled"]`, which is a full C compile of SQLite, plus the tauri, axum and reqwest trees. `cargo test --lib --bins --tests` then pays full codegen and links 21 binaries on Windows. **Budget for it and do not read a long first gate as a hang.**
+
+**Batch 3's gate is incremental and therefore cheap**, because only `entity_creation.rs` and `lib.rs` change and only `agentscommander-new` recompiles. §4.1's "separating them costs one extra Rust gate run" is accurate, **conditional on the target directory surviving between the two batches.** So, between batch 2 and batch 3: no `cargo clean`, no toolchain switch, and do not run the gates from a different directory or with a different `CARGO_TARGET_DIR`. If that condition breaks, the split stops costing one incremental run and starts costing a second cold build.
+
+**§4.1's rationale and §8/§10.11's rule disagree, and the rule loses.** §4.1 justifies committing per batch as follows: "a session can be lost during a long `cargo` gate, and a commit survives that where a working tree does not." But §8 and §10.11 both instruct committing at the *end* of the batch, which is after the gate. That leaves the working tree unprotected for exactly the interval the rationale is about.
+
+**Concrete correction: apply the batch's edits, commit immediately, then run the gate.** If the gate fails, fix and `git commit --amend`, or add a fixup and squash before the next batch. Same four commits, same messages, same revert granularity, and the risk window closes. This matters most for batch 2: it is the only batch whose intermediate state cannot be reconstructed by inspecting a partially-edited tree, it is six edits deep, and it is the one immediately followed by the cold build.
+
+---
+
+#### E6. Batch 1 has no owner, and it is not the Rust implementer's
+
+§8 hands all four batches to a single "implementer" and §10 addresses one reader. Batch 1 is TypeScript (`src/shared/ipc.ts`, `src/shared/types.ts`) and batch 4 is documentation. The Rust owner's role boundary excludes `src/` TypeScript. Read cold, §8 tells whoever picks this up to start with edits they may not be permitted to make.
+
+This is load-bearing rather than cosmetic, because §4.1 uses the ordering as an argument: "TypeScript first is strictly better" is a coherent sequencing choice for one person and a **blocking cross-agent dependency** for two. Someone has to say whether batch 2 may start before batch 1 has landed.
+
+**It may, and the plan already contains the proof.** §4.1 establishes that the two halves have no compile-time dependency and describes the "Rust landed, TS not landed" state explicitly: `tsc` still passes because the command names are string literals, and nothing calls `PhoneAPI`, so the state is inert. The TypeScript-first ordering is therefore a preference about which interrupted state is tidier, not a constraint. Saying so out loud prevents a Rust implementer from idling on a batch that is not theirs.
+
+**Requested at Step 7:** name an owner per batch in §8, and state explicitly that batches 2 and 3 may proceed independently of batch 1.
+
+---
+
+#### E7. Smaller items
+
+1. **§3.1 R7 and §5.2 both say `:3664-3696`, 33 lines. That is correct.** `:3695` is the closing brace, `:3696` the trailing blank, `:3697` the next doc comment. Recorded because the Step 5 dispatch brief paraphrased the range as `:3664-3695`; the plan is right and the paraphrase is one line short. An implementer working from a 32-line cut leaves a double blank line.
+2. **§9.5 criterion 22 is entirely downstream of E1.** As written, all 13 line counts are read out of `d7285ce` and all 13 will report the pre-change number. The counts themselves are correct (E3); only the revision they are read from is wrong.
+3. **`architecture.md:230`'s edit resolves cleanly.** Dropping ` PhoneAPI,` turns `DarkFactoryAPI, PhoneAPI,<br/>DebugAPI` into `DarkFactoryAPI,<br/>DebugAPI`, which is what §5.4 specifies.
+4. **§5.3 T4's resulting shape is fine.** After the cut, `:1070` ends `),` and is followed directly by `};` with no blank line. That matches `PhoneAPI`'s own shape at `:814`/`:815`, exactly as §5.3 claims.
+
+---
+
+#### Verdict: is this plan implementable cold-start as it stands?
+
+**No, because of E1 alone.** The acceptance suite in §9.4 is unrunnable, and its failure mode is indistinguishable from broken work: an implementer who does everything right sees 16 criteria report the opposite of what they were told to expect. Nothing else in the plan comes close to that cost.
+
+**Everything else holds.** Scope, cut boundaries, line counts, batch-2 atomicity, the homonym analysis, the gate commands, the Mermaid node-integrity table and the four checks in §2.3 all survive independent re-derivation from `d7285ce`. The six batch-2 edits are complete; no seventh edit exists. I found no step whose ordering breaks in practice, and no assumption in the plan that I know to be false other than E1's.
+
+**With E1's correction applied to §9.3, §9.4 and §9.5, plus the per-batch ownership statement in E6, this plan is implementable cold-start.** E5's commit-before-gate change and the "do not disturb the target directory" note are improvements to resilience and cost, not preconditions.
 
 ### dev-rust-grinch (Step 6)
 
