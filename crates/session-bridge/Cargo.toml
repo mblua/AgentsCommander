@@ -10,10 +10,21 @@ portable-pty = "0.8"
 reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+terminal-snapshot-renderer = { path = "../terminal-snapshot-renderer", default-features = false, features = ["protocol"] }
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+] }
+
 [dev-dependencies]
 base64 = "0.22"
 sha1 = "0.10"
+tempfile = "3"

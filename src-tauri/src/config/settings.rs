@@ -403,6 +403,11 @@ pub struct AppSettings {
     /// non-loopback bind logs a loud startup warning.
     #[serde(default = "default_api_bind")]
     pub api_server_bind: String,
+    /// #1173 - disclosure gate for authorized backend terminal snapshots.
+    /// Whole-settings writers preserve the authoritative value. Only the
+    /// dedicated compare-and-set command may change it.
+    #[serde(default)]
+    pub terminal_snapshots_enabled: bool,
     /// Currently loaded project path (legacy single-project, kept for backward compat)
     #[serde(default)]
     pub project_path: Option<String>,
@@ -727,6 +732,7 @@ impl Default for AppSettings {
             api_server_enabled: false,
             api_server_port: default_api_port(),
             api_server_bind: default_api_bind(),
+            terminal_snapshots_enabled: false,
             project_path: None,
             project_paths: vec![],
             archived_project_paths: vec![],
@@ -1985,6 +1991,7 @@ const FIELD_PROJECT_PATHS: &str = "projectPaths";
 const FIELD_PROJECT_PATHS_REL: &str = "projectPathsRelativeToInstance";
 const FIELD_ARCHIVED: &str = "archivedProjectPaths";
 const FIELD_ARCHIVED_REL: &str = "archivedProjectPathsRelativeToInstance";
+const FIELD_TERMINAL_SNAPSHOTS_ENABLED: &str = "terminalSnapshotsEnabled";
 
 /// The authoritative instance base for path pairing, canonicalized at the codec
 /// boundary. `None` in any degraded mode (no base, or a base that fails to
@@ -2277,6 +2284,12 @@ pub(crate) fn apply_project_decode_to_value(
 pub(crate) enum ProjectWriteMode {
     Preserve,
     Reconcile { active: bool, archived: bool },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalSnapshotGateWriteMode {
+    Preserve,
+    Explicit(bool),
 }
 
 /// A slot value for a retained (unresolved/conflict/missing) raw field: string
@@ -2630,6 +2643,147 @@ pub(crate) fn reconcile_project_state_to_path(
     )
 }
 
+struct SettingsFileLock {
+    file: std::fs::File,
+}
+
+impl SettingsFileLock {
+    fn acquire(settings_path: &Path, timeout: std::time::Duration) -> Result<Self, String> {
+        let parent = settings_path
+            .parent()
+            .ok_or_else(|| "settings_lock_unavailable".to_string())?;
+        std::fs::create_dir_all(parent).map_err(|_| "settings_lock_unavailable".to_string())?;
+        crate::path_identity::verify_component_chain(parent)
+            .map_err(|_| "settings_lock_unavailable".to_string())?;
+        let lock_path = parent.join("settings.json.lock");
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(true).create(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::{
+                FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
+            };
+            options
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        }
+        let file = options
+            .open(&lock_path)
+            .map_err(|_| "settings_lock_unavailable".to_string())?;
+        let metadata = file
+            .metadata()
+            .map_err(|_| "settings_lock_unavailable".to_string())?;
+        if !metadata.is_file() {
+            return Err("settings_lock_unavailable".to_string());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            if metadata.nlink() != 1 {
+                return Err("settings_lock_unavailable".to_string());
+            }
+            std::fs::set_permissions(&lock_path, std::fs::Permissions::from_mode(0o600))
+                .map_err(|_| "settings_lock_unavailable".to_string())?;
+        }
+        #[cfg(windows)]
+        crate::path_identity::verify_regular_file(&lock_path)
+            .map_err(|_| "settings_lock_unavailable".to_string())?;
+
+        let deadline = std::time::Instant::now()
+            .checked_add(timeout)
+            .ok_or_else(|| "settings_lock_unavailable".to_string())?;
+        loop {
+            if try_lock_settings_file(&file)? {
+                return Ok(Self { file });
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("settings_lock_unavailable".to_string());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+}
+
+impl Drop for SettingsFileLock {
+    fn drop(&mut self) {
+        unlock_settings_file(&self.file);
+    }
+}
+
+#[cfg(unix)]
+fn try_lock_settings_file(file: &std::fs::File) -> Result<bool, String> {
+    use std::os::fd::AsRawFd;
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result == 0 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    if matches!(
+        error.raw_os_error(),
+        Some(libc::EWOULDBLOCK) | Some(libc::EAGAIN)
+    ) {
+        Ok(false)
+    } else {
+        Err("settings_lock_unavailable".to_string())
+    }
+}
+
+#[cfg(unix)]
+fn unlock_settings_file(file: &std::fs::File) {
+    use std::os::fd::AsRawFd;
+    let _ = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+}
+
+#[cfg(windows)]
+fn try_lock_settings_file(file: &std::fs::File) -> Result<bool, String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+    };
+    let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED = unsafe { std::mem::zeroed() };
+    let result = unsafe {
+        LockFileEx(
+            file.as_raw_handle(),
+            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+            0,
+            u32::MAX,
+            u32::MAX,
+            &mut overlapped,
+        )
+    };
+    if result != 0 {
+        return Ok(true);
+    }
+    const ERROR_LOCK_VIOLATION: i32 = 33;
+    if std::io::Error::last_os_error().raw_os_error() == Some(ERROR_LOCK_VIOLATION) {
+        Ok(false)
+    } else {
+        Err("settings_lock_unavailable".to_string())
+    }
+}
+
+#[cfg(windows)]
+fn unlock_settings_file(file: &std::fs::File) {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::UnlockFileEx;
+    let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED = unsafe { std::mem::zeroed() };
+    let _ = unsafe { UnlockFileEx(file.as_raw_handle(), 0, u32::MAX, u32::MAX, &mut overlapped) };
+}
+
+#[cfg(not(any(unix, windows)))]
+fn try_lock_settings_file(_file: &std::fs::File) -> Result<bool, String> {
+    Err("settings_lock_unavailable".to_string())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn unlock_settings_file(_file: &std::fs::File) {}
+
 /// The #1077 project-aware atomic writer. Builds the output object per `mode`,
 /// writes it atomically, then re-decodes the exact written value so the returned
 /// `AppSettings` carries fresh runtime projections + hidden state (never the
@@ -2638,6 +2792,21 @@ fn save_settings_value(
     settings: &AppSettings,
     path: &Path,
     mode: ProjectWriteMode,
+) -> Result<AppSettings, String> {
+    let _lock = SettingsFileLock::acquire(path, std::time::Duration::from_secs(2))?;
+    save_settings_value_locked(
+        settings,
+        path,
+        mode,
+        TerminalSnapshotGateWriteMode::Preserve,
+    )
+}
+
+fn save_settings_value_locked(
+    settings: &AppSettings,
+    path: &Path,
+    mode: ProjectWriteMode,
+    terminal_snapshot_gate_mode: TerminalSnapshotGateWriteMode,
 ) -> Result<AppSettings, String> {
     let base = production_instance_base();
     let disk = read_disk_object_for_write(path)?;
@@ -2720,6 +2889,27 @@ fn save_settings_value(
             }
         }
     }
+
+    // #1173: a whole-settings writer cannot opt in or re-enable a stale
+    // terminal snapshot gate. The on-disk boolean is authoritative. An absent
+    // legacy key is authoritative false. Only the dedicated CAS uses Explicit.
+    let terminal_snapshots_enabled = match terminal_snapshot_gate_mode {
+        TerminalSnapshotGateWriteMode::Explicit(enabled) => enabled,
+        TerminalSnapshotGateWriteMode::Preserve => match &disk {
+            Some(disk) => match disk.get(FIELD_TERMINAL_SNAPSHOTS_ENABLED) {
+                Some(Value::Bool(enabled)) => *enabled,
+                None => false,
+                Some(_) => {
+                    return Err("terminal_snapshot_setting_invalid".to_string());
+                }
+            },
+            None => false,
+        },
+    };
+    out.insert(
+        FIELD_TERMINAL_SNAPSHOTS_ENABLED.to_string(),
+        Value::Bool(terminal_snapshots_enabled),
+    );
 
     // A synthesized legacy state (direct-constructed AppSettings) has no dirty
     // repair, so the eligible branches above never fire for it; its groups are
@@ -2817,6 +3007,147 @@ pub(crate) async fn read_pty_input_project_paths_strict_offloaded(
     tokio::task::spawn_blocking(read_pty_input_project_paths_strict)
         .await
         .map_err(|_| "settings_unavailable".to_string())?
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TerminalSnapshotSecuritySettings {
+    pub terminal_snapshots_enabled: bool,
+    pub project_paths: Vec<String>,
+}
+
+/// Read only the security-bearing snapshot gate and active project list. This
+/// path never repairs, migrates, or writes settings. Every ambiguity fails
+/// closed and callers map it to the fixed disabled response.
+pub(crate) fn read_terminal_snapshot_security_settings_strict(
+) -> Result<TerminalSnapshotSecuritySettings, String> {
+    let path = settings_path().ok_or_else(|| "snapshot_settings_invalid".to_string())?;
+    read_terminal_snapshot_security_settings_strict_from_path(&path)
+}
+
+fn read_terminal_snapshot_security_settings_strict_from_path(
+    path: &Path,
+) -> Result<TerminalSnapshotSecuritySettings, String> {
+    let (bytes, _) = crate::path_identity::read_bounded_regular(path, 1024 * 1024)
+        .map_err(|_| "snapshot_settings_invalid".to_string())?;
+    let value = crate::path_identity::parse_json_no_duplicates(&bytes)
+        .map_err(|_| "snapshot_settings_invalid".to_string())?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "snapshot_settings_invalid".to_string())?;
+    let enabled = object
+        .get(FIELD_TERMINAL_SNAPSHOTS_ENABLED)
+        .and_then(Value::as_bool)
+        .ok_or_else(|| "snapshot_settings_invalid".to_string())?;
+    let paths = object
+        .get(FIELD_PROJECT_PATHS)
+        .and_then(Value::as_array)
+        .filter(|paths| paths.len() <= 4_096)
+        .ok_or_else(|| "snapshot_settings_invalid".to_string())?;
+    let mut project_paths = Vec::with_capacity(paths.len());
+    let mut aggregate_bytes = 0usize;
+    for value in paths {
+        let path = value
+            .as_str()
+            .filter(|path| !path.is_empty() && path.len() <= 32 * 1024 && !path.contains('\0'))
+            .ok_or_else(|| "snapshot_settings_invalid".to_string())?;
+        aggregate_bytes = aggregate_bytes
+            .checked_add(path.len())
+            .filter(|bytes| *bytes <= 4 * 1024 * 1024)
+            .ok_or_else(|| "snapshot_settings_invalid".to_string())?;
+        project_paths.push(path.to_string());
+    }
+    Ok(TerminalSnapshotSecuritySettings {
+        terminal_snapshots_enabled: enabled,
+        project_paths,
+    })
+}
+
+pub(crate) async fn read_terminal_snapshot_security_settings_strict_offloaded(
+) -> Result<TerminalSnapshotSecuritySettings, String> {
+    tokio::task::spawn_blocking(read_terminal_snapshot_security_settings_strict)
+        .await
+        .map_err(|_| "snapshot_settings_invalid".to_string())?
+}
+
+/// The sole persistence owner for the #1173 disclosure gate. The caller holds
+/// the managed settings write guard while this function serializes every AC
+/// process with the settings file lock and compares against current disk truth.
+pub(crate) fn compare_and_set_terminal_snapshots_enabled(
+    current: &AppSettings,
+    expected: bool,
+    enabled: bool,
+) -> Result<AppSettings, String> {
+    let path =
+        settings_path().ok_or_else(|| "terminal_snapshot_setting_save_failed".to_string())?;
+    compare_and_set_terminal_snapshots_enabled_at_path(current, &path, expected, enabled)
+}
+
+fn compare_and_set_terminal_snapshots_enabled_at_path(
+    current: &AppSettings,
+    path: &Path,
+    expected: bool,
+    enabled: bool,
+) -> Result<AppSettings, String> {
+    let _lock = SettingsFileLock::acquire(path, std::time::Duration::from_secs(2))
+        .map_err(|_| "terminal_snapshot_setting_save_failed".to_string())?;
+    let disk = read_disk_object_for_write(path)
+        .map_err(|_| "terminal_snapshot_setting_save_failed".to_string())?;
+    let disk_gate = match disk
+        .as_ref()
+        .and_then(|object| object.get(FIELD_TERMINAL_SNAPSHOTS_ENABLED))
+    {
+        Some(Value::Bool(value)) => *value,
+        None => false,
+        Some(_) => return Err("terminal_snapshot_setting_save_failed".to_string()),
+    };
+    if disk_gate != expected && disk_gate != enabled {
+        return Err("terminal_snapshot_setting_conflict".to_string());
+    }
+
+    let mut candidate = match disk {
+        Some(object) => decode_disk_settings_for_terminal_snapshot_cas(object)
+            .map_err(|_| "terminal_snapshot_setting_save_failed".to_string())?,
+        None => current.clone(),
+    };
+    candidate.terminal_snapshots_enabled = enabled;
+    if disk_gate == enabled {
+        return Ok(candidate);
+    }
+
+    let written = save_settings_value_locked(
+        &candidate,
+        path,
+        ProjectWriteMode::Preserve,
+        TerminalSnapshotGateWriteMode::Explicit(enabled),
+    )
+    .map_err(|_| "terminal_snapshot_setting_save_failed".to_string())?;
+    let (bytes, _) = crate::path_identity::read_bounded_regular(path, 1024 * 1024)
+        .map_err(|_| "terminal_snapshot_setting_save_failed".to_string())?;
+    let value = crate::path_identity::parse_json_no_duplicates(&bytes)
+        .map_err(|_| "terminal_snapshot_setting_save_failed".to_string())?;
+    if value
+        .as_object()
+        .and_then(|object| object.get(FIELD_TERMINAL_SNAPSHOTS_ENABLED))
+        .and_then(Value::as_bool)
+        != Some(enabled)
+    {
+        return Err("terminal_snapshot_setting_save_failed".to_string());
+    }
+    Ok(written)
+}
+
+fn decode_disk_settings_for_terminal_snapshot_cas(
+    object: Map<String, Value>,
+) -> Result<AppSettings, String> {
+    let base = production_instance_base();
+    let mut value = Value::Object(object);
+    migrate_settings_value_to_v2(&mut value);
+    let state =
+        apply_project_decode_to_value(&mut value, base.as_deref(), &projects::FsCandidateResolver);
+    let mut settings: AppSettings =
+        serde_json::from_value(value).map_err(|_| "settings_invalid".to_string())?;
+    settings.project_path_state = Arc::new(state);
+    Ok(settings)
 }
 
 fn read_project_paths_from_disk(path: &Path) -> Result<Option<DiskProjectLists>, String> {
@@ -2997,33 +3328,120 @@ pub fn save_settings(settings: &AppSettings) -> Result<AppSettings, String> {
 /// the raw and the project-aware writers. Preserves the #774 unique-temp +
 /// `rename_with_retry` behavior; still not fsynced.
 fn write_value_atomic(value: &Value, path: &Path) -> Result<(), String> {
+    use std::io::Write as _;
+
     let dir = path
         .parent()
-        .ok_or_else(|| format!("Settings path {} has no parent", path.display()))?;
-    std::fs::create_dir_all(dir)
-        .map_err(|e| format!("Failed to create settings directory: {}", e))?;
+        .ok_or_else(|| "settings_save_failed".to_string())?;
+    std::fs::create_dir_all(dir).map_err(|_| "settings_save_failed".to_string())?;
+    crate::path_identity::verify_component_chain(dir)
+        .map_err(|_| "settings_save_failed".to_string())?;
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if !metadata.is_file() {
+                return Err("settings_save_failed".to_string());
+            }
+            crate::path_identity::verify_regular_file(path)
+                .map_err(|_| "settings_save_failed".to_string())?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("settings_save_failed".to_string()),
+    }
 
-    let json = serde_json::to_string_pretty(value)
-        .map_err(|e| format!("Failed to serialize settings: {}", e))?;
+    let json = serde_json::to_vec_pretty(value).map_err(|_| "settings_save_failed".to_string())?;
+    if json.len() > 16 * 1024 * 1024 {
+        return Err("settings_save_failed".to_string());
+    }
 
     let op_id = SAVE_OP_ID.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
     let tmp_path = dir.join(format!("settings.json.{}.{}.tmp", pid, op_id));
-
-    if let Err(e) = std::fs::write(&tmp_path, &json) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(format!("Failed to write temp settings file: {}", e));
-    }
-
-    if let Err((err_msg, _diag)) =
-        crate::config::sessions_persistence::rename_with_retry(&tmp_path, path)
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
     {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(format!("Failed to rename settings file: {}", err_msg));
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+
+    let result = (|| {
+        let mut temporary = options
+            .open(&tmp_path)
+            .map_err(|_| "settings_save_failed".to_string())?;
+        temporary
+            .write_all(&json)
+            .and_then(|_| temporary.flush())
+            .and_then(|_| temporary.sync_all())
+            .map_err(|_| "settings_save_failed".to_string())?;
+        crate::path_identity::verify_opened_regular_file(&tmp_path, &temporary, false)
+            .map_err(|_| "settings_save_failed".to_string())?;
+        drop(temporary);
+
+        replace_settings_file_atomic(&tmp_path, path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .map_err(|_| "settings_save_failed".to_string())?;
+            std::fs::File::open(dir)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|_| "settings_save_failed".to_string())?;
+        }
+        let (written, _) = crate::path_identity::read_bounded_regular(path, 16 * 1024 * 1024)
+            .map_err(|_| "settings_save_failed".to_string())?;
+        if written != json {
+            return Err("settings_save_failed".to_string());
+        }
+        Ok(())
+    })();
+    if result.is_err() && tmp_path.exists() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    result?;
 
     log::debug!("Saved settings to {:?}", path);
     Ok(())
+}
+
+#[cfg(windows)]
+fn replace_settings_file_atomic(source: &Path, destination: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
+    }
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
+    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let result = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        Err("settings_save_failed".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_settings_file_atomic(source: &Path, destination: &Path) -> Result<(), String> {
+    std::fs::rename(source, destination).map_err(|_| "settings_save_failed".to_string())
 }
 
 /// #778/#881: EXPLICIT writer. Persists `project_paths`/`project_path` and
@@ -3083,6 +3501,78 @@ pub type SettingsState = Arc<RwLock<AppSettings>>;
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn terminal_snapshot_gate_defaults_false_and_strict_reader_fails_closed() {
+        let mut legacy = serde_json::to_value(super::AppSettings::default()).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("terminalSnapshotsEnabled");
+        let decoded: super::AppSettings = serde_json::from_value(legacy).unwrap();
+        assert!(!decoded.terminal_snapshots_enabled);
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, r#"{"projectPaths":[]}"#).unwrap();
+        assert!(super::read_terminal_snapshot_security_settings_strict_from_path(&path).is_err());
+        std::fs::write(
+            &path,
+            r#"{"terminalSnapshotsEnabled":true,"terminalSnapshotsEnabled":false,"projectPaths":[]}"#,
+        )
+        .unwrap();
+        assert!(super::read_terminal_snapshot_security_settings_strict_from_path(&path).is_err());
+        std::fs::write(
+            &path,
+            r#"{"terminalSnapshotsEnabled":true,"projectPaths":["one"]}"#,
+        )
+        .unwrap();
+        let strict =
+            super::read_terminal_snapshot_security_settings_strict_from_path(&path).unwrap();
+        assert!(strict.terminal_snapshots_enabled);
+        assert_eq!(strict.project_paths, vec!["one"]);
+    }
+
+    #[test]
+    fn terminal_snapshot_gate_cas_is_idempotent_and_rejects_stale_expected_value() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("settings.json");
+        let current = super::AppSettings::default();
+        super::save_settings_to_path(&current, &path).unwrap();
+
+        let enabled =
+            super::compare_and_set_terminal_snapshots_enabled_at_path(&current, &path, false, true)
+                .unwrap();
+        assert!(enabled.terminal_snapshots_enabled);
+        let idempotent =
+            super::compare_and_set_terminal_snapshots_enabled_at_path(&enabled, &path, false, true)
+                .unwrap();
+        assert!(idempotent.terminal_snapshots_enabled);
+        assert_eq!(
+            super::compare_and_set_terminal_snapshots_enabled_at_path(
+                &enabled, &path, false, false,
+            )
+            .unwrap_err(),
+            "terminal_snapshot_setting_conflict"
+        );
+        let disabled =
+            super::compare_and_set_terminal_snapshots_enabled_at_path(&enabled, &path, true, false)
+                .unwrap();
+        assert!(!disabled.terminal_snapshots_enabled);
+    }
+
+    #[test]
+    fn whole_settings_writer_preserves_disk_terminal_snapshot_gate() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("settings.json");
+        let mut enabled = super::AppSettings::default();
+        enabled.terminal_snapshots_enabled = true;
+        super::save_settings_to_path(&enabled, &path).unwrap();
+
+        let stale = super::AppSettings::default();
+        let written = super::save_settings_to_path_preserving_project_paths(&stale, &path).unwrap();
+        assert!(written.terminal_snapshots_enabled);
+    }
 
     #[test]
     fn privileged_project_paths_reader_rejects_duplicates_and_non_strings() {

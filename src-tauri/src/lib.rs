@@ -2276,6 +2276,7 @@ pub fn run(
             commands::resource_monitor::get_resource_snapshot,
             commands::resource_monitor::kill_resource_group,
             commands::config::save_settings_draft,
+            commands::config::set_terminal_snapshots_enabled,
             commands::config::update_coding_agent_profiles,
             commands::config::update_coding_agent_env_settings,
             commands::config::set_agent_default_profile,
