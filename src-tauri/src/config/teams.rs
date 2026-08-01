@@ -562,6 +562,29 @@ pub struct VerifiedPtyInputRoute {
     pub kind: PtyInputAuthorityKind,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalSnapshotAuthorityKind {
+    Coordinator,
+    Root,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedTerminalSnapshotRoute {
+    pub sender: VerifiedPtyInputIdentity,
+    pub target: VerifiedPtyInputIdentity,
+    pub kind: TerminalSnapshotAuthorityKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TerminalSnapshotTargetIdentity {
+    pub canonical_fqn: String,
+    pub replica_root: PathBuf,
+    pub project: String,
+    pub workgroup: String,
+    pub team: String,
+    pub is_coordinator: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct StrictPtyFqn {
     project: String,
@@ -636,6 +659,47 @@ pub(crate) fn validate_pty_input_target_syntax(value: &str) -> Result<(), String
         return Err("invalid_target".to_string());
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalSnapshotTargetSyntax {
+    Workgroup,
+    Origin,
+    Root,
+}
+
+fn terminal_snapshot_target_syntax(value: &str) -> Result<TerminalSnapshotTargetSyntax, String> {
+    if value == crate::config::root_agent::ROOT_AGENT_SENDER {
+        return Ok(TerminalSnapshotTargetSyntax::Root);
+    }
+    if validate_pty_input_target_syntax(value).is_ok() {
+        return Ok(TerminalSnapshotTargetSyntax::Workgroup);
+    }
+    if value.is_empty()
+        || value.len() > 1_024
+        || value.contains(':')
+        || value.matches('/').count() != 1
+    {
+        return Err("invalid_target".to_string());
+    }
+    let (project, agent) = value
+        .split_once('/')
+        .ok_or_else(|| "invalid_target".to_string())?;
+    if [project, agent].iter().any(|component| {
+        component.is_empty()
+            || matches!(*component, "." | "..")
+            || component.chars().any(forbidden_identity_scalar)
+            || !component
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    }) {
+        return Err("invalid_target".to_string());
+    }
+    Ok(TerminalSnapshotTargetSyntax::Origin)
+}
+
+pub(crate) fn validate_terminal_snapshot_target_syntax(value: &str) -> Result<(), String> {
+    terminal_snapshot_target_syntax(value).map(|_| ())
 }
 
 fn identity_fingerprint(identities: &[&crate::path_identity::VerifiedPathIdentity]) -> String {
@@ -960,7 +1024,7 @@ fn find_target_identity(
     Ok(identity)
 }
 
-pub(crate) fn resolve_pty_input_target(
+fn resolve_verified_wg_target(
     target_fqn: &str,
     project_paths: &[String],
 ) -> Result<VerifiedPtyInputIdentity, String> {
@@ -972,6 +1036,112 @@ pub(crate) fn resolve_pty_input_target(
     Ok(target)
 }
 
+pub(crate) fn resolve_pty_input_target(
+    target_fqn: &str,
+    project_paths: &[String],
+) -> Result<VerifiedPtyInputIdentity, String> {
+    resolve_verified_wg_target(target_fqn, project_paths)
+}
+
+pub(crate) fn discover_verified_terminal_snapshot_targets(
+    project_paths: &[String],
+) -> Result<Vec<TerminalSnapshotTargetIdentity>, String> {
+    const TARGET_CAP: usize = 4_096;
+    let projects = enumerate_project_dirs_strict(project_paths)?;
+    let mut project_names = std::collections::HashSet::new();
+    let mut project_objects = std::collections::HashSet::new();
+    for (name, path) in &projects {
+        let identity = crate::path_identity::verify_directory(path)?;
+        if !project_names.insert(name.clone()) || !project_objects.insert(identity.object_id) {
+            return Err("ambiguous_project".to_string());
+        }
+    }
+
+    let mut targets = Vec::new();
+    let mut target_names = std::collections::HashSet::new();
+    let mut target_objects = std::collections::HashSet::new();
+    let mut scanned_entries = 0usize;
+    for (project, project_dir) in projects {
+        let workspace =
+            strict_project_workspace(&project_dir)?.ok_or_else(|| "unsafe_path".to_string())?;
+        let workgroups = std::fs::read_dir(&workspace).map_err(|_| "unsafe_path".to_string())?;
+        for workgroup in workgroups {
+            let workgroup = workgroup.map_err(|_| "unsafe_path".to_string())?;
+            scanned_entries = scanned_entries.saturating_add(1);
+            if scanned_entries > TARGET_CAP * 4 {
+                return Err("target_limit".to_string());
+            }
+            let name = workgroup
+                .file_name()
+                .into_string()
+                .map_err(|_| "unsafe_path".to_string())?;
+            if !name.starts_with("wg-") {
+                continue;
+            }
+            let workgroup_identity = crate::path_identity::verify_directory(&workgroup.path())?;
+            let replicas = std::fs::read_dir(&workgroup_identity.canonical_path)
+                .map_err(|_| "unsafe_path".to_string())?;
+            for replica in replicas {
+                let replica = replica.map_err(|_| "unsafe_path".to_string())?;
+                scanned_entries = scanned_entries.saturating_add(1);
+                if scanned_entries > TARGET_CAP * 4 {
+                    return Err("target_limit".to_string());
+                }
+                let replica_name = replica
+                    .file_name()
+                    .into_string()
+                    .map_err(|_| "unsafe_path".to_string())?;
+                let Some(agent) = replica_name.strip_prefix("__agent_") else {
+                    continue;
+                };
+                let candidate = format!("{project}:{name}/{agent}");
+                let parsed = parse_strict_pty_fqn(&candidate)?;
+                let identity = verify_replica(&project_dir, &workspace, &parsed)?;
+                if !target_names.insert(identity.canonical_fqn.clone())
+                    || !target_objects.insert(identity.replica_identity.object_id)
+                {
+                    return Err("ambiguous_target".to_string());
+                }
+                targets.push(TerminalSnapshotTargetIdentity {
+                    canonical_fqn: identity.canonical_fqn,
+                    replica_root: identity.replica_root,
+                    project: identity.project,
+                    workgroup: identity.workgroup,
+                    team: parsed.team,
+                    is_coordinator: identity.is_coordinator,
+                });
+                if targets.len() > TARGET_CAP {
+                    return Err("target_limit".to_string());
+                }
+            }
+        }
+    }
+    targets.sort_by(|left, right| left.canonical_fqn.cmp(&right.canonical_fqn));
+    Ok(targets)
+}
+
+pub(crate) fn verify_terminal_snapshot_root_identity(
+    root: &Path,
+) -> Result<VerifiedPtyInputIdentity, String> {
+    let root_identity = crate::config::root_agent::verify_live_root_agent_path(root)?;
+    Ok(VerifiedPtyInputIdentity {
+        canonical_fqn: crate::config::root_agent::ROOT_AGENT_SENDER.to_string(),
+        project: String::new(),
+        workgroup: String::new(),
+        agent: "root-agent".to_string(),
+        replica_root: root_identity.canonical_path.clone(),
+        matrix_root: root_identity.canonical_path.clone(),
+        is_coordinator: false,
+        project_identity: root_identity.clone(),
+        workspace_identity: root_identity.clone(),
+        workgroup_identity: root_identity.clone(),
+        replica_identity: root_identity.clone(),
+        matrix_identity: root_identity.clone(),
+        incarnation_fingerprint: incarnation_fingerprint(&root_identity),
+        authority_fingerprint: identity_fingerprint(&[&root_identity]),
+    })
+}
+
 /// Verify the only two privileged routes. No discovery repair or broad
 /// communication predicate is used.
 pub fn verify_pty_input_route(
@@ -981,23 +1151,7 @@ pub fn verify_pty_input_route(
     project_paths: &[String],
 ) -> Result<VerifiedPtyInputRoute, String> {
     if sender_is_root {
-        let root_identity = crate::config::root_agent::verify_live_root_agent_path(sender_cwd)?;
-        let sender = VerifiedPtyInputIdentity {
-            canonical_fqn: crate::config::root_agent::ROOT_AGENT_SENDER.to_string(),
-            project: String::new(),
-            workgroup: String::new(),
-            agent: "root-agent".to_string(),
-            replica_root: root_identity.canonical_path.clone(),
-            matrix_root: root_identity.canonical_path.clone(),
-            is_coordinator: false,
-            project_identity: root_identity.clone(),
-            workspace_identity: root_identity.clone(),
-            workgroup_identity: root_identity.clone(),
-            replica_identity: root_identity.clone(),
-            matrix_identity: root_identity.clone(),
-            incarnation_fingerprint: incarnation_fingerprint(&root_identity),
-            authority_fingerprint: identity_fingerprint(&[&root_identity]),
-        };
+        let sender = verify_terminal_snapshot_root_identity(sender_cwd)?;
         let target = resolve_pty_input_target(target_fqn, project_paths)?;
         if !target.is_coordinator {
             return Err("target_out_of_scope".to_string());
@@ -1026,6 +1180,49 @@ pub fn verify_pty_input_route(
         sender,
         target,
         kind: PtyInputAuthorityKind::Coordinator,
+    })
+}
+
+/// Verify the distinct #1173 read capability. This deliberately does not call
+/// the PTY-input route policy, mint input authority, or change Root actuation.
+pub(crate) fn verify_terminal_snapshot_route(
+    sender_cwd: &Path,
+    sender_is_root: bool,
+    target_fqn: &str,
+    project_paths: &[String],
+) -> Result<VerifiedTerminalSnapshotRoute, String> {
+    let syntax = terminal_snapshot_target_syntax(target_fqn)?;
+    if sender_is_root {
+        let sender = verify_terminal_snapshot_root_identity(sender_cwd)?;
+        if syntax != TerminalSnapshotTargetSyntax::Workgroup {
+            return Err("target_out_of_scope".to_string());
+        }
+        let target = resolve_verified_wg_target(target_fqn, project_paths)?;
+        return Ok(VerifiedTerminalSnapshotRoute {
+            sender,
+            target,
+            kind: TerminalSnapshotAuthorityKind::Root,
+        });
+    }
+
+    // Prove the Coordinator before any target identity walk. This preserves the
+    // no-oracle ordering for workers and origin senders.
+    let sender = verify_pty_input_coordinator_root(sender_cwd)?;
+    if syntax != TerminalSnapshotTargetSyntax::Workgroup {
+        return Err("target_out_of_scope".to_string());
+    }
+    let target = resolve_verified_wg_target(target_fqn, project_paths)?;
+    if sender.project != target.project
+        || sender.workgroup != target.workgroup
+        || target.is_coordinator
+        || sender.canonical_fqn == target.canonical_fqn
+    {
+        return Err("target_out_of_scope".to_string());
+    }
+    Ok(VerifiedTerminalSnapshotRoute {
+        sender,
+        target,
+        kind: TerminalSnapshotAuthorityKind::Coordinator,
     })
 }
 
@@ -1920,6 +2117,47 @@ mod tests {
                 "invalid={invalid:?}"
             );
         }
+    }
+
+    #[test]
+    fn terminal_snapshot_syntax_accepts_policy_denied_origin_and_root_targets() {
+        assert!(validate_terminal_snapshot_target_syntax("proj-a:wg-1-dev-team/dev-rust").is_ok());
+        assert!(validate_terminal_snapshot_target_syntax("proj-a/dev-rust").is_ok());
+        assert!(validate_terminal_snapshot_target_syntax(
+            crate::config::root_agent::ROOT_AGENT_SENDER
+        )
+        .is_ok());
+        assert!(validate_terminal_snapshot_target_syntax("*").is_err());
+    }
+
+    #[test]
+    fn terminal_snapshot_coordinator_policy_is_distinct_from_pty_input() {
+        let (fixture, paths) = make_coordinator_fixture(false);
+        let workspace = fixture.path().join("proj-a").join(".ac");
+        let coordinator = workspace.join("wg-1-dev-team").join("__agent_tech-lead");
+        let route = verify_terminal_snapshot_route(
+            &coordinator,
+            false,
+            "proj-a:wg-1-dev-team/dev-rust",
+            &paths,
+        )
+        .unwrap();
+        assert_eq!(route.kind, TerminalSnapshotAuthorityKind::Coordinator);
+        assert_eq!(route.target.canonical_fqn, "proj-a:wg-1-dev-team/dev-rust");
+        assert!(verify_terminal_snapshot_route(
+            &coordinator,
+            false,
+            "proj-a:wg-1-dev-team/tech-lead",
+            &paths,
+        )
+        .is_err());
+        assert!(verify_terminal_snapshot_route(
+            &coordinator,
+            false,
+            crate::config::root_agent::ROOT_AGENT_SENDER,
+            &paths,
+        )
+        .is_err());
     }
 
     #[test]

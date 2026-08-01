@@ -293,12 +293,25 @@ where
     after_first_snapshot();
     file.seek(SeekFrom::Start(0))
         .map_err(|_| "unsafe_path".to_string())?;
-    let mut verification = Vec::with_capacity(bytes.capacity());
-    Read::by_ref(&mut file)
-        .take(max_bytes.saturating_add(1) as u64)
-        .read_to_end(&mut verification)
-        .map_err(|_| "unsafe_path".to_string())?;
-    if verification.len() > max_bytes || verification != bytes {
+    let mut verification = [0_u8; 64 * 1024];
+    let mut verified_bytes = 0usize;
+    loop {
+        let read = file
+            .read(&mut verification)
+            .map_err(|_| "unsafe_path".to_string())?;
+        if read == 0 {
+            break;
+        }
+        let end = verified_bytes
+            .checked_add(read)
+            .filter(|end| *end <= bytes.len())
+            .ok_or_else(|| "unsafe_path".to_string())?;
+        if bytes.get(verified_bytes..end) != Some(&verification[..read]) {
+            return Err("unsafe_path".to_string());
+        }
+        verified_bytes = end;
+    }
+    if verified_bytes != bytes.len() {
         return Err("unsafe_path".to_string());
     }
     let opened_after = file.metadata().map_err(|_| "unsafe_path".to_string())?;
@@ -331,6 +344,17 @@ where
             content_sha256: Some(digest),
         },
     ))
+}
+
+pub fn sync_parent_best_effort(path: &Path) {
+    #[cfg(unix)]
+    if let Some(parent) = path.parent() {
+        if let Ok(directory) = File::open(parent) {
+            let _ = directory.sync_all();
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 #[cfg(windows)]
@@ -782,6 +806,198 @@ impl<'de> Visitor<'de> for ScanningVisitor {
     }
 }
 
+/// A caller-owned output file whose leaf handle and parent directory remain
+/// retained until the write and identity checks complete.
+pub struct VerifiedNewFile {
+    path: PathBuf,
+    file: File,
+    parent: VerifiedPathIdentity,
+}
+
+impl VerifiedNewFile {
+    /// Failure intentionally leaves the newly created caller-owned file in
+    /// place. The CLI must never unlink a path after ownership becomes unclear.
+    pub fn write_all_and_sync(mut self, bytes: &[u8]) -> Result<(), String> {
+        self.file
+            .write_all(bytes)
+            .and_then(|_| self.file.flush())
+            .and_then(|_| self.file.sync_all())
+            .map_err(|_| "output_failed".to_string())?;
+        let opened = verify_opened_regular_file(&self.path, &self.file, false)
+            .map_err(|_| "output_failed".to_string())?;
+        let current_parent = verify_directory(
+            self.path
+                .parent()
+                .ok_or_else(|| "output_failed".to_string())?,
+        )
+        .map_err(|_| "output_failed".to_string())?;
+        if !same_object(&self.parent, &current_parent)
+            || opened.metadata.links != 1
+            || opened.metadata.len != bytes.len() as u64
+        {
+            return Err("output_failed".to_string());
+        }
+        Ok(())
+    }
+}
+
+pub fn create_terminal_snapshot_output(path: &Path) -> Result<VerifiedNewFile, String> {
+    validate_terminal_snapshot_output_path(path)?;
+    let parent_path = path.parent().ok_or_else(|| "unsafe_path".to_string())?;
+    let parent = verify_directory(parent_path)?;
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        _ => return Err("unsafe_path".to_string()),
+    }
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(UNIX_O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options.open(path).map_err(|_| "unsafe_path".to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|_| "unsafe_path".to_string())?;
+        if file
+            .metadata()
+            .map_err(|_| "unsafe_path".to_string())?
+            .permissions()
+            .mode()
+            & 0o777
+            != 0o600
+        {
+            return Err("unsafe_path".to_string());
+        }
+    }
+    verify_opened_regular_file(path, &file, true)?;
+    let current_parent = verify_directory(parent_path)?;
+    if !same_object(&parent, &current_parent) {
+        return Err("unsafe_path".to_string());
+    }
+    Ok(VerifiedNewFile {
+        path: path.to_path_buf(),
+        file,
+        parent,
+    })
+}
+
+pub fn validate_terminal_snapshot_output_path(path: &Path) -> Result<(), String> {
+    if !path.is_absolute() {
+        return Err("unsafe_path".to_string());
+    }
+    let extension = path.extension().ok_or_else(|| "unsafe_path".to_string())?;
+    #[cfg(unix)]
+    let extension_is_png = {
+        use std::os::unix::ffi::OsStrExt;
+        extension
+            .as_bytes()
+            .iter()
+            .copied()
+            .map(|byte| byte.to_ascii_lowercase())
+            .eq(b"png".iter().copied())
+    };
+    #[cfg(not(unix))]
+    let extension_is_png = extension
+        .to_str()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("png"));
+    if !extension_is_png {
+        return Err("unsafe_path".to_string());
+    }
+    let parent = path.parent().ok_or_else(|| "unsafe_path".to_string())?;
+    verify_directory(parent)?;
+    #[cfg(windows)]
+    validate_windows_snapshot_output_path(path)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn validate_windows_snapshot_output_path(path: &Path) -> Result<(), String> {
+    use std::path::Prefix;
+
+    let raw = path.as_os_str().to_string_lossy();
+    let mut components = path.components();
+    let allowed_drive_colon = match components.next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::Disk(_) => Some(1),
+            Prefix::VerbatimDisk(_) => {
+                raw.char_indices().find_map(
+                    |(index, value)| {
+                        if value == ':' {
+                            Some(index)
+                        } else {
+                            None
+                        }
+                    },
+                )
+            }
+            Prefix::UNC(_, _) | Prefix::VerbatimUNC(_, _) => None,
+            _ => return Err("unsafe_path".to_string()),
+        },
+        _ => return Err("unsafe_path".to_string()),
+    };
+    if raw
+        .char_indices()
+        .any(|(index, value)| value == ':' && Some(index) != allowed_drive_colon)
+    {
+        return Err("unsafe_path".to_string());
+    }
+    for component in path.components() {
+        let Component::Normal(value) = component else {
+            continue;
+        };
+        let Some(value) = value.to_str() else {
+            return Err("unsafe_path".to_string());
+        };
+        if value.ends_with([' ', '.']) {
+            return Err("unsafe_path".to_string());
+        }
+        let stem = value.split('.').next().unwrap_or(value);
+        let reserved = matches!(
+            stem.to_ascii_uppercase().as_str(),
+            "CON"
+                | "PRN"
+                | "AUX"
+                | "NUL"
+                | "COM1"
+                | "COM2"
+                | "COM3"
+                | "COM4"
+                | "COM5"
+                | "COM6"
+                | "COM7"
+                | "COM8"
+                | "COM9"
+                | "LPT1"
+                | "LPT2"
+                | "LPT3"
+                | "LPT4"
+                | "LPT5"
+                | "LPT6"
+                | "LPT7"
+                | "LPT8"
+                | "LPT9"
+        );
+        if reserved
+            || value
+                .chars()
+                .any(|character| matches!(character, '<' | '>' | '"' | '|' | '?' | '*'))
+        {
+            return Err("unsafe_path".to_string());
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -903,5 +1119,19 @@ mod tests {
             assert!(verify_directory(&link).is_err());
             assert!(read_bounded_regular(&link.join("identity.json"), 16).is_err());
         }
+    }
+
+    #[test]
+    fn terminal_snapshot_output_is_absolute_png_create_new() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let output = directory.path().join("snapshot.PNG");
+        let file = create_terminal_snapshot_output(&output).unwrap();
+        file.write_all_and_sync(b"owned bytes").unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), b"owned bytes");
+        assert!(create_terminal_snapshot_output(&output).is_err());
+        assert!(validate_terminal_snapshot_output_path(Path::new("relative.png")).is_err());
+        assert!(
+            validate_terminal_snapshot_output_path(&directory.path().join("wrong.txt")).is_err()
+        );
     }
 }

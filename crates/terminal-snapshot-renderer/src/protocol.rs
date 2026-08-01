@@ -412,7 +412,8 @@ fn equal_fixed_strings(actual: &[String], expected: &[&str]) -> bool {
             .all(|(actual, expected)| actual == expected)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TerminalScreenModel {
     pub captured_at: String,
     pub session: TerminalSnapshotSession,
@@ -868,44 +869,71 @@ pub fn validate_target_syntax(value: &str) -> Result<(), ProtocolError> {
     if value == ROOT_REQUESTER_IDENTITY {
         return Ok(());
     }
-    validate_canonical_fqn(value).map(|_| ())
-}
-
-pub fn validate_wg_fqn(value: &str) -> Result<(), ProtocolError> {
-    let (_, path) = validate_canonical_fqn(value)?;
-    let (workgroup, _) = path.split_once('/').ok_or(ProtocolError::Invalid)?;
-    if !workgroup.starts_with("wg-") {
+    if value.contains(':') {
+        return validate_wg_fqn(value);
+    }
+    if value.is_empty() || value.len() > 1_024 || value.matches('/').count() != 1 {
         return Err(ProtocolError::Invalid);
     }
-    Ok(())
-}
-
-fn validate_canonical_fqn(value: &str) -> Result<(&str, &str), ProtocolError> {
-    if value.is_empty() || value.len() > 1_024 || value.contains('\0') {
-        return Err(ProtocolError::Invalid);
-    }
-    let (project, path) = value.split_once(':').ok_or(ProtocolError::Invalid)?;
-    if project.is_empty()
-        || path.is_empty()
-        || project.contains(':')
-        || path.contains(':')
-        || path.matches('/').count() != 1
-    {
-        return Err(ProtocolError::Invalid);
-    }
-    let (scope, agent) = path.split_once('/').ok_or(ProtocolError::Invalid)?;
-    for component in [project, scope, agent] {
+    let (project, agent) = value.split_once('/').ok_or(ProtocolError::Invalid)?;
+    for component in [project, agent] {
         if component.is_empty()
             || component == "."
             || component == ".."
             || !component
                 .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
         {
             return Err(ProtocolError::Invalid);
         }
     }
-    Ok((project, path))
+    Ok(())
+}
+
+pub fn validate_wg_fqn(value: &str) -> Result<(), ProtocolError> {
+    if value.is_empty() || value.len() > 1_024 || value.matches(':').count() != 1 {
+        return Err(ProtocolError::Invalid);
+    }
+    let (project, local) = value.split_once(':').ok_or(ProtocolError::Invalid)?;
+    if project.is_empty()
+        || matches!(project, "." | "..")
+        || project.chars().any(|scalar| {
+            scalar.is_control()
+                || matches!(
+                    scalar,
+                    '\u{061c}'
+                        | '\u{200e}'
+                        | '\u{200f}'
+                        | '\u{2028}'
+                        | '\u{2029}'
+                        | '\u{202a}'..='\u{202e}'
+                        | '\u{2066}'..='\u{2069}'
+                )
+                || matches!(scalar, '/' | '\\' | '*' | '?' | '"' | '<' | '>' | '|')
+        })
+        || local.matches('/').count() != 1
+    {
+        return Err(ProtocolError::Invalid);
+    }
+    let (workgroup, agent) = local.split_once('/').ok_or(ProtocolError::Invalid)?;
+    let rest = workgroup
+        .strip_prefix("wg-")
+        .ok_or(ProtocolError::Invalid)?;
+    let (digits, team) = rest.split_once('-').ok_or(ProtocolError::Invalid)?;
+    if digits.is_empty()
+        || !digits.bytes().all(|byte| byte.is_ascii_digit())
+        || team.is_empty()
+        || !team
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        || agent.is_empty()
+        || !agent
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return Err(ProtocolError::Invalid);
+    }
+    Ok(())
 }
 
 pub fn validate_screen(screen: &TerminalScreen) -> Result<(), ProtocolError> {

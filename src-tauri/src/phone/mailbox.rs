@@ -2444,6 +2444,7 @@ enum MailboxTestEvent {
 pub struct MailboxPoller {
     poll_interval: std::time::Duration,
     retry_tracker: HashMap<PathBuf, RetryState>,
+    snapshot_scanner: crate::phone::terminal_snapshot::SnapshotMailboxScanner,
     #[cfg(test)]
     test_hooks: Option<MailboxTestHooks>,
 }
@@ -2613,6 +2614,7 @@ impl MailboxPoller {
         Self {
             poll_interval: std::time::Duration::from_secs(3),
             retry_tracker: HashMap::new(),
+            snapshot_scanner: crate::phone::terminal_snapshot::SnapshotMailboxScanner::default(),
             #[cfg(test)]
             test_hooks: None,
         }
@@ -2623,6 +2625,7 @@ impl MailboxPoller {
         Self {
             poll_interval: std::time::Duration::from_secs(3),
             retry_tracker: HashMap::new(),
+            snapshot_scanner: crate::phone::terminal_snapshot::SnapshotMailboxScanner::default(),
             test_hooks: Some(test_hooks),
         }
     }
@@ -2701,6 +2704,7 @@ impl MailboxPoller {
 
     /// One poll cycle: scan all repo outbox dirs, process each message.
     async fn poll<R: tauri::Runtime>(&mut self, app: &tauri::AppHandle<R>) -> Result<(), String> {
+        self.snapshot_scanner.begin_cycle();
         if let Some(state) = app.try_state::<crate::api::message_store::MessageStoreState>() {
             if let Ok(store) = &state.store {
                 let active = state.active_operations.snapshot();
@@ -2735,21 +2739,99 @@ impl MailboxPoller {
             let mgr = session_mgr.read().await;
             mgr.get_sessions_working_dirs().await
         };
-        let session_dirs = if archived.is_empty() {
+        let snapshot_session_dirs = session_dirs.clone();
+        let archived_for_filter = archived.clone();
+        let session_dirs = if archived_for_filter.is_empty() {
             session_dirs
         } else {
             tokio::task::spawn_blocking(move || {
-                let roots = crate::config::sessions_persistence::normalize_project_roots(&archived);
+                let roots = crate::config::sessions_persistence::normalize_project_roots(
+                    &archived_for_filter,
+                );
                 retain_unarchived_session_dirs(session_dirs, &roots)
             })
             .await
             .map_err(|e| format!("archived mailbox-session filter task failed: {}", e))?
         };
 
+        let mut startup_project_paths = repo_paths.clone();
+        for path in &archived {
+            if !startup_project_paths.contains(path) {
+                startup_project_paths.push(path.clone());
+            }
+        }
         let mut all_paths: Vec<String> = repo_paths;
         for (_, dir) in &session_dirs {
             if !all_paths.contains(dir) {
                 all_paths.push(dir.clone());
+            }
+        }
+
+        // One bounded startup sweep covers canonical Root plus verified WG
+        // replicas under active and archived projects. Fresh artifacts are
+        // registered so the monotonic cleanup task continues after this poll.
+        if self.snapshot_scanner.startup_sweep_pending() {
+            if let Some(state) =
+                app.try_state::<Arc<crate::pty::terminal_snapshot::TerminalSnapshotState>>()
+            {
+                let mut startup_objects = std::collections::HashSet::new();
+                if let Ok(root) = crate::config::root_agent::root_agent_dir() {
+                    let root = PathBuf::from(root);
+                    if let Ok(identity) = crate::path_identity::verify_directory(&root) {
+                        if startup_objects.insert(identity.object_id) {
+                            self.snapshot_scanner.startup_sweep_root(&state, &root);
+                        }
+                    }
+                }
+                let mut target_count = 0usize;
+                for project in &startup_project_paths {
+                    let Ok(targets) =
+                        crate::config::teams::discover_verified_terminal_snapshot_targets(
+                            std::slice::from_ref(project),
+                        )
+                    else {
+                        continue;
+                    };
+                    for target in targets {
+                        target_count = target_count.saturating_add(1);
+                        if target_count > 4_096 {
+                            break;
+                        }
+                        let Ok(identity) =
+                            crate::path_identity::verify_directory(&target.replica_root)
+                        else {
+                            continue;
+                        };
+                        if startup_objects.insert(identity.object_id) {
+                            self.snapshot_scanner
+                                .startup_sweep_root(&state, &target.replica_root);
+                        }
+                    }
+                    if target_count > 4_096 {
+                        break;
+                    }
+                }
+            }
+            self.snapshot_scanner.finish_startup_sweep();
+        }
+
+        // Snapshot ingress derives exact replica roots before checking ordinary
+        // outbox spellings, so a live session CWD below its replica cannot make
+        // the dedicated protocol invisible. Physical roots are scanned once.
+        let mut snapshot_root_objects = std::collections::HashSet::new();
+        for (_, discovered) in &snapshot_session_dirs {
+            let Some(requester_root) =
+                crate::phone::terminal_snapshot::verified_requester_root_from_discovered_path(
+                    Path::new(discovered),
+                )
+            else {
+                continue;
+            };
+            let Ok(identity) = crate::path_identity::verify_directory(&requester_root) else {
+                continue;
+            };
+            if snapshot_root_objects.insert(identity.object_id) {
+                self.snapshot_scanner.scan_root(app, &requester_root);
             }
         }
 
@@ -2772,6 +2854,7 @@ impl MailboxPoller {
             if !outbox_dir.is_dir() {
                 continue;
             }
+            let is_app_outbox = outbox_dir.as_path() == Path::new(&app_outbox_path);
             if let Some(state) = app.try_state::<crate::api::message_store::MessageStoreState>() {
                 if let Ok(store) = &state.store {
                     self.scrub_stale_pty_input_temps(outbox_dir, store);
@@ -2791,7 +2874,6 @@ impl MailboxPoller {
                 Err(_) => continue,
             };
 
-            let is_app_outbox = outbox_dir.as_path() == Path::new(&app_outbox_path);
             for path in entries {
                 let standard_content = match classify_outbox_document(&path) {
                     OutboxClassification::PrivilegedCandidate { bytes, identity } => {
@@ -2889,6 +2971,8 @@ impl MailboxPoller {
                 }
             }
         }
+
+        self.snapshot_scanner.finish_cycle();
 
         // Prune tracker entries for files that no longer exist
         self.retry_tracker.retain(|path, _| path.exists());
@@ -4640,38 +4724,9 @@ impl MailboxPoller {
                 return;
             }
         };
-        let final_api_guard = if source_plane
-            == crate::phone::types::PtyInputSourcePlane::ContainerApi
-        {
-            let Some(client_store) = api_client_store else {
-                reject_pty_input_before_boundary(
-                    &store,
-                    &mut heartbeat,
-                    injection_id,
-                    C::AuthorityChanged,
-                )
-                .await;
-                return;
-            };
-            let (Some(client_id), Some(generation)) = (
-                claimed.authority_client_id.as_deref(),
-                claimed.authority_client_generation.as_deref(),
-            ) else {
-                reject_pty_input_before_boundary(
-                    &store,
-                    &mut heartbeat,
-                    injection_id,
-                    C::AuthorityChanged,
-                )
-                .await;
-                return;
-            };
-            match client_store
-                .load_active_binding_fresh_offloaded(client_id.to_string(), generation.to_string())
-                .await
-            {
-                Ok(Some(guard)) => Some(guard),
-                Ok(None) => {
+        let final_api_guard =
+            if source_plane == crate::phone::types::PtyInputSourcePlane::ContainerApi {
+                let Some(client_store) = api_client_store else {
                     reject_pty_input_before_boundary(
                         &store,
                         &mut heartbeat,
@@ -4680,22 +4735,54 @@ impl MailboxPoller {
                     )
                     .await;
                     return;
-                }
-                Err(_) => {
-                    finish_pty_input_before_boundary(
+                };
+                let (Some(client_id), Some(generation)) = (
+                    claimed.authority_client_id.as_deref(),
+                    claimed.authority_client_generation.as_deref(),
+                ) else {
+                    reject_pty_input_before_boundary(
                         &store,
                         &mut heartbeat,
                         injection_id,
-                        &lease_owner,
-                        C::StoreTransient,
+                        C::AuthorityChanged,
                     )
                     .await;
                     return;
+                };
+                match client_store
+                    .load_active_binding_fresh_offloaded(
+                        client_id.to_string(),
+                        generation.to_string(),
+                        crate::api::auth::SCOPE_PTY_INPUT,
+                    )
+                    .await
+                {
+                    Ok(Some(guard)) => Some(guard),
+                    Ok(None) => {
+                        reject_pty_input_before_boundary(
+                            &store,
+                            &mut heartbeat,
+                            injection_id,
+                            C::AuthorityChanged,
+                        )
+                        .await;
+                        return;
+                    }
+                    Err(_) => {
+                        finish_pty_input_before_boundary(
+                            &store,
+                            &mut heartbeat,
+                            injection_id,
+                            &lease_owner,
+                            C::StoreTransient,
+                        )
+                        .await;
+                        return;
+                    }
                 }
-            }
-        } else {
-            None
-        };
+            } else {
+                None
+            };
         let final_authority = if let Some(fresh) = final_api_guard.as_ref() {
             self.validate_claimed_api_authority_with_fresh(app, &claimed, fresh)
                 .await
@@ -5136,7 +5223,11 @@ impl MailboxPoller {
             return Ok(None);
         };
         let Some(fresh) = client_store
-            .load_active_binding_fresh_offloaded(client_id.to_string(), generation.to_string())
+            .load_active_binding_fresh_offloaded(
+                client_id.to_string(),
+                generation.to_string(),
+                crate::api::auth::SCOPE_PTY_INPUT,
+            )
             .await?
         else {
             return Ok(None);

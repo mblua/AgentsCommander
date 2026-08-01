@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::pty::context_scrape::{ContextSessionLiveness, ScreenRowsRead};
-use crate::pty::output::{PtyOutputTarget, PtyScreenSnapshot};
+use crate::pty::output::{CapturedVtScreen, PtyOutputTarget, PtyScreenSnapshot};
 use crate::resource_monitor::{ResourceLaunchRegistration, ResourceLogicalAgentSlot};
 use crate::session::profile::{CodingAgentKind, IdleTuning};
 
@@ -16,6 +16,18 @@ use crate::session::profile::{CodingAgentKind, IdleTuning};
 /// The payload is handed to a backend in one call. It is never split into
 /// chunks, appended with Enter, or interpreted as a command line.
 pub const PTY_INPUT_MAX_BYTES: usize = 65_536;
+
+pub(crate) enum TerminalScreenCopyRead {
+    Copied(CapturedVtScreen),
+    Unavailable,
+    TooLarge,
+}
+
+pub(crate) enum TerminalScreenRead {
+    Captured(std::sync::Arc<terminal_snapshot_renderer::TerminalScreenModel>),
+    Unavailable,
+    TooLarge,
+}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -154,6 +166,13 @@ pub trait PtyBackend: Any + Send + Sync {
     }
 
     fn get_screen_snapshot(&self, id: Uuid) -> Option<PtyScreenSnapshot>;
+
+    /// Read-only fixed-cell viewport copy. Backends unrelated to the two live
+    /// production fanouts remain source-compatible and report unavailable.
+    #[allow(private_interfaces)]
+    fn copy_terminal_screen(&self, _id: Uuid) -> TerminalScreenCopyRead {
+        TerminalScreenCopyRead::Unavailable
+    }
 
     fn get_pty_size(&self, id: Uuid) -> Option<(u16, u16)>;
 

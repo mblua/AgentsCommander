@@ -275,6 +275,7 @@ struct JsonShapeScanner<'a> {
     bytes: &'a [u8],
     position: usize,
     nodes: usize,
+    cells: usize,
 }
 
 impl<'a> JsonShapeScanner<'a> {
@@ -283,6 +284,7 @@ impl<'a> JsonShapeScanner<'a> {
             bytes,
             position: 0,
             nodes: 0,
+            cells: 0,
         }
     }
 
@@ -308,12 +310,27 @@ impl<'a> JsonShapeScanner<'a> {
         self.skip_whitespace();
         match self.peek().ok_or(ProtocolError::Invalid)? {
             b'{' => self.parse_object(depth),
-            b'[' => self.parse_array(depth),
+            b'[' => self.parse_array(depth, field_name),
             b'"' => {
                 let require_unescaped = field_name == Some("pngBase64");
+                let start = self.position;
                 let length = self.parse_string(require_unescaped, false)?;
                 if require_unescaped && length > MAX_BASE64_TEXT_BYTES {
                     return Err(ProtocolError::TooLarge);
+                }
+                if field_name == Some("text") {
+                    if length > 144 {
+                        return Err(ProtocolError::TooLarge);
+                    }
+                    let raw = self
+                        .bytes
+                        .get(start..self.position)
+                        .ok_or(ProtocolError::Invalid)?;
+                    let text: String =
+                        serde_json::from_slice(raw).map_err(|_| ProtocolError::Invalid)?;
+                    if text.len() > 24 || text.chars().count() > 6 {
+                        return Err(ProtocolError::TooLarge);
+                    }
                 }
                 Ok(())
             }
@@ -359,14 +376,33 @@ impl<'a> JsonShapeScanner<'a> {
         }
     }
 
-    fn parse_array(&mut self, depth: usize) -> Result<(), ProtocolError> {
+    fn parse_array(&mut self, depth: usize, field_name: Option<&str>) -> Result<(), ProtocolError> {
         self.expect(b'[')?;
         self.skip_whitespace();
         if self.consume_if(b']') {
             return Ok(());
         }
+        let cap = match field_name {
+            Some("lines") => Some(crate::protocol::MAX_ROWS as usize),
+            Some("cells") => Some(crate::protocol::MAX_COLUMNS as usize),
+            Some("omitted") => Some(crate::protocol::FIDELITY_OMITTED.len()),
+            Some("unsupported") => Some(crate::protocol::FIDELITY_UNSUPPORTED.len()),
+            _ => None,
+        };
+        let mut elements = 0usize;
         loop {
             self.parse_value(depth + 1, None)?;
+            elements = elements.checked_add(1).ok_or(ProtocolError::TooLarge)?;
+            if cap.is_some_and(|cap| elements > cap) {
+                return Err(ProtocolError::TooLarge);
+            }
+            if field_name == Some("cells") {
+                self.cells = self
+                    .cells
+                    .checked_add(1)
+                    .filter(|cells| *cells <= crate::protocol::MAX_CELLS)
+                    .ok_or(ProtocolError::TooLarge)?;
+            }
             self.skip_whitespace();
             if self.consume_if(b']') {
                 return Ok(());

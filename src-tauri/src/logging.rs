@@ -19,6 +19,46 @@ use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 static INIT: OnceLock<()> = OnceLock::new();
+static PAYLOAD_PANIC_HOOK: OnceLock<()> = OnceLock::new();
+
+thread_local! {
+    static PAYLOAD_WORKER_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+struct PayloadWorkerGuard;
+
+impl PayloadWorkerGuard {
+    fn enter() -> Self {
+        PAYLOAD_PANIC_HOOK.get_or_init(|| {
+            let previous = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |information| {
+                let suppressed = PAYLOAD_WORKER_DEPTH.with(|depth| depth.get() > 0);
+                if !suppressed {
+                    previous(information);
+                }
+            }));
+        });
+        PAYLOAD_WORKER_DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
+        Self
+    }
+}
+
+impl Drop for PayloadWorkerGuard {
+    fn drop(&mut self) {
+        PAYLOAD_WORKER_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
+/// Catch a panic in a terminal-payload worker without allowing the default
+/// panic hook to print attacker-controlled parser or renderer data. Unrelated
+/// panics continue through the process hook unchanged.
+pub(crate) fn catch_payload_unwind<F, T>(operation: F) -> std::thread::Result<T>
+where
+    F: FnOnce() -> T,
+{
+    let _guard = PayloadWorkerGuard::enter();
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation))
+}
 
 /// #612 runtime-adjustable verbosity for our own targets (`agentscommander*`),
 /// stored as `log::Level as u8` (Error=1 .. Trace=5). Installed ONLY on the
@@ -91,6 +131,30 @@ impl log::Log for LevelGateLogger {
         // Re-check per the log::Log contract: the global max_level may admit
         // records this gate rejects. Delegating to inner reuses the existing
         // format closure unchanged (scrub + #264 sink + rotation).
+        if self.enabled(record.metadata()) {
+            self.inner.log(record);
+        }
+    }
+
+    fn flush(&self) {
+        self.inner.flush();
+    }
+}
+
+struct PrivacyFilterLogger<L> {
+    inner: L,
+}
+
+fn is_payload_logging_target(target: &str) -> bool {
+    target == "vt100" || target.starts_with("vt100::")
+}
+
+impl<L: log::Log> log::Log for PrivacyFilterLogger<L> {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        !is_payload_logging_target(metadata.target()) && self.inner.enabled(metadata)
+    }
+
+    fn log(&self, record: &log::Record) {
         if self.enabled(record.metadata()) {
             self.inner.log(record);
         }
@@ -361,7 +425,9 @@ fn install_format(builder: &mut env_logger::Builder, log_state: Arc<Option<Arc<A
 
 fn init_logger_inner() {
     if let Err(error) = crate::config::instance_gitignore::ensure_instance_gitignore() {
-        eprintln!("[instance-gitignore] warning: {error}");
+        if !machine_output_enabled() {
+            eprintln!("[instance-gitignore] warning: {error}");
+        }
     }
 
     let log_state: Option<Arc<AppLogFile>> = crate::config::config_dir().and_then(|dir| {
@@ -408,7 +474,12 @@ fn init_logger_inner() {
         let mut builder = env_logger::Builder::from_env(env_logger::Env::default());
         builder.parse_filters(&rust_log);
         install_format(&mut builder, Arc::clone(&log_state));
-        builder.init();
+        let inner = builder.build();
+        let max_level = inner.filter();
+        let logger = PrivacyFilterLogger { inner };
+        if log::set_boxed_logger(Box::new(logger)).is_ok() {
+            log::set_max_level(max_level);
+        }
         return;
     }
 
@@ -436,7 +507,8 @@ fn init_logger_inner() {
         inner,
         level: atomic,
     };
-    if log::set_boxed_logger(Box::new(gate)).is_ok() {
+    let logger = PrivacyFilterLogger { inner: gate };
+    if log::set_boxed_logger(Box::new(logger)).is_ok() {
         log::set_max_level(max_filter_for(initial));
     }
 }

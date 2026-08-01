@@ -3009,6 +3009,38 @@ pub(crate) async fn read_pty_input_project_paths_strict_offloaded(
         .map_err(|_| "settings_unavailable".to_string())?
 }
 
+pub(crate) fn read_terminal_snapshot_project_paths_strict() -> Result<Vec<String>, String> {
+    let path = settings_path().ok_or_else(|| "snapshot_settings_invalid".to_string())?;
+    let (bytes, _) = crate::path_identity::read_bounded_regular(&path, 1024 * 1024)
+        .map_err(|_| "snapshot_settings_invalid".to_string())?;
+    let value = crate::path_identity::parse_json_no_duplicates(&bytes)
+        .map_err(|_| "snapshot_settings_invalid".to_string())?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "snapshot_settings_invalid".to_string())?;
+    let Some(paths) = object.get(FIELD_PROJECT_PATHS) else {
+        return Ok(Vec::new());
+    };
+    let paths = paths
+        .as_array()
+        .filter(|paths| paths.len() <= 4_096)
+        .ok_or_else(|| "snapshot_settings_invalid".to_string())?;
+    let mut project_paths = Vec::with_capacity(paths.len());
+    let mut aggregate_bytes = 0usize;
+    for value in paths {
+        let path = value
+            .as_str()
+            .filter(|path| !path.is_empty() && path.len() <= 32 * 1024 && !path.contains('\0'))
+            .ok_or_else(|| "snapshot_settings_invalid".to_string())?;
+        aggregate_bytes = aggregate_bytes
+            .checked_add(path.len())
+            .filter(|bytes| *bytes <= 4 * 1024 * 1024)
+            .ok_or_else(|| "snapshot_settings_invalid".to_string())?;
+        project_paths.push(path.to_string());
+    }
+    Ok(project_paths)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TerminalSnapshotSecuritySettings {
     pub terminal_snapshots_enabled: bool,
@@ -3565,8 +3597,10 @@ mod tests {
     fn whole_settings_writer_preserves_disk_terminal_snapshot_gate() {
         let temp = tempfile::TempDir::new().unwrap();
         let path = temp.path().join("settings.json");
-        let mut enabled = super::AppSettings::default();
-        enabled.terminal_snapshots_enabled = true;
+        let enabled = super::AppSettings {
+            terminal_snapshots_enabled: true,
+            ..super::AppSettings::default()
+        };
         super::save_settings_to_path(&enabled, &path).unwrap();
 
         let stale = super::AppSettings::default();

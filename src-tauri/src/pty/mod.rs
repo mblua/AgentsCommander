@@ -17,3 +17,4 @@ pub mod local_backend;
 pub mod manager;
 pub mod output;
 pub mod spawn_diagnostics; // #942 - spawn/first-output/exit evidence for hang triage
+pub mod terminal_snapshot;

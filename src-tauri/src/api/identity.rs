@@ -46,6 +46,201 @@ pub fn resolve_from(client: &ApiClient) -> Result<String, ApiError> {
     Ok(fqn)
 }
 
+pub struct InitialApiCredentialProof {
+    pub client_id: String,
+    pub bound_root: String,
+    pub bound_session_id: String,
+    pub credential_generation: String,
+    pub presented_token_hash: String,
+}
+
+impl InitialApiCredentialProof {
+    pub fn from_fresh_guard(
+        guard: crate::api::auth::ApiClientFreshGuard,
+    ) -> Result<Self, BoundContainerCoordinatorError> {
+        let client = guard.client;
+        let bound_session_id = client
+            .bound_session_id
+            .ok_or(BoundContainerCoordinatorError::Unbound)?;
+        let credential_generation = client
+            .credential_generation
+            .ok_or(BoundContainerCoordinatorError::Unbound)?;
+        Ok(Self {
+            client_id: client.client_id,
+            bound_root: client.bound_root,
+            bound_session_id,
+            credential_generation,
+            presented_token_hash: guard.presented_token_hash,
+        })
+    }
+}
+
+impl std::fmt::Debug for InitialApiCredentialProof {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("InitialApiCredentialProof")
+            .field("client_id", &self.client_id)
+            .field("bound_session_id", &self.bound_session_id)
+            .field("credential_generation", &self.credential_generation)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoundContainerCoordinatorError {
+    Unbound,
+    Stale,
+    BindingMismatch,
+    NotCoordinator,
+    Internal,
+}
+
+pub struct VerifiedBoundContainerCoordinator {
+    pub sender: crate::config::teams::VerifiedPtyInputIdentity,
+    pub session_id: uuid::Uuid,
+    pub client_id: String,
+    pub credential_generation: String,
+    pub bound_root_object_id: crate::path_identity::FileObjectId,
+    pub presented_token_hash: String,
+}
+
+impl std::fmt::Debug for VerifiedBoundContainerCoordinator {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("VerifiedBoundContainerCoordinator")
+            .field("session_id", &self.session_id)
+            .field("client_id", &self.client_id)
+            .field("credential_generation", &self.credential_generation)
+            .finish_non_exhaustive()
+    }
+}
+
+pub async fn verify_live_bound_container_coordinator(
+    state: &crate::api::ApiState,
+    proof: InitialApiCredentialProof,
+) -> Result<VerifiedBoundContainerCoordinator, BoundContainerCoordinatorError> {
+    let session_id = crate::phone::types::parse_canonical_uuid_v4(&proof.bound_session_id)
+        .map_err(|_| BoundContainerCoordinatorError::Unbound)?;
+    crate::phone::types::parse_canonical_uuid_v4(&proof.credential_generation)
+        .map_err(|_| BoundContainerCoordinatorError::Unbound)?;
+    let manager = {
+        let manager = state.session_mgr.read().await;
+        manager.clone()
+    };
+    let fact = manager
+        .live_snapshot_requester_by_id(session_id)
+        .await
+        .ok_or(BoundContainerCoordinatorError::Stale)?;
+    if fact.backend_kind != crate::pty::backend::SessionBackendKind::ContainerTransport {
+        return Err(BoundContainerCoordinatorError::Stale);
+    }
+    if fact.is_root_agent || !fact.is_coordinator {
+        return Err(BoundContainerCoordinatorError::NotCoordinator);
+    }
+    let bound_root =
+        crate::path_identity::verify_directory(std::path::Path::new(&proof.bound_root))
+            .map_err(|_| BoundContainerCoordinatorError::BindingMismatch)?;
+    let session_root =
+        crate::path_identity::verify_directory(std::path::Path::new(&fact.working_directory))
+            .map_err(|_| BoundContainerCoordinatorError::BindingMismatch)?;
+    if !crate::path_identity::same_object(&bound_root, &session_root) {
+        return Err(BoundContainerCoordinatorError::BindingMismatch);
+    }
+    let route = crate::pty::manager::PtyManager::snapshot_route_proof(&state.pty_mgr, session_id)
+        .map_err(|_| BoundContainerCoordinatorError::BindingMismatch)?;
+    let container_backend = {
+        let manager = state
+            .pty_mgr
+            .lock()
+            .map_err(|_| BoundContainerCoordinatorError::Internal)?;
+        manager.container_backend()
+    };
+    let binding = container_backend
+        .credential_binding(session_id)
+        .ok_or(BoundContainerCoordinatorError::BindingMismatch)?;
+    if binding.client_id != proof.client_id
+        || binding.credential_generation != proof.credential_generation
+        || binding.bound_session_id != proof.bound_session_id
+        || binding.bound_root_object_id != bound_root.object_id
+        || !crate::api::auth::constant_time_eq(
+            &binding.credential_token_hash,
+            &proof.presented_token_hash,
+        )
+    {
+        return Err(BoundContainerCoordinatorError::BindingMismatch);
+    }
+    let sender = crate::config::teams::verify_pty_input_coordinator_root(std::path::Path::new(
+        &fact.working_directory,
+    ))
+    .map_err(|_| BoundContainerCoordinatorError::NotCoordinator)?;
+    if route.backend_kind() != crate::pty::backend::SessionBackendKind::ContainerTransport
+        || route.liveness() != crate::pty::context_scrape::ContextSessionLiveness::Live
+        || !route.matches_requester_route(
+            crate::pty::backend::SessionBackendKind::ContainerTransport,
+            &session_root,
+            Some(&sender.replica_identity),
+        )
+    {
+        return Err(BoundContainerCoordinatorError::BindingMismatch);
+    }
+    Ok(VerifiedBoundContainerCoordinator {
+        sender,
+        session_id,
+        client_id: proof.client_id,
+        credential_generation: proof.credential_generation,
+        bound_root_object_id: bound_root.object_id,
+        presented_token_hash: proof.presented_token_hash,
+    })
+}
+
+pub fn verify_final_bound_container_coordinator(
+    state: &crate::api::ApiState,
+    authority: &VerifiedBoundContainerCoordinator,
+    fresh: &crate::api::auth::ApiClientFreshGuard,
+) -> bool {
+    let client = &fresh.client;
+    if client.client_id != authority.client_id
+        || client.bound_session_id.as_deref() != Some(authority.session_id.to_string().as_str())
+        || client.credential_generation.as_deref() != Some(authority.credential_generation.as_str())
+        || !client.has_scope(crate::api::auth::SCOPE_TERMINAL_SNAPSHOT)
+        || !crate::api::auth::constant_time_eq(
+            &fresh.presented_token_hash,
+            &authority.presented_token_hash,
+        )
+    {
+        return false;
+    }
+    let route = match crate::pty::manager::PtyManager::snapshot_route_proof(
+        &state.pty_mgr,
+        authority.session_id,
+    ) {
+        Ok(route) => route,
+        Err(_) => return false,
+    };
+    let backend = match state.pty_mgr.lock() {
+        Ok(manager) => manager.container_backend(),
+        Err(_) => return false,
+    };
+    let Some(binding) = backend.credential_binding(authority.session_id) else {
+        return false;
+    };
+    binding.client_id == authority.client_id
+        && binding.credential_generation == authority.credential_generation
+        && binding.bound_session_id == authority.session_id.to_string()
+        && binding.bound_root_object_id == authority.bound_root_object_id
+        && crate::api::auth::constant_time_eq(
+            &binding.credential_token_hash,
+            &authority.presented_token_hash,
+        )
+        && route.backend_kind() == crate::pty::backend::SessionBackendKind::ContainerTransport
+        && route.liveness() == crate::pty::context_scrape::ContextSessionLiveness::Live
+        && route.matches_requester_route(
+            crate::pty::backend::SessionBackendKind::ContainerTransport,
+            &authority.sender.replica_identity,
+            Some(&authority.sender.replica_identity),
+        )
+}
+
 pub struct VerifiedApiPtyAuthority {
     pub sender: crate::config::teams::VerifiedPtyInputIdentity,
     pub session_id: uuid::Uuid,
@@ -59,102 +254,33 @@ fn pty_authority_error(code: crate::phone::types::PtyInputReasonCode) -> ApiErro
 
 pub async fn verify_live_pty_input_authority(
     state: &crate::api::ApiState,
-    guard: &crate::api::auth::ApiClientFreshGuard,
+    proof: InitialApiCredentialProof,
 ) -> Result<VerifiedApiPtyAuthority, ApiError> {
-    let client = &guard.client;
-    let session_raw = client.bound_session_id.as_deref().ok_or_else(|| {
-        pty_authority_error(crate::phone::types::PtyInputReasonCode::ApiClientUnbound)
-    })?;
-    let generation = client.credential_generation.as_deref().ok_or_else(|| {
-        pty_authority_error(crate::phone::types::PtyInputReasonCode::ApiClientUnbound)
-    })?;
-    let session_id = crate::phone::types::parse_canonical_uuid_v4(session_raw).map_err(|_| {
-        pty_authority_error(crate::phone::types::PtyInputReasonCode::ApiClientUnbound)
-    })?;
-    crate::phone::types::parse_canonical_uuid_v4(generation).map_err(|_| {
-        pty_authority_error(crate::phone::types::PtyInputReasonCode::ApiClientUnbound)
-    })?;
-    let session = {
-        let manager = state.session_mgr.read().await;
-        manager.get_session(session_id).await
-    }
-    .ok_or_else(|| pty_authority_error(crate::phone::types::PtyInputReasonCode::ApiClientStale))?;
-    if matches!(
-        session.status,
-        crate::session::session::SessionStatus::Exited(_)
-    ) || session.backend_kind != crate::pty::backend::SessionBackendKind::ContainerTransport
-    {
-        return Err(pty_authority_error(
-            crate::phone::types::PtyInputReasonCode::ApiClientStale,
-        ));
-    }
-    let bound_root =
-        crate::path_identity::verify_directory(std::path::Path::new(&client.bound_root)).map_err(
-            |_| pty_authority_error(crate::phone::types::PtyInputReasonCode::ApiBindingMismatch),
-        )?;
-    let session_root =
-        crate::path_identity::verify_directory(std::path::Path::new(&session.working_directory))
-            .map_err(|_| {
-                pty_authority_error(crate::phone::types::PtyInputReasonCode::ApiBindingMismatch)
-            })?;
-    if bound_root.object_id != session_root.object_id {
-        return Err(pty_authority_error(
-            crate::phone::types::PtyInputReasonCode::ApiBindingMismatch,
-        ));
-    }
-    let (binding, route_backend, route_identities, route_live) = {
-        let manager = state
-            .pty_mgr
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        (
-            manager.container_backend().credential_binding(session_id),
-            manager.backend_kind(session_id),
-            manager.route_identities(session_id),
-            manager.has_session(session_id),
-        )
-    };
-    let binding = binding.ok_or_else(|| {
-        pty_authority_error(crate::phone::types::PtyInputReasonCode::ApiBindingMismatch)
-    })?;
-    if !route_live
-        || route_backend != Some(crate::pty::backend::SessionBackendKind::ContainerTransport)
-        || binding.client_id != client.client_id
-        || binding.credential_generation != generation
-        || binding.bound_session_id != session_raw
-        || binding.bound_root_object_id != bound_root.object_id
-        || !crate::api::auth::constant_time_eq(
-            &binding.credential_token_hash,
-            &guard.presented_token_hash,
-        )
-    {
-        return Err(pty_authority_error(
-            crate::phone::types::PtyInputReasonCode::ApiBindingMismatch,
-        ));
-    }
-    let sender = crate::config::teams::verify_pty_input_coordinator_root(std::path::Path::new(
-        &session.working_directory,
-    ))
-    .map_err(|_| {
-        pty_authority_error(crate::phone::types::PtyInputReasonCode::SenderNotCoordinator)
-    })?;
-    let route_matches = route_identities.is_some_and(|(cwd, replica, _)| {
-        cwd.as_ref()
-            .is_some_and(|saved| crate::path_identity::same_object(saved, &session_root))
-            && replica.as_ref().is_some_and(|saved| {
-                crate::path_identity::same_object(saved, &sender.replica_identity)
-            })
-    });
-    if !route_matches {
-        return Err(pty_authority_error(
-            crate::phone::types::PtyInputReasonCode::ApiBindingMismatch,
-        ));
-    }
+    let authority = verify_live_bound_container_coordinator(state, proof)
+        .await
+        .map_err(|error| {
+            let code = match error {
+                BoundContainerCoordinatorError::Unbound => {
+                    crate::phone::types::PtyInputReasonCode::ApiClientUnbound
+                }
+                BoundContainerCoordinatorError::Stale => {
+                    crate::phone::types::PtyInputReasonCode::ApiClientStale
+                }
+                BoundContainerCoordinatorError::NotCoordinator => {
+                    crate::phone::types::PtyInputReasonCode::SenderNotCoordinator
+                }
+                BoundContainerCoordinatorError::BindingMismatch
+                | BoundContainerCoordinatorError::Internal => {
+                    crate::phone::types::PtyInputReasonCode::ApiBindingMismatch
+                }
+            };
+            pty_authority_error(code)
+        })?;
     Ok(VerifiedApiPtyAuthority {
-        sender,
-        session_id,
-        client_id: client.client_id.clone(),
-        credential_generation: generation.to_string(),
+        sender: authority.sender,
+        session_id: authority.session_id,
+        client_id: authority.client_id,
+        credential_generation: authority.credential_generation,
     })
 }
 

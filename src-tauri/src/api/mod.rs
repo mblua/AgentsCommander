@@ -66,6 +66,10 @@ pub fn build_router(state: ApiState) -> Router {
     Router::new()
         .route("/api/v1/send", post(handlers::send::handle))
         .route("/api/v1/pty-input", post(handlers::pty_input::post))
+        .route(
+            "/api/v1/terminal-snapshot",
+            post(handlers::terminal_snapshot::post),
+        )
         .route("/api/v1/pty-input/{op_id}", get(handlers::pty_input::get))
         .route("/api/v1/peers", get(handlers::list_peers::handle))
         .route(

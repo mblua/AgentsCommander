@@ -777,6 +777,8 @@ pub fn run(
 
     let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let shutdown_signal = ShutdownSignal::new();
+    let terminal_snapshot_state =
+        crate::pty::terminal_snapshot::TerminalSnapshotState::new(shutdown_signal.clone());
     let selection_coordinator = crate::session::selection::SelectionCoordinator::new(
         Arc::clone(&session_mgr),
         shutdown_signal.token().clone(),
@@ -965,6 +967,7 @@ pub fn run(
         .manage(config_seed_lock)
         .manage(update_check_state)
         .manage(ui_automation_state)
+        .manage(terminal_snapshot_state)
         .manage(shutdown_signal)
         .manage(Arc::new(RestoreInProgress(AtomicBool::new(false))))
         .manage(Arc::new(PendingSelfClear::default()))
@@ -2221,6 +2224,8 @@ pub fn run(
                 .unwrap()
                 .start_container_pending_reaper(shutdown_for_setup.clone());
 
+            app.state::<Arc<crate::pty::terminal_snapshot::TerminalSnapshotState>>()
+                .start_artifact_cleanup();
             let mailbox_poller = phone::mailbox::MailboxPoller::new();
             mailbox_poller.start(app.handle().clone(), shutdown_for_setup.clone());
             loop_scheduler_for_setup

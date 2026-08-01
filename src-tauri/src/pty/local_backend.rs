@@ -1464,6 +1464,11 @@ impl PtyBackend for LocalProcessBackend {
         self.fanout.get_screen_snapshot(id)
     }
 
+    #[allow(private_interfaces)]
+    fn copy_terminal_screen(&self, id: Uuid) -> crate::pty::backend::TerminalScreenCopyRead {
+        self.fanout.copy_terminal_screen(id)
+    }
+
     fn get_pty_size(&self, id: Uuid) -> Option<(u16, u16)> {
         self.fanout.get_pty_size(id)
     }
