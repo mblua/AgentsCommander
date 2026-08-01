@@ -2740,14 +2740,12 @@ impl MailboxPoller {
             mgr.get_sessions_working_dirs().await
         };
         let snapshot_session_dirs = session_dirs.clone();
-        let archived_for_filter = archived.clone();
-        let session_dirs = if archived_for_filter.is_empty() {
+        let archived_for_snapshot = archived.clone();
+        let session_dirs = if archived.is_empty() {
             session_dirs
         } else {
             tokio::task::spawn_blocking(move || {
-                let roots = crate::config::sessions_persistence::normalize_project_roots(
-                    &archived_for_filter,
-                );
+                let roots = crate::config::sessions_persistence::normalize_project_roots(&archived);
                 retain_unarchived_session_dirs(session_dirs, &roots)
             })
             .await
@@ -2755,7 +2753,7 @@ impl MailboxPoller {
         };
 
         let mut startup_project_paths = repo_paths.clone();
-        for path in &archived {
+        for path in &archived_for_snapshot {
             if !startup_project_paths.contains(path) {
                 startup_project_paths.push(path.clone());
             }
