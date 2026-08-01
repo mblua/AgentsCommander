@@ -25,8 +25,6 @@ import type {
   CodingAgentProfilesConfig,
   RepoMatch,
   BridgeInfo,
-  PhoneMessage,
-  AgentInfo,
   AcDiscoveryResult,
   ContextTemplateOverwriteResult,
   ContextTemplateUpdate,
@@ -804,16 +802,6 @@ export function onSessionEnvWarning(
   );
 }
 
-export const PhoneAPI = {
-  sendMessage: (from: string, to: string, body: string, team: string) =>
-    transport.invoke<string>("phone_send_message", { from, to, body, team }),
-  getInbox: (agentName: string) =>
-    transport.invoke<PhoneMessage[]>("phone_get_inbox", { agentName }),
-  listAgents: () => transport.invoke<AgentInfo[]>("phone_list_agents"),
-  ackMessages: (agentName: string, messageIds: string[]) =>
-    transport.invoke<void>("phone_ack_messages", { agentName, messageIds }),
-};
-
 export const AcDiscoveryAPI = {
   discover: () => transport.invoke<AcDiscoveryResult>("discover_ac_agents"),
 
@@ -1068,11 +1056,6 @@ export const EntityAPI = {
 
   deleteWorkgroup: (projectPath: string, workgroupName: string, force?: boolean) =>
     transport.invoke<void>("delete_workgroup", { projectPath, workgroupName, force: force ?? false }),
-
-  syncWorkgroupRepos: (projectPath: string, teamName: string) =>
-    transport.invoke<{ workgroupsUpdated: number; replicasUpdated: number; errors: { replica: string; error: string }[] }>(
-      "sync_workgroup_repos", { projectPath, teamName }
-    ),
 };
 
 export const AgentCreatorAPI = {
