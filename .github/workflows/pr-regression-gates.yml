@@ -84,6 +84,36 @@ jobs:
         working-directory: src-tauri
         run: cargo test --lib --bins --tests
 
+  terminal-snapshot-portable:
+    name: terminal-snapshot-portable (${{ matrix.os }})
+    # Skip branch-deletion push events while still requiring pull request validation.
+    if: github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - ubuntu-latest
+          - macos-15
+          - macos-15-intel
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+
+      - name: Test locked terminal snapshot renderer
+        run: cargo test --locked -p terminal-snapshot-renderer
+
+      - name: Test locked terminal snapshot helper
+        run: cargo test --locked -p session-bridge --bin agentscommander-api-helper terminal_snapshot
+
   windows-release-cli-smoke:
     name: windows-release-cli-smoke
     # Skip branch-deletion push events while still requiring pull request validation.

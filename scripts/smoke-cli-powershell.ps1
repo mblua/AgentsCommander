@@ -132,6 +132,22 @@ function Assert-True {
     }
 }
 
+# Root help: direct, noninteractive, and machine-clean for every wrapper binary/shell pair.
+$r0 = Invoke-PSNonInteractiveDirect -ShellPath $ShellPath -CaseName "00-root-help-direct" -Exe $BinaryPath -ExeArgs @('--help')
+Assert-True "root --help exits zero" ($r0.ExitCode -eq 0) "exit code was $($r0.ExitCode), expected 0" $r0.CaseName $r0
+Assert-True "root --help stdout non-empty" (-not [string]::IsNullOrWhiteSpace($r0.Stdout)) "stdout was empty" $r0.CaseName $r0
+Assert-True "root --help lists terminal-snapshot" ($r0.Stdout -match 'terminal-snapshot') "stdout missing terminal-snapshot command" $r0.CaseName $r0
+Assert-True "root --help stderr empty" ([string]::IsNullOrWhiteSpace($r0.Stderr)) "stderr leaked content; inspect stderr log" $r0.CaseName $r0
+
+# Terminal snapshot help must exercise only Clap discovery, never a live capture.
+$r0Snapshot = Invoke-PSNonInteractiveDirect -ShellPath $ShellPath -CaseName "00-terminal-snapshot-help-direct" -Exe $BinaryPath -ExeArgs @('terminal-snapshot', '--help')
+Assert-True "terminal-snapshot --help exits zero" ($r0Snapshot.ExitCode -eq 0) "exit code was $($r0Snapshot.ExitCode), expected 0" $r0Snapshot.CaseName $r0Snapshot
+Assert-True "terminal-snapshot --help stdout non-empty" (-not [string]::IsNullOrWhiteSpace($r0Snapshot.Stdout)) "stdout was empty" $r0Snapshot.CaseName $r0Snapshot
+Assert-True "terminal-snapshot --help shows required syntax" ($r0Snapshot.Stdout -match '--token' -and $r0Snapshot.Stdout -match '--root' -and $r0Snapshot.Stdout -match '--to') "stdout missing required --token/--root/--to syntax" $r0Snapshot.CaseName $r0Snapshot
+Assert-True "terminal-snapshot --help shows format and output syntax" ($r0Snapshot.Stdout -match '--format' -and $r0Snapshot.Stdout -match '--output' -and $r0Snapshot.Stdout -match '--timeout') "stdout missing --format/--output/--timeout syntax" $r0Snapshot.CaseName $r0Snapshot
+Assert-True "terminal-snapshot --help shows discovery command" ($r0Snapshot.Stdout -match 'list-peers-lean' -and $r0Snapshot.Stdout -match '--snapshot-targets') "stdout missing snapshot target discovery syntax" $r0Snapshot.CaseName $r0Snapshot
+Assert-True "terminal-snapshot --help stderr empty" ([string]::IsNullOrWhiteSpace($r0Snapshot.Stderr)) "stderr leaked content; inspect stderr log" $r0Snapshot.CaseName $r0Snapshot
+
 # Test 1: list-peers stdout must contain JSON, and stderr must be empty.
 $r1 = Invoke-PSNonInteractiveDirect -ShellPath $ShellPath -CaseName "01-list-peers-direct" -Exe $BinaryPath -ExeArgs @('list-peers', '--token', $Token, '--root', $Root)
 Assert-True "list-peers stdout non-empty" (-not [string]::IsNullOrWhiteSpace($r1.Stdout)) "stdout was empty (issue #129 not fixed)" $r1.CaseName $r1
@@ -139,8 +155,10 @@ Assert-True "list-peers stderr empty" ([string]::IsNullOrWhiteSpace($r1.Stderr))
 if (-not [string]::IsNullOrWhiteSpace($r1.Stdout)) {
     try {
         $parsed = $r1.Stdout | ConvertFrom-Json -ErrorAction Stop
-        if ($null -eq $parsed) {
-            Write-Host "FAIL: list-peers ConvertFrom-Json returned null -- $(New-FailureDetail -CaseName $r1.CaseName -Detail 'non-empty stdout parsed to null' -Result $r1)" -ForegroundColor Red
+        $trimmedJson = $r1.Stdout.Trim()
+        # PowerShell 7 writes no pipeline object for a valid empty JSON array.
+        if ($null -eq $parsed -and $trimmedJson -ne '[]') {
+            Write-Host "FAIL: list-peers ConvertFrom-Json returned null -- $(New-FailureDetail -CaseName $r1.CaseName -Detail 'non-empty non-array stdout parsed to null' -Result $r1)" -ForegroundColor Red
             $failed++
         } else {
             Write-Host "PASS: list-peers stdout parses as JSON" -ForegroundColor Green
@@ -206,8 +224,10 @@ if ([string]::IsNullOrWhiteSpace($mergedOut)) {
 } else {
     try {
         $parsed = $mergedOut | ConvertFrom-Json -ErrorAction Stop
-        if ($null -eq $parsed) {
-            Write-Host "FAIL: Test 4 ConvertFrom-Json returned null -- $(New-FailureDetail -CaseName $r4.CaseName -Detail 'non-empty merged output parsed to null' -Result $r4)" -ForegroundColor Red
+        $trimmedMergedJson = $mergedOut.Trim()
+        # PowerShell 7 writes no pipeline object for a valid empty JSON array.
+        if ($null -eq $parsed -and $trimmedMergedJson -ne '[]') {
+            Write-Host "FAIL: Test 4 ConvertFrom-Json returned null -- $(New-FailureDetail -CaseName $r4.CaseName -Detail 'non-empty non-array merged output parsed to null' -Result $r4)" -ForegroundColor Red
             $failed++
         } else {
             Write-Host "PASS: 2>&1 | ConvertFrom-Json continues to work" -ForegroundColor Green
