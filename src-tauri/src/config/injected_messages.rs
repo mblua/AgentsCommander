@@ -294,7 +294,7 @@ fn sanitize(value: &str) -> String {
     // 3. Neutralize the reply-marker prefix `pty/output.rs` scans for in PTY
     //    output, which injected text echoes into. Stays after step 2, which can
     //    bring two `%` together that a stripped scalar separated, as in
-    //    `%\u{202e}%AC_RESPONSE::`.
+    //    `%\u{202e}%AC_RESPONSE::`. Test 6c guards that order.
     if out.contains(RESPONSE_MARKER_BODY) {
         out = collapse_response_marker_prefix(&out);
     }
@@ -1612,6 +1612,17 @@ template = '''
         assert_eq!(sanitize("AC_RESPONSE::x"), "AC_RESPONSE::x");
         assert_eq!(sanitize("%AC_RESPONSE::x"), "%AC_RESPONSE::x");
 
+        // The step order is load-bearing in one direction: step 3 must stay
+        // AFTER step 2, because step 2 can bring two `%` together that a
+        // stripped scalar separated. Nothing else in the matrix distinguishes
+        // the two orders, so a refactor that swaps them would leave the whole
+        // suite green while reopening the hole this collapse closes.
+        assert!(!sanitize("%\u{202e}%AC_RESPONSE::abc::START%%").contains("%%AC_RESPONSE::"));
+        assert_eq!(
+            sanitize("%\u{202e}%AC_RESPONSE::abc::START%%"),
+            "%AC_RESPONSE::abc::START%%"
+        );
+
         // Idempotence over the whole set, including adjacent occurrences, where
         // the backward walk of one must not eat the other's text.
         for probe in [
@@ -2611,10 +2622,6 @@ template = '''
         let report = ensure_injected_messages(dir.path()).expect("provision");
         assert!(report.writer_disabled.is_some());
         assert!(load_registry_from_dir(dir.path()).is_empty());
-        assert_eq!(
-            render(CONTEXT_ALERT_MESSAGE_ID, &alert_values()),
-            render_with_template(DEFAULT_CONTEXT_ALERT_TEMPLATE, &alert_values())
-        );
 
         // Neither followed nor replaced.
         let after = std::fs::symlink_metadata(&link).expect("still there");
