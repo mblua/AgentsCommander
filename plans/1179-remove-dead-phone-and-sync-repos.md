@@ -2,7 +2,7 @@
 
 Status: READY_FOR_IMPLEMENTATION
 
-Certified by `architect` at Step 7 round 2. The round-1 certification and its digest `FD9E52B772DAAC360DA773614F957596F21BED0C44778A7B1E18422D12577AD4` are **superseded**: `dev-rust-grinch`'s Step 9 review found a defect in this plan's own §4.6 text, not in the implementation. §4.6 is rewritten, §4.2's evidence table is corrected, the positive documentation gate is rebuilt, and the one-line fix ships as batch 5 (§8.7). The full round-2 record is in §13.4; round 1's enrichment resolution (`dev-rust` E1-E7, `dev-rust-grinch` G1-G7) is in §13.
+Certified by `architect` at Step 7 round 3, which is final. The round-1 digest `FD9E52B772DAAC360DA773614F957596F21BED0C44778A7B1E18422D12577AD4` and the round-2 digest `C76B945165A30A32315177C7E4D55D7C4E063FC19ED6449D4BBCE6445A5DCA18` are **superseded**. The code is done and correct; what changed across the three rounds is documentation wording that this plan specifies. Round 3 replaces the categorical storage claims in `docs/security.md:14` and `PRIVACY.md:29-31` with bounded, non-categorical text (§4.6, §4.2, and the standard in §4.6.1), rebuilds the gates around it (§9.3 rule 9), and ships both as batch 5 (§8.7). The full round-3 record is §13.5; rounds 1 and 2 are §13 and §13.4. The round-1 certification and its digest `FD9E52B772DAAC360DA773614F957596F21BED0C44778A7B1E18422D12577AD4` are **superseded**: `dev-rust-grinch`'s Step 9 review found a defect in this plan's own §4.6 text, not in the implementation. §4.6 is rewritten, §4.2's evidence table is corrected, the positive documentation gate is rebuilt, and the one-line fix ships as batch 5 (§8.7). The full round-2 record is in §13.4; round 1's enrichment resolution (`dev-rust` E1-E7, `dev-rust-grinch` G1-G7) is in §13.
 
 **Baseline commit:** `d7285ceb7bda5259e370cc25433d1aa3293c8628` (`d7285ce`)
 **Branch:** `chore/1179-remove-dead-phone-and-sync-repos`, branched from `main` @ `d7285ce`
@@ -296,7 +296,7 @@ Issue step 11 requires retargeting, not deletion, and leaves the wording to the 
 The internal messaging system between agents is **entirely local**. Messages are stored as JSON files in `~/.agentscommander/conversations/`. No external network calls are made.
 ```
 
-**Replacement, `PRIVACY.md:29-31`: use exactly this text, three lines, same position:**
+**Superseded text, shipped by batch 4 and currently at `PRIVACY.md:29-31`. It is false as a universal claim; batch 5 replaces it:**
 
 ```markdown
 ### Inter-Agent Messaging
@@ -304,21 +304,32 @@ The internal messaging system between agents is **entirely local**. Messages are
 The internal messaging system between agents is **entirely local**. Messages are written as Markdown files to `messaging/` directories on your own disk, inside each workgroup and inside the Root Agent directory. No external network calls are made.
 ```
 
+**Replacement, `PRIVACY.md:29-31`: use exactly this text, three lines, same position:**
+
+```markdown
+### Inter-Agent Messaging
+
+The internal messaging system between agents is **entirely local**. The file-based path writes Markdown files into `messaging/` directories inside each workgroup and inside the Root Agent directory; other delivery paths keep message content in queues of their own. No external network calls are made.
+```
+
+**Why this changed at round 3.** Rounds 1 and 2 both judged the shipped sentence correct, and both were wrong for the same reason `docs/security.md` was wrong: it is **universal**. "Messages are written as Markdown files to `messaging/` directories" quantifies over every message. Validation found a live delivery path that produces no Markdown file at all: the opt-in control-plane API stores the body inline in `<config-dir>/api-message-bus.sqlite3` (`api/message_store.rs:15`, `:722-724`, `:785-792`) and dispatches it straight from that queue (`api/dispatcher.rs:180-190` via `WakeDeliveryOrigin::DbQueue`, `:331-337` building the `OutboxMessage` from `row.body`). One counterexample is enough to make a universal false, so the shipped line is false today. **The fix is not to enumerate the other paths; it is to stop quantifying over all messages.**
+
 **Why this wording, clause by clause:**
 
-| Clause | Backing fact |
-| --- | --- |
-| Heading drops "(Phone)" | Required by the issue; the feature the qualifier named is gone. |
-| "**entirely local** ... No external network calls are made" | Preserved verbatim. This is the privacy guarantee, and it is still true of the live messaging system. Losing it would be a regression in the privacy policy. |
-| "Markdown files" | `phone/messaging.rs:199-207` `build_filename` produces `"{}-{}-to-{}-{}.md"`. Not JSON. The current text is wrong on this point too. |
-| "`messaging/` directories" | `phone/messaging.rs:11` `pub const MESSAGING_DIR_NAME: &str = "messaging";` |
-| "inside each workgroup" | `phone/messaging.rs:160-164` `messaging_dir(wg_root)` -> `wg_root.join(MESSAGING_DIR_NAME)`; the workgroup root is the `wg-<N>-*` ancestor found by `:146-157` `workgroup_root`, in the project workspace |
-| "and inside the Root Agent directory" | `phone/messaging.rs:166-170` `root_messaging_dir(root_agent_dir)`; the directory itself is `config/root_agent.rs:626-628` `config_dir.join(ROOT_AGENT_DIR_NAME)` and its `messaging/` is created at `:722`. **This root is under the config directory, not in a workspace.** |
-| No `~/.agentscommander/` path | **Deliberate, and re-derived at round 2.** The two `messaging/` roots do not share a parent: a workgroup's is in the project workspace (`phone/messaging.rs:160-164`, `mailbox.rs:717-719`), the Root Agent's is under the config directory (`config/root_agent.rs:626-628`, `:722`). Naming either root in this sentence would make it false for the other half, and naming both is threat-model detail rather than privacy-policy detail. So this line stays shaped by **artifact** (Markdown files in `messaging/` directories, on your own disk) and `docs/security.md:14` (§4.6) carries the **roots**. `PRIVACY.md:5` makes the separate, still-true claim about configuration and session data living under `~/.agentscommander/`; leave that line alone. |
+| Clause | Backing fact | What would falsify it |
+| --- | --- | --- |
+| Heading drops "(Phone)" | Required by the issue; the feature the qualifier named is gone. | n/a |
+| "**entirely local**" and "No external network calls are made" | **Preserved verbatim**, per the coordinator's round-3 instruction. This is the privacy guarantee and it remains true: the messaging system contacts no external service. The API server is inbound, opt-in, off by default, and loopback-bound by default (`api/README.md:11-16`); `PRIVACY.md`'s own "Network Features" section already scopes what leaves the machine. | AC initiating a call to an external service as part of messaging. Nothing does. |
+| "The file-based path writes Markdown files into `messaging/` directories" | `phone/messaging.rs:11` `MESSAGING_DIR_NAME`, `:199-207` `build_filename` producing `"{}-{}-to-{}-{}.md"`, `:214-217` `validate_filename_shape` rejecting anything without a `.md` suffix. **Scoped to one path**, not to all messages. | A non-`.md` file written into `messaging/` by that path. A different path producing no Markdown does **not** falsify it, which is exactly the round-2 failure this rewrite removes. |
+| "inside each workgroup" | `phone/messaging.rs:160-164` `messaging_dir(wg_root)` -> `wg_root.join(MESSAGING_DIR_NAME)`; the workgroup root is the `wg-<N>-*` ancestor found at `:146-157`, in the project workspace. | That directory moving. |
+| "and inside the Root Agent directory" | `phone/messaging.rs:166-170` `root_messaging_dir`; the directory itself is `config/root_agent.rs:626-628` `config_dir.join(ROOT_AGENT_DIR_NAME)`, its `messaging/` created at `:722`. **This root is under the config directory, not in a workspace.** | That directory moving. |
+| "other delivery paths keep message content in queues of their own" | Existential and unnamed by design. True of the API DB queue (`api/README.md:6` calls it "the durable DB queue"; `message_store.rs:785-792` stores the body) and of the caller-supplied outbox (`cli/send.rs:1077-1079`, `:1093-1098`). Naming them is #1195's job; this clause only has to be true, and it stays true if their number changes. | Nothing plausible. If every other path were removed the clause would be vacuous, not false. |
+| "on your own disk" dropped from the middle sentence | Round 2 carried it there. Removed because `send --outbox` (`docs/reference/cli.md:128`) writes wherever the caller points, so a mid-sentence universal about the destination is one more thing a future feature can falsify. The locality guarantee is carried by "**entirely local**" and "No external network calls are made", both preserved verbatim, which are claims about **what AC does** rather than about where every byte ends up. | n/a. This is a removal. |
+| No `~/.agentscommander/` path | **Deliberate.** The two `messaging/` roots do not share a parent: a workgroup's is in the project workspace (`phone/messaging.rs:160-164`, `mailbox.rs:717-719`), the Root Agent's is under the config directory (`config/root_agent.rs:626-628`, `:722`). Naming either root here would make the sentence false for the other half; naming both is threat-model detail. This line stays shaped by **artifact**, and `docs/security.md:14` (§4.6) carries the **roots**. `PRIVACY.md:5` makes the separate, still-true claim about configuration and session data; leave that line alone. | n/a. |
 
 The replacement is 3 lines for 3 lines, so `PRIVACY.md` stays at 54 lines.
 
-**Round-2 re-verification of this text, mandated by the Step 7 round-2 dispatch.** Every clause above was checked again against the tree, independently of the round-1 table. **The replacement text is unchanged**: it is true as written, and it is the description §4.6 now aligns to rather than the other way round. Two things did change in this section, neither of them in the shipped wording: the "inside the Root Agent directory" row now records **where that directory is**, and the "No `~/.agentscommander/` path" row's justification was rewritten. That justification previously read "Messaging files do **not** live under the config directory; they live in the project workspace." **That sentence was false**, by the same evidence that invalidated round-1 §4.6, and it is the reason the false claim propagated into `docs/security.md`. The conclusion it supported (no path in `PRIVACY.md`) survives on correct reasoning; the reasoning did not.
+**Recorded dissent, since round 3 is final and this is the one thing I could not fully close.** "Entirely local" and "No external network calls are made" are preserved on the coordinator's explicit instruction, and I agree they are true of AC's own behaviour. They are, however, claims a *user* can weaken without AC changing: pointing `send --outbox` at a network share puts message JSON on a remote filesystem, and widening `apiServerBind` off loopback (`api/README.md:14-16`) lets message bodies cross a network to reach AC, inbound. Neither is AC calling an external service, so neither makes the sentence false as written. I flag it because a reader could take "entirely local" as a property of the deployment rather than of the software, and that gap belongs in **#1195**'s audit rather than in this line.
 
 ### 4.3 Decision: `docs/agents/inter-agent-messaging.md` is a deletion, not a retarget
 
@@ -377,37 +388,60 @@ Deleting the `conversations` token alone is not enough, and shipping that would 
 4. **The disk.** Everything is plain files, in two locations. Configuration and persisted sessions live under `~/.agentscommander/` (or the portable instance's `.agentscommander_<suffix>/`). Team configuration and inter-agent messages live in your project workspace instead: team config under `_team_<name>/`, Markdown message files under each workgroup's `messaging/` directory, and each agent replica's JSON delivery queue under its local `outbox/`.
 ```
 
-**Replacement, `docs/security.md:14`: use exactly this text, one line for one line:**
+**Superseded round-2 text. Never shipped, rejected at validation. Do not ship it either:**
 
 ```markdown
 4. **The disk.** Everything is plain files, in two locations. Under `~/.agentscommander/` (or the portable instance's `.agentscommander_<suffix>/`): configuration, persisted sessions, the Root Agent directory `ac-root-agent/` with its own `messaging/` Markdown message files and `outbox/` delivery queue, and the running instance's JSON delivery queue under `instances/<instance-id>/outbox/`. In your project workspace: team configuration under `_team_<name>/`, each workgroup's `messaging/` Markdown message files, and each agent replica's JSON delivery queue under its own `outbox/`. **Inter-agent messages live in both locations**, so securing, backing up, or erasing them means covering both.
 ```
 
-**Why the round-1 text was wrong.** It said "**instead**" where the real model is "**both**". Workgroup and replica artifacts do live in the project workspace, but the Root Agent's `messaging/` directory and the running instance's app outbox live under the config directory, and the round-1 enumeration named neither. A security-conscious reader following that line would secure, back up, or erase the workspace and leave Root Agent Markdown messages and the instance outbox behind. That is the same class of defect this decision exists to fix, one clause further on: the widening from a token deletion to a rewrite was right, the replacement claim was over-stated.
+**Replacement, `docs/security.md:14`: use exactly this text, one line for one line:**
 
-**Why this wording, clause by clause.** Every clause below was re-derived from the tree for round 2, not carried over from the round-1 table.
+```markdown
+4. **The disk.** AC keeps its state in files on this machine. Under `~/.agentscommander/` (or the portable instance's `.agentscommander_<suffix>/`) you will find configuration, persisted sessions, the Root Agent directory `ac-root-agent/` including its `messaging/` Markdown message files, and the running instance's delivery queue at `instances/<instance-id>/outbox/`. In your project workspace you will find team configuration under `_team_<name>/`, each workgroup's `messaging/` Markdown message files, and each agent replica's delivery queue at `<replica>/<instance-dir>/outbox/`, where `<instance-dir>` is that replica's dot-prefixed per-instance directory. **Message data is written under both roots**, optional features and per-call overrides can put it outside either, and neither list is exhaustive, so treat this as where to start looking rather than as an inventory of everything AC writes.
+```
 
-| Clause | Backing fact |
-| --- | --- |
-| "in two locations" | The config directory and the project workspace. Exhaustive for this enumeration: every artifact named in the two lists resolves under one of the two roots, via `config::config_dir()` or via a `workspace_dir` / agent root argument. |
-| "Configuration ... under `~/.agentscommander/`" | `config/settings.rs:1733` `super::config_dir().map(\|d\| d.join("settings.json"))`. Unchanged in substance from the original and still true. |
-| "persisted sessions" | `config/sessions_persistence.rs:271` `super::config_dir().map(\|d\| d.join("sessions.json"))`. Unchanged and still true. |
-| portable-instance parenthetical | Preserved verbatim from the baseline line. `config/mod.rs:169-176`: `config_dir()` resolves to `<binary_parent_dir>/.<binary_file_stem>/`. |
-| "the Root Agent directory `ac-root-agent/`" | `config/root_agent.rs:13` `pub const ROOT_AGENT_DIR_NAME: &str = "ac-root-agent";` and `:626-628` `display_path(&config_dir.join(ROOT_AGENT_DIR_NAME))`. It is a **config-directory** child, not a workspace child. |
-| "with its own `messaging/` Markdown message files" | `config/root_agent.rs:722` creates `root_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME)` beneath that config-dir-owned root; `phone/messaging.rs:166-170` `root_messaging_dir`; `cli/send.rs:943-946` routes a Root Agent sender's `--send` file through it; `phone/messaging.rs:199-207` `build_filename` produces `.md`. |
-| "and `outbox/` delivery queue" | The Root Agent root is provisioned by `create_agent_matrix_layout` (`config/root_agent.rs:709` -> `entity_creation.rs:142-147`), whose layout includes an `outbox/`; the test at `entity_creation.rs:4483` asserts it. A non-root-token send with `--root <ac-root-agent>` also writes `<root>/<local-dir>/outbox/<msg_id>.json` (`cli/send.rs:827`, `:1091`, `:1098`), likewise under `ac-root-agent/`. The clause names the directory, not an internal path, so it is true on both readings. **This is why the sentence says "with ... and", not "consisting of": the Root Agent root holds more than these two, and the item is a threat-model pointer, not a directory listing.** |
-| "the running instance's JSON delivery queue under `instances/<instance-id>/outbox/`" | `lib.rs:968-969` `config_dir.join("instances")`; `:996-998` `instances_dir.join(&instance_id).join("outbox")`, created at boot; `cli/send.rs:1080-1088` selects that app outbox for root/master-token sends; `:1098` writes `<msg_id>.json`. |
-| "In your project workspace" | `phone/mailbox.rs:717-719` records the full replica shape `<project_dir>/<workspace>/wg-<N>-*/__agent_*/<local-dir>/outbox/<file>.json`; `phone/messaging.rs:146-157` `workgroup_root` walks up to the `wg-<N>-*` ancestor. |
-| "team configuration under `_team_<name>/`" | `entity_creation.rs:846`, `:917`, `:937`, `:970`, `:3025` and `cli/workgroup.rs:180` all build `workspace_dir.join(format!("_team_{}", team_name))`. `read_team_config` takes a `workspace_dir`, not a config dir. **No `teams.json` file exists**: `teams.json` occurs exactly once in `src-tauri/src/`, at `cli/send.rs:22`, as prose inside the CLI help text ("coordinator rules (teams.json)"); **no code anywhere constructs that path**, under the config directory or elsewhere. Round 1 stated this as `git grep '"teams.json"'` returning nothing, which is true only because the prose hit carries no surrounding double quotes: a correct conclusion resting on a fragile probe, restated here on the direct evidence. The baseline line's "teams" claim was already false. |
-| "each workgroup's `messaging/` Markdown message files" | `phone/messaging.rs:11` `MESSAGING_DIR_NAME = "messaging"`, `:160-164` `messaging_dir(wg_root)`, `:199-207` `build_filename` producing `.md`. Same evidence base as §4.2. |
-| "each agent replica's JSON delivery queue under its own `outbox/`" | `cli/send.rs:108` documents the target as `<root>/<local-dir>/outbox/`; `:827` `let ac_dir = PathBuf::from(&root).join(crate::config::agent_local_dir_name());` and `:1091` `ac_dir.join("outbox")`; `cli/purge_wg.rs:173-174`, `cli/raise_hand.rs:55`, `cli/close_session.rs:207-218` build the same path. `mailbox.rs:718` confirms the `<file>.json` shape. |
-| "**Inter-agent messages live in both locations**" | The conjunction of the two `messaging/` rows: `phone/messaging.rs:160-164` (workgroup, in the workspace) and `:166-170` with `config/root_agent.rs:626-628` and `:722` (Root Agent, under the config directory). `cli/send.rs:944-974` is the single call site that picks between them, on `root_is_root_agent`. This is the clause round 1 got wrong. |
-| "so securing, backing up, or erasing them means covering both" | Operational consequence of the row above. It is the reason the item exists in a threat model rather than in a reference doc, and it is what makes the failure mode explicit rather than inferable. |
-| `conversations` dropped | The store is written only by `phone/manager.rs`, which R2 deletes. |
+### 4.6.1 Why two rewrites failed, and what changed in the standard
 
-**Scope note, flagged rather than buried.** This edit corrects **two** pre-existing falsehoods (teams and messages), where the coordinator's Step 7 instruction named only messages. The widening is deliberate and stays inside the same single line: no adjacent line is touched, and the file stays at 121 lines. The alternative, correcting the messages clause and leaving the teams clause false, was rejected for the reason in the first paragraph. Round 2 widens nothing further: it corrects the round-1 replacement's own claim and touches no other path, decision, cut boundary, or batch.
+Rounds 1 and 2 both failed the same way, and it is worth stating precisely because the round-3 text is built to be immune to it rather than merely to be more complete.
 
-**Consistency check this closes.** `PRIVACY.md` (§4.2) says messages are Markdown files in `messaging/` directories "inside each workgroup and inside the Root Agent directory". This line now says the same thing and adds where each of those two roots sits on disk. The two documents resolve to one storage model, and neither claims an exclusive location. §4.2's evidence table is corrected for round 2 for the same reason: its text was already right, but one row's justification carried the false exclusivity claim.
+**Round 1** said messages live in the project workspace "**instead**". False: Root Agent `messaging/` and the instance app outbox are under the config directory.
+
+**Round 2** said "**Everything** is plain files, **in two locations**" and enumerated what each holds. Validation found three things wrong with it:
+
+1. A fifth message store nobody had audited, `<config-dir>/api-message-bus.sqlite3`, holding queued message bodies inline. Re-verified: `api/message_store.rs:15` `DB_FILENAME`, `:722-724` `config_dir().join(DB_FILENAME)`, `:785-792` `messages.body TEXT NOT NULL`; `api/dispatcher.rs:180-190` delivers via `WakeDeliveryOrigin::DbQueue` and `:331-337` builds the `OutboxMessage` straight from `row.body`, so **no Markdown file is created at all** on that path; `api/README.md:150-157` calls the database plaintext and sensitive and warns that WAL can retain historical body bytes.
+2. **My "`ac-root-agent/` ... `outbox/` delivery queue" claim was wrong, and I withdraw it.** Re-verified: the direct child comes from the generic Agent Matrix layout (`entity_creation.rs:128` `AGENT_MATRIX_DIRS`, `:131-134`) and has no production reader or writer; the live queue is `<root>/<agent-local-dir>/outbox/` (`cli/send.rs:827`, `:1091`), which is exactly what `phone/mailbox.rs:2761-2769` scans, alongside the app outbox and nothing else. My round-2 evidence row asserted the phrase was "true on both readings"; it was true on neither. This is the **same failure mode as round 1**: a conclusion defended by a reason I had not actually checked.
+3. `send --outbox` is a public documented option (`docs/reference/cli.md:128`) that accepts any path and writes the message JSON there (`cli/send.rs:1077-1079`, `:1093-1098`), so it can place a queue outside both roots.
+
+**The pattern.** Each round found one more omission because the sentence was **categorical**. "Everything." "In two locations." Under a universal quantifier, any single unaudited artifact makes the whole sentence false, so the only correct categorical text is an exhaustive one, and exhaustiveness here is a full security-documentation audit rather than a one-line fix. That audit is issue **#1195**, filed with the validation evidence.
+
+**The round-3 standard, set by the user and relayed by the coordinator: bounded and non-categorical.** Describe the default AC-managed locations without asserting they are the only ones. The acceptance test applied to every clause below is: **would this sentence still be true if a sixth store existed that nobody has audited?** If no, it was rewritten. That is why the replacement uses "you will find" rather than "everything is", states outright that neither list is exhaustive, and names overrides and optional features as a category without naming the API database or `--outbox`, which belong to #1195.
+
+**Why this wording, clause by clause.** Every clause was re-derived from the tree for round 3, and each row states what would falsify it.
+
+| Clause | Backing fact | What would falsify it |
+| --- | --- | --- |
+| "AC keeps its state in files on this machine" | Every artifact named below, plus every store found during three rounds of audit including the API message database, is a local file. `config/mod.rs:169-176` resolves the config root; nothing in the messaging or persistence path writes to a remote service. | A store AC keeps somewhere other than the local filesystem. None was found, and the product is a local desktop app (threat-model item 3 already scopes the optional network endpoints). **Note it does not say "only" files, or "plain" files**: the API database is a file too, and this clause survives it. |
+| "you will find" (both lists) | Existential, not universal. Each named artifact is verified in its own row below. | Only a named artifact **not** being there. A store the lists omit does **not** falsify it. This is the single most important word choice in the line, and it is what rounds 1 and 2 got wrong. |
+| "Configuration ... under `~/.agentscommander/`" | `config/settings.rs:1733` `super::config_dir().map(\|d\| d.join("settings.json"))`. | `settings.json` moving out of the config directory. |
+| "persisted sessions" | `config/sessions_persistence.rs:271` `super::config_dir().map(\|d\| d.join("sessions.json"))`. | `sessions.json` moving out of the config directory. |
+| portable-instance parenthetical | Preserved verbatim from the baseline line. `config/mod.rs:108-135`: the portable config dir is `<binary_parent_dir>/.<binary_file_stem>/`, with a `$HOME` fallback at `:137-142`. | The portable resolution being removed. |
+| "the Root Agent directory `ac-root-agent/`" | `config/root_agent.rs:13` `pub const ROOT_AGENT_DIR_NAME: &str = "ac-root-agent";` and `:626-628` `display_path(&config_dir.join(ROOT_AGENT_DIR_NAME))`. A **config-directory** child, not a workspace child. | The Root Agent root moving, or being renamed. |
+| "including its `messaging/` Markdown message files" | `config/root_agent.rs:722` creates `root_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME)`; `phone/messaging.rs:166-170` `root_messaging_dir`; `cli/send.rs:943-946` routes a Root Agent sender's `--send` file through it; `phone/messaging.rs:199-207` `build_filename` produces `.md`; `:214` `validate_filename_shape` requires the `.md` suffix. "**including**" is deliberate: the directory holds more than this. | A non-`.md` file being written **into `messaging/`**. Messages delivered by some other path that never touch `messaging/` do not falsify it, because the clause is scoped to that directory's contents. |
+| "the running instance's delivery queue at `instances/<instance-id>/outbox/`" | `lib.rs:968-969` `config_dir.join("instances")`; `:996-998` `instances_dir.join(&instance_id).join("outbox")`, created at boot; `cli/send.rs:1080-1088` selects it for root/master-token sends; `:1098` writes `<msg_id>.json`; `phone/mailbox.rs:2761-2769` scans it. **Round 2's "JSON" qualifier is dropped**: the payload shape is not what a reader securing the directory needs, and dropping it removes one more thing that a future format change would falsify. | That path no longer being created or scanned. |
+| "team configuration under `_team_<name>/`" | `entity_creation.rs:846`, `:917`, `:937`, `:970`, `:3025` and `cli/workgroup.rs:180` all build `workspace_dir.join(format!("_team_{}", team_name))`; `read_team_config` takes a `workspace_dir`, not a config dir. **No `teams.json` file exists**: that name occurs exactly once in `src-tauri/src/`, at `cli/send.rs:22`, as prose inside the CLI help text, and no code constructs the path. | Team config being read from the config directory. |
+| "each workgroup's `messaging/` Markdown message files" | `phone/messaging.rs:11` `MESSAGING_DIR_NAME = "messaging"`, `:146-157` `workgroup_root` walks up to the `wg-<N>-*` ancestor, `:160-164` `messaging_dir(wg_root)`, `:199-207` `build_filename`. Same scoping as the Root Agent row: a claim about that directory's contents, not about all messages. | A non-`.md` file written into a workgroup `messaging/`. |
+| "each agent replica's delivery queue at `<replica>/<instance-dir>/outbox/`, where `<instance-dir>` is that replica's dot-prefixed per-instance directory" | `cli/send.rs:827` `PathBuf::from(&root).join(crate::config::agent_local_dir_name())` and `:1091` `ac_dir.join("outbox")`; `config/mod.rs:165-167` `agent_local_dir_name()` returns `format!(".{}", local_dir_stem)`, hence dot-prefixed and per-instance; `phone/mailbox.rs:2761-2769` scans exactly `<path>/<agent-local-dir-name>/outbox`; `:717-719` records the full shape. `cli/purge_wg.rs:173-174`, `cli/raise_hand.rs:55`, `cli/close_session.rs:207` build the same path. **This corrects round 2**, which wrote "under its own `outbox/`" and so named the provisioned direct child `<replica>/outbox/` (`entity_creation.rs:129` `AGENT_REPLICA_DIRS`) that no production reader or writer touches. | The poller scanning a different path, or the queue moving to the direct child. |
+| "**Message data is written under both roots**" | Config root: `config/root_agent.rs:722` (Root Agent `messaging/`) and `lib.rs:996-998` (instance outbox). Workspace root: `phone/messaging.rs:160-164` (workgroup `messaging/`) and `cli/send.rs:827`/`:1091` (replica queue). Existential in both directions, so a further store under either root only adds to it. | Message data ceasing to be written under one of the two roots. **Not** falsified by a store under a third root, which the next clause covers explicitly. |
+| "optional features and per-call overrides can put it outside either" | Verified concretely, though deliberately not named in the line: `send --outbox` is public (`docs/reference/cli.md:128`), accepts any path, and writes there (`cli/send.rs:1077-1079`, `:1093-1098`); and the opt-in control-plane API stores message bodies in `<config-dir>/api-message-bus.sqlite3` (`api/message_store.rs:15`, `:722-724`, `:785-792`) and dispatches from that queue without creating a `messaging/` file (`api/dispatcher.rs:180-190`, `:331-337`). The clause is a **category**, so it stays true if either mechanism changes and it is already true of any third one. | Nothing plausible. Removing every override and optional store would make it vacuous rather than false, and it would still be safe to leave in a threat model. |
+| "neither list is exhaustive" | Demonstrably true today: the API message database is under the config root and is not in the config list; `--outbox` targets are in neither. It is also the clause that makes the two enumerations **existential by construction**. | Nothing. A clause that disclaims completeness cannot be falsified by finding something else. **This is the round-3 fix.** |
+| "treat this as where to start looking rather than as an inventory of everything AC writes" | Sets the reader's contract explicitly, so a security-conscious reader knows to keep auditing rather than to trust the list as closed. Pairs with #1195, which is the audit itself. | Nothing. It is an instruction, not a factual claim. |
+| `conversations` dropped | The store is written only by `phone/manager.rs`, which R2 deletes. | A surviving writer of `<config-dir>/conversations/`. |
+
+**What this line deliberately does not say.** It does not say "everything", "only", "all", "in two locations", or "instead". It does not name the API message database or `--outbox`: the coordinator scoped those to **#1195**, and naming them would re-open the exhaustiveness trap this rewrite exists to escape. It does not claim every inter-agent message is a Markdown file. It does not characterize the Root Agent's own queue at all, which is the legitimate omission the coordinator offered, and it is the safer choice after getting that path wrong once.
+
+**Scope note, flagged rather than buried.** This edit corrects two pre-existing falsehoods in the baseline line (teams and messages), where the coordinator's original Step 7 instruction named only messages. The widening is deliberate and stays inside the same single line: no adjacent line is touched, and the file stays at 121 lines. Round 3 widens nothing further; it replaces claims with weaker true ones and adds no new path.
+
+**Consistency check this closes.** `PRIVACY.md` (§4.2, also rewritten at round 3) and this line now describe one storage model at the same level of confidence: the filesystem protocol writes Markdown into `messaging/` directories under both roots, other delivery paths exist and stay local, and neither document claims its list is complete. Neither can be falsified by the other, and neither is falsified by #1195's findings.
 
 ---
 
@@ -698,7 +732,7 @@ After the cut: `:978` `}`, `:979` blank, `:980` blank, `:981` `export interface 
 
 The `subgraph "phone/"` at `:113-116` keeps `PH_TYPES` and stays valid after `PH_MGR` is removed.
 
-**D2. `PRIVACY.md:29-31`**: replace with the exact three lines given in Section 4.2. 54 lines, unchanged.
+**D2. `PRIVACY.md:29-31`**: replace with the exact three lines given in Section 4.2. 54 lines, unchanged. **Round 3: use §4.2's round-3 text, not the version currently in the tree.** Batch 4 shipped the round-1 wording, which validation found false as a universal claim: it says every message is a Markdown file in `messaging/`, and the control-plane API path produces no such file. D2 is now implemented by **batch 5** (§8.7) alongside D4.
 
 **D3. `docs/agents/inter-agent-messaging.md`: delete lines `:129-132`** (heading, blank, paragraph, blank) per Section 4.3. 218 -> 214 lines.
 
@@ -706,7 +740,7 @@ The `subgraph "phone/"` at `:113-116` keeps `PH_TYPES` and stays valid after `PH
 
 **This is a rewrite, not a token deletion.** Deleting `conversations, ` alone would leave the line still claiming that teams and messages live under `~/.agentscommander/`, and §4.6 shows both claims are false as stated. Use §4.6's replacement text verbatim; it is a decided wording with per-clause evidence, not a draft.
 
-**Round 2: use §4.6's round-2 text, not the version currently in the tree.** Batch 4 landed the round-1 wording, which review found false for Root Agent messaging and silent about the instance app outbox. D4 is now implemented by **batch 5** (§8.7) against `8c1ea67`, replacing line `:14` in full.
+**Round 3: use §4.6's round-3 text, not the version currently in the tree and not round 2's.** Batch 4 landed the round-1 wording, which review found false for Root Agent messaging. Round 2's replacement was rejected at validation for being categorical, for mislabelling the Root Agent's provisioned `outbox/` as a delivery queue, and for omitting a fifth message store. D4 is now implemented by **batch 5** (§8.7) alongside D2, replacing line `:14` in full.
 
 ---
 
@@ -775,13 +809,15 @@ A fourth near-homonym, flagged so a wide search does not mislead: **`sync_workgr
 
 **Rust API compatibility.** `agentscommander_lib` is a library crate, so removing `pub` items is technically a breaking change for any external consumer. **There is no supported or known external consumer:** the crate is unpublished, it is consumed inside this workspace only by its own binaries and by `src-tauri/tests/`, §2.3b confirms no test reaches the removed surface, and no public client contract documents any of these items. That is the strongest claim the evidence supports. It is deliberately not phrased as proof that no private fork or unpublished dependent exists anywhere, which is unknowable from this repository.
 
-**Persistence and data.** Nothing writes `<config-dir>/conversations/` after this change. Existing directories are left untouched (§6.2). No schema, no migration, no config-format change. Unaffected: the live `messaging/` directories in both roots (`<workgroup-root>/messaging/` and `<config-dir>/ac-root-agent/messaging/`), the outbox `.json` files in both roots (`<replica-root>/<local-dir>/outbox/` and `<config-dir>/instances/<instance-id>/outbox/`), `settings.json`, `sessions.json`, and team configuration under `<workspace>/_team_<name>/` (§4.6).
+**Persistence and data.** Nothing writes `<config-dir>/conversations/` after this change. Existing directories are left untouched (§6.2). No schema, no migration, no config-format change. **This change removes one store and touches no other.** Among the stores that stay untouched: the `messaging/` directories in both roots (`<workgroup-root>/messaging/` and `<config-dir>/ac-root-agent/messaging/`), the outbox directories (`<replica-root>/<local-dir>/outbox/` and `<config-dir>/instances/<instance-id>/outbox/`), the control-plane API message database (`<config-dir>/api-message-bus.sqlite3`), `settings.json`, `sessions.json`, and team configuration under `<workspace>/_team_<name>/`. **That list is illustrative, not an inventory**: round 3 established that a closed enumeration of AC's stores does not yet exist, which is the subject of issue #1195.
 
 **Performance.** Neutral. Five fewer `invoke_handler` entries is not a measurable difference. Marginally smaller binary.
 
 **Security.** Net positive, though small. Each registered Tauri command is reachable from any page loaded in the webview; removing five unreachable ones removes five entry points. Of the five, `phone_send_message` is the one that actually mattered: it wrote attacker-influenced content to `<config-dir>/conversations/*.json` with a `can_communicate` check as the only gate, and nothing in the product ever needed it. Attack surface strictly shrinks; no permission, no authentication path, and no capability grant changes.
 
-**Security and privacy documentation.** `PRIVACY.md` retains its guarantee that inter-agent messaging is entirely local with no external network calls, now pointed at the store that actually exists (§4.2). The guarantee is preserved, not weakened, and it is now true rather than accidentally true. `docs/security.md`'s threat-model item 4 is corrected in the same change (§4.6). The baseline line told a security-conscious reader that team configuration and inter-agent messages live under `~/.agentscommander/`; team configuration does not live there at all, and messages live there only in part, since the workgroup half is in the project workspace. The round-1 correction over-swung and asserted the mirror image of that error; §4.6's round-2 text states the real model, which is **both** roots, and batch 5 (§8.7) ships it. After batch 5 the two documents agree with each other and with the code, so a reader deciding what to secure, back up, or erase is pointed at every directory that holds message data and at no directory that does not.
+**Security and privacy documentation.** `PRIVACY.md` retains its guarantee that inter-agent messaging is entirely local with no external network calls; that clause is preserved verbatim through every round (§4.2). What changed is everything around it. The baseline `docs/security.md:14` told a security-conscious reader that team configuration and inter-agent messages live under `~/.agentscommander/`: team configuration does not live there at all, and messages live there only in part. Round 1 over-swung and asserted the mirror image. Round 2 named both roots and was still categorical, which validation falsified with a store neither round had audited. **Round 3 stops making the claim categorical at all** (§4.6, §4.2): both documents now describe the default AC-managed locations, name the file-based path as one path rather than as all messaging, and say outright that their lists are not exhaustive. Batch 5 (§8.7) ships both.
+
+The honest summary of what this change delivers on the documentation side is therefore narrower than round 2 claimed, and it is worth stating plainly: **after batch 5 the two documents are true, mutually consistent, and explicitly incomplete.** They point a reader at the right directories to start from and tell them the list has a boundary. They are not a complete inventory of everything AC writes; three rounds established that no such inventory exists yet, and producing one is issue **#1195**.
 
 ---
 
@@ -893,20 +929,24 @@ None. Everything the issue asks for lands in the four batches above.
 4. **Run every verification grep against the working tree**, never against `d7285ce`. §9.3 rule 1.
 5. **Touch only the 13 files in the §1.3 table.** Nothing else, for any reason.
 
-### 8.7 Batch 5: the round-2 D4 correction. Added at Step 7 round 2.
+### 8.7 Batch 5: the documentation-accuracy correction. Added at round 2, widened to two files at round 3.
 
-**Batches 1 through 4 already landed and are correct.** The Step 9 review confirmed every R1-R9, T1-T4 and D1-D4 cut against §5 and found no code defect; the branch is clean at `8c1ea67`. What failed review is the round-1 §4.6 **wording**, which batch 4 shipped faithfully. So this is not a re-run of batch 4 and not a revert: it is one further one-line edit on top of it.
+**Batches 1 through 4 already landed and the code is correct.** The Step 9 review confirmed every R1-R9, T1-T4 and D1-D4 cut against §5 and found no code defect; the branch is clean. What failed review is **wording this plan specified**, which batch 4 shipped faithfully. So this is not a re-run of batch 4 and not a revert: it is a small edit on top of it, in two files that batch 4 already touched.
 
-**Batch 5: the corrected `docs/security.md:14`.** Owner `technical-writer`.
-Entry precondition: `8c1ea67` (or later) checked out, tree clean, and this plan re-certified at Step 7 round 2.
-Edits: replace `docs/security.md:14` in full with §4.6's round-2 replacement text. **One line, one file. Nothing else, for any reason.**
-Commit: `docs(#1179): correct the docs/security.md disk-locations item (batch 5)`
-Gate: the batch-4 block in §9.4, then the **Final** block including the scope gate. The batch-4 block is rerun whole rather than only its new greps, because D1, D2 and D3 must still hold after this edit.
-Handoff: back to the coordinator, then to `dev-rust-grinch` for the round-2 review.
+**Batch 5: the corrected `docs/security.md:14` and `PRIVACY.md:29-31`.** Owner `technical-writer`.
+Entry precondition: `bce5b31` (or later) checked out, tree clean, and this plan re-certified at Step 7 round 3.
+Edits, two files, both already on the §9.4 whitelist:
+1. Replace `docs/security.md:14` in full with §4.6's **round-3** replacement text. One line for one line.
+2. Replace `PRIVACY.md:29-31` in full with §4.2's **round-3** replacement text. Three lines for three lines.
 
-**Three things this batch does not change.** The final scope gate still lists exactly the same 13 paths, because `docs/security.md` was already on the whitelist and batch 5 only edits it again. `docs/security.md` stays at 121 lines, so criterion 22 is unaffected. And criterion 26's four-commit assertion still holds for batches 1-4; batch 5 adds a fifth implementation commit, which is expected rather than a scope violation.
+**Nothing else, in either file, for any reason.**
+Commit: `docs(#1179): correct the disk-location and messaging accuracy claims (batch 5)`
+Gate: the batch-4 block in §9.4, then the **Final** block including the scope gate. The batch-4 block is rerun whole rather than only its new greps, because D1 and D3 must still hold after these edits.
+Handoff: back to the coordinator.
 
-**If line `:14` is not the superseded round-1 text.** Two legitimate states exist: the baseline text (batch 4 not applied) and the round-1 text (batch 4 applied). §4.6 prints both, and the replacement is the same in either case. **Any third state means someone edited the line outside this plan: stop and report it.** Do not merge, do not adapt the wording, do not treat a partial match as done.
+**Three things this batch does not change.** The final scope gate still lists exactly the same 13 paths: both files were already on the whitelist and batch 5 only edits them again. `docs/security.md` stays at 121 lines and `PRIVACY.md` at 54, so criterion 22 is unaffected. And criterion 26's four-commit assertion still holds for batches 1-4; batch 5 adds a fifth implementation commit, which is expected rather than a scope violation.
+
+**If either target does not hold the text you expect.** For `docs/security.md:14` three superseded versions are on record in §4.6: the baseline, the round-1 text that batch 4 shipped, and the round-2 text that was never shipped. For `PRIVACY.md:29-31` two are on record in §4.2: the baseline and the shipped round-1/2 text. The replacement is the same whichever you find. **Any state not on those lists means someone edited outside this plan: stop and report it.** Do not merge, do not adapt the wording, do not treat a partial match as done.
 
 ---
 
@@ -951,7 +991,13 @@ Per §2.4, neither the Rust nor the TypeScript gate can see a leftover `pub` ite
 6. **Disambiguate at the definition site.** For the three traps in §6.3, reading the struct body is the check. Match count is not.
 7. **A passing build is never evidence that a TS or `pub` Rust symbol was removed.** Only the grep is.
 8. **A passing symbol suite is not evidence that the change stayed in scope.** All symbol, count and build criteria can pass while an unrelated tracked file has been edited. The scope gate in the Final block is what closes that, and it is mandatory.
-9. **A positive documentation check must be one a wrong sentence fails, and it must be anchored to the line it certifies.** Round 1's `docs/security.md` gate grepped for `` `messaging/` ``, `` `outbox/` `` and `_team_`, all three of which the factually false round-1 line satisfied; it certified vocabulary, not truth. Two properties fix that and both are required. **First, at least one anchor must be a phrase the wrong version cannot contain**, which for D4 means the config-directory half it omitted. **Second, every anchor must resolve to the same line number**, so a token that happens to appear elsewhere in the file cannot stand in for the line under test. A negative check on the superseded wording is a useful third guard but never a substitute for the first two: it only rules out one known-bad phrasing, not the next one.
+9. **A positive documentation check must be one a wrong sentence fails, it must be anchored to the line it certifies, and for a claim about storage it must anchor the non-exhaustiveness.** Round 1's `docs/security.md` gate grepped for `` `messaging/` ``, `` `outbox/` `` and `_team_`, all three of which the factually false round-1 line satisfied; it certified vocabulary, not truth. Round 2's gate fixed that and still would have certified the round-2 line, which was also inaccurate. Four properties, all required:
+   - **(a) At least one anchor must be a phrase the wrong version cannot contain.** For D4 that was the config-directory half round 1 omitted.
+   - **(b) Every anchor must resolve to the same line number**, so a token appearing elsewhere in the file cannot stand in for the line under test.
+   - **(c) A claim about where data lives must anchor its own non-exhaustiveness.** This is the round-3 addition and it is the one that generalises. Rounds 1 and 2 both failed because the sentence was categorical ("instead", "everything", "in two locations"), and under a universal quantifier every unaudited artifact is a future falsification. Gating on the disclaimer (`neither list is exhaustive`) makes a categorical rewrite fail the gate mechanically, which no vocabulary anchor can do.
+   - **(d) A negative probe on every superseded wording**, accumulated rather than replaced. Each round's rejected phrasing stays in the negative set, because the failure mode is drift back toward a claim that reads well.
+
+   Properties (a) and (d) only rule out phrasings already known to be wrong. **(c) is the only one that constrains the next wrong sentence**, which is why it exists.
 
 ### 9.4 Verification commands, per batch
 
@@ -1073,25 +1119,39 @@ git grep -n 'PH\["phone/'    -- docs/reference/architecture.md      # :34
 git grep -n 'CMD --> PH'     -- docs/reference/architecture.md      # :53
 git grep -n 'PH <-->'        -- docs/reference/architecture.md      # :60
 
-# PRIVACY.md: the guarantee survives literally, and is retargeted.
+# PRIVACY.md: the guarantee survives literally, and the universal claim is gone.
+# Each must return a hit, and all must be on line 31:
 git grep -n -F 'entirely local'                       -- PRIVACY.md
 git grep -n -F 'No external network calls are made.'  -- PRIVACY.md
 git grep -n -F '`messaging/`'                         -- PRIVACY.md
+git grep -n -F 'The file-based path'                  -- PRIVACY.md
+git grep -n -F 'other delivery paths'                 -- PRIVACY.md
+
+# The superseded universal claim is gone. Must return exit 1:
+git grep -n -F 'Messages are written as Markdown files' -- PRIVACY.md
 
 # docs/security.md: the corrected location claim is positively present, it names
-# BOTH roots, and every anchor lands on the same line. §9.3 rule 9: the first
-# three greps alone are NOT a gate: the factually false round-1 line satisfied
-# all three. The next three are the anchors that version cannot carry.
+# BOTH roots, it names the queue path correctly, and it disclaims its own
+# completeness. §9.3 rule 9: the first three greps alone are NOT a gate (the
+# false round-1 line satisfied all three), and anchors 4-5 alone are not either
+# (the inaccurate round-2 line satisfied those). Anchors 6-8 are what a
+# categorical rewrite cannot carry.
 # Each must return exactly one hit, and every hit must be line 14:
 git grep -n -F '`messaging/`'                                 -- docs/security.md
-git grep -n -F '`outbox/`'                                    -- docs/security.md
+git grep -n -F 'outbox/'                                      -- docs/security.md
 git grep -n -F '_team_'                                       -- docs/security.md
 git grep -n -F 'ac-root-agent/'                               -- docs/security.md
 git grep -n -F 'instances/<instance-id>/outbox/'              -- docs/security.md
-git grep -n -F 'Inter-agent messages live in both locations'  -- docs/security.md
+git grep -n -F '<replica>/<instance-dir>/outbox/'             -- docs/security.md
+git grep -n -F 'neither list is exhaustive'                   -- docs/security.md
+git grep -n -F 'where to start looking'                       -- docs/security.md
 
-# The superseded round-1 exclusivity claim is gone. Must return exit 1:
-git grep -n -i -F 'project workspace instead' -- docs/security.md
+# Every superseded wording is gone. Accumulated, not replaced (§9.3 rule 9d).
+# Each must return exit 1:
+git grep -n -i -F 'project workspace instead'                 -- docs/security.md
+git grep -n -F 'Everything is plain files'                    -- docs/security.md
+git grep -n -F 'Inter-agent messages live in both locations'  -- docs/security.md
+git grep -n -F '`outbox/` delivery queue'                     -- docs/security.md
 
 # One storage model across both documents: each names the Root Agent as a place
 # messages live. Each must return a hit. Note that `docs/security.md:42` and `:59`
@@ -1179,14 +1239,14 @@ Every criterion is decidable by running a listed command and comparing the resul
 | 17 | `phone/types.rs` still exports `OutboxMessage` and the `PtyInput*` surface; `lib.rs:11 pub mod phone;` is present | batch 2 greps |
 | 18 | `docs/reference/architecture.md:34`, `:53` and `:60` are present | batch 4 greps |
 | 19 | No removed symbol is documented anywhere: the architecture.md symbol grep returns exit 1 | batch 4 grep |
-| 20 | `PRIVACY.md` contains the literal string `No external network calls are made.`, the literal `entirely local`, and a `` `messaging/` `` reference; and contains **zero** `phone` or `conversations` hits | batch 4 greps |
-| 21 | `docs/agents/inter-agent-messaging.md` and `docs/security.md` contain **zero** `conversations` hits; `docs/security.md` positively contains all six D4 anchors (`` `messaging/` ``, `` `outbox/` ``, `_team_`, `ac-root-agent/`, `instances/<instance-id>/outbox/`, and the literal `Inter-agent messages live in both locations`), **each returning exactly one hit and each on line 14**; and the superseded phrase `project workspace instead` returns **zero** hits | batch 4 greps |
+| 20 | `PRIVACY.md` contains the literals `No external network calls are made.`, `entirely local`, `` `messaging/` ``, `The file-based path` and `other delivery paths`, **all on line 31**; contains **zero** `phone` or `conversations` hits; and the superseded universal `Messages are written as Markdown files` returns **zero** hits | batch 4 greps |
+| 21 | `docs/agents/inter-agent-messaging.md` and `docs/security.md` contain **zero** `conversations` hits; `docs/security.md` positively contains all eight D4 anchors (`` `messaging/` ``, `outbox/`, `_team_`, `ac-root-agent/`, `instances/<instance-id>/outbox/`, `<replica>/<instance-dir>/outbox/`, `neither list is exhaustive`, `where to start looking`), **each returning exactly one hit and each on line 14**; and all four superseded phrasings (`project workspace instead`, `Everything is plain files`, `Inter-agent messages live in both locations`, `` `outbox/` delivery queue ``) return **zero** hits | batch 4 greps |
 | 22 | Every one of the 13 line counts in the §1.3 table matches, read from the working tree | per-batch `wc -l` checks |
 | 23 | `architecture.md` still holds exactly 15 Mermaid fences | batch 4 structural check |
 | 24 | **Scope gate.** `git status --porcelain` is empty, `git diff --check` is clean, and `git diff --name-status d7285ce..HEAD` excluding this plan file lists **exactly** the 13 paths and statuses in §9.4, and nothing else | final scope gate |
 | 25 | `CHANGELOG.md` is unmodified | implied by criterion 24; `CHANGELOG.md` is not on the whitelist |
 | 26 | The branch contains the 4 implementation commits of §8.5, in that order and with those messages. Any `docs(#1179)` commit carrying this plan file is separate and does not count against this criterion (§9.6). The round-2 follow-on batch adds one further implementation commit and does not invalidate this criterion (§8.7) | `git log --oneline d7285ce..HEAD` |
-| 27 | **One storage model across both documents.** `PRIVACY.md` and `docs/security.md` each contain the literal `Root Agent directory`, so neither document describes message storage as exclusive to the other's location | batch 4 greps |
+| 27 | **One storage model across both documents.** `PRIVACY.md` and `docs/security.md` each contain the literal `Root Agent directory`, so neither describes message storage as exclusive to the other's location; and **neither document states a universal.** The four negative probes of criteria 20 and 21 are the mechanical form of the second half | batch 4 greps |
 
 ### 9.6 Note on this plan file and `.gitignore`
 
@@ -1211,7 +1271,7 @@ Three consequences:
 | `dev-webpage-ui` | 1 | §5.0, §5.3, §6.3 (the TS `AgentInfo` trap), §8, §9.3, §9.4 batch 1 | §1, §2.4, §3 |
 | `dev-rust` | 2 and 3 | §5.0, §5.1, §5.2, §6.3, §6.4, §8, §9.3, §9.4 batches 2 and 3 | §1, §2, §3 |
 | `technical-writer` | 4 | §4.2, §4.3, §4.6, §5.4, §8, §9.3, §9.4 batch 4 | §1, §2.5, §3 |
-| `technical-writer` | 5 (round 2) | §4.6, §8.7, §9.3 rule 9, §9.4 batch 4 | §4.2, §7 |
+| `technical-writer` | 5 (round 3) | §4.2, §4.6, §4.6.1, §8.7, §9.3 rule 9, §9.4 batch 4 | §7 |
 
 Everyone reads §8 in full. It carries the entry precondition, the commit-before-gate rule, and the handoff rule, and those are what keep three owners from corrupting each other's work.
 
@@ -1256,11 +1316,12 @@ Everyone reads §8 in full. It carries the entry precondition, the commit-before
 - D2, D3 and D4 have exact replacement text in §4.2, §4.3 and §4.6. **Use it verbatim.** These are decided wordings with per-clause evidence, not drafts. D4 in particular is a **rewrite of the whole enumeration item**, not a token deletion; §4.6 explains why.
 - You run the **Final** block, including the scope gate, because you are last. §8.5.
 
-**Batch 5 (`technical-writer`, round 2):**
-- **The line already in the tree is the wrong one.** `docs/security.md:14` at `8c1ea67` carries the superseded round-1 text. It reads plausibly and it passes the round-1 greps. Replace it in full with §4.6's round-2 text; do not diff the two by eye and patch the difference.
-- **The one clause that matters** is that inter-agent messages live under **both** roots. If your replacement can be read as putting them in only one place, it is wrong.
-- Your gate now has anchors that the superseded line cannot satisfy, and every anchor must land on line 14. §9.3 rule 9.
-- One file, one line. The scope gate still expects the same 13 paths. §8.7.
+**Batch 5 (`technical-writer`, round 3):**
+- **The text already in the tree is wrong in both files.** `docs/security.md:14` and `PRIVACY.md:29-31` both carry superseded wording that reads plausibly. Replace each block in full with §4.6's and §4.2's round-3 text; do not diff by eye and patch the difference.
+- **§4.6 has three superseded versions on record and §4.2 has two.** Only the block labelled "Replacement" ships. If you are looking at a version that says "instead", "Everything is plain files", or "Messages are written as Markdown files", you are reading a superseded one.
+- **The clauses that matter most are the weak ones.** "you will find", "neither list is exhaustive", "The file-based path", "other delivery paths". They look like hedging and they are the entire point: three rounds failed because the text was categorical. Do not tighten them, do not make them read more confidently, and do not "improve" the grammar in a way that restores a universal.
+- Your gate anchors the non-exhaustiveness clause, and every `docs/security.md` anchor must land on line 14. §9.3 rule 9.
+- Two files, four lines total. The scope gate still expects the same 13 paths. §8.7.
 
 ---
 
@@ -1277,12 +1338,14 @@ Everyone reads §8 in full. It carries the entry precondition, the commit-before
 | 1f | `git ls-tree` in acceptance | **Never as an exit-status check.** It requires a tree-ish, and `ls-tree HEAD -- <missing>` exits 0. Replaced with `test ! -e` plus `test -z "$(...)"` output assertions and an exact surviving-directory comparison. | §9.3 rule 5, §9.4 |
 | 1g | Scope enforcement | **A mandatory final scope gate**: clean `git status`, `git diff --check`, and an exact 13-path `git diff --name-status` whitelist. The symbol suite alone cannot detect an unrelated edit. | §9.3 rule 8, §9.4 Final |
 | 1h | Mermaid acceptance | **Render preview is non-binding manual QA.** The binding gate is the node-id grep plus a fence-count check (15 fences, unchanged). D1 edits **4** diagrams, not 5. No render dependency is added; §3.3 rules that out. | §9.4 batch 4 |
-| 2 | Exact `PRIVACY.md` replacement wording | Specified verbatim, 3 lines for 3 lines, with a per-clause evidence table | §4.2 |
+| 2 | Exact `PRIVACY.md` replacement wording | Specified verbatim, 3 lines for 3 lines, with a per-clause evidence table. **Rewritten at round 3**: the shipped text universally claims every message is a Markdown file in `messaging/`, which the control-plane API path falsifies. The privacy guarantee is preserved verbatim; the universal framing is not. | §4.2 |
 | 3 | `docs/agents/inter-agent-messaging.md:129-132` | **Delete** the `## Conversation files` section (no guarantee to preserve, unlike `PRIVACY.md`) | §4.3 |
 | 4 | `docs/security.md:14` | **Rewrite the whole enumeration item**, not a token deletion. Dropping `conversations, ` alone leaves two verified falsehoods (teams and messages both claimed to live under `~/.agentscommander/`). Exact wording specified. | §4.6 |
-| 4a | Which location the rewritten `docs/security.md:14` names for messages | **Both, explicitly.** Round 1 said messages live in the project workspace "instead", which is false for Root Agent `messaging/` and omits the instance app outbox; the round-2 text enumerates the config-directory artifacts and the workspace artifacts separately and states that messages live in both. Ships as batch 5. | §4.6, §8.7 |
-| 4b | Whether `PRIVACY.md`'s §4.2 wording changes at round 2 | **No.** Re-verified clause by clause and left byte-identical. Only its evidence table changed: one row's justification asserted the same false exclusivity and was rewritten. | §4.2 |
-| 4c | What makes a positive documentation gate binding | **An anchor the wrong sentence cannot carry, plus a line-number assertion.** Round 1's gate grepped for vocabulary the false line also contained. Promoted to §9.3 rule 9 because it is a class of gate defect, not an instance. | §9.3 rule 9, §9.4 batch 4 |
+| 4a | Which location the rewritten `docs/security.md:14` names for messages | **Both, and it says its list is not closed.** Round 1 said the project workspace "instead", false for Root Agent `messaging/`. Round 2 said both but categorically, and validation falsified the categorical with a fifth store. Round 3 keeps both roots, drops every universal quantifier, and disclaims exhaustiveness in the line itself. Ships as batch 5. | §4.6, §4.6.1, §8.7 |
+| 4b | Whether `PRIVACY.md`'s §4.2 wording changes | **Not at round 2; yes at round 3.** Rounds 1 and 2 both judged the shipped text correct. It is not: it universally claims every message becomes a Markdown file in `messaging/`, and the control-plane API path creates no file. The guarantee clauses are preserved verbatim; the universal framing is replaced by a path-scoped description. | §4.2 |
+| 4c | What makes a positive documentation gate binding | **An anchor the wrong sentence cannot carry, a line-number assertion, an anchor on the non-exhaustiveness clause, and an accumulated negative set.** Round 1's gate certified vocabulary; round 2's would have certified the categorical round-2 line. Only the non-exhaustiveness anchor constrains the *next* wrong sentence. §9.3 rule 9, properties (a) through (d). | §9.3 rule 9, §9.4 batch 4 |
+| 4d | Whether to name the API message database and `send --outbox` in these two documents | **No, by the user's scope decision relayed at round 3.** Both are real and both are verified in §4.6.1's evidence, but naming them re-enters the exhaustiveness trap: the next unaudited store falsifies the sentence again. The texts are instead written so that neither can contradict them. The full storage audit is issue **#1195**. | §4.6.1, §12.2 item 12 |
+| 4e | What the two documents claim after batch 5 | **True, mutually consistent, and explicitly incomplete.** This is a deliberate reduction in what the documents assert, not an oversight; §7 states it plainly rather than implying completeness. | §7, §4.6 |
 | 5 | `docs/agents/teams-and-workgroups.md:161` | **Out of scope.** The sentence is about the workgroup directory, not the config-dir store; this change does not make it false. | §3.2 |
 | 6 | `lib.rs:1254` incidental comment | **Edit**: drop `, `sync_workgroup_repos``; `update_team` keeps the comment true | §4.4 |
 | 7 | `architecture.md:623` `style CONVDIR` | **Delete.** Missing from the issue; leaving it dangles a Mermaid style directive | §5.4 |
@@ -1319,6 +1382,9 @@ The issue body was rewritten on 2026-08-01 and already corrects nine claims from
 | 9 | Not addressed | **No integration test under `src-tauri/tests/` reaches the removed surface** (verified; the three `phone` hits there are all live `messaging`/`types`/`mailbox` references). | Closes an external-linkage failure mode. |
 | 10 | Not addressed | **Neither deleted Rust file contains a `cfg` attribute**, so #1177's "no PR job compiles Rust for Linux or macOS" hazard does not apply to this change. | Removes a risk the implementer might otherwise assume they inherit. |
 | 11 | Not addressed. Added at Step 7 round 1 after `dev-rust-grinch` (G3) challenged D4; **corrected at Step 7 round 2** after the Step 9 review found the round-1 replacement itself false | **`docs/security.md:14` carries two more false location claims, not one.** Removing the `conversations` token leaves the line asserting that **teams** and **messages** live under `~/.agentscommander/`. Team configuration does not live there at all (`<workspace>/_team_<name>/`; no code constructs a `teams.json` path anywhere, the one occurrence of that name being CLI help prose at `cli/send.rs:22`). Messages live there **in part**: workgroup `messaging/` and replica `outbox/` are in the project workspace, while Root Agent `messaging/` (`<config-dir>/ac-root-agent/messaging/`) and the instance app outbox (`<config-dir>/instances/<instance-id>/outbox/`) are under the config directory. §4.6 rewrites the whole item to name both roots. | A security document telling a reader the wrong place to secure, back up, or erase their data. **Round 1 half-corrected it**: it moved messages wholesale into the workspace, which is the mirror-image error and would have left Root Agent messages and the instance outbox undocumented. It would also have left `PRIVACY.md` and `docs/security.md` describing two different storage models. |
+
+| 12 | Not addressed. Added at Step 7 round 3 | **`PRIVACY.md:29-31` is also false as shipped, and the fix is to stop quantifying rather than to enumerate.** The line claims every inter-agent message is written as a Markdown file into a `messaging/` directory. The opt-in control-plane API stores bodies inline in `<config-dir>/api-message-bus.sqlite3` and dispatches from that queue with no Markdown file created. §4.2 rewrites the sentence to describe the file-based path as one path. | A privacy policy making a universal claim about message storage that one live delivery path already contradicts. Three rounds of this change asserted it or left it standing. |
+| 13 | Not addressed. Added at Step 7 round 3 | **Neither document can carry a closed inventory, and both now say so.** Three successive rewrites were each falsified by an artifact the previous one had not audited: the Root Agent `messaging/` directory, the instance app outbox, the API message database, the caller-supplied `--outbox`. §4.6 and §4.2 are therefore bounded and non-categorical by design, and §9.3 rule 9(c) gates the disclaimer so a categorical rewrite fails mechanically. The complete storage audit is **#1195**. | Without this, round 4 would have found a sixth store and the cycle would repeat. The user's scope decision was to bound the claim rather than chase completeness inside a dead-code-removal change. |
 
 ### 12.3 No reason was found to stop
 
@@ -1736,6 +1802,56 @@ Unchanged: **`PRIVACY.md`'s replacement text in §4.2**, every §5 cut coordinat
 
 The corrected line is specified but not yet implemented. Batch 5 (§8.7) is the whole of the remaining work, and it is one line in one file.
 
-#### Certification (round 2)
+#### Certification (round 2, superseded)
 
-This plan is certified `READY_FOR_IMPLEMENTATION` as of Step 7 round 2. The certified artifact is the committed file; any byte change after the certifying commit invalidates this status and requires re-certification.
+Certified at Step 7 round 2, digest `C76B945165A30A32315177C7E4D55D7C4E063FC19ED6449D4BBCE6445A5DCA18`. **Withdrawn at Step 7 round 3**, for the reasons in §13.5.
+
+---
+
+### 13.5 Step 7 round 3: validation rejected the round-2 wording, and the standard changed
+
+`dev-rust-grinch` validated the round-2 §4.6 text before implementation and **REJECTED** it with three findings. I re-derived all three from the tree rather than accepting the report. **All three hold.**
+
+#### Finding 1: a fifth message store, unaudited by any round
+
+`<config-dir>/api-message-bus.sqlite3`. Verified: `api/message_store.rs:15` `DB_FILENAME`, `:722-724` `at_config_dir()` opening `config_dir().join(DB_FILENAME)`, `:785-792` the `messages` table with `body TEXT NOT NULL`. `api/dispatcher.rs:180-190` delivers via `WakeDeliveryOrigin::DbQueue` and `:331-337` builds the `OutboxMessage` from `row.body`, so **that path creates no Markdown file at any point**. `api/README.md:3-7` describes the API as speaking the control plane "instead of the filesystem outbox"; `:150-157` calls the database plaintext and sensitive, holding queued message bodies and replayable PTY-input text, and warns that WAL and storage media can retain historical body bytes.
+
+**Consequence beyond §4.6: the shipped `PRIVACY.md:31` is false**, because it universally claims messages are written as Markdown files. Rounds 1 and 2 both examined that sentence and both passed it. I passed it twice.
+
+#### Finding 2: my round-2 Root Agent `outbox/` claim was wrong, and I withdraw it
+
+Verified: the direct child `ac-root-agent/outbox/` comes from the generic Agent Matrix layout (`entity_creation.rs:128` `AGENT_MATRIX_DIRS`, `:131-134` `create_agent_matrix_subdirs`) and has no production reader or writer. The live queue is `<root>/<agent-local-dir>/outbox/` (`cli/send.rs:827`, `:1091`), and `phone/mailbox.rs:2761-2769` scans exactly that path plus the app outbox, nothing else.
+
+My round-2 evidence row claimed the phrase was "true on both readings". **It was true on neither**: one reading names a directory nothing delivers through, the other silently drops `<agent-local-dir>/`. This is the round-1 failure repeating inside its own correction: a conclusion defended by a reason I had not actually checked. The round-3 text names the nested path explicitly for replicas and omits the Root Agent queue entirely, which the coordinator offered as legitimate and which is the safer choice after getting it wrong once.
+
+#### Finding 3: `send --outbox` escapes both roots
+
+`docs/reference/cli.md:128` documents it publicly; `cli/send.rs:1077-1079` accepts any path and `:1093-1098` creates it and writes the message JSON there. Any categorical "in exactly two locations" claim is false while that option exists.
+
+#### The pattern, and the standard that replaces it
+
+Three rounds, three rewrites, three falsifications, each by an artifact the previous round had not audited. The common factor is not carelessness about any one store; it is that **every version made a categorical claim**, and a universal quantifier converts any single unaudited artifact into a falsification of the whole sentence. The only correct categorical text is an exhaustive one, and exhaustiveness here is a security-documentation audit, not a one-line fix.
+
+**The user decided the scope: bounded and non-categorical wording.** The coordinator relayed it with the operative test, which I applied to every clause of both texts: *would this sentence still be true if a sixth store existed that nobody has audited?* Where the answer was no, the clause was rewritten or removed. The complete audit is issue **#1195**, filed with the validation evidence.
+
+I record my agreement rather than merely my compliance. **The bounded standard is the correct engineering call**, and not only for expediency: a security document that enumerates confidently and incompletely is worse than one that enumerates helpfully and says so, because the first invites a reader to stop looking. Round 2's line would have done exactly that.
+
+#### The grinch's root-cause correction, accepted
+
+It judged my round-2 diagnosis "partly right but incomplete". Correct. I identified the propagation mechanism (a false premise in §4.2's evidence table travelling into §4.6) and stopped there. **The deeper cause is that the inventory treated `phone/messaging.rs`'s filesystem protocol as the whole messaging system** and never audited the API DB queue or the custom-outbox path. That is why the same incomplete premise was still sitting in §4.2, §7 and criteria 20/21/27 after round 2 supposedly fixed it. All four are corrected here.
+
+#### What changed at round 3
+
+Rewritten: §4.6's replacement text and its whole evidence table, now with a "what would falsify it" column; §4.2's replacement text, evidence table and dissent note; §7's persistence and documentation paragraphs; §9.3 rule 9; §9.4's batch-4 `PRIVACY.md` and `docs/security.md` blocks; §8.7 (two files); criteria 20, 21, 27; §10.1 and §10.3's batch-5 rows; §11 decisions 2, 4a, 4b, 4c.
+New: §4.6.1 (why two rewrites failed and what the standard is now), §9.3 rule 9 properties (c) and (d), §11 decisions 4d and 4e, §12.2 items 12 and 13, §13.5.
+Unchanged: every §5 cut coordinate, every batch-1 through batch-4 instruction, §1.3's line counts, the 13-path scope whitelist, §3, §6, §8.0-§8.6. **No code decision, cut boundary, or batch structure was reopened**; batch 5's file count went from one to two, both already whitelisted. `docs/security.md` stays at 121 lines and `PRIVACY.md` at 54.
+
+#### What I could not close, stated rather than certified around
+
+1. **The corrected text is specified, not implemented.** Batch 5 is the remaining work: two files, four lines.
+2. **"Entirely local" and "No external network calls are made" are preserved on instruction.** They are true of AC's own behaviour. A user can weaken them without AC changing, by pointing `--outbox` at a network share or widening `apiServerBind` off loopback. Neither makes the sentence false as written; both belong in #1195. Recorded in §4.2 as dissent, not as a blocker.
+3. **Neither document is a complete inventory, and both now say so.** That is the decided outcome, not a gap I am hiding: §7 states it, §4.6 states it in the shipped line, and #1195 owns the audit.
+
+#### Certification (round 3, final)
+
+This plan is certified `READY_FOR_IMPLEMENTATION` as of Step 7 round 3. The certified artifact is the committed file; any byte change after the certifying commit invalidates this status and requires re-certification.
