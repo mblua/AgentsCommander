@@ -1,13 +1,17 @@
 # Implementation Plan: #1179 Remove the dead `phone` feature and the unreachable `sync_workgroup_repos` command
 
-**Status:** Step 4 draft, authored by `architect`. **NOT certified `READY_FOR_IMPLEMENTATION`.**
-Certification happens at Step 7, after enrichment by `dev-rust` (Step 5) and `dev-rust-grinch` (Step 6).
+Status: READY_FOR_IMPLEMENTATION
+
+Certified by `architect` at Step 7 round 1, after enrichment by `dev-rust` (Step 5, items E1-E7) and `dev-rust-grinch` (Step 6, items G1-G7). The full per-item resolution is in §13.
 
 **Baseline commit:** `d7285ceb7bda5259e370cc25433d1aa3293c8628` (`d7285ce`)
 **Branch:** `chore/1179-remove-dead-phone-and-sync-repos`, branched from `main` @ `d7285ce`
 **Issue:** https://github.com/mblua/AgentsCommander/issues/1179
+**Owners:** batch 1 `dev-webpage-ui`, batches 2 and 3 `dev-rust`, batch 4 `technical-writer`. Strictly sequential, see §8.0.
 
-Every line coordinate in this plan was read directly out of `d7285ce` by the author. Where this plan and the issue body disagree, **this plan wins**; the disagreements are enumerated in Section 12.
+Every line coordinate in this plan was read directly out of `d7285ce` by the author and independently re-derived by `dev-rust` at Step 5. Where this plan and the issue body disagree, **this plan wins**; the disagreements are enumerated in §12.
+
+> **If you are implementing a batch, read §8 and §10 first.** Two rules matter more than the rest: run every verification grep against the **working tree**, never against `d7285ce` (§9.3 rule 1), and hand off only after your gate has passed in full (§8.3).
 
 ---
 
@@ -39,7 +43,7 @@ $ git status --porcelain
 (empty)
 ```
 
-Baseline sizes of every file this plan touches, so the implementer can confirm they are working against the same bytes:
+Baseline sizes of every file this plan touches, so each batch owner can confirm they are working against the same bytes:
 
 | File | Lines at `d7285ce` | Lines after this change |
 | --- | ---: | ---: |
@@ -167,7 +171,7 @@ This is the single most important operational fact in this plan.
 | ESLint / Biome | **does not exist in this repo** | n/a |
 | `npm run test:debt` | CI `test-debt`, ubuntu | Ignored/placeholder tests only. Unaffected by this change. |
 
-Two consequences the implementer must internalise:
+Two consequences every batch owner must internalise:
 
 1. **`agentscommander_lib` is a `lib` crate.** `lib.rs` declares `pub mod commands;` and `pub mod phone;`, and each submodule is `pub mod` in turn, so every `pub` item in them is part of the crate's public surface. **rustc emits no `dead_code` warning for them no matter how few callers they have.** If a deletion strands another `pub` item, clippy will not say so, on any platform. `git grep` against the baseline commit is not a secondary check here; it is the **only** check.
 2. **The frontend has no unused-symbol gate at all.** If the orphaned imports (`ipc.ts:28-29`) or the orphaned interfaces (`types.ts:981-996`) are left behind, `npm run typecheck` and `npm test` both pass. Their removal is mandatory and is verified by grep, not by a build.
@@ -217,7 +221,7 @@ Two consequences the implementer must internalise:
 | D1 | `docs/reference/architecture.md` | 17 line-level edits across 5 sections (Section 5.4) |
 | D2 | `PRIVACY.md:29-31` | retarget at the live `messaging/` directories; exact wording in Section 4.2 |
 | D3 | `docs/agents/inter-agent-messaging.md:129-132` | delete the `## Conversation files` section |
-| D4 | `docs/security.md:14` | drop `conversations,` from the disk-contents enumeration |
+| D4 | `docs/security.md:14` | replace the disk-contents enumeration item with the exact truthful text in §4.6 (one line for one line) |
 
 **D3 and D4 are not in the issue body.** They are added by this plan; the justification is in Section 12.2.
 
@@ -250,25 +254,20 @@ Two consequences the implementer must internalise:
 
 ## 4. Decided solution
 
-Five decisions are the architect's, not the implementer's. All are closed here. Nothing in this plan is left to judgement at implementation time.
+Six decisions are the architect's, not an implementer's. All are closed here. Nothing in this plan is left to judgement at implementation time.
 
-### 4.1 Decision: batching and commit order (four batches, four commits)
+### 4.1 Decision: batching, ownership, and commit order (four batches, four commits, three owners)
 
-**Rationale.** Past experience in this repo is that a session can be lost during a long `cargo` gate, and a commit survives that where a working tree does not. So every batch closes with a commit, and the expensive Rust gate runs once per Rust batch rather than once for everything.
+**Rationale.** Past experience in this repo is that a session can be lost during a long `cargo` gate, and a commit survives that where a working tree does not. So every batch is committed, and the expensive Rust gate runs once per Rust batch rather than once for everything.
 
-| Batch | Content | Gate cost | Commit message |
-| --- | --- | --- | --- |
-| **1** | TypeScript: T1, T2, T3, T4 | seconds | `chore(#1179): remove the dead PhoneAPI and syncWorkgroupRepos TS surface (batch 1)` |
-| **2** | Rust, phone chain: R1-R6 | full Rust gate | `chore(#1179): delete the dead phone command chain and its exclusive types (batch 2)` |
-| **3** | Rust, sync wrapper: R7, R8, R9 | full Rust gate | `chore(#1179): remove the unreachable sync_workgroup_repos command (batch 3)` |
-| **4** | Docs: D1, D2, D3, D4 | greps only | `docs(#1179): drop the removed phone surface and retarget the conversations references (batch 4)` |
+| Batch | Content | Owner | Gate cost | Commit message |
+| --- | --- | --- | --- | --- |
+| **1** | TypeScript: T1, T2, T3, T4 | `dev-webpage-ui` | seconds | `chore(#1179): remove the dead PhoneAPI and syncWorkgroupRepos TS surface (batch 1)` |
+| **2** | Rust, phone chain: R1-R6 | `dev-rust` | full Rust gate, **cold build** | `chore(#1179): delete the dead phone command chain and its exclusive types (batch 2)` |
+| **3** | Rust, sync wrapper: R7, R8, R9 | `dev-rust` | full Rust gate, incremental | `chore(#1179): remove the unreachable sync_workgroup_repos command (batch 3)` |
+| **4** | Docs: D1, D2, D3, D4 | `technical-writer` | greps only | `docs(#1179): drop the removed phone surface and retarget the conversations references (batch 4)` |
 
-**Why TypeScript first, before Rust.** The two halves have no compile-time dependency, so the order is a coherence choice, not a correctness one. TypeScript first is strictly better because of what each interrupted state looks like:
-
-- *TS landed, Rust not landed:* the backend registers four commands nobody invokes. That is exactly today's situation minus the frontend half. Fully coherent, compiles, no regression.
-- *Rust landed, TS not landed:* `PhoneAPI` invokes command names that no longer exist. `tsc` still passes (the names are string literals) and nothing calls it, so it is inert, but the repo is momentarily in a state that would throw at runtime if anything ever did.
-
-TypeScript first also costs seconds, so it de-risks the frontend half before the first long `cargo` run.
+**The order is mandatory, and TypeScript first is a correctness constraint, not a preference.** The two halves have no *compile-time* dependency, but the batch-2 and batch-3 **gates** are cross-tree by design: they search `src-tauri/` and `src/` together, so a correct Rust deletion still fails its own gate if batch 1 has not landed. Full reasoning, both independent causes, and the rejected alternative are in §8.0. The commit-before-gate rule and the handoff protocol are in §8.2 and §8.3.
 
 **Why batches 2 and 3 are separate.** Different files, different modules, no shared symbol. The issue and both revalidations independently confirm they are fully independent. Separating them costs one extra Rust gate run and buys two clean revert units and a failure in one that cannot force redoing the other.
 
@@ -355,6 +354,38 @@ The issue calls this an "incidental mention" and does not say what to do with it
 ### 4.5 Decision: no `CHANGELOG.md` entry
 
 `CHANGELOG.md` has one section per **release** (`## 0.20.0 – 2026-07-23` is the most recent) with no `Unreleased` section, and its own preamble scopes it to "notable **user-facing** changes". Nothing removed here is user-reachable, so there is no user-facing change to record. Precedent confirms it: #1177, a strictly larger dead-code removal on the same codebase, added no CHANGELOG entry (`git grep -n '1177\|dead code' d7285ce -- CHANGELOG.md` -> exit 1). **Do not touch `CHANGELOG.md`.**
+
+### 4.6 Decision: the exact `docs/security.md` replacement wording
+
+Deleting the `conversations` token alone is not enough, and shipping that would be worse than leaving the line untouched. The surviving sentence would still assert that **teams** and **messages** live under `~/.agentscommander/`, and both claims are false. Correcting one falsehood while knowingly re-publishing two others, in a security document, in the same edit, is not defensible. So the whole enumeration item is rewritten to be true.
+
+**Current, `docs/security.md:14`:**
+
+```markdown
+4. **The disk.** Configuration, sessions, teams, conversations, and messages all live as plain files under `~/.agentscommander/` (or the portable instance's `.agentscommander_<suffix>/`).
+```
+
+**Replacement, `docs/security.md:14`: use exactly this text, one line for one line:**
+
+```markdown
+4. **The disk.** Everything is plain files, in two locations. Configuration and persisted sessions live under `~/.agentscommander/` (or the portable instance's `.agentscommander_<suffix>/`). Team configuration and inter-agent messages live in your project workspace instead: team config under `_team_<name>/`, Markdown message files under each workgroup's `messaging/` directory, and each agent replica's JSON delivery queue under its local `outbox/`.
+```
+
+**Why this wording, clause by clause.** The replacement maps one-to-one onto the original's five categories: configuration and sessions stay, `conversations` goes, teams and messages move to the location they actually occupy.
+
+| Clause | Backing fact |
+| --- | --- |
+| "Configuration ... under `~/.agentscommander/`" | `config_dir().join("settings.json")`. Unchanged from the original and still true. |
+| "persisted sessions" | `config_dir().join("sessions.json")`. Unchanged and still true. |
+| portable-instance parenthetical | Preserved verbatim from the original line. |
+| `conversations` dropped | The store is written only by `phone/manager.rs`, which R2 deletes. |
+| "Team configuration ... under `_team_<name>/`" | `entity_creation.rs:917`, `:937`, `:970`, `:3025` and `cli/workgroup.rs:180` all build `workspace_dir.join(format!("_team_{}", team_name))`. `read_team_config` takes a `workspace_dir`, not a config dir. **There is no `teams.json`**: `git grep '"teams.json"' -- src-tauri/src/` returns nothing. The original line's "teams" claim was already false. |
+| "Markdown message files under each workgroup's `messaging/`" | `phone/messaging.rs:11` `MESSAGING_DIR_NAME = "messaging"`, `:160-164` `messaging_dir(wg_root)`, `:199-207` `build_filename` producing `.md`. Same evidence base as §4.2. |
+| "each agent replica's JSON delivery queue under its local `outbox/`" | `cli/send.rs:108` documents the target as `<root>/<local-dir>/outbox/`; `cli/purge_wg.rs:173-174`, `cli/raise_hand.rs:55`, `cli/close_session.rs:207-218` all build `PathBuf::from(&root).join(agent_local_dir_name()).join("outbox")`. `mailbox.rs:718` confirms the `<file>.json` shape. |
+
+**Scope note, flagged rather than buried.** This edit corrects **two** pre-existing falsehoods (teams and messages), where the coordinator's Step 7 instruction named only messages. The widening is deliberate and stays inside the same single line: no adjacent line is touched, and the file stays at 121 lines. The alternative, correcting the messages clause and leaving the teams clause false, was rejected for the reason in the first paragraph.
+
+**Consistency check this closes.** After batch 4, `PRIVACY.md` (§4.2) and `docs/security.md` make the same claim about where messages live. Shipping D4 as a token deletion would have left the two documents contradicting each other.
 
 ---
 
@@ -649,14 +680,9 @@ The `subgraph "phone/"` at `:113-116` keeps `PH_TYPES` and stays valid after `PH
 
 **D3. `docs/agents/inter-agent-messaging.md`: delete lines `:129-132`** (heading, blank, paragraph, blank) per Section 4.3. 218 -> 214 lines.
 
-**D4. `docs/security.md:14`**: one-token edit in the threat-model enumeration:
+**D4. `docs/security.md:14`**: replace the threat-model enumeration item with the exact truthful text specified in **§4.6**. One line for one line; no adjacent line is touched; the file stays at 121 lines.
 
-```
-Current:  4. **The disk.** Configuration, sessions, teams, conversations, and messages all live as plain files under `~/.agentscommander/` (or the portable instance's `.agentscommander_<suffix>/`).
-New:      4. **The disk.** Configuration, sessions, teams, and messages all live as plain files under `~/.agentscommander/` (or the portable instance's `.agentscommander_<suffix>/`).
-```
-
-Delete `conversations, ` only. Everything else on the line, including the portable-instance parenthetical, stays byte-identical. 121 lines, unchanged.
+**This is a rewrite, not a token deletion.** Deleting `conversations, ` alone would leave the line still claiming that teams and messages live under `~/.agentscommander/`, and §4.6 shows both claims are false. Use §4.6's replacement text verbatim; it is a decided wording with per-clause evidence, not a draft.
 
 ---
 
@@ -680,7 +706,7 @@ Delete `conversations, ` only. Everything else on the line, including the portab
 | --- | --- |
 | Users with an existing `~/.agentscommander/conversations/` directory | The directory is **left on disk untouched**. This change deletes no user data and adds no migration or cleanup. Nothing reads or writes it afterwards; it becomes an inert leftover. This is deliberate: deleting user files during a dead-code cleanup is out of proportion to the change and is not requested. |
 | A stale build cache resolving `crate::phone::manager` | Not possible after `cargo check`: the module declaration is gone in the same batch as the file. |
-| The four command names appearing in an untracked local `plans/` file | Verification greps run against the **baseline commit**, not the working tree, so plan text cannot pollute results (Section 9.4, Rule 1). |
+| The four command names appearing in this plan file, which is tracked and matches every removed symbol | **Pathspec is the protection, not the revision.** Every per-batch grep is scoped to `src/`, `src-tauri/`, `docs/`, `PRIVACY.md` or `docs/security.md`, none of which can reach `plans/`. The two repo-wide sweeps carry `':!plans/'`. §9.3 rule 2. |
 | `Conversation` also occurring as an English word | It does: `pty/container_paths.rs:245` and `:592` contain "Conversation transcripts are container-ephemeral" inside a user-facing warning string, and `docs/comparison.md:43` uses it in prose. **An unscoped `git grep -w Conversation` will therefore return hits after a correct implementation.** The acceptance grep in Section 9.5 is scoped to `src-tauri/src/phone/` and `src/` precisely for this reason. |
 | Mermaid rendering after the diagram edits | Covered by the node-reference integrity table in Section 5.4; no dangling id remains. |
 
@@ -707,8 +733,15 @@ A fourth near-homonym, flagged so a wide search does not mislead: **`sync_workgr
 | `error[E0412]: cannot find type Serialize` in `phone/types.rs` | `:4` `use serde::...` was removed | Restore it; it is out of scope by Section 3.2 |
 | Any compile error in `entity_creation.rs` after R7 | The cut boundary was wrong | Re-check against the `:3662`/`:3663`/`:3697` anchors in Section 5.2 |
 | `tsc` error naming `PhoneMessage` or `AgentInfo` | T3 applied, T1 or T2 skipped | Apply the missing one; the correct order is T1/T2 before or with T3 |
-| `tsc` and `npm test` **pass** but the grep in Section 9.5 fails | The gates cannot see orphaned TS symbols (Section 2.4) | This is the expected failure signature for a skipped T2 or T3. Apply the missing edit. **A green gate is not evidence here.** |
-| An acceptance grep returns a `plans/` hit | The grep was run against the working tree instead of `d7285ce`, or the exclusion was dropped | Re-run per Section 9.4 |
+| `tsc` and `npm test` **pass** but the grep in §9.5 fails | The gates cannot see orphaned TS symbols (§2.4) | This is the expected failure signature for a skipped T2 or T3. Apply the missing edit. **A green gate is not evidence here.** |
+| An acceptance grep returns a `plans/` hit | A repo-wide sweep lost its `':!plans/'` exclusion. This file is tracked and matches every removed symbol | Re-run per §9.4. Note the per-batch greps are pathspec-scoped and cannot reach `plans/` at all (§9.3 rule 2) |
+| **Every completeness grep reports the symbols you just deleted, and the line counts all show the pre-change number** | The grep was pinned to `d7285ce`. That reads the tree **before** your edits and can neither pass nor fail | Drop the revision. Run against the working tree. §9.3 rule 1. **This is not broken work; nothing you did is wrong.** |
+| **Batch 2:** `-w PhoneMessage -- src-tauri/ src/` returns 3 hits at `ipc.ts:28`, `ipc.ts:811`, `types.ts:981`; or `-w AgentInfo` returns 7 instead of 4 | **Batch 1 has not landed.** The Rust deletion is correct; the gate is cross-tree by design | Stop. Do not edit `src/` to make your gate pass, that is batch 1's scope. Report that the entry precondition was not met. §8.0 and §8.1 |
+| **Batch 3:** `-w sync_workgroup_repos -- src-tauri/ src/` returns 2 hits, the second at `ipc.ts:1074` | **Batch 1 has not landed.** Same cause and same remedy as the row above | Stop and report. Do not edit `src/` |
+| `git ls-tree ... -- <path>` exits 128 with `fatal: Not a valid object name` | The revision was dropped from an `ls-tree`; it requires a tree-ish and cannot become a working-tree check | Use the `test ! -e` / `test -z "$(...)"` forms in §9.4 verbatim. §9.3 rule 5 |
+| An `ls-tree` check "passes" with exit 0 but you never saw its output | `git ls-tree HEAD -- <missing-path>` exits **0** with empty output. Exit status never proves absence | Assert on output, not exit status. §9.3 rule 5 |
+| Criterion 10 fails with lowercase "conversation" hits in `phone/mailbox.rs` | `-i` was added to the `Conversation` grep | Remove `-i`. The case-sensitive form is correct and deliberate. §9.3 rule 4 |
+| The scope gate lists a 14th path | An unrelated file was edited, or a stray file was committed | Revert it. §8.6 rule 5. If the edit was needed, that is new information: stop and report |
 
 ---
 
@@ -716,39 +749,109 @@ A fourth near-homonym, flagged so a wide search does not mislead: **`sync_workgr
 
 **IPC compatibility.** The Tauri IPC surface shrinks by five commands: `phone_send_message`, `phone_get_inbox`, `phone_list_agents`, `phone_ack_messages`, `sync_workgroup_repos`. All five are unreachable today from every client plane, verified independently for each: the desktop frontend (`src/`), the web dispatcher (`web/commands.rs`, zero case-insensitive `phone` hits), the control-plane API (`api/`), and the CLI (`cli/`). **No client contract is broken because no client holds one.**
 
-**Rust API compatibility.** `agentscommander_lib` is a library crate, so removing `pub` items is technically a breaking change for any external consumer. There is none: the crate is consumed only by this workspace's own binaries and by `src-tauri/tests/`, and Section 2.3b confirms no test reaches the removed surface.
+**Rust API compatibility.** `agentscommander_lib` is a library crate, so removing `pub` items is technically a breaking change for any external consumer. **There is no supported or known external consumer:** the crate is unpublished, it is consumed inside this workspace only by its own binaries and by `src-tauri/tests/`, §2.3b confirms no test reaches the removed surface, and no public client contract documents any of these items. That is the strongest claim the evidence supports. It is deliberately not phrased as proof that no private fork or unpublished dependent exists anywhere, which is unknowable from this repository.
 
-**Persistence and data.** Nothing writes `<config-dir>/conversations/` after this change. Existing directories are left untouched (Section 6.2). No schema, no migration, no config-format change. The live `messaging/` directories, the outbox `.json` files, `settings.json`, `sessions.json`, and `teams.json` are all unaffected.
+**Persistence and data.** Nothing writes `<config-dir>/conversations/` after this change. Existing directories are left untouched (§6.2). No schema, no migration, no config-format change. The live `messaging/` directories, the outbox `.json` files, `settings.json` and `sessions.json` are all unaffected, as is team configuration under `<workspace>/_team_<name>/` (§4.6).
 
 **Performance.** Neutral. Five fewer `invoke_handler` entries is not a measurable difference. Marginally smaller binary.
 
 **Security.** Net positive, though small. Each registered Tauri command is reachable from any page loaded in the webview; removing five unreachable ones removes five entry points. Of the five, `phone_send_message` is the one that actually mattered: it wrote attacker-influenced content to `<config-dir>/conversations/*.json` with a `can_communicate` check as the only gate, and nothing in the product ever needed it. Attack surface strictly shrinks; no permission, no authentication path, and no capability grant changes.
 
-**Privacy documentation.** `PRIVACY.md` retains its guarantee that inter-agent messaging is entirely local with no external network calls, now pointed at the store that actually exists. The guarantee is preserved, not weakened, and it is now true rather than accidentally true.
+**Security and privacy documentation.** `PRIVACY.md` retains its guarantee that inter-agent messaging is entirely local with no external network calls, now pointed at the store that actually exists (§4.2). The guarantee is preserved, not weakened, and it is now true rather than accidentally true. `docs/security.md`'s threat-model item 4 is corrected in the same pass (§4.6): it currently tells a security-conscious reader that team configuration and inter-agent messages live under `~/.agentscommander/`, and both are false. After batch 4 the two documents agree with each other and with the code, so a reader deciding what to secure, back up, or erase is pointed at the right directories.
 
 ---
 
-## 8. Implementation order
+## 8. Implementation order, owners, and handoff
 
 Phase order per the planning rules: MVP -> Full Features -> Polish -> Extras. This change is small enough that MVP and Full Features are the same four batches; Polish and Extras are empty by design.
 
-### MVP / Full Features
+### 8.0 Three owners, strictly sequential. This is a hard constraint.
 
-**Batch 1: TypeScript.** Edits T4, T1, T2 in `src/shared/ipc.ts` (in that order, bottom-up), then T3 in `src/shared/types.ts`.
-Gate: `npm run typecheck`, `npm test`, plus the batch-1 greps in Section 9.4.
+**This plan is executed by three different agents, each starting from a purged context and reading only this file.**
+
+| Batch | Content | Owner |
+| --- | --- | --- |
+| 1 | TypeScript (`src/`) | `dev-webpage-ui` |
+| 2 | Rust, phone chain (`src-tauri/`) | `dev-rust` |
+| 3 | Rust, `sync_workgroup_repos` (`src-tauri/`) | `dev-rust` |
+| 4 | Documentation | `technical-writer` |
+
+**The order 1 -> 2 -> 3 -> 4 is mandatory, not preferred. Exactly one owner works in the tree at a time.** Two independent reasons, either of which alone is sufficient:
+
+1. **One clone.** The workgroup has a single working copy of the repository. Two owners editing concurrently corrupt each other's batch and make `git status` meaningless as a handoff signal.
+2. **The per-batch gates are cross-tree, by design.** Batch 2's and batch 3's completeness greps deliberately search **both** `src-tauri/` and `src/`, because that is what makes criteria 9, 11 and 12 whole-repository facts rather than per-language ones. A consequence is that a **correct** Rust deletion still fails its own gate if batch 1 has not landed:
+   - Run batch 2 before batch 1 and `git grep -w PhoneMessage -- src-tauri/ src/` returns the three surviving TypeScript hits (`ipc.ts:28`, `ipc.ts:811`, `types.ts:981`). `-w AgentInfo` returns 7 rather than the required 4.
+   - Run batch 3 before batch 1 and `git grep -w sync_workgroup_repos -- src-tauri/ src/` returns 2 hits rather than 1, the second being `ipc.ts:1074`.
+
+   §6.4 records both signatures so a mis-ordered run is diagnosed rather than mistaken for broken Rust work.
+
+**Decision, recorded so it is not reopened: the gates stay cross-tree and the order carries the constraint.** The alternative, narrowing each batch's greps to its own language and making only the final sweep cross-tree, was considered and rejected. It would buy nothing, because reason 1 already forces strict sequencing, and it would cost the cumulative property that makes each batch's gate assert the whole-repository state reached so far.
+
+### 8.1 The per-batch protocol every owner follows
+
+Each batch runs the same five steps in this order.
+
+1. **Entry precondition.** Verify the previous batch actually landed *and* passed its gate. This is a hard gate, not a courtesy: run the previous batch's completeness greps from §9.4 yourself, plus `git status --porcelain` (must be empty) and `git log --oneline -1` (must show the previous batch's commit message). Batch 1's entry precondition is `HEAD` at the plan commit with a clean tree. **If the entry precondition fails, stop and report. Do not start your batch on top of an unverified one.**
+2. **Apply the edits** from §5, in the order that batch specifies.
+3. **Commit immediately, before gating.** See §8.2.
+4. **Run the full gate** for that batch from §9.4.
+5. **Hand off** only after the gate has passed in full. See §8.3.
+
+### 8.2 Commit before gating, not after
+
+**Apply the batch's edits, commit, then run the gate.** If the gate fails, fix and `git commit --amend`, or add a fixup and squash it into the batch commit **before handoff**. The result is the same four commits with the same messages and the same revert granularity.
+
+The reason is the one §4.1 gives for committing per batch at all: a session can be lost during a long gate, and a commit survives that where a working tree does not. Gating first would leave the tree unprotected for exactly the interval the rule exists to cover. This matters most for batch 2, which is six edits deep, whose partially-applied state cannot be reconstructed by inspection, and which is immediately followed by the cold build described in §8.4.
+
+### 8.3 A commit is not evidence its gate passed
+
+This is the trap that commit-before-gate introduces, and it is sharper here because the batches cross agents. An owner can commit, start a long gate, and lose the session. The next owner then sees the exact expected commit and a clean tree, and can begin work on code that was never accepted.
+
+**Three rules close it:**
+
+1. **No handoff until the owner reports an explicit, complete gate pass.** The presence of the commit is never the signal. The report is.
+2. **After a session loss following a commit, the recovering owner reruns the entire batch gate on that `HEAD`.** Do not assume it passed because the commit exists. Do not resume mid-gate.
+3. **After a gate failure, the same owner fixes it, amends or squashes into the batch commit, and reruns the full gate before handing off.** Do not create a fifth implementation commit, and do not hand a failing batch forward.
+
+A failure whose signature is not in §6.4 remains stop-and-report, per §8.6 rule 2.
+
+### 8.4 Batch 2's gate is a cold build. Budget for it.
+
+`src-tauri/target/` in this replica contains only `fw/` (about 2.1 GB, written by something that set a non-default target directory). There is no `src-tauri/target/debug/`, and neither `src-tauri/.cargo/config.toml` nor `CARGO_TARGET_DIR` redirects the default. So batch 2's first `cargo check --all-targets` compiles the whole dependency tree from scratch, including `rusqlite` with `features = ["bundled"]`, which is a full C compile of SQLite, plus the tauri, axum and reqwest trees. `cargo test --lib --bins --tests` then pays full codegen and links 21 binaries on Windows.
+
+**Do not read a long first gate as a hang.**
+
+**Batch 3's gate is incremental and cheap, conditional on the target directory surviving between the two batches.** Between batch 2 and batch 3: no `cargo clean`, no toolchain switch, and do not run the gates from a different directory or with a different `CARGO_TARGET_DIR`. If that condition breaks, §4.1's "one extra gate run" becomes a second cold build.
+
+### 8.5 MVP / Full Features: the four batches
+
+**Batch 1: TypeScript.** Owner `dev-webpage-ui`.
+Entry precondition: clean tree at the plan commit.
+Edits: T4, T1, T2 in `src/shared/ipc.ts` (in that order, bottom-up), then T3 in `src/shared/types.ts`.
 Commit: `chore(#1179): remove the dead PhoneAPI and syncWorkgroupRepos TS surface (batch 1)`
+Gate: `npm run typecheck`, `npm test`, plus the batch-1 block in §9.4.
+Handoff: to `dev-rust` after the gate passes in full.
 
-**Batch 2: Rust, the phone chain. Atomic.** Apply **all six** of R1, R2, R3, R4, R5, R6 before running anything. Intermediate states do not compile and their failures carry no information.
-Gate: from `src-tauri/`: `cargo check --all-targets`, then `cargo clippy --all-targets -- -D warnings`, then `cargo test --lib --bins --tests`. Plus the batch-2 greps in Section 9.4.
+**Batch 2: Rust, the phone chain. Atomic.** Owner `dev-rust`.
+Entry precondition: batch 1 committed and gate-passed; batch 1's greps rerun clean.
+Edits: apply **all six** of R1, R2, R3, R4, R5, R6 before running anything. Intermediate states do not compile and their failures carry no information.
 Commit: `chore(#1179): delete the dead phone command chain and its exclusive types (batch 2)`
+Gate: from `src-tauri/`: `cargo check --all-targets`, then `cargo clippy --all-targets -- -D warnings`, then `cargo test --lib --bins --tests`. Plus the batch-2 block in §9.4.
+Handoff: stays with `dev-rust` for batch 3.
 
-**Batch 3: Rust, `sync_workgroup_repos`.** Apply R7, then R8 (**locate by anchor text; the line is now `:2663`, not `:2667`**), then R9.
-Gate: the same three `cargo` commands, plus the batch-3 greps.
+**Batch 3: Rust, `sync_workgroup_repos`.** Owner `dev-rust`.
+Entry precondition: batch 2 committed and gate-passed.
+Edits: R7, then R8 (**locate by anchor text; the line is now `:2663`, not `:2667`**), then R9.
 Commit: `chore(#1179): remove the unreachable sync_workgroup_repos command (batch 3)`
+Gate: the same three `cargo` commands, plus the batch-3 block in §9.4.
+Handoff: to `technical-writer` after the gate passes in full.
 
-**Batch 4: Documentation.** Apply D1 bottom-up (17 edits), then D2, D3, D4.
-Gate: the batch-4 greps and the line-count check in Section 9.4. No build gate exists for documentation; the greps are the gate.
+**Batch 4: Documentation.** Owner `technical-writer`.
+Entry precondition: batch 3 committed and gate-passed.
+Edits: D1 bottom-up (17 edits), then D2, D3, D4.
 Commit: `docs(#1179): drop the removed phone surface and retarget the conversations references (batch 4)`
+Gate: the batch-4 block in §9.4, then the **Final** block, which includes the scope gate of §9.4.
+Handoff: back to the coordinator. Batch 4's owner runs the Final block because they are last; it is a whole-change gate, not a documentation gate.
 
 ### Polish
 
@@ -758,12 +861,13 @@ None. There is no follow-up cleanup this change defers.
 
 None. Everything the issue asks for lands in the four batches above.
 
-### Rules that hold across all batches
+### 8.6 Rules that hold across all batches
 
-1. **Commit at the end of every batch, before starting the next.** A lost session costs at most one batch.
-2. **Never fix a gate failure by widening the scope.** Every legitimate failure has a listed cause in Section 6.4. A failure that is not on that list is new information: stop and report it rather than improvising a fix.
-3. **Do not reformat.** No `cargo fmt` over untouched regions, no prettier pass, no import reordering. Every edit in Section 5 is a deletion or a named-token replacement.
-4. **Run every verification grep against `d7285ce`,** never the working tree (Section 9.4, Rule 1).
+1. **Commit before gating, hand off only after the gate passes.** §8.2 and §8.3.
+2. **Never fix a gate failure by widening the scope.** Every legitimate failure has a listed cause in §6.4. A failure that is not on that list is new information: stop and report it rather than improvising a fix.
+3. **Do not reformat.** No `cargo fmt` over untouched regions, no prettier pass, no import reordering. Every edit in §5 is a deletion or a named-token replacement. The scope gate in §9.4 will catch a reformat as an out-of-whitelist change or as a line-count mismatch.
+4. **Run every verification grep against the working tree**, never against `d7285ce`. §9.3 rule 1.
+5. **Touch only the 13 files in the §1.3 table.** Nothing else, for any reason.
 
 ---
 
@@ -771,7 +875,7 @@ None. Everything the issue asks for lands in the four batches above.
 
 ### 9.1 No new test is written, and none is deleted
 
-The deleted code has no test of any kind: `commands/phone.rs` and `phone/manager.rs` contain no `#[cfg(test)]` module (verified by reading both files in full), no integration test under `src-tauri/tests/` reaches them (Section 2.3b), and no frontend test mentions any phone symbol:
+The deleted code has no test of any kind: `commands/phone.rs` and `phone/manager.rs` contain no `#[cfg(test)]` module (verified by reading both files in full), no integration test under `src-tauri/tests/` reaches them (§2.3b), and no frontend test mentions any phone symbol. **This is baseline evidence, not an acceptance check**, which is why it is the one command in §9 that is legitimately pinned to `d7285ce`: it proves there was nothing to delete before the work started.
 
 ```
 $ git grep -n -i phone d7285ce -- '*.test.ts' '*.test.tsx' '*.spec.ts' '*.d.ts' '*.stories.tsx'
@@ -780,51 +884,70 @@ $ git grep -n -i phone d7285ce -- '*.test.ts' '*.test.tsx' '*.spec.ts' '*.d.ts' 
 
 `phone/types.rs`'s test module at `:809-913` survives untouched and must keep passing; it exercises only `OutboxMessage` and `PtyInput*`. `npm run test:debt` is unaffected: no ignored or placeholder test is added or removed.
 
+**Source-introspection tests are the one non-obvious hazard, and all are clean.** This crate contains tests that read production `.rs` and `.ts` files off disk and assert on their contents. They are invisible to symbol greps and are the likeliest source of a gate failure §6.4 would not otherwise explain. Every one was checked:
+
+| Test | What it reads | Why this change cannot break it |
+| --- | --- | --- |
+| `lib.rs:3241` | `src/lib.rs`, split at `#[cfg(test)]` | Compares byte offsets of two anchors that both sit around `:1200`, far above the `invoke_handler` at `:2532`. Deleting 5 registrations does not reorder them |
+| `config/local_config_io.rs:429` | walks `src/config` **and `src/commands`** | Offender-detection (`assert!(offenders.is_empty())`), not exhaustiveness, so deleting a file cannot add an offender. Its allowlist names `entity_creation.rs` only for `write_team_config`, `create_new_team_config_on_disk` and `team_dir.join("config.json")`; the wrapper R7 deletes contains none |
+| `tests/pty_writer_inventory.rs:67` | every `.rs` under `src/`; permits `src/phone/mailbox.rs` | Neither deleted file contains a PTY write, and `mailbox.rs` is untouched |
+| `session/selection.rs:3838-3899` | recursively reads **every** Rust source for lifecycle-ownership violations | Deleting files cannot add a violation; R7 contains none of the ownership sentinel's event/mutator patterns |
+| `tests/cli_workgroup_team.rs:1781-1869` | `commands/entity_creation.rs`, asserts the activation-token count | R7 contains no `ManifestActivationToken::production()` construction, so the count stays at three |
+| `testability/ui_automation.rs:2592-2638` | `../src/shared/types.ts`, parses the `UiAutomationAction` union | That union starts at `types.ts:847` and its terminating semicolon precedes the deleted `:981-998`, so the parser reads byte-identical text |
+| `pty/watchers/mod.rs:2470`, `commands/session.rs:7432/:7492/:7790/:8012`, `loops/scheduler.rs:644`, `phone/mailbox.rs:11320` | each reads one specific unrelated file | None reads any file this change touches |
+
+There is no test asserting a registered-command count and no desktop/web command-parity test. `ipc.transport.test.ts` dynamically imports the whole IPC module but never enumerates its exports. No JSON fixture or snapshot contains the deleted conversation shape, no Rust doctest names a removed item, and the companion `repo-agentscommander_webpage` contains no removed symbol and no `conversations/` reference.
+
 ### 9.2 Verification method, and why it is grep-first
 
-Per Section 2.4, neither the Rust nor the TypeScript gate can see a leftover `pub` item or an orphaned TS symbol. The build gates prove the tree still compiles; **the greps prove the deletion was complete.** Both are required. Neither substitutes for the other.
+Per §2.4, neither the Rust nor the TypeScript gate can see a leftover `pub` item or an orphaned TS symbol. The build gates prove the tree still compiles; **the greps prove the deletion was complete.** Both are required. Neither substitutes for the other.
 
-### 9.3 The six verification rules
+### 9.3 The eight verification rules
 
-1. **Run every grep against the baseline commit**: `git grep ... d7285ce`, not the working tree. Running against the working tree makes this plan file itself a match and turns every criterion into a false positive.
-2. **Use `-w` (word-regexp) for every symbol name.** Substring matching produces `sync_workgroup_repos` -> `sync_workgroup_repos_inner` and `SessionGroup` -> `TeamSessionGroup` style false positives.
-3. **Scope by pathspec where a name has an English-word homonym.** Specifically `Conversation` (Section 6.2).
-4. **Disambiguate at the definition site.** For the three traps in Section 6.3, reading the struct body is the check. Match count is not.
-5. **`plans/` is excluded from every criterion.** Plan prose legitimately names removed symbols, both this plan and `plans/1177-remove-dead-code.md`.
-6. **A passing build is never evidence that a TS or `pub` Rust symbol was removed.** Only the grep is.
+1. **Run every completeness grep and every line count against the working tree, never against `d7285ce`.** A command of the form `git grep <sym> d7285ce -- <path>` reads the tree *before* any edit and returns the same answer whether the work is complete, half-done, or never started. It cannot fail and it cannot pass. Use `d7285ce` only to re-read the baseline for orientation, never as an acceptance check. Under §8.2 the batch is committed before gating, so at gate time the working tree and `HEAD` are identical and either form is valid; the commands below use the working-tree form.
+2. **Pathspec is what protects the greps from this plan file, not the revision.** This file is tracked, so an unscoped `git grep -w PhoneAPI` matches it 22 times. Every per-batch grep below is scoped to `src/`, `src-tauri/`, `docs/`, `PRIVACY.md` or `docs/security.md`, none of which can reach `plans/`. The two repo-wide sweeps in the Final block carry `':!plans/'`, which is the correct and sufficient guard there.
+3. **Use `-w` (word-regexp) for every symbol name.** Substring matching produces `sync_workgroup_repos` -> `sync_workgroup_repos_inner` and `SessionGroup` -> `TeamSessionGroup` style false positives.
+4. **Scope by pathspec where a name has an English-word homonym, and do not add `-i` to make a grep "stricter".** Specifically: `-w Conversation` over `src-tauri/src/phone/ src/` is correct and safe, because the surviving `phone/mailbox.rs` contains "conversation" on three lines, always lowercase. **Adding `-i` converts criterion 10 into a guaranteed false failure.** The same hazard put `Conversation` prose in `pty/container_paths.rs:245,:592` and `docs/comparison.md:43`, which is why the pathspec exists at all (§6.2).
+5. **`git ls-tree` requires a tree-ish and cannot be turned into a working-tree check by dropping the revision.** `git ls-tree -r --name-only -- <path>` exits 128 with `fatal: Not a valid object name`. Worse, `git ls-tree -r --name-only HEAD -- <missing-path>` exits **0** with empty output, so exit status is never proof of absence. **Assert on output, not on exit status**, and use `test ! -e` for the filesystem. Both forms are written out in §9.4. **No acceptance rule may treat a Git usage error as proof of deletion.**
+6. **Disambiguate at the definition site.** For the three traps in §6.3, reading the struct body is the check. Match count is not.
+7. **A passing build is never evidence that a TS or `pub` Rust symbol was removed.** Only the grep is.
+8. **A passing symbol suite is not evidence that the change stayed in scope.** All symbol, count and build criteria can pass while an unrelated tracked file has been edited. The scope gate in the Final block is what closes that, and it is mandatory.
 
 ### 9.4 Verification commands, per batch
 
-All greps are run from the repo root against the baseline commit.
+All commands are run from the repository root, against the working tree, after that batch has been committed (§8.2). Written for Git Bash / POSIX `sh`, which is available in this environment.
 
-**After batch 1 (TypeScript):**
+**After batch 1 (TypeScript), owner `dev-webpage-ui`:**
 
 ```bash
 npm run typecheck                 # must exit 0
 npm test                          # must pass
 
-# Completeness. Each must return exit 1 (no hits):
-git grep -n -w PhoneAPI            d7285ce -- src/
-git grep -n -w PhoneMessage        d7285ce -- src/
-git grep -n -w AgentInfo           d7285ce -- src/
-git grep -n -w syncWorkgroupRepos  d7285ce -- src/
-git grep -n 'phone_'               d7285ce -- src/
-git grep -n 'sync_workgroup_repos' d7285ce -- src/
+# Completeness. Each must return exit 1 (no output):
+git grep -n -w PhoneAPI            -- src/
+git grep -n -w PhoneMessage        -- src/
+git grep -n -w AgentInfo           -- src/
+git grep -n -w syncWorkgroupRepos  -- src/
+git grep -n 'phone_'               -- src/
+git grep -n 'sync_workgroup_repos' -- src/
 
 # Nothing live was collateral damage. Each must still return hits:
-git grep -n -w AcWorkgroup         d7285ce -- src/shared/types.ts
-git grep -n -w WorkgroupGroup      d7285ce -- src/shared/types.ts
-git grep -n -w listAllAgents       d7285ce -- src/shared/ipc.ts
-git grep -n -w AcDiscoveryAPI      d7285ce -- src/shared/ipc.ts
+git grep -n -w AcWorkgroup         -- src/shared/types.ts
+git grep -n -w WorkgroupGroup      -- src/shared/types.ts
+git grep -n -w listAllAgents       -- src/shared/ipc.ts
+git grep -n -w AcDiscoveryAPI      -- src/shared/ipc.ts
 
 # Line counts
-git show d7285ce:src/shared/ipc.ts   | wc -l    # expect 1235
-git show d7285ce:src/shared/types.ts | wc -l    # expect 1445
+wc -l < src/shared/ipc.ts     # expect 1235
+wc -l < src/shared/types.ts   # expect 1445
 ```
 
-**After batch 2 (Rust, phone chain):**
+**After batch 2 (Rust, phone chain), owner `dev-rust`:**
 
 ```bash
+# Entry precondition: rerun batch 1's six completeness greps. All must be exit 1.
+# A hit here means batch 1 did not land, NOT that batch 2 is wrong. See 6.4.
+
 cd src-tauri
 cargo check  --all-targets
 cargo clippy --all-targets -- -D warnings       # zero warnings
@@ -832,31 +955,43 @@ cargo test   --lib --bins --tests
 cd ..
 
 # Completeness. Each must return exit 1:
-git grep -n -E 'phone_send_message|phone_get_inbox|phone_list_agents|phone_ack_messages' d7285ce -- src-tauri/
-git grep -n -E 'phone::manager|commands::phone|super::manager'                           d7285ce -- src-tauri/
-git grep -n -w Conversation   d7285ce -- src-tauri/src/phone/ src/
-git grep -n -w PhoneMessage   d7285ce -- src-tauri/ src/
-git ls-tree -r --name-only d7285ce -- src-tauri/src/phone/manager.rs
-git ls-tree -r --name-only d7285ce -- src-tauri/src/commands/phone.rs
+git grep -n -E 'phone_send_message|phone_get_inbox|phone_list_agents|phone_ack_messages' -- src-tauri/
+git grep -n -E 'phone::manager|commands::phone|super::manager'                           -- src-tauri/
+git grep -n -w Conversation   -- src-tauri/src/phone/ src/       # do NOT add -i, see rule 4
+git grep -n -w PhoneMessage   -- src-tauri/ src/
+
+# The two deleted files are gone. Assert on OUTPUT, not exit status (rule 5):
+test ! -e src-tauri/src/phone/manager.rs
+test ! -e src-tauri/src/commands/phone.rs
+test -z "$(git ls-tree -r --name-only HEAD -- src-tauri/src/phone/manager.rs)"
+test -z "$(git ls-tree -r --name-only HEAD -- src-tauri/src/commands/phone.rs)"
 
 # AgentInfo: exactly 4 hits, all in entity_creation.rs (:39, :2705, :2706, :2756):
-git grep -n -w AgentInfo d7285ce -- src-tauri/ src/
+git grep -n -w AgentInfo -- src-tauri/ src/
+
+# The surviving phone/ directory is exactly these five files:
+expected_phone_files="$(printf '%s\n' \
+  src-tauri/src/phone/consumption.rs \
+  src-tauri/src/phone/mailbox.rs \
+  src-tauri/src/phone/messaging.rs \
+  src-tauri/src/phone/mod.rs \
+  src-tauri/src/phone/types.rs)"
+actual_phone_files="$(git ls-tree -r --name-only HEAD -- src-tauri/src/phone/)"
+test "$actual_phone_files" = "$expected_phone_files"
 
 # Live surface intact. Each must still return hits:
-git grep -n -w OutboxMessage             d7285ce -- src-tauri/src/phone/types.rs
-git grep -n -w MESSAGING_DIR_NAME        d7285ce -- src-tauri/src/phone/messaging.rs
-git grep -n -w can_communicate           d7285ce -- src-tauri/src/config/teams.rs
-git grep -n 'pub mod phone;'             d7285ce -- src-tauri/src/lib.rs
-git ls-tree -r --name-only d7285ce -- src-tauri/src/phone/
-    # expect exactly: consumption.rs, mailbox.rs, messaging.rs, mod.rs, types.rs
+git grep -n -w OutboxMessage       -- src-tauri/src/phone/types.rs
+git grep -n -w MESSAGING_DIR_NAME  -- src-tauri/src/phone/messaging.rs
+git grep -n -w can_communicate     -- src-tauri/src/config/teams.rs
+git grep -n 'pub mod phone;'       -- src-tauri/src/lib.rs
 
 # Line counts
-git show d7285ce:src-tauri/src/phone/types.rs   | wc -l   # expect 883
-git show d7285ce:src-tauri/src/phone/mod.rs     | wc -l   # expect 4
-git show d7285ce:src-tauri/src/commands/mod.rs  | wc -l   # expect 22
+wc -l < src-tauri/src/phone/types.rs    # expect 883
+wc -l < src-tauri/src/phone/mod.rs      # expect 4
+wc -l < src-tauri/src/commands/mod.rs   # expect 22
 ```
 
-**After batch 3 (Rust, sync wrapper):**
+**After batch 3 (Rust, sync wrapper), owner `dev-rust`:**
 
 ```bash
 cd src-tauri
@@ -865,64 +1000,106 @@ cargo clippy --all-targets -- -D warnings
 cargo test   --lib --bins --tests
 cd ..
 
-# sync_workgroup_repos: exactly ONE surviving hit outside plans/, the log string at :3629.
-git grep -n -w sync_workgroup_repos d7285ce -- src-tauri/ src/
+# sync_workgroup_repos: exactly ONE surviving hit, the log string at :3629.
+# Two hits means batch 1 did not land and ipc.ts:1074 is still there. See 6.4.
+git grep -n -w sync_workgroup_repos -- src-tauri/ src/
 
 # The inner helper and its live caller survive.
-git grep -n -w sync_workgroup_repos_inner d7285ce -- src-tauri/
+git grep -n -w sync_workgroup_repos_inner -- src-tauri/
     # expect exactly 3 hits after the cut:
     #   :3399  the live call inside update_team
     #   :3449  a code comment referencing it ("...emitted straight to the UI by
     #          `sync_workgroup_repos_inner`..."), out of scope and untouched
     #   :3462  the definition
     # The 4th baseline hit, :3685 inside the deleted wrapper, is gone.
-git grep -n -w SyncResult  d7285ce -- src-tauri/   # expect 3 hits: :91, :3470, :3471
-git grep -n -w SyncError   d7285ce -- src-tauri/   # expect 3 hits, unchanged
+git grep -n -w SyncResult  -- src-tauri/   # expect 3 hits: :91, :3470, :3471
+git grep -n -w SyncError   -- src-tauri/   # expect 3 hits, unchanged
 
 # Line counts
-git show d7285ce:src-tauri/src/lib.rs                        | wc -l   # expect 3589
-git show d7285ce:src-tauri/src/commands/entity_creation.rs   | wc -l   # expect 7793
+wc -l < src-tauri/src/lib.rs                       # expect 3589
+wc -l < src-tauri/src/commands/entity_creation.rs  # expect 7793
 ```
 
-**After batch 4 (docs):**
+**After batch 4 (docs), owner `technical-writer`:**
 
 ```bash
 # Completeness. Each must return exit 1:
-git grep -n -i -E 'phone|conversations' d7285ce -- PRIVACY.md
-git grep -n -w -E 'PhoneAPI|PhoneMessage|Conversation|AgentInfo|CONVDIR|C_PHONE|PH_MGR|A10|R9' d7285ce -- docs/reference/architecture.md
-git grep -n 'conversations' d7285ce -- docs/agents/inter-agent-messaging.md docs/security.md
+git grep -n -i -E 'phone|conversations' -- PRIVACY.md
+git grep -n -w -E 'PhoneAPI|PhoneMessage|Conversation|AgentInfo|CONVDIR|C_PHONE|PH_MGR|A10|R9' -- docs/reference/architecture.md
+git grep -n 'conversations' -- docs/agents/inter-agent-messaging.md docs/security.md
 
 # Kept lines. Each must still return a hit:
-git grep -n 'PH\["phone/'   d7285ce -- docs/reference/architecture.md      # :34
-git grep -n 'CMD --> PH'    d7285ce -- docs/reference/architecture.md      # :53
-git grep -n 'PH <-->'       d7285ce -- docs/reference/architecture.md      # :60
-git grep -n 'entirely local' d7285ce -- PRIVACY.md
-git grep -n 'messaging/'    d7285ce -- PRIVACY.md
+git grep -n 'PH\["phone/'    -- docs/reference/architecture.md      # :34
+git grep -n 'CMD --> PH'     -- docs/reference/architecture.md      # :53
+git grep -n 'PH <-->'        -- docs/reference/architecture.md      # :60
+
+# PRIVACY.md: the guarantee survives literally, and is retargeted.
+git grep -n -F 'entirely local'                       -- PRIVACY.md
+git grep -n -F 'No external network calls are made.'  -- PRIVACY.md
+git grep -n -F '`messaging/`'                         -- PRIVACY.md
+
+# docs/security.md: the corrected location claim is positively present.
+git grep -n -F '`messaging/`'   -- docs/security.md
+git grep -n -F '`outbox/`'      -- docs/security.md
+git grep -n -F '_team_'         -- docs/security.md
 
 # Line counts
-git show d7285ce:docs/reference/architecture.md         | wc -l   # expect 725
-git show d7285ce:PRIVACY.md                             | wc -l   # expect 54
-git show d7285ce:docs/agents/inter-agent-messaging.md   | wc -l   # expect 214
-git show d7285ce:docs/security.md                       | wc -l   # expect 121
-
-# Mermaid renders. Open docs/reference/architecture.md in a Mermaid-capable
-# preview and confirm all five diagrams render with no ghost or unstyled node.
+wc -l < docs/reference/architecture.md        # expect 725
+wc -l < PRIVACY.md                            # expect 54
+wc -l < docs/agents/inter-agent-messaging.md  # expect 214
+wc -l < docs/security.md                      # expect 121
 ```
 
-**Final, across the whole change:**
+Mermaid structural check. `architecture.md` holds **15** Mermaid fences and D1 edits **4** diagrams (§2 Rust Backend Modules, §3.3 Shared Layer, §4 IPC Contract, §8 Persistence). No fence is added or removed, so the count must be unchanged:
+
+````bash
+grep -c '^```mermaid' docs/reference/architecture.md   # must print 15
+````
+
+Together with the node-id grep above, that is the **binding** Mermaid gate: every removed id is gone from the file, and no fence was damaged. Opening the file in a Mermaid preview is **non-binding manual QA**, explicitly optional. It is not an acceptance criterion, because the repository ships no `mmdc` or documentation-render script (`package.json` has the `mermaid` runtime library only), and adding one would be a new dependency, which §3.3 rules out.
+
+**Final, across the whole change. Run by batch 4's owner:**
 
 ```bash
-git grep -n -i -E 'phone_send_message|phone_get_inbox|phone_list_agents|phone_ack_messages|PhoneAPI|syncWorkgroupRepos' d7285ce -- . ':!plans/'
-    # -> exit 1, zero hits repo-wide outside plans/
+# 1. Symbol sweep, repo-wide. Must return exit 1.
+git grep -n -i -E 'phone_send_message|phone_get_inbox|phone_list_agents|phone_ack_messages|PhoneAPI|syncWorkgroupRepos' -- . ':!plans/'
+
+# 2. Full build and test suite.
 npm run typecheck && npm test && npm run test:debt
 cd src-tauri && cargo check --all-targets \
   && cargo clippy --all-targets -- -D warnings \
   && cargo test --lib --bins --tests
+cd ..
+
+# 3. SCOPE GATE. Mandatory. Clean tree, no whitespace damage, and an exact path whitelist.
+git status --porcelain                                                              # must be empty
+git diff --check       d7285ce..HEAD -- . ':!plans/1179-remove-dead-phone-and-sync-repos.md'
+git diff --name-status d7285ce..HEAD -- . ':!plans/1179-remove-dead-phone-and-sync-repos.md'
 ```
+
+The `--name-status` output must be **exactly** these 13 lines, and nothing else:
+
+```text
+M  PRIVACY.md
+M  docs/agents/inter-agent-messaging.md
+M  docs/reference/architecture.md
+M  docs/security.md
+M  src-tauri/src/commands/entity_creation.rs
+M  src-tauri/src/commands/mod.rs
+D  src-tauri/src/commands/phone.rs
+M  src-tauri/src/lib.rs
+D  src-tauri/src/phone/manager.rs
+M  src-tauri/src/phone/mod.rs
+M  src-tauri/src/phone/types.rs
+M  src/shared/ipc.ts
+M  src/shared/types.ts
+```
+
+The whitelist catches an unrelated file. The line counts in the per-batch blocks catch an extra edit inside a whitelisted file. **Read the production diff against §5's exact cuts** as the last step: that catches same-file reformatting that happens to preserve the line count.
 
 ### 9.5 Objective acceptance criteria
 
-Every criterion is decidable by running a listed command and comparing the result. No judgement is required.
+Every criterion is decidable by running a listed command and comparing the result. No judgement is required. Criteria 7 through 22 are evaluated against the **working tree**, never against `d7285ce`.
 
 | # | Criterion | Decided by |
 | ---: | --- | --- |
@@ -935,49 +1112,90 @@ Every criterion is decidable by running a listed command and comparing the resul
 | 7 | The four `phone_*` command names return **zero** hits repo-wide outside `plans/` | final grep |
 | 8 | `PhoneAPI` returns **zero** hits outside `plans/` | final grep |
 | 9 | `PhoneMessage` returns **zero** hits under `src/` and `src-tauri/` | batch 1 and 2 greps |
-| 10 | `Conversation` returns **zero** hits under `src-tauri/src/phone/` and `src/` | batch 2 grep |
+| 10 | `Conversation` returns **zero** hits under `src-tauri/src/phone/` and `src/`, case-sensitive | batch 2 grep |
 | 11 | `AgentInfo` returns **exactly 4** hits under `src-tauri/` and `src/`, all in `commands/entity_creation.rs` (`:39`, `:2705`, `:2706`, `:2756`) | batch 2 grep |
 | 12 | `sync_workgroup_repos` (word-regexp) returns **exactly 1** hit under `src-tauri/` and `src/`: the log string in the inner helper | batch 3 grep |
 | 13 | `syncWorkgroupRepos` returns **zero** hits under `src/` | batch 1 grep |
 | 14 | `sync_workgroup_repos_inner` returns **exactly 3** hits under `src-tauri/`: the live call at `:3399`, the code comment at `:3449`, and the definition at `:3462` | batch 3 grep |
 | 15 | `SyncResult` returns 3 hits, `SyncError` returns 3 hits, both in `entity_creation.rs` | batch 3 grep |
-| 16 | `src-tauri/src/phone/` contains exactly `consumption.rs`, `mailbox.rs`, `messaging.rs`, `mod.rs`, `types.rs` | batch 2 `git ls-tree` |
+| 16 | `src-tauri/src/phone/` at `HEAD` contains **exactly** `consumption.rs`, `mailbox.rs`, `messaging.rs`, `mod.rs`, `types.rs`, and the two deleted files are absent from both the filesystem and `HEAD` | batch 2 `test`/`ls-tree` assertions |
 | 17 | `phone/types.rs` still exports `OutboxMessage` and the `PtyInput*` surface; `lib.rs:11 pub mod phone;` is present | batch 2 greps |
-| 18 | `docs/reference/architecture.md:34` is present; `:53` and `:60` are present | batch 4 greps |
+| 18 | `docs/reference/architecture.md:34`, `:53` and `:60` are present | batch 4 greps |
 | 19 | No removed symbol is documented anywhere: the architecture.md symbol grep returns exit 1 | batch 4 grep |
-| 20 | `PRIVACY.md` still asserts inter-agent messaging is entirely local with no external network calls, and contains no `conversations` reference | batch 4 greps |
-| 21 | `docs/agents/inter-agent-messaging.md` and `docs/security.md` contain no `conversations` reference | batch 4 grep |
-| 22 | Every one of the 13 line counts in the Section 1.3 table matches | per-batch line-count checks |
-| 23 | `CHANGELOG.md` is unmodified | `git diff --stat` shows no `CHANGELOG.md` entry |
-| 24 | The branch contains the 4 implementation commits of Section 4.1, in that order and with those messages. Any `docs(#1179)` commit carrying this plan file is separate and does not count against this criterion (Section 9.6). | `git log --oneline d7285ce..HEAD` |
+| 20 | `PRIVACY.md` contains the literal string `No external network calls are made.`, the literal `entirely local`, and a `` `messaging/` `` reference; and contains **zero** `phone` or `conversations` hits | batch 4 greps |
+| 21 | `docs/agents/inter-agent-messaging.md` and `docs/security.md` contain **zero** `conversations` hits, and `docs/security.md` positively contains `` `messaging/` ``, `` `outbox/` `` and `_team_` | batch 4 greps |
+| 22 | Every one of the 13 line counts in the §1.3 table matches, read from the working tree | per-batch `wc -l` checks |
+| 23 | `architecture.md` still holds exactly 15 Mermaid fences | batch 4 structural check |
+| 24 | **Scope gate.** `git status --porcelain` is empty, `git diff --check` is clean, and `git diff --name-status d7285ce..HEAD` excluding this plan file lists **exactly** the 13 paths and statuses in §9.4, and nothing else | final scope gate |
+| 25 | `CHANGELOG.md` is unmodified | implied by criterion 24; `CHANGELOG.md` is not on the whitelist |
+| 26 | The branch contains the 4 implementation commits of §8.5, in that order and with those messages. Any `docs(#1179)` commit carrying this plan file is separate and does not count against this criterion (§9.6) | `git log --oneline d7285ce..HEAD` |
 
 ### 9.6 Note on this plan file and `.gitignore`
 
-`.gitignore:11` ignores `plans/`, so **this file is untracked by default**. Several plan files are nevertheless in the repository (`plans/1038-*`, `1057-*`, `1070-*`, `1072-*`, `1171-*`, `1177-*`), added with `git add -f`. Precedent from the immediately preceding change is two dedicated commits: `092d85c docs(#1177): add implementation plan for dead-code removal`, then `c93bff0 docs(#1177): certify plan READY_FOR_IMPLEMENTATION (Step 7 consensus)`.
+`.gitignore:11` ignores `plans/`, so this file is **untracked by default** and reaches the repository only via `git add -f`. Six plan files are in the repository that way (`plans/1038-*`, `1057-*`, `1070-*`, `1072-*`, `1171-*`, `1177-*`). Precedent from the immediately preceding change is two dedicated commits: `092d85c docs(#1177): add implementation plan for dead-code removal`, then `c93bff0 docs(#1177): certify plan READY_FOR_IMPLEMENTATION (Step 7 consensus)`.
 
-Two consequences:
+Three consequences:
 
-1. **Committing this plan is not the implementer's job** and is not one of the four batches. It belongs to the plan-authoring and certification workflow, and it requires `git add -f` because of the ignore rule.
-2. **The ignore rule is a second layer of protection for the verification greps.** Even a grep run against the working tree instead of `d7285ce` would not see this file, because `git grep` skips ignored paths. That does not make Rule 1 optional: `plans/1177-remove-dead-code.md` **is** tracked and does contain `sync_workgroup_repos` and `PhoneMessage`, so the `':!plans/'` exclusion in the final grep remains mandatory.
+1. **Committing this plan is not an implementer's job** and is not one of the four batches. It belongs to the plan-authoring and certification workflow.
+2. **This file is tracked once committed, so `git grep` does see it.** An unscoped `git grep -w PhoneAPI` matches it 22 times. That is exactly why §9.3 rule 2 makes the pathspec, not the revision, the protection: every per-batch grep is scoped to a directory that cannot reach `plans/`, and the two repo-wide sweeps carry `':!plans/'`.
+3. **The scope gate excludes only this plan file**, by exact path. `plans/1177-remove-dead-code.md` is tracked and unmodified by this change, so it never appears in the diff.
 
 ---
 
-## 10. Notes for the implementer
+## 10. Notes for the batch owners
 
-You are working from a purged context. Everything you need is in this file; you do not need the issue body, the revalidation reports, or any prior conversation.
+**Read this section before starting your batch.** You are working from a purged context: everything you need is in this file, and you do not need the issue body, the revalidation reports, or any prior conversation.
 
-1. **The issue body contains errors this plan has already corrected.** If you read it and it disagrees with Section 5, **Section 5 wins**. The disagreements are listed in Section 12 so you can tell a correction from a mistake.
-2. **`phone/types.rs` is not a phone-types file.** It is 913 lines of live PTY-input protocol with 30 lines of phone types appended at the end. You are removing `:779-808` and nothing else. Do not open the file expecting to delete it.
-3. **The live surface under `phone/` is everything except `manager.rs`.** `consumption.rs`, `mailbox.rs` (21,707 lines, the real CLI messaging system), `messaging.rs`, `mod.rs`, `types.rs` all stay.
-4. **Batch 2 is atomic.** Apply all six edits, then gate. A `cargo check` between them will fail and the failure means nothing.
-5. **After batch 2, `lib.rs:2667` has become `:2663`.** In batch 3, locate by anchor text.
-6. **A green build does not prove the TypeScript deletion was complete.** This repo has no `noUnusedLocals` and no linter. The greps in Section 9.4 are the real gate for T2 and T3.
-7. **Run verification greps against `d7285ce`, never the working tree.** Otherwise this plan file matches every symbol you are checking for.
-8. **Three homonym traps** (`AgentInfo`, `send_message`, TS `AgentInfo`) plus one near-homonym (`sync_workgroup_repos` vs `..._inner`). Section 6.3. Read the definition site; never trust a match count.
-9. **`plans/1177-remove-dead-code.md:625` records the sync wrapper at `:3678`. That is stale.** The real location is `:3666`. Acting on the stale number lands you 12 lines inside the function body.
-10. **Do not reformat anything.** Every edit is a deletion or a named-token replacement.
-11. **Commit at the end of every batch.** If your session dies, a commit survives and a working tree does not.
-12. If a gate fails in a way Section 6.4 does not describe, **stop and report it.** That is new information, not something to work around.
+### 10.1 Which parts are yours
+
+| You are | Your batch | Read in full | Skim for context |
+| --- | --- | --- | --- |
+| `dev-webpage-ui` | 1 | §5.0, §5.3, §6.3 (the TS `AgentInfo` trap), §8, §9.3, §9.4 batch 1 | §1, §2.4, §3 |
+| `dev-rust` | 2 and 3 | §5.0, §5.1, §5.2, §6.3, §6.4, §8, §9.3, §9.4 batches 2 and 3 | §1, §2, §3 |
+| `technical-writer` | 4 | §4.2, §4.3, §4.4, §5.4, §8, §9.3, §9.4 batch 4 | §1, §2.5, §3 |
+
+Everyone reads §8 in full. It carries the entry precondition, the commit-before-gate rule, and the handoff rule, and those are what keep three owners from corrupting each other's work.
+
+### 10.2 Rules for every owner
+
+1. **The issue body contains errors this plan has already corrected.** If you read it and it disagrees with §5, **§5 wins**. The disagreements are listed in §12 so you can tell a correction from a mistake.
+2. **Do not start until your entry precondition passes** (§8.1). Rerunning the previous batch's greps takes seconds and is the only thing standing between you and building on unverified work.
+3. **Commit your batch before you gate it, and hand off only after the gate passes in full** (§8.2, §8.3). A commit is not evidence a gate passed. If you inherit a commit whose gate you did not watch complete, rerun the whole gate on that `HEAD`.
+4. **Run verification greps against the working tree, never against `d7285ce`.** A `d7285ce`-pinned grep reads the tree before your edits and will report the symbols you just deleted as still present. §9.3 rule 1.
+5. **`git ls-tree` needs a tree-ish, and its exit status never proves absence.** Use the `test ! -e` and `test -z "$(...)"` forms in §9.4 exactly as written. §9.3 rule 5.
+6. **Do not "improve" a grep by adding `-i`.** It converts criterion 10 into a guaranteed false failure. §9.3 rule 4.
+7. **A green build does not prove a deletion was complete.** This repo has no `noUnusedLocals` and no linter, and rustc emits no `dead_code` for `pub` items in a `lib` crate. The greps are the real gate. §2.4.
+8. **Do not reformat anything, and touch only the 13 files in the §1.3 table.** The scope gate will catch you.
+9. If a gate fails in a way §6.4 does not describe, **stop and report it.** That is new information, not something to work around.
+
+### 10.3 Batch-specific traps
+
+**Batch 1 (`dev-webpage-ui`):**
+- Apply the three `ipc.ts` cuts **bottom-up**: `:1071-1075`, then `:806-815`, then `:28-29`. §5.0 rule A.
+- `syncWorkgroupRepos` orphans **no** import; its return type is inline and anonymous. Do not go hunting for one. §5.3 T4.
+- `PhoneConversation` is already gone. `types.ts:1041-1046` now holds live `AcWorkgroup`/`WorkgroupGroup` code. **Do not go near those lines.** §5.3 T3.
+- TS `AgentInfo` is not the type `EntityAPI.listAllAgents` uses; that one is inlined. §6.3.
+
+**Batch 2 (`dev-rust`):**
+- **Batch 2 is atomic.** Apply all six edits, then gate. A `cargo check` between them will fail and the failure means nothing. §4.1.
+- **`phone/types.rs` is not a phone-types file.** It is 913 lines of live PTY-input protocol with 30 lines of phone types appended at the end. You remove `:779-808` and nothing else. Do not open it expecting to delete it.
+- **Keep `types.rs:4` `use serde::{Deserialize, Serialize};`.** `Deserialize` and `Serialize` each appear 12 times in the surviving `:1-777`. Removing it is a compile error, not a cleanup.
+- **The live surface under `phone/` is everything except `manager.rs`.** `consumption.rs`, `mailbox.rs` (21,707 lines, the real CLI messaging system), `messaging.rs`, `mod.rs`, `types.rs` all stay. **Do not touch `lib.rs:11 pub mod phone;`.**
+- Your first gate is a **cold build**. Budget for it and do not read it as a hang. §8.4.
+- Three homonym traps (`AgentInfo`, `send_message`, TS `AgentInfo`) plus one near-homonym (`sync_workgroup_repos` vs `..._inner`). Read the definition site; never trust a match count. §6.3.
+
+**Batch 3 (`dev-rust`):**
+- **After batch 2, `lib.rs:2667` has become `:2663`.** Locate R8 by anchor text, not by line number. §5.0 rule B.
+- **`plans/1177-remove-dead-code.md:625` records the sync wrapper at `:3678`. That is stale.** The real location is `:3666`; the stale number lands you 12 lines inside the function body.
+- Do not touch `sync_workgroup_repos_inner`, `SyncResult`, `SyncError`, or the `:3629` log string. §5.2.
+- Between batch 2 and batch 3, **do not disturb `src-tauri/target/`**: no `cargo clean`, no toolchain switch, no different `CARGO_TARGET_DIR`. Otherwise batch 3's cheap incremental gate becomes a second cold build. §8.4.
+
+**Batch 4 (`technical-writer`):**
+- Apply D1's 17 edits **bottom-up**, highest line number first. §5.0 rule A gives the exact order.
+- **`:623 style CONVDIR` must go with `:611`.** Deleting only the node leaves Mermaid styling an undeclared id. §5.4.
+- **`:34`, `:53` and `:60` must STAY.** They describe the `phone/` directory, which survives. §3.2.
+- D2, D3 and D4 have exact replacement text in §4.2, §4.3 and §4.6. **Use it verbatim.** These are decided wordings with per-clause evidence, not drafts. D4 in particular is a **rewrite of the whole enumeration item**, not a token deletion; §4.6 explains why.
+- You run the **Final** block, including the scope gate, because you are last. §8.5.
 
 ---
 
@@ -986,9 +1204,17 @@ You are working from a purged context. Everything you need is in this file; you 
 | # | Decision | Resolution | Where |
 | ---: | --- | --- | --- |
 | 1 | Batching and commit order | 4 batches, 4 commits: TS -> Rust phone -> Rust sync -> docs. Batch 2 is atomic. | §4.1 |
+| 1a | Ownership and execution order | **Three owners, strictly sequential**: batch 1 `dev-webpage-ui`, batches 2 and 3 `dev-rust`, batch 4 `technical-writer`. One owner in the tree at a time. Order is a **hard constraint**, not a preference. | §8.0 |
+| 1b | Cross-tree gates vs. narrowed per-language gates | **Gates stay cross-tree; the order carries the constraint.** Narrowing was considered and rejected: strict sequencing is already forced by the single clone, and narrowing would cost the cumulative whole-repository property of criteria 9, 11 and 12. | §8.0 |
+| 1c | Commit before gating, or gate before committing | **Commit first, then gate**, amending or squashing into the batch commit on failure. Gating first leaves the tree unprotected for exactly the interval the per-batch commit rule exists to cover. | §8.2 |
+| 1d | What counts as a handoff signal | **An explicit gate-pass report, never the presence of the commit.** After a session loss the recovering owner reruns the whole gate on that `HEAD`. | §8.3 |
+| 1e | Revision that acceptance runs against | **The working tree, never `d7285ce`.** A baseline-pinned acceptance suite verifies the state the change removes and can neither pass nor fail. Protection against this plan file is the **pathspec**, not the revision. | §9.3 rules 1-2 |
+| 1f | `git ls-tree` in acceptance | **Never as an exit-status check.** It requires a tree-ish, and `ls-tree HEAD -- <missing>` exits 0. Replaced with `test ! -e` plus `test -z "$(...)"` output assertions and an exact surviving-directory comparison. | §9.3 rule 5, §9.4 |
+| 1g | Scope enforcement | **A mandatory final scope gate**: clean `git status`, `git diff --check`, and an exact 13-path `git diff --name-status` whitelist. The symbol suite alone cannot detect an unrelated edit. | §9.3 rule 8, §9.4 Final |
+| 1h | Mermaid acceptance | **Render preview is non-binding manual QA.** The binding gate is the node-id grep plus a fence-count check (15 fences, unchanged). D1 edits **4** diagrams, not 5. No render dependency is added; §3.3 rules that out. | §9.4 batch 4 |
 | 2 | Exact `PRIVACY.md` replacement wording | Specified verbatim, 3 lines for 3 lines, with a per-clause evidence table | §4.2 |
 | 3 | `docs/agents/inter-agent-messaging.md:129-132` | **Delete** the `## Conversation files` section (no guarantee to preserve, unlike `PRIVACY.md`) | §4.3 |
-| 4 | `docs/security.md:14` | **Edit**: drop `conversations, ` from the disk enumeration | §5.4 D4 |
+| 4 | `docs/security.md:14` | **Rewrite the whole enumeration item**, not a token deletion. Dropping `conversations, ` alone leaves two verified falsehoods (teams and messages both claimed to live under `~/.agentscommander/`). Exact wording specified. | §4.6 |
 | 5 | `docs/agents/teams-and-workgroups.md:161` | **Out of scope.** The sentence is about the workgroup directory, not the config-dir store; this change does not make it false. | §3.2 |
 | 6 | `lib.rs:1254` incidental comment | **Edit**: drop `, `sync_workgroup_repos``; `update_team` keeps the comment true | §4.4 |
 | 7 | `architecture.md:623` `style CONVDIR` | **Delete.** Missing from the issue; leaving it dangles a Mermaid style directive | §5.4 |
@@ -1000,7 +1226,7 @@ You are working from a purged context. Everything you need is in this file; you 
 | 13 | `architecture.md:60` `PH <-->\|"JSON files"\| FS` | **Keep.** The live outbox still writes `<file>.json`, so the edge stays accurate. | §3.2 |
 | 14 | `architecture.md:687` misattributing `can_communicate()` to `phone/manager.rs` | No separate fix. The row is deleted by D1, so the pre-existing error disappears with it. | §2.3d, §5.4 |
 | 15 | Existing user `~/.agentscommander/conversations/` directories | **Left on disk untouched.** No migration, no cleanup, no data deletion. | §6.2 |
-| 16 | Committing this plan file, given that `.gitignore:11` ignores `plans/` | **Not the implementer's job and not one of the four batches.** It needs `git add -f` and belongs to the authoring/certification workflow, matching the #1177 precedent. | §9.6 |
+| 16 | Committing this plan file, given that `.gitignore:11` ignores `plans/` | **Not a batch owner's job and not one of the four batches.** It needs `git add -f` and belongs to the authoring/certification workflow, matching the #1177 precedent. | §9.6 |
 
 ---
 
@@ -1024,10 +1250,13 @@ The issue body was rewritten on 2026-08-01 and already corrects nine claims from
 | 8 | Not addressed | **`src-tauri/capabilities/default.json` and `tauri.conf.json` contain no reference to either surface** (verified). No manifest edit is required. | Closes a Tauri-specific failure mode neither revalidation covered. |
 | 9 | Not addressed | **No integration test under `src-tauri/tests/` reaches the removed surface** (verified; the three `phone` hits there are all live `messaging`/`types`/`mailbox` references). | Closes an external-linkage failure mode. |
 | 10 | Not addressed | **Neither deleted Rust file contains a `cfg` attribute**, so #1177's "no PR job compiles Rust for Linux or macOS" hazard does not apply to this change. | Removes a risk the implementer might otherwise assume they inherit. |
+| 11 | Not addressed. Added at Step 7 after `dev-rust-grinch` (G3) challenged D4 | **`docs/security.md:14` carries two more false location claims, not one.** Removing the `conversations` token leaves the line asserting that **teams** and **messages** live under `~/.agentscommander/`. Both are false: team configuration lives at `<workspace>/_team_<name>/` (there is no `teams.json` in the codebase at all) and messages live in workspace `messaging/` and `outbox/` directories. §4.6 rewrites the whole item. | A security document telling a reader the wrong place to secure, back up, or erase their data. It would also have left `PRIVACY.md` and `docs/security.md` contradicting each other after batch 4. |
 
 ### 12.3 No reason was found to stop
 
-The change should proceed as specified. Every "dead" claim was re-verified independently against `d7285ce`; every one holds. The three additions in 12.2 items 1 and 2 widen the documentation scope by 6 lines across 2 files; they do not change the shape of the work or its risk profile.
+The change should proceed as specified. Every "dead" claim was re-verified independently against `d7285ce` by the author and again by `dev-rust` at Step 5; every one holds. Neither reviewer found a missing production deletion, a seventh batch-2 edit, a hidden caller, or a platform or resource blocker. The eleven additions in §12.2 widen the documentation scope by roughly 6 lines across 2 files and correct one Mermaid rendering defect; they do not change the shape of the work or its risk profile.
+
+Every defect found at Steps 5 and 6 was in the **verification apparatus**, not in the edits: what revision acceptance ran against, whether `git ls-tree` can prove absence, whether the batches could be reordered, whether the scope was bounded, and whether a documentation claim was true. All are resolved in §13.
 
 ---
 
@@ -1338,6 +1567,60 @@ Adversarial review by `dev-rust-grinch`, reading this plan end to end and checki
 
 **Ownership verdict:** approve `dev-webpage-ui` for batch 1, `dev-rust` for batches 2 and 3, and `technical-writer` for batch 4. Approve only the coordinator's **strict sequential** order. With the current cross-tree per-batch greps, allowing Rust to run independently of batch 1 is not valid.
 
-### Architect resolution and certification (Step 7)
+### Architect resolution and certification (Step 7, round 1)
 
-*pending: this plan is NOT certified `READY_FOR_IMPLEMENTATION`*
+**Verdict: `READY_FOR_IMPLEMENTATION`.** All fourteen enrichment items are resolved. Nothing was deferred to a second round, and no decision was left open.
+
+**Both reviewers' cold-start verdict was "no as written, yes once these are resolved," and they were right.** E1 is a genuine defect of mine: §9.3 rule 1 pinned every acceptance grep and line count to `d7285ce`, so the suite verified the state the change removes and returned the same answer whether the work was complete, half-done, or never started. The coordinator supplied that pin for **revalidation**, where it is correct; carrying it into **acceptance**, where the revision is inverted, was my error. Sixteen of twenty-four criteria were affected and the failure mode was indistinguishable from broken work. §9 has been rewritten rather than patched.
+
+**Every command G1 proposed was re-derived against this repository before adoption, not trusted.** Two consecutive fixes in this area had already shipped bugs, so the same skepticism was applied to the third. Results, run on this branch:
+
+````text
+$ git ls-tree -r --name-only -- src-tauri/src/phone/
+fatal: Not a valid object name src-tauri/src/phone/          exit=128     <- G1 confirmed
+$ git ls-tree -r --name-only HEAD -- does/not/exist
+                                                              exit=0       <- G1 confirmed
+$ expected="$(printf '%s\n' ...5 paths...)"; actual="$(git ls-tree -r --name-only HEAD -- src-tauri/src/phone/)"
+$ test "$actual" = "$expected"                                             <- mechanism verified working
+$ git diff --name-status d7285ce..HEAD -- . ':!plans/1179-...md'
+                                                              (empty)      <- G4 scope gate verified working
+$ grep -c '^```mermaid' docs/reference/architecture.md
+15                                                                         <- G6 confirmed
+$ git grep -c -w PhoneAPI -- .          -> includes plans/1179-...md:22    <- confirms rule 2's premise
+$ git grep -c -w PhoneAPI -- src/ src-tauri/ docs/   -> plan file absent   <- confirms pathspec is sufficient
+````
+
+#### Disposition of every item
+
+| Item | Disposition | Resolution |
+| --- | --- | --- |
+| **E1** | **ADOPTED, with the fix reworked** | §9.3 rule 1 now mandates the working tree and explains why a baseline-pinned suite can neither pass nor fail. Every `git grep` in §9.4 lost its revision; every `git show <rev>:<path> \| wc -l` became `wc -l < <path>` (equivalence verified for all 11 files). E1's instruction to do the same to `git ls-tree` was **not** applied, see G1. §6.2, §6.4 and §9.6 reworded so the stated protection is the pathspec, not the revision. New §6.4 row gives the exact symptom so an implementer who hits a pinned grep diagnoses it in seconds instead of reverting correct work. |
+| **E2** | **ADOPTED as evidence** | Batch-2 atomicity confirmed; six edits, no seventh. The source-introspection test class was the genuinely new contribution and is now recorded in §9.1 as a table, merged with G7's three additions. |
+| **E3** | **ADOPTED as evidence** | All 13 line counts and every cut boundary independently re-derived and confirmed. §1.3 stays as written and is now readable as acceptance, since E1's fix makes the counts come from the working tree. |
+| **E4** | **ADOPTED** | The "do not add `-i` to the `Conversation` grep" hazard is promoted to §9.3 rule 4 with the reason, and to a §6.4 row. This is a real trap: `phone/mailbox.rs` carries lowercase "conversation" on three lines, so `-i` would turn criterion 10 into a guaranteed false failure. E4's request that the two `ls-tree` lines carry a stated expectation is satisfied by G1's replacement. |
+| **E5** | **ADOPTED** | Commit-before-gate is now §8.2, and §4.1's rationale, §8.5 and §10 agree with it. E5 correctly caught that §4.1 justified per-batch commits by session-loss risk while §8 and §10.11 told the implementer to commit *after* the gate, leaving the tree exposed for exactly that interval. The cold-build warning and the "do not disturb `src-tauri/target/`" condition are §8.4. |
+| **E6** | **ADJUSTED. Its premise is overturned; its request is granted** | E6 asked for per-batch owners: granted, in §8.0 and §8.5, matching the coordinator's split. E6 also concluded that batches 2 and 3 may start before batch 1 lands. **Rejected**, because G2 is right: the source edits are compile-independent but the *gates* are not. §8.0 records both the corrected reasoning and the two concrete failure signatures. |
+| **E7** | **ADOPTED** | `:3664-3696` (33 lines) confirmed as the correct wrapper cut against the dispatch brief's 32-line paraphrase. Criterion 22 is downstream of E1 and is fixed by it. The `architecture.md:230` and T4 shape confirmations are recorded. |
+| **G1** | **ADOPTED, after independent verification** | Both claims reproduce exactly (output above). §9.3 rule 5 now states that `ls-tree` requires a tree-ish and that its exit status never proves absence, and §9.4 uses `test ! -e` plus `test -z "$(...)"` plus an exact five-path directory comparison. Two §6.4 rows cover both misuse signatures. **The general rule that no acceptance check may treat a Git usage error as proof is stated explicitly**, because that is the class of error, not the instance. |
+| **G2** | **ADOPTED as a hard constraint** | §8.0 states the strict order 1 -> 2 -> 3 -> 4 as mandatory with **two independent sufficient reasons**: the single shared clone, and the cross-tree gates. The coordinator asked for one choice between "mandatory order" and "re-scope the greps": **the order carries the constraint and the gates stay cross-tree.** The narrowing alternative is recorded as considered and rejected, with the reason, so it is not reopened. |
+| **G3** | **ADOPTED, and widened** | G3 is right that D4 as written still placed messages under `~/.agentscommander/`. Verifying it surfaced more: **the surviving line also claims teams live there, and that is false too** (`<workspace>/_team_<name>/`; there is no `teams.json` anywhere in the codebase). Correcting one falsehood while re-publishing another, in a security document, is not defensible, so §4.6 rewrites the whole enumeration item with a per-clause evidence table, matching §4.2's treatment of `PRIVACY.md`. The widening is flagged in §4.6 and §12.2 item 11 rather than buried. G3's positive location check is §9.4 batch 4 and criterion 21; the literal `No external network calls are made.` assertion is criterion 20. |
+| **G4** | **ADOPTED, with additions** | The scope gate is §9.4 Final step 3 and criterion 24, with G4's exact 13-path whitelist (cross-checked against §1.3: identical). Verified the commands run correctly on this branch. Added beyond G4: §9.3 rule 8 states the principle, §8.6 rule 5 states the obligation, and a §6.4 row tells an owner what a 14th path means. Criterion 25 now derives `CHANGELOG.md` from the whitelist instead of asserting it separately. |
+| **G5** | **ADOPTED** | §8.3 states the three rules verbatim in effect: no handoff without an explicit gate-pass report, rerun the whole gate on `HEAD` after a session loss, and amend or squash before handoff after a failure. §8.1 adds the matching **entry precondition**, so the receiving owner independently verifies the previous batch rather than trusting a commit. G5 is right that this matters more because the batches cross agents. |
+| **G6** | **ADOPTED** | Count corrected: `architecture.md` holds **15** Mermaid fences and D1 edits **4** diagrams (§2, §3.3, §4, §8), not five. Verified. The render preview is now explicitly **non-binding manual QA**. The binding gate is the node-id grep plus a fence-count check (criterion 23). No render dependency is added: the repository ships only the `mermaid` runtime library, and adding `mmdc` would need a separate scope decision that §3.3 forecloses. |
+| **G7** | **ADOPTED as evidence** | The three additional source readers (`session/selection.rs`, `tests/cli_workgroup_team.rs`, `testability/ui_automation.rs`) are merged into §9.1's table with G7's reasoning, alongside the negative results for dynamic IPC tests, capability tests, fixtures, snapshots, doctests and the companion webpage repo. This closes the hidden-coupling audit. |
+| **G's public-API caveat** | **ADOPTED** | §7 now claims "no supported or known external consumer" and states explicitly that this is the strongest claim the evidence supports, rather than asserting that no private dependent exists anywhere. |
+
+#### Nothing rejected, one premise overturned
+
+No item was rejected. **E6's conclusion that batches 2 and 3 may proceed independently of batch 1 is the single overturned premise**, and it was overturned by G2 on evidence, not by preference. E6's underlying request, per-batch owners, was granted in full. `dev-rust` and `dev-rust-grinch` reached opposite conclusions on that one point; the record above shows which won and why, so the dissent is visible rather than smoothed over.
+
+#### What changed in the plan
+
+Rewritten: §8 (now owners and handoff), §9.3, §9.4, §9.5, §10 (now addressed to three batch owners rather than one implementer).
+New: §4.6 (`docs/security.md` wording), §8.0-§8.4, §8.6, §9.3 rules 5 and 8, §9.4 Final scope gate, criteria 23-26.
+Amended: header, §4.1, §3.1 D4, §5.4 D4, §6.2, §6.4 (eight new rows), §7, §11 (decisions 1a-1h), §12.2 item 11, §12.3.
+Unchanged: §1, §2, §3.2, §3.3, §5.0-§5.3, §5.4 D1-D3, §6.1, §6.3, §9.1's opening, §9.2, §9.6's substance, §12.1. Every cut coordinate in §5 survived two independent re-derivations and was not touched.
+
+#### Certification
+
+This plan is certified `READY_FOR_IMPLEMENTATION` as of Step 7 round 1. The certified artifact is the committed file; any byte change after the certifying commit invalidates this status and requires re-certification.
