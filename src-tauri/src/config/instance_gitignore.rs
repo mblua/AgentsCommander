@@ -2,10 +2,14 @@ use std::fs::{File, Metadata, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-const FIXED_RULES: [&str; 8] = [
+const FIXED_RULES: [&str; 12] = [
+    "/.agentscommander-injected-messages.json",
     "/app-outbox-path.txt",
     "/app.log",
     "/daemon.pid",
+    "/injected-messages.default.toml",
+    "/injected-messages.toml",
+    "/injected-messages.toml.bak-*",
     "/master-token.txt",
     "/sessions.json",
     "/settings.json",
@@ -92,7 +96,7 @@ fn escape_gitignore_path_segment(segment: &str) -> Result<String, String> {
     Ok(escaped)
 }
 
-fn required_rules(agent_local_dir: &str) -> Result<[String; 10], String> {
+fn required_rules(agent_local_dir: &str) -> Result<[String; 14], String> {
     let escaped_agent_local_dir = escape_gitignore_path_segment(agent_local_dir)?;
 
     Ok([
@@ -110,10 +114,14 @@ fn required_rules(agent_local_dir: &str) -> Result<[String; 10], String> {
         FIXED_RULES[5].to_string(),
         FIXED_RULES[6].to_string(),
         FIXED_RULES[7].to_string(),
+        FIXED_RULES[8].to_string(),
+        FIXED_RULES[9].to_string(),
+        FIXED_RULES[10].to_string(),
+        FIXED_RULES[11].to_string(),
     ])
 }
 
-fn create_fresh_file(path: &Path, rules: &[String; 10]) -> Result<AttemptResult, String> {
+fn create_fresh_file(path: &Path, rules: &[String; 14]) -> Result<AttemptResult, String> {
     let mut file = match open_new_no_follow(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
@@ -141,7 +149,7 @@ fn create_fresh_file(path: &Path, rules: &[String; 10]) -> Result<AttemptResult,
     Ok(AttemptResult::Done)
 }
 
-fn ensure_existing_file(path: &Path, rules: &[String; 10]) -> Result<AttemptResult, String> {
+fn ensure_existing_file(path: &Path, rules: &[String; 14]) -> Result<AttemptResult, String> {
     let mut read_file = match open_read_no_follow(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -195,7 +203,7 @@ fn ensure_existing_file(path: &Path, rules: &[String; 10]) -> Result<AttemptResu
     Ok(AttemptResult::Done)
 }
 
-fn fresh_file_bytes(rules: &[String; 10]) -> Vec<u8> {
+fn fresh_file_bytes(rules: &[String; 14]) -> Vec<u8> {
     let capacity = rules.iter().map(|rule| rule.len() + 1).sum();
     let mut bytes = Vec::with_capacity(capacity);
     for rule in rules {
@@ -205,7 +213,7 @@ fn fresh_file_bytes(rules: &[String; 10]) -> Vec<u8> {
     bytes
 }
 
-fn missing_rule_indexes(bytes: &[u8], rules: &[String; 10]) -> Vec<usize> {
+fn missing_rule_indexes(bytes: &[u8], rules: &[String; 14]) -> Vec<usize> {
     rules
         .iter()
         .enumerate()
@@ -224,7 +232,7 @@ fn contains_exact_line(bytes: &[u8], rule: &[u8]) -> bool {
     })
 }
 
-fn append_buffer(existing: &[u8], rules: &[String; 10], missing: &[usize]) -> Vec<u8> {
+fn append_buffer(existing: &[u8], rules: &[String; 14], missing: &[usize]) -> Vec<u8> {
     let capacity = missing
         .iter()
         .map(|index| rules[*index].len() + 1)
@@ -447,7 +455,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_file_has_exact_ten_rules_and_dynamic_name() {
+    fn fresh_file_has_exact_fourteen_rules_and_dynamic_name() {
         let temp = tempfile::tempdir().expect("tempdir");
         ensure_instance_gitignore_at(temp.path(), TEST_AGENT_LOCAL_DIR).expect("ensure fresh file");
 
@@ -455,9 +463,13 @@ mod tests {
         let expected = concat!(
             "/ac-root-agent/.agentscommander_amp-office/config.json\n",
             "/ac-root-agent/config.json\n",
+            "/.agentscommander-injected-messages.json\n",
             "/app-outbox-path.txt\n",
             "/app.log\n",
             "/daemon.pid\n",
+            "/injected-messages.default.toml\n",
+            "/injected-messages.toml\n",
+            "/injected-messages.toml.bak-*\n",
             "/master-token.txt\n",
             "/sessions.json\n",
             "/settings.json\n",
@@ -470,8 +482,8 @@ mod tests {
         let lines: Vec<&[u8]> = actual[..actual.len() - 1]
             .split(|byte| *byte == b'\n')
             .collect();
-        assert_eq!(lines.len(), 10);
-        assert_eq!(lines.iter().copied().collect::<HashSet<_>>().len(), 10);
+        assert_eq!(lines.len(), 14);
+        assert_eq!(lines.iter().copied().collect::<HashSet<_>>().len(), 14);
         assert!(!actual
             .windows(b"<agent-local-dir>".len())
             .any(|window| window == b"<agent-local-dir>"));
@@ -684,9 +696,13 @@ mod tests {
         let required_paths = [
             "ac-root-agent/.agentscommander_amp-office/config.json",
             "ac-root-agent/config.json",
+            ".agentscommander-injected-messages.json",
             "app-outbox-path.txt",
             "app.log",
             "daemon.pid",
+            "injected-messages.default.toml",
+            "injected-messages.toml",
+            "injected-messages.toml.bak-20260801T221533Z",
             "master-token.txt",
             "sessions.json",
             "settings.json",
@@ -735,6 +751,10 @@ mod tests {
             "cache/entry.bin",
             "state.sqlite",
             "ac-root-agent/unrelated/config.json",
+            "injected-messages.toml.bak",
+            "injected-messages.json",
+            "agentscommander-injected-messages.json",
+            "sub/injected-messages.toml",
         ];
         for relative in control_paths {
             let path = config_dir.join(relative);
@@ -808,7 +828,7 @@ mod tests {
         let escaped_agent_local_dir =
             escape_gitignore_path_segment(agent_local_dir).expect("encode agent local dir");
         let rules = required_rules(agent_local_dir).expect("construct canonical rules");
-        assert_eq!(rules.len(), 10);
+        assert_eq!(rules.len(), 14);
         assert_eq!(
             rules[0],
             format!(
@@ -820,9 +840,13 @@ mod tests {
             &rules[1..],
             &[
                 "/ac-root-agent/config.json",
+                "/.agentscommander-injected-messages.json",
                 "/app-outbox-path.txt",
                 "/app.log",
                 "/daemon.pid",
+                "/injected-messages.default.toml",
+                "/injected-messages.toml",
+                "/injected-messages.toml.bak-*",
                 "/master-token.txt",
                 "/sessions.json",
                 "/settings.json",
@@ -864,7 +888,7 @@ mod tests {
                 .split(|byte| *byte == b'\n')
                 .filter(|line| !line.is_empty())
                 .count(),
-            10
+            14
         );
 
         let literal = "instance/ac-root-agent/.agents[1]/config.json";
@@ -905,7 +929,7 @@ mod tests {
                     .split(|byte| *byte == b'\n')
                     .filter(|line| !line.is_empty())
                     .count(),
-                10
+                14
             );
             let raw_companion = format!(
                 "/{}/{agent_local_dir}/config.json",
@@ -973,5 +997,65 @@ mod tests {
 
         ensure_instance_gitignore_at(temp.path(), agent_local_dir).expect("repeat repaired ensure");
         assert_eq!(std::fs::read(path).expect("read repeated result"), repaired);
+    }
+
+    #[test]
+    fn instance_gitignore_covers_every_injected_messages_artifact() {
+        use super::super::injected_messages::{
+            INJECTED_MESSAGES_FILENAME, INJECTED_MESSAGES_REFERENCE_FILENAME,
+            INJECTED_MESSAGES_STATE_FILENAME,
+        };
+
+        let rules = required_rules(TEST_AGENT_LOCAL_DIR).expect("rules");
+        for expected in [
+            format!("/{INJECTED_MESSAGES_FILENAME}"),
+            format!("/{INJECTED_MESSAGES_REFERENCE_FILENAME}"),
+            format!("/{INJECTED_MESSAGES_STATE_FILENAME}"),
+            format!("/{INJECTED_MESSAGES_FILENAME}.bak-*"),
+        ] {
+            assert!(
+                rules.contains(&expected),
+                "injected-messages artifact is not covered by the instance policy: {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn instance_gitignore_ignores_injected_messages_artifacts_narrowly() {
+        use super::super::injected_messages::{
+            INJECTED_MESSAGES_FILENAME, INJECTED_MESSAGES_REFERENCE_FILENAME,
+            INJECTED_MESSAGES_STATE_FILENAME,
+        };
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path();
+        assert_git_success(repo, &["init", "--quiet"]);
+        let config_dir = repo.join("instance");
+        std::fs::create_dir(&config_dir).expect("create config dir");
+
+        ensure_instance_gitignore_at(&config_dir, TEST_AGENT_LOCAL_DIR)
+            .expect("ensure injected-messages fixture");
+
+        let stamped_backup = format!("{INJECTED_MESSAGES_FILENAME}.bak-20260801T221533Z");
+        let unstamped_backup = format!("{INJECTED_MESSAGES_FILENAME}.bak");
+        let nested = format!("sub/{INJECTED_MESSAGES_FILENAME}");
+        let cases = [
+            (INJECTED_MESSAGES_STATE_FILENAME, 0),
+            (INJECTED_MESSAGES_REFERENCE_FILENAME, 0),
+            (INJECTED_MESSAGES_FILENAME, 0),
+            (stamped_backup.as_str(), 0),
+            (unstamped_backup.as_str(), 1),
+            ("injected-messages.json", 1),
+            ("agentscommander-injected-messages.json", 1),
+            (nested.as_str(), 1),
+        ];
+
+        for (relative, expected_code) in cases {
+            let path = config_dir.join(relative);
+            std::fs::create_dir_all(path.parent().expect("fixture parent"))
+                .expect("create fixture parent");
+            std::fs::write(path, b"fixture").expect("write fixture");
+            assert_git_ignore_status(repo, &format!("instance/{relative}"), expected_code);
+        }
     }
 }
