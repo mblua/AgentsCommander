@@ -4,6 +4,12 @@ All notable user-facing changes are tracked here and in [GitHub Releases](https:
 
 This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) shape: one section per release in reverse-chronological order. Each entry groups changes under **Added / Changed / Removed / Fixed / Security** where useful.
 
+## Unreleased
+
+### Changed
+
+- **The context-alert message injected into a coordinator's terminal is now operator-editable**, and its visible prefix changes from `[AgentsCommander context alert]` to `[AC context alert]`. The wording lives in `injected-messages.toml`, next to the executable in the config directory, alongside a read-only `injected-messages.default.toml` reference. Markdown is preserved byte for byte, the placeholders are `%MEMBER%`, `%WORKGROUP%`, `%THRESHOLDS%` and the optional `%OBSERVED%`, and an entry you have edited is never overwritten by an upgrade. `injected-messages reseed --id <id>` (or `--all`) restores a shipped default, taking a timestamped backup first. ([#1157](https://github.com/mblua/AgentsCommander/issues/1157))
+
 ## 0.20.0 – 2026-07-23
 
 Large release covering everything merged since `0.10.0` (616 commits across ~110 PRs). Headlines: **containerized coding agents** (Docker / "Camino 2" backend), an **in-daemon Control Plane API**, a **coding-agent catalog overhaul** (Hermes / Cursor CLI / Pi), **live context-usage visibility** (CTX badges + alerts), **workgroup UI Groups** (Telegram-style sidebar rail), a **single self-contained web-server executable**, plus a deep PTY/terminal reliability and settings-persistence hardening pass.

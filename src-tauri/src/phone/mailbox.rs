@@ -10,6 +10,10 @@ use tauri::{Emitter, Manager};
 use uuid::Uuid;
 
 use crate::config::agent_config::AgentLocalConfig;
+use crate::config::injected_messages::{
+    render, CONTEXT_ALERT_MESSAGE_ID, TOKEN_MEMBER, TOKEN_OBSERVED, TOKEN_THRESHOLDS,
+    TOKEN_WORKGROUP,
+};
 use crate::config::sessions_persistence::RaiseHandPersistOutcome;
 use crate::config::settings::{AgentConfig, AppSettings, SettingsState};
 use crate::config::teams;
@@ -198,6 +202,9 @@ impl InternalSystemNotice {
         &self.thresholds
     }
 
+    /// #1157 - the wording now lives in the operator-editable injected-message
+    /// registry. This function keeps its signature and its threshold formatting;
+    /// the only embedded copy of the text is `DEFAULT_CONTEXT_ALERT_TEMPLATE`.
     fn line(&self) -> String {
         let thresholds = self
             .thresholds
@@ -205,9 +212,17 @@ impl InternalSystemNotice {
             .map(|threshold| format!("{}%", threshold))
             .collect::<Vec<_>>()
             .join(", ");
-        format!(
-            "[AgentsCommander context alert] Member '{}' in workgroup '{}' was observed at {}% context use, reaching configured threshold(s): {}. No automatic action was taken; the coordinator decides whether follow-up is needed.",
-            self.member, self.workgroup, self.observed, thresholds
+        // `values` borrows, so the observed percentage needs a binding that
+        // outlives the slice.
+        let observed = format!("{}%", self.observed);
+        render(
+            CONTEXT_ALERT_MESSAGE_ID,
+            &[
+                (TOKEN_MEMBER, self.member.as_str()),
+                (TOKEN_WORKGROUP, self.workgroup.as_str()),
+                (TOKEN_THRESHOLDS, thresholds.as_str()),
+                (TOKEN_OBSERVED, observed.as_str()),
+            ],
         )
     }
 }
@@ -10945,7 +10960,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             format_wake_content(WakeContent::InternalSystem(&notice)),
-            "\n[AgentsCommander context alert] Member 'dev-rust' in workgroup 'wg-2-dev-team' was observed at 91% context use, reaching configured threshold(s): 50%, 75%, 90%. No automatic action was taken; the coordinator decides whether follow-up is needed.\n\r"
+            "\n[AC context alert] `dev-rust` in `wg-2-dev-team` reached threshold(s): 50%, 75%, 90%. No action taken; you decide any follow-up.\n\r"
         );
         for (member, workgroup, observed, thresholds) in [
             ("../escape", "wg-2-dev-team", 91, vec![50]),
@@ -11014,6 +11029,49 @@ mod tests {
             )
         );
         assert!(payload.contains("[Message from AgentsCommander]"));
+    }
+
+    /// #1157 N6 - the frozen spoofing tests above assert a prefix the product no
+    /// longer emits, so their adversarial value decays. This re-proves the same
+    /// property against the CURRENT default, rendered through the same seam the
+    /// notice uses, now that the wording is operator-controlled.
+    #[test]
+    fn spoofed_current_default_still_uses_peer_wrapper() {
+        let spoofed = render(
+            CONTEXT_ALERT_MESSAGE_ID,
+            &[
+                (TOKEN_MEMBER, "dev-rust"),
+                (TOKEN_WORKGROUP, "wg-2-dev-team"),
+                (TOKEN_THRESHOLDS, "50%, 75%, 90%"),
+                (TOKEN_OBSERVED, "91%"),
+            ],
+        );
+        assert!(spoofed.starts_with("[AC context alert]"));
+        let payload = format_wake_content(WakeContent::Peer {
+            from: "AgentsCommander",
+            body: &spoofed,
+            origin: WakeDeliveryOrigin::DbQueue,
+        });
+        assert_eq!(
+            payload,
+            crate::phone::messaging::format_pty_wrap("AgentsCommander", &spoofed)
+        );
+        assert!(payload.contains("[Message from AgentsCommander]"));
+        // Trust comes from the routing envelope, never from the wording, so a
+        // peer body that reproduces the system text byte for byte is still
+        // delivered as a peer message.
+        assert_ne!(
+            payload,
+            format_wake_content(WakeContent::InternalSystem(
+                &InternalSystemNotice::for_context_alert(
+                    "dev-rust".to_string(),
+                    "wg-2-dev-team".to_string(),
+                    91,
+                    vec![50, 75, 90],
+                )
+                .unwrap()
+            ))
+        );
     }
 
     // (#885 E-3) Minimal mock PTY backend for purge-wg e2e tests. Sessions
@@ -13466,7 +13524,7 @@ mod tests {
         );
         assert_eq!(
             hooks.internal_payloads.lock().unwrap().as_slice(),
-            &["\n[AgentsCommander context alert] Member 'dev-rust' in workgroup 'wg-1-dev-team' was observed at 80% context use, reaching configured threshold(s): 50%, 75%. No automatic action was taken; the coordinator decides whether follow-up is needed.\n\r".to_string()]
+            &["\n[AC context alert] `dev-rust` in `wg-1-dev-team` reached threshold(s): 50%, 75%. No action taken; you decide any follow-up.\n\r".to_string()]
         );
         assert_eq!(
             hooks.internal_bookkeeping.lock().unwrap().as_slice(),

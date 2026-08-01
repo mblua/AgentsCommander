@@ -1440,6 +1440,24 @@ pub fn run(
                 log::error!("[root-agent] Failed to provision root agent directory: {}", e);
             }
 
+            // #1157 - seed and reconcile the operator-editable injected-message
+            // templates. Best effort, never fatal, matching the block above.
+            //
+            // The ordering is NOT load-bearing: `render` resolves from the
+            // registry or the embedded default and never fails, so an alert
+            // firing before this point still renders correctly. The cost is
+            // bounded and small (one read plus at most three small atomic
+            // writes on the setup thread), not "non-blocking"; moving it to
+            // tokio::spawn would buy nothing and would race the registry load.
+            if let Some(dir) = crate::config::config_dir() {
+                if let Err(e) = crate::config::injected_messages::ensure_injected_messages(&dir) {
+                    log::warn!("[injected-messages] provisioning failed: {}", e);
+                }
+            }
+            // Force the registry once, so the first alert - whose line() runs
+            // on a tokio worker - never performs a blocking read there.
+            let _ = crate::config::injected_messages::registry();
+
             // §224 A.2.5 / G-IMPL-1 — Set restore_in_progress=TRUE BEFORE the
             // mailbox poller starts. The restore task now also owns the root-agent
             // first-start path, so it must run even with no persisted sessions.
