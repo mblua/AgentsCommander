@@ -3661,39 +3661,6 @@ async fn sync_workgroup_repos_inner(
     Ok(result)
 }
 
-/// Sync repo assignments and context tokens from team config to all existing workgroup replicas.
-#[tauri::command]
-pub async fn sync_workgroup_repos(
-    app: AppHandle,
-    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
-    git_watcher: State<'_, Arc<GitWatcher>>,
-    discovery_watcher: State<'_, Arc<DiscoveryBranchWatcher>>,
-    project_path: String,
-    team_name: String,
-) -> Result<SyncResult, String> {
-    validate_existing_name(&team_name, "Team")?;
-
-    let base = selected_workspace_dir(Path::new(&project_path))?;
-
-    let team_dir = base.join(format!("_team_{}", team_name));
-    if !team_dir.exists() {
-        return Err(format!("Team '{}' not found", team_name));
-    }
-
-    let repos = read_team_config(&base, &team_name)?.repos;
-
-    sync_workgroup_repos_inner(
-        &base,
-        &team_name,
-        &repos,
-        session_mgr.inner(),
-        git_watcher.inner(),
-        discovery_watcher.inner(),
-        &app,
-    )
-    .await
-}
-
 /// Refresh `is_coordinator` on every live session and emit `session_coordinator_changed`
 /// for those whose flag flipped. Called by team-CRUD commands (§2).
 pub(crate) async fn emit_coordinator_refresh(
