@@ -1126,7 +1126,7 @@ fn publish_edits(
         }
 
         // Descending, so an earlier edit never shifts a later span.
-        edits.sort_by(|left, right| right.0.start.cmp(&left.0.start));
+        edits.sort_by_key(|edit| std::cmp::Reverse(edit.0.start));
         for (span, literal) in edits {
             if span.end > candidate.len() || !candidate.is_char_boundary(span.start) {
                 return Err("a `template` span does not address the source".to_string());
