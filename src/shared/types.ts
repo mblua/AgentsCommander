@@ -978,24 +978,6 @@ export interface SessionsState {
 }
 
 
-export interface PhoneMessage {
-  id: string;
-  from: string;
-  to: string;
-  team: string;
-  content: string;
-  timestamp: string;
-  status: "pending" | "delivered" | "error";
-}
-
-export interface AgentInfo {
-  name: string;
-  path: string;
-  teams: string[];
-  isCoordinatorOf: string[];
-}
-
-
 export interface AcAgentMatrix {
   name: string;
   path: string;
