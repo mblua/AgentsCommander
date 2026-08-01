@@ -572,7 +572,7 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
 
       <div class="watchers-filter-bar" data-ac-testid="watchers.filters" data-ac-role="toolbar">
         <div class="watchers-filter-group">
-          <span class="watchers-filter-label">Scope</span>
+          <span class="watchers-filter-label">Agent</span>
           <select
             class="watchers-select"
             ref={(el) => (scopeEl = el)}
@@ -580,7 +580,7 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
             data-ac-testid="watchers.scope"
             data-ac-role="combobox"
           >
-            <option value="all">All sessions</option>
+            <option value="all">All agents</option>
             <For each={agentSessions()}>
               {(session) => <option value={session.id}>{session.name}</option>}
             </For>
@@ -608,12 +608,12 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
           </div>
         </Show>
 
-        {/* In single-session scope Agent and Workgroup have one possible value each and
+        {/* In single-session scope Coding-Agent and Workgroup have one possible value each and
             filter nothing, so they are not rendered -- the gesture the Resource Monitor
             already uses for an empty option list. */}
         <Show when={isAllSessions() && agentOptions().length > 0}>
           <div class="watchers-filter-group" data-ac-testid="watchers.filter.agent">
-            <span class="watchers-filter-label">Agent</span>
+            <span class="watchers-filter-label">Coding-Agent</span>
             <For each={agentOptions()}>
               {(option) => (
                 <button
