@@ -11,7 +11,7 @@ AgentsCommander is a **local desktop application** that spawns coding-agent CLIs
 1. **The user.** Operates the GUI, picks coding agents, accepts the actions agents propose. Fully trusted.
 2. **The coding agents.** Claude Code, Codex, Gemini, and Pi. They run in real PTYs as full user-level processes and are trusted with the user's local file system to the same degree the user trusts them when launched directly.
 3. **The optional network endpoints.** Telegram Bot API and the Google Gemini API for voice-to-text. Only contacted when the user explicitly enables those features.
-4. **The disk.** Configuration, sessions, teams, conversations, and messages all live as plain files under `~/.agentscommander/` (or the portable instance's `.agentscommander_<suffix>/`).
+4. **The disk.** Everything is plain files, in two locations. Configuration and persisted sessions live under `~/.agentscommander/` (or the portable instance's `.agentscommander_<suffix>/`). Team configuration and inter-agent messages live in your project workspace instead: team config under `_team_<name>/`, Markdown message files under each workgroup's `messaging/` directory, and each agent replica's JSON delivery queue under its local `outbox/`.
 
 AC does not:
 

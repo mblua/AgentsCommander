@@ -26,9 +26,9 @@ When the user activates voice recording:
 - **When**: Only when the user explicitly presses the record button and stops recording
 - **Credentials**: The Gemini API key is configured by the user and stored locally in `~/.agentscommander/settings.json`
 
-### Inter-Agent Messaging (Phone)
+### Inter-Agent Messaging
 
-The internal messaging system between agents is **entirely local**. Messages are stored as JSON files in `~/.agentscommander/conversations/`. No external network calls are made.
+The internal messaging system between agents is **entirely local**. Messages are written as Markdown files to `messaging/` directories on your own disk, inside each workgroup and inside the Root Agent directory. No external network calls are made.
 
 ## What Is NOT Transmitted
 
