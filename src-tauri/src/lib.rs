@@ -1251,7 +1251,7 @@ pub fn run(
             // Git branch watcher: polls git branch for each session every 5s
             let git_watcher = GitWatcher::new(session_mgr_for_git, app.handle().clone());
             // Register for Tauri commands that take `State<'_, Arc<GitWatcher>>`
-            // (e.g. `update_team`, `sync_workgroup_repos`). Must happen BEFORE the
+            // (e.g. `update_team`). Must happen BEFORE the
             // `PtyManager::new(..., git_watcher, ...)` move below.
             app.manage(Arc::clone(&git_watcher));
 
@@ -2660,7 +2660,6 @@ pub fn run(
             commands::entity_creation::get_team_config,
             commands::entity_creation::create_workgroup,
             commands::entity_creation::delete_workgroup,
-            commands::entity_creation::sync_workgroup_repos,
             commands::role_templates::list_role_templates,
             commands::role_templates::get_agency_templates_status,
             commands::role_templates::update_agency_templates,
