@@ -5,9 +5,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use terminal_snapshot_renderer::{
-    encode_canonical_base64, render_png, to_ascii_json, TerminalScreenModel,
-    TerminalSnapshotDocument, TerminalSnapshotFormat, TerminalSnapshotReasonCode,
-    TerminalSnapshotResult, MAX_TRANSPORT_BYTES,
+    encode_api_success_payload, encode_host_success_payload, render_png,
+    terminal_snapshot_payload_bytes, TerminalScreenModel, TerminalSnapshotDocument,
+    TerminalSnapshotFormat, TerminalSnapshotPayload, TerminalSnapshotReasonCode,
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
@@ -76,6 +76,7 @@ pub(crate) enum TerminalSnapshotRequesterSelector {
     ApiSession(Uuid),
 }
 
+#[derive(Clone)]
 pub(crate) struct TerminalSnapshotServiceContext {
     pub session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
     pub pty_manager: Arc<std::sync::Mutex<PtyManager>>,
@@ -84,18 +85,73 @@ pub(crate) struct TerminalSnapshotServiceContext {
     pub purge: Arc<crate::session::purge_guard::PurgeGuard>,
 }
 
-pub(crate) struct TerminalSnapshotServiceSuccess {
-    pub result: TerminalSnapshotResult,
-    pub payload_bytes: u64,
+pub(crate) struct TerminalSnapshotPrepared {
+    payload: TerminalSnapshotPayload,
+    finalization: TerminalSnapshotFinalization,
 }
 
-impl std::fmt::Debug for TerminalSnapshotServiceSuccess {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("TerminalSnapshotServiceSuccess")
-            .field("format", &self.result.format())
-            .field("payload_bytes", &self.payload_bytes)
-            .finish()
+impl TerminalSnapshotPrepared {
+    pub(crate) fn into_parts(self) -> (TerminalSnapshotPayload, TerminalSnapshotFinalization) {
+        (self.payload, self.finalization)
+    }
+}
+
+pub(crate) struct TerminalSnapshotPreAdmission {
+    state: Arc<TerminalSnapshotState>,
+    context: TerminalSnapshotServiceContext,
+    manager: SessionManager,
+    requester: RequesterProof,
+    permit: RequesterSnapshotPermit,
+    audit: TerminalSnapshotAuditGuard,
+    deadline: Instant,
+    host_wall_deadline: Option<chrono::DateTime<chrono::Utc>>,
+    source_plane: TerminalSnapshotSourcePlane,
+}
+
+impl TerminalSnapshotPreAdmission {
+    pub(crate) fn deadline(&self) -> Instant {
+        self.deadline
+    }
+}
+
+pub(crate) struct TerminalSnapshotFinalization {
+    state: Arc<TerminalSnapshotState>,
+    context: TerminalSnapshotServiceContext,
+    manager: SessionManager,
+    requester: RequesterProof,
+    route: VerifiedTerminalSnapshotRoute,
+    selected: SelectedSession,
+    permit: RequesterSnapshotPermit,
+    audit: TerminalSnapshotAuditGuard,
+    deadline: Instant,
+    host_wall_deadline: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+pub(crate) struct TerminalSnapshotDisclosure {
+    state: Arc<TerminalSnapshotState>,
+    permit: RequesterSnapshotPermit,
+    audit: TerminalSnapshotAuditGuard,
+    deadline: Instant,
+}
+
+impl TerminalSnapshotDisclosure {
+    pub(crate) fn remaining(&self) -> Result<Duration, TerminalSnapshotReasonCode> {
+        ensure_before_deadline(self.deadline, &self.state.shutdown)?;
+        Ok(self.deadline.saturating_duration_since(Instant::now()))
+    }
+
+    pub(crate) fn ensure_handoff(&self) -> Result<(), TerminalSnapshotReasonCode> {
+        ensure_before_deadline(self.deadline, &self.state.shutdown)
+    }
+
+    pub(crate) fn finalize_success(self) {
+        self.audit.finalize("succeeded", None);
+        drop(self.permit);
+    }
+
+    pub(crate) fn finalize_failure(self, reason: TerminalSnapshotReasonCode) {
+        self.audit.finalize_failure(reason);
+        drop(self.permit);
     }
 }
 
@@ -326,11 +382,13 @@ impl TerminalSnapshotState {
                 tokio::select! {
                     biased;
                     _ = state.shutdown.token().cancelled() => {
-                        state.sweep_artifacts(true);
+                        let cleanup = Arc::clone(&state);
+                        let _ = tokio::task::spawn_blocking(move || cleanup.sweep_artifacts(true)).await;
                         break;
                     }
                     _ = tokio::time::sleep(Duration::from_secs(5)) => {
-                        state.sweep_artifacts(false);
+                        let cleanup = Arc::clone(&state);
+                        let _ = tokio::task::spawn_blocking(move || cleanup.sweep_artifacts(false)).await;
                     }
                 }
             }
@@ -448,13 +506,7 @@ impl TerminalSnapshotState {
             .chain(registry.directory_reservations.keys().copied())
             .collect();
         for directory in directories {
-            if live_directories.contains(&directory.identity.object_id) {
-                continue;
-            }
-            let vanished = crate::path_identity::verify_directory(&directory.path)
-                .map(|current| !crate::path_identity::same_object(&current, &directory.identity))
-                .unwrap_or(true);
-            if vanished {
+            if !live_directories.contains(&directory.identity.object_id) {
                 registry.directories.remove(&directory.identity.object_id);
             }
         }
@@ -527,67 +579,41 @@ impl TerminalSnapshotState {
         })
     }
 
-    pub(crate) async fn execute(
-        &self,
+    pub(crate) async fn pre_admit_requester(
+        self: &Arc<Self>,
         context: &TerminalSnapshotServiceContext,
-        request: TerminalSnapshotServiceRequest,
         requester_selector: TerminalSnapshotRequesterSelector,
-    ) -> Result<TerminalSnapshotServiceSuccess, TerminalSnapshotReasonCode> {
-        let audit = TerminalSnapshotAuditGuard::new(&request);
-        let result = self
-            .execute_inner(context, &request, requester_selector, &audit)
-            .await;
-        match &result {
-            Ok(success) => audit.finalize_success(success),
-            Err(reason) => audit.finalize_failure(*reason),
-        }
-        result
-    }
-
-    pub(crate) async fn execute_with_deferred_success_audit(
-        &self,
-        context: &TerminalSnapshotServiceContext,
-        request: TerminalSnapshotServiceRequest,
-        requester_selector: TerminalSnapshotRequesterSelector,
+        source_plane: TerminalSnapshotSourcePlane,
+        host_authorization_deadline: Option<(Instant, chrono::DateTime<chrono::Utc>)>,
         audit: TerminalSnapshotAuditGuard,
-    ) -> Result<
-        (TerminalSnapshotServiceSuccess, PendingTerminalSnapshotAudit),
-        TerminalSnapshotReasonCode,
-    > {
-        audit.accept_request(&request);
-        match self
-            .execute_inner(context, &request, requester_selector, &audit)
-            .await
-        {
-            Ok(success) => Ok((success, PendingTerminalSnapshotAudit(audit))),
-            Err(reason) => {
-                audit.finalize_failure(reason);
-                Err(reason)
-            }
-        }
+    ) -> Result<TerminalSnapshotPreAdmission, TerminalSnapshotReasonCode> {
+        self.pre_admit_requester_inner(
+            context,
+            requester_selector,
+            source_plane,
+            host_authorization_deadline,
+            audit,
+        )
+        .await
     }
 
-    async fn execute_inner(
-        &self,
+    async fn pre_admit_requester_inner(
+        self: &Arc<Self>,
         context: &TerminalSnapshotServiceContext,
-        request: &TerminalSnapshotServiceRequest,
         requester_selector: TerminalSnapshotRequesterSelector,
-        audit: &TerminalSnapshotAuditGuard,
-    ) -> Result<TerminalSnapshotServiceSuccess, TerminalSnapshotReasonCode> {
+        source_plane: TerminalSnapshotSourcePlane,
+        host_authorization_deadline: Option<(Instant, chrono::DateTime<chrono::Utc>)>,
+        audit: TerminalSnapshotAuditGuard,
+    ) -> Result<TerminalSnapshotPreAdmission, TerminalSnapshotReasonCode> {
         if self.shutdown.is_cancelled() {
             return Err(TerminalSnapshotReasonCode::ServiceUnavailable);
         }
-        terminal_snapshot_renderer::validate_uuid(&request.request_id.to_string(), Some(4))
-            .map_err(|_| TerminalSnapshotReasonCode::InvalidRequest)?;
-        crate::config::teams::validate_terminal_snapshot_target_syntax(&request.target)
-            .map_err(|_| TerminalSnapshotReasonCode::InvalidRequest)?;
-
         let manager = clone_session_manager(&context.session_manager).await;
         let requester = prove_requester(
             &manager,
             &context.pty_manager,
             requester_selector,
-            request.source_plane,
+            source_plane,
         )
         .await?;
         audit.accept_requester(&requester.identity.canonical_fqn);
@@ -595,15 +621,59 @@ impl TerminalSnapshotState {
         let server_deadline = accepted_at
             .checked_add(SNAPSHOT_SERVER_TIMEOUT)
             .ok_or(TerminalSnapshotReasonCode::Internal)?;
-        let deadline = request
-            .host_authorization_deadline
-            .as_ref()
-            .map_or(server_deadline, |(host_deadline, _)| {
-                server_deadline.min(*host_deadline)
-            });
-        let requester_key = authority_key(&requester.identity);
-        let permit = self.admit_requester(requester_key)?;
+        let (deadline, host_wall_deadline) = host_authorization_deadline.map_or(
+            (server_deadline, None),
+            |(host_deadline, wall_deadline)| {
+                (server_deadline.min(host_deadline), Some(wall_deadline))
+            },
+        );
+        let permit = self.admit_requester(authority_key(&requester.identity))?;
+        ensure_before_deadline(deadline, &self.shutdown)?;
+        Ok(TerminalSnapshotPreAdmission {
+            state: Arc::clone(self),
+            context: context.clone(),
+            manager,
+            requester,
+            permit,
+            audit,
+            deadline,
+            host_wall_deadline,
+            source_plane,
+        })
+    }
 
+    pub(crate) async fn prepare_with_admission(
+        self: &Arc<Self>,
+        admission: TerminalSnapshotPreAdmission,
+        request: TerminalSnapshotServiceRequest,
+    ) -> Result<TerminalSnapshotPrepared, TerminalSnapshotReasonCode> {
+        self.prepare_inner(admission, request).await
+    }
+
+    async fn prepare_inner(
+        self: &Arc<Self>,
+        admission: TerminalSnapshotPreAdmission,
+        request: TerminalSnapshotServiceRequest,
+    ) -> Result<TerminalSnapshotPrepared, TerminalSnapshotReasonCode> {
+        let TerminalSnapshotPreAdmission {
+            state,
+            context,
+            manager,
+            requester,
+            permit,
+            audit,
+            deadline,
+            host_wall_deadline,
+            source_plane,
+        } = admission;
+        if !Arc::ptr_eq(self, &state) || source_plane != request.source_plane {
+            return Err(TerminalSnapshotReasonCode::Internal);
+        }
+        terminal_snapshot_renderer::validate_uuid(&request.request_id.to_string(), Some(4))
+            .map_err(|_| TerminalSnapshotReasonCode::InvalidRequest)?;
+        crate::config::teams::validate_terminal_snapshot_target_syntax(&request.target)
+            .map_err(|_| TerminalSnapshotReasonCode::InvalidRequest)?;
+        audit.accept_request(&request);
         ensure_before_deadline(deadline, &self.shutdown)?;
         let security = await_deadline(
             deadline,
@@ -624,12 +694,12 @@ impl TerminalSnapshotState {
 
         let sender_cwd = requester.fact.working_directory.clone();
         let target = request.target.clone();
-        let mut project_paths = security.project_paths.clone();
+        let mut project_paths = security.project_paths;
         let sender_is_root = requester.fact.is_root_agent;
         if !sender_is_root {
             augment_coordinator_project(&mut project_paths, &requester.identity)?;
         }
-        let route = run_blocking_with_deadline(deadline, permit.clone(), move || {
+        let route = run_blocking_with_deadline(deadline, &permit, &audit, move || {
             crate::config::teams::verify_terminal_snapshot_route(
                 std::path::Path::new(&sender_cwd),
                 sender_is_root,
@@ -654,13 +724,14 @@ impl TerminalSnapshotState {
         let facts = await_deadline(deadline, manager.terminal_snapshot_session_facts()).await??;
         let ids: Vec<Uuid> = facts.iter().map(|fact| fact.id).collect();
         let pty_manager = Arc::clone(&context.pty_manager);
-        let proofs = run_blocking_with_deadline(deadline, permit.clone(), move || {
+        let proofs = run_blocking_with_deadline(deadline, &permit, &audit, move || {
             PtyManager::snapshot_route_proofs(&pty_manager, &ids)
         })
         .await??;
-        let target_identity = route.target.clone();
-        let selected = run_blocking_with_deadline(deadline, permit.clone(), move || {
-            select_target_session(facts, proofs, &target_identity)
+        let target_root = route.target.replica_root.clone();
+        let target_identity = route.target.replica_identity.clone();
+        let selected = run_blocking_with_deadline(deadline, &permit, &audit, move || {
+            select_target_session(facts, proofs, &target_root, &target_identity)
         })
         .await??;
         if context.purge.blocks_session(selected.fact.id) {
@@ -671,7 +742,7 @@ impl TerminalSnapshotState {
         let capture_kind = selected.fact.backend_kind;
         let capture_cwd = selected.cwd_identity.clone();
         let capture_replica = route.target.replica_identity.clone();
-        let selected = run_blocking_with_deadline(deadline, permit.clone(), move || {
+        let selected = run_blocking_with_deadline(deadline, &permit, &audit, move || {
             let read =
                 selected
                     .proof
@@ -695,30 +766,45 @@ impl TerminalSnapshotState {
         let request_id = request.request_id.to_string();
         let format = request.format;
         let model_for_build = Arc::clone(&model);
-        let built = run_blocking_with_deadline(deadline, permit.clone(), move || {
-            build_result(
-                format,
-                request_id,
-                requester_fqn,
-                target_fqn,
-                &model_for_build,
-            )
-        })
-        .await??;
-        audit.accept_payload(built.payload_bytes);
-        if request
-            .host_authorization_deadline
-            .as_ref()
-            .is_some_and(|(_, wall_deadline)| chrono::Utc::now() >= *wall_deadline)
-        {
+        let (payload, payload_bytes) =
+            run_blocking_with_deadline(deadline, &permit, &audit, move || {
+                let payload = build_payload(
+                    format,
+                    request_id,
+                    requester_fqn,
+                    target_fqn,
+                    &model_for_build,
+                )?;
+                let payload_bytes =
+                    terminal_snapshot_payload_bytes(&payload).map_err(|error| match error {
+                        terminal_snapshot_renderer::ProtocolError::TooLarge => {
+                            TerminalSnapshotReasonCode::SnapshotTooLarge
+                        }
+                        _ => TerminalSnapshotReasonCode::Internal,
+                    })?;
+                Ok::<_, TerminalSnapshotReasonCode>((payload, payload_bytes))
+            })
+            .await??;
+        audit.accept_payload(payload_bytes);
+        if host_wall_deadline.is_some_and(|wall_deadline| chrono::Utc::now() >= wall_deadline) {
             return Err(TerminalSnapshotReasonCode::SnapshotTimeout);
         }
 
-        final_revalidate(
-            self, context, &manager, deadline, permit, &requester, &route, &selected,
-        )
-        .await?;
-        Ok(built)
+        Ok(TerminalSnapshotPrepared {
+            payload,
+            finalization: TerminalSnapshotFinalization {
+                state,
+                context,
+                manager,
+                requester,
+                route,
+                selected,
+                permit,
+                audit,
+                deadline,
+                host_wall_deadline,
+            },
+        })
     }
 }
 
@@ -874,7 +960,8 @@ struct SelectedSession {
 fn select_target_session(
     facts: Vec<TerminalSnapshotSessionFact>,
     proofs: Vec<Option<PtySnapshotRouteProof>>,
-    target: &VerifiedPtyInputIdentity,
+    target_root: &Path,
+    target_identity: &crate::path_identity::VerifiedPathIdentity,
 ) -> Result<SelectedSession, TerminalSnapshotReasonCode> {
     if facts.len() != proofs.len() {
         return Err(TerminalSnapshotReasonCode::Internal);
@@ -882,41 +969,37 @@ fn select_target_session(
     let mut eligible = Vec::new();
     let mut unavailable = false;
     for (fact, proof) in facts.into_iter().zip(proofs) {
-        let lexical_target =
-            std::path::Path::new(&fact.working_directory).starts_with(&target.replica_root);
-        let cwd_identity = match crate::path_identity::verify_directory(std::path::Path::new(
-            &fact.working_directory,
-        )) {
-            Ok(identity)
-                if crate::path_identity::is_verified_descendant(
-                    &identity,
-                    &target.replica_identity,
-                ) =>
-            {
-                identity
-            }
-            Ok(_) => continue,
-            Err(_) => {
-                if lexical_target && !matches!(fact.status, SessionStatus::Exited(_)) {
-                    unavailable = true;
-                }
-                continue;
-            }
-        };
         if matches!(fact.status, SessionStatus::Exited(_))
             || fact.name.starts_with(TEMP_SESSION_PREFIX)
         {
             continue;
         }
+        let lexical_target = std::path::Path::new(&fact.working_directory).starts_with(target_root);
+        let cwd_identity = match crate::path_identity::verify_directory(std::path::Path::new(
+            &fact.working_directory,
+        )) {
+            Ok(identity)
+                if crate::path_identity::is_verified_descendant(&identity, target_identity) =>
+            {
+                identity
+            }
+            Ok(_) => continue,
+            Err(_) => {
+                if lexical_target {
+                    unavailable = true;
+                }
+                continue;
+            }
+        };
         let Some(proof) = proof else {
             unavailable = true;
             continue;
         };
         let route_matches = proof.backend_kind() == fact.backend_kind
             && crate::path_identity::same_object(proof.saved_cwd(), &cwd_identity)
-            && proof.saved_replica().is_some_and(|replica| {
-                crate::path_identity::same_object(replica, &target.replica_identity)
-            });
+            && proof
+                .saved_replica()
+                .is_some_and(|replica| crate::path_identity::same_object(replica, target_identity));
         if !route_matches || proof.liveness() != ContextSessionLiveness::Live {
             unavailable = true;
             continue;
@@ -951,13 +1034,13 @@ fn status_rank(status: &SessionStatus) -> u8 {
     }
 }
 
-fn build_result(
+fn build_payload(
     format: TerminalSnapshotFormat,
     request_id: String,
     requester: String,
     target: String,
     model: &TerminalScreenModel,
-) -> Result<TerminalSnapshotServiceSuccess, TerminalSnapshotReasonCode> {
+) -> Result<TerminalSnapshotPayload, TerminalSnapshotReasonCode> {
     match format {
         TerminalSnapshotFormat::Json => {
             let document =
@@ -965,22 +1048,7 @@ fn build_result(
             document
                 .validate()
                 .map_err(|_| TerminalSnapshotReasonCode::Internal)?;
-            let document_bytes =
-                to_ascii_json(&document, terminal_snapshot_renderer::MAX_JSON_BYTES).map_err(
-                    |error| match error {
-                        terminal_snapshot_renderer::ProtocolError::TooLarge => {
-                            TerminalSnapshotReasonCode::SnapshotTooLarge
-                        }
-                        _ => TerminalSnapshotReasonCode::Internal,
-                    },
-                )?;
-            let result = TerminalSnapshotResult::Json { snapshot: document };
-            to_ascii_json(&result, MAX_TRANSPORT_BYTES)
-                .map_err(|_| TerminalSnapshotReasonCode::SnapshotTooLarge)?;
-            Ok(TerminalSnapshotServiceSuccess {
-                result,
-                payload_bytes: document_bytes.len() as u64,
-            })
+            Ok(TerminalSnapshotPayload::Json { snapshot: document })
         }
         TerminalSnapshotFormat::Png => {
             let rendered = render_png(model).map_err(|error| match error {
@@ -990,34 +1058,130 @@ fn build_result(
                 _ => TerminalSnapshotReasonCode::RenderFailed,
             })?;
             let metadata = rendered.metadata(request_id, requester, target, model);
-            let png_base64 = encode_canonical_base64(&rendered.bytes)
-                .map_err(|_| TerminalSnapshotReasonCode::SnapshotTooLarge)?;
-            let payload_bytes = rendered.bytes.len() as u64;
-            let result = TerminalSnapshotResult::Png {
+            Ok(TerminalSnapshotPayload::Png {
                 metadata,
-                png_base64,
-            };
-            to_ascii_json(&result, MAX_TRANSPORT_BYTES)
-                .map_err(|_| TerminalSnapshotReasonCode::SnapshotTooLarge)?;
-            Ok(TerminalSnapshotServiceSuccess {
-                result,
-                payload_bytes,
+                png: rendered.bytes,
             })
         }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn final_revalidate(
-    state: &TerminalSnapshotState,
-    context: &TerminalSnapshotServiceContext,
-    manager: &SessionManager,
-    deadline: Instant,
-    permit: RequesterSnapshotPermit,
-    requester: &RequesterProof,
-    route: &VerifiedTerminalSnapshotRoute,
-    selected: &SelectedSession,
+impl TerminalSnapshotFinalization {
+    pub(crate) async fn build_api_response(
+        &self,
+        payload: TerminalSnapshotPayload,
+    ) -> Result<Vec<u8>, TerminalSnapshotReasonCode> {
+        run_blocking_with_deadline(self.deadline, &self.permit, &self.audit, move || {
+            encode_api_success_payload(&payload).map_err(map_envelope_error)
+        })
+        .await?
+    }
+
+    pub(crate) async fn build_host_response(
+        &self,
+        payload: TerminalSnapshotPayload,
+        request_id: String,
+        confirmation_tag: String,
+        expires_at: String,
+    ) -> Result<Vec<u8>, TerminalSnapshotReasonCode> {
+        run_blocking_with_deadline(self.deadline, &self.permit, &self.audit, move || {
+            encode_host_success_payload(&request_id, &confirmation_tag, &expires_at, &payload)
+                .map_err(map_envelope_error)
+        })
+        .await?
+    }
+
+    pub(crate) async fn revalidate_api(
+        self,
+    ) -> Result<TerminalSnapshotDisclosure, TerminalSnapshotReasonCode> {
+        if self.host_wall_deadline.is_some() {
+            self.audit
+                .finalize_failure(TerminalSnapshotReasonCode::Internal);
+            return Err(TerminalSnapshotReasonCode::Internal);
+        }
+        if let Err(reason) = final_revalidate_async(&self).await {
+            self.audit.finalize_failure(reason);
+            return Err(reason);
+        }
+        Ok(TerminalSnapshotDisclosure {
+            state: self.state,
+            permit: self.permit,
+            audit: self.audit,
+            deadline: self.deadline,
+        })
+    }
+
+    pub(crate) fn fail_host<F>(
+        self,
+        reason: TerminalSnapshotReasonCode,
+        publish: F,
+    ) -> Result<(), TerminalSnapshotReasonCode>
+    where
+        F: FnOnce(TerminalSnapshotReasonCode) -> Result<(), TerminalSnapshotReasonCode>,
+    {
+        let result = match publish(reason) {
+            Ok(()) => Err(reason),
+            Err(_) => Err(TerminalSnapshotReasonCode::ResponseUnavailable),
+        };
+        if let Err(final_reason) = result {
+            self.audit.finalize_failure(final_reason);
+        }
+        drop(self.permit);
+        result
+    }
+
+    pub(crate) fn finalize_host<F>(
+        self,
+        success_bytes: Vec<u8>,
+        publish: F,
+    ) -> Result<(), TerminalSnapshotReasonCode>
+    where
+        F: FnOnce(
+            Result<Vec<u8>, TerminalSnapshotReasonCode>,
+        ) -> Result<(), TerminalSnapshotReasonCode>,
+    {
+        let result =
+            finalize_host_publication(success_bytes, final_revalidate_blocking(&self), publish);
+        match result {
+            Ok(()) => self.audit.finalize("succeeded", None),
+            Err(reason) => self.audit.finalize_failure(reason),
+        }
+        drop(self.permit);
+        result
+    }
+}
+
+fn finalize_host_publication<F>(
+    success_bytes: Vec<u8>,
+    authority: Result<(), TerminalSnapshotReasonCode>,
+    publish: F,
+) -> Result<(), TerminalSnapshotReasonCode>
+where
+    F: FnOnce(
+        Result<Vec<u8>, TerminalSnapshotReasonCode>,
+    ) -> Result<(), TerminalSnapshotReasonCode>,
+{
+    match authority {
+        Ok(()) => publish(Ok(success_bytes)),
+        Err(reason) => match publish(Err(reason)) {
+            Ok(()) => Err(reason),
+            Err(_) => Err(TerminalSnapshotReasonCode::ResponseUnavailable),
+        },
+    }
+}
+
+async fn final_revalidate_async(
+    finalization: &TerminalSnapshotFinalization,
 ) -> Result<(), TerminalSnapshotReasonCode> {
+    let state = &finalization.state;
+    let context = &finalization.context;
+    let manager = &finalization.manager;
+    let deadline = finalization.deadline;
+    let permit = &finalization.permit;
+    let audit = &finalization.audit;
+    let requester = &finalization.requester;
+    let route = &finalization.route;
+    let selected = &finalization.selected;
     ensure_before_deadline(deadline, &state.shutdown)?;
     let security = await_deadline(
         deadline,
@@ -1044,7 +1208,7 @@ async fn final_revalidate(
         augment_coordinator_project(&mut project_paths, &requester.identity)
             .map_err(|_| TerminalSnapshotReasonCode::AuthorityChanged)?;
     }
-    let fresh_route = run_blocking_with_deadline(deadline, permit, move || {
+    let fresh_route = run_blocking_with_deadline(deadline, permit, audit, move || {
         crate::config::teams::verify_terminal_snapshot_route(
             std::path::Path::new(&sender_cwd),
             sender_is_root,
@@ -1071,17 +1235,113 @@ async fn final_revalidate(
             return Err(TerminalSnapshotReasonCode::AuthorityChanged);
         }
     }
-    let current_requester = await_deadline(
+    verify_current_requester_async(deadline, manager, requester).await?;
+    verify_current_selected_async(deadline, manager, route, selected).await?;
+    ensure_before_deadline(deadline, &state.shutdown)
+}
+
+fn final_revalidate_blocking(
+    finalization: &TerminalSnapshotFinalization,
+) -> Result<(), TerminalSnapshotReasonCode> {
+    let state = &finalization.state;
+    let context = &finalization.context;
+    let manager = &finalization.manager;
+    let requester = &finalization.requester;
+    let route = &finalization.route;
+    let selected = &finalization.selected;
+    ensure_before_deadline(finalization.deadline, &state.shutdown)?;
+    let security = crate::config::settings::read_terminal_snapshot_security_settings_strict()
+        .map_err(|_| TerminalSnapshotReasonCode::AuthorityChanged)?;
+    let memory_enabled = context.settings.blocking_read().terminal_snapshots_enabled;
+    if !security.terminal_snapshots_enabled
+        || !memory_enabled
+        || context.restore.0.load(Ordering::SeqCst)
+        || context.purge.blocks_agent(&route.target.canonical_fqn)
+        || context.purge.blocks_session(selected.fact.id)
+    {
+        return Err(TerminalSnapshotReasonCode::AuthorityChanged);
+    }
+    let mut project_paths = security.project_paths;
+    if !requester.fact.is_root_agent {
+        augment_coordinator_project(&mut project_paths, &requester.identity)
+            .map_err(|_| TerminalSnapshotReasonCode::AuthorityChanged)?;
+    }
+    let fresh_route = crate::config::teams::verify_terminal_snapshot_route(
+        Path::new(&requester.fact.working_directory),
+        requester.fact.is_root_agent,
+        &route.target.canonical_fqn,
+        &project_paths,
+    )
+    .map_err(|_| TerminalSnapshotReasonCode::AuthorityChanged)?;
+    if !same_authority(&requester.identity, &fresh_route.sender)
+        || !same_authority(&route.target, &fresh_route.target)
+    {
+        return Err(TerminalSnapshotReasonCode::AuthorityChanged);
+    }
+    if let Some(token) = requester.host_token {
+        let token_fact = manager
+            .find_unique_live_snapshot_requester_by_token_blocking(token)
+            .map_err(|_| TerminalSnapshotReasonCode::AuthorityChanged)?;
+        if token_fact.id != requester.fact.id || token_fact.created_at != requester.fact.created_at
+        {
+            return Err(TerminalSnapshotReasonCode::AuthorityChanged);
+        }
+    }
+    verify_current_requester_blocking(manager, requester)?;
+    verify_current_selected_blocking(manager, route, selected)?;
+    if finalization
+        .host_wall_deadline
+        .is_some_and(|wall_deadline| chrono::Utc::now() >= wall_deadline)
+    {
+        return Err(TerminalSnapshotReasonCode::SnapshotTimeout);
+    }
+    ensure_before_deadline(finalization.deadline, &state.shutdown)
+}
+
+fn map_envelope_error(
+    error: terminal_snapshot_renderer::ProtocolError,
+) -> TerminalSnapshotReasonCode {
+    match error {
+        terminal_snapshot_renderer::ProtocolError::TooLarge => {
+            TerminalSnapshotReasonCode::SnapshotTooLarge
+        }
+        _ => TerminalSnapshotReasonCode::Internal,
+    }
+}
+
+async fn verify_current_requester_async(
+    deadline: Instant,
+    manager: &SessionManager,
+    requester: &RequesterProof,
+) -> Result<(), TerminalSnapshotReasonCode> {
+    let current = await_deadline(
         deadline,
         manager.live_snapshot_requester_by_id(requester.fact.id),
     )
     .await?
     .ok_or(TerminalSnapshotReasonCode::AuthorityChanged)?;
-    if current_requester.created_at != requester.fact.created_at
-        || current_requester.working_directory != requester.fact.working_directory
-        || current_requester.backend_kind != requester.fact.backend_kind
-        || current_requester.is_root_agent != requester.fact.is_root_agent
-        || current_requester.is_coordinator != requester.fact.is_coordinator
+    verify_requester_fact(requester, &current)
+}
+
+fn verify_current_requester_blocking(
+    manager: &SessionManager,
+    requester: &RequesterProof,
+) -> Result<(), TerminalSnapshotReasonCode> {
+    let current = manager
+        .live_snapshot_requester_by_id_blocking(requester.fact.id)
+        .ok_or(TerminalSnapshotReasonCode::AuthorityChanged)?;
+    verify_requester_fact(requester, &current)
+}
+
+fn verify_requester_fact(
+    requester: &RequesterProof,
+    current: &TerminalSnapshotRequesterFact,
+) -> Result<(), TerminalSnapshotReasonCode> {
+    if current.created_at != requester.fact.created_at
+        || current.working_directory != requester.fact.working_directory
+        || current.backend_kind != requester.fact.backend_kind
+        || current.is_root_agent != requester.fact.is_root_agent
+        || current.is_coordinator != requester.fact.is_coordinator
         || requester.route.liveness() != ContextSessionLiveness::Live
         || !requester.route.matches_requester_route(
             requester.fact.backend_kind,
@@ -1095,18 +1355,46 @@ async fn final_revalidate(
     {
         return Err(TerminalSnapshotReasonCode::AuthorityChanged);
     }
-    let current_selected = await_deadline(
+    Ok(())
+}
+
+async fn verify_current_selected_async(
+    deadline: Instant,
+    manager: &SessionManager,
+    route: &VerifiedTerminalSnapshotRoute,
+    selected: &SelectedSession,
+) -> Result<(), TerminalSnapshotReasonCode> {
+    let current = await_deadline(
         deadline,
         manager.terminal_snapshot_session_fact_by_id(selected.fact.id),
     )
     .await?
     .ok_or(TerminalSnapshotReasonCode::AuthorityChanged)?;
-    if current_selected.created_at != selected.fact.created_at
-        || current_selected.working_directory != selected.fact.working_directory
-        || current_selected.backend_kind != selected.fact.backend_kind
-        || current_selected.name != selected.fact.name
-        || current_selected.name.starts_with(TEMP_SESSION_PREFIX)
-        || matches!(current_selected.status, SessionStatus::Exited(_))
+    verify_selected_fact(route, selected, &current)
+}
+
+fn verify_current_selected_blocking(
+    manager: &SessionManager,
+    route: &VerifiedTerminalSnapshotRoute,
+    selected: &SelectedSession,
+) -> Result<(), TerminalSnapshotReasonCode> {
+    let current = manager
+        .terminal_snapshot_session_fact_by_id_blocking(selected.fact.id)
+        .ok_or(TerminalSnapshotReasonCode::AuthorityChanged)?;
+    verify_selected_fact(route, selected, &current)
+}
+
+fn verify_selected_fact(
+    route: &VerifiedTerminalSnapshotRoute,
+    selected: &SelectedSession,
+    current: &TerminalSnapshotSessionFact,
+) -> Result<(), TerminalSnapshotReasonCode> {
+    if current.created_at != selected.fact.created_at
+        || current.working_directory != selected.fact.working_directory
+        || current.backend_kind != selected.fact.backend_kind
+        || current.name != selected.fact.name
+        || current.name.starts_with(TEMP_SESSION_PREFIX)
+        || matches!(current.status, SessionStatus::Exited(_))
         || selected.proof.liveness() != ContextSessionLiveness::Live
         || !selected.proof.matches_current(
             selected.fact.backend_kind,
@@ -1116,7 +1404,7 @@ async fn final_revalidate(
     {
         return Err(TerminalSnapshotReasonCode::AuthorityChanged);
     }
-    ensure_before_deadline(deadline, &state.shutdown)
+    Ok(())
 }
 
 fn ensure_before_deadline(
@@ -1144,15 +1432,19 @@ where
 
 async fn run_blocking_with_deadline<F, T>(
     deadline: Instant,
-    permit: RequesterSnapshotPermit,
+    permit: &RequesterSnapshotPermit,
+    audit: &TerminalSnapshotAuditGuard,
     operation: F,
 ) -> Result<T, TerminalSnapshotReasonCode>
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
+    let permit = permit.clone();
+    let audit = audit.clone();
     let handle = tokio::task::spawn_blocking(move || {
         let _permit = permit;
+        let _audit = audit;
         crate::logging::catch_payload_unwind(operation)
     });
     let joined = await_deadline(deadline, handle).await?;
@@ -1179,18 +1471,6 @@ impl Drop for AuditInner {
         metadata.status = "failed".to_string();
         metadata.reason_code = Some("internal".to_string());
         crate::api::audit::record_terminal_snapshot(&metadata);
-    }
-}
-
-pub(crate) struct PendingTerminalSnapshotAudit(TerminalSnapshotAuditGuard);
-
-impl PendingTerminalSnapshotAudit {
-    pub(crate) fn finalize_success(self) {
-        self.0.finalize("succeeded", None);
-    }
-
-    pub(crate) fn finalize_failure(self, reason: TerminalSnapshotReasonCode) {
-        self.0.finalize_failure(reason);
     }
 }
 
@@ -1227,13 +1507,7 @@ impl TerminalSnapshotAuditGuard {
         }
     }
 
-    fn new(request: &TerminalSnapshotServiceRequest) -> Self {
-        let audit = Self::pre_admission(request.source_plane);
-        audit.accept_request(request);
-        audit
-    }
-
-    fn accept_request(&self, request: &TerminalSnapshotServiceRequest) {
+    pub(crate) fn accept_request(&self, request: &TerminalSnapshotServiceRequest) {
         self.update(|metadata| {
             metadata.request_id = Some(request.request_id.to_string());
             metadata.format = Some(request.format.to_string());
@@ -1280,11 +1554,6 @@ impl TerminalSnapshotAuditGuard {
 
     fn accept_payload(&self, payload_bytes: u64) {
         self.update(|metadata| metadata.payload_bytes = Some(payload_bytes));
-    }
-
-    fn finalize_success(&self, success: &TerminalSnapshotServiceSuccess) {
-        self.accept_payload(success.payload_bytes);
-        self.finalize("succeeded", None);
     }
 
     pub(crate) fn finalize_failure(&self, reason: TerminalSnapshotReasonCode) {
@@ -1336,6 +1605,25 @@ mod tests {
     }
 
     #[test]
+    fn temporary_only_target_is_unavailable_even_when_its_cwd_vanished() {
+        let target = tempfile::TempDir::new().unwrap();
+        let target_identity = crate::path_identity::verify_directory(target.path()).unwrap();
+        let fact = TerminalSnapshotSessionFact {
+            id: Uuid::new_v4(),
+            created_at: chrono::Utc::now(),
+            name: format!("{TEMP_SESSION_PREFIX}only"),
+            status: SessionStatus::Running,
+            working_directory: target.path().join("missing").to_string_lossy().to_string(),
+            backend_kind: SessionBackendKind::LocalProcess,
+        };
+        let result = select_target_session(vec![fact], vec![None], target.path(), &target_identity);
+        assert!(matches!(
+            result,
+            Err(TerminalSnapshotReasonCode::TargetUnavailable)
+        ));
+    }
+
+    #[test]
     fn artifact_registry_removes_only_the_tracked_object() {
         let state = TerminalSnapshotState::new(crate::shutdown::ShutdownSignal::new());
         let directory = tempfile::TempDir::new().unwrap();
@@ -1363,6 +1651,81 @@ mod tests {
             .unwrap()
             .files
             .contains_key(&identity.object_id));
+    }
+
+    #[test]
+    fn host_final_handoff_discards_success_bytes_after_authority_change() {
+        let secret = b"terminal-content-sentinel".to_vec();
+        let result = finalize_host_publication(
+            secret,
+            Err(TerminalSnapshotReasonCode::AuthorityChanged),
+            |outcome| {
+                assert!(matches!(
+                    outcome,
+                    Err(TerminalSnapshotReasonCode::AuthorityChanged)
+                ));
+                Ok(())
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(TerminalSnapshotReasonCode::AuthorityChanged)
+        ));
+    }
+
+    #[test]
+    fn host_final_handoff_reports_the_actual_publication_failure() {
+        let result = finalize_host_publication(b"safe-envelope".to_vec(), Ok(()), |outcome| {
+            assert!(outcome.is_ok());
+            Err(TerminalSnapshotReasonCode::ResponseUnavailable)
+        });
+        assert!(matches!(
+            result,
+            Err(TerminalSnapshotReasonCode::ResponseUnavailable)
+        ));
+    }
+
+    #[test]
+    fn artifact_cleanup_reclaims_an_existing_idle_directory_record() {
+        let state = TerminalSnapshotState::new(crate::shutdown::ShutdownSignal::new());
+        let directory = tempfile::TempDir::new().unwrap();
+        let identity = crate::path_identity::verify_directory(directory.path()).unwrap();
+        drop(state.reserve_artifact(directory.path(), &identity).unwrap());
+        assert_eq!(state.artifacts.lock().unwrap().directories.len(), 1);
+        state.sweep_artifacts(false);
+        assert!(state.artifacts.lock().unwrap().directories.is_empty());
+        assert!(state.reserve_artifact(directory.path(), &identity).is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn timed_out_blocking_work_retains_the_requester_and_global_permit() {
+        let state = TerminalSnapshotState::new(crate::shutdown::ShutdownSignal::new());
+        let permit = state.admit_requester("requester".to_string()).unwrap();
+        let audit =
+            TerminalSnapshotAuditGuard::pre_admission(TerminalSnapshotSourcePlane::ContainerApi);
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let deadline = Instant::now() + Duration::from_millis(20);
+        let result = run_blocking_with_deadline(deadline, &permit, &audit, move || {
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        })
+        .await;
+        assert!(matches!(
+            result,
+            Err(TerminalSnapshotReasonCode::SnapshotTimeout)
+        ));
+        started_rx.recv().unwrap();
+        drop(permit);
+        assert!(state.admit_requester("requester".to_string()).is_err());
+        release_tx.send(()).unwrap();
+        for _ in 0..50 {
+            if state.admit_requester("requester".to_string()).is_ok() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("blocking task did not release the retained limiter permit");
     }
 
     #[test]

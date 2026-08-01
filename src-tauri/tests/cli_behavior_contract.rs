@@ -163,6 +163,7 @@ fn root_help_lists_public_subcommands() {
         "send",
         "list-peers",
         "list-peers-lean",
+        "terminal-snapshot",
         "list-sessions",
         "agency-templates",
         "create-agent",
@@ -218,6 +219,18 @@ fn public_subcommand_help_contracts() {
         (
             &["list-peers-lean", "--help"],
             &["lean", "--token", "--root"],
+        ),
+        (
+            &["terminal-snapshot", "--help"],
+            &[
+                "--token",
+                "--root",
+                "--to",
+                "--format",
+                "--output",
+                "--timeout",
+                "--snapshot-targets",
+            ],
         ),
         (
             &["list-sessions", "--help"],

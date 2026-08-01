@@ -65,7 +65,7 @@ impl From<ProtocolError> for RenderError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct RenderedTerminalPng {
     pub bytes: Vec<u8>,
     pub pixel_width: u32,
@@ -738,7 +738,7 @@ mod tests {
         });
         let first = render_png(&model).unwrap();
         let second = render_png(&model).unwrap();
-        assert_eq!(first, second);
+        assert!(first == second);
         assert_eq!((first.pixel_width, first.pixel_height), (26, 36));
         assert_eq!(FONT_BYTES.len(), 340_712);
     }

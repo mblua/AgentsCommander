@@ -1248,10 +1248,9 @@ async fn execute_terminal_snapshot(
     options: TerminalSnapshotOptions,
 ) -> Result<(), terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
     use terminal_snapshot_renderer::{
-        decode_api_error, decode_api_success, decode_canonical_base64_png, to_ascii_json,
-        validate_png_for_metadata, TerminalSnapshotApiRequest, TerminalSnapshotFormat as F,
-        TerminalSnapshotReasonCode as C, TerminalSnapshotResult, API_VERSION, MAX_ERROR_BYTES,
-        MAX_REQUEST_BYTES, MAX_TRANSPORT_BYTES,
+        decode_api_error, decode_api_success, to_ascii_json, TerminalSnapshotApiRequest,
+        TerminalSnapshotFormat as F, TerminalSnapshotPayload, TerminalSnapshotReasonCode as C,
+        API_VERSION, MAX_ERROR_BYTES, MAX_REQUEST_BYTES, MAX_TRANSPORT_BYTES,
     };
 
     let base = validated_snapshot_api_url()?;
@@ -1268,14 +1267,7 @@ async fn execute_terminal_snapshot(
     request.validate().map_err(|_| C::InvalidRequest)?;
     let body = to_ascii_json(&request, MAX_REQUEST_BYTES).map_err(|_| C::InvalidRequest)?;
     let deadline = Instant::now() + Duration::from_secs(options.timeout);
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .retry(reqwest::retry::never())
-        .redirect(reqwest::redirect::Policy::none())
-        .referer(false)
-        .timeout(Duration::from_secs(options.timeout))
-        .build()
-        .map_err(|_| C::ResponseUnavailable)?;
+    let client = snapshot_http_client(Duration::from_secs(options.timeout))?;
     let remaining = deadline
         .checked_duration_since(Instant::now())
         .ok_or(C::SnapshotTimeout)?;
@@ -1310,11 +1302,12 @@ async fn execute_terminal_snapshot(
     }
     let success = decode_api_success(&bytes, &request_id, &request.to, request.format)
         .map_err(|_| C::ResponseUnavailable)?;
+    drop(bytes);
     if Instant::now() >= deadline {
         return Err(C::SnapshotTimeout);
     }
     match (request.format, success.result) {
-        (F::Json, TerminalSnapshotResult::Json { snapshot }) => {
+        (F::Json, TerminalSnapshotPayload::Json { snapshot }) => {
             let line = to_ascii_json(&snapshot, MAX_TRANSPORT_BYTES)
                 .map_err(|_| C::ResponseUnavailable)?;
             if Instant::now() >= deadline {
@@ -1322,16 +1315,7 @@ async fn execute_terminal_snapshot(
             }
             write_snapshot_stdout(&line)
         }
-        (
-            F::Png,
-            TerminalSnapshotResult::Png {
-                metadata,
-                png_base64,
-            },
-        ) => {
-            let png =
-                decode_canonical_base64_png(&png_base64).map_err(|_| C::ResponseUnavailable)?;
-            validate_png_for_metadata(&png, &metadata).map_err(|_| C::ResponseUnavailable)?;
+        (F::Png, TerminalSnapshotPayload::Png { metadata, png }) => {
             if Instant::now() >= deadline {
                 return Err(C::SnapshotTimeout);
             }
@@ -1339,18 +1323,43 @@ async fn execute_terminal_snapshot(
             let file = create_snapshot_output(output)?;
             file.write_and_verify(&png)?;
             let line = to_ascii_json(&metadata, MAX_REQUEST_BYTES).map_err(|_| C::OutputFailed)?;
+            if Instant::now() >= deadline {
+                return Err(C::SnapshotTimeout);
+            }
             write_snapshot_stdout(&line)
         }
         _ => Err(C::ResponseUnavailable),
     }
 }
 
+fn snapshot_http_client(
+    timeout: Duration,
+) -> Result<reqwest::Client, terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
+    use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
+
+    reqwest::Client::builder()
+        .no_proxy()
+        .retry(reqwest::retry::never())
+        .redirect(reqwest::redirect::Policy::none())
+        .referer(false)
+        .timeout(timeout)
+        .build()
+        .map_err(|_| C::ResponseUnavailable)
+}
+
 fn validated_snapshot_api_url(
+) -> Result<reqwest::Url, terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
+    let raw = api_url()
+        .map_err(|_| terminal_snapshot_renderer::TerminalSnapshotReasonCode::ResponseUnavailable)?;
+    validate_snapshot_api_url(&raw)
+}
+
+fn validate_snapshot_api_url(
+    raw: &str,
 ) -> Result<reqwest::Url, terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
     use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
 
-    let raw = api_url().map_err(|_| C::ResponseUnavailable)?;
-    let url = reqwest::Url::parse(&raw).map_err(|_| C::ResponseUnavailable)?;
+    let url = reqwest::Url::parse(raw).map_err(|_| C::ResponseUnavailable)?;
     if !matches!(url.scheme(), "http" | "https")
         || !url.username().is_empty()
         || url.password().is_some()
@@ -1474,16 +1483,13 @@ fn write_snapshot_stdout(
 struct SnapshotOutputFile {
     path: std::path::PathBuf,
     file: std::fs::File,
-    parent_identity: SnapshotDirectoryIdentity,
+    parent: SnapshotDirectoryProof,
     file_identity: SnapshotFileIdentity,
 }
 
-#[derive(Clone, PartialEq, Eq)]
-enum SnapshotDirectoryIdentity {
-    #[cfg(unix)]
-    Unix { device: u64, inode: u64 },
-    #[cfg(windows)]
-    Windows(std::path::PathBuf),
+struct SnapshotDirectoryProof {
+    file: std::fs::File,
+    identity: SnapshotFileIdentity,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1505,14 +1511,19 @@ impl SnapshotOutputFile {
             .and_then(|_| self.file.flush())
             .and_then(|_| self.file.sync_all())
             .map_err(|_| C::OutputFailed)?;
-        let current_parent =
-            snapshot_directory_identity(self.path.parent().ok_or(C::OutputFailed)?)?;
+        let current_parent = snapshot_directory_identity(
+            self.path.parent().ok_or(C::OutputFailed)?,
+            C::OutputFailed,
+        )?;
+        let retained_parent =
+            snapshot_handle_identity(&self.parent.file, true).map_err(|_| C::OutputFailed)?;
         let current_handle = snapshot_file_identity(&self.file).map_err(|_| C::OutputFailed)?;
         let current_path = open_snapshot_leaf(&self.path).map_err(|_| C::OutputFailed)?;
         let current_path_identity =
             snapshot_file_identity(&current_path).map_err(|_| C::OutputFailed)?;
         let length = self.file.metadata().map_err(|_| C::OutputFailed)?.len();
-        if current_parent != self.parent_identity
+        if retained_parent != self.parent.identity
+            || current_parent.identity != self.parent.identity
             || current_handle != self.file_identity
             || current_path_identity != self.file_identity
             || current_handle.links != 1
@@ -1569,11 +1580,19 @@ fn validate_snapshot_output_path(
 fn create_snapshot_output(
     path: &std::path::Path,
 ) -> Result<SnapshotOutputFile, terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
+    create_snapshot_output_inner(path, || {})
+}
+
+fn create_snapshot_output_inner(
+    path: &std::path::Path,
+    before_create: impl FnOnce(),
+) -> Result<SnapshotOutputFile, terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
     use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
 
     validate_snapshot_output_path(path)?;
     let parent = path.parent().ok_or(C::UnsafePath)?;
-    let parent_identity = snapshot_directory_identity(parent)?;
+    let parent_proof = snapshot_directory_identity(parent, C::UnsafePath)?;
+    before_create();
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -1587,36 +1606,37 @@ fn create_snapshot_output(
         use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
         options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     }
-    let file = options.open(path).map_err(|_| C::UnsafePath)?;
+    let file = options.open(path).map_err(|_| C::OutputFailed)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         file.set_permissions(std::fs::Permissions::from_mode(0o600))
-            .map_err(|_| C::UnsafePath)?;
+            .map_err(|_| C::OutputFailed)?;
         if file
             .metadata()
-            .map_err(|_| C::UnsafePath)?
+            .map_err(|_| C::OutputFailed)?
             .permissions()
             .mode()
             & 0o777
             != 0o600
         {
-            return Err(C::UnsafePath);
+            return Err(C::OutputFailed);
         }
     }
-    let file_identity = snapshot_file_identity(&file).map_err(|_| C::UnsafePath)?;
-    let path_file = open_snapshot_leaf(path).map_err(|_| C::UnsafePath)?;
-    let path_identity = snapshot_file_identity(&path_file).map_err(|_| C::UnsafePath)?;
+    let file_identity = snapshot_file_identity(&file).map_err(|_| C::OutputFailed)?;
+    let path_file = open_snapshot_leaf(path).map_err(|_| C::OutputFailed)?;
+    let path_identity = snapshot_file_identity(&path_file).map_err(|_| C::OutputFailed)?;
+    let current_parent = snapshot_directory_identity(parent, C::OutputFailed)?;
     if file_identity != path_identity
         || file_identity.links != 1
-        || snapshot_directory_identity(parent)? != parent_identity
+        || current_parent.identity != parent_proof.identity
     {
-        return Err(C::UnsafePath);
+        return Err(C::OutputFailed);
     }
     Ok(SnapshotOutputFile {
         path: path.to_path_buf(),
         file,
-        parent_identity,
+        parent: parent_proof,
         file_identity,
     })
 }
@@ -1643,35 +1663,45 @@ fn verify_snapshot_directory_chain(
             return Err(C::UnsafePath);
         }
     }
-    snapshot_directory_identity(directory).map(|_| ())
+    snapshot_directory_identity(directory, C::UnsafePath).map(|_| ())
 }
 
 fn snapshot_directory_identity(
     path: &std::path::Path,
-) -> Result<SnapshotDirectoryIdentity, terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
-    use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
-
-    let metadata = std::fs::symlink_metadata(path).map_err(|_| C::UnsafePath)?;
+    reason: terminal_snapshot_renderer::TerminalSnapshotReasonCode,
+) -> Result<SnapshotDirectoryProof, terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| reason)?;
     if !metadata.is_dir()
         || metadata.file_type().is_symlink()
         || snapshot_metadata_reparse(&metadata)
     {
-        return Err(C::UnsafePath);
+        return Err(reason);
     }
+    let file = open_snapshot_directory(path).map_err(|_| reason)?;
+    let identity = snapshot_handle_identity(&file, true).map_err(|_| reason)?;
+    Ok(SnapshotDirectoryProof { file, identity })
+}
+
+fn open_snapshot_directory(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::MetadataExt;
-        Ok(SnapshotDirectoryIdentity::Unix {
-            device: metadata.dev(),
-            inode: metadata.ino(),
-        })
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
     }
     #[cfg(windows)]
     {
-        std::fs::canonicalize(path)
-            .map(SnapshotDirectoryIdentity::Windows)
-            .map_err(|_| C::UnsafePath)
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+            FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+        options
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
     }
+    options.open(path)
 }
 
 fn open_snapshot_leaf(path: &std::path::Path) -> std::io::Result<std::fs::File> {
@@ -1691,12 +1721,19 @@ fn open_snapshot_leaf(path: &std::path::Path) -> std::io::Result<std::fs::File> 
     options.open(path)
 }
 
-#[cfg(unix)]
 fn snapshot_file_identity(file: &std::fs::File) -> std::io::Result<SnapshotFileIdentity> {
+    snapshot_handle_identity(file, false)
+}
+
+#[cfg(unix)]
+fn snapshot_handle_identity(
+    file: &std::fs::File,
+    require_directory: bool,
+) -> std::io::Result<SnapshotFileIdentity> {
     use std::os::unix::fs::MetadataExt;
     let metadata = file.metadata()?;
-    if !metadata.is_file() {
-        return Err(std::io::Error::other("not regular"));
+    if metadata.is_dir() != require_directory || metadata.is_file() == require_directory {
+        return Err(std::io::Error::other("unexpected filesystem object"));
     }
     Ok(SnapshotFileIdentity {
         volume: metadata.dev(),
@@ -1706,13 +1743,20 @@ fn snapshot_file_identity(file: &std::fs::File) -> std::io::Result<SnapshotFileI
 }
 
 #[cfg(windows)]
-fn snapshot_file_identity(file: &std::fs::File) -> std::io::Result<SnapshotFileIdentity> {
+fn snapshot_handle_identity(
+    file: &std::fs::File,
+    require_directory: bool,
+) -> std::io::Result<SnapshotFileIdentity> {
     use std::mem::MaybeUninit;
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
         GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
     };
 
+    let metadata = file.metadata()?;
+    if metadata.is_dir() != require_directory || metadata.is_file() == require_directory {
+        return Err(std::io::Error::other("unexpected filesystem object"));
+    }
     let mut information = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
     let ok =
         unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, information.as_mut_ptr()) };
@@ -1832,12 +1876,20 @@ mod tests {
     enum ScriptedReply {
         DropConnection,
         Http(u16, Vec<u8>),
+        Raw(Vec<u8>),
+        Trickle {
+            head: Vec<u8>,
+            first: Vec<u8>,
+            delay: Duration,
+            rest: Vec<u8>,
+        },
     }
 
     #[derive(Clone)]
     struct CapturedRequest {
         method: String,
         path: String,
+        headers: String,
         body: Vec<u8>,
     }
 
@@ -1859,6 +1911,7 @@ mod tests {
             );
         };
         let headers = std::str::from_utf8(&bytes[..header_end]).unwrap();
+        let captured_headers = headers.to_ascii_lowercase();
         let mut lines = headers.split("\r\n");
         let request_line = lines.next().unwrap();
         let mut request_parts = request_line.split_whitespace();
@@ -1881,6 +1934,7 @@ mod tests {
         CapturedRequest {
             method,
             path,
+            headers: captured_headers,
             body: bytes[header_end..header_end + content_length].to_vec(),
         }
     }
@@ -1919,6 +1973,22 @@ mod tests {
                         );
                         let _ = stream.write_all(headers.as_bytes()).await;
                         let _ = stream.write_all(&body).await;
+                        let _ = stream.shutdown().await;
+                    }
+                    ScriptedReply::Raw(response) => {
+                        let _ = stream.write_all(&response).await;
+                        let _ = stream.shutdown().await;
+                    }
+                    ScriptedReply::Trickle {
+                        head,
+                        first,
+                        delay,
+                        rest,
+                    } => {
+                        let _ = stream.write_all(&head).await;
+                        let _ = stream.write_all(&first).await;
+                        tokio::time::sleep(delay).await;
+                        let _ = stream.write_all(&rest).await;
                         let _ = stream.shutdown().await;
                     }
                 }
@@ -2304,6 +2374,99 @@ mod tests {
         assert!(captured[0].body.is_empty());
     }
 
+    fn strict_snapshot_response(status: u16, body: &[u8], extra_headers: &str) -> Vec<u8> {
+        let reason = if status == 200 { "OK" } else { "Response" };
+        format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nPragma: no-cache\r\nContent-Length: {}\r\n{extra_headers}Connection: close\r\n\r\n{}",
+            body.len(),
+            String::from_utf8_lossy(body),
+        )
+        .into_bytes()
+    }
+
+    #[tokio::test]
+    async fn terminal_snapshot_client_never_follows_redirects_or_retries_protocol_status() {
+        for (status, extra) in [
+            (302, "Location: http://127.0.0.1:9/forwarded\r\n"),
+            (421, ""),
+        ] {
+            let scripted = strict_snapshot_response(status, b"", extra);
+            let (base, captured, task) = scripted_server(vec![ScriptedReply::Raw(scripted)]).await;
+            let client = snapshot_http_client(Duration::from_secs(2)).unwrap();
+            let response = client
+                .post(format!("{base}/api/v1/terminal-snapshot"))
+                .header(ACCEPT_ENCODING, "identity")
+                .body("{}")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status().as_u16(), status);
+            task.await.unwrap();
+            let captured = captured.lock().unwrap();
+            assert_eq!(captured.len(), 1);
+            assert!(captured[0]
+                .headers
+                .contains("accept-encoding: identity\r\n"));
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_snapshot_response_rejects_compression_and_duplicate_security_headers() {
+        for extra in ["Content-Encoding: gzip\r\n", "Cache-Control: no-store\r\n"] {
+            let response = strict_snapshot_response(200, b"{}", extra);
+            let (base, _, task) = scripted_server(vec![ScriptedReply::Raw(response)]).await;
+            let client = snapshot_http_client(Duration::from_secs(2)).unwrap();
+            let response = client.get(base).send().await.unwrap();
+            assert_eq!(
+                validate_snapshot_response_headers(&response).unwrap_err(),
+                terminal_snapshot_renderer::TerminalSnapshotReasonCode::ResponseUnavailable
+            );
+            task.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_snapshot_streamed_body_uses_one_absolute_deadline() {
+        let head = b"HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nPragma: no-cache\r\nContent-Length: 4\r\nConnection: close\r\n\r\n".to_vec();
+        let (base, _, task) = scripted_server(vec![ScriptedReply::Trickle {
+            head,
+            first: b"{".to_vec(),
+            delay: Duration::from_millis(100),
+            rest: b"}\n\n".to_vec(),
+        }])
+        .await;
+        let client = snapshot_http_client(Duration::from_secs(2)).unwrap();
+        let response = client.get(base).send().await.unwrap();
+        validate_snapshot_response_headers(&response).unwrap();
+        let error = read_snapshot_response_body(
+            response,
+            terminal_snapshot_renderer::MAX_TRANSPORT_BYTES,
+            Instant::now() + Duration::from_millis(20),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error,
+            terminal_snapshot_renderer::TerminalSnapshotReasonCode::SnapshotTimeout
+        );
+        task.await.unwrap();
+    }
+
+    #[test]
+    fn terminal_snapshot_base_url_rejects_credentials_query_fragment_and_suffix() {
+        for invalid in [
+            "ftp://example.test/",
+            "http://user@example.test/",
+            "http://example.test/?query=1",
+            "http://example.test/#fragment",
+            "http://example.test/api/v1/",
+        ] {
+            assert!(validate_snapshot_api_url(invalid).is_err(), "{invalid}");
+        }
+        assert!(validate_snapshot_api_url("http://example.test/").is_ok());
+        assert!(validate_snapshot_api_url("https://example.test/").is_ok());
+    }
+
     #[test]
     fn terminal_snapshot_parser_enforces_format_output_and_duplicates() {
         use terminal_snapshot_renderer::{
@@ -2388,6 +2551,25 @@ mod tests {
             validate_snapshot_output_path(std::path::Path::new("relative.png")).unwrap_err(),
             C::UnsafePath
         );
+    }
+
+    #[test]
+    fn terminal_snapshot_output_rejects_same_spelling_parent_replacement() {
+        use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let parent = temporary.path().join("parent");
+        let retired = temporary.path().join("retired");
+        std::fs::create_dir(&parent).unwrap();
+        let output = parent.join("snapshot.png");
+        let parent_for_race = parent.clone();
+        let error = create_snapshot_output_inner(&output, move || {
+            std::fs::rename(&parent_for_race, &retired).unwrap();
+            std::fs::create_dir(&parent_for_race).unwrap();
+        })
+        .err()
+        .unwrap();
+        assert_eq!(error, C::OutputFailed);
     }
 
     #[test]

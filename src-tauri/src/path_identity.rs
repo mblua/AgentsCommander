@@ -842,6 +842,13 @@ impl VerifiedNewFile {
 }
 
 pub fn create_terminal_snapshot_output(path: &Path) -> Result<VerifiedNewFile, String> {
+    create_terminal_snapshot_output_inner(path, || {})
+}
+
+fn create_terminal_snapshot_output_inner(
+    path: &Path,
+    before_create: impl FnOnce(),
+) -> Result<VerifiedNewFile, String> {
     validate_terminal_snapshot_output_path(path)?;
     let parent_path = path.parent().ok_or_else(|| "unsafe_path".to_string())?;
     let parent = verify_directory(parent_path)?;
@@ -849,6 +856,7 @@ pub fn create_terminal_snapshot_output(path: &Path) -> Result<VerifiedNewFile, S
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         _ => return Err("unsafe_path".to_string()),
     }
+    before_create();
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -862,27 +870,29 @@ pub fn create_terminal_snapshot_output(path: &Path) -> Result<VerifiedNewFile, S
         use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
         options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     }
-    let file = options.open(path).map_err(|_| "unsafe_path".to_string())?;
+    let file = options
+        .open(path)
+        .map_err(|_| "output_failed".to_string())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         file.set_permissions(std::fs::Permissions::from_mode(0o600))
-            .map_err(|_| "unsafe_path".to_string())?;
+            .map_err(|_| "output_failed".to_string())?;
         if file
             .metadata()
-            .map_err(|_| "unsafe_path".to_string())?
+            .map_err(|_| "output_failed".to_string())?
             .permissions()
             .mode()
             & 0o777
             != 0o600
         {
-            return Err("unsafe_path".to_string());
+            return Err("output_failed".to_string());
         }
     }
-    verify_opened_regular_file(path, &file, true)?;
-    let current_parent = verify_directory(parent_path)?;
+    verify_opened_regular_file(path, &file, true).map_err(|_| "output_failed".to_string())?;
+    let current_parent = verify_directory(parent_path).map_err(|_| "output_failed".to_string())?;
     if !same_object(&parent, &current_parent) {
-        return Err("unsafe_path".to_string());
+        return Err("output_failed".to_string());
     }
     Ok(VerifiedNewFile {
         path: path.to_path_buf(),
@@ -913,10 +923,10 @@ pub fn validate_terminal_snapshot_output_path(path: &Path) -> Result<(), String>
     if !extension_is_png {
         return Err("unsafe_path".to_string());
     }
-    let parent = path.parent().ok_or_else(|| "unsafe_path".to_string())?;
-    verify_directory(parent)?;
     #[cfg(windows)]
     validate_windows_snapshot_output_path(path)?;
+    let parent = path.parent().ok_or_else(|| "unsafe_path".to_string())?;
+    verify_directory(parent)?;
     Ok(())
 }
 
@@ -1118,6 +1128,35 @@ mod tests {
         if linked {
             assert!(verify_directory(&link).is_err());
             assert!(read_bounded_regular(&link.join("identity.json"), 16).is_err());
+        }
+    }
+
+    #[test]
+    fn terminal_snapshot_post_validation_create_race_is_output_failed() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let output = directory.path().join("raced.png");
+        let raced = output.clone();
+        let error = create_terminal_snapshot_output_inner(&output, move || {
+            std::fs::write(raced, b"collision").unwrap();
+        })
+        .err()
+        .unwrap();
+        assert_eq!(error, "output_failed");
+        assert_eq!(std::fs::read(output).unwrap(), b"collision");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_snapshot_windows_namespaces_reject_lexically() {
+        for path in [
+            r"\\.\C:\snapshot.png",
+            r"\\?\GLOBALROOT\Device\HarddiskVolume1\snapshot.png",
+            r"\\?\Volume{00000000-0000-0000-0000-000000000000}\snapshot.png",
+            r"C:\safe\snapshot.png:stream",
+            r"C:\safe\CON.png",
+            r"C:\safe\trailing.\snapshot.png",
+        ] {
+            assert!(validate_windows_snapshot_output_path(Path::new(path)).is_err());
         }
     }
 

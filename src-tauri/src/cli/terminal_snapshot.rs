@@ -4,9 +4,9 @@ use std::time::{Duration, Instant};
 
 use clap::{Args, ValueEnum};
 use terminal_snapshot_renderer::{
-    canonical_timestamp, decode_canonical_base64_png, decode_host_response, to_ascii_json,
-    validate_png_for_metadata, TerminalSnapshotFormat, TerminalSnapshotHostResponse,
-    TerminalSnapshotReasonCode, TerminalSnapshotResult, MAX_REQUEST_BYTES, MAX_TRANSPORT_BYTES,
+    canonical_timestamp, decode_host_response, to_ascii_json, TerminalSnapshotFormat,
+    TerminalSnapshotHostResponse, TerminalSnapshotPayload, TerminalSnapshotReasonCode,
+    MAX_REQUEST_BYTES, MAX_TRANSPORT_BYTES,
 };
 use uuid::Uuid;
 
@@ -159,6 +159,7 @@ fn execute_inner(args: TerminalSnapshotArgs) -> Result<(), String> {
                 &request.confirmation_tag,
                 &request.to,
                 request.format,
+                deadline,
             )?;
             let expires_at = terminal_snapshot_renderer::validate_timestamp(&response.expires_at)
                 .map_err(|_| "response_unavailable".to_string())?;
@@ -166,12 +167,14 @@ fn execute_inner(args: TerminalSnapshotArgs) -> Result<(), String> {
             if now >= expires_at || expires_at > now + chrono::Duration::seconds(65) {
                 return Err("response_unavailable".to_string());
             }
+            ensure_client_deadline(deadline)?;
             let outcome = handle_response(
                 &response,
                 format,
                 args.output.as_deref(),
                 &request.from,
                 &request.to,
+                deadline,
             );
             remove_response(&response_path, &response_identity);
             return outcome;
@@ -354,6 +357,7 @@ fn read_response(
     confirmation_tag: &str,
     target: &str,
     format: TerminalSnapshotFormat,
+    deadline: Instant,
 ) -> Result<
     (
         TerminalSnapshotHostResponse,
@@ -361,6 +365,7 @@ fn read_response(
     ),
     String,
 > {
+    ensure_client_deadline(deadline)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -376,13 +381,16 @@ fn read_response(
     }
     let (bytes, identity) = crate::path_identity::read_bounded_regular(path, MAX_TRANSPORT_BYTES)
         .map_err(|_| "response_unavailable".to_string())?;
+    ensure_client_deadline(deadline)?;
     let response = decode_host_response(&bytes, request_id, confirmation_tag, target, format)
         .map_err(|_| "response_unavailable".to_string())?;
+    ensure_client_deadline(deadline)?;
     let current = crate::path_identity::verify_regular_file(path)
         .map_err(|_| "response_unavailable".to_string())?;
     if !crate::path_identity::same_object(&identity, &current) {
         return Err("response_unavailable".to_string());
     }
+    ensure_client_deadline(deadline)?;
     Ok((response, identity))
 }
 
@@ -401,7 +409,9 @@ fn handle_response(
     output: Option<&Path>,
     expected_requester: &str,
     expected_target: &str,
+    deadline: Instant,
 ) -> Result<(), String> {
+    ensure_client_deadline(deadline)?;
     if let Some(error) = response.error {
         return Err(error.as_str().to_string());
     }
@@ -413,46 +423,46 @@ fn handle_response(
         return Err("response_unavailable".to_string());
     }
     match (format, result) {
-        (TerminalSnapshotFormat::Json, TerminalSnapshotResult::Json { snapshot }) => {
+        (TerminalSnapshotFormat::Json, TerminalSnapshotPayload::Json { snapshot }) => {
             snapshot
                 .validate()
                 .map_err(|_| "response_unavailable".to_string())?;
             let bytes = to_ascii_json(snapshot, MAX_TRANSPORT_BYTES)
                 .map_err(|_| "response_unavailable".to_string())?;
-            write_stdout_line(&bytes)
+            write_stdout_line(&bytes, deadline)
         }
-        (
-            TerminalSnapshotFormat::Png,
-            TerminalSnapshotResult::Png {
-                metadata,
-                png_base64,
-            },
-        ) => {
+        (TerminalSnapshotFormat::Png, TerminalSnapshotPayload::Png { metadata, png }) => {
             let output = output.ok_or_else(|| "invalid_request".to_string())?;
             metadata
                 .validate()
                 .map_err(|_| "response_unavailable".to_string())?;
-            let png = decode_canonical_base64_png(png_base64)
-                .map_err(|_| "response_unavailable".to_string())?;
-            validate_png_for_metadata(&png, metadata)
-                .map_err(|_| "response_unavailable".to_string())?;
-            let file = crate::path_identity::create_terminal_snapshot_output(output)?;
-            file.write_all_and_sync(&png)?;
             let bytes = to_ascii_json(metadata, MAX_REQUEST_BYTES)
                 .map_err(|_| "output_failed".to_string())?;
-            write_stdout_line(&bytes)
+            ensure_client_deadline(deadline)?;
+            let file = crate::path_identity::create_terminal_snapshot_output(output)?;
+            file.write_all_and_sync(png)?;
+            write_stdout_line(&bytes, deadline)
         }
         _ => Err("response_unavailable".to_string()),
     }
 }
 
-fn write_stdout_line(bytes: &[u8]) -> Result<(), String> {
+fn write_stdout_line(bytes: &[u8], deadline: Instant) -> Result<(), String> {
+    ensure_client_deadline(deadline)?;
     let mut stdout = std::io::stdout().lock();
     stdout
         .write_all(bytes)
         .and_then(|_| stdout.write_all(b"\n"))
         .and_then(|_| stdout.flush())
         .map_err(|_| "output_failed".to_string())
+}
+
+fn ensure_client_deadline(deadline: Instant) -> Result<(), String> {
+    if Instant::now() >= deadline {
+        Err("snapshot_timeout".to_string())
+    } else {
+        Ok(())
+    }
 }
 
 fn fail(reason: &str) -> i32 {
@@ -491,6 +501,26 @@ fn reason_code(value: &str) -> Option<TerminalSnapshotReasonCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expired_deadline_wins_before_response_read_or_output_handoff() {
+        let missing =
+            std::env::temp_dir().join(format!("ac-snapshot-missing-{}.json", Uuid::new_v4()));
+        let error = read_response(
+            &missing,
+            "00000000-0000-4000-8000-000000000119",
+            &"a".repeat(64),
+            "project:wg-1-team/member",
+            TerminalSnapshotFormat::Json,
+            Instant::now(),
+        )
+        .unwrap_err();
+        assert_eq!(error, "snapshot_timeout");
+        assert_eq!(
+            write_stdout_line(b"{}", Instant::now()).unwrap_err(),
+            "snapshot_timeout"
+        );
+    }
 
     #[test]
     fn format_conversion_is_exact() {

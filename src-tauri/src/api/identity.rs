@@ -210,6 +210,14 @@ pub fn verify_final_bound_container_coordinator(
     {
         return false;
     }
+    let fresh_bound_root = match verify_fresh_bound_root(
+        client,
+        authority.bound_root_object_id,
+        &authority.sender.replica_identity,
+    ) {
+        Some(identity) => identity,
+        None => return false,
+    };
     let route = match crate::pty::manager::PtyManager::snapshot_route_proof(
         &state.pty_mgr,
         authority.session_id,
@@ -236,9 +244,21 @@ pub fn verify_final_bound_container_coordinator(
         && route.liveness() == crate::pty::context_scrape::ContextSessionLiveness::Live
         && route.matches_requester_route(
             crate::pty::backend::SessionBackendKind::ContainerTransport,
-            &authority.sender.replica_identity,
+            &fresh_bound_root,
             Some(&authority.sender.replica_identity),
         )
+}
+
+fn verify_fresh_bound_root(
+    client: &ApiClient,
+    expected_object: crate::path_identity::FileObjectId,
+    expected_replica: &crate::path_identity::VerifiedPathIdentity,
+) -> Option<crate::path_identity::VerifiedPathIdentity> {
+    let identity =
+        crate::path_identity::verify_directory(std::path::Path::new(&client.bound_root)).ok()?;
+    (identity.object_id == expected_object
+        && crate::path_identity::same_object(&identity, expected_replica))
+    .then_some(identity)
 }
 
 pub struct VerifiedApiPtyAuthority {
@@ -310,6 +330,21 @@ mod tests {
         let c = client_with_root("C:/definitely/not/a/real/replica/path/xyz", "proj:wg-1/dev");
         let err = resolve_from(&c).unwrap_err();
         assert_eq!(err.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn final_registry_bound_root_requires_the_same_filesystem_object() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join("bound-root");
+        let retired = temp.path().join("retired-root");
+        std::fs::create_dir(&root).unwrap();
+        let expected = crate::path_identity::verify_directory(&root).unwrap();
+        let client = client_with_root(&root.to_string_lossy(), "project:wg-1-team/coordinator");
+        assert!(verify_fresh_bound_root(&client, expected.object_id, &expected).is_some());
+
+        std::fs::rename(&root, &retired).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        assert!(verify_fresh_bound_root(&client, expected.object_id, &expected).is_none());
     }
 
     #[test]

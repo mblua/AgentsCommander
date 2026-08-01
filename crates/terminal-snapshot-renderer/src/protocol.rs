@@ -238,7 +238,7 @@ pub struct TerminalCellStyle {
     pub inverse: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TerminalCell {
     pub text: String,
@@ -248,7 +248,7 @@ pub struct TerminalCell {
     pub style: TerminalCellStyle,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TerminalLine {
     pub wrapped: bool,
@@ -325,7 +325,7 @@ pub struct TerminalCursor {
     pub in_bounds: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TerminalScreen {
     pub dimensions: TerminalDimensions,
@@ -412,7 +412,7 @@ fn equal_fixed_strings(actual: &[String], expected: &[&str]) -> bool {
             .all(|(actual, expected)| actual == expected)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TerminalScreenModel {
     pub captured_at: String,
@@ -430,7 +430,7 @@ impl TerminalScreenModel {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TerminalSnapshotDocument {
     pub schema_version: u32,
@@ -462,23 +462,17 @@ impl TerminalSnapshotDocument {
         }
     }
 
-    pub fn model(&self) -> TerminalScreenModel {
-        TerminalScreenModel {
-            captured_at: self.captured_at.clone(),
-            session: self.session.clone(),
-            screen: self.screen.clone(),
-            fidelity: self.fidelity.clone(),
-        }
-    }
-
     pub fn validate(&self) -> Result<(), ProtocolError> {
         if self.schema_version != SCHEMA_VERSION {
             return Err(ProtocolError::Invalid);
         }
         validate_uuid(&self.request_id, Some(4))?;
+        validate_timestamp(&self.captured_at)?;
         validate_requester_identity(&self.requester, true)?;
         validate_wg_fqn(&self.target)?;
-        self.model().validate()
+        validate_uuid(&self.session.id, None)?;
+        validate_screen(&self.screen)?;
+        self.fidelity.validate(self.screen.parser_errors)
     }
 }
 
@@ -612,20 +606,20 @@ impl TerminalSnapshotPngMetadata {
     }
 }
 
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "format", rename_all = "camelCase")]
-pub enum TerminalSnapshotResult {
+/// Validated snapshot payload used in memory by the daemon and clients.
+/// PNG bytes remain raw so no owned base64 copy can outlive wire decoding.
+#[derive(PartialEq)]
+pub enum TerminalSnapshotPayload {
     Json {
         snapshot: TerminalSnapshotDocument,
     },
     Png {
         metadata: TerminalSnapshotPngMetadata,
-        #[serde(rename = "pngBase64")]
-        png_base64: String,
+        png: Vec<u8>,
     },
 }
 
-impl fmt::Debug for TerminalSnapshotResult {
+impl fmt::Debug for TerminalSnapshotPayload {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Json { snapshot } => formatter
@@ -633,19 +627,16 @@ impl fmt::Debug for TerminalSnapshotResult {
                 .field("rows", &snapshot.screen.dimensions.rows)
                 .field("columns", &snapshot.screen.dimensions.columns)
                 .finish(),
-            Self::Png {
-                metadata,
-                png_base64,
-            } => formatter
+            Self::Png { metadata, png } => formatter
                 .debug_struct("Png")
-                .field("bytes", &metadata.png.bytes)
-                .field("base64_bytes", &png_base64.len())
+                .field("declared_bytes", &metadata.png.bytes)
+                .field("decoded_bytes", &png.len())
                 .finish(),
         }
     }
 }
 
-impl TerminalSnapshotResult {
+impl TerminalSnapshotPayload {
     pub fn format(&self) -> TerminalSnapshotFormat {
         match self {
             Self::Json { .. } => TerminalSnapshotFormat::Json,
@@ -675,11 +666,10 @@ impl TerminalSnapshotResult {
     }
 }
 
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(PartialEq)]
 pub struct TerminalSnapshotApiSuccess {
     pub api_version: String,
-    pub result: TerminalSnapshotResult,
+    pub result: TerminalSnapshotPayload,
 }
 
 impl fmt::Debug for TerminalSnapshotApiSuccess {
@@ -717,18 +707,14 @@ impl TerminalSnapshotApiError {
     }
 }
 
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(PartialEq)]
 pub struct TerminalSnapshotHostResponse {
     pub api_version: String,
     pub request_id: String,
     pub confirmation_tag: String,
     pub expires_at: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<TerminalSnapshotResult>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<TerminalSnapshotPayload>,
     pub error: Option<TerminalSnapshotReasonCode>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
 }
 
@@ -744,23 +730,6 @@ impl fmt::Debug for TerminalSnapshotHostResponse {
 }
 
 impl TerminalSnapshotHostResponse {
-    pub fn success(
-        request_id: String,
-        confirmation_tag: String,
-        expires_at: String,
-        result: TerminalSnapshotResult,
-    ) -> Self {
-        Self {
-            api_version: API_VERSION.to_string(),
-            request_id,
-            confirmation_tag,
-            expires_at,
-            result: Some(result),
-            error: None,
-            detail: None,
-        }
-    }
-
     pub fn failure(
         request_id: String,
         confirmation_tag: String,

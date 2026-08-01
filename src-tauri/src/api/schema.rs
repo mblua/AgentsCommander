@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 pub use terminal_snapshot_renderer::{
     TerminalSnapshotApiError, TerminalSnapshotApiRequest, TerminalSnapshotApiSuccess,
-    TerminalSnapshotResult,
+    TerminalSnapshotPayload,
 };
 
 /// Contract version. URL-versioned (`/api/v1`); this echo is a redundant,

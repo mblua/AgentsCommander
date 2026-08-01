@@ -7,15 +7,12 @@ use axum::http::{header, HeaderMap, HeaderName, Request, StatusCode};
 use axum::response::Response;
 use tauri::Manager;
 use terminal_snapshot_renderer::{
-    decode_bounded, to_ascii_json, TerminalSnapshotReasonCode, API_VERSION, MAX_REQUEST_BYTES,
-    MAX_TRANSPORT_BYTES,
+    decode_bounded, to_ascii_json, TerminalSnapshotReasonCode, MAX_REQUEST_BYTES,
 };
 
 use crate::api::auth::{FreshRegistryError, SCOPE_TERMINAL_SNAPSHOT};
 use crate::api::identity::{BoundContainerCoordinatorError, InitialApiCredentialProof};
-use crate::api::schema::{
-    TerminalSnapshotApiError, TerminalSnapshotApiRequest, TerminalSnapshotApiSuccess,
-};
+use crate::api::schema::{TerminalSnapshotApiError, TerminalSnapshotApiRequest};
 use crate::api::ApiState;
 use crate::pty::terminal_snapshot::{
     TerminalSnapshotAuditGuard, TerminalSnapshotRequesterSelector, TerminalSnapshotServiceContext,
@@ -51,7 +48,7 @@ async fn post_inner(
         .app_handle
         .try_state::<Arc<TerminalSnapshotState>>()
         .ok_or(TerminalSnapshotReasonCode::ServiceUnavailable)?;
-    let _ingress = snapshot_state.try_admit_ingress(format!("api:{}", address.ip()))?;
+    let ingress = snapshot_state.try_admit_ingress(format!("api:{}", address.ip()))?;
     if uri.query().is_some() {
         return Err(TerminalSnapshotReasonCode::InvalidRequest);
     }
@@ -104,24 +101,6 @@ async fn post_inner(
         .await
         .map_err(map_bound_authority_error)?;
 
-    let claimed_length = parse_content_length(&parts.headers)?;
-    let bytes = to_bytes(body, MAX_REQUEST_BYTES)
-        .await
-        .map_err(|_| TerminalSnapshotReasonCode::InvalidRequest)?;
-    if claimed_length.is_some_and(|length| length != bytes.len()) {
-        return Err(TerminalSnapshotReasonCode::InvalidRequest);
-    }
-    let request: TerminalSnapshotApiRequest =
-        decode_bounded(&bytes, MAX_REQUEST_BYTES).map_err(|error| match error {
-            terminal_snapshot_renderer::ProtocolError::TooLarge => {
-                TerminalSnapshotReasonCode::InvalidRequest
-            }
-            _ => TerminalSnapshotReasonCode::InvalidRequest,
-        })?;
-    request
-        .validate()
-        .map_err(|_| TerminalSnapshotReasonCode::InvalidRequest)?;
-
     let settings = state
         .app_handle
         .try_state::<crate::config::settings::SettingsState>()
@@ -147,6 +126,28 @@ async fn post_inner(
         restore,
         purge,
     };
+    let admission = snapshot_state
+        .pre_admit_requester(
+            &context,
+            TerminalSnapshotRequesterSelector::ApiSession(authority.session_id),
+            TerminalSnapshotSourcePlane::ContainerApi,
+            None,
+            audit.clone(),
+        )
+        .await?;
+    let deadline = admission.deadline();
+    drop(ingress);
+
+    let claimed_length = parse_content_length(&parts.headers)?;
+    let bytes = collect_request_body(body, deadline).await?;
+    if claimed_length.is_some_and(|length| length != bytes.len()) {
+        return Err(TerminalSnapshotReasonCode::InvalidRequest);
+    }
+    let request: TerminalSnapshotApiRequest = decode_bounded(&bytes, MAX_REQUEST_BYTES)
+        .map_err(|_| TerminalSnapshotReasonCode::InvalidRequest)?;
+    request
+        .validate()
+        .map_err(|_| TerminalSnapshotReasonCode::InvalidRequest)?;
     let service_request = TerminalSnapshotServiceRequest {
         request_id: terminal_snapshot_renderer::validate_uuid(&request.request_id, Some(4))
             .map_err(|_| TerminalSnapshotReasonCode::InvalidRequest)?,
@@ -155,64 +156,77 @@ async fn post_inner(
         source_plane: TerminalSnapshotSourcePlane::ContainerApi,
         host_authorization_deadline: None,
     };
-    let (success, audit) = snapshot_state
-        .execute_with_deferred_success_audit(
-            &context,
-            service_request,
-            TerminalSnapshotRequesterSelector::ApiSession(authority.session_id),
-            audit,
-        )
+    let prepared = snapshot_state
+        .prepare_with_admission(admission, service_request)
         .await?;
-    let envelope = TerminalSnapshotApiSuccess {
-        api_version: API_VERSION.to_string(),
-        result: success.result,
-    };
-    let bytes = match to_ascii_json(&envelope, MAX_TRANSPORT_BYTES) {
-        Ok(bytes) => bytes,
-        Err(_) => {
-            audit.finalize_failure(TerminalSnapshotReasonCode::SnapshotTooLarge);
-            return Err(TerminalSnapshotReasonCode::SnapshotTooLarge);
-        }
-    };
+    let (payload, finalization) = prepared.into_parts();
+    let response_bytes = finalization.build_api_response(payload).await?;
+    let disclosure = finalization.revalidate_api().await?;
 
-    // Every awaited check is complete. The fresh registry guard and runtime
-    // binding comparison are the last content-authority boundary.
-    let final_guard = match state
-        .store
-        .load_active_binding_fresh_offloaded(
+    // Every source-plane byte and awaited authority check is complete. The
+    // fresh registry guard, synchronous runtime proof, immutable response
+    // construction, and audit finalization are the sole final handoff.
+    let remaining = disclosure.remaining()?;
+    let final_guard = match tokio::time::timeout(
+        remaining,
+        state.store.load_active_binding_fresh_offloaded(
             authority.client_id.clone(),
             authority.credential_generation.clone(),
             SCOPE_TERMINAL_SNAPSHOT,
-        )
-        .await
+        ),
+    )
+    .await
     {
-        Ok(Some(guard)) => guard,
-        Ok(None) => {
-            audit.finalize_failure(TerminalSnapshotReasonCode::AuthorityChanged);
+        Err(_) => {
+            disclosure.finalize_failure(TerminalSnapshotReasonCode::SnapshotTimeout);
+            return Err(TerminalSnapshotReasonCode::SnapshotTimeout);
+        }
+        Ok(Ok(Some(guard))) => guard,
+        Ok(Ok(None)) => {
+            disclosure.finalize_failure(TerminalSnapshotReasonCode::AuthorityChanged);
             return Err(TerminalSnapshotReasonCode::AuthorityChanged);
         }
-        Err(_) => {
-            audit.finalize_failure(TerminalSnapshotReasonCode::ServiceUnavailable);
+        Ok(Err(_)) => {
+            disclosure.finalize_failure(TerminalSnapshotReasonCode::ServiceUnavailable);
             return Err(TerminalSnapshotReasonCode::ServiceUnavailable);
         }
     };
+    if let Err(reason) = disclosure.ensure_handoff() {
+        let response = error_response(reason);
+        drop(final_guard);
+        disclosure.finalize_failure(reason);
+        return Ok(response);
+    }
     let authorized = crate::api::identity::verify_final_bound_container_coordinator(
         &state,
         &authority,
         &final_guard,
     );
     let response = if authorized {
-        json_response(StatusCode::OK, bytes)
+        json_response(StatusCode::OK, response_bytes)
     } else {
         error_response(TerminalSnapshotReasonCode::AuthorityChanged)
     };
     drop(final_guard);
     if authorized {
-        audit.finalize_success();
+        disclosure.finalize_success();
     } else {
-        audit.finalize_failure(TerminalSnapshotReasonCode::AuthorityChanged);
+        disclosure.finalize_failure(TerminalSnapshotReasonCode::AuthorityChanged);
     }
     Ok(response)
+}
+
+async fn collect_request_body(
+    body: Body,
+    deadline: std::time::Instant,
+) -> Result<axum::body::Bytes, TerminalSnapshotReasonCode> {
+    let remaining = deadline
+        .checked_duration_since(std::time::Instant::now())
+        .ok_or(TerminalSnapshotReasonCode::SnapshotTimeout)?;
+    tokio::time::timeout(remaining, to_bytes(body, MAX_REQUEST_BYTES))
+        .await
+        .map_err(|_| TerminalSnapshotReasonCode::SnapshotTimeout)?
+        .map_err(|_| TerminalSnapshotReasonCode::InvalidRequest)
 }
 
 fn map_bound_authority_error(error: BoundContainerCoordinatorError) -> TerminalSnapshotReasonCode {
@@ -327,6 +341,21 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
         assert_eq!(response.headers()[header::PRAGMA], "no-cache");
+    }
+
+    #[tokio::test]
+    async fn authenticated_body_collection_obeys_the_server_deadline() {
+        let stream = futures_util::stream::pending::<Result<axum::body::Bytes, std::io::Error>>();
+        let body = Body::from_stream(stream);
+        let result = collect_request_body(
+            body,
+            std::time::Instant::now() + std::time::Duration::from_millis(20),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(TerminalSnapshotReasonCode::SnapshotTimeout)
+        ));
     }
 
     #[test]

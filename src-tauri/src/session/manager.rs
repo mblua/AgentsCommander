@@ -176,6 +176,28 @@ fn requester_fact(session: &Session) -> Option<TerminalSnapshotRequesterFact> {
     })
 }
 
+fn snapshot_session_fact_by_id(
+    state: &SessionManagerState,
+    id: Uuid,
+) -> Option<TerminalSnapshotSessionFact> {
+    state
+        .sessions
+        .get(&id)
+        .filter(|session| !state.pending_create.contains_key(&session.id))
+        .filter(|session| {
+            session.working_directory.len() <= TERMINAL_SNAPSHOT_MAX_CWD_BYTES
+                && session.name.len() <= TERMINAL_SNAPSHOT_MAX_NAME_BYTES
+        })
+        .map(|session| TerminalSnapshotSessionFact {
+            id: session.id,
+            created_at: session.created_at,
+            name: session.name.clone(),
+            status: session.status.clone(),
+            working_directory: session.working_directory.clone(),
+            backend_kind: session.backend_kind,
+        })
+}
+
 impl Default for SessionManager {
     fn default() -> Self {
         Self::new()
@@ -1444,6 +1466,39 @@ impl SessionManager {
             .and_then(requester_fact)
     }
 
+    /// Blocking projection used only by the dedicated host snapshot finalizer.
+    pub(crate) fn find_unique_live_snapshot_requester_by_token_blocking(
+        &self,
+        token: Uuid,
+    ) -> Result<TerminalSnapshotRequesterFact, UniqueLiveTokenError> {
+        let state = self.state.blocking_read();
+        let mut matches = state
+            .sessions
+            .values()
+            .filter(|session| !state.pending_create.contains_key(&session.id))
+            .filter(|session| session.token == token)
+            .filter(|session| !matches!(session.status, SessionStatus::Exited(_)));
+        let first = matches.next().ok_or(UniqueLiveTokenError::NotFound)?;
+        if matches.next().is_some() {
+            return Err(UniqueLiveTokenError::Ambiguous);
+        }
+        requester_fact(first).ok_or(UniqueLiveTokenError::NotFound)
+    }
+
+    /// Blocking projection used only by the dedicated host snapshot finalizer.
+    pub(crate) fn live_snapshot_requester_by_id_blocking(
+        &self,
+        id: Uuid,
+    ) -> Option<TerminalSnapshotRequesterFact> {
+        let state = self.state.blocking_read();
+        state
+            .sessions
+            .get(&id)
+            .filter(|session| !state.pending_create.contains_key(&session.id))
+            .filter(|session| !matches!(session.status, SessionStatus::Exited(_)))
+            .and_then(requester_fact)
+    }
+
     /// One capped, typed selection boundary for terminal snapshots. This takes
     /// one manager guard and performs no filesystem work.
     pub(crate) async fn terminal_snapshot_session_facts(
@@ -1494,22 +1549,16 @@ impl SessionManager {
         id: Uuid,
     ) -> Option<TerminalSnapshotSessionFact> {
         let state = self.state.read().await;
-        state
-            .sessions
-            .get(&id)
-            .filter(|session| !state.pending_create.contains_key(&session.id))
-            .filter(|session| {
-                session.working_directory.len() <= TERMINAL_SNAPSHOT_MAX_CWD_BYTES
-                    && session.name.len() <= TERMINAL_SNAPSHOT_MAX_NAME_BYTES
-            })
-            .map(|session| TerminalSnapshotSessionFact {
-                id: session.id,
-                created_at: session.created_at,
-                name: session.name.clone(),
-                status: session.status.clone(),
-                working_directory: session.working_directory.clone(),
-                backend_kind: session.backend_kind,
-            })
+        snapshot_session_fact_by_id(&state, id)
+    }
+
+    /// Blocking projection used only by the dedicated host snapshot finalizer.
+    pub(crate) fn terminal_snapshot_session_fact_by_id_blocking(
+        &self,
+        id: Uuid,
+    ) -> Option<TerminalSnapshotSessionFact> {
+        let state = self.state.blocking_read();
+        snapshot_session_fact_by_id(&state, id)
     }
 
     pub(crate) async fn selection_payload(&self) -> SessionSelection {

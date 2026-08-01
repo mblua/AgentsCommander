@@ -1135,6 +1135,98 @@ mod tests {
     }
 
     #[test]
+    fn output_and_capture_race_is_wholly_before_or_after_one_chunk() {
+        let fanout = fanout();
+        for _ in 0..64 {
+            let id = Uuid::new_v4();
+            fanout.register_session(id, IdleTuning::DEFAULT, 1, 2);
+            let writer = fanout.clone();
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let writer_barrier = Arc::clone(&barrier);
+            let thread = std::thread::spawn(move || {
+                writer_barrier.wait();
+                feed(&writer, id, &[b"A"]);
+            });
+            barrier.wait();
+            let copied = fanout.copy_terminal_screen(id);
+            thread.join().unwrap();
+            let model = match copied {
+                crate::pty::backend::TerminalScreenCopyRead::Copied(copied) => copied
+                    .into_model(id, SessionBackendKind::LocalProcess)
+                    .unwrap(),
+                _ => panic!("expected coherent capture"),
+            };
+            let first = &model.screen.lines[0].cells[0].text;
+            assert!(
+                (model.screen.sequence == 0 && first.is_empty())
+                    || (model.screen.sequence == 1 && first == "A")
+            );
+            fanout.remove_session(id);
+        }
+    }
+
+    #[test]
+    fn resize_and_capture_race_returns_one_complete_dimension_set() {
+        let fanout = fanout();
+        for _ in 0..64 {
+            let id = Uuid::new_v4();
+            fanout.register_session(id, IdleTuning::DEFAULT, 2, 2);
+            let writer = fanout.clone();
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let writer_barrier = Arc::clone(&barrier);
+            let thread = std::thread::spawn(move || {
+                writer_barrier.wait();
+                writer.resize_screen_and_broadcast(id, 4, 3);
+            });
+            barrier.wait();
+            let copied = fanout.copy_terminal_screen(id);
+            thread.join().unwrap();
+            let model = match copied {
+                crate::pty::backend::TerminalScreenCopyRead::Copied(copied) => copied
+                    .into_model(id, SessionBackendKind::LocalProcess)
+                    .unwrap(),
+                _ => panic!("expected coherent capture"),
+            };
+            let dimensions = model.screen.dimensions;
+            assert!(
+                (dimensions.rows == 2 && dimensions.columns == 2)
+                    || (dimensions.rows == 3 && dimensions.columns == 4)
+            );
+            assert_eq!(model.screen.lines.len(), usize::from(dimensions.rows));
+            assert!(model
+                .screen
+                .lines
+                .iter()
+                .all(|line| line.cells.len() == usize::from(dimensions.columns)));
+            assert_eq!(model.screen.sequence, 0);
+            fanout.remove_session(id);
+        }
+    }
+
+    #[test]
+    fn large_and_partial_osc_state_is_excluded_from_the_viewport_copy() {
+        let fanout = fanout();
+        let id = Uuid::new_v4();
+        fanout.register_session(id, IdleTuning::DEFAULT, 1, 4);
+        let sentinel = "snapshot-osc-sentinel".repeat(8_192);
+        let first = format!("\x1b]0;{sentinel}");
+        feed(&fanout, id, &[first.as_bytes()]);
+        let copied = match fanout.copy_terminal_screen(id) {
+            crate::pty::backend::TerminalScreenCopyRead::Copied(copied) => copied,
+            _ => panic!("partial OSC must not break capture"),
+        };
+        let model = copied
+            .into_model(id, SessionBackendKind::LocalProcess)
+            .unwrap();
+        assert!(model
+            .screen
+            .lines
+            .iter()
+            .flat_map(|line| &line.cells)
+            .all(|cell| !cell.text.contains("snapshot-osc-sentinel")));
+    }
+
+    #[test]
     fn hostile_one_column_wide_input_removes_only_its_parser() {
         let fanout = fanout();
         let faulty = Uuid::new_v4();

@@ -7,7 +7,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use terminal_snapshot_renderer::{
-    canonical_timestamp, to_ascii_json, TerminalSnapshotFormat, TerminalSnapshotHostResponse,
+    canonical_timestamp, encode_host_failure_payload, TerminalSnapshotFormat,
     TerminalSnapshotReasonCode, MAX_REQUEST_BYTES, MAX_TRANSPORT_BYTES,
 };
 use uuid::Uuid;
@@ -48,6 +48,25 @@ impl std::fmt::Debug for HostTerminalSnapshotRequest {
 }
 
 impl HostTerminalSnapshotRequest {
+    fn validate_correlation(
+        &self,
+        filename_request_id: &str,
+    ) -> Result<Uuid, TerminalSnapshotReasonCode> {
+        let request_id = terminal_snapshot_renderer::validate_uuid(&self.request_id, Some(4))
+            .map_err(|_| TerminalSnapshotReasonCode::InvalidRequest)?;
+        if self.request_id != filename_request_id {
+            return Err(TerminalSnapshotReasonCode::InvalidRequest);
+        }
+        terminal_snapshot_renderer::validate_hex(&self.nonce, 64)
+            .map_err(|_| TerminalSnapshotReasonCode::InvalidRequest)?;
+        terminal_snapshot_renderer::validate_hex(&self.confirmation_tag, 64)
+            .map_err(|_| TerminalSnapshotReasonCode::InvalidRequest)?;
+        if confirmation_tag(self) != self.confirmation_tag {
+            return Err(TerminalSnapshotReasonCode::InvalidRequest);
+        }
+        Ok(request_id)
+    }
+
     pub(crate) fn validate(
         &self,
         now: chrono::DateTime<chrono::Utc>,
@@ -367,7 +386,6 @@ impl SnapshotMailboxScanner {
             let expected_root = root_identity.clone();
             let snapshot_state = snapshot_state.inner().clone();
             tauri::async_runtime::spawn(async move {
-                let _ingress = ingress;
                 process_claimed(
                     &app,
                     snapshot_state,
@@ -376,6 +394,7 @@ impl SnapshotMailboxScanner {
                     expected_root,
                     claimed,
                     request_id,
+                    ingress,
                 )
                 .await;
             });
@@ -427,6 +446,7 @@ async fn process_claimed<R: tauri::Runtime>(
     expected_root: crate::path_identity::VerifiedPathIdentity,
     claimed: crate::path_identity::VerifiedPathIdentity,
     filename_request_id: String,
+    ingress: tokio::sync::OwnedSemaphorePermit,
 ) {
     let read = crate::path_identity::read_bounded_regular(&processing, MAX_REQUEST_BYTES);
     let (bytes, identity) = match read {
@@ -463,39 +483,36 @@ async fn process_claimed<R: tauri::Runtime>(
             }
         };
     remove_tracked_processing(&snapshot_state, &processing, &identity);
-    let (request_id, token, expires_at) = match request.validate(chrono::Utc::now()) {
-        Ok(validated) if request.request_id == filename_request_id => validated,
-        Ok(_) => {
-            record_host_ingress_failure(
-                Some(request.request_id.clone()),
-                Some(request.format),
-                TerminalSnapshotReasonCode::InvalidRequest,
-            );
-            publish_failure(
-                &snapshot_state,
-                &response_directory,
-                &request,
-                TerminalSnapshotReasonCode::InvalidRequest,
-            );
+    let request_id = match request.validate_correlation(&filename_request_id) {
+        Ok(request_id) => request_id,
+        Err(reason) => {
+            record_host_ingress_failure(Some(filename_request_id), None, reason);
             return;
         }
+    };
+    let (_, token, expires_at) = match request.validate(chrono::Utc::now()) {
+        Ok(validated) => validated,
         Err(reason) => {
-            record_host_ingress_failure(
-                Some(request.request_id.clone()),
+            publish_correlated_ingress_failure(
+                &snapshot_state,
+                &response_directory,
+                request_id,
+                &request.confirmation_tag,
                 Some(request.format),
                 reason,
             );
-            publish_failure(&snapshot_state, &response_directory, &request, reason);
             return;
         }
     };
     let publish_error = |reason| {
-        record_host_ingress_failure(
-            Some(request.request_id.clone()),
+        publish_correlated_ingress_failure(
+            &snapshot_state,
+            &response_directory,
+            request_id,
+            &request.confirmation_tag,
             Some(request.format),
             reason,
         );
-        publish_failure(&snapshot_state, &response_directory, &request, reason);
     };
     let Some(session_manager) =
         app.try_state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>()
@@ -544,40 +561,114 @@ async fn process_claimed<R: tauri::Runtime>(
         restore: restore.inner().clone(),
         purge: purge.inner().clone(),
     };
-    let result = snapshot_state
-        .execute(
+    let service_request = crate::pty::terminal_snapshot::TerminalSnapshotServiceRequest {
+        request_id,
+        target: request.to.clone(),
+        format: request.format,
+        source_plane: crate::pty::terminal_snapshot::TerminalSnapshotSourcePlane::HostCli,
+        host_authorization_deadline: Some((monotonic_deadline, expires_at)),
+    };
+    let audit = crate::pty::terminal_snapshot::TerminalSnapshotAuditGuard::pre_admission(
+        crate::pty::terminal_snapshot::TerminalSnapshotSourcePlane::HostCli,
+    );
+    audit.accept_request(&service_request);
+    let admission = snapshot_state
+        .pre_admit_requester(
             &context,
-            crate::pty::terminal_snapshot::TerminalSnapshotServiceRequest {
-                request_id,
-                target: request.to.clone(),
-                format: request.format,
-                source_plane: crate::pty::terminal_snapshot::TerminalSnapshotSourcePlane::HostCli,
-                host_authorization_deadline: Some((monotonic_deadline, expires_at)),
-            },
             crate::pty::terminal_snapshot::TerminalSnapshotRequesterSelector::Host {
                 token,
                 expected_root,
                 claimed_from: request.from.clone(),
             },
+            crate::pty::terminal_snapshot::TerminalSnapshotSourcePlane::HostCli,
+            service_request.host_authorization_deadline.clone(),
+            audit.clone(),
         )
         .await;
-    match result {
-        Ok(success) => {
-            let response = TerminalSnapshotHostResponse::success(
-                request.request_id.clone(),
-                request.confirmation_tag.clone(),
-                canonical_timestamp(chrono::Utc::now() + chrono::Duration::seconds(60)),
-                success.result,
-            );
-            publish_response(
+    let admission = match admission {
+        Ok(admission) => admission,
+        Err(reason) => {
+            drop(ingress);
+            let published = publish_trusted_failure(
                 &snapshot_state,
                 &response_directory,
-                &request.request_id,
-                &response,
+                request_id,
+                &request.confirmation_tag,
+                reason,
             );
+            audit.finalize_failure(if published.is_ok() {
+                reason
+            } else {
+                TerminalSnapshotReasonCode::ResponseUnavailable
+            });
+            return;
         }
-        Err(reason) => publish_failure(&snapshot_state, &response_directory, &request, reason),
-    }
+    };
+    drop(ingress);
+    let prepared = snapshot_state
+        .prepare_with_admission(admission, service_request)
+        .await;
+    let prepared = match prepared {
+        Ok(prepared) => prepared,
+        Err(reason) => {
+            let published = publish_trusted_failure(
+                &snapshot_state,
+                &response_directory,
+                request_id,
+                &request.confirmation_tag,
+                reason,
+            );
+            audit.finalize_failure(if published.is_ok() {
+                reason
+            } else {
+                TerminalSnapshotReasonCode::ResponseUnavailable
+            });
+            return;
+        }
+    };
+    let (payload, finalization) = prepared.into_parts();
+    let response_expires_at =
+        canonical_timestamp(chrono::Utc::now() + chrono::Duration::seconds(60));
+    let success_bytes = finalization
+        .build_host_response(
+            payload,
+            request_id.to_string(),
+            request.confirmation_tag.clone(),
+            response_expires_at,
+        )
+        .await;
+    let response_directory_for_publish = response_directory.clone();
+    let state_for_publish = Arc::clone(&snapshot_state);
+    let confirmation_tag = request.confirmation_tag.clone();
+    let task = match success_bytes {
+        Ok(success_bytes) => tokio::task::spawn_blocking(move || {
+            crate::logging::catch_payload_unwind(|| {
+                finalization.finalize_host(success_bytes, |outcome| {
+                    publish_host_outcome(
+                        &state_for_publish,
+                        &response_directory_for_publish,
+                        request_id,
+                        &confirmation_tag,
+                        outcome,
+                    )
+                })
+            })
+        }),
+        Err(reason) => tokio::task::spawn_blocking(move || {
+            crate::logging::catch_payload_unwind(|| {
+                finalization.fail_host(reason, |reason| {
+                    publish_trusted_failure(
+                        &state_for_publish,
+                        &response_directory_for_publish,
+                        request_id,
+                        &confirmation_tag,
+                        reason,
+                    )
+                })
+            })
+        }),
+    };
+    let _ = task.await;
 }
 
 fn record_host_ingress_failure(
@@ -615,45 +706,89 @@ fn record_host_ingress_failure(
     );
 }
 
-fn publish_failure(
+fn publish_correlated_ingress_failure(
     state: &crate::pty::terminal_snapshot::TerminalSnapshotState,
     response_directory: &Path,
-    request: &HostTerminalSnapshotRequest,
+    request_id: Uuid,
+    confirmation_tag: &str,
+    format: Option<TerminalSnapshotFormat>,
     reason: TerminalSnapshotReasonCode,
 ) {
-    let response = TerminalSnapshotHostResponse::failure(
-        request.request_id.clone(),
-        request.confirmation_tag.clone(),
-        canonical_timestamp(chrono::Utc::now() + chrono::Duration::seconds(60)),
+    let published = publish_trusted_failure(
+        state,
+        response_directory,
+        request_id,
+        confirmation_tag,
         reason,
     );
-    publish_response(state, response_directory, &request.request_id, &response);
+    record_host_ingress_failure(
+        Some(request_id.to_string()),
+        format,
+        if published.is_ok() {
+            reason
+        } else {
+            TerminalSnapshotReasonCode::ResponseUnavailable
+        },
+    );
 }
 
-fn publish_response(
+fn publish_host_outcome(
     state: &crate::pty::terminal_snapshot::TerminalSnapshotState,
     response_directory: &Path,
-    request_id: &str,
-    response: &TerminalSnapshotHostResponse,
-) {
-    let Ok(directory_identity) = crate::path_identity::verify_directory(response_directory) else {
-        return;
-    };
-    let Ok(reservation) = state.reserve_artifact(response_directory, &directory_identity) else {
-        return;
-    };
-    let bytes = match to_ascii_json(response, MAX_TRANSPORT_BYTES) {
-        Ok(bytes) => bytes,
-        Err(_) => return,
-    };
+    request_id: Uuid,
+    confirmation_tag: &str,
+    outcome: Result<Vec<u8>, TerminalSnapshotReasonCode>,
+) -> Result<(), TerminalSnapshotReasonCode> {
+    match outcome {
+        Ok(bytes) => publish_response_bytes(state, response_directory, request_id, &bytes),
+        Err(reason) => publish_trusted_failure(
+            state,
+            response_directory,
+            request_id,
+            confirmation_tag,
+            reason,
+        ),
+    }
+}
+
+fn publish_trusted_failure(
+    state: &crate::pty::terminal_snapshot::TerminalSnapshotState,
+    response_directory: &Path,
+    request_id: Uuid,
+    confirmation_tag: &str,
+    reason: TerminalSnapshotReasonCode,
+) -> Result<(), TerminalSnapshotReasonCode> {
+    let expires_at = canonical_timestamp(chrono::Utc::now() + chrono::Duration::seconds(60));
+    let bytes = encode_host_failure_payload(
+        &request_id.to_string(),
+        confirmation_tag,
+        &expires_at,
+        reason,
+    )
+    .map_err(|_| TerminalSnapshotReasonCode::ResponseUnavailable)?;
+    publish_response_bytes(state, response_directory, request_id, &bytes)
+}
+
+fn publish_response_bytes(
+    state: &crate::pty::terminal_snapshot::TerminalSnapshotState,
+    response_directory: &Path,
+    request_id: Uuid,
+    bytes: &[u8],
+) -> Result<(), TerminalSnapshotReasonCode> {
+    if bytes.is_empty() || bytes.len() > MAX_TRANSPORT_BYTES {
+        return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
+    }
+    let directory_identity = crate::path_identity::verify_directory(response_directory)
+        .map_err(|_| TerminalSnapshotReasonCode::ResponseUnavailable)?;
+    let reservation = state.reserve_artifact(response_directory, &directory_identity)?;
     let temporary = response_directory.join(format!(
         ".{}.{}.terminal-snapshot-response-tmp",
         request_id,
         Uuid::new_v4()
     ));
     let destination = response_directory.join(format!("{request_id}.json"));
-    if destination.exists() {
-        return;
+    if destination.parent() != Some(response_directory) || destination.exists() {
+        return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
     }
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -668,9 +803,9 @@ fn publish_response(
         use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
         options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     }
-    let Ok(mut file) = options.open(&temporary) else {
-        return;
-    };
+    let mut file = options
+        .open(&temporary)
+        .map_err(|_| TerminalSnapshotReasonCode::ResponseUnavailable)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -682,34 +817,39 @@ fn publish_response(
                 .ok()
                 .is_none_or(|metadata| metadata.permissions().mode() & 0o777 != 0o600)
         {
-            return;
+            return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
         }
     }
     if file
-        .write_all(&bytes)
+        .write_all(bytes)
         .and_then(|_| file.flush())
         .and_then(|_| file.sync_all())
         .is_err()
     {
-        let _ = std::fs::remove_file(&temporary);
-        return;
+        if let Ok(identity) =
+            crate::path_identity::verify_opened_regular_file(&temporary, &file, false)
+        {
+            safe_remove(&temporary, Some(&identity));
+        }
+        return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
     }
-    let Ok(temporary_identity) =
+    let temporary_identity =
         crate::path_identity::verify_opened_regular_file(&temporary, &file, false)
-    else {
-        let _ = std::fs::remove_file(&temporary);
-        return;
-    };
+            .map_err(|_| TerminalSnapshotReasonCode::ResponseUnavailable)?;
     if crate::path_identity::publish_new_file_atomic(&temporary, &destination).is_err() {
         safe_remove(&temporary, Some(&temporary_identity));
-        return;
+        return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
     }
     let identity =
         match crate::path_identity::verify_opened_regular_file(&destination, &file, false) {
-            Ok(identity) => identity,
-            Err(_) => {
+            Ok(identity)
+                if crate::path_identity::is_verified_descendant(&identity, &directory_identity) =>
+            {
+                identity
+            }
+            _ => {
                 safe_remove(&destination, Some(&temporary_identity));
-                return;
+                return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
             }
         };
     drop(file);
@@ -718,9 +858,10 @@ fn publish_response(
         .is_err()
     {
         safe_remove(&destination, Some(&identity));
-    } else {
-        crate::path_identity::sync_parent_best_effort(&destination);
+        return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
     }
+    crate::path_identity::sync_parent_best_effort(&destination);
+    Ok(())
 }
 
 fn remove_tracked_processing(
@@ -842,6 +983,54 @@ mod tests {
         let mut changed = request.clone();
         changed.to.push('x');
         assert!(changed.validate(chrono::Utc::now()).is_err());
+    }
+
+    #[test]
+    fn request_correlation_rejects_body_ids_that_do_not_match_the_filename() {
+        let mut request = request();
+        let filename_id = request.request_id.clone();
+        request.request_id = Uuid::new_v4().to_string();
+        request.confirmation_tag = confirmation_tag(&request);
+        assert!(request.validate_correlation(&filename_id).is_err());
+
+        request.request_id = "../audit-secret".to_string();
+        request.confirmation_tag = confirmation_tag(&request);
+        assert!(request.validate_correlation(&filename_id).is_err());
+    }
+
+    #[test]
+    fn response_publication_is_canonical_and_never_replaces_a_collision() {
+        let state = crate::pty::terminal_snapshot::TerminalSnapshotState::new(
+            crate::shutdown::ShutdownSignal::new(),
+        );
+        let directory = tempfile::TempDir::new().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        let request_id = Uuid::new_v4();
+        let tag = "a".repeat(64);
+        assert!(publish_trusted_failure(
+            &state,
+            directory.path(),
+            request_id,
+            &tag,
+            TerminalSnapshotReasonCode::InvalidRequest,
+        )
+        .is_ok());
+        let destination = directory.path().join(format!("{request_id}.json"));
+        let first = std::fs::read(&destination).unwrap();
+        assert!(publish_trusted_failure(
+            &state,
+            directory.path(),
+            request_id,
+            &tag,
+            TerminalSnapshotReasonCode::Internal,
+        )
+        .is_err());
+        assert_eq!(std::fs::read(destination).unwrap(), first);
     }
 
     #[test]
