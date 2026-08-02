@@ -148,6 +148,19 @@ Assert-True "terminal-snapshot --help shows format and output syntax" ($r0Snapsh
 Assert-True "terminal-snapshot --help shows discovery command" ($r0Snapshot.Stdout -match 'list-peers-lean' -and $r0Snapshot.Stdout -match '--snapshot-targets') "stdout missing snapshot target discovery syntax" $r0Snapshot.CaseName $r0Snapshot
 Assert-True "terminal-snapshot --help stderr empty" ([string]::IsNullOrWhiteSpace($r0Snapshot.Stderr)) "stderr leaked content; inspect stderr log" $r0Snapshot.CaseName $r0Snapshot
 
+# Post-parse semantic failures must remain one fixed machine line in either shell.
+$snapshotTokenCanary = 'ACSNAP_PS_TOKEN_1173_P5Q1'
+$snapshotRootCanary = Join-Path $Root 'ACSNAP_PS_CALLER_PATH_1173_P5Q1'
+$snapshotTargetCanary = 'project:wg-1-team/acsnap-ps-target-p5q1'
+$r0SnapshotFailure = Invoke-PSNonInteractiveDirect -ShellPath $ShellPath -CaseName "00-terminal-snapshot-fixed-failure-direct" -Exe $BinaryPath -ExeArgs @('terminal-snapshot', '--token', $snapshotTokenCanary, '--root', $snapshotRootCanary, '--to', $snapshotTargetCanary, '--timeout', '4')
+$normalizedSnapshotStderr = $r0SnapshotFailure.Stderr -replace "`r`n", "`n"
+$expectedSnapshotStderr = "terminal_snapshot_error code=invalid_request detail=The terminal snapshot request is invalid.`n"
+Assert-True "terminal-snapshot semantic failure exits one" ($r0SnapshotFailure.ExitCode -eq 1) "exit code was $($r0SnapshotFailure.ExitCode), expected 1" $r0SnapshotFailure.CaseName $r0SnapshotFailure
+Assert-True "terminal-snapshot semantic failure stdout empty" ($r0SnapshotFailure.Stdout.Length -eq 0) "stdout was not byte-empty" $r0SnapshotFailure.CaseName $r0SnapshotFailure
+Assert-True "terminal-snapshot semantic failure stderr exact" ($normalizedSnapshotStderr -ceq $expectedSnapshotStderr) "stderr did not match the fixed one-line contract" $r0SnapshotFailure.CaseName $r0SnapshotFailure
+Assert-True "terminal-snapshot semantic failure hides token" (-not $r0SnapshotFailure.Stderr.Contains($snapshotTokenCanary)) "stderr reflected the token canary" $r0SnapshotFailure.CaseName $r0SnapshotFailure
+Assert-True "terminal-snapshot semantic failure hides path and target" (-not $r0SnapshotFailure.Stderr.Contains($snapshotRootCanary) -and -not $r0SnapshotFailure.Stderr.Contains($snapshotTargetCanary)) "stderr reflected caller input" $r0SnapshotFailure.CaseName $r0SnapshotFailure
+
 # Test 1: list-peers stdout must contain JSON, and stderr must be empty.
 $r1 = Invoke-PSNonInteractiveDirect -ShellPath $ShellPath -CaseName "01-list-peers-direct" -Exe $BinaryPath -ExeArgs @('list-peers', '--token', $Token, '--root', $Root)
 Assert-True "list-peers stdout non-empty" (-not [string]::IsNullOrWhiteSpace($r1.Stdout)) "stdout was empty (issue #129 not fixed)" $r1.CaseName $r1

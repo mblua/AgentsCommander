@@ -308,7 +308,7 @@ fn publish_request(
         .and_then(|_| file.sync_all())
         .map_err(|_| "response_unavailable".to_string())?;
     let temporary_identity =
-        crate::path_identity::verify_opened_regular_file(&temporary, &file, true)
+        crate::path_identity::verify_opened_regular_file(&temporary, &file, false)
             .map_err(|_| "response_unavailable".to_string())?;
     if crate::path_identity::publish_new_file_atomic(&temporary, destination).is_err() {
         if let Ok(current) = crate::path_identity::verify_regular_file(&temporary) {
@@ -318,8 +318,22 @@ fn publish_request(
         }
         return Err("response_unavailable".to_string());
     }
-    let published = crate::path_identity::verify_opened_regular_file(destination, &file, true)
-        .map_err(|_| "response_unavailable".to_string())?;
+    let published =
+        match crate::path_identity::verify_opened_regular_file(destination, &file, false) {
+            Ok(identity) => identity,
+            Err(_)
+                if std::fs::symlink_metadata(destination)
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                // A compatible daemon may claim the published final before this
+                // post-publication path check. The retained handle/object proof
+                // remains the cancellation identity; an absent final is already
+                // non-cancellable and must not turn accepted work into a local
+                // publication failure.
+                temporary_identity
+            }
+            Err(_) => return Err("response_unavailable".to_string()),
+        };
     drop(file);
     crate::path_identity::sync_parent_best_effort(destination);
     Ok(published)
@@ -366,32 +380,50 @@ fn read_response(
     String,
 > {
     ensure_client_deadline(deadline)?;
+    let initial = crate::path_identity::verify_regular_file(path)
+        .map_err(|_| "response_unavailable".to_string())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if std::fs::symlink_metadata(path)
-            .map_err(|_| "response_unavailable".to_string())?
-            .permissions()
-            .mode()
-            & 0o777
-            != 0o600
-        {
+        let private = std::fs::symlink_metadata(path)
+            .map(|metadata| metadata.permissions().mode() & 0o777 == 0o600)
+            .unwrap_or(false);
+        if !private {
+            remove_response(path, &initial);
             return Err("response_unavailable".to_string());
         }
     }
-    let (bytes, identity) = crate::path_identity::read_bounded_regular(path, MAX_TRANSPORT_BYTES)
-        .map_err(|_| "response_unavailable".to_string())?;
-    ensure_client_deadline(deadline)?;
-    let response = decode_host_response(&bytes, request_id, confirmation_tag, target, format)
-        .map_err(|_| "response_unavailable".to_string())?;
-    ensure_client_deadline(deadline)?;
-    let current = crate::path_identity::verify_regular_file(path)
-        .map_err(|_| "response_unavailable".to_string())?;
-    if !crate::path_identity::same_object(&identity, &current) {
+    let (bytes, identity) =
+        match crate::path_identity::read_bounded_regular(path, MAX_TRANSPORT_BYTES) {
+            Ok(value) => value,
+            Err(_) => {
+                remove_response(path, &initial);
+                return Err("response_unavailable".to_string());
+            }
+        };
+    if !crate::path_identity::same_object(&initial, &identity) {
         return Err("response_unavailable".to_string());
     }
-    ensure_client_deadline(deadline)?;
-    Ok((response, identity))
+    let outcome = (|| {
+        ensure_client_deadline(deadline)?;
+        let response = decode_host_response(&bytes, request_id, confirmation_tag, target, format)
+            .map_err(|_| "response_unavailable".to_string())?;
+        ensure_client_deadline(deadline)?;
+        let current = crate::path_identity::verify_regular_file(path)
+            .map_err(|_| "response_unavailable".to_string())?;
+        if !crate::path_identity::same_object(&identity, &current) {
+            return Err("response_unavailable".to_string());
+        }
+        ensure_client_deadline(deadline)?;
+        Ok(response)
+    })();
+    match outcome {
+        Ok(response) => Ok((response, identity)),
+        Err(reason) => {
+            remove_response(path, &identity);
+            Err(reason)
+        }
+    }
 }
 
 fn remove_response(path: &Path, expected: &crate::path_identity::VerifiedPathIdentity) {

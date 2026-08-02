@@ -1267,7 +1267,7 @@ async fn execute_terminal_snapshot(
     request.validate().map_err(|_| C::InvalidRequest)?;
     let body = to_ascii_json(&request, MAX_REQUEST_BYTES).map_err(|_| C::InvalidRequest)?;
     let deadline = Instant::now() + Duration::from_secs(options.timeout);
-    let client = snapshot_http_client(Duration::from_secs(options.timeout))?;
+    let client = snapshot_http_client()?;
     let remaining = deadline
         .checked_duration_since(Instant::now())
         .ok_or(C::SnapshotTimeout)?;
@@ -1333,7 +1333,6 @@ async fn execute_terminal_snapshot(
 }
 
 fn snapshot_http_client(
-    timeout: Duration,
 ) -> Result<reqwest::Client, terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
     use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
 
@@ -1342,7 +1341,6 @@ fn snapshot_http_client(
         .retry(reqwest::retry::never())
         .redirect(reqwest::redirect::Policy::none())
         .referer(false)
-        .timeout(timeout)
         .build()
         .map_err(|_| C::ResponseUnavailable)
 }
@@ -2392,7 +2390,7 @@ mod tests {
         ] {
             let scripted = strict_snapshot_response(status, b"", extra);
             let (base, captured, task) = scripted_server(vec![ScriptedReply::Raw(scripted)]).await;
-            let client = snapshot_http_client(Duration::from_secs(2)).unwrap();
+            let client = snapshot_http_client().unwrap();
             let response = client
                 .post(format!("{base}/api/v1/terminal-snapshot"))
                 .header(ACCEPT_ENCODING, "identity")
@@ -2415,7 +2413,7 @@ mod tests {
         for extra in ["Content-Encoding: gzip\r\n", "Cache-Control: no-store\r\n"] {
             let response = strict_snapshot_response(200, b"{}", extra);
             let (base, _, task) = scripted_server(vec![ScriptedReply::Raw(response)]).await;
-            let client = snapshot_http_client(Duration::from_secs(2)).unwrap();
+            let client = snapshot_http_client().unwrap();
             let response = client.get(base).send().await.unwrap();
             assert_eq!(
                 validate_snapshot_response_headers(&response).unwrap_err(),
@@ -2435,7 +2433,7 @@ mod tests {
             rest: b"}\n\n".to_vec(),
         }])
         .await;
-        let client = snapshot_http_client(Duration::from_secs(2)).unwrap();
+        let client = snapshot_http_client().unwrap();
         let response = client.get(base).send().await.unwrap();
         validate_snapshot_response_headers(&response).unwrap();
         let error = read_snapshot_response_body(

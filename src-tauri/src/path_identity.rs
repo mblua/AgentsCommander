@@ -944,7 +944,10 @@ pub fn validate_terminal_snapshot_output_path(path: &Path) -> Result<(), String>
     validate_windows_snapshot_output_path(path)?;
     let parent = path.parent().ok_or_else(|| "unsafe_path".to_string())?;
     verify_directory(parent)?;
-    Ok(())
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        _ => Err("unsafe_path".to_string()),
+    }
 }
 
 #[cfg(windows)]
