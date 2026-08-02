@@ -68,7 +68,7 @@ pub fn record_pty_input(metadata: &PtyInputAuditMetadata) {
     }
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalSnapshotAuditMetadata {
     pub event: String,
@@ -101,6 +101,27 @@ pub struct TerminalSnapshotAuditMetadata {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason_code: Option<String>,
+}
+
+impl std::fmt::Debug for TerminalSnapshotAuditMetadata {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TerminalSnapshotAuditMetadata")
+            .field("has_request_id", &self.request_id.is_some())
+            .field("has_requester", &self.requester_fqn.is_some())
+            .field("has_target", &self.target_fqn.is_some())
+            .field("has_format", &self.format.is_some())
+            .field("has_selected_session", &self.selected_session_id.is_some())
+            .field("has_selected_backend", &self.selected_backend.is_some())
+            .field("rows", &self.rows)
+            .field("columns", &self.columns)
+            .field("sequence", &self.sequence)
+            .field("has_captured_at", &self.captured_at.is_some())
+            .field("payload_bytes", &self.payload_bytes)
+            .field("has_accepted_at", &self.accepted_at.is_some())
+            .field("has_reason_code", &self.reason_code.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 pub fn record_terminal_snapshot(metadata: &TerminalSnapshotAuditMetadata) {
@@ -256,6 +277,22 @@ mod tests {
             status: "succeeded".into(),
             reason_code: None,
         };
+        let diagnostic = format!("{metadata:?}");
+        for forbidden in [
+            metadata.request_id.as_deref().unwrap(),
+            metadata.requester_fqn.as_deref().unwrap(),
+            metadata.target_fqn.as_deref().unwrap(),
+            metadata.selected_session_id.as_deref().unwrap(),
+            metadata.captured_at.as_deref().unwrap(),
+            metadata.accepted_at.as_deref().unwrap(),
+            metadata.completed_at.as_str(),
+            metadata.status.as_str(),
+        ] {
+            assert!(!diagnostic.contains(forbidden));
+        }
+        assert!(diagnostic.contains("rows: Some(30)"));
+        assert!(diagnostic.contains("payload_bytes: Some(123)"));
+
         let value = serde_json::to_value(metadata).unwrap();
         for forbidden in [
             "token",

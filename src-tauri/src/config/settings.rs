@@ -3041,10 +3041,28 @@ pub(crate) fn read_terminal_snapshot_project_paths_strict() -> Result<Vec<String
     Ok(project_paths)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct TerminalSnapshotSecuritySettings {
     pub terminal_snapshots_enabled: bool,
     pub project_paths: Vec<String>,
+}
+
+impl std::fmt::Debug for TerminalSnapshotSecuritySettings {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let project_path_bytes = self
+            .project_paths
+            .iter()
+            .fold(0usize, |total, path| total.saturating_add(path.len()));
+        formatter
+            .debug_struct("TerminalSnapshotSecuritySettings")
+            .field(
+                "terminal_snapshots_enabled",
+                &self.terminal_snapshots_enabled,
+            )
+            .field("project_paths", &self.project_paths.len())
+            .field("project_path_bytes", &project_path_bytes)
+            .finish()
+    }
 }
 
 /// Read only the security-bearing snapshot gate and active project list. This
@@ -3563,6 +3581,17 @@ mod tests {
             super::read_terminal_snapshot_security_settings_strict_from_path(&path).unwrap();
         assert!(strict.terminal_snapshots_enabled);
         assert_eq!(strict.project_paths, vec!["one"]);
+
+        const PATH_CANARY: &str = r"C:\PATH_1173_SETTINGS_N3X6\project";
+        let structural = super::TerminalSnapshotSecuritySettings {
+            terminal_snapshots_enabled: true,
+            project_paths: vec![PATH_CANARY.to_string()],
+        };
+        let diagnostic = format!("{structural:?}");
+        assert!(!diagnostic.contains(PATH_CANARY));
+        assert!(diagnostic.contains("terminal_snapshots_enabled: true"));
+        assert!(diagnostic.contains("project_paths: 1"));
+        assert!(diagnostic.contains(&format!("project_path_bytes: {}", PATH_CANARY.len())));
     }
 
     #[test]

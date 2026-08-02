@@ -23,10 +23,36 @@ pub(crate) enum TerminalScreenCopyRead {
     TooLarge,
 }
 
+impl std::fmt::Debug for TerminalScreenCopyRead {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Copied(captured) => formatter
+                .debug_tuple("TerminalScreenCopyRead::Copied")
+                .field(captured)
+                .finish(),
+            Self::Unavailable => formatter.write_str("TerminalScreenCopyRead::Unavailable"),
+            Self::TooLarge => formatter.write_str("TerminalScreenCopyRead::TooLarge"),
+        }
+    }
+}
+
 pub(crate) enum TerminalScreenRead {
     Captured(std::sync::Arc<terminal_snapshot_renderer::TerminalScreenModel>),
     Unavailable,
     TooLarge,
+}
+
+impl std::fmt::Debug for TerminalScreenRead {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Captured(model) => formatter
+                .debug_tuple("TerminalScreenRead::Captured")
+                .field(model)
+                .finish(),
+            Self::Unavailable => formatter.write_str("TerminalScreenRead::Unavailable"),
+            Self::TooLarge => formatter.write_str("TerminalScreenRead::TooLarge"),
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -44,7 +44,7 @@ pub enum UniqueLiveTokenError {
     Ambiguous,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(crate) struct TerminalSnapshotRequesterFact {
     pub id: Uuid,
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -54,7 +54,19 @@ pub(crate) struct TerminalSnapshotRequesterFact {
     pub is_root_agent: bool,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+impl std::fmt::Debug for TerminalSnapshotRequesterFact {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TerminalSnapshotRequesterFact")
+            .field("working_directory_bytes", &self.working_directory.len())
+            .field("backend_kind", &self.backend_kind)
+            .field("is_coordinator", &self.is_coordinator)
+            .field("is_root_agent", &self.is_root_agent)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, PartialEq)]
 pub(crate) struct TerminalSnapshotSessionFact {
     pub id: Uuid,
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -62,6 +74,18 @@ pub(crate) struct TerminalSnapshotSessionFact {
     pub status: SessionStatus,
     pub working_directory: String,
     pub backend_kind: SessionBackendKind,
+}
+
+impl std::fmt::Debug for TerminalSnapshotSessionFact {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TerminalSnapshotSessionFact")
+            .field("name_bytes", &self.name.len())
+            .field("status", &self.status)
+            .field("working_directory_bytes", &self.working_directory.len())
+            .field("backend_kind", &self.backend_kind)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2269,6 +2293,42 @@ impl SessionManager {
 mod tests {
     use super::*;
     use crate::session::selection::TrustedCreateIntent;
+
+    #[test]
+    fn terminal_snapshot_fact_debug_uses_only_structural_fields() {
+        const NAME_CANARY: &str = "NAME_1173_S2K9";
+        const PATH_CANARY: &str = r"C:\PATH_1173_S2K9\replica";
+        let id = Uuid::parse_str("11730000-0000-4000-8000-00000000c229").unwrap();
+        let requester = TerminalSnapshotRequesterFact {
+            id,
+            created_at: chrono::Utc::now(),
+            working_directory: PATH_CANARY.to_string(),
+            backend_kind: SessionBackendKind::ContainerTransport,
+            is_coordinator: true,
+            is_root_agent: false,
+        };
+        let session = TerminalSnapshotSessionFact {
+            id,
+            created_at: chrono::Utc::now(),
+            name: NAME_CANARY.to_string(),
+            status: SessionStatus::Running,
+            working_directory: PATH_CANARY.to_string(),
+            backend_kind: SessionBackendKind::LocalProcess,
+        };
+        let diagnostic = format!("{requester:?}\n{session:?}");
+        let id_text = id.to_string();
+        for forbidden in [NAME_CANARY, PATH_CANARY, id_text.as_str()] {
+            assert!(!diagnostic.contains(forbidden));
+        }
+        for structural in [
+            "working_directory_bytes",
+            "name_bytes",
+            "status: Running",
+            "backend_kind: ContainerTransport",
+        ] {
+            assert!(diagnostic.contains(structural));
+        }
+    }
 
     #[tokio::test]
     async fn set_effective_shell_args_writes_field() {

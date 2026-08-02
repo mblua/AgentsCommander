@@ -568,14 +568,25 @@ pub enum TerminalSnapshotAuthorityKind {
     Root,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct VerifiedTerminalSnapshotRoute {
     pub sender: VerifiedPtyInputIdentity,
     pub target: VerifiedPtyInputIdentity,
     pub kind: TerminalSnapshotAuthorityKind,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl std::fmt::Debug for VerifiedTerminalSnapshotRoute {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("VerifiedTerminalSnapshotRoute")
+            .field("kind", &self.kind)
+            .field("sender_is_coordinator", &self.sender.is_coordinator)
+            .field("target_is_coordinator", &self.target.is_coordinator)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct TerminalSnapshotTargetIdentity {
     pub canonical_fqn: String,
     pub replica_root: PathBuf,
@@ -583,6 +594,15 @@ pub(crate) struct TerminalSnapshotTargetIdentity {
     pub workgroup: String,
     pub team: String,
     pub is_coordinator: bool,
+}
+
+impl std::fmt::Debug for TerminalSnapshotTargetIdentity {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TerminalSnapshotTargetIdentity")
+            .field("is_coordinator", &self.is_coordinator)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2144,6 +2164,20 @@ mod tests {
         .unwrap();
         assert_eq!(route.kind, TerminalSnapshotAuthorityKind::Coordinator);
         assert_eq!(route.target.canonical_fqn, "proj-a:wg-1-dev-team/dev-rust");
+        let diagnostic = format!("{route:?}");
+        let sender_path = route.sender.replica_root.to_string_lossy().into_owned();
+        let target_path = route.target.replica_root.to_string_lossy().into_owned();
+        for forbidden in [
+            route.sender.canonical_fqn.as_str(),
+            route.target.canonical_fqn.as_str(),
+            sender_path.as_str(),
+            target_path.as_str(),
+            route.sender.incarnation_fingerprint.as_str(),
+            route.target.authority_fingerprint.as_str(),
+        ] {
+            assert!(!diagnostic.contains(forbidden));
+        }
+        assert!(diagnostic.contains("kind: Coordinator"));
         assert!(verify_terminal_snapshot_route(
             &coordinator,
             false,
@@ -2158,6 +2192,24 @@ mod tests {
             &paths,
         )
         .is_err());
+    }
+
+    #[test]
+    fn terminal_snapshot_target_debug_omits_identity_and_path_text() {
+        const AUTH_CANARY: &str = "AUTH_1173_T8F2";
+        const PATH_CANARY: &str = r"C:\PATH_1173_T8F2\replica";
+        let target = TerminalSnapshotTargetIdentity {
+            canonical_fqn: AUTH_CANARY.to_string(),
+            replica_root: PathBuf::from(PATH_CANARY),
+            project: AUTH_CANARY.to_string(),
+            workgroup: AUTH_CANARY.to_string(),
+            team: AUTH_CANARY.to_string(),
+            is_coordinator: true,
+        };
+        let diagnostic = format!("{target:?}");
+        assert!(!diagnostic.contains(AUTH_CANARY));
+        assert!(!diagnostic.contains(PATH_CANARY));
+        assert!(diagnostic.contains("is_coordinator: true"));
     }
 
     #[test]

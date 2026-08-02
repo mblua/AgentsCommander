@@ -201,6 +201,10 @@ mod tests {
         let bytes = tiny_png();
         let validated = validate_generated_png(&bytes, 1, 1).unwrap();
         assert_eq!(validated.rgb_bytes, 3);
+        let diagnostic = format!("{validated:?}");
+        assert!(diagnostic.contains("width: 1"));
+        assert!(diagnostic.contains(&format!("bytes: {}", bytes.len())));
+        assert!(!diagnostic.contains("IDAT"));
     }
 
     #[test]

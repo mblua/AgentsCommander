@@ -222,7 +222,7 @@ pub enum TerminalCellWidth {
     WideContinuation,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum TerminalColor {
     Default,
@@ -230,13 +230,36 @@ pub enum TerminalColor {
     Rgb { red: u8, green: u8, blue: u8 },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+impl fmt::Debug for TerminalColor {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Default => "Default",
+            Self::Indexed { .. } => "Indexed",
+            Self::Rgb { .. } => "Rgb",
+        })
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TerminalCellStyle {
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
     pub inverse: bool,
+}
+
+impl fmt::Debug for TerminalCellStyle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let enabled_attributes = [self.bold, self.italic, self.underline, self.inverse]
+            .into_iter()
+            .filter(|enabled| *enabled)
+            .count();
+        formatter
+            .debug_struct("TerminalCellStyle")
+            .field("enabled_attributes", &enabled_attributes)
+            .finish()
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -249,11 +272,34 @@ pub struct TerminalCell {
     pub style: TerminalCellStyle,
 }
 
+impl fmt::Debug for TerminalCell {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TerminalCell")
+            .field("text_bytes", &self.text.len())
+            .field("width", &self.width)
+            .field("foreground", &self.foreground)
+            .field("background", &self.background)
+            .field("style", &self.style)
+            .finish()
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TerminalLine {
     pub wrapped: bool,
     pub cells: Vec<TerminalCell>,
+}
+
+impl fmt::Debug for TerminalLine {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TerminalLine")
+            .field("wrapped", &self.wrapped)
+            .field("cells", &self.cells.len())
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -337,14 +383,42 @@ pub struct TerminalScreen {
     pub lines: Vec<TerminalLine>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+impl fmt::Debug for TerminalScreen {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let cells = self
+            .lines
+            .iter()
+            .fold(0usize, |total, line| total.saturating_add(line.cells.len()));
+        formatter
+            .debug_struct("TerminalScreen")
+            .field("dimensions", &self.dimensions)
+            .field("sequence", &self.sequence)
+            .field("active_buffer", &self.active_buffer)
+            .field("cursor", &self.cursor)
+            .field("parser_errors", &self.parser_errors)
+            .field("lines", &self.lines.len())
+            .field("cells", &cells)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TerminalSnapshotSession {
     pub id: String,
     pub backend: TerminalBackendKind,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+impl fmt::Debug for TerminalSnapshotSession {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TerminalSnapshotSession")
+            .field("backend", &self.backend)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TerminalSnapshotFidelity {
     pub scope: String,
@@ -359,6 +433,26 @@ pub struct TerminalSnapshotFidelity {
     pub parser_error_coverage: String,
     pub omitted: Vec<String>,
     pub unsupported: Vec<String>,
+}
+
+impl fmt::Debug for TerminalSnapshotFidelity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TerminalSnapshotFidelity")
+            .field("backend_scrollback_rows", &self.backend_scrollback_rows)
+            .field("atomic_at_output_sequence", &self.atomic_at_output_sequence)
+            .field("application_frame_atomic", &self.application_frame_atomic)
+            .field(
+                "all_active_viewport_cells_included",
+                &self.all_active_viewport_cells_included,
+            )
+            .field("includes_frontend_state", &self.includes_frontend_state)
+            .field("exact_frontend_pixels", &self.exact_frontend_pixels)
+            .field("parser_had_errors", &self.parser_had_errors)
+            .field("omitted", &self.omitted.len())
+            .field("unsupported", &self.unsupported.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl TerminalSnapshotFidelity {
@@ -422,6 +516,17 @@ pub struct TerminalScreenModel {
     pub fidelity: TerminalSnapshotFidelity,
 }
 
+impl fmt::Debug for TerminalScreenModel {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TerminalScreenModel")
+            .field("session", &self.session)
+            .field("screen", &self.screen)
+            .field("fidelity", &self.fidelity)
+            .finish_non_exhaustive()
+    }
+}
+
 impl TerminalScreenModel {
     pub fn validate(&self) -> Result<(), ProtocolError> {
         validate_timestamp(&self.captured_at)?;
@@ -442,6 +547,18 @@ pub struct TerminalSnapshotDocument {
     pub session: TerminalSnapshotSession,
     pub screen: TerminalScreen,
     pub fidelity: TerminalSnapshotFidelity,
+}
+
+impl fmt::Debug for TerminalSnapshotDocument {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TerminalSnapshotDocument")
+            .field("schema_version", &self.schema_version)
+            .field("session", &self.session)
+            .field("screen", &self.screen)
+            .field("fidelity", &self.fidelity)
+            .finish_non_exhaustive()
+    }
 }
 
 impl TerminalSnapshotDocument {
@@ -495,13 +612,22 @@ pub struct TerminalPngInfo {
     pub pixel_height: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TerminalRendererFontMetadata {
     pub family: String,
     pub version: String,
     pub sha256: String,
     pub size_px: f32,
+}
+
+impl fmt::Debug for TerminalRendererFontMetadata {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TerminalRendererFontMetadata")
+            .field("size_px", &self.size_px)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -512,7 +638,7 @@ pub struct TerminalRendererCellMetadata {
     pub baseline_px: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TerminalRendererMetadata {
     pub id: String,
@@ -522,6 +648,18 @@ pub struct TerminalRendererMetadata {
     pub palette_id: String,
     pub cursor_policy: String,
     pub fallback_glyph_count: u64,
+}
+
+impl fmt::Debug for TerminalRendererMetadata {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TerminalRendererMetadata")
+            .field("font", &self.font)
+            .field("cell", &self.cell)
+            .field("padding_px", &self.padding_px)
+            .field("fallback_glyph_count", &self.fallback_glyph_count)
+            .finish_non_exhaustive()
+    }
 }
 
 impl TerminalRendererMetadata {
@@ -565,7 +703,7 @@ impl TerminalRendererMetadata {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TerminalSnapshotPngMetadata {
     pub schema_version: u32,
@@ -579,6 +717,21 @@ pub struct TerminalSnapshotPngMetadata {
     pub format: TerminalSnapshotFormat,
     pub png: TerminalPngInfo,
     pub renderer: TerminalRendererMetadata,
+}
+
+impl fmt::Debug for TerminalSnapshotPngMetadata {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TerminalSnapshotPngMetadata")
+            .field("schema_version", &self.schema_version)
+            .field("session", &self.session)
+            .field("screen", &self.screen)
+            .field("fidelity", &self.fidelity)
+            .field("format", &self.format)
+            .field("png", &self.png)
+            .field("renderer", &self.renderer)
+            .finish_non_exhaustive()
+    }
 }
 
 impl TerminalSnapshotPngMetadata {
@@ -677,18 +830,26 @@ impl fmt::Debug for TerminalSnapshotApiSuccess {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("TerminalSnapshotApiSuccess")
-            .field("api_version", &self.api_version)
             .field("result", &self.result)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TerminalSnapshotApiError {
     pub api_version: String,
     pub error: TerminalSnapshotReasonCode,
     pub detail: String,
+}
+
+impl fmt::Debug for TerminalSnapshotApiError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TerminalSnapshotApiError")
+            .field("error", &self.error)
+            .finish_non_exhaustive()
+    }
 }
 
 impl TerminalSnapshotApiError {
@@ -723,10 +884,10 @@ impl fmt::Debug for TerminalSnapshotHostResponse {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("TerminalSnapshotHostResponse")
-            .field("request_id", &self.request_id)
-            .field("has_result", &self.result.is_some())
+            .field("result", &self.result)
             .field("error", &self.error)
-            .finish()
+            .field("has_detail", &self.detail.is_some())
+            .finish_non_exhaustive()
     }
 }
 
@@ -777,9 +938,8 @@ impl fmt::Debug for TerminalSnapshotApiRequest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("TerminalSnapshotApiRequest")
-            .field("request_id", &self.request_id)
             .field("format", &self.format)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -1017,6 +1177,263 @@ mod tests {
         assert!(validate_screen(&screen).is_ok());
         screen.lines[0].cells[1].text = "x".to_string();
         assert!(validate_screen(&screen).is_err());
+    }
+
+    fn canary_model() -> TerminalScreenModel {
+        let cell_canary = "CELL_1173_D9Q2";
+        let osc_canary = "\u{1b}]52;c;OSC_1173_D9Q2\u{7}";
+        let auth_canary = "AUTH_1173_D9Q2";
+        TerminalScreenModel {
+            captured_at: auth_canary.to_string(),
+            session: TerminalSnapshotSession {
+                id: auth_canary.to_string(),
+                backend: TerminalBackendKind::ContainerTransport,
+            },
+            screen: TerminalScreen {
+                dimensions: TerminalDimensions {
+                    rows: 1,
+                    columns: 1,
+                },
+                sequence: 1173,
+                active_buffer: TerminalActiveBuffer::Alternate,
+                cursor: TerminalCursor {
+                    row: 0,
+                    column: 0,
+                    visible: true,
+                    in_bounds: true,
+                },
+                parser_errors: 2,
+                lines: vec![TerminalLine {
+                    wrapped: true,
+                    cells: vec![TerminalCell {
+                        text: format!("{cell_canary}{osc_canary}"),
+                        width: TerminalCellWidth::Narrow,
+                        foreground: TerminalColor::Indexed { index: 173 },
+                        background: TerminalColor::Rgb {
+                            red: 17,
+                            green: 73,
+                            blue: 92,
+                        },
+                        style: TerminalCellStyle {
+                            bold: true,
+                            italic: true,
+                            underline: false,
+                            inverse: false,
+                        },
+                    }],
+                }],
+            },
+            fidelity: TerminalSnapshotFidelity {
+                scope: auth_canary.to_string(),
+                backend_parser: auth_canary.to_string(),
+                backend_scrollback_rows: 0,
+                atomic_at_output_sequence: true,
+                application_frame_atomic: false,
+                all_active_viewport_cells_included: true,
+                includes_frontend_state: false,
+                exact_frontend_pixels: false,
+                parser_had_errors: true,
+                parser_error_coverage: auth_canary.to_string(),
+                omitted: vec![auth_canary.to_string()],
+                unsupported: vec![auth_canary.to_string()],
+            },
+        }
+    }
+
+    fn canary_png_metadata(model: &TerminalScreenModel) -> TerminalSnapshotPngMetadata {
+        let auth_canary = "AUTH_1173_D9Q2";
+        let mut renderer = TerminalRendererMetadata::version_one(3);
+        renderer.id = auth_canary.to_string();
+        renderer.font.family = auth_canary.to_string();
+        renderer.font.version = auth_canary.to_string();
+        renderer.font.sha256 = auth_canary.to_string();
+        renderer.palette_id = auth_canary.to_string();
+        renderer.cursor_policy = auth_canary.to_string();
+        TerminalSnapshotPngMetadata {
+            schema_version: SCHEMA_VERSION,
+            request_id: auth_canary.to_string(),
+            captured_at: auth_canary.to_string(),
+            requester: auth_canary.to_string(),
+            target: auth_canary.to_string(),
+            session: model.session.clone(),
+            screen: TerminalPngScreenMetadata {
+                dimensions: model.screen.dimensions,
+                sequence: model.screen.sequence,
+                active_buffer: model.screen.active_buffer,
+                cursor: model.screen.cursor,
+                parser_errors: model.screen.parser_errors,
+            },
+            fidelity: model.fidelity.clone(),
+            format: TerminalSnapshotFormat::Png,
+            png: TerminalPngInfo {
+                bytes: 17,
+                pixel_width: 26,
+                pixel_height: 36,
+            },
+            renderer,
+        }
+    }
+
+    #[test]
+    fn terminal_payload_model_render_and_wire_debug_is_structural_only() {
+        const CELL_CANARY: &str = "CELL_1173_D9Q2";
+        const OSC_CANARY: &str = "\u{1b}]52;c;OSC_1173_D9Q2\u{7}";
+        const PNG_CANARY: &str = "PNG_BYTES_1173_D9Q2";
+        const AUTH_CANARY: &str = "AUTH_1173_D9Q2";
+        const PATH_CANARY: &str = r"C:\PATH_1173_D9Q2\snapshot.png";
+        const TRANSPORT_CANARY: &str = "TRANSPORT_1173_D9Q2";
+
+        let model = canary_model();
+        let document = TerminalSnapshotDocument {
+            schema_version: SCHEMA_VERSION,
+            request_id: AUTH_CANARY.to_string(),
+            captured_at: AUTH_CANARY.to_string(),
+            requester: AUTH_CANARY.to_string(),
+            target: PATH_CANARY.to_string(),
+            session: model.session.clone(),
+            screen: model.screen.clone(),
+            fidelity: model.fidelity.clone(),
+        };
+        let metadata = canary_png_metadata(&model);
+        let api_error = TerminalSnapshotApiError {
+            api_version: TRANSPORT_CANARY.to_string(),
+            error: TerminalSnapshotReasonCode::InvalidRequest,
+            detail: TRANSPORT_CANARY.to_string(),
+        };
+        let api_request = TerminalSnapshotApiRequest {
+            api_version: TRANSPORT_CANARY.to_string(),
+            request_id: AUTH_CANARY.to_string(),
+            to: PATH_CANARY.to_string(),
+            format: TerminalSnapshotFormat::Png,
+        };
+
+        let mut diagnostics = vec![
+            format!("{:?}", TerminalSnapshotFormat::Png),
+            format!("{:?}", TerminalSnapshotReasonCode::InvalidRequest),
+            format!("{:?}", ProtocolError::Invalid),
+            format!("{:?}", TerminalBackendKind::ContainerTransport),
+            format!("{:?}", TerminalActiveBuffer::Alternate),
+            format!("{:?}", TerminalCellWidth::Narrow),
+            format!("{:?}", model.screen.lines[0].cells[0].foreground),
+            format!("{:?}", model.screen.lines[0].cells[0].style),
+            format!("{:?}", model.screen.lines[0].cells[0]),
+            format!("{:?}", model.screen.lines[0]),
+            format!("{:?}", model.screen.dimensions),
+            format!(
+                "{:?}",
+                model.screen.dimensions.checked_image_dimensions().unwrap()
+            ),
+            format!("{:?}", model.screen.cursor),
+            format!("{:?}", model.screen),
+            format!("{:?}", model.session),
+            format!("{:?}", model.fidelity),
+            format!("{model:?}"),
+            format!("{document:?}"),
+            format!("{:?}", metadata.screen),
+            format!("{:?}", metadata.png),
+            format!("{:?}", metadata.renderer.font),
+            format!("{:?}", metadata.renderer.cell),
+            format!("{:?}", metadata.renderer),
+            format!("{metadata:?}"),
+            format!("{api_error:?}"),
+            format!("{api_request:?}"),
+        ];
+        diagnostics.push(format!(
+            "{:?}",
+            TerminalSnapshotPayload::Json {
+                snapshot: document.clone(),
+            }
+        ));
+        diagnostics.push(format!(
+            "{:?}",
+            TerminalSnapshotPayload::Png {
+                metadata: metadata.clone(),
+                png: PNG_CANARY.as_bytes().to_vec(),
+            }
+        ));
+        diagnostics.push(format!(
+            "{:?}",
+            TerminalSnapshotApiSuccess {
+                api_version: TRANSPORT_CANARY.to_string(),
+                result: TerminalSnapshotPayload::Json {
+                    snapshot: document.clone(),
+                },
+            }
+        ));
+        diagnostics.push(format!(
+            "{:?}",
+            TerminalSnapshotHostResponse {
+                api_version: TRANSPORT_CANARY.to_string(),
+                request_id: AUTH_CANARY.to_string(),
+                confirmation_tag: AUTH_CANARY.to_string(),
+                expires_at: AUTH_CANARY.to_string(),
+                result: Some(TerminalSnapshotPayload::Png {
+                    metadata,
+                    png: PNG_CANARY.as_bytes().to_vec(),
+                }),
+                error: None,
+                detail: Some(TRANSPORT_CANARY.to_string()),
+            }
+        ));
+
+        let diagnostics = diagnostics.join("\n");
+        for forbidden in [
+            CELL_CANARY,
+            OSC_CANARY,
+            PNG_CANARY,
+            AUTH_CANARY,
+            PATH_CANARY,
+            TRANSPORT_CANARY,
+        ] {
+            assert!(!diagnostics.contains(forbidden));
+        }
+        for structural in [
+            "text_bytes",
+            "cells: 1",
+            "rows: 1",
+            "decoded_bytes",
+            "InvalidRequest",
+            "format: Png",
+        ] {
+            assert!(diagnostics.contains(structural));
+        }
+    }
+
+    #[test]
+    fn protocol_display_debug_and_error_sources_are_fixed_and_source_free() {
+        use std::error::Error as _;
+
+        for (error, display, debug) in [
+            (
+                ProtocolError::Invalid,
+                "invalid terminal snapshot protocol data",
+                "Invalid",
+            ),
+            (
+                ProtocolError::TooLarge,
+                "terminal snapshot protocol limit exceeded",
+                "TooLarge",
+            ),
+            (
+                ProtocolError::InvalidPng,
+                "invalid terminal snapshot PNG",
+                "InvalidPng",
+            ),
+            (
+                ProtocolError::Serialization,
+                "terminal snapshot serialization failed",
+                "Serialization",
+            ),
+        ] {
+            assert_eq!(error.to_string(), display);
+            assert_eq!(format!("{error:?}"), debug);
+            assert!(error.source().is_none());
+        }
+        assert_eq!(TerminalSnapshotFormat::Json.to_string(), "json");
+        assert_eq!(
+            TerminalSnapshotReasonCode::InvalidRequest.to_string(),
+            "invalid_request"
+        );
     }
 
     #[test]

@@ -67,6 +67,24 @@ pub(crate) struct CapturedVtScreen {
     cells: Vec<vt100::Cell>,
 }
 
+impl std::fmt::Debug for CapturedVtScreen {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CapturedVtScreen")
+            .field("rows", &self.rows)
+            .field("columns", &self.columns)
+            .field("output_sequence", &self.output_sequence)
+            .field("active_buffer", &self.active_buffer)
+            .field("cursor_row", &self.cursor_row)
+            .field("cursor_column", &self.cursor_column)
+            .field("cursor_visible", &self.cursor_visible)
+            .field("parser_errors", &self.parser_errors)
+            .field("wraps", &self.wraps.len())
+            .field("cells", &self.cells.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl CapturedVtScreen {
     pub(crate) fn into_model(
         self,
@@ -1132,6 +1150,47 @@ mod tests {
             TerminalCellWidth::WideContinuation
         );
         assert!(model.screen.lines[0].cells[2].text.is_empty());
+    }
+
+    #[test]
+    fn capture_and_model_result_debug_omit_cell_osc_and_session_canaries() {
+        const CELL_CANARY: &str = "CELL_1173_VT_Q8L5";
+        const OSC_CANARY: &str = "OSC_1173_VT_Q8L5";
+        let fanout = fanout();
+        let id = Uuid::parse_str("11730000-0000-4000-8000-00000000a815").unwrap();
+        fanout.register_session(id, IdleTuning::DEFAULT, 2, 40);
+        let output = format!("{CELL_CANARY}\x1b]0;{OSC_CANARY}\x07");
+        feed(&fanout, id, &[output.as_bytes()]);
+
+        let copied = fanout.copy_terminal_screen(id);
+        let copied_diagnostic = format!("{copied:?}");
+        let captured = match copied {
+            crate::pty::backend::TerminalScreenCopyRead::Copied(captured) => captured,
+            _ => panic!("expected compact viewport copy"),
+        };
+        let model = captured
+            .into_model(id, SessionBackendKind::LocalProcess)
+            .expect("valid owned model");
+        let read = crate::pty::backend::TerminalScreenRead::Captured(model);
+        let diagnostic = format!(
+            "{copied_diagnostic}\n{read:?}\n{:?}\n{:?}",
+            crate::pty::backend::TerminalScreenCopyRead::Unavailable,
+            crate::pty::backend::TerminalScreenRead::TooLarge,
+        );
+        let id_text = id.to_string();
+        for forbidden in [CELL_CANARY, OSC_CANARY, id_text.as_str()] {
+            assert!(!diagnostic.contains(forbidden));
+        }
+        for structural in [
+            "rows: 2",
+            "columns: 40",
+            "cells: 80",
+            "TerminalScreenRead::Captured",
+            "TerminalScreenCopyRead::Unavailable",
+            "TerminalScreenRead::TooLarge",
+        ] {
+            assert!(diagnostic.contains(structural));
+        }
     }
 
     #[test]

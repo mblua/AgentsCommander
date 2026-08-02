@@ -73,6 +73,18 @@ pub struct RenderedTerminalPng {
     pub fallback_glyph_count: u64,
 }
 
+impl std::fmt::Debug for RenderedTerminalPng {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RenderedTerminalPng")
+            .field("bytes", &self.bytes.len())
+            .field("pixel_width", &self.pixel_width)
+            .field("pixel_height", &self.pixel_height)
+            .field("fallback_glyph_count", &self.fallback_glyph_count)
+            .finish()
+    }
+}
+
 impl RenderedTerminalPng {
     pub fn metadata(
         &self,
@@ -741,6 +753,59 @@ mod tests {
         assert!(first == second);
         assert_eq!((first.pixel_width, first.pixel_height), (26, 36));
         assert_eq!(FONT_BYTES.len(), 340_712);
+    }
+
+    #[test]
+    fn rendered_png_and_render_errors_have_structural_diagnostics() {
+        use std::error::Error as _;
+
+        const PNG_CANARY: &str = "PNG_BYTES_1173_R4N8";
+        const CELL_CANARY: &str = "CELL_1173_R4N8";
+        let rendered = RenderedTerminalPng {
+            bytes: PNG_CANARY.as_bytes().to_vec(),
+            pixel_width: 1173,
+            pixel_height: 4096,
+            fallback_glyph_count: 2,
+        };
+        let debug = format!("{rendered:?}");
+        assert!(!debug.contains(PNG_CANARY));
+        assert!(debug.contains(&format!("bytes: {}", PNG_CANARY.len())));
+        assert!(debug.contains("pixel_width: 1173"));
+
+        let mut invalid = model(TerminalCell {
+            text: CELL_CANARY.to_string(),
+            width: TerminalCellWidth::Narrow,
+            foreground: TerminalColor::Default,
+            background: TerminalColor::Default,
+            style: TerminalCellStyle::default(),
+        });
+        invalid.screen.dimensions.columns = 2;
+        let mapped = render_png(&invalid).unwrap_err();
+        assert_eq!(mapped, RenderError::InvalidModel);
+        assert!(!format!("{mapped} {mapped:?}").contains(CELL_CANARY));
+
+        for (error, display) in [
+            (
+                RenderError::InvalidModel,
+                "terminal snapshot model is invalid",
+            ),
+            (
+                RenderError::TooLarge,
+                "terminal snapshot render limit exceeded",
+            ),
+            (
+                RenderError::Font,
+                "terminal snapshot font initialization failed",
+            ),
+            (
+                RenderError::Invariant,
+                "terminal snapshot renderer invariant failed",
+            ),
+            (RenderError::Png, "terminal snapshot PNG encoding failed"),
+        ] {
+            assert_eq!(error.to_string(), display);
+            assert!(error.source().is_none());
+        }
     }
 
     #[test]

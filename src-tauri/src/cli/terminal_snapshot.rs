@@ -44,7 +44,18 @@ pub struct TerminalSnapshotArgs {
     pub timeout: u64,
 }
 
-#[derive(Clone, Copy, ValueEnum)]
+impl std::fmt::Debug for TerminalSnapshotArgs {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TerminalSnapshotArgs")
+            .field("format", &self.format)
+            .field("has_output", &self.output.is_some())
+            .field("timeout", &self.timeout)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum SnapshotFormatArg {
     Json,
     Png,
@@ -552,6 +563,26 @@ mod tests {
             write_stdout_line(b"{}", Instant::now()).unwrap_err(),
             "snapshot_timeout"
         );
+    }
+
+    #[test]
+    fn argument_debug_omits_token_target_and_path_canaries() {
+        const AUTH_CANARY: &str = "AUTH_1173_C3P7";
+        const PATH_CANARY: &str = r"C:\PATH_1173_C3P7\snapshot.png";
+        let args = TerminalSnapshotArgs {
+            token: AUTH_CANARY.to_string(),
+            root: PathBuf::from(PATH_CANARY),
+            to: AUTH_CANARY.to_string(),
+            format: SnapshotFormatArg::Png,
+            output: Some(PathBuf::from(PATH_CANARY)),
+            timeout: 15,
+        };
+        let diagnostic = format!("{args:?}");
+        assert!(!diagnostic.contains(AUTH_CANARY));
+        assert!(!diagnostic.contains(PATH_CANARY));
+        assert!(diagnostic.contains("format: Png"));
+        assert!(diagnostic.contains("has_output: true"));
+        assert!(diagnostic.contains("timeout: 15"));
     }
 
     #[test]

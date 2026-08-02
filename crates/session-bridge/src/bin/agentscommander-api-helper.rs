@@ -1161,6 +1161,18 @@ struct TerminalSnapshotOptions {
     saw_timeout: bool,
 }
 
+impl std::fmt::Debug for TerminalSnapshotOptions {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TerminalSnapshotOptions")
+            .field("has_target", &self.to.is_some())
+            .field("format", &self.format)
+            .field("has_output", &self.output.is_some())
+            .field("timeout", &self.timeout)
+            .finish_non_exhaustive()
+    }
+}
+
 fn parse_terminal_snapshot_options(
     args: Vec<OsString>,
 ) -> Result<TerminalSnapshotOptions, terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
@@ -2526,6 +2538,26 @@ mod tests {
                 Err(C::InvalidRequest)
             ));
         }
+    }
+
+    #[test]
+    fn terminal_snapshot_option_debug_omits_target_and_path_canaries() {
+        const AUTH_CANARY: &str = "AUTH_1173_HELPER_B7W4";
+        const PATH_CANARY: &str = r"C:\PATH_1173_HELPER_B7W4\snapshot.png";
+        let options = TerminalSnapshotOptions {
+            to: Some(AUTH_CANARY.to_string()),
+            format: terminal_snapshot_renderer::TerminalSnapshotFormat::Png,
+            output: Some(std::path::PathBuf::from(PATH_CANARY)),
+            timeout: 15,
+            saw_format: true,
+            saw_timeout: true,
+        };
+        let diagnostic = format!("{options:?}");
+        assert!(!diagnostic.contains(AUTH_CANARY));
+        assert!(!diagnostic.contains(PATH_CANARY));
+        assert!(diagnostic.contains("has_target: true"));
+        assert!(diagnostic.contains("format: Png"));
+        assert!(diagnostic.contains("has_output: true"));
     }
 
     #[test]

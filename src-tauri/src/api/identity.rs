@@ -79,9 +79,6 @@ impl std::fmt::Debug for InitialApiCredentialProof {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("InitialApiCredentialProof")
-            .field("client_id", &self.client_id)
-            .field("bound_session_id", &self.bound_session_id)
-            .field("credential_generation", &self.credential_generation)
             .finish_non_exhaustive()
     }
 }
@@ -108,9 +105,6 @@ impl std::fmt::Debug for VerifiedBoundContainerCoordinator {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("VerifiedBoundContainerCoordinator")
-            .field("session_id", &self.session_id)
-            .field("client_id", &self.client_id)
-            .field("credential_generation", &self.credential_generation)
             .finish_non_exhaustive()
     }
 }
@@ -323,6 +317,23 @@ mod tests {
             bound_session_id: None,
             credential_generation: None,
         }
+    }
+
+    #[test]
+    fn initial_snapshot_credential_debug_omits_auth_and_path_canaries() {
+        const AUTH_CANARY: &str = "AUTH_1173_API_G2D6";
+        const PATH_CANARY: &str = r"C:\PATH_1173_API_G2D6\replica";
+        let proof = InitialApiCredentialProof {
+            client_id: AUTH_CANARY.to_string(),
+            bound_root: PATH_CANARY.to_string(),
+            bound_session_id: AUTH_CANARY.to_string(),
+            credential_generation: AUTH_CANARY.to_string(),
+            presented_token_hash: AUTH_CANARY.to_string(),
+        };
+        let diagnostic = format!("{proof:?}");
+        assert!(!diagnostic.contains(AUTH_CANARY));
+        assert!(!diagnostic.contains(PATH_CANARY));
+        assert_eq!(diagnostic, "InitialApiCredentialProof { .. }");
     }
 
     #[test]

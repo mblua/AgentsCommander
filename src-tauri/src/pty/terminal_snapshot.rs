@@ -82,9 +82,13 @@ impl std::fmt::Debug for TerminalSnapshotServiceRequest {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("TerminalSnapshotServiceRequest")
-            .field("request_id", &self.request_id)
             .field("format", &self.format)
-            .finish()
+            .field("source_plane", &self.source_plane)
+            .field(
+                "has_host_authorization_deadline",
+                &self.host_authorization_deadline.is_some(),
+            )
+            .finish_non_exhaustive()
     }
 }
 
@@ -95,6 +99,15 @@ pub(crate) enum TerminalSnapshotRequesterSelector {
         claimed_from: String,
     },
     ApiSession(Uuid),
+}
+
+impl std::fmt::Debug for TerminalSnapshotRequesterSelector {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Host { .. } => "TerminalSnapshotRequesterSelector::Host",
+            Self::ApiSession(_) => "TerminalSnapshotRequesterSelector::ApiSession",
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -114,6 +127,21 @@ pub(crate) enum PreparedSnapshotPayload {
         model: Arc<TerminalScreenModel>,
     },
     Png(Box<TerminalSnapshotPayload>),
+}
+
+impl std::fmt::Debug for PreparedSnapshotPayload {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Json { model, .. } => formatter
+                .debug_struct("PreparedSnapshotPayload::Json")
+                .field("model", model)
+                .finish(),
+            Self::Png(payload) => formatter
+                .debug_tuple("PreparedSnapshotPayload::Png")
+                .field(payload)
+                .finish(),
+        }
+    }
 }
 
 impl PreparedSnapshotPayload {
@@ -176,6 +204,15 @@ impl PreparedSnapshotPayload {
 pub(crate) struct TerminalSnapshotPrepared {
     payload: PreparedSnapshotPayload,
     finalization: TerminalSnapshotFinalization,
+}
+
+impl std::fmt::Debug for TerminalSnapshotPrepared {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TerminalSnapshotPrepared")
+            .field("payload", &self.payload)
+            .finish_non_exhaustive()
+    }
 }
 
 impl TerminalSnapshotPrepared {
@@ -1799,6 +1836,87 @@ mod resource_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn service_request_selector_and_prepared_payload_debug_are_structural_only() {
+        const CELL_CANARY: &str = "CELL_1173_SVC_F4R6";
+        const PNG_CANARY: &str = "PNG_1173_SVC_F4R6";
+        const AUTH_CANARY: &str = "AUTH_1173_SVC_F4R6";
+        const PATH_CANARY: &str = r"C:\PATH_1173_SVC_F4R6\snapshot.png";
+        let request_id = Uuid::parse_str("11730000-0000-4000-8000-00000000f406").unwrap();
+        let request = TerminalSnapshotServiceRequest {
+            request_id,
+            target: PATH_CANARY.to_string(),
+            format: TerminalSnapshotFormat::Json,
+            source_plane: TerminalSnapshotSourcePlane::HostCli,
+            host_authorization_deadline: Some((Instant::now(), chrono::Utc::now())),
+        };
+        let temporary = tempfile::TempDir::new().unwrap();
+        let expected_root = crate::path_identity::verify_directory(temporary.path()).unwrap();
+        let selector = TerminalSnapshotRequesterSelector::Host {
+            token: request_id,
+            expected_root,
+            claimed_from: AUTH_CANARY.to_string(),
+        };
+        let api_selector = TerminalSnapshotRequesterSelector::ApiSession(request_id);
+
+        let mut model: TerminalScreenModel = terminal_snapshot_renderer::decode_bounded(
+            include_bytes!(
+                "../../../crates/terminal-snapshot-renderer/tests/fixtures/blank-cursor-model.json"
+            ),
+            terminal_snapshot_renderer::MAX_JSON_BYTES,
+        )
+        .unwrap();
+        model.screen.lines[0].cells[0].text = CELL_CANARY.to_string();
+        let json = PreparedSnapshotPayload::Json {
+            request_id: AUTH_CANARY.to_string(),
+            requester: AUTH_CANARY.to_string(),
+            target: PATH_CANARY.to_string(),
+            model: Arc::new(model),
+        };
+        let png_model: TerminalScreenModel = terminal_snapshot_renderer::decode_bounded(
+            include_bytes!(
+                "../../../crates/terminal-snapshot-renderer/tests/fixtures/blank-cursor-model.json"
+            ),
+            terminal_snapshot_renderer::MAX_JSON_BYTES,
+        )
+        .unwrap();
+        let rendered = render_png(&png_model).unwrap();
+        let png = PreparedSnapshotPayload::Png(Box::new(TerminalSnapshotPayload::Png {
+            metadata: rendered.metadata(
+                AUTH_CANARY.to_string(),
+                AUTH_CANARY.to_string(),
+                PATH_CANARY.to_string(),
+                &png_model,
+            ),
+            png: PNG_CANARY.as_bytes().to_vec(),
+        }));
+
+        let diagnostic = format!("{request:?}\n{selector:?}\n{api_selector:?}\n{json:?}\n{png:?}");
+        let request_id_text = request_id.to_string();
+        let temporary_path = temporary.path().to_string_lossy().into_owned();
+        for forbidden in [
+            CELL_CANARY,
+            PNG_CANARY,
+            AUTH_CANARY,
+            PATH_CANARY,
+            request_id_text.as_str(),
+            temporary_path.as_str(),
+        ] {
+            assert!(!diagnostic.contains(forbidden));
+        }
+        for structural in [
+            "source_plane: HostCli",
+            "has_host_authorization_deadline: true",
+            "TerminalSnapshotRequesterSelector::Host",
+            "TerminalSnapshotRequesterSelector::ApiSession",
+            "PreparedSnapshotPayload::Json",
+            "PreparedSnapshotPayload::Png",
+            "decoded_bytes",
+        ] {
+            assert!(diagnostic.contains(structural));
+        }
+    }
 
     #[test]
     fn status_order_is_exact() {

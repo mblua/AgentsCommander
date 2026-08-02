@@ -41,7 +41,7 @@ impl std::fmt::Debug for HostTerminalSnapshotRequest {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("HostTerminalSnapshotRequest")
-            .field("request_id", &self.request_id)
+            .field("version", &self.version)
             .field("format", &self.format)
             .finish_non_exhaustive()
     }
@@ -1122,11 +1122,24 @@ mod tests {
     }
 
     #[test]
-    fn request_debug_omits_secrets_and_targets() {
-        let request = request();
-        let debug = format!("{request:?}");
-        assert!(!debug.contains(&request.token));
-        assert!(!debug.contains(&request.nonce));
-        assert!(!debug.contains(&request.to));
+    fn request_debug_is_structural_and_omits_auth_identity_and_path_canaries() {
+        const AUTH_CANARY: &str = "AUTH_1173_H5C8";
+        const PATH_CANARY: &str = r"C:\PATH_1173_H5C8\request.json";
+        let mut request = request();
+        request.kind = AUTH_CANARY.to_string();
+        request.request_id = AUTH_CANARY.to_string();
+        request.token = AUTH_CANARY.to_string();
+        request.from = AUTH_CANARY.to_string();
+        request.to = PATH_CANARY.to_string();
+        request.issued_at = AUTH_CANARY.to_string();
+        request.expires_at = AUTH_CANARY.to_string();
+        request.nonce = AUTH_CANARY.to_string();
+        request.confirmation_tag = AUTH_CANARY.to_string();
+
+        let diagnostic = format!("{request:?}");
+        assert!(!diagnostic.contains(AUTH_CANARY));
+        assert!(!diagnostic.contains(PATH_CANARY));
+        assert!(diagnostic.contains("version: 1"));
+        assert!(diagnostic.contains("format: Json"));
     }
 }
