@@ -59,6 +59,7 @@ type TerminalSnapshotResponsePublicationHook = Box<dyn FnOnce(&Path, &Path) + Se
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum TerminalSnapshotResponsePublicationStage {
+    BeforeDirectoryRetention,
     BeforeTemporaryCreate,
     BeforeTemporaryCommit,
     AfterTemporaryCommit,
@@ -733,8 +734,8 @@ fn prune_map(map: &mut HashMap<String, VecDeque<Instant>>, now: Instant) {
 
 #[derive(Clone)]
 struct TrackedArtifactDirectory {
-    path: PathBuf,
     identity: crate::path_identity::VerifiedPathIdentity,
+    retained: crate::path_identity::RetainedDirectory,
 }
 
 #[derive(Clone)]
@@ -774,11 +775,10 @@ impl TerminalSnapshotArtifactReservation {
         identity: crate::path_identity::VerifiedPathIdentity,
         ttl: Duration,
     ) -> Result<(), TerminalSnapshotReasonCode> {
-        let current_directory = crate::path_identity::verify_directory(&self.directory.path)
+        self.directory
+            .retained
+            .verify_current()
             .map_err(|_| TerminalSnapshotReasonCode::ResponseUnavailable)?;
-        if !crate::path_identity::same_object(&current_directory, &self.directory.identity) {
-            return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
-        }
         let current_file = crate::path_identity::verify_regular_file(&path)
             .map_err(|_| TerminalSnapshotReasonCode::ResponseUnavailable)?;
         if !crate::path_identity::same_object(&current_file, &identity)
@@ -1272,9 +1272,9 @@ impl TerminalSnapshotState {
         directory_identity: &crate::path_identity::VerifiedPathIdentity,
         existing_object: Option<crate::path_identity::FileObjectId>,
     ) -> Result<TerminalSnapshotArtifactReservation, TerminalSnapshotReasonCode> {
-        let current = crate::path_identity::verify_directory(directory_path)
+        let retained = crate::path_identity::retain_directory(directory_path)
             .map_err(|_| TerminalSnapshotReasonCode::ResponseUnavailable)?;
-        if !crate::path_identity::same_object(&current, directory_identity) {
+        if !crate::path_identity::same_object(retained.identity(), directory_identity) {
             return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
         }
         let mut registry = self
@@ -1294,8 +1294,8 @@ impl TerminalSnapshotState {
             return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
         }
         let directory = TrackedArtifactDirectory {
-            path: directory_path.to_path_buf(),
             identity: directory_identity.clone(),
+            retained,
         };
         registry
             .directories

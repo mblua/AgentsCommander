@@ -1511,20 +1511,33 @@ struct SnapshotFileIdentity {
 
 impl SnapshotOutputFile {
     fn write_and_verify(
+        self,
+        bytes: &[u8],
+    ) -> Result<(), terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
+        self.write_and_verify_inner(bytes, || {}, || {})
+    }
+
+    fn write_and_verify_inner(
         mut self,
         bytes: &[u8],
+        after_write: impl FnOnce(),
+        after_sync: impl FnOnce(),
     ) -> Result<(), terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
         use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
 
         self.file
             .write_all(bytes)
             .and_then(|_| self.file.flush())
-            .and_then(|_| self.file.sync_all())
             .map_err(|_| C::OutputFailed)?;
-        let current_parent = snapshot_directory_identity(
-            self.path.parent().ok_or(C::OutputFailed)?,
-            C::OutputFailed,
-        )?;
+        after_write();
+        let parent_path = self.path.parent().ok_or(C::OutputFailed)?;
+        let current_parent = snapshot_directory_identity(parent_path, C::OutputFailed)?;
+        if current_parent.identity != self.parent.identity {
+            return Err(C::OutputFailed);
+        }
+        self.file.sync_all().map_err(|_| C::OutputFailed)?;
+        after_sync();
+        let current_parent = snapshot_directory_identity(parent_path, C::OutputFailed)?;
         let retained_parent =
             snapshot_handle_identity(&self.parent.file, true).map_err(|_| C::OutputFailed)?;
         let current_handle = snapshot_file_identity(&self.file).map_err(|_| C::OutputFailed)?;
@@ -1548,6 +1561,13 @@ impl SnapshotOutputFile {
 fn validate_snapshot_output_path(
     path: &std::path::Path,
 ) -> Result<(), terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
+    validate_snapshot_output_path_inner(path, || {}).map(|_| ())
+}
+
+fn validate_snapshot_output_path_inner(
+    path: &std::path::Path,
+    before_filesystem: impl FnOnce(),
+) -> Result<SnapshotFileIdentity, terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
     use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
 
     if !path.is_absolute()
@@ -1580,9 +1600,14 @@ fn validate_snapshot_output_path(
     }
     #[cfg(windows)]
     validate_windows_snapshot_path(path)?;
-    verify_snapshot_directory_chain(path.parent().ok_or(C::UnsafePath)?)?;
+    before_filesystem();
+    let parent = path.parent().ok_or(C::UnsafePath)?;
+    verify_snapshot_directory_chain(parent)?;
+    let parent_proof = snapshot_directory_identity(parent, C::UnsafePath)?;
+    let parent_identity = parent_proof.identity;
+    drop(parent_proof);
     match std::fs::symlink_metadata(path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(parent_identity),
         _ => Err(C::UnsafePath),
     }
 }
@@ -1595,14 +1620,26 @@ fn create_snapshot_output(
 
 fn create_snapshot_output_inner(
     path: &std::path::Path,
-    before_create: impl FnOnce(),
+    before_retention: impl FnOnce(),
+) -> Result<SnapshotOutputFile, terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
+    create_snapshot_output_with_hooks(path, before_retention, || {})
+}
+
+fn create_snapshot_output_with_hooks(
+    path: &std::path::Path,
+    before_retention: impl FnOnce(),
+    before_open: impl FnOnce(),
 ) -> Result<SnapshotOutputFile, terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
     use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
 
-    validate_snapshot_output_path(path)?;
+    let validated_parent_identity = validate_snapshot_output_path_inner(path, || {})?;
     let parent = path.parent().ok_or(C::UnsafePath)?;
-    let parent_proof = snapshot_directory_identity(parent, C::UnsafePath)?;
-    before_create();
+    before_retention();
+    let parent_proof = snapshot_directory_identity(parent, C::OutputFailed)?;
+    if parent_proof.identity != validated_parent_identity {
+        return Err(C::OutputFailed);
+    }
+    before_open();
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -1613,8 +1650,12 @@ fn create_snapshot_output_inner(
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
-        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
-        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+        };
+        options
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     }
     let file = options.open(path).map_err(|_| C::OutputFailed)?;
     #[cfg(unix)]
@@ -1704,11 +1745,10 @@ fn open_snapshot_directory(path: &std::path::Path) -> std::io::Result<std::fs::F
     {
         use std::os::windows::fs::OpenOptionsExt;
         use windows_sys::Win32::Storage::FileSystem::{
-            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
-            FILE_SHARE_READ, FILE_SHARE_WRITE,
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
         };
         options
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .share_mode(FILE_SHARE_READ)
             .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
     }
     options.open(path)
@@ -1800,7 +1840,20 @@ fn validate_windows_snapshot_path(
     use std::path::{Component, Prefix};
     use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
 
-    let raw = path.as_os_str().to_string_lossy();
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    {
+        return Err(C::UnsafePath);
+    }
+    let raw = path.as_os_str().to_str().ok_or(C::UnsafePath)?;
+    if raw
+        .split(['\\', '/'])
+        .any(|component| matches!(component, "." | ".."))
+    {
+        return Err(C::UnsafePath);
+    }
     let mut components = path.components();
     let allowed_drive_colon = match components.next() {
         Some(Component::Prefix(prefix)) => match prefix.kind() {
@@ -1835,13 +1888,19 @@ fn validate_windows_snapshot_path(
         if value.ends_with([' ', '.']) {
             return Err(C::UnsafePath);
         }
-        let stem = value.split('.').next().unwrap_or(value);
+        let stem = value
+            .split('.')
+            .next()
+            .unwrap_or(value)
+            .trim_end_matches([' ', '.']);
         let reserved = matches!(
             stem.to_ascii_uppercase().as_str(),
             "CON"
                 | "PRN"
                 | "AUX"
                 | "NUL"
+                | "CONIN$"
+                | "CONOUT$"
                 | "COM1"
                 | "COM2"
                 | "COM3"
@@ -1851,6 +1910,9 @@ fn validate_windows_snapshot_path(
                 | "COM7"
                 | "COM8"
                 | "COM9"
+                | "COM¹"
+                | "COM²"
+                | "COM³"
                 | "LPT1"
                 | "LPT2"
                 | "LPT3"
@@ -1860,11 +1922,14 @@ fn validate_windows_snapshot_path(
                 | "LPT7"
                 | "LPT8"
                 | "LPT9"
+                | "LPT¹"
+                | "LPT²"
+                | "LPT³"
         );
         if reserved
-            || value
-                .chars()
-                .any(|character| matches!(character, '<' | '>' | '"' | '|' | '?' | '*'))
+            || value.chars().any(|character| {
+                character <= '\u{1f}' || matches!(character, '<' | '>' | '"' | '|' | '?' | '*')
+            })
         {
             return Err(C::UnsafePath);
         }
@@ -2593,18 +2658,200 @@ mod tests {
         std::fs::create_dir(&parent).unwrap();
         let output = parent.join("snapshot.png");
         let parent_for_race = parent.clone();
+        let retired_for_race = retired.clone();
         let error = create_snapshot_output_inner(&output, move || {
-            std::fs::rename(&parent_for_race, &retired).unwrap();
+            std::fs::rename(&parent_for_race, &retired_for_race).unwrap();
             std::fs::create_dir(&parent_for_race).unwrap();
         })
         .err()
         .unwrap();
         assert_eq!(error, C::OutputFailed);
-        assert!(!output.exists(), "replacement parent received an output leaf");
+        assert!(
+            !output.exists(),
+            "replacement parent received an output leaf"
+        );
         assert!(
             !retired.join("snapshot.png").exists(),
             "retained parent received an output leaf after identity loss"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_snapshot_helper_retains_real_parent_and_leaf_through_output() {
+        let temporary = tempfile::tempdir().unwrap();
+        let ancestor = temporary.path().join("ancestor");
+        let parent = ancestor.join("parent");
+        let retired_parent = ancestor.join("retired-parent");
+        let retired_ancestor = temporary.path().join("retired-ancestor");
+        let displaced_leaf = parent.join("displaced.png");
+        let hard_link_leaf = parent.join("hard-link.png");
+        std::fs::create_dir(&ancestor).unwrap();
+        std::fs::create_dir(&parent).unwrap();
+        let output = parent.join("snapshot.png");
+        let parent_before_open = parent.clone();
+        let retired_before_open = retired_parent.clone();
+        let file = create_snapshot_output_with_hooks(
+            &output,
+            || {},
+            move || {
+                assert!(std::fs::rename(&parent_before_open, &retired_before_open).is_err());
+            },
+        )
+        .unwrap();
+        assert!(file.parent.identity == snapshot_handle_identity(&file.parent.file, true).unwrap());
+        let output_after_write = output.clone();
+        let displaced_after_write = displaced_leaf.clone();
+        let output_for_link = output.clone();
+        let hard_link_after_write = hard_link_leaf.clone();
+        let ancestor_after_sync = ancestor.clone();
+        let retired_after_sync = retired_ancestor.clone();
+        file.write_and_verify_inner(
+            b"owned bytes",
+            move || {
+                assert!(
+                    std::fs::rename(&output_after_write, &displaced_after_write).is_err(),
+                    "helper output leaf was replaceable after write"
+                );
+                assert!(
+                    std::fs::hard_link(&output_for_link, &hard_link_after_write).is_err(),
+                    "helper output leaf allowed a hard-link alias"
+                );
+            },
+            move || {
+                assert!(
+                    std::fs::rename(&ancestor_after_sync, &retired_after_sync).is_err(),
+                    "helper output ancestor was replaceable after sync"
+                );
+            },
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), b"owned bytes");
+        assert!(!displaced_leaf.exists());
+        assert!(!hard_link_leaf.exists());
+        assert!(!retired_parent.exists());
+        assert!(!retired_ancestor.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_snapshot_helper_rejects_windows_aliases_before_filesystem_work() {
+        for path in [
+            r"\\.\C:\snapshot.png",
+            r"\\?\GLOBALROOT\Device\HarddiskVolume1\snapshot.png",
+            r"\\?\Volume{00000000-0000-0000-0000-000000000000}\snapshot.png",
+            r"\\?\PIPE\snapshot.png",
+            r"C:\safe\snapshot.png:stream",
+            r"C:\safe\CON .png",
+            r"C:\safe\CONOUT$.png",
+            r"C:\safe\COM¹.png",
+            r"C:\safe\LPT³.txt.png",
+            r"C:\safe\trailing.\snapshot.png",
+            r"C:\safe\..\escape.png",
+            r"C:\safe\.\snapshot.png",
+        ] {
+            assert!(
+                validate_snapshot_output_path_inner(std::path::Path::new(path), || {
+                    panic!("lexically rejected helper path reached filesystem validation")
+                })
+                .is_err(),
+                "accepted unsafe helper Windows spelling: {path}"
+            );
+        }
+        for path in [
+            r"C:\safe\snapshot.png",
+            r"\\server\share\snapshot.PNG",
+            r"\\?\C:\safe\snapshot.png",
+            r"\\?\UNC\server\share\snapshot.png",
+        ] {
+            assert!(
+                validate_windows_snapshot_path(std::path::Path::new(path)).is_ok(),
+                "rejected allowed helper Windows spelling: {path}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_snapshot_helper_rejects_junction_and_symlink_parents() {
+        use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let real = temporary.path().join("real");
+        let junction = temporary.path().join("junction");
+        std::fs::create_dir(&real).unwrap();
+        let status = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&real)
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "failed to create the helper junction fixture"
+        );
+        let junction_output = junction.join("snapshot.png");
+        assert_eq!(
+            validate_snapshot_output_path(&junction_output).unwrap_err(),
+            C::UnsafePath
+        );
+        assert!(!real.join("snapshot.png").exists());
+        std::fs::remove_dir(&junction).unwrap();
+
+        let symlink = temporary.path().join("symlink");
+        if std::os::windows::fs::symlink_dir(&real, &symlink).is_ok() {
+            let symlink_output = symlink.join("snapshot.png");
+            assert_eq!(
+                validate_snapshot_output_path(&symlink_output).unwrap_err(),
+                C::UnsafePath
+            );
+            assert!(!real.join("snapshot.png").exists());
+            std::fs::remove_dir(&symlink).unwrap();
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_snapshot_helper_supports_long_verbatim_and_distinct_normalized_names() {
+        use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let case_parent = temporary.path().join("CaseParent");
+        std::fs::create_dir(&case_parent).unwrap();
+        let upper_parent = std::path::PathBuf::from(case_parent.to_string_lossy().to_uppercase());
+        assert!(
+            snapshot_directory_identity(&case_parent, C::UnsafePath)
+                .unwrap()
+                .identity
+                == snapshot_directory_identity(&upper_parent, C::UnsafePath)
+                    .unwrap()
+                    .identity
+        );
+
+        let composed = temporary.path().join("\u{e9}");
+        let decomposed = temporary.path().join("e\u{301}");
+        std::fs::create_dir(&composed).unwrap();
+        std::fs::create_dir(&decomposed).unwrap();
+        assert!(
+            snapshot_directory_identity(&composed, C::UnsafePath)
+                .unwrap()
+                .identity
+                != snapshot_directory_identity(&decomposed, C::UnsafePath)
+                    .unwrap()
+                    .identity
+        );
+
+        let mut long_parent = std::fs::canonicalize(temporary.path()).unwrap();
+        while long_parent.as_os_str().len() < 300 {
+            long_parent.push("terminal-snapshot-helper-long-segment");
+            std::fs::create_dir(&long_parent).unwrap();
+        }
+        let output = long_parent.join("snapshot.png");
+        create_snapshot_output(&output)
+            .unwrap()
+            .write_and_verify(b"long path")
+            .unwrap();
+        assert_eq!(std::fs::read(output).unwrap(), b"long path");
     }
 
     #[test]

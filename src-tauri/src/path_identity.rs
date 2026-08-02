@@ -39,6 +39,44 @@ pub struct VerifiedPathIdentity {
     pub content_sha256: Option<[u8; 32]>,
 }
 
+/// A verified directory whose live handle prevents Windows pathname replacement
+/// while a privileged filesystem operation is in progress.
+#[derive(Clone)]
+pub struct RetainedDirectory {
+    identity: VerifiedPathIdentity,
+    handle: std::sync::Arc<File>,
+}
+
+impl RetainedDirectory {
+    pub fn identity(&self) -> &VerifiedPathIdentity {
+        &self.identity
+    }
+
+    pub fn verify_current(&self) -> Result<(), String> {
+        let metadata = self
+            .handle
+            .metadata()
+            .map_err(|_| "unsafe_path".to_string())?;
+        let (object_id, _) = handle_identity(&self.handle)?;
+        if !metadata.is_dir()
+            || is_link_or_reparse(&metadata)
+            || object_id != self.identity.object_id
+        {
+            return Err("unsafe_path".to_string());
+        }
+        let current = verify_directory(self.identity.canonical_path.as_path())?;
+        if same_object(&current, &self.identity) {
+            Ok(())
+        } else {
+            Err("unsafe_path".to_string())
+        }
+    }
+
+    pub fn sync_best_effort(&self) {
+        let _ = self.handle.sync_all();
+    }
+}
+
 fn is_link_or_reparse(metadata: &Metadata) -> bool {
     if metadata.file_type().is_symlink() {
         return true;
@@ -189,6 +227,61 @@ fn open_directory_no_follow(path: &Path) -> Result<File, String> {
             .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
     }
     options.open(path).map_err(|_| "unsafe_path".to_string())
+}
+
+fn open_retained_directory(path: &Path, share_write: bool) -> Result<File, String> {
+    #[cfg(not(windows))]
+    let _ = share_write;
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(UNIX_O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+            FILE_SHARE_WRITE,
+        };
+        let share_mode = if share_write {
+            FILE_SHARE_READ | FILE_SHARE_WRITE
+        } else {
+            FILE_SHARE_READ
+        };
+        options
+            .share_mode(share_mode)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    options.open(path).map_err(|_| "unsafe_path".to_string())
+}
+
+pub fn retain_directory(path: &Path) -> Result<RetainedDirectory, String> {
+    retain_directory_inner(path, true)
+}
+
+fn retain_immutable_directory(path: &Path) -> Result<RetainedDirectory, String> {
+    retain_directory_inner(path, false)
+}
+
+fn retain_directory_inner(path: &Path, share_write: bool) -> Result<RetainedDirectory, String> {
+    let before = verify_directory(path)?;
+    let handle = open_retained_directory(path, share_write)?;
+    let metadata = handle.metadata().map_err(|_| "unsafe_path".to_string())?;
+    let (object_id, _) = handle_identity(&handle)?;
+    if !metadata.is_dir() || is_link_or_reparse(&metadata) || object_id != before.object_id {
+        return Err("unsafe_path".to_string());
+    }
+    let current = verify_directory(path)?;
+    if !same_object(&before, &current) {
+        return Err("unsafe_path".to_string());
+    }
+    Ok(RetainedDirectory {
+        identity: current,
+        handle: std::sync::Arc::new(handle),
+    })
 }
 
 pub fn verify_regular_file(path: &Path) -> Result<VerifiedPathIdentity, String> {
@@ -346,6 +439,31 @@ where
     ))
 }
 
+#[cfg(windows)]
+pub fn opened_file_is_delete_pending(file: &File) -> bool {
+    use std::mem::MaybeUninit;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileStandardInfo, GetFileInformationByHandleEx, FILE_STANDARD_INFO,
+    };
+
+    let mut information = MaybeUninit::<FILE_STANDARD_INFO>::zeroed();
+    let succeeded = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileStandardInfo,
+            information.as_mut_ptr().cast(),
+            std::mem::size_of::<FILE_STANDARD_INFO>() as u32,
+        )
+    };
+    succeeded != 0 && unsafe { information.assume_init() }.DeletePending != 0
+}
+
+#[cfg(not(windows))]
+pub fn opened_file_is_delete_pending(_file: &File) -> bool {
+    false
+}
+
 pub fn sync_parent_best_effort(path: &Path) {
     #[cfg(unix)]
     if let Some(parent) = path.parent() {
@@ -357,8 +475,9 @@ pub fn sync_parent_best_effort(path: &Path) {
     let _ = path;
 }
 
-/// Remove only the regular one-link object proven by `expected`. A second
-/// identity check closes deterministic validation-to-delete replacement races.
+/// Remove only the regular one-link object proven by `expected`. Windows
+/// deletion is issued through the verified leaf handle, closing the final
+/// pathname validation-to-delete race without deleting an attacker replacement.
 pub fn remove_regular_file_if_same(path: &Path, expected: &VerifiedPathIdentity) -> bool {
     remove_regular_file_if_same_inner(path, expected, || {})
 }
@@ -368,6 +487,12 @@ fn remove_regular_file_if_same_inner(
     expected: &VerifiedPathIdentity,
     after_validation: impl FnOnce(),
 ) -> bool {
+    let Some(parent_path) = path.parent() else {
+        return false;
+    };
+    let Ok(parent_before) = verify_directory(parent_path) else {
+        return false;
+    };
     let Ok(current) = verify_regular_file(path) else {
         return std::fs::symlink_metadata(path)
             .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound);
@@ -376,16 +501,82 @@ fn remove_regular_file_if_same_inner(
         return false;
     }
     after_validation();
-    let Ok(current) = verify_regular_file(path) else {
-        return std::fs::symlink_metadata(path)
-            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound);
+    let Ok(parent) = retain_immutable_directory(parent_path) else {
+        return false;
     };
-    if !same_object(expected, &current) {
+    if !same_object(&parent_before, parent.identity()) {
         return false;
     }
-    match std::fs::remove_file(path) {
-        Ok(()) => true,
-        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+
+    #[cfg(windows)]
+    {
+        remove_windows_regular_file_by_handle(path, expected)
+    }
+    #[cfg(not(windows))]
+    {
+        let Ok(current) = verify_regular_file(path) else {
+            return std::fs::symlink_metadata(path)
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound);
+        };
+        if !same_object(expected, &current) {
+            return false;
+        }
+        match std::fs::remove_file(path) {
+            Ok(()) => true,
+            Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+        }
+    }
+}
+
+#[cfg(windows)]
+fn remove_windows_regular_file_by_handle(path: &Path, expected: &VerifiedPathIdentity) -> bool {
+    remove_windows_regular_file_by_handle_inner(path, expected, || {})
+}
+
+#[cfg(windows)]
+fn remove_windows_regular_file_by_handle_inner(
+    path: &Path,
+    expected: &VerifiedPathIdentity,
+    before_delete: impl FnOnce(),
+) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileDispositionInfo, SetFileInformationByHandle, DELETE, FILE_DISPOSITION_INFO,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .access_mode(DELETE | FILE_READ_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    let Ok(file) = options.open(path) else {
+        return false;
+    };
+    let Ok(metadata) = file.metadata() else {
+        return false;
+    };
+    let Ok((object_id, links)) = handle_identity(&file) else {
+        return false;
+    };
+    if !metadata.is_file()
+        || is_link_or_reparse(&metadata)
+        || links != 1
+        || object_id != expected.object_id
+    {
+        return false;
+    }
+    before_delete();
+    let disposition = FILE_DISPOSITION_INFO { DeleteFile: 1 };
+    unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileDispositionInfo,
+            std::ptr::addr_of!(disposition).cast(),
+            std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+        ) != 0
     }
 }
 
@@ -860,30 +1051,43 @@ impl<'de> Visitor<'de> for ScanningVisitor {
 pub struct VerifiedNewFile {
     path: PathBuf,
     file: File,
-    parent: VerifiedPathIdentity,
+    parent: RetainedDirectory,
 }
 
 impl VerifiedNewFile {
     /// Failure intentionally leaves the newly created caller-owned file in
     /// place. The CLI must never unlink a path after ownership becomes unclear.
-    pub fn write_all_and_sync(mut self, bytes: &[u8]) -> Result<(), String> {
+    pub fn write_all_and_sync(self, bytes: &[u8]) -> Result<(), String> {
+        self.write_all_and_sync_inner(bytes, || {}, || {})
+    }
+
+    fn write_all_and_sync_inner(
+        mut self,
+        bytes: &[u8],
+        after_write: impl FnOnce(),
+        after_sync: impl FnOnce(),
+    ) -> Result<(), String> {
+        self.parent
+            .verify_current()
+            .map_err(|_| "output_failed".to_string())?;
         self.file
             .write_all(bytes)
             .and_then(|_| self.file.flush())
-            .and_then(|_| self.file.sync_all())
+            .map_err(|_| "output_failed".to_string())?;
+        after_write();
+        self.parent
+            .verify_current()
+            .map_err(|_| "output_failed".to_string())?;
+        self.file
+            .sync_all()
+            .map_err(|_| "output_failed".to_string())?;
+        after_sync();
+        self.parent
+            .verify_current()
             .map_err(|_| "output_failed".to_string())?;
         let opened = verify_opened_regular_file(&self.path, &self.file, false)
             .map_err(|_| "output_failed".to_string())?;
-        let current_parent = verify_directory(
-            self.path
-                .parent()
-                .ok_or_else(|| "output_failed".to_string())?,
-        )
-        .map_err(|_| "output_failed".to_string())?;
-        if !same_object(&self.parent, &current_parent)
-            || opened.metadata.links != 1
-            || opened.metadata.len != bytes.len() as u64
-        {
+        if opened.metadata.links != 1 || opened.metadata.len != bytes.len() as u64 {
             return Err("output_failed".to_string());
         }
         Ok(())
@@ -896,16 +1100,25 @@ pub fn create_terminal_snapshot_output(path: &Path) -> Result<VerifiedNewFile, S
 
 fn create_terminal_snapshot_output_inner(
     path: &Path,
-    before_create: impl FnOnce(),
+    before_retention: impl FnOnce(),
 ) -> Result<VerifiedNewFile, String> {
-    validate_terminal_snapshot_output_path(path)?;
+    create_terminal_snapshot_output_with_hooks(path, before_retention, || {})
+}
+
+fn create_terminal_snapshot_output_with_hooks(
+    path: &Path,
+    before_retention: impl FnOnce(),
+    before_open: impl FnOnce(),
+) -> Result<VerifiedNewFile, String> {
+    let validated_parent = validate_terminal_snapshot_output_path_inner(path, || {})?;
     let parent_path = path.parent().ok_or_else(|| "unsafe_path".to_string())?;
-    let parent = verify_directory(parent_path)?;
-    match std::fs::symlink_metadata(path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        _ => return Err("unsafe_path".to_string()),
+    before_retention();
+    let parent =
+        retain_immutable_directory(parent_path).map_err(|_| "output_failed".to_string())?;
+    if !same_object(&validated_parent, parent.identity()) {
+        return Err("output_failed".to_string());
     }
-    before_create();
+    before_open();
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -916,8 +1129,12 @@ fn create_terminal_snapshot_output_inner(
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
-        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
-        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+        };
+        options
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     }
     let file = options
         .open(path)
@@ -939,10 +1156,9 @@ fn create_terminal_snapshot_output_inner(
         }
     }
     verify_opened_regular_file(path, &file, true).map_err(|_| "output_failed".to_string())?;
-    let current_parent = verify_directory(parent_path).map_err(|_| "output_failed".to_string())?;
-    if !same_object(&parent, &current_parent) {
-        return Err("output_failed".to_string());
-    }
+    parent
+        .verify_current()
+        .map_err(|_| "output_failed".to_string())?;
     Ok(VerifiedNewFile {
         path: path.to_path_buf(),
         file,
@@ -951,7 +1167,18 @@ fn create_terminal_snapshot_output_inner(
 }
 
 pub fn validate_terminal_snapshot_output_path(path: &Path) -> Result<(), String> {
-    if !path.is_absolute() {
+    validate_terminal_snapshot_output_path_inner(path, || {}).map(|_| ())
+}
+
+fn validate_terminal_snapshot_output_path_inner(
+    path: &Path,
+    before_filesystem: impl FnOnce(),
+) -> Result<VerifiedPathIdentity, String> {
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    {
         return Err("unsafe_path".to_string());
     }
     let extension = path.extension().ok_or_else(|| "unsafe_path".to_string())?;
@@ -974,10 +1201,11 @@ pub fn validate_terminal_snapshot_output_path(path: &Path) -> Result<(), String>
     }
     #[cfg(windows)]
     validate_windows_snapshot_output_path(path)?;
+    before_filesystem();
     let parent = path.parent().ok_or_else(|| "unsafe_path".to_string())?;
-    verify_directory(parent)?;
+    let parent_identity = verify_directory(parent)?;
     match std::fs::symlink_metadata(path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(parent_identity),
         _ => Err("unsafe_path".to_string()),
     }
 }
@@ -986,7 +1214,23 @@ pub fn validate_terminal_snapshot_output_path(path: &Path) -> Result<(), String>
 fn validate_windows_snapshot_output_path(path: &Path) -> Result<(), String> {
     use std::path::Prefix;
 
-    let raw = path.as_os_str().to_string_lossy();
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    {
+        return Err("unsafe_path".to_string());
+    }
+    let raw = path
+        .as_os_str()
+        .to_str()
+        .ok_or_else(|| "unsafe_path".to_string())?;
+    if raw
+        .split(['\\', '/'])
+        .any(|component| matches!(component, "." | ".."))
+    {
+        return Err("unsafe_path".to_string());
+    }
     let mut components = path.components();
     let allowed_drive_colon = match components.next() {
         Some(Component::Prefix(prefix)) => match prefix.kind() {
@@ -1023,13 +1267,19 @@ fn validate_windows_snapshot_output_path(path: &Path) -> Result<(), String> {
         if value.ends_with([' ', '.']) {
             return Err("unsafe_path".to_string());
         }
-        let stem = value.split('.').next().unwrap_or(value);
+        let stem = value
+            .split('.')
+            .next()
+            .unwrap_or(value)
+            .trim_end_matches([' ', '.']);
         let reserved = matches!(
             stem.to_ascii_uppercase().as_str(),
             "CON"
                 | "PRN"
                 | "AUX"
                 | "NUL"
+                | "CONIN$"
+                | "CONOUT$"
                 | "COM1"
                 | "COM2"
                 | "COM3"
@@ -1039,6 +1289,9 @@ fn validate_windows_snapshot_output_path(path: &Path) -> Result<(), String> {
                 | "COM7"
                 | "COM8"
                 | "COM9"
+                | "COM¹"
+                | "COM²"
+                | "COM³"
                 | "LPT1"
                 | "LPT2"
                 | "LPT3"
@@ -1048,11 +1301,14 @@ fn validate_windows_snapshot_output_path(path: &Path) -> Result<(), String> {
                 | "LPT7"
                 | "LPT8"
                 | "LPT9"
+                | "LPT¹"
+                | "LPT²"
+                | "LPT³"
         );
         if reserved
-            || value
-                .chars()
-                .any(|character| matches!(character, '<' | '>' | '"' | '|' | '?' | '*'))
+            || value.chars().any(|character| {
+                character <= '\u{1f}' || matches!(character, '<' | '>' | '"' | '|' | '?' | '*')
+            })
         {
             return Err("unsafe_path".to_string());
         }
@@ -1238,7 +1494,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(error, "output_failed");
-        assert!(!output.exists(), "replacement parent received an output leaf");
+        assert!(
+            !output.exists(),
+            "replacement parent received an output leaf"
+        );
         assert!(
             !retired.join("snapshot.png").exists(),
             "retained parent received an output leaf after identity loss"
@@ -1247,17 +1506,215 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn terminal_snapshot_windows_namespaces_reject_lexically() {
+    fn terminal_snapshot_windows_namespaces_reject_lexically_without_filesystem_work() {
         for path in [
             r"\\.\C:\snapshot.png",
             r"\\?\GLOBALROOT\Device\HarddiskVolume1\snapshot.png",
             r"\\?\Volume{00000000-0000-0000-0000-000000000000}\snapshot.png",
+            r"\\?\PIPE\snapshot.png",
+            r"\??\GLOBALROOT\Device\HarddiskVolume1\snapshot.png",
             r"C:\safe\snapshot.png:stream",
             r"C:\safe\CON.png",
+            r"C:\safe\CON .png",
+            r"C:\safe\CONIN$.png",
+            r"C:\safe\COM¹.png",
+            r"C:\safe\LPT³.txt.png",
             r"C:\safe\trailing.\snapshot.png",
+            "C:\\safe\\control\u{1f}.png",
+            r"C:\safe\..\escape.png",
+            r"C:\safe\.\snapshot.png",
         ] {
-            assert!(validate_windows_snapshot_output_path(Path::new(path)).is_err());
+            assert!(
+                validate_terminal_snapshot_output_path_inner(Path::new(path), || {
+                    panic!("lexically rejected namespace reached filesystem validation")
+                })
+                .is_err(),
+                "accepted unsafe Windows spelling: {path}"
+            );
         }
+        for path in [
+            r"C:\safe\snapshot.png",
+            r"\\server\share\snapshot.PNG",
+            r"\\?\C:\safe\snapshot.png",
+            r"\\?\UNC\server\share\snapshot.png",
+        ] {
+            assert!(
+                validate_windows_snapshot_output_path(Path::new(path)).is_ok(),
+                "rejected allowed Windows spelling: {path}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn retained_directory_has_stable_volume_file_id_and_blocks_replacement() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let ancestor = directory.path().join("ancestor");
+        let parent = ancestor.join("parent");
+        let retired_parent = ancestor.join("retired-parent");
+        let retired_ancestor = directory.path().join("retired-ancestor");
+        std::fs::create_dir(&ancestor).unwrap();
+        std::fs::create_dir(&parent).unwrap();
+        let retained = retain_directory(&parent).unwrap();
+        let identity = retained.identity().object_id;
+        let current = verify_directory(&parent).unwrap();
+        assert_eq!(identity.volume, current.object_id.volume);
+        assert_eq!(identity.file, current.object_id.file);
+        assert!(std::fs::rename(&parent, &retired_parent).is_err());
+        assert!(std::fs::rename(&ancestor, &retired_ancestor).is_err());
+        let retained_clone = retained.clone();
+        drop(retained);
+        assert!(std::fs::rename(&parent, &retired_parent).is_err());
+        retained_clone.verify_current().unwrap();
+        drop(retained_clone);
+        std::fs::rename(&ancestor, &retired_ancestor).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_snapshot_output_rejects_junction_and_symlink_parents() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let real = directory.path().join("real");
+        let junction = directory.path().join("junction");
+        std::fs::create_dir(&real).unwrap();
+        let status = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&real)
+            .status()
+            .unwrap();
+        assert!(status.success(), "failed to create the junction fixture");
+        let junction_output = junction.join("snapshot.png");
+        assert_eq!(
+            validate_terminal_snapshot_output_path(&junction_output).unwrap_err(),
+            "unsafe_path"
+        );
+        assert!(!real.join("snapshot.png").exists());
+        std::fs::remove_dir(&junction).unwrap();
+
+        let symlink = directory.path().join("symlink");
+        if std::os::windows::fs::symlink_dir(&real, &symlink).is_ok() {
+            let symlink_output = symlink.join("snapshot.png");
+            assert_eq!(
+                validate_terminal_snapshot_output_path(&symlink_output).unwrap_err(),
+                "unsafe_path"
+            );
+            assert!(!real.join("snapshot.png").exists());
+            std::fs::remove_dir(&symlink).unwrap();
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn retained_output_parent_and_leaf_block_create_write_sync_swaps() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let parent = directory.path().join("parent");
+        let retired_parent = directory.path().join("retired-parent");
+        let displaced_leaf = parent.join("displaced.png");
+        let hard_link_leaf = parent.join("hard-link.png");
+        std::fs::create_dir(&parent).unwrap();
+        let output = parent.join("snapshot.png");
+        let parent_before_open = parent.clone();
+        let retired_before_open = retired_parent.clone();
+        let file = create_terminal_snapshot_output_with_hooks(
+            &output,
+            || {},
+            move || {
+                assert!(std::fs::rename(&parent_before_open, &retired_before_open).is_err());
+            },
+        )
+        .unwrap();
+        let output_after_write = output.clone();
+        let displaced_after_write = displaced_leaf.clone();
+        let output_for_link = output.clone();
+        let hard_link_after_write = hard_link_leaf.clone();
+        let parent_after_sync = parent.clone();
+        let retired_after_sync = retired_parent.clone();
+        file.write_all_and_sync_inner(
+            b"owned bytes",
+            move || {
+                assert!(
+                    std::fs::rename(&output_after_write, &displaced_after_write).is_err(),
+                    "opened output leaf was replaceable after write"
+                );
+                assert!(
+                    std::fs::hard_link(&output_for_link, &hard_link_after_write).is_err(),
+                    "opened output leaf allowed a hard-link alias"
+                );
+            },
+            move || {
+                assert!(
+                    std::fs::rename(&parent_after_sync, &retired_after_sync).is_err(),
+                    "retained output parent was replaceable after sync"
+                );
+            },
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), b"owned bytes");
+        assert!(!displaced_leaf.exists());
+        assert!(!hard_link_leaf.exists());
+        assert!(!retired_parent.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn exact_handle_delete_cannot_remove_a_leaf_swap() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let path = directory.path().join("owned-response.json");
+        let displaced = directory.path().join("displaced-response.json");
+        std::fs::write(&path, b"owned response").unwrap();
+        let expected = verify_regular_file(&path).unwrap();
+        let path_for_hook = path.clone();
+        let displaced_for_hook = displaced.clone();
+        assert!(remove_windows_regular_file_by_handle_inner(
+            &path,
+            &expected,
+            move || {
+                assert!(
+                    std::fs::rename(&path_for_hook, &displaced_for_hook).is_err(),
+                    "verified delete handle allowed a final leaf swap"
+                );
+            },
+        ));
+        assert!(!path.exists());
+        assert!(!displaced.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_snapshot_output_supports_case_unicode_identity_and_long_verbatim_paths() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let case_parent = directory.path().join("CaseParent");
+        std::fs::create_dir(&case_parent).unwrap();
+        let upper_parent = PathBuf::from(case_parent.to_string_lossy().to_uppercase());
+        assert_eq!(
+            retain_directory(&case_parent).unwrap().identity().object_id,
+            retain_directory(&upper_parent)
+                .unwrap()
+                .identity()
+                .object_id
+        );
+
+        let composed = directory.path().join("\u{e9}");
+        let decomposed = directory.path().join("e\u{301}");
+        std::fs::create_dir(&composed).unwrap();
+        std::fs::create_dir(&decomposed).unwrap();
+        assert_ne!(
+            verify_directory(&composed).unwrap().object_id,
+            verify_directory(&decomposed).unwrap().object_id
+        );
+
+        let mut long_parent = std::fs::canonicalize(directory.path()).unwrap();
+        while long_parent.as_os_str().len() < 300 {
+            long_parent.push("terminal-snapshot-long-segment");
+            std::fs::create_dir(&long_parent).unwrap();
+        }
+        let output = long_parent.join("snapshot.png");
+        create_terminal_snapshot_output(&output)
+            .unwrap()
+            .write_all_and_sync(b"long path")
+            .unwrap();
+        assert_eq!(std::fs::read(output).unwrap(), b"long path");
     }
 
     #[test]

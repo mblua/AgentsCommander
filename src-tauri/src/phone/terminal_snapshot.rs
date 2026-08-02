@@ -294,8 +294,8 @@ impl SnapshotMailboxScanner {
             return;
         }
         self.observed.insert(request_directory_identity.object_id);
-        sweep_directory(&request_directory, false);
-        sweep_directory(&response_directory, true);
+        sweep_directory(&request_directory, &request_directory_identity, false);
+        sweep_directory(&response_directory, &response_directory_identity, true);
         let cursor = self
             .cursors
             .get(&request_directory_identity.object_id)
@@ -812,8 +812,20 @@ fn publish_response_bytes(
     if bytes.is_empty() || bytes.len() > MAX_TRANSPORT_BYTES {
         return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
     }
-    let directory_identity = crate::path_identity::verify_directory(response_directory)
+    let validated_directory = crate::path_identity::verify_directory(response_directory)
         .map_err(|_| TerminalSnapshotReasonCode::ResponseUnavailable)?;
+    #[cfg(test)]
+    state.run_response_publication_hook(
+        crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage::BeforeDirectoryRetention,
+        response_directory,
+        response_directory,
+    );
+    let retained_directory = crate::path_identity::retain_directory(response_directory)
+        .map_err(|_| TerminalSnapshotReasonCode::ResponseUnavailable)?;
+    if !crate::path_identity::same_object(&validated_directory, retained_directory.identity()) {
+        return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
+    }
+    let directory_identity = retained_directory.identity().clone();
     let reservation = state
         .reserve_artifact(response_directory, &directory_identity)
         .map_err(|_| TerminalSnapshotReasonCode::ResponseUnavailable)?;
@@ -990,7 +1002,7 @@ fn publish_response_bytes(
     #[cfg(not(test))]
     let parent_sync_failed = false;
     if !parent_sync_failed {
-        crate::path_identity::sync_parent_best_effort(&destination);
+        retained_directory.sync_best_effort();
     }
     #[cfg(test)]
     state.run_response_publication_hook(
@@ -1024,7 +1036,10 @@ fn reconcile_published_response(
         {
             Ok(Some(identity))
         }
-        Err(_) if path_is_absent(destination) => {
+        Err(_)
+            if path_is_absent(destination)
+                || crate::path_identity::opened_file_is_delete_pending(file) =>
+        {
             state.untrack_artifact(expected);
             Ok(None)
         }
@@ -1069,7 +1084,17 @@ fn safe_remove(path: &Path, expected: &crate::path_identity::VerifiedPathIdentit
     crate::path_identity::remove_regular_file_if_same(path, expected)
 }
 
-fn sweep_directory(directory: &Path, response_directory: bool) {
+fn sweep_directory(
+    directory: &Path,
+    expected_directory: &crate::path_identity::VerifiedPathIdentity,
+    response_directory: bool,
+) {
+    let Ok(retained_directory) = crate::path_identity::retain_directory(directory) else {
+        return;
+    };
+    if !crate::path_identity::same_object(retained_directory.identity(), expected_directory) {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(directory) else {
         return;
     };
@@ -1095,6 +1120,7 @@ fn sweep_directory(directory: &Path, response_directory: bool) {
         };
         safe_remove(&path, &identity);
     }
+    let _ = retained_directory.verify_current();
 }
 
 fn protocol_cleanup_name(name: &str, response_directory: bool) -> bool {
@@ -1186,7 +1212,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn response_parent_replacement_before_rename_leaves_no_secret_residue() {
+    fn response_parent_replacement_before_retention_leaves_no_secret_residue() {
         use crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage as Stage;
 
         let state = crate::pty::terminal_snapshot::TerminalSnapshotState::new(
@@ -1198,7 +1224,7 @@ mod tests {
         std::fs::create_dir(&parent).unwrap();
         let parent_for_hook = parent.clone();
         let retired_for_hook = retired.clone();
-        state.install_response_publication_hook(Stage::BeforeAtomicRename, move |_, _| {
+        state.install_response_publication_hook(Stage::BeforeDirectoryRetention, move |_, _| {
             std::fs::rename(&parent_for_hook, &retired_for_hook).unwrap();
             std::fs::create_dir(&parent_for_hook).unwrap();
         });
@@ -1213,9 +1239,59 @@ mod tests {
         );
         assert!(
             std::fs::read_dir(&retired).unwrap().next().is_none(),
-            "secret response remained in the displaced retained parent"
+            "secret response reached the displaced parent before retention"
         );
         assert_eq!(state.test_artifact_counts(), (0, 0, 0));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn retained_response_parent_blocks_replacement_at_every_publication_stage() {
+        use crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage as Stage;
+
+        for stage in [
+            Stage::BeforeTemporaryCreate,
+            Stage::BeforeTemporaryCommit,
+            Stage::AfterTemporaryCommit,
+            Stage::AfterTemporaryWrite,
+            Stage::BeforeAtomicRename,
+            Stage::AfterAtomicRename,
+            Stage::AfterFinalVerification,
+            Stage::AfterRegistryCommit,
+            Stage::AfterParentSync,
+        ] {
+            let state = crate::pty::terminal_snapshot::TerminalSnapshotState::new(
+                crate::shutdown::ShutdownSignal::new(),
+            );
+            let directory = tempfile::TempDir::new().unwrap();
+            let parent = directory.path().join("responses");
+            let retired = directory.path().join("retired-responses");
+            std::fs::create_dir(&parent).unwrap();
+            let parent_for_hook = parent.clone();
+            let retired_for_hook = retired.clone();
+            state.install_response_publication_hook(stage, move |_, _| {
+                assert!(
+                    std::fs::rename(&parent_for_hook, &retired_for_hook).is_err(),
+                    "retained parent was replaceable at {stage:?}"
+                );
+            });
+
+            let request_id = Uuid::new_v4();
+            assert!(
+                publish_response_bytes(&state, &parent, request_id, b"secret-response").is_ok()
+            );
+            let destination = parent.join(format!("{request_id}.json"));
+            assert_eq!(std::fs::read(&destination).unwrap(), b"secret-response");
+            assert!(!retired.exists());
+            assert!(
+                std::fs::rename(&parent, &retired).is_err(),
+                "registry did not retain the parent after {stage:?}"
+            );
+            state.sweep_artifacts_for_test(true);
+            assert!(!destination.exists());
+            assert_eq!(state.test_artifact_counts(), (0, 0, 0));
+            std::fs::rename(&parent, &retired).unwrap();
+        }
     }
 
     #[test]
@@ -1448,14 +1524,17 @@ mod tests {
                 let identity = crate::path_identity::verify_regular_file(destination).unwrap();
                 assert!(safe_remove(destination, &identity));
             });
-            assert!(publish_trusted_failure(
-                &state,
-                directory.path(),
-                request_id,
-                &"a".repeat(64),
-                TerminalSnapshotReasonCode::InvalidRequest,
-            )
-            .is_ok());
+            assert!(
+                publish_trusted_failure(
+                    &state,
+                    directory.path(),
+                    request_id,
+                    &"a".repeat(64),
+                    TerminalSnapshotReasonCode::InvalidRequest,
+                )
+                .is_ok(),
+                "client consumption was reclassified at {stage:?}"
+            );
             assert!(!directory.path().join(format!("{request_id}.json")).exists());
             assert!(response_temporary_paths(directory.path()).is_empty());
             assert_eq!(state.test_artifact_counts(), (0, 0, 0));
