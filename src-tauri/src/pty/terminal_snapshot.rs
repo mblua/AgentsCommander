@@ -54,6 +54,30 @@ enum TerminalSnapshotBlockingStage {
 type TerminalSnapshotTestHook = Box<dyn FnOnce() + Send + 'static>;
 
 #[cfg(test)]
+type TerminalSnapshotResponsePublicationHook = Box<dyn FnOnce(&Path, &Path) + Send + 'static>;
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum TerminalSnapshotResponsePublicationStage {
+    BeforeTemporaryCreate,
+    BeforeTemporaryCommit,
+    AfterTemporaryCommit,
+    AfterTemporaryWrite,
+    BeforeAtomicRename,
+    AfterAtomicRename,
+    AfterFinalVerification,
+    AfterRegistryCommit,
+    AfterParentSync,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TerminalSnapshotResponsePublicationFailure {
+    FileSync,
+    ParentSync,
+}
+
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum TerminalSnapshotHostCancellationStage {
     Processing,
@@ -347,7 +371,13 @@ struct TerminalSnapshotTestState {
     api_before_capture: Mutex<Option<TerminalSnapshotTestHook>>,
     api_after_response_bytes: Mutex<Option<TerminalSnapshotTestHook>>,
     api_before_final_binding: Mutex<Option<TerminalSnapshotTestHook>>,
-    response_after_publish: Mutex<Option<TerminalSnapshotTestHook>>,
+    response_publication_hooks: Mutex<
+        HashMap<
+            TerminalSnapshotResponsePublicationStage,
+            VecDeque<TerminalSnapshotResponsePublicationHook>,
+        >,
+    >,
+    response_publication_failures: Mutex<VecDeque<TerminalSnapshotResponsePublicationFailure>>,
     blocking_controls: Mutex<
         HashMap<TerminalSnapshotBlockingStage, VecDeque<Arc<TerminalSnapshotBlockingControl>>>,
     >,
@@ -805,6 +835,21 @@ fn release_artifact_reservation(
 ) {
     registry.reservations = registry.reservations.saturating_sub(1);
     decrement_counter(&mut registry.directory_reservations, &directory);
+    remove_idle_artifact_directory(registry, directory);
+}
+
+fn remove_idle_artifact_directory(
+    registry: &mut ArtifactRegistry,
+    directory: crate::path_identity::FileObjectId,
+) {
+    if !registry.directory_reservations.contains_key(&directory)
+        && !registry
+            .files
+            .values()
+            .any(|file| file.directory == directory)
+    {
+        registry.directories.remove(&directory);
+    }
 }
 
 pub(crate) struct TerminalSnapshotState {
@@ -826,6 +871,21 @@ impl TerminalSnapshotState {
             #[cfg(test)]
             test_state: TerminalSnapshotTestState::default(),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_artifact_counts(&self) -> (usize, usize, usize) {
+        let registry = self.artifacts.lock().expect("artifact registry");
+        (
+            registry.directories.len(),
+            registry.files.len(),
+            registry.reservations,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sweep_artifacts_for_test(&self, force: bool) {
+        self.sweep_artifacts(force);
     }
 
     #[cfg(test)]
@@ -915,6 +975,18 @@ impl TerminalSnapshotState {
                 .lock()
                 .expect("host finalizer control queue")
                 .is_empty()
+            || !self
+                .test_state
+                .response_publication_hooks
+                .lock()
+                .expect("response publication hook queue")
+                .is_empty()
+            || !self
+                .test_state
+                .response_publication_failures
+                .lock()
+                .expect("response publication failure queue")
+                .is_empty()
     }
 
     #[cfg(test)]
@@ -996,12 +1068,56 @@ impl TerminalSnapshotState {
     }
 
     #[cfg(test)]
-    pub(crate) fn install_response_after_publish_hook(&self, hook: impl FnOnce() + Send + 'static) {
-        *self
-            .test_state
-            .response_after_publish
+    pub(crate) fn install_response_publication_hook(
+        &self,
+        stage: TerminalSnapshotResponsePublicationStage,
+        hook: impl FnOnce(&Path, &Path) + Send + 'static,
+    ) {
+        self.test_state
+            .response_publication_hooks
             .lock()
-            .expect("response post-publish test hook lock") = Some(Box::new(hook));
+            .expect("response publication hook queue")
+            .entry(stage)
+            .or_default()
+            .push_back(Box::new(hook));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_response_after_publish_hook(&self, hook: impl FnOnce() + Send + 'static) {
+        self.install_response_publication_hook(
+            TerminalSnapshotResponsePublicationStage::AfterAtomicRename,
+            move |_, _| hook(),
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_response_publication_failure(
+        &self,
+        failure: TerminalSnapshotResponsePublicationFailure,
+    ) {
+        self.test_state
+            .response_publication_failures
+            .lock()
+            .expect("response publication failure queue")
+            .push_back(failure);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_response_publication_failure(
+        &self,
+        expected: TerminalSnapshotResponsePublicationFailure,
+    ) -> bool {
+        let mut failures = self
+            .test_state
+            .response_publication_failures
+            .lock()
+            .expect("response publication failure queue");
+        if failures.front() == Some(&expected) {
+            failures.pop_front();
+            true
+        } else {
+            false
+        }
     }
 
     #[cfg(test)]
@@ -1090,15 +1206,26 @@ impl TerminalSnapshotState {
     }
 
     #[cfg(test)]
-    pub(crate) fn run_response_after_publish_hook(&self) {
-        let hook = self
-            .test_state
-            .response_after_publish
-            .lock()
-            .expect("response post-publish test hook lock")
-            .take();
+    pub(crate) fn run_response_publication_hook(
+        &self,
+        stage: TerminalSnapshotResponsePublicationStage,
+        temporary: &Path,
+        destination: &Path,
+    ) {
+        let hook = {
+            let mut hooks = self
+                .test_state
+                .response_publication_hooks
+                .lock()
+                .expect("response publication hook queue");
+            let hook = hooks.get_mut(&stage).and_then(VecDeque::pop_front);
+            if hooks.get(&stage).is_some_and(VecDeque::is_empty) {
+                hooks.remove(&stage);
+            }
+            hook
+        };
         if let Some(hook) = hook {
-            hook();
+            hook(temporary, destination);
         }
     }
 
@@ -1189,8 +1316,57 @@ impl TerminalSnapshotState {
 
     pub(crate) fn untrack_artifact(&self, identity: &crate::path_identity::VerifiedPathIdentity) {
         if let Ok(mut registry) = self.artifacts.lock() {
-            registry.files.remove(&identity.object_id);
+            if let Some(removed) = registry.files.remove(&identity.object_id) {
+                remove_idle_artifact_directory(&mut registry, removed.directory);
+            }
         }
+    }
+
+    pub(crate) fn relocate_artifact(
+        &self,
+        expected: &crate::path_identity::VerifiedPathIdentity,
+        path: &Path,
+    ) -> Result<Option<crate::path_identity::VerifiedPathIdentity>, TerminalSnapshotReasonCode>
+    {
+        let current = match crate::path_identity::verify_regular_file(path) {
+            Ok(current) if crate::path_identity::same_object(expected, &current) => current,
+            Err(_)
+                if std::fs::symlink_metadata(path)
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                self.untrack_artifact(expected);
+                return Ok(None);
+            }
+            _ => {
+                self.untrack_artifact(expected);
+                return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
+            }
+        };
+        let mut registry = self
+            .artifacts
+            .lock()
+            .map_err(|_| TerminalSnapshotReasonCode::ServiceUnavailable)?;
+        let Some(directory_object) = registry
+            .files
+            .get(&expected.object_id)
+            .map(|tracked| tracked.directory)
+        else {
+            return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
+        };
+        let Some(directory) = registry.directories.get(&directory_object) else {
+            registry.files.remove(&expected.object_id);
+            return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
+        };
+        if !crate::path_identity::is_verified_descendant(&current, &directory.identity) {
+            registry.files.remove(&expected.object_id);
+            return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
+        }
+        let Some(tracked) = registry.files.get_mut(&expected.object_id) else {
+            return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
+        };
+        tracked.path = path.to_path_buf();
+        tracked.identity = current.clone();
+        Ok(Some(current))
     }
 
     fn sweep_artifacts(&self, force: bool) {
@@ -1209,11 +1385,22 @@ impl TerminalSnapshotState {
             }
             match crate::path_identity::verify_regular_file(&tracked.path) {
                 Ok(current) if crate::path_identity::same_object(&current, &tracked.identity) => {
-                    if std::fs::remove_file(&tracked.path).is_ok() {
+                    if crate::path_identity::remove_regular_file_if_same(
+                        &tracked.path,
+                        &tracked.identity,
+                    ) {
                         absent_files.push(tracked.identity.object_id);
                     }
                 }
-                Err(_) if !tracked.path.exists() => {
+                Ok(_) => {
+                    // The tracked object no longer owns this name. Leave the
+                    // replacement untouched and release only the stale record.
+                    absent_files.push(tracked.identity.object_id);
+                }
+                Err(_)
+                    if std::fs::symlink_metadata(&tracked.path)
+                        .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+                {
                     absent_files.push(tracked.identity.object_id);
                 }
                 _ => {}
@@ -2651,6 +2838,38 @@ mod tests {
     }
 
     #[test]
+    fn artifact_registry_releases_a_displaced_object_without_removing_its_replacement() {
+        let state = TerminalSnapshotState::new(crate::shutdown::ShutdownSignal::new());
+        let directory = tempfile::TempDir::new().unwrap();
+        let directory_identity = crate::path_identity::verify_directory(directory.path()).unwrap();
+        let reservation = state
+            .reserve_artifact(directory.path(), &directory_identity)
+            .unwrap();
+        let path = directory.path().join(format!("{}.json", Uuid::new_v4()));
+        let displaced = directory.path().join("displaced-tracked-response");
+        std::fs::write(&path, b"tracked response").unwrap();
+        let identity = crate::path_identity::verify_regular_file(&path).unwrap();
+        reservation.commit(path.clone(), identity.clone()).unwrap();
+        std::fs::rename(&path, &displaced).unwrap();
+        std::fs::write(&path, b"replacement response").unwrap();
+        {
+            let mut registry = state.artifacts.lock().unwrap();
+            registry
+                .files
+                .get_mut(&identity.object_id)
+                .unwrap()
+                .expires_at = Instant::now();
+        }
+
+        state.sweep_artifacts(false);
+        assert_eq!(std::fs::read(&path).unwrap(), b"replacement response");
+        assert_eq!(std::fs::read(&displaced).unwrap(), b"tracked response");
+        let registry = state.artifacts.lock().unwrap();
+        assert!(!registry.files.contains_key(&identity.object_id));
+        assert!(registry.directories.is_empty());
+    }
+
+    #[test]
     fn host_final_handoff_discards_success_bytes_after_authority_change() {
         let secret = b"terminal-content-sentinel".to_vec();
         let result = finalize_host_publication(
@@ -2683,13 +2902,11 @@ mod tests {
     }
 
     #[test]
-    fn artifact_cleanup_reclaims_an_existing_idle_directory_record() {
+    fn artifact_reservation_release_immediately_reclaims_an_idle_directory_record() {
         let state = TerminalSnapshotState::new(crate::shutdown::ShutdownSignal::new());
         let directory = tempfile::TempDir::new().unwrap();
         let identity = crate::path_identity::verify_directory(directory.path()).unwrap();
         drop(state.reserve_artifact(directory.path(), &identity).unwrap());
-        assert_eq!(state.artifacts.lock().unwrap().directories.len(), 1);
-        state.sweep_artifacts(false);
         assert!(state.artifacts.lock().unwrap().directories.is_empty());
         assert!(state.reserve_artifact(directory.path(), &identity).is_ok());
     }

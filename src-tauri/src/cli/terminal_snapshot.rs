@@ -172,14 +172,9 @@ fn execute_inner(args: TerminalSnapshotArgs) -> Result<(), String> {
                 request.format,
                 deadline,
             )?;
-            let expires_at = terminal_snapshot_renderer::validate_timestamp(&response.expires_at)
-                .map_err(|_| "response_unavailable".to_string())?;
-            let now = chrono::Utc::now();
-            if now >= expires_at || expires_at > now + chrono::Duration::seconds(65) {
-                return Err("response_unavailable".to_string());
-            }
-            ensure_client_deadline(deadline)?;
-            let outcome = handle_response(
+            return finish_response(
+                &response_path,
+                &response_identity,
                 &response,
                 format,
                 args.output.as_deref(),
@@ -187,8 +182,6 @@ fn execute_inner(args: TerminalSnapshotArgs) -> Result<(), String> {
                 &request.to,
                 deadline,
             );
-            remove_response(&response_path, &response_identity);
-            return outcome;
         }
         std::thread::sleep(POLL_INTERVAL);
     }
@@ -478,13 +471,40 @@ fn read_response(
     }
 }
 
-fn remove_response(path: &Path, expected: &crate::path_identity::VerifiedPathIdentity) {
-    let Ok(current) = crate::path_identity::verify_regular_file(path) else {
-        return;
-    };
-    if crate::path_identity::same_object(expected, &current) {
-        let _ = std::fs::remove_file(path);
-    }
+fn remove_response(path: &Path, expected: &crate::path_identity::VerifiedPathIdentity) -> bool {
+    crate::path_identity::remove_regular_file_if_same(path, expected)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_response(
+    path: &Path,
+    identity: &crate::path_identity::VerifiedPathIdentity,
+    response: &TerminalSnapshotHostResponse,
+    format: TerminalSnapshotFormat,
+    output: Option<&Path>,
+    expected_requester: &str,
+    expected_target: &str,
+    deadline: Instant,
+) -> Result<(), String> {
+    let outcome = (|| {
+        let expires_at = terminal_snapshot_renderer::validate_timestamp(&response.expires_at)
+            .map_err(|_| "response_unavailable".to_string())?;
+        let now = chrono::Utc::now();
+        if now >= expires_at || expires_at > now + chrono::Duration::seconds(65) {
+            return Err("response_unavailable".to_string());
+        }
+        ensure_client_deadline(deadline)?;
+        handle_response(
+            response,
+            format,
+            output,
+            expected_requester,
+            expected_target,
+            deadline,
+        )
+    })();
+    remove_response(path, identity);
+    outcome
 }
 
 fn handle_response(
@@ -585,6 +605,15 @@ fn reason_code(value: &str) -> Option<TerminalSnapshotReasonCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write_private_response(path: &Path, bytes: &[u8]) {
+        std::fs::write(path, bytes).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
 
     #[test]
     fn timeout_cancellation_claims_and_removes_only_the_original_request() {
@@ -714,6 +743,88 @@ mod tests {
             &displaced_identity
         ));
         assert!(!caller_output.exists());
+    }
+
+    #[test]
+    fn malformed_corrupt_and_late_responses_are_removed_after_rejection() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let target = "project:wg-1-team/member";
+        let tag = "a".repeat(64);
+        let request_id = Uuid::new_v4().to_string();
+        let deadline = Instant::now() + Duration::from_secs(30);
+
+        let malformed = directory.path().join("malformed.json");
+        write_private_response(&malformed, b"{");
+        assert_eq!(
+            read_response(
+                &malformed,
+                &request_id,
+                &tag,
+                target,
+                TerminalSnapshotFormat::Json,
+                deadline,
+            )
+            .unwrap_err(),
+            "response_unavailable"
+        );
+        assert!(!malformed.exists());
+
+        let corrupt = directory.path().join("corrupt.json");
+        let corrupt_bytes = terminal_snapshot_renderer::encode_host_failure_payload(
+            &Uuid::new_v4().to_string(),
+            &tag,
+            &canonical_timestamp(chrono::Utc::now() + chrono::Duration::seconds(60)),
+            TerminalSnapshotReasonCode::InvalidRequest,
+        )
+        .unwrap();
+        write_private_response(&corrupt, &corrupt_bytes);
+        assert_eq!(
+            read_response(
+                &corrupt,
+                &request_id,
+                &tag,
+                target,
+                TerminalSnapshotFormat::Json,
+                deadline,
+            )
+            .unwrap_err(),
+            "response_unavailable"
+        );
+        assert!(!corrupt.exists());
+
+        let late = directory.path().join("late.json");
+        let late_bytes = terminal_snapshot_renderer::encode_host_failure_payload(
+            &request_id,
+            &tag,
+            &canonical_timestamp(chrono::Utc::now() - chrono::Duration::seconds(1)),
+            TerminalSnapshotReasonCode::InvalidRequest,
+        )
+        .unwrap();
+        write_private_response(&late, &late_bytes);
+        let (response, identity) = read_response(
+            &late,
+            &request_id,
+            &tag,
+            target,
+            TerminalSnapshotFormat::Json,
+            deadline,
+        )
+        .unwrap();
+        assert_eq!(
+            finish_response(
+                &late,
+                &identity,
+                &response,
+                TerminalSnapshotFormat::Json,
+                None,
+                "project:wg-1-team/coordinator",
+                target,
+                deadline,
+            )
+            .unwrap_err(),
+            "response_unavailable"
+        );
+        assert!(!late.exists());
     }
 
     #[test]

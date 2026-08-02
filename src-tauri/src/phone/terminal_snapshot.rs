@@ -214,7 +214,7 @@ impl SnapshotMailboxScanner {
                     continue;
                 };
                 if age >= RESPONSE_TTL {
-                    safe_remove(&path, Some(&identity));
+                    safe_remove(&path, &identity);
                     continue;
                 }
                 let Ok(reservation) = state.reserve_existing_artifact(
@@ -387,7 +387,7 @@ impl SnapshotMailboxScanner {
                 .commit(processing.clone(), claimed.clone())
                 .is_err()
             {
-                safe_remove(&processing, Some(&claimed));
+                safe_remove(&processing, &claimed);
                 continue;
             }
             let app = app.clone();
@@ -814,7 +814,9 @@ fn publish_response_bytes(
     }
     let directory_identity = crate::path_identity::verify_directory(response_directory)
         .map_err(|_| TerminalSnapshotReasonCode::ResponseUnavailable)?;
-    let reservation = state.reserve_artifact(response_directory, &directory_identity)?;
+    let reservation = state
+        .reserve_artifact(response_directory, &directory_identity)
+        .map_err(|_| TerminalSnapshotReasonCode::ResponseUnavailable)?;
     let temporary = response_directory.join(format!(
         ".{}.{}.terminal-snapshot-response-tmp",
         request_id,
@@ -824,6 +826,12 @@ fn publish_response_bytes(
     if destination.parent() != Some(response_directory) || destination.exists() {
         return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
     }
+    #[cfg(test)]
+    state.run_response_publication_hook(
+        crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage::BeforeTemporaryCreate,
+        &temporary,
+        &destination,
+    );
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -840,6 +848,28 @@ fn publish_response_bytes(
     let mut file = options
         .open(&temporary)
         .map_err(|_| TerminalSnapshotReasonCode::ResponseUnavailable)?;
+    let temporary_identity =
+        crate::path_identity::verify_opened_regular_file(&temporary, &file, true)
+            .map_err(|_| TerminalSnapshotReasonCode::ResponseUnavailable)?;
+    #[cfg(test)]
+    state.run_response_publication_hook(
+        crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage::BeforeTemporaryCommit,
+        &temporary,
+        &destination,
+    );
+    if reservation
+        .commit(temporary.clone(), temporary_identity.clone())
+        .is_err()
+    {
+        safe_remove(&temporary, &temporary_identity);
+        return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
+    }
+    #[cfg(test)]
+    state.run_response_publication_hook(
+        crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage::AfterTemporaryCommit,
+        &temporary,
+        &destination,
+    );
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -851,64 +881,158 @@ fn publish_response_bytes(
                 .ok()
                 .is_none_or(|metadata| metadata.permissions().mode() & 0o777 != 0o600)
         {
+            cleanup_tracked_artifact(state, &temporary, &temporary_identity);
             return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
         }
     }
-    if file
-        .write_all(bytes)
-        .and_then(|_| file.flush())
-        .and_then(|_| file.sync_all())
-        .is_err()
-    {
-        if let Ok(identity) =
-            crate::path_identity::verify_opened_regular_file(&temporary, &file, false)
-        {
-            safe_remove(&temporary, Some(&identity));
-        }
-        return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
-    }
-    let temporary_identity =
-        crate::path_identity::verify_opened_regular_file(&temporary, &file, false)
-            .map_err(|_| TerminalSnapshotReasonCode::ResponseUnavailable)?;
-    if crate::path_identity::publish_new_file_atomic(&temporary, &destination).is_err() {
-        safe_remove(&temporary, Some(&temporary_identity));
+    if file.write_all(bytes).and_then(|_| file.flush()).is_err() {
+        cleanup_tracked_artifact(state, &temporary, &temporary_identity);
         return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
     }
     #[cfg(test)]
-    state.run_response_after_publish_hook();
-    let identity =
-        match crate::path_identity::verify_opened_regular_file(&destination, &file, false) {
+    let file_sync_failed = state.take_response_publication_failure(
+        crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationFailure::FileSync,
+    );
+    #[cfg(not(test))]
+    let file_sync_failed = false;
+    if file_sync_failed || file.sync_all().is_err() {
+        cleanup_tracked_artifact(state, &temporary, &temporary_identity);
+        return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
+    }
+    #[cfg(test)]
+    state.run_response_publication_hook(
+        crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage::AfterTemporaryWrite,
+        &temporary,
+        &destination,
+    );
+    let written_identity =
+        match crate::path_identity::verify_opened_regular_file(&temporary, &file, false) {
             Ok(identity)
-                if crate::path_identity::is_verified_descendant(&identity, &directory_identity) =>
+                if crate::path_identity::same_object(&identity, &temporary_identity)
+                    && crate::path_identity::is_verified_descendant(
+                        &identity,
+                        &directory_identity,
+                    ) =>
             {
-                Some(identity)
-            }
-            Err(_) if path_is_absent(&destination) => {
-                // A client may consume the atomic final before the publisher's
-                // post-publication path check. The retained handle proves what
-                // was published, and no residual artifact remains to track.
-                None
+                identity
             }
             _ => {
-                safe_remove(&destination, Some(&temporary_identity));
+                cleanup_tracked_artifact(state, &temporary, &temporary_identity);
                 return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
             }
         };
-    drop(file);
-    if let Some(identity) = identity {
-        if reservation
-            .commit(destination.clone(), identity.clone())
-            .is_err()
-            && !path_is_absent(&destination)
-        {
-            safe_remove(&destination, Some(&identity));
-            return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
-        }
-    } else {
-        drop(reservation);
+    #[cfg(test)]
+    state.run_response_publication_hook(
+        crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage::BeforeAtomicRename,
+        &temporary,
+        &destination,
+    );
+    if crate::path_identity::publish_new_file_atomic(&temporary, &destination).is_err() {
+        cleanup_tracked_artifact(state, &temporary, &written_identity);
+        return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
     }
-    crate::path_identity::sync_parent_best_effort(&destination);
+    #[cfg(test)]
+    state.run_response_publication_hook(
+        crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage::AfterAtomicRename,
+        &temporary,
+        &destination,
+    );
+    let mut published = reconcile_published_response(
+        state,
+        &destination,
+        &file,
+        &written_identity,
+        &directory_identity,
+    )?;
+    #[cfg(test)]
+    state.run_response_publication_hook(
+        crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage::AfterFinalVerification,
+        &temporary,
+        &destination,
+    );
+    if published.is_some() {
+        published = reconcile_published_response(
+            state,
+            &destination,
+            &file,
+            &written_identity,
+            &directory_identity,
+        )?;
+    }
+    if published.is_some() {
+        published = match state.relocate_artifact(&written_identity, &destination) {
+            Ok(published) => published,
+            Err(_) => {
+                cleanup_tracked_artifact(state, &destination, &written_identity);
+                return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
+            }
+        };
+    }
+    #[cfg(test)]
+    state.run_response_publication_hook(
+        crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage::AfterRegistryCommit,
+        &temporary,
+        &destination,
+    );
+    if published.is_some() {
+        published = reconcile_published_response(
+            state,
+            &destination,
+            &file,
+            &written_identity,
+            &directory_identity,
+        )?;
+    }
+    #[cfg(test)]
+    let parent_sync_failed = state.take_response_publication_failure(
+        crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationFailure::ParentSync,
+    );
+    #[cfg(not(test))]
+    let parent_sync_failed = false;
+    if !parent_sync_failed {
+        crate::path_identity::sync_parent_best_effort(&destination);
+    }
+    #[cfg(test)]
+    state.run_response_publication_hook(
+        crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage::AfterParentSync,
+        &temporary,
+        &destination,
+    );
+    if published.is_some() {
+        let _ = reconcile_published_response(
+            state,
+            &destination,
+            &file,
+            &written_identity,
+            &directory_identity,
+        )?;
+    }
     Ok(())
+}
+
+fn reconcile_published_response(
+    state: &crate::pty::terminal_snapshot::TerminalSnapshotState,
+    destination: &Path,
+    file: &std::fs::File,
+    expected: &crate::path_identity::VerifiedPathIdentity,
+    directory: &crate::path_identity::VerifiedPathIdentity,
+) -> Result<Option<crate::path_identity::VerifiedPathIdentity>, TerminalSnapshotReasonCode> {
+    match crate::path_identity::verify_opened_regular_file(destination, file, false) {
+        Ok(identity)
+            if crate::path_identity::same_object(expected, &identity)
+                && crate::path_identity::is_verified_descendant(&identity, directory) =>
+        {
+            Ok(Some(identity))
+        }
+        Err(_) if path_is_absent(destination) => {
+            state.untrack_artifact(expected);
+            Ok(None)
+        }
+        _ => {
+            cleanup_tracked_artifact(state, destination, expected);
+            Err(TerminalSnapshotReasonCode::ResponseUnavailable)
+        }
+    }
 }
 
 fn remove_tracked_processing(
@@ -916,8 +1040,24 @@ fn remove_tracked_processing(
     path: &Path,
     expected: &crate::path_identity::VerifiedPathIdentity,
 ) {
-    if safe_remove(path, Some(expected)) {
+    cleanup_tracked_artifact(state, path, expected);
+}
+
+fn cleanup_tracked_artifact(
+    state: &crate::pty::terminal_snapshot::TerminalSnapshotState,
+    path: &Path,
+    expected: &crate::path_identity::VerifiedPathIdentity,
+) -> bool {
+    if safe_remove(path, expected) {
         state.untrack_artifact(expected);
+        return true;
+    }
+    match crate::path_identity::verify_regular_file(path) {
+        Ok(current) if crate::path_identity::same_object(expected, &current) => false,
+        _ => {
+            state.untrack_artifact(expected);
+            false
+        }
     }
 }
 
@@ -925,19 +1065,8 @@ fn path_is_absent(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
 }
 
-fn safe_remove(path: &Path, expected: Option<&crate::path_identity::VerifiedPathIdentity>) -> bool {
-    if let Some(expected) = expected {
-        let Ok(current) = crate::path_identity::verify_regular_file(path) else {
-            return !path.exists();
-        };
-        if !crate::path_identity::same_object(expected, &current) {
-            return false;
-        }
-    }
-    match std::fs::remove_file(path) {
-        Ok(()) => true,
-        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
-    }
+fn safe_remove(path: &Path, expected: &crate::path_identity::VerifiedPathIdentity) -> bool {
+    crate::path_identity::remove_regular_file_if_same(path, expected)
 }
 
 fn sweep_directory(directory: &Path, response_directory: bool) {
@@ -964,7 +1093,7 @@ fn sweep_directory(directory: &Path, response_directory: bool) {
         let Ok(identity) = crate::path_identity::verify_regular_file(&path) else {
             continue;
         };
-        safe_remove(&path, Some(&identity));
+        safe_remove(&path, &identity);
     }
 }
 
@@ -1006,6 +1135,35 @@ fn protocol_cleanup_name(name: &str, response_directory: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn response_directory() -> tempfile::TempDir {
+        let directory = tempfile::TempDir::new().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        directory
+    }
+
+    fn response_temporary_paths(directory: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(directory)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(".terminal-snapshot-response-tmp"))
+            })
+            .collect()
+    }
+
+    fn assert_registry_reclaimed(state: &crate::pty::terminal_snapshot::TerminalSnapshotState) {
+        state.sweep_artifacts_for_test(false);
+        assert_eq!(state.test_artifact_counts(), (0, 0, 0));
+    }
 
     fn request() -> HostTerminalSnapshotRequest {
         let issued = chrono::Utc::now();
@@ -1073,15 +1231,379 @@ mod tests {
         .is_ok());
         let destination = directory.path().join(format!("{request_id}.json"));
         let first = std::fs::read(&destination).unwrap();
+        assert!(matches!(
+            publish_trusted_failure(
+                &state,
+                directory.path(),
+                request_id,
+                &tag,
+                TerminalSnapshotReasonCode::Internal,
+            ),
+            Err(TerminalSnapshotReasonCode::ResponseUnavailable)
+        ));
+        assert_eq!(std::fs::read(destination).unwrap(), first);
+    }
+
+    #[test]
+    fn response_publication_collisions_never_overwrite_or_orphan_owned_temps() {
+        use crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage as Stage;
+
+        let directory = response_directory();
+        let state = crate::pty::terminal_snapshot::TerminalSnapshotState::new(
+            crate::shutdown::ShutdownSignal::new(),
+        );
+        let request_id = Uuid::new_v4();
+        let collided_temporary = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let collided_temporary_for_hook = std::sync::Arc::clone(&collided_temporary);
+        state.install_response_publication_hook(
+            Stage::BeforeTemporaryCreate,
+            move |temporary, _| {
+                std::fs::write(temporary, b"temporary collision").unwrap();
+                *collided_temporary_for_hook.lock().unwrap() = Some(temporary.to_path_buf());
+            },
+        );
+        assert!(matches!(
+            publish_trusted_failure(
+                &state,
+                directory.path(),
+                request_id,
+                &"a".repeat(64),
+                TerminalSnapshotReasonCode::InvalidRequest,
+            ),
+            Err(TerminalSnapshotReasonCode::ResponseUnavailable)
+        ));
+        let temporary = collided_temporary.lock().unwrap().clone().unwrap();
+        assert_eq!(std::fs::read(&temporary).unwrap(), b"temporary collision");
+        assert!(!directory.path().join(format!("{request_id}.json")).exists());
+        assert_eq!(state.test_artifact_counts(), (0, 0, 0));
+        std::fs::remove_file(temporary).unwrap();
+        assert_registry_reclaimed(&state);
+
+        for stage in [Stage::AfterTemporaryCommit, Stage::BeforeAtomicRename] {
+            let directory = response_directory();
+            let state = crate::pty::terminal_snapshot::TerminalSnapshotState::new(
+                crate::shutdown::ShutdownSignal::new(),
+            );
+            let request_id = Uuid::new_v4();
+            state.install_response_publication_hook(stage, |_, destination| {
+                std::fs::write(destination, b"final collision").unwrap();
+            });
+            assert!(matches!(
+                publish_trusted_failure(
+                    &state,
+                    directory.path(),
+                    request_id,
+                    &"a".repeat(64),
+                    TerminalSnapshotReasonCode::InvalidRequest,
+                ),
+                Err(TerminalSnapshotReasonCode::ResponseUnavailable)
+            ));
+            assert_eq!(
+                std::fs::read(directory.path().join(format!("{request_id}.json"))).unwrap(),
+                b"final collision"
+            );
+            assert!(response_temporary_paths(directory.path()).is_empty());
+            assert_eq!(state.test_artifact_counts(), (0, 0, 0));
+            std::fs::remove_file(directory.path().join(format!("{request_id}.json"))).unwrap();
+            assert_registry_reclaimed(&state);
+        }
+    }
+
+    #[test]
+    fn temporary_identity_change_before_registry_commit_fails_closed() {
+        use crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage as Stage;
+
+        let directory = response_directory();
+        let state = crate::pty::terminal_snapshot::TerminalSnapshotState::new(
+            crate::shutdown::ShutdownSignal::new(),
+        );
+        let request_id = Uuid::new_v4();
+        let displaced = directory.path().join("displaced-empty-temporary");
+        let replacement = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let replacement_for_hook = std::sync::Arc::clone(&replacement);
+        let displaced_for_hook = displaced.clone();
+        state.install_response_publication_hook(
+            Stage::BeforeTemporaryCommit,
+            move |temporary, _| {
+                std::fs::rename(temporary, &displaced_for_hook).unwrap();
+                std::fs::write(temporary, b"temporary replacement").unwrap();
+                *replacement_for_hook.lock().unwrap() = Some(temporary.to_path_buf());
+            },
+        );
+
+        assert!(matches!(
+            publish_trusted_failure(
+                &state,
+                directory.path(),
+                request_id,
+                &"a".repeat(64),
+                TerminalSnapshotReasonCode::InvalidRequest,
+            ),
+            Err(TerminalSnapshotReasonCode::ResponseUnavailable)
+        ));
+        let replacement = replacement.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            std::fs::read(&replacement).unwrap(),
+            b"temporary replacement"
+        );
+        assert_eq!(std::fs::read(&displaced).unwrap(), b"");
+        assert_eq!(state.test_artifact_counts(), (0, 0, 0));
+        std::fs::remove_file(replacement).unwrap();
+        std::fs::remove_file(displaced).unwrap();
+        assert_registry_reclaimed(&state);
+    }
+
+    #[test]
+    fn temporary_identity_change_after_write_never_renames_or_removes_the_replacement() {
+        use crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage as Stage;
+
+        let directory = response_directory();
+        let state = crate::pty::terminal_snapshot::TerminalSnapshotState::new(
+            crate::shutdown::ShutdownSignal::new(),
+        );
+        let request_id = Uuid::new_v4();
+        let displaced = directory.path().join("consumed-written-temporary");
+        let replacement = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let replacement_for_hook = std::sync::Arc::clone(&replacement);
+        let displaced_for_hook = displaced.clone();
+        state.install_response_publication_hook(Stage::AfterTemporaryWrite, move |temporary, _| {
+            std::fs::rename(temporary, &displaced_for_hook).unwrap();
+            std::fs::write(temporary, b"post-write temporary replacement").unwrap();
+            *replacement_for_hook.lock().unwrap() = Some(temporary.to_path_buf());
+        });
+
+        assert!(matches!(
+            publish_trusted_failure(
+                &state,
+                directory.path(),
+                request_id,
+                &"a".repeat(64),
+                TerminalSnapshotReasonCode::InvalidRequest,
+            ),
+            Err(TerminalSnapshotReasonCode::ResponseUnavailable)
+        ));
+        let replacement = replacement.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            std::fs::read(&replacement).unwrap(),
+            b"post-write temporary replacement"
+        );
+        assert!(std::fs::metadata(&displaced).unwrap().len() > 0);
+        assert!(!directory.path().join(format!("{request_id}.json")).exists());
+        assert_eq!(state.test_artifact_counts(), (0, 0, 0));
+        std::fs::remove_file(replacement).unwrap();
+        std::fs::remove_file(displaced).unwrap();
+        assert_registry_reclaimed(&state);
+    }
+
+    #[test]
+    fn every_post_rename_client_consumption_stage_succeeds_and_reuses_capacity() {
+        use crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage as Stage;
+
+        for stage in [
+            Stage::AfterAtomicRename,
+            Stage::AfterFinalVerification,
+            Stage::AfterRegistryCommit,
+            Stage::AfterParentSync,
+        ] {
+            let directory = response_directory();
+            let state = crate::pty::terminal_snapshot::TerminalSnapshotState::new(
+                crate::shutdown::ShutdownSignal::new(),
+            );
+            let request_id = Uuid::new_v4();
+            state.install_response_publication_hook(stage, |_, destination| {
+                let identity = crate::path_identity::verify_regular_file(destination).unwrap();
+                assert!(safe_remove(destination, &identity));
+            });
+            assert!(publish_trusted_failure(
+                &state,
+                directory.path(),
+                request_id,
+                &"a".repeat(64),
+                TerminalSnapshotReasonCode::InvalidRequest,
+            )
+            .is_ok());
+            assert!(!directory.path().join(format!("{request_id}.json")).exists());
+            assert!(response_temporary_paths(directory.path()).is_empty());
+            assert_eq!(state.test_artifact_counts(), (0, 0, 0));
+            assert_registry_reclaimed(&state);
+            let identity = crate::path_identity::verify_directory(directory.path()).unwrap();
+            assert!(state.reserve_artifact(directory.path(), &identity).is_ok());
+        }
+    }
+
+    #[test]
+    fn every_post_rename_mismatch_fails_without_deleting_the_replacement() {
+        use crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage as Stage;
+
+        for (index, stage) in [
+            Stage::AfterAtomicRename,
+            Stage::AfterFinalVerification,
+            Stage::AfterRegistryCommit,
+            Stage::AfterParentSync,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let directory = response_directory();
+            let state = crate::pty::terminal_snapshot::TerminalSnapshotState::new(
+                crate::shutdown::ShutdownSignal::new(),
+            );
+            let request_id = Uuid::new_v4();
+            let displaced = directory.path().join(format!("consumed-{index}.json"));
+            let displaced_for_hook = displaced.clone();
+            state.install_response_publication_hook(stage, move |_, destination| {
+                std::fs::rename(destination, &displaced_for_hook).unwrap();
+                std::fs::write(destination, b"mismatched final replacement").unwrap();
+            });
+            assert!(matches!(
+                publish_trusted_failure(
+                    &state,
+                    directory.path(),
+                    request_id,
+                    &"a".repeat(64),
+                    TerminalSnapshotReasonCode::InvalidRequest,
+                ),
+                Err(TerminalSnapshotReasonCode::ResponseUnavailable)
+            ));
+            let destination = directory.path().join(format!("{request_id}.json"));
+            assert_eq!(
+                std::fs::read(&destination).unwrap(),
+                b"mismatched final replacement"
+            );
+            assert!(std::fs::metadata(&displaced).unwrap().len() > 0);
+            assert_eq!(state.test_artifact_counts(), (0, 0, 0));
+            std::fs::remove_file(destination).unwrap();
+            std::fs::remove_file(displaced).unwrap();
+            assert_registry_reclaimed(&state);
+        }
+    }
+
+    #[test]
+    fn response_artifact_reservation_commit_relocation_and_cleanup_are_exact() {
+        use crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage as Stage;
+
+        let directory = response_directory();
+        let state = crate::pty::terminal_snapshot::TerminalSnapshotState::new(
+            crate::shutdown::ShutdownSignal::new(),
+        );
+        let before_create = std::sync::Arc::clone(&state);
+        state.install_response_publication_hook(Stage::BeforeTemporaryCreate, move |_, _| {
+            assert_eq!(before_create.test_artifact_counts(), (1, 0, 1));
+        });
+        let after_commit = std::sync::Arc::clone(&state);
+        state.install_response_publication_hook(
+            Stage::AfterTemporaryCommit,
+            move |temporary, _| {
+                assert!(temporary.exists());
+                assert_eq!(after_commit.test_artifact_counts(), (1, 1, 0));
+            },
+        );
+        let after_relocation = std::sync::Arc::clone(&state);
+        state.install_response_publication_hook(
+            Stage::AfterRegistryCommit,
+            move |temporary, destination| {
+                assert!(!temporary.exists());
+                assert!(destination.exists());
+                assert_eq!(after_relocation.test_artifact_counts(), (1, 1, 0));
+            },
+        );
+        let request_id = Uuid::new_v4();
         assert!(publish_trusted_failure(
             &state,
             directory.path(),
             request_id,
-            &tag,
-            TerminalSnapshotReasonCode::Internal,
+            &"a".repeat(64),
+            TerminalSnapshotReasonCode::InvalidRequest,
         )
-        .is_err());
-        assert_eq!(std::fs::read(destination).unwrap(), first);
+        .is_ok());
+        assert!(response_temporary_paths(directory.path()).is_empty());
+        state.sweep_artifacts_for_test(true);
+        assert!(!directory.path().join(format!("{request_id}.json")).exists());
+        assert_eq!(state.test_artifact_counts(), (0, 0, 0));
+        let identity = crate::path_identity::verify_directory(directory.path()).unwrap();
+        assert!(state.reserve_artifact(directory.path(), &identity).is_ok());
+    }
+
+    #[test]
+    fn file_sync_failure_is_response_unavailable_while_parent_sync_is_best_effort() {
+        use crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationFailure as Failure;
+
+        let directory = response_directory();
+        let state = crate::pty::terminal_snapshot::TerminalSnapshotState::new(
+            crate::shutdown::ShutdownSignal::new(),
+        );
+        let request_id = Uuid::new_v4();
+        state.install_response_publication_failure(Failure::FileSync);
+        assert!(matches!(
+            publish_trusted_failure(
+                &state,
+                directory.path(),
+                request_id,
+                &"a".repeat(64),
+                TerminalSnapshotReasonCode::InvalidRequest,
+            ),
+            Err(TerminalSnapshotReasonCode::ResponseUnavailable)
+        ));
+        assert!(!directory.path().join(format!("{request_id}.json")).exists());
+        assert!(response_temporary_paths(directory.path()).is_empty());
+        assert_registry_reclaimed(&state);
+
+        let directory = response_directory();
+        let state = crate::pty::terminal_snapshot::TerminalSnapshotState::new(
+            crate::shutdown::ShutdownSignal::new(),
+        );
+        let request_id = Uuid::new_v4();
+        state.install_response_publication_failure(Failure::ParentSync);
+        assert!(publish_trusted_failure(
+            &state,
+            directory.path(),
+            request_id,
+            &"a".repeat(64),
+            TerminalSnapshotReasonCode::InvalidRequest,
+        )
+        .is_ok());
+        assert!(directory.path().join(format!("{request_id}.json")).exists());
+        state.sweep_artifacts_for_test(true);
+        assert_eq!(state.test_artifact_counts(), (0, 0, 0));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_remove_keeps_the_owned_temp_tracked_until_retry() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+        use crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage as Stage;
+
+        let directory = response_directory();
+        let state = crate::pty::terminal_snapshot::TerminalSnapshotState::new(
+            crate::shutdown::ShutdownSignal::new(),
+        );
+        let blocker = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let blocker_for_hook = std::sync::Arc::clone(&blocker);
+        state.install_response_publication_hook(Stage::BeforeAtomicRename, move |temporary, _| {
+            let mut options = std::fs::OpenOptions::new();
+            options
+                .read(true)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
+            *blocker_for_hook.lock().unwrap() = Some(options.open(temporary).unwrap());
+        });
+        assert!(matches!(
+            publish_trusted_failure(
+                &state,
+                directory.path(),
+                Uuid::new_v4(),
+                &"a".repeat(64),
+                TerminalSnapshotReasonCode::InvalidRequest,
+            ),
+            Err(TerminalSnapshotReasonCode::ResponseUnavailable)
+        ));
+        assert_eq!(state.test_artifact_counts(), (1, 1, 0));
+        assert_eq!(response_temporary_paths(directory.path()).len(), 1);
+        drop(blocker.lock().unwrap().take());
+        state.sweep_artifacts_for_test(true);
+        assert!(response_temporary_paths(directory.path()).is_empty());
+        assert_eq!(state.test_artifact_counts(), (0, 0, 0));
     }
 
     #[test]
@@ -1114,6 +1636,79 @@ mod tests {
         )
         .is_ok());
         assert!(path_is_absent(&destination));
+    }
+
+    #[test]
+    fn response_consumed_after_registry_commit_releases_registry_capacity() {
+        let state = crate::pty::terminal_snapshot::TerminalSnapshotState::new(
+            crate::shutdown::ShutdownSignal::new(),
+        );
+        let directory = tempfile::TempDir::new().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        let request_id = Uuid::new_v4();
+        state.install_response_publication_hook(
+            crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage::AfterRegistryCommit,
+            |_, destination| {
+                std::fs::remove_file(destination).expect("consume committed response");
+            },
+        );
+
+        assert!(publish_trusted_failure(
+            &state,
+            directory.path(),
+            request_id,
+            &"a".repeat(64),
+            TerminalSnapshotReasonCode::InvalidRequest,
+        )
+        .is_ok());
+        assert_eq!(state.test_artifact_counts(), (0, 0, 0));
+        state.sweep_artifacts_for_test(false);
+        assert_eq!(state.test_artifact_counts(), (0, 0, 0));
+    }
+
+    #[test]
+    fn response_replaced_after_registry_commit_fails_without_deleting_replacement() {
+        let state = crate::pty::terminal_snapshot::TerminalSnapshotState::new(
+            crate::shutdown::ShutdownSignal::new(),
+        );
+        let directory = tempfile::TempDir::new().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        let request_id = Uuid::new_v4();
+        let displaced = directory.path().join("client-consumed-response");
+        state.install_response_publication_hook(
+            crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage::AfterRegistryCommit,
+            move |_, destination| {
+                std::fs::rename(destination, &displaced).expect("consume committed object");
+                std::fs::write(destination, b"attacker replacement")
+                    .expect("install mismatched final object");
+            },
+        );
+
+        assert!(matches!(
+            publish_trusted_failure(
+                &state,
+                directory.path(),
+                request_id,
+                &"a".repeat(64),
+                TerminalSnapshotReasonCode::InvalidRequest,
+            ),
+            Err(TerminalSnapshotReasonCode::ResponseUnavailable)
+        ));
+        let destination = directory.path().join(format!("{request_id}.json"));
+        assert_eq!(std::fs::read(destination).unwrap(), b"attacker replacement");
+        assert_eq!(state.test_artifact_counts(), (0, 0, 0));
+        state.sweep_artifacts_for_test(false);
+        assert_eq!(state.test_artifact_counts(), (0, 0, 0));
     }
 
     #[test]

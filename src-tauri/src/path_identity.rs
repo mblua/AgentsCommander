@@ -357,6 +357,38 @@ pub fn sync_parent_best_effort(path: &Path) {
     let _ = path;
 }
 
+/// Remove only the regular one-link object proven by `expected`. A second
+/// identity check closes deterministic validation-to-delete replacement races.
+pub fn remove_regular_file_if_same(path: &Path, expected: &VerifiedPathIdentity) -> bool {
+    remove_regular_file_if_same_inner(path, expected, || {})
+}
+
+fn remove_regular_file_if_same_inner(
+    path: &Path,
+    expected: &VerifiedPathIdentity,
+    after_validation: impl FnOnce(),
+) -> bool {
+    let Ok(current) = verify_regular_file(path) else {
+        return std::fs::symlink_metadata(path)
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound);
+    };
+    if !same_object(expected, &current) {
+        return false;
+    }
+    after_validation();
+    let Ok(current) = verify_regular_file(path) else {
+        return std::fs::symlink_metadata(path)
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound);
+    };
+    if !same_object(expected, &current) {
+        return false;
+    }
+    match std::fs::remove_file(path) {
+        Ok(()) => true,
+        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+    }
+}
+
 #[cfg(windows)]
 pub fn publish_new_file_atomic(source: &Path, destination: &Path) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
@@ -1074,6 +1106,28 @@ mod tests {
             std::fs::write(replacement, b"other").unwrap();
         });
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn same_object_removal_rechecks_and_preserves_a_replacement() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let path = directory.path().join("owned-response.json");
+        let displaced = directory.path().join("displaced-owned-response");
+        std::fs::write(&path, b"owned response").unwrap();
+        let expected = verify_regular_file(&path).unwrap();
+        let raced_path = path.clone();
+        let raced_displaced = displaced.clone();
+
+        assert!(!remove_regular_file_if_same_inner(
+            &path,
+            &expected,
+            move || {
+                std::fs::rename(&raced_path, &raced_displaced).unwrap();
+                std::fs::write(&raced_path, b"replacement response").unwrap();
+            },
+        ));
+        assert_eq!(std::fs::read(path).unwrap(), b"replacement response");
+        assert_eq!(std::fs::read(displaced).unwrap(), b"owned response");
     }
 
     #[test]
