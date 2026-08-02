@@ -49,15 +49,69 @@ impl Drop for PayloadWorkerGuard {
     }
 }
 
+/// Structural marker returned after a terminal-payload panic. The original
+/// panic object is dropped while hook suppression is still active and never
+/// crosses a snapshot task boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PayloadPanic;
+
 /// Catch a panic in a terminal-payload worker without allowing the default
 /// panic hook to print attacker-controlled parser or renderer data. Unrelated
 /// panics continue through the process hook unchanged.
-pub(crate) fn catch_payload_unwind<F, T>(operation: F) -> std::thread::Result<T>
+pub(crate) fn catch_payload_unwind<F, T>(operation: F) -> Result<T, PayloadPanic>
 where
     F: FnOnce() -> T,
 {
     let _guard = PayloadWorkerGuard::enter();
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation))
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation)) {
+        Ok(value) => Ok(value),
+        Err(payload) => {
+            drop(payload);
+            Err(PayloadPanic)
+        }
+    }
+}
+
+/// Poll a payload-bearing future with panic-hook suppression active only for
+/// each synchronous poll. This remains correct when Tokio moves the future
+/// between worker threads and converts a panic to one structural marker.
+pub(crate) async fn catch_payload_future<F>(future: F) -> Result<F::Output, PayloadPanic>
+where
+    F: std::future::Future,
+{
+    let mut future = Some(Box::pin(future));
+    std::future::poll_fn(move |context| {
+        let Some(pending) = future.as_mut() else {
+            return std::task::Poll::Ready(Err(PayloadPanic));
+        };
+        match catch_payload_unwind(|| pending.as_mut().poll(context)) {
+            Ok(std::task::Poll::Pending) => std::task::Poll::Pending,
+            Ok(std::task::Poll::Ready(output)) => {
+                let completed = future.take();
+                match catch_payload_unwind(|| drop(completed)) {
+                    Ok(()) => std::task::Poll::Ready(Ok(output)),
+                    Err(panic) => std::task::Poll::Ready(Err(panic)),
+                }
+            }
+            Err(panic) => {
+                let failed = future.take();
+                let drop_panic = catch_payload_unwind(|| drop(failed)).err();
+                std::task::Poll::Ready(Err(drop_panic.unwrap_or(panic)))
+            }
+        }
+    })
+    .await
+}
+
+/// Collapse both a guarded worker panic and a Tokio task failure without ever
+/// invoking `JoinError` formatting, which includes string panic payloads.
+pub(crate) fn collapse_payload_task<T>(
+    joined: Result<Result<T, PayloadPanic>, tokio::task::JoinError>,
+) -> Result<T, PayloadPanic> {
+    match joined {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(_)) | Err(_) => Err(PayloadPanic),
+    }
 }
 
 /// #612 runtime-adjustable verbosity for our own targets (`agentscommander*`),
@@ -676,6 +730,36 @@ mod tests {
                 .args(format_args!("synthetic message"))
                 .build(),
         )
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn payload_panic_and_join_failures_collapse_without_payload_formatting() {
+        const UNWIND_CANARY: &str = "PANIC_UNWIND_1173_C6R9";
+        const FUTURE_CANARY: &str = "PANIC_FUTURE_1173_N4H7";
+        const JOIN_CANARY: &str = "PANIC_JOIN_1173_W8K3";
+
+        let unwind: Result<(), PayloadPanic> =
+            catch_payload_unwind(|| std::panic::panic_any(UNWIND_CANARY));
+        let future: Result<(), PayloadPanic> = catch_payload_future(async {
+            std::panic::panic_any(FUTURE_CANARY);
+        })
+        .await;
+
+        let handle: tokio::task::JoinHandle<()> = tokio::spawn(async {
+            let _guard = PayloadWorkerGuard::enter();
+            std::panic::panic_any(JOIN_CANARY);
+        });
+        let joined = handle.await.map(Ok::<(), PayloadPanic>);
+        let collapsed = collapse_payload_task(joined);
+
+        assert_eq!(unwind, Err(PayloadPanic));
+        assert_eq!(future, Err(PayloadPanic));
+        assert_eq!(collapsed, Err(PayloadPanic));
+        let diagnostics = format!("{unwind:?}\n{future:?}\n{collapsed:?}");
+        for canary in [UNWIND_CANARY, FUTURE_CANARY, JOIN_CANARY] {
+            assert!(!diagnostics.contains(canary));
+        }
+        assert_eq!(diagnostics.matches("PayloadPanic").count(), 3);
     }
 
     #[test]

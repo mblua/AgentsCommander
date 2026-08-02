@@ -157,14 +157,21 @@ impl std::fmt::Debug for RegistrySnapshot {
 
 /// SHA-256 the secret, formatted `"sha256:<lowercase-hex>"`.
 pub fn hash_token(secret: &str) -> String {
+    const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
+
     let digest = Sha256::digest(secret.as_bytes());
     let mut hex = String::with_capacity(64);
     for byte in digest {
-        // Two lowercase hex chars per byte.
-        hex.push(char::from_digit((byte >> 4) as u32, 16).unwrap());
-        hex.push(char::from_digit((byte & 0x0f) as u32, 16).unwrap());
+        let Some(high) = LOWER_HEX.get(usize::from(byte >> 4)) else {
+            return "sha256:invalid".to_string();
+        };
+        let Some(low) = LOWER_HEX.get(usize::from(byte & 0x0f)) else {
+            return "sha256:invalid".to_string();
+        };
+        hex.push(char::from(*high));
+        hex.push(char::from(*low));
     }
-    format!("sha256:{}", hex)
+    format!("sha256:{hex}")
 }
 
 /// Constant-time equality over two equal-length strings (the fixed-length hex
@@ -409,9 +416,16 @@ impl ApiClientStore {
         presented: String,
     ) -> Result<Option<ApiClientFreshGuard>, FreshRegistryError> {
         let store = std::sync::Arc::clone(self);
-        tokio::task::spawn_blocking(move || store.authenticate_privileged_fresh(&presented))
-            .await
-            .map_err(|_| FreshRegistryError::Internal)?
+        let joined = tokio::task::spawn_blocking(move || {
+            crate::logging::catch_payload_unwind(move || {
+                store.authenticate_privileged_fresh(&presented)
+            })
+        })
+        .await;
+        match crate::logging::collapse_payload_task(joined) {
+            Ok(result) => result,
+            Err(_) => Err(FreshRegistryError::Internal),
+        }
     }
 
     pub fn authenticate_pty_input_fresh(
@@ -460,11 +474,16 @@ impl ApiClientStore {
         required_scope: &'static str,
     ) -> Result<Option<ApiClientFreshGuard>, FreshRegistryError> {
         let store = std::sync::Arc::clone(self);
-        tokio::task::spawn_blocking(move || {
-            store.load_active_binding_fresh(&client_id, &generation, required_scope)
+        let joined = tokio::task::spawn_blocking(move || {
+            crate::logging::catch_payload_unwind(move || {
+                store.load_active_binding_fresh(&client_id, &generation, required_scope)
+            })
         })
-        .await
-        .map_err(|_| FreshRegistryError::Internal)?
+        .await;
+        match crate::logging::collapse_payload_task(joined) {
+            Ok(result) => result,
+            Err(_) => Err(FreshRegistryError::Internal),
+        }
     }
 }
 

@@ -27,12 +27,24 @@ pub async fn post(
 ) -> Response {
     let audit =
         TerminalSnapshotAuditGuard::pre_admission(TerminalSnapshotSourcePlane::ContainerApi);
-    let response = post_inner(state, address, uri, request, audit.clone()).await;
+    let response = crate::logging::catch_payload_future(post_inner(
+        state,
+        address,
+        uri,
+        request,
+        audit.clone(),
+    ))
+    .await;
     match response {
-        Ok(response) => response,
-        Err(reason) => {
+        Ok(Ok(response)) => response,
+        Ok(Err(reason)) => {
             audit.finalize_failure(reason);
             error_response(reason)
+        }
+        Err(_) => {
+            log::error!("[terminal-snapshot] stage=api_task code=internal");
+            audit.finalize_failure(TerminalSnapshotReasonCode::Internal);
+            error_response(TerminalSnapshotReasonCode::Internal)
         }
     }
 }

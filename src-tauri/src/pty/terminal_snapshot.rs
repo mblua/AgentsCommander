@@ -1086,30 +1086,38 @@ async fn prove_requester(
     }
     let cwd = fact.working_directory.clone();
     let is_root = fact.is_root_agent;
-    let (identity, cwd_identity) = tokio::task::spawn_blocking(move || {
-        let cwd_identity = crate::path_identity::verify_directory(std::path::Path::new(&cwd))?;
-        let identity = if is_root {
-            let identity = crate::config::teams::verify_terminal_snapshot_root_identity(
-                std::path::Path::new(&cwd),
-            )?;
-            if !crate::path_identity::same_object(&identity.replica_identity, &cwd_identity) {
-                return Err("requester_identity_invalid".to_string());
-            }
-            identity
-        } else {
-            let identity = crate::config::teams::verify_pty_input_coordinator_root(
-                std::path::Path::new(&cwd),
-            )?;
-            if !crate::path_identity::same_object(&identity.replica_identity, &cwd_identity) {
-                return Err("requester_identity_invalid".to_string());
-            }
-            identity
-        };
-        Ok::<_, String>((identity, cwd_identity))
+    let identity_task = tokio::task::spawn_blocking(move || {
+        crate::logging::catch_payload_unwind(move || {
+            let cwd_identity = crate::path_identity::verify_directory(std::path::Path::new(&cwd))?;
+            let identity = if is_root {
+                let identity = crate::config::teams::verify_terminal_snapshot_root_identity(
+                    std::path::Path::new(&cwd),
+                )?;
+                if !crate::path_identity::same_object(&identity.replica_identity, &cwd_identity) {
+                    return Err("requester_identity_invalid".to_string());
+                }
+                identity
+            } else {
+                let identity = crate::config::teams::verify_pty_input_coordinator_root(
+                    std::path::Path::new(&cwd),
+                )?;
+                if !crate::path_identity::same_object(&identity.replica_identity, &cwd_identity) {
+                    return Err("requester_identity_invalid".to_string());
+                }
+                identity
+            };
+            Ok::<_, String>((identity, cwd_identity))
+        })
     })
-    .await
-    .map_err(|_| TerminalSnapshotReasonCode::ServiceUnavailable)?
-    .map_err(|_| TerminalSnapshotReasonCode::RequesterUnavailable)?;
+    .await;
+    let (identity, cwd_identity) = match crate::logging::collapse_payload_task(identity_task) {
+        Ok(Ok(value)) => value,
+        Ok(Err(_)) => return Err(TerminalSnapshotReasonCode::RequesterUnavailable),
+        Err(_) => {
+            log::error!("[terminal-snapshot] stage=requester_task code=internal");
+            return Err(TerminalSnapshotReasonCode::ServiceUnavailable);
+        }
+    };
     let route = PtyManager::snapshot_route_proof(pty_manager, fact.id)
         .map_err(|_| TerminalSnapshotReasonCode::RequesterUnavailable)?;
     if let Some((expected_root, claimed_from)) = host_confinement {
@@ -1678,14 +1686,19 @@ where
     let permit = permit.clone();
     let audit = audit.clone();
     let handle = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        let _audit = audit;
-        crate::logging::catch_payload_unwind(operation)
+        crate::logging::catch_payload_unwind(move || {
+            let _permit = permit;
+            let _audit = audit;
+            operation()
+        })
     });
     let joined = await_deadline(deadline, handle).await?;
-    match joined {
-        Ok(Ok(value)) => Ok(value),
-        Ok(Err(_)) | Err(_) => Err(TerminalSnapshotReasonCode::Internal),
+    match crate::logging::collapse_payload_task(joined) {
+        Ok(value) => Ok(value),
+        Err(_) => {
+            log::error!("[terminal-snapshot] stage=blocking_task code=internal");
+            Err(TerminalSnapshotReasonCode::Internal)
+        }
     }
 }
 

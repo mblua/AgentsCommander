@@ -395,7 +395,7 @@ impl SnapshotMailboxScanner {
             let expected_root = root_identity.clone();
             let snapshot_state = snapshot_state.inner().clone();
             let task = tauri::async_runtime::spawn(async move {
-                process_claimed(
+                let processed = crate::logging::catch_payload_future(process_claimed(
                     &app,
                     snapshot_state,
                     processing,
@@ -404,8 +404,11 @@ impl SnapshotMailboxScanner {
                     claimed,
                     request_id,
                     ingress,
-                )
+                ))
                 .await;
+                if processed.is_err() {
+                    log::error!("[terminal-snapshot] stage=host_task code=internal");
+                }
             });
             #[cfg(test)]
             self.pending_tasks.push(task);
@@ -682,7 +685,12 @@ async fn process_claimed<R: tauri::Runtime>(
             })
         }),
     };
-    let _ = task.await;
+    match crate::logging::collapse_payload_task(task.await) {
+        Ok(_) => {}
+        Err(_) => {
+            log::error!("[terminal-snapshot] stage=host_finalizer_task code=internal");
+        }
+    }
 }
 
 fn record_host_ingress_failure(

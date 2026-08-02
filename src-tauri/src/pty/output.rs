@@ -263,7 +263,11 @@ impl SessionIoFanout {
             parser: vt100::Parser::new(rows, cols, 0),
             output_sequence: 0,
         };
-        self.screen_parsers.lock().unwrap().insert(id, replay);
+        if let Ok(mut parsers) = self.screen_parsers.lock() {
+            parsers.insert(id, replay);
+        } else {
+            log::error!("[terminal-snapshot] stage=parser_register code=internal session={id}");
+        }
     }
 
     pub fn handle_output(

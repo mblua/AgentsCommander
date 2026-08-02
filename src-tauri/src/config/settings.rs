@@ -3114,9 +3114,17 @@ fn read_terminal_snapshot_security_settings_strict_from_path(
 
 pub(crate) async fn read_terminal_snapshot_security_settings_strict_offloaded(
 ) -> Result<TerminalSnapshotSecuritySettings, String> {
-    tokio::task::spawn_blocking(read_terminal_snapshot_security_settings_strict)
-        .await
-        .map_err(|_| "snapshot_settings_invalid".to_string())?
+    let joined = tokio::task::spawn_blocking(|| {
+        crate::logging::catch_payload_unwind(read_terminal_snapshot_security_settings_strict)
+    })
+    .await;
+    match crate::logging::collapse_payload_task(joined) {
+        Ok(result) => result,
+        Err(_) => {
+            log::error!("[terminal-snapshot] stage=gate_read_task code=internal");
+            Err("snapshot_settings_invalid".to_string())
+        }
+    }
 }
 
 /// The sole persistence owner for the #1173 disclosure gate. The caller holds
