@@ -2600,6 +2600,11 @@ mod tests {
         .err()
         .unwrap();
         assert_eq!(error, C::OutputFailed);
+        assert!(!output.exists(), "replacement parent received an output leaf");
+        assert!(
+            !retired.join("snapshot.png").exists(),
+            "retained parent received an output leaf after identity loss"
+        );
     }
 
     #[test]

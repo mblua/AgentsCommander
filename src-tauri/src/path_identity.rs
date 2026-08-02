@@ -1221,6 +1221,32 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn terminal_snapshot_parent_replacement_before_create_leaves_no_output() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let parent = directory.path().join("parent");
+        let retired = directory.path().join("retired");
+        std::fs::create_dir(&parent).unwrap();
+        let output = parent.join("snapshot.png");
+        let parent_for_race = parent.clone();
+        let retired_for_race = retired.clone();
+
+        let error = create_terminal_snapshot_output_inner(&output, move || {
+            std::fs::rename(&parent_for_race, &retired_for_race).unwrap();
+            std::fs::create_dir(&parent_for_race).unwrap();
+        })
+        .err()
+        .unwrap();
+
+        assert_eq!(error, "output_failed");
+        assert!(!output.exists(), "replacement parent received an output leaf");
+        assert!(
+            !retired.join("snapshot.png").exists(),
+            "retained parent received an output leaf after identity loss"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn terminal_snapshot_windows_namespaces_reject_lexically() {
         for path in [
             r"\\.\C:\snapshot.png",

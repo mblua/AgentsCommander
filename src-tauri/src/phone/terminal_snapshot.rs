@@ -1184,6 +1184,40 @@ mod tests {
         request
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn response_parent_replacement_before_rename_leaves_no_secret_residue() {
+        use crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage as Stage;
+
+        let state = crate::pty::terminal_snapshot::TerminalSnapshotState::new(
+            crate::shutdown::ShutdownSignal::new(),
+        );
+        let directory = tempfile::TempDir::new().unwrap();
+        let parent = directory.path().join("responses");
+        let retired = directory.path().join("retired-responses");
+        std::fs::create_dir(&parent).unwrap();
+        let parent_for_hook = parent.clone();
+        let retired_for_hook = retired.clone();
+        state.install_response_publication_hook(Stage::BeforeAtomicRename, move |_, _| {
+            std::fs::rename(&parent_for_hook, &retired_for_hook).unwrap();
+            std::fs::create_dir(&parent_for_hook).unwrap();
+        });
+
+        let request_id = Uuid::new_v4();
+        let result = publish_response_bytes(&state, &parent, request_id, b"secret-response");
+
+        assert_eq!(result, Err(TerminalSnapshotReasonCode::ResponseUnavailable));
+        assert!(
+            std::fs::read_dir(&parent).unwrap().next().is_none(),
+            "replacement parent was touched"
+        );
+        assert!(
+            std::fs::read_dir(&retired).unwrap().next().is_none(),
+            "secret response remained in the displaced retained parent"
+        );
+        assert_eq!(state.test_artifact_counts(), (0, 0, 0));
+    }
+
     #[test]
     fn confirmation_tag_and_window_are_exact() {
         let request = request();
