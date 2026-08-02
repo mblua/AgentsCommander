@@ -612,16 +612,23 @@ async fn expired_deadline_retains_maximum_raster_and_permit_until_reclamation() 
     let expired = Instant::now()
         .checked_sub(Duration::from_millis(1))
         .unwrap();
-    let result = run_blocking_with_deadline(expired, &permit, &audit, move || {
-        let probe = probe;
-        let raster = vec![0u8; MAX_RGB_BYTES];
-        assert_eq!(raster.len(), MAX_RGB_BYTES);
-        started_tx.send(()).unwrap();
-        release_rx.recv().unwrap();
-        drop(raster);
-        drop(probe);
-        finished_tx.send(()).unwrap();
-    })
+    let result = run_blocking_with_deadline(
+        &state,
+        TerminalSnapshotBlockingStage::TestResourceRetention,
+        expired,
+        &permit,
+        &audit,
+        move || {
+            let probe = probe;
+            let raster = vec![0u8; MAX_RGB_BYTES];
+            assert_eq!(raster.len(), MAX_RGB_BYTES);
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            drop(raster);
+            drop(probe);
+            finished_tx.send(()).unwrap();
+        },
+    )
     .await;
     assert!(matches!(
         result,

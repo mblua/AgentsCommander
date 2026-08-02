@@ -35,8 +35,182 @@ pub(crate) const SNAPSHOT_ARTIFACT_DIRECTORY_CAP: usize = 4_096;
 pub(crate) const SNAPSHOT_ARTIFACT_FILE_CAP: usize = 8_192;
 pub(crate) const SNAPSHOT_ARTIFACT_TTL: Duration = Duration::from_secs(60);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum TerminalSnapshotBlockingStage {
+    RouteVerification,
+    RouteProofs,
+    SessionSelection,
+    Capture,
+    JsonPayload,
+    PngPayload,
+    ApiEnvelope,
+    HostEnvelope,
+    FinalVerification,
+    #[cfg(test)]
+    TestResourceRetention,
+}
+
 #[cfg(test)]
 type TerminalSnapshotTestHook = Box<dyn FnOnce() + Send + 'static>;
+
+#[cfg(test)]
+#[derive(Default)]
+struct TerminalSnapshotBlockingControlState {
+    entered: bool,
+    released: bool,
+    deadline_expired: bool,
+    completed: bool,
+    retained_payload_bytes: usize,
+}
+
+#[cfg(test)]
+pub(crate) struct TerminalSnapshotBlockingControl {
+    state: Mutex<TerminalSnapshotBlockingControlState>,
+    changed: std::sync::Condvar,
+    deadline_changed: tokio::sync::Notify,
+    panic_after_release: Option<String>,
+}
+
+#[cfg(test)]
+impl TerminalSnapshotBlockingControl {
+    pub(crate) fn new(panic_after_release: Option<String>) -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new(TerminalSnapshotBlockingControlState::default()),
+            changed: std::sync::Condvar::new(),
+            deadline_changed: tokio::sync::Notify::new(),
+            panic_after_release,
+        })
+    }
+
+    fn wait_for(&self, completed: bool, label: &'static str) {
+        let limit = Instant::now() + Duration::from_secs(60);
+        let mut state = self.state.lock().expect("blocking control state");
+        while if completed {
+            !state.completed
+        } else {
+            !state.entered
+        } {
+            let remaining = limit.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "{label}");
+            let (next, timeout) = self
+                .changed
+                .wait_timeout(state, remaining)
+                .expect("blocking control wait");
+            state = next;
+            let reached = if completed {
+                state.completed
+            } else {
+                state.entered
+            };
+            assert!(!timeout.timed_out() || reached, "{label}");
+        }
+    }
+
+    pub(crate) fn wait_until_entered(&self) {
+        self.wait_for(
+            false,
+            "blocking worker did not reach its deterministic barrier",
+        );
+    }
+
+    pub(crate) fn wait_until_completed(&self) {
+        self.wait_for(true, "detached blocking worker did not complete");
+    }
+
+    pub(crate) fn expire_deadline(&self) {
+        let mut state = self.state.lock().expect("blocking control state");
+        state.deadline_expired = true;
+        drop(state);
+        self.deadline_changed.notify_waiters();
+    }
+
+    pub(crate) fn release(&self) {
+        let mut state = self.state.lock().expect("blocking control state");
+        state.released = true;
+        self.changed.notify_all();
+    }
+
+    pub(crate) fn retained_payload_bytes(&self) -> usize {
+        self.state
+            .lock()
+            .expect("blocking control state")
+            .retained_payload_bytes
+    }
+
+    fn set_retained_payload_bytes(&self, bytes: usize) {
+        self.state
+            .lock()
+            .expect("blocking control state")
+            .retained_payload_bytes = bytes;
+    }
+
+    fn enter_worker(&self) {
+        let mut state = self.state.lock().expect("blocking control state");
+        state.entered = true;
+        self.changed.notify_all();
+        while !state.released {
+            state = self
+                .changed
+                .wait(state)
+                .expect("blocking control release wait");
+        }
+        drop(state);
+        if let Some(payload) = self.panic_after_release.clone() {
+            std::panic::panic_any(payload);
+        }
+    }
+
+    fn complete_worker(&self) {
+        let mut state = self.state.lock().expect("blocking control state");
+        state.completed = true;
+        self.changed.notify_all();
+    }
+
+    async fn deadline_expired(&self) {
+        loop {
+            let changed = self.deadline_changed.notified();
+            if self
+                .state
+                .lock()
+                .expect("blocking control state")
+                .deadline_expired
+            {
+                return;
+            }
+            changed.await;
+        }
+    }
+}
+
+#[cfg(test)]
+struct TerminalSnapshotTestTaskOutput<T> {
+    outcome: Option<Result<T, crate::logging::PayloadPanic>>,
+    control: Option<Arc<TerminalSnapshotBlockingControl>>,
+}
+
+#[cfg(test)]
+impl<T> TerminalSnapshotTestTaskOutput<T> {
+    fn into_outcome(mut self) -> Result<T, crate::logging::PayloadPanic> {
+        let outcome = self
+            .outcome
+            .take()
+            .expect("blocking task output consumed exactly once");
+        if let Some(control) = self.control.take() {
+            control.complete_worker();
+        }
+        outcome
+    }
+}
+
+#[cfg(test)]
+impl<T> Drop for TerminalSnapshotTestTaskOutput<T> {
+    fn drop(&mut self) {
+        drop(self.outcome.take());
+        if let Some(control) = self.control.take() {
+            control.complete_worker();
+        }
+    }
+}
 
 #[cfg(test)]
 #[derive(Default)]
@@ -49,6 +223,9 @@ struct TerminalSnapshotTestState {
     api_after_response_bytes: Mutex<Option<TerminalSnapshotTestHook>>,
     api_before_final_binding: Mutex<Option<TerminalSnapshotTestHook>>,
     response_after_publish: Mutex<Option<TerminalSnapshotTestHook>>,
+    blocking_controls: Mutex<
+        HashMap<TerminalSnapshotBlockingStage, VecDeque<Arc<TerminalSnapshotBlockingControl>>>,
+    >,
 }
 
 #[cfg(test)]
@@ -148,6 +325,23 @@ impl std::fmt::Debug for PreparedSnapshotPayload {
 }
 
 impl PreparedSnapshotPayload {
+    #[cfg(test)]
+    fn retained_content_bytes(&self) -> usize {
+        match self {
+            Self::Json { model, .. } => model
+                .screen
+                .lines
+                .iter()
+                .map(|line| line.cells.len())
+                .sum::<usize>()
+                .saturating_mul(std::mem::size_of::<terminal_snapshot_renderer::TerminalCell>()),
+            Self::Png(payload) => match &**payload {
+                TerminalSnapshotPayload::Png { png, .. } => png.len(),
+                TerminalSnapshotPayload::Json { .. } => 0,
+            },
+        }
+    }
+
     fn payload_bytes(&self) -> Result<u64, terminal_snapshot_renderer::ProtocolError> {
         match self {
             Self::Json {
@@ -526,6 +720,62 @@ impl TerminalSnapshotState {
                 .load(Ordering::SeqCst),
             target_route_lookups: self.test_state.target_route_lookups.load(Ordering::SeqCst),
         }
+    }
+
+    #[cfg(test)]
+    fn install_blocking_control(
+        &self,
+        stage: TerminalSnapshotBlockingStage,
+        control: Arc<TerminalSnapshotBlockingControl>,
+    ) {
+        self.test_state
+            .blocking_controls
+            .lock()
+            .expect("blocking control queue")
+            .entry(stage)
+            .or_default()
+            .push_back(control);
+    }
+
+    #[cfg(test)]
+    fn take_blocking_control(
+        &self,
+        stage: TerminalSnapshotBlockingStage,
+    ) -> Option<Arc<TerminalSnapshotBlockingControl>> {
+        let mut controls = self
+            .test_state
+            .blocking_controls
+            .lock()
+            .expect("blocking control queue");
+        let control = controls.get_mut(&stage).and_then(VecDeque::pop_front);
+        if controls.get(&stage).is_some_and(VecDeque::is_empty) {
+            controls.remove(&stage);
+        }
+        control
+    }
+
+    #[cfg(test)]
+    fn mark_blocking_payload_retention(&self, stage: TerminalSnapshotBlockingStage, bytes: usize) {
+        if let Some(control) = self
+            .test_state
+            .blocking_controls
+            .lock()
+            .expect("blocking control queue")
+            .get(&stage)
+            .and_then(VecDeque::front)
+        {
+            control.set_retained_payload_bytes(bytes);
+        }
+    }
+
+    #[cfg(test)]
+    fn has_blocking_controls(&self) -> bool {
+        !self
+            .test_state
+            .blocking_controls
+            .lock()
+            .expect("blocking control queue")
+            .is_empty()
     }
 
     #[cfg(test)]
@@ -980,14 +1230,21 @@ impl TerminalSnapshotState {
         if !sender_is_root {
             augment_coordinator_project(&mut project_paths, &requester.identity)?;
         }
-        let route = run_blocking_with_deadline(deadline, &permit, &audit, move || {
-            crate::config::teams::verify_terminal_snapshot_route(
-                std::path::Path::new(&sender_cwd),
-                sender_is_root,
-                &target,
-                &project_paths,
-            )
-        })
+        let route = run_blocking_with_deadline(
+            self,
+            TerminalSnapshotBlockingStage::RouteVerification,
+            deadline,
+            &permit,
+            &audit,
+            move || {
+                crate::config::teams::verify_terminal_snapshot_route(
+                    std::path::Path::new(&sender_cwd),
+                    sender_is_root,
+                    &target,
+                    &project_paths,
+                )
+            },
+        )
         .await?
         .map_err(|_| TerminalSnapshotReasonCode::NotAuthorized)?;
         if !same_authority(&requester.identity, &route.sender) {
@@ -1013,15 +1270,25 @@ impl TerminalSnapshotState {
         self.test_state
             .target_route_lookups
             .fetch_add(1, Ordering::SeqCst);
-        let proofs = run_blocking_with_deadline(deadline, &permit, &audit, move || {
-            PtyManager::snapshot_route_proofs(&pty_manager, &ids)
-        })
+        let proofs = run_blocking_with_deadline(
+            self,
+            TerminalSnapshotBlockingStage::RouteProofs,
+            deadline,
+            &permit,
+            &audit,
+            move || PtyManager::snapshot_route_proofs(&pty_manager, &ids),
+        )
         .await??;
         let target_root = route.target.replica_root.clone();
         let target_identity = route.target.replica_identity.clone();
-        let selected = run_blocking_with_deadline(deadline, &permit, &audit, move || {
-            select_target_session(facts, proofs, &target_root, &target_identity)
-        })
+        let selected = run_blocking_with_deadline(
+            self,
+            TerminalSnapshotBlockingStage::SessionSelection,
+            deadline,
+            &permit,
+            &audit,
+            move || select_target_session(facts, proofs, &target_root, &target_identity),
+        )
         .await??;
         if context.purge.blocks_session(selected.fact.id) {
             return Err(TerminalSnapshotReasonCode::SnapshotUnavailable);
@@ -1035,13 +1302,20 @@ impl TerminalSnapshotState {
         let capture_kind = selected.fact.backend_kind;
         let capture_cwd = selected.cwd_identity.clone();
         let capture_replica = route.target.replica_identity.clone();
-        let selected = run_blocking_with_deadline(deadline, &permit, &audit, move || {
-            let read =
-                selected
-                    .proof
-                    .capture_verified(capture_kind, &capture_cwd, &capture_replica);
-            (selected, read)
-        })
+        let selected = run_blocking_with_deadline(
+            self,
+            TerminalSnapshotBlockingStage::Capture,
+            deadline,
+            &permit,
+            &audit,
+            move || {
+                let read =
+                    selected
+                        .proof
+                        .capture_verified(capture_kind, &capture_cwd, &capture_replica);
+                (selected, read)
+            },
+        )
         .await?;
         let (selected, model) = match selected {
             (selected, TerminalScreenRead::Captured(model)) => (selected, model),
@@ -1059,8 +1333,12 @@ impl TerminalSnapshotState {
         let request_id = request.request_id.to_string();
         let format = request.format;
         let model_for_build = Arc::clone(&model);
+        let payload_stage = match format {
+            TerminalSnapshotFormat::Json => TerminalSnapshotBlockingStage::JsonPayload,
+            TerminalSnapshotFormat::Png => TerminalSnapshotBlockingStage::PngPayload,
+        };
         let (payload, payload_bytes) =
-            run_blocking_with_deadline(deadline, &permit, &audit, move || {
+            run_blocking_with_deadline(self, payload_stage, deadline, &permit, &audit, move || {
                 let payload = build_payload(
                     format,
                     request_id,
@@ -1380,9 +1658,19 @@ impl TerminalSnapshotFinalization {
         &self,
         payload: PreparedSnapshotPayload,
     ) -> Result<Vec<u8>, TerminalSnapshotReasonCode> {
-        run_blocking_with_deadline(self.deadline, &self.permit, &self.audit, move || {
-            payload.encode_api().map_err(map_envelope_error)
-        })
+        #[cfg(test)]
+        self.state.mark_blocking_payload_retention(
+            TerminalSnapshotBlockingStage::ApiEnvelope,
+            payload.retained_content_bytes(),
+        );
+        run_blocking_with_deadline(
+            &self.state,
+            TerminalSnapshotBlockingStage::ApiEnvelope,
+            self.deadline,
+            &self.permit,
+            &self.audit,
+            move || payload.encode_api().map_err(map_envelope_error),
+        )
         .await?
     }
 
@@ -1393,11 +1681,23 @@ impl TerminalSnapshotFinalization {
         confirmation_tag: String,
         expires_at: String,
     ) -> Result<Vec<u8>, TerminalSnapshotReasonCode> {
-        run_blocking_with_deadline(self.deadline, &self.permit, &self.audit, move || {
-            payload
-                .encode_host(&request_id, &confirmation_tag, &expires_at)
-                .map_err(map_envelope_error)
-        })
+        #[cfg(test)]
+        self.state.mark_blocking_payload_retention(
+            TerminalSnapshotBlockingStage::HostEnvelope,
+            payload.retained_content_bytes(),
+        );
+        run_blocking_with_deadline(
+            &self.state,
+            TerminalSnapshotBlockingStage::HostEnvelope,
+            self.deadline,
+            &self.permit,
+            &self.audit,
+            move || {
+                payload
+                    .encode_host(&request_id, &confirmation_tag, &expires_at)
+                    .map_err(map_envelope_error)
+            },
+        )
         .await?
     }
 
@@ -1520,14 +1820,21 @@ async fn final_revalidate_async(
         augment_coordinator_project(&mut project_paths, &requester.identity)
             .map_err(|_| TerminalSnapshotReasonCode::AuthorityChanged)?;
     }
-    let fresh_route = run_blocking_with_deadline(deadline, permit, audit, move || {
-        crate::config::teams::verify_terminal_snapshot_route(
-            std::path::Path::new(&sender_cwd),
-            sender_is_root,
-            &target_fqn,
-            &project_paths,
-        )
-    })
+    let fresh_route = run_blocking_with_deadline(
+        state,
+        TerminalSnapshotBlockingStage::FinalVerification,
+        deadline,
+        permit,
+        audit,
+        move || {
+            crate::config::teams::verify_terminal_snapshot_route(
+                std::path::Path::new(&sender_cwd),
+                sender_is_root,
+                &target_fqn,
+                &project_paths,
+            )
+        },
+    )
     .await?
     .map_err(|_| TerminalSnapshotReasonCode::AuthorityChanged)?;
     if !same_authority(&requester.identity, &fresh_route.sender)
@@ -1743,6 +2050,8 @@ where
 }
 
 async fn run_blocking_with_deadline<F, T>(
+    state: &TerminalSnapshotState,
+    stage: TerminalSnapshotBlockingStage,
     deadline: Instant,
     permit: &RequesterSnapshotPermit,
     audit: &TerminalSnapshotAuditGuard,
@@ -1752,16 +2061,61 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
+    #[cfg(test)]
+    let control = state.take_blocking_control(stage);
+    #[cfg(not(test))]
+    let _ = (state, stage);
+
     let permit = permit.clone();
     let audit = audit.clone();
-    let handle = tokio::task::spawn_blocking(move || {
+    #[cfg(test)]
+    let worker_control = control.clone();
+    #[cfg(test)]
+    let completion_control = control.clone();
+    #[cfg(test)]
+    let mut handle = tokio::task::spawn_blocking(move || {
+        let outcome = crate::logging::catch_payload_unwind(move || {
+            let _permit = permit;
+            let _audit = audit;
+            if let Some(control) = worker_control {
+                control.enter_worker();
+            }
+            operation()
+        });
+        TerminalSnapshotTestTaskOutput {
+            outcome: Some(outcome),
+            control: completion_control,
+        }
+    });
+    #[cfg(not(test))]
+    let mut handle = tokio::task::spawn_blocking(move || {
         crate::logging::catch_payload_unwind(move || {
             let _permit = permit;
             let _audit = audit;
             operation()
         })
     });
-    let joined = await_deadline(deadline, handle).await?;
+
+    #[cfg(test)]
+    let joined = if let Some(control) = control {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        tokio::select! {
+            joined = &mut handle => joined,
+            _ = tokio::time::sleep(remaining) => {
+                return Err(TerminalSnapshotReasonCode::SnapshotTimeout);
+            }
+            _ = control.deadline_expired() => {
+                return Err(TerminalSnapshotReasonCode::SnapshotTimeout);
+            }
+        }
+    } else {
+        await_deadline(deadline, &mut handle).await?
+    };
+    #[cfg(not(test))]
+    let joined = await_deadline(deadline, &mut handle).await?;
+    #[cfg(test)]
+    let joined = joined.map(TerminalSnapshotTestTaskOutput::into_outcome);
+
     match crate::logging::collapse_payload_task(joined) {
         Ok(value) => Ok(value),
         Err(_) => {
@@ -2106,29 +2460,35 @@ mod tests {
         let permit = state.admit_requester("requester".to_string()).unwrap();
         let audit =
             TerminalSnapshotAuditGuard::pre_admission(TerminalSnapshotSourcePlane::ContainerApi);
-        let (started_tx, started_rx) = std::sync::mpsc::channel();
-        let (release_tx, release_rx) = std::sync::mpsc::channel();
-        let deadline = Instant::now() + Duration::from_millis(20);
-        let result = run_blocking_with_deadline(deadline, &permit, &audit, move || {
-            started_tx.send(()).unwrap();
-            release_rx.recv().unwrap();
-        })
-        .await;
+        let control = TerminalSnapshotBlockingControl::new(None);
+        state.install_blocking_control(
+            TerminalSnapshotBlockingStage::TestResourceRetention,
+            Arc::clone(&control),
+        );
+        let task_state = Arc::clone(&state);
+        let task = tokio::spawn(async move {
+            let result = run_blocking_with_deadline(
+                &task_state,
+                TerminalSnapshotBlockingStage::TestResourceRetention,
+                Instant::now() + Duration::from_secs(60),
+                &permit,
+                &audit,
+                || (),
+            )
+            .await;
+            drop(permit);
+            result
+        });
+        control.wait_until_entered();
+        control.expire_deadline();
         assert!(matches!(
-            result,
+            task.await.expect("controlled blocking waiter"),
             Err(TerminalSnapshotReasonCode::SnapshotTimeout)
         ));
-        started_rx.recv().unwrap();
-        drop(permit);
         assert!(state.admit_requester("requester".to_string()).is_err());
-        release_tx.send(()).unwrap();
-        for _ in 0..50 {
-            if state.admit_requester("requester".to_string()).is_ok() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        panic!("blocking task did not release the retained limiter permit");
+        control.release();
+        control.wait_until_completed();
+        assert!(state.admit_requester("requester".to_string()).is_ok());
     }
 
     #[test]
