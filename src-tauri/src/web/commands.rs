@@ -1135,8 +1135,7 @@ mod tests {
     fn broadcast_all_r_sends_to_managed_websocket_broadcaster() {
         let broadcaster = WsBroadcaster::new();
         let mut receiver = broadcaster.subscribe();
-        let app = tauri::Builder::default()
-            .any_thread()
+        let app = crate::test_app_builder()
             .manage(broadcaster)
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build test app");
@@ -1157,8 +1156,7 @@ mod tests {
         let managed = WsBroadcaster::new();
         let explicit = WsBroadcaster::new();
         let mut receiver = explicit.subscribe();
-        let app = tauri::Builder::default()
-            .any_thread()
+        let app = crate::test_app_builder()
             .manage(managed)
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build test app");
@@ -1176,8 +1174,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_project_groups_web_dispatch_broadcasts_saved_config() {
-        let app = tauri::Builder::default()
-            .any_thread()
+        let app = crate::test_app_builder()
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build test app");
         let app_handle = app.handle().clone();
@@ -1250,8 +1247,7 @@ mod tests {
     /// Build a minimal `WsState` backed by `settings`, plus a broadcast receiver
     /// for asserting web events emitted during dispatch.
     fn ws_state_for(settings: AppSettings) -> (WsState, tokio::sync::mpsc::Receiver<WsOutMsg>) {
-        let app = tauri::Builder::default()
-            .any_thread()
+        let app = crate::test_app_builder()
             .manage(crate::session::warnings::new_session_warning_state())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build test app");

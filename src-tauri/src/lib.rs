@@ -47,6 +47,18 @@ use voice::tracker::{VoiceTracker, VoiceTrackingState};
 use web::auth::WebAccessToken;
 use web::broadcast::WsBroadcaster;
 
+#[cfg(test)]
+pub(crate) fn test_app_builder() -> tauri::Builder<tauri::Wry> {
+    #[cfg(any(windows, target_os = "linux"))]
+    {
+        tauri::Builder::default().any_thread()
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        tauri::Builder::default()
+    }
+}
+
 pub(crate) fn shutdown_persistence_allowed(
     selection_persistence_safe: bool,
     container_cleanup_terminal: bool,
@@ -3241,8 +3253,7 @@ mod tests {
 
     #[test]
     fn web_and_api_server_handles_can_be_managed_together() {
-        let _app = tauri::Builder::default()
-            .any_thread()
+        let _app = crate::test_app_builder()
             .manage(WebServerHandle::default())
             .manage(ApiServerHandle::default())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))

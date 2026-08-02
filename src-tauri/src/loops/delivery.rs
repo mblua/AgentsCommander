@@ -560,8 +560,7 @@ mod tests {
     }
 
     fn make_inject_test_app(session_mgr: Arc<tokio::sync::RwLock<SessionManager>>) -> tauri::App {
-        let app = tauri::Builder::default()
-            .any_thread()
+        let app = crate::test_app_builder()
             .manage(Arc::clone(&session_mgr))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build inject test app");
