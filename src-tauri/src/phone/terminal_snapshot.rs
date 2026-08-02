@@ -465,6 +465,10 @@ async fn process_claimed<R: tauri::Runtime>(
     filename_request_id: String,
     ingress: tokio::sync::OwnedSemaphorePermit,
 ) {
+    #[cfg(test)]
+    snapshot_state.run_host_cancellation_hook(
+        crate::pty::terminal_snapshot::TerminalSnapshotHostCancellationStage::Processing,
+    );
     let read = crate::path_identity::read_bounded_regular(&processing, MAX_REQUEST_BYTES);
     let (bytes, identity) = match read {
         Ok(value) if crate::path_identity::same_object(&claimed, &value.1) => value,
@@ -654,6 +658,10 @@ async fn process_claimed<R: tauri::Runtime>(
             response_expires_at,
         )
         .await;
+    #[cfg(test)]
+    snapshot_state.run_host_cancellation_hook(
+        crate::pty::terminal_snapshot::TerminalSnapshotHostCancellationStage::ResponseBytesReady,
+    );
     let response_directory_for_publish = response_directory.clone();
     let state_for_publish = Arc::clone(&snapshot_state);
     let confirmation_tag = request.confirmation_tag.clone();
@@ -761,6 +769,10 @@ fn publish_host_outcome(
     confirmation_tag: &str,
     outcome: Result<Vec<u8>, TerminalSnapshotReasonCode>,
 ) -> Result<(), TerminalSnapshotReasonCode> {
+    #[cfg(test)]
+    state.run_host_cancellation_hook(
+        crate::pty::terminal_snapshot::TerminalSnapshotHostCancellationStage::BeforePublish,
+    );
     match outcome {
         Ok(bytes) => publish_response_bytes(state, response_directory, request_id, &bytes),
         Err(reason) => publish_trusted_failure(

@@ -54,6 +54,14 @@ enum TerminalSnapshotBlockingStage {
 type TerminalSnapshotTestHook = Box<dyn FnOnce() + Send + 'static>;
 
 #[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum TerminalSnapshotHostCancellationStage {
+    Processing,
+    ResponseBytesReady,
+    BeforePublish,
+}
+
+#[cfg(test)]
 #[derive(Default)]
 struct TerminalSnapshotBlockingControlState {
     entered: bool,
@@ -333,6 +341,9 @@ struct TerminalSnapshotTestState {
     target_route_lookups: std::sync::atomic::AtomicUsize,
     api_success_handoffs: std::sync::atomic::AtomicUsize,
     host_before_final_revalidation: Mutex<Option<TerminalSnapshotTestHook>>,
+    host_cancellation_hooks:
+        Mutex<HashMap<TerminalSnapshotHostCancellationStage, VecDeque<TerminalSnapshotTestHook>>>,
+    host_finalizer_controls: Mutex<VecDeque<Arc<TerminalSnapshotHostFinalizerControl>>>,
     api_before_capture: Mutex<Option<TerminalSnapshotTestHook>>,
     api_after_response_bytes: Mutex<Option<TerminalSnapshotTestHook>>,
     api_before_final_binding: Mutex<Option<TerminalSnapshotTestHook>>,
@@ -892,6 +903,45 @@ impl TerminalSnapshotState {
             .lock()
             .expect("blocking control queue")
             .is_empty()
+            || !self
+                .test_state
+                .host_cancellation_hooks
+                .lock()
+                .expect("host cancellation hook queue")
+                .is_empty()
+            || !self
+                .test_state
+                .host_finalizer_controls
+                .lock()
+                .expect("host finalizer control queue")
+                .is_empty()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_host_cancellation_hook(
+        &self,
+        stage: TerminalSnapshotHostCancellationStage,
+        hook: impl FnOnce() + Send + 'static,
+    ) {
+        self.test_state
+            .host_cancellation_hooks
+            .lock()
+            .expect("host cancellation hook queue")
+            .entry(stage)
+            .or_default()
+            .push_back(Box::new(hook));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_next_host_finalizer_control(
+        &self,
+        control: Arc<TerminalSnapshotHostFinalizerControl>,
+    ) {
+        self.test_state
+            .host_finalizer_controls
+            .lock()
+            .expect("host finalizer control queue")
+            .push_back(control);
     }
 
     #[cfg(test)]
@@ -965,6 +1015,36 @@ impl TerminalSnapshotState {
         if let Some(hook) = hook {
             hook();
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn run_host_cancellation_hook(&self, stage: TerminalSnapshotHostCancellationStage) {
+        let hook = {
+            let mut hooks = self
+                .test_state
+                .host_cancellation_hooks
+                .lock()
+                .expect("host cancellation hook queue");
+            let hook = hooks.get_mut(&stage).and_then(VecDeque::pop_front);
+            if hooks.get(&stage).is_some_and(VecDeque::is_empty) {
+                hooks.remove(&stage);
+            }
+            hook
+        };
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    #[cfg(test)]
+    fn take_next_host_finalizer_control(
+        &self,
+    ) -> Option<Arc<TerminalSnapshotHostFinalizerControl>> {
+        self.test_state
+            .host_finalizer_controls
+            .lock()
+            .expect("host finalizer control queue")
+            .pop_front()
     }
 
     #[cfg(test)]
@@ -1490,7 +1570,11 @@ impl TerminalSnapshotState {
                 deadline,
                 host_wall_deadline,
                 #[cfg(test)]
-                host_finalizer_control: None,
+                host_finalizer_control: if source_plane == TerminalSnapshotSourcePlane::HostCli {
+                    self.take_next_host_finalizer_control()
+                } else {
+                    None
+                },
             },
         })
     }
