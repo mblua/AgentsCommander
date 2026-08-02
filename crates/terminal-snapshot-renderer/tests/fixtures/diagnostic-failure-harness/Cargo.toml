@@ -1,0 +1,16 @@
+[package]
+name = "terminal-snapshot-diagnostic-failure-harness"
+version = "0.0.0"
+edition = "2021"
+publish = false
+autotests = false
+
+[workspace]
+
+[dependencies]
+terminal-snapshot-renderer = { path = "../../.." }
+tokio = { version = "=1.51.0", features = ["macros", "rt-multi-thread"] }
+
+[[test]]
+name = "diagnostic_failures"
+path = "failures.rs"
