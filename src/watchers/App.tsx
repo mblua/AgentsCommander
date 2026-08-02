@@ -49,8 +49,26 @@ import "./styles/watchers.css";
  *  cross-window settings event to hang a refresh on, so without a poll those five freeze at
  *  their mount values. Cadence copies the Resource Monitor's written precedent
  *  (`ActionBar.tsx:81-87`). */
-const POLL_FOCUSED_MS = 10_000;
-const POLL_UNFOCUSED_MS = 15_000;
+export const POLL_FOCUSED_MS = 10_000;
+export const POLL_UNFOCUSED_MS = 15_000;
+
+/** How long one activity round may take before it is abandoned.
+ *
+ *  #1188: a `finally` on the round is not enough on its own, because a promise that never
+ *  settles never reaches `finally` either. This deadline is what turns "never settles" into
+ *  "settles as a failure", and every re-arm below depends on it.
+ *
+ *  8s against a command measured at 13ms in the worst stressed case, so no plausible fan-out
+ *  makes it fire on a merely slow round. It sits under POLL_FOCUSED_MS purely as a service
+ *  level: a hung round is reported within one period instead of after several. It is NOT
+ *  what stops rounds overlapping. Nothing can overlap here at any value, because the chain
+ *  arms the next round only once this one has ended. Exported for the invariant test. */
+export const POLL_TIMEOUT_MS = 8_000;
+
+/** What the window says when a round is abandoned. Exported so the regression test asserts
+ *  the exact string the window paints, rather than a substring that could drift. */
+export const POLL_TIMEOUT_MESSAGE =
+  "Activity refresh timed out. The list may be out of date; retrying.";
 
 /** How long a move or resize settles before the rect is persisted. */
 const GEOMETRY_SAVE_DEBOUNCE_MS = 500;
@@ -119,6 +137,35 @@ export async function registerAll(
   } finally {
     if (!handedOver) release();
   }
+}
+
+/**
+ * Resolve with `work`, or reject with `message` once `ms` have elapsed, whichever is first.
+ *
+ * The rejection is the whole point. `work` is a Tauri `invoke`, nothing can cancel it, and a
+ * lost reply leaves it pending forever; #1188 is that promise taking the only re-arm of the
+ * poll down with it. Racing does not stop the call, it stops the WAIT, which is what every
+ * `finally` downstream needs in order to run at all.
+ *
+ * `Promise.race` keeps a handler attached to `work`, so a late rejection of an abandoned call
+ * is absorbed here instead of escaping as an unhandled one. The timer is cleared on both
+ * paths, so a healthy round leaves nothing armed.
+ *
+ * Exported for its own test: the failure it exists for needs a promise that never settles,
+ * which no real IPC call produces on demand.
+ */
+export function withDeadline<T>(
+  work: Promise<T>,
+  ms: number,
+  message: string
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([work, deadline]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
 }
 
 const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
@@ -292,8 +339,19 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
     const ids = scopeIds();
     const limit = scopeLimit();
     try {
+      // #1188: the deadline goes INSIDE the map, not around the `Promise.all`. The two read
+      // the same and differ only in what a lost reply keeps alive: an aggregate with one
+      // element still pending holds its values list, and every already-resolved sibling
+      // snapshot in it, reachable for the life of the window. Deadlining each element makes
+      // every element settle, so the aggregate settles and releases them.
       const fetched = await Promise.all(
-        ids.map((id) => PtyAPI.getWatcherActivity(id, limit))
+        ids.map((id) =>
+          withDeadline(
+            PtyAPI.getWatcherActivity(id, limit),
+            POLL_TIMEOUT_MS,
+            POLL_TIMEOUT_MESSAGE
+          )
+        )
       );
       if (disposed || request !== requestCounter) return;
       setSnapshots(fetched);
@@ -376,6 +434,34 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
     void refresh();
   });
 
+  /**
+   * One poll round, re-armed on every path.
+   *
+   * #1188: the re-arm used to live inside `refresh().then()`, so any outcome that was not a
+   * fulfilment ended the chain for the life of the window, and the reported outcome was no
+   * outcome at all. It is in `finally` now, and the fetch has a deadline (`withDeadline`),
+   * because `finally` does not run for a promise that never settles either. The re-arm is
+   * the FIRST statement in the `finally`: nothing may ever come between a round and the next
+   * one, and `settingsStore.refresh()` is best-effort by construction.
+   */
+  const runPollRound = async () => {
+    try {
+      await refresh();
+    } catch (err) {
+      // `refresh` swallows its own failures, so this is unreachable today. It is the belt for
+      // anything later added outside its try: an escape here would end the chain again.
+      console.error("[watchers] poll round failed:", err);
+    } finally {
+      if (!disposed) {
+        schedulePoll();
+        // The poll also refreshes the settings store, so a watcher saved from the modal turns
+        // the "no watcher reaches this agent" state into "configured and waiting" without the
+        // user reopening the window. There is no cross-window settings event to use instead.
+        settingsStore.refresh();
+      }
+    }
+  };
+
   const schedulePoll = () => {
     if (disposed) return;
     if (pollTimer) clearTimeout(pollTimer);
@@ -384,14 +470,7 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
       pollTimer = null;
       // Chained rather than fired: a round that outlives its own period would otherwise stack
       // against a per-session mutex, and in "All sessions" one round is already N calls.
-      void refresh().then(() => {
-        if (disposed) return;
-        // The poll also refreshes the settings store, so a watcher saved from the modal turns
-        // the "no watcher reaches this agent" state into "configured and waiting" without the
-        // user reopening the window. There is no cross-window settings event to use instead.
-        settingsStore.refresh();
-        schedulePoll();
-      });
+      void runPollRound();
     }, delay);
   };
 
