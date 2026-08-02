@@ -5,8 +5,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use terminal_snapshot_renderer::{
-    encode_api_success_payload, encode_host_success_payload, render_png,
-    terminal_snapshot_payload_bytes, TerminalScreenModel, TerminalSnapshotDocument,
+    encode_api_json_success_from_model, encode_api_success_payload,
+    encode_host_json_success_from_model, encode_host_success_payload, render_png,
+    terminal_snapshot_json_bytes_from_model, terminal_snapshot_payload_bytes, TerminalScreenModel,
     TerminalSnapshotFormat, TerminalSnapshotPayload, TerminalSnapshotReasonCode,
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -104,13 +105,80 @@ pub(crate) struct TerminalSnapshotServiceContext {
     pub purge: Arc<crate::session::purge_guard::PurgeGuard>,
 }
 
+pub(crate) enum PreparedSnapshotPayload {
+    Json {
+        request_id: String,
+        requester: String,
+        target: String,
+        model: Arc<TerminalScreenModel>,
+    },
+    Png(Box<TerminalSnapshotPayload>),
+}
+
+impl PreparedSnapshotPayload {
+    fn payload_bytes(&self) -> Result<u64, terminal_snapshot_renderer::ProtocolError> {
+        match self {
+            Self::Json {
+                request_id,
+                requester,
+                target,
+                model,
+            } => terminal_snapshot_json_bytes_from_model(request_id, requester, target, model),
+            Self::Png(payload) => terminal_snapshot_payload_bytes(payload),
+        }
+    }
+
+    fn encode_api(&self) -> Result<Vec<u8>, terminal_snapshot_renderer::ProtocolError> {
+        match self {
+            Self::Json {
+                request_id,
+                requester,
+                target,
+                model,
+            } => encode_api_json_success_from_model(request_id, requester, target, model),
+            Self::Png(payload) => encode_api_success_payload(payload),
+        }
+    }
+
+    fn encode_host(
+        &self,
+        request_id: &str,
+        confirmation_tag: &str,
+        expires_at: &str,
+    ) -> Result<Vec<u8>, terminal_snapshot_renderer::ProtocolError> {
+        match self {
+            Self::Json {
+                request_id: payload_request_id,
+                requester,
+                target,
+                model,
+            } => {
+                if payload_request_id != request_id {
+                    return Err(terminal_snapshot_renderer::ProtocolError::Invalid);
+                }
+                encode_host_json_success_from_model(
+                    request_id,
+                    confirmation_tag,
+                    expires_at,
+                    requester,
+                    target,
+                    model,
+                )
+            }
+            Self::Png(payload) => {
+                encode_host_success_payload(request_id, confirmation_tag, expires_at, payload)
+            }
+        }
+    }
+}
+
 pub(crate) struct TerminalSnapshotPrepared {
-    payload: TerminalSnapshotPayload,
+    payload: PreparedSnapshotPayload,
     finalization: TerminalSnapshotFinalization,
 }
 
 impl TerminalSnapshotPrepared {
-    pub(crate) fn into_parts(self) -> (TerminalSnapshotPayload, TerminalSnapshotFinalization) {
+    pub(crate) fn into_parts(self) -> (PreparedSnapshotPayload, TerminalSnapshotFinalization) {
         (self.payload, self.finalization)
     }
 }
@@ -869,15 +937,14 @@ impl TerminalSnapshotState {
                     request_id,
                     requester_fqn,
                     target_fqn,
-                    &model_for_build,
+                    model_for_build,
                 )?;
-                let payload_bytes =
-                    terminal_snapshot_payload_bytes(&payload).map_err(|error| match error {
-                        terminal_snapshot_renderer::ProtocolError::TooLarge => {
-                            TerminalSnapshotReasonCode::SnapshotTooLarge
-                        }
-                        _ => TerminalSnapshotReasonCode::Internal,
-                    })?;
+                let payload_bytes = payload.payload_bytes().map_err(|error| match error {
+                    terminal_snapshot_renderer::ProtocolError::TooLarge => {
+                        TerminalSnapshotReasonCode::SnapshotTooLarge
+                    }
+                    _ => TerminalSnapshotReasonCode::Internal,
+                })?;
                 Ok::<_, TerminalSnapshotReasonCode>((payload, payload_bytes))
             })
             .await??;
@@ -1135,29 +1202,38 @@ fn build_payload(
     request_id: String,
     requester: String,
     target: String,
-    model: &TerminalScreenModel,
-) -> Result<TerminalSnapshotPayload, TerminalSnapshotReasonCode> {
+    model: Arc<TerminalScreenModel>,
+) -> Result<PreparedSnapshotPayload, TerminalSnapshotReasonCode> {
     match format {
         TerminalSnapshotFormat::Json => {
-            let document =
-                TerminalSnapshotDocument::from_model(request_id, requester, target, model);
-            document
-                .validate()
-                .map_err(|_| TerminalSnapshotReasonCode::Internal)?;
-            Ok(TerminalSnapshotPayload::Json { snapshot: document })
+            terminal_snapshot_json_bytes_from_model(&request_id, &requester, &target, &model)
+                .map_err(|error| match error {
+                    terminal_snapshot_renderer::ProtocolError::TooLarge => {
+                        TerminalSnapshotReasonCode::SnapshotTooLarge
+                    }
+                    _ => TerminalSnapshotReasonCode::Internal,
+                })?;
+            Ok(PreparedSnapshotPayload::Json {
+                request_id,
+                requester,
+                target,
+                model,
+            })
         }
         TerminalSnapshotFormat::Png => {
-            let rendered = render_png(model).map_err(|error| match error {
+            let rendered = render_png(&model).map_err(|error| match error {
                 terminal_snapshot_renderer::RenderError::TooLarge => {
                     TerminalSnapshotReasonCode::SnapshotTooLarge
                 }
                 _ => TerminalSnapshotReasonCode::RenderFailed,
             })?;
-            let metadata = rendered.metadata(request_id, requester, target, model);
-            Ok(TerminalSnapshotPayload::Png {
-                metadata,
-                png: rendered.bytes,
-            })
+            let metadata = rendered.metadata(request_id, requester, target, &model);
+            Ok(PreparedSnapshotPayload::Png(Box::new(
+                TerminalSnapshotPayload::Png {
+                    metadata,
+                    png: rendered.bytes,
+                },
+            )))
         }
     }
 }
@@ -1165,23 +1241,24 @@ fn build_payload(
 impl TerminalSnapshotFinalization {
     pub(crate) async fn build_api_response(
         &self,
-        payload: TerminalSnapshotPayload,
+        payload: PreparedSnapshotPayload,
     ) -> Result<Vec<u8>, TerminalSnapshotReasonCode> {
         run_blocking_with_deadline(self.deadline, &self.permit, &self.audit, move || {
-            encode_api_success_payload(&payload).map_err(map_envelope_error)
+            payload.encode_api().map_err(map_envelope_error)
         })
         .await?
     }
 
     pub(crate) async fn build_host_response(
         &self,
-        payload: TerminalSnapshotPayload,
+        payload: PreparedSnapshotPayload,
         request_id: String,
         confirmation_tag: String,
         expires_at: String,
     ) -> Result<Vec<u8>, TerminalSnapshotReasonCode> {
         run_blocking_with_deadline(self.deadline, &self.permit, &self.audit, move || {
-            encode_host_success_payload(&request_id, &confirmation_tag, &expires_at, &payload)
+            payload
+                .encode_host(&request_id, &confirmation_tag, &expires_at)
                 .map_err(map_envelope_error)
         })
         .await?
@@ -1693,6 +1770,8 @@ impl From<crate::errors::AppError> for TerminalSnapshotReasonCode {
 
 #[cfg(test)]
 mod acceptance_tests;
+#[cfg(test)]
+mod resource_tests;
 
 #[cfg(test)]
 mod tests {

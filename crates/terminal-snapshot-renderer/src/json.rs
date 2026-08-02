@@ -6,10 +6,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::ser::{CharEscape, Formatter};
 
 use crate::protocol::{
-    ProtocolError, TerminalSnapshotApiError, TerminalSnapshotApiSuccess, TerminalSnapshotDocument,
-    TerminalSnapshotFormat, TerminalSnapshotHostResponse, TerminalSnapshotPayload,
-    TerminalSnapshotPngMetadata, TerminalSnapshotReasonCode, API_VERSION, MAX_BASE64_TEXT_BYTES,
-    MAX_JSON_DEPTH, MAX_PNG_BYTES,
+    validate_requester_identity, validate_uuid, validate_wg_fqn, ProtocolError, TerminalScreen,
+    TerminalScreenModel, TerminalSnapshotApiError, TerminalSnapshotApiSuccess,
+    TerminalSnapshotDocument, TerminalSnapshotFidelity, TerminalSnapshotFormat,
+    TerminalSnapshotHostResponse, TerminalSnapshotPayload, TerminalSnapshotPngMetadata,
+    TerminalSnapshotReasonCode, TerminalSnapshotSession, API_VERSION, MAX_BASE64_TEXT_BYTES,
+    MAX_JSON_BYTES, MAX_JSON_DEPTH, MAX_PNG_BYTES, SCHEMA_VERSION,
 };
 
 pub struct CappedWriter {
@@ -38,13 +40,24 @@ impl CappedWriter {
 
 impl Write for CappedWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let remaining = self.cap.saturating_sub(self.bytes.len());
-        if bytes.len() > remaining {
-            self.exceeded = true;
-            return Err(io::Error::new(
-                io::ErrorKind::WriteZero,
-                "terminal snapshot cap reached",
-            ));
+        let required = self
+            .bytes
+            .len()
+            .checked_add(bytes.len())
+            .filter(|required| *required <= self.cap)
+            .ok_or_else(|| {
+                self.exceeded = true;
+                io::Error::new(io::ErrorKind::WriteZero, "terminal snapshot cap reached")
+            })?;
+        if required > self.bytes.capacity() {
+            let doubled = self.bytes.capacity().max(1_024).saturating_mul(2);
+            let target = required.max(doubled.min(self.cap));
+            self.bytes
+                .try_reserve_exact(target.saturating_sub(self.bytes.len()))
+                .map_err(|_| {
+                    self.exceeded = true;
+                    io::Error::other("terminal snapshot allocation failed")
+                })?;
         }
         self.bytes.extend_from_slice(bytes);
         Ok(bytes.len())
@@ -335,18 +348,20 @@ pub fn decode_canonical_base64_png(text: &str) -> Result<Vec<u8>, ProtocolError>
         .and_then(|length| length.checked_sub(padding))
         .filter(|length| *length > 0 && *length <= MAX_PNG_BYTES)
         .ok_or(ProtocolError::TooLarge)?;
-    let mut decoded = Vec::new();
-    decoded
-        .try_reserve_exact(decoded_len)
-        .map_err(|_| ProtocolError::TooLarge)?;
+    let mut decoded = vec![0u8; decoded_len];
     let mut decoder = base64::read::DecoderReader::new(
         text.as_bytes(),
         &base64::engine::general_purpose::STANDARD,
     );
     decoder
-        .read_to_end(&mut decoded)
+        .read_exact(&mut decoded)
         .map_err(|_| ProtocolError::Invalid)?;
-    if decoded.len() != decoded_len {
+    let mut trailing = [0u8; 1];
+    if decoder
+        .read(&mut trailing)
+        .map_err(|_| ProtocolError::Invalid)?
+        != 0
+    {
         return Err(ProtocolError::Invalid);
     }
     Ok(decoded)
@@ -384,6 +399,104 @@ pub fn terminal_snapshot_payload_bytes(
             u64::try_from(png.len()).map_err(|_| ProtocolError::TooLarge)
         }
     }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BorrowedTerminalSnapshotDocument<'a> {
+    schema_version: u32,
+    request_id: &'a str,
+    captured_at: &'a str,
+    requester: &'a str,
+    target: &'a str,
+    session: &'a TerminalSnapshotSession,
+    screen: &'a TerminalScreen,
+    fidelity: &'a TerminalSnapshotFidelity,
+}
+
+fn borrowed_document<'a>(
+    request_id: &'a str,
+    requester: &'a str,
+    target: &'a str,
+    model: &'a TerminalScreenModel,
+) -> Result<BorrowedTerminalSnapshotDocument<'a>, ProtocolError> {
+    validate_uuid(request_id, Some(4))?;
+    validate_requester_identity(requester, true)?;
+    validate_wg_fqn(target)?;
+    model.validate()?;
+    Ok(BorrowedTerminalSnapshotDocument {
+        schema_version: SCHEMA_VERSION,
+        request_id,
+        captured_at: &model.captured_at,
+        requester,
+        target,
+        session: &model.session,
+        screen: &model.screen,
+        fidelity: &model.fidelity,
+    })
+}
+
+pub fn terminal_snapshot_json_bytes_from_model(
+    request_id: &str,
+    requester: &str,
+    target: &str,
+    model: &TerminalScreenModel,
+) -> Result<u64, ProtocolError> {
+    let document = borrowed_document(request_id, requester, target, model)?;
+    let mut writer = CountingWriter::new(MAX_JSON_BYTES);
+    serialize_ascii_into(&mut writer, &document)?;
+    u64::try_from(writer.len).map_err(|_| ProtocolError::TooLarge)
+}
+
+pub fn encode_api_json_success_from_model(
+    request_id: &str,
+    requester: &str,
+    target: &str,
+    model: &TerminalScreenModel,
+) -> Result<Vec<u8>, ProtocolError> {
+    let document = borrowed_document(request_id, requester, target, model)?;
+    let mut writer = CappedWriter::new(crate::protocol::MAX_TRANSPORT_BYTES);
+    writer
+        .write_all(b"{\"apiVersion\":\"1\",\"result\":{\"format\":\"json\",\"snapshot\":")
+        .map_err(|_| ProtocolError::TooLarge)?;
+    serialize_ascii_capped(&mut writer, &document)?;
+    writer
+        .write_all(b"}}")
+        .map_err(|_| ProtocolError::TooLarge)?;
+    writer.into_bytes()
+}
+
+pub fn encode_host_json_success_from_model(
+    request_id: &str,
+    confirmation_tag: &str,
+    expires_at: &str,
+    requester: &str,
+    target: &str,
+    model: &TerminalScreenModel,
+) -> Result<Vec<u8>, ProtocolError> {
+    validate_host_correlation(request_id, confirmation_tag, expires_at)?;
+    let document = borrowed_document(request_id, requester, target, model)?;
+    let mut writer = CappedWriter::new(crate::protocol::MAX_TRANSPORT_BYTES);
+    writer
+        .write_all(b"{\"apiVersion\":\"1\",\"requestId\":")
+        .map_err(|_| ProtocolError::TooLarge)?;
+    serialize_ascii_into(&mut writer, request_id)?;
+    writer
+        .write_all(b",\"confirmationTag\":")
+        .map_err(|_| ProtocolError::TooLarge)?;
+    serialize_ascii_into(&mut writer, confirmation_tag)?;
+    writer
+        .write_all(b",\"expiresAt\":")
+        .map_err(|_| ProtocolError::TooLarge)?;
+    serialize_ascii_into(&mut writer, expires_at)?;
+    writer
+        .write_all(b",\"result\":{\"format\":\"json\",\"snapshot\":")
+        .map_err(|_| ProtocolError::TooLarge)?;
+    serialize_ascii_capped(&mut writer, &document)?;
+    writer
+        .write_all(b"}}")
+        .map_err(|_| ProtocolError::TooLarge)?;
+    writer.into_bytes()
 }
 
 pub fn encode_api_success_payload(
@@ -868,7 +981,9 @@ mod tests {
 
     #[test]
     fn canonical_base64_round_trips_without_a_second_reencoding() {
-        assert_eq!(decode_canonical_base64_png("cG5n").unwrap(), b"png");
+        let decoded = decode_canonical_base64_png("cG5n").unwrap();
+        assert_eq!(decoded, b"png");
+        assert_eq!(decoded.capacity(), decoded.len());
         assert!(decode_canonical_base64_png("cG5n===").is_err());
         assert!(decode_canonical_base64_png("cG5=").is_err());
     }
@@ -879,6 +994,44 @@ mod tests {
             crate::protocol::MAX_JSON_BYTES,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn borrowed_model_encoding_is_byte_identical_without_a_screen_clone() {
+        let request_id = "00000000-0000-4000-8000-000000000116";
+        let requester = "project:wg-1-team/coordinator";
+        let target = "project:wg-1-team/member";
+        let confirmation_tag = "11".repeat(32);
+        let expires_at = "2026-07-31T03:31:00.123Z";
+        let model = fixture_model();
+        let owned = TerminalSnapshotPayload::Json {
+            snapshot: TerminalSnapshotDocument::from_model(
+                request_id.to_string(),
+                requester.to_string(),
+                target.to_string(),
+                &model,
+            ),
+        };
+        assert_eq!(
+            encode_api_json_success_from_model(request_id, requester, target, &model).unwrap(),
+            encode_api_success_payload(&owned).unwrap()
+        );
+        assert_eq!(
+            encode_host_json_success_from_model(
+                request_id,
+                &confirmation_tag,
+                expires_at,
+                requester,
+                target,
+                &model,
+            )
+            .unwrap(),
+            encode_host_success_payload(request_id, &confirmation_tag, expires_at, &owned).unwrap()
+        );
+        assert_eq!(
+            terminal_snapshot_json_bytes_from_model(request_id, requester, target, &model).unwrap(),
+            terminal_snapshot_payload_bytes(&owned).unwrap()
+        );
     }
 
     #[test]

@@ -14,6 +14,7 @@ pub const MAX_PIXELS: usize = 8_200_000;
 pub const MAX_RGB_BYTES: usize = 24_288_768;
 pub const MAX_JSON_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_PNG_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_PNG_DECODER_ALLOCATION_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_TRANSPORT_BYTES: usize = 24 * 1024 * 1024;
 pub const MAX_ERROR_BYTES: usize = 8 * 1024;
 pub const MAX_REQUEST_BYTES: usize = 8 * 1024;

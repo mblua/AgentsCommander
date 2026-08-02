@@ -2,10 +2,12 @@ use std::io::Cursor;
 
 use crc32fast::Hasher;
 
-use crate::protocol::{ProtocolError, TerminalSnapshotPngMetadata, MAX_PNG_BYTES, MAX_RGB_BYTES};
+use crate::protocol::{
+    ProtocolError, TerminalSnapshotPngMetadata, MAX_PNG_BYTES, MAX_PNG_DECODER_ALLOCATION_BYTES,
+    MAX_RGB_BYTES,
+};
 
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
-const DECODER_ALLOCATION_BUDGET: usize = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ValidatedPng {
@@ -134,7 +136,7 @@ pub fn validate_generated_png(
     let mut decoder = png::Decoder::new_with_limits(
         Cursor::new(bytes),
         png::Limits {
-            bytes: DECODER_ALLOCATION_BUDGET,
+            bytes: MAX_PNG_DECODER_ALLOCATION_BYTES,
         },
     );
     decoder.set_transformations(png::Transformations::IDENTITY);
