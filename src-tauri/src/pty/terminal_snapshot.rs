@@ -183,6 +183,120 @@ impl TerminalSnapshotBlockingControl {
 }
 
 #[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TerminalSnapshotHostFinalizerStage {
+    RevalidationEntry,
+    RouteVerification,
+    FinalDeadline,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct TerminalSnapshotHostFinalizerControlState {
+    entered: bool,
+    released: bool,
+    deadline_expired: bool,
+    retained_response_bytes: usize,
+}
+
+#[cfg(test)]
+pub(crate) struct TerminalSnapshotHostFinalizerControl {
+    stage: TerminalSnapshotHostFinalizerStage,
+    state: Mutex<TerminalSnapshotHostFinalizerControlState>,
+    changed: std::sync::Condvar,
+    panic_after_release: Option<String>,
+}
+
+#[cfg(test)]
+impl TerminalSnapshotHostFinalizerControl {
+    pub(crate) fn new(
+        stage: TerminalSnapshotHostFinalizerStage,
+        panic_after_release: Option<String>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            stage,
+            state: Mutex::new(TerminalSnapshotHostFinalizerControlState::default()),
+            changed: std::sync::Condvar::new(),
+            panic_after_release,
+        })
+    }
+
+    pub(crate) fn wait_until_entered(&self) {
+        let limit = Instant::now() + Duration::from_secs(60);
+        let mut state = self.state.lock().expect("host finalizer control state");
+        while !state.entered {
+            let remaining = limit.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "host finalizer did not reach its deterministic barrier"
+            );
+            let (next, timeout) = self
+                .changed
+                .wait_timeout(state, remaining)
+                .expect("host finalizer control wait");
+            state = next;
+            assert!(
+                !timeout.timed_out() || state.entered,
+                "host finalizer did not reach its deterministic barrier"
+            );
+        }
+    }
+
+    pub(crate) fn expire_deadline(&self) {
+        self.state
+            .lock()
+            .expect("host finalizer control state")
+            .deadline_expired = true;
+    }
+
+    pub(crate) fn release(&self) {
+        let mut state = self.state.lock().expect("host finalizer control state");
+        state.released = true;
+        self.changed.notify_all();
+    }
+
+    pub(crate) fn retained_response_bytes(&self) -> usize {
+        self.state
+            .lock()
+            .expect("host finalizer control state")
+            .retained_response_bytes
+    }
+
+    fn set_retained_response_bytes(&self, bytes: usize) {
+        self.state
+            .lock()
+            .expect("host finalizer control state")
+            .retained_response_bytes = bytes;
+    }
+
+    fn deadline_expired(&self) -> bool {
+        self.state
+            .lock()
+            .expect("host finalizer control state")
+            .deadline_expired
+    }
+
+    fn enter_stage(&self, stage: TerminalSnapshotHostFinalizerStage) {
+        if self.stage != stage {
+            return;
+        }
+        let mut state = self.state.lock().expect("host finalizer control state");
+        state.entered = true;
+        self.changed.notify_all();
+        while !state.released {
+            state = self
+                .changed
+                .wait(state)
+                .expect("host finalizer control release wait");
+        }
+        drop(state);
+        if let Some(payload) = self.panic_after_release.clone() {
+            std::panic::panic_any(payload);
+        }
+    }
+}
+
+#[cfg(test)]
 struct TerminalSnapshotTestTaskOutput<T> {
     outcome: Option<Result<T, crate::logging::PayloadPanic>>,
     control: Option<Arc<TerminalSnapshotBlockingControl>>,
@@ -447,6 +561,8 @@ pub(crate) struct TerminalSnapshotFinalization {
     audit: TerminalSnapshotAuditGuard,
     deadline: Instant,
     host_wall_deadline: Option<chrono::DateTime<chrono::Utc>>,
+    #[cfg(test)]
+    host_finalizer_control: Option<Arc<TerminalSnapshotHostFinalizerControl>>,
 }
 
 pub(crate) struct TerminalSnapshotDisclosure {
@@ -1373,6 +1489,8 @@ impl TerminalSnapshotState {
                 audit,
                 deadline,
                 host_wall_deadline,
+                #[cfg(test)]
+                host_finalizer_control: None,
             },
         })
     }
@@ -1654,6 +1772,21 @@ fn build_payload(
 }
 
 impl TerminalSnapshotFinalization {
+    #[cfg(test)]
+    pub(crate) fn install_host_finalizer_control(
+        &mut self,
+        control: Arc<TerminalSnapshotHostFinalizerControl>,
+    ) {
+        self.host_finalizer_control = Some(control);
+    }
+
+    #[cfg(test)]
+    fn run_host_finalizer_control(&self, stage: TerminalSnapshotHostFinalizerStage) {
+        if let Some(control) = self.host_finalizer_control.as_ref() {
+            control.enter_stage(stage);
+        }
+    }
+
     pub(crate) async fn build_api_response(
         &self,
         payload: PreparedSnapshotPayload,
@@ -1751,7 +1884,13 @@ impl TerminalSnapshotFinalization {
         ) -> Result<(), TerminalSnapshotReasonCode>,
     {
         #[cfg(test)]
+        if let Some(control) = self.host_finalizer_control.as_ref() {
+            control.set_retained_response_bytes(success_bytes.len());
+        }
+        #[cfg(test)]
         self.state.run_host_final_handoff_hook();
+        #[cfg(test)]
+        self.run_host_finalizer_control(TerminalSnapshotHostFinalizerStage::RevalidationEntry);
         let result =
             finalize_host_publication(success_bytes, final_revalidate_blocking(&self), publish);
         match result {
@@ -1862,13 +2001,12 @@ async fn final_revalidate_async(
 fn final_revalidate_blocking(
     finalization: &TerminalSnapshotFinalization,
 ) -> Result<(), TerminalSnapshotReasonCode> {
-    let state = &finalization.state;
     let context = &finalization.context;
     let manager = &finalization.manager;
     let requester = &finalization.requester;
     let route = &finalization.route;
     let selected = &finalization.selected;
-    ensure_before_deadline(finalization.deadline, &state.shutdown)?;
+    ensure_host_finalizer_before_deadline(finalization)?;
     let security = crate::config::settings::read_terminal_snapshot_security_settings_strict()
         .map_err(|_| TerminalSnapshotReasonCode::AuthorityChanged)?;
     let memory_enabled = context.settings.blocking_read().terminal_snapshots_enabled;
@@ -1885,6 +2023,8 @@ fn final_revalidate_blocking(
         augment_coordinator_project(&mut project_paths, &requester.identity)
             .map_err(|_| TerminalSnapshotReasonCode::AuthorityChanged)?;
     }
+    #[cfg(test)]
+    finalization.run_host_finalizer_control(TerminalSnapshotHostFinalizerStage::RouteVerification);
     let fresh_route = crate::config::teams::verify_terminal_snapshot_route(
         Path::new(&requester.fact.working_directory),
         requester.fact.is_root_agent,
@@ -1914,7 +2054,23 @@ fn final_revalidate_blocking(
     {
         return Err(TerminalSnapshotReasonCode::SnapshotTimeout);
     }
-    ensure_before_deadline(finalization.deadline, &state.shutdown)
+    #[cfg(test)]
+    finalization.run_host_finalizer_control(TerminalSnapshotHostFinalizerStage::FinalDeadline);
+    ensure_host_finalizer_before_deadline(finalization)
+}
+
+fn ensure_host_finalizer_before_deadline(
+    finalization: &TerminalSnapshotFinalization,
+) -> Result<(), TerminalSnapshotReasonCode> {
+    #[cfg(test)]
+    if finalization
+        .host_finalizer_control
+        .as_ref()
+        .is_some_and(|control| control.deadline_expired())
+    {
+        return Err(TerminalSnapshotReasonCode::SnapshotTimeout);
+    }
+    ensure_before_deadline(finalization.deadline, &finalization.state.shutdown)
 }
 
 fn map_envelope_error(
