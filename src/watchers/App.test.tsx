@@ -277,6 +277,52 @@ describe("the watcher activity window (#1171)", () => {
   });
 
   /**
+   * #1193. The two labels name each other's concept, so both renames have to hold at once:
+   * asserting all three strings in one test makes a half-applied swap -- which would leave
+   * two controls labelled AGENT -- fail. The assertions read the source casing because
+   * `text-transform: uppercase` is a paint-time rule jsdom does not apply to `textContent`.
+   */
+  it("labels the dropdown Agent and the chip group Coding-Agent", async () => {
+    const fake = transportWith(snapshot({ matches: [match()] }));
+    const rendered = renderWithFakeTransport(() => <WatchersApp initialSessionId="s1" />, fake);
+    try {
+      await waitFor(() =>
+        expect(rendered.root.querySelector('[data-ac-testid="watchers.table"]')).toBeTruthy()
+      );
+
+      const scope = rendered.root.querySelector<HTMLSelectElement>(
+        '[data-ac-testid="watchers.scope"]'
+      )!;
+      scope.value = "all";
+      scope.dispatchEvent(new Event("change", { bubbles: true }));
+
+      // The chip group only renders in All-agents scope.
+      await waitFor(() =>
+        expect(
+          rendered.root.querySelector('[data-ac-testid="watchers.filter.agent"]')
+        ).toBeTruthy()
+      );
+
+      // The dropdown is the control that selects among the user's agents.
+      expect(
+        scope.parentElement?.querySelector(".watchers-filter-label")?.textContent
+      ).toBe("Agent");
+      expect(
+        rendered.root.querySelector('[data-ac-testid="watchers.scope"] option[value="all"]')
+          ?.textContent
+      ).toBe("All agents");
+      // The chip group is the one that filters by the CLI behind the session.
+      expect(
+        rendered.root.querySelector(
+          '[data-ac-testid="watchers.filter.agent"] .watchers-filter-label'
+        )?.textContent
+      ).toBe("Coding-Agent");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  /**
    * #1171 test 79, the frontend half. The backend focuses the existing window and emits
    * `watchers_scope_request` instead of building a second one; what is left to prove here
    * is that the window actually changes scope when that event arrives.
