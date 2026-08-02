@@ -308,77 +308,6 @@ impl RetainedDirectory {
         }
     }
 
-    pub fn read_child_names(
-        &self,
-        maximum: usize,
-    ) -> Result<(Vec<std::ffi::OsString>, bool), String> {
-        #[cfg(unix)]
-        {
-            use std::os::fd::AsRawFd;
-            use std::os::unix::ffi::OsStringExt;
-
-            let current = std::ffi::CString::new(".").map_err(|_| "unsafe_path".to_string())?;
-            let descriptor = unsafe {
-                libc::openat(
-                    self.handle.as_raw_fd(),
-                    current.as_ptr(),
-                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                )
-            };
-            if descriptor < 0 {
-                return Err("unsafe_path".to_string());
-            }
-            let directory = unsafe { libc::fdopendir(descriptor) };
-            if directory.is_null() {
-                unsafe {
-                    libc::close(descriptor);
-                }
-                return Err("unsafe_path".to_string());
-            }
-            struct DirectoryGuard(*mut libc::DIR);
-            impl Drop for DirectoryGuard {
-                fn drop(&mut self) {
-                    unsafe {
-                        libc::closedir(self.0);
-                    }
-                }
-            }
-            let guard = DirectoryGuard(directory);
-            let mut names = Vec::new();
-            loop {
-                let entry = unsafe { libc::readdir(guard.0) };
-                if entry.is_null() {
-                    return Ok((names, false));
-                }
-                let name =
-                    unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr().cast()) }.to_bytes();
-                if matches!(name, b"." | b"..") {
-                    continue;
-                }
-                if names.len() >= maximum {
-                    return Ok((names, true));
-                }
-                names.push(std::ffi::OsString::from_vec(name.to_vec()));
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            self.verify_current()?;
-            let mut names = Vec::new();
-            let entries = std::fs::read_dir(&self.identity.canonical_path)
-                .map_err(|_| "unsafe_path".to_string())?;
-            for entry in entries {
-                let entry = entry.map_err(|_| "unsafe_path".to_string())?;
-                if names.len() >= maximum {
-                    return Ok((names, true));
-                }
-                names.push(entry.file_name());
-            }
-            self.verify_current()?;
-            Ok((names, false))
-        }
-    }
-
     #[cfg(unix)]
     fn canonical_child_path(&self, path: &Path) -> Result<PathBuf, String> {
         let name = path
@@ -849,7 +778,24 @@ fn remove_regular_file_if_same_inner(
         return false;
     }
 
-    parent.remove_regular_file_if_same(path, expected)
+    #[cfg(windows)]
+    {
+        remove_windows_regular_file_by_handle(path, expected)
+    }
+    #[cfg(not(windows))]
+    {
+        let Ok(current) = verify_regular_file(path) else {
+            return std::fs::symlink_metadata(path)
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound);
+        };
+        if !same_object(expected, &current) {
+            return false;
+        }
+        match std::fs::remove_file(path) {
+            Ok(()) => true,
+            Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+        }
+    }
 }
 
 #[cfg(windows)]

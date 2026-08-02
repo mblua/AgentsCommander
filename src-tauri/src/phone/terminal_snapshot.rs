@@ -1087,15 +1087,12 @@ fn sweep_directory(
     if !crate::path_identity::same_object(retained_directory.identity(), expected_directory) {
         return;
     }
-    let Ok((names, exceeded)) = retained_directory.read_child_names(MAX_DIRECTORY_ENTRIES) else {
+    let Ok(entries) = std::fs::read_dir(directory) else {
         return;
     };
-    if exceeded {
-        return;
-    }
-    for name in names {
-        let path = directory.join(&name);
-        let Some(name) = name.to_str() else {
+    for entry in entries.take(MAX_DIRECTORY_ENTRIES).filter_map(Result::ok) {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
             continue;
         };
         if !protocol_cleanup_name(name, response_directory) {
@@ -1110,10 +1107,10 @@ fn sweep_directory(
         if !old {
             continue;
         }
-        let Ok(identity) = retained_directory.verify_regular_file(&path) else {
+        let Ok(identity) = crate::path_identity::verify_regular_file(&path) else {
             continue;
         };
-        retained_directory.remove_regular_file_if_same(&path, &identity);
+        safe_remove(&path, &identity);
     }
     let _ = retained_directory.verify_current();
 }
