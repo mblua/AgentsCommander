@@ -45,6 +45,7 @@ struct TerminalSnapshotTestState {
     target_route_lookups: std::sync::atomic::AtomicUsize,
     host_before_final_revalidation: Mutex<Option<TerminalSnapshotTestHook>>,
     api_before_final_binding: Mutex<Option<TerminalSnapshotTestHook>>,
+    response_after_publish: Mutex<Option<TerminalSnapshotTestHook>>,
 }
 
 #[cfg(test)]
@@ -506,6 +507,15 @@ impl TerminalSnapshotState {
     }
 
     #[cfg(test)]
+    pub(crate) fn install_response_after_publish_hook(&self, hook: impl FnOnce() + Send + 'static) {
+        *self
+            .test_state
+            .response_after_publish
+            .lock()
+            .expect("response post-publish test hook lock") = Some(Box::new(hook));
+    }
+
+    #[cfg(test)]
     fn run_host_final_handoff_hook(&self) {
         let hook = self
             .test_state
@@ -525,6 +535,19 @@ impl TerminalSnapshotState {
             .api_before_final_binding
             .lock()
             .expect("API final-handoff test hook lock")
+            .take();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn run_response_after_publish_hook(&self) {
+        let hook = self
+            .test_state
+            .response_after_publish
+            .lock()
+            .expect("response post-publish test hook lock")
             .take();
         if let Some(hook) = hook {
             hook();

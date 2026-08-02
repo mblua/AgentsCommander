@@ -130,6 +130,8 @@ pub(crate) struct SnapshotMailboxScanner {
     cursors: HashMap<crate::path_identity::FileObjectId, String>,
     observed: std::collections::HashSet<crate::path_identity::FileObjectId>,
     startup_sweep_complete: bool,
+    #[cfg(test)]
+    pending_tasks: Vec<tauri::async_runtime::JoinHandle<()>>,
 }
 
 pub(crate) fn verified_requester_root_from_discovered_path(path: &Path) -> Option<PathBuf> {
@@ -231,6 +233,13 @@ impl SnapshotMailboxScanner {
     pub(crate) fn finish_cycle(&mut self) {
         self.cursors
             .retain(|object, _| self.observed.contains(object));
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn join_pending_tasks_for_test(&mut self) {
+        for task in std::mem::take(&mut self.pending_tasks) {
+            task.await.expect("terminal snapshot mailbox task");
+        }
     }
 
     pub(crate) fn scan_root<R: tauri::Runtime>(
@@ -385,7 +394,7 @@ impl SnapshotMailboxScanner {
             let response_directory = response_directory.clone();
             let expected_root = root_identity.clone();
             let snapshot_state = snapshot_state.inner().clone();
-            tauri::async_runtime::spawn(async move {
+            let task = tauri::async_runtime::spawn(async move {
                 process_claimed(
                     &app,
                     snapshot_state,
@@ -398,6 +407,10 @@ impl SnapshotMailboxScanner {
                 )
                 .await;
             });
+            #[cfg(test)]
+            self.pending_tasks.push(task);
+            #[cfg(not(test))]
+            drop(task);
         }
     }
 }
@@ -841,12 +854,20 @@ fn publish_response_bytes(
         safe_remove(&temporary, Some(&temporary_identity));
         return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
     }
+    #[cfg(test)]
+    state.run_response_after_publish_hook();
     let identity =
         match crate::path_identity::verify_opened_regular_file(&destination, &file, false) {
             Ok(identity)
                 if crate::path_identity::is_verified_descendant(&identity, &directory_identity) =>
             {
-                identity
+                Some(identity)
+            }
+            Err(_) if path_is_absent(&destination) => {
+                // A client may consume the atomic final before the publisher's
+                // post-publication path check. The retained handle proves what
+                // was published, and no residual artifact remains to track.
+                None
             }
             _ => {
                 safe_remove(&destination, Some(&temporary_identity));
@@ -854,12 +875,17 @@ fn publish_response_bytes(
             }
         };
     drop(file);
-    if reservation
-        .commit(destination.clone(), identity.clone())
-        .is_err()
-    {
-        safe_remove(&destination, Some(&identity));
-        return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
+    if let Some(identity) = identity {
+        if reservation
+            .commit(destination.clone(), identity.clone())
+            .is_err()
+            && !path_is_absent(&destination)
+        {
+            safe_remove(&destination, Some(&identity));
+            return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
+        }
+    } else {
+        drop(reservation);
     }
     crate::path_identity::sync_parent_best_effort(&destination);
     Ok(())
@@ -873,6 +899,10 @@ fn remove_tracked_processing(
     if safe_remove(path, Some(expected)) {
         state.untrack_artifact(expected);
     }
+}
+
+fn path_is_absent(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
 }
 
 fn safe_remove(path: &Path, expected: Option<&crate::path_identity::VerifiedPathIdentity>) -> bool {
@@ -1032,6 +1062,38 @@ mod tests {
         )
         .is_err());
         assert_eq!(std::fs::read(destination).unwrap(), first);
+    }
+
+    #[test]
+    fn response_consumed_after_atomic_publish_is_not_reclassified_as_failure() {
+        let state = crate::pty::terminal_snapshot::TerminalSnapshotState::new(
+            crate::shutdown::ShutdownSignal::new(),
+        );
+        let directory = tempfile::TempDir::new().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        let request_id = Uuid::new_v4();
+        let destination = directory.path().join(format!("{request_id}.json"));
+        let destination_for_hook = destination.clone();
+        state.install_response_after_publish_hook(move || {
+            crate::path_identity::verify_regular_file(&destination_for_hook)
+                .expect("published response identity");
+            std::fs::remove_file(&destination_for_hook).expect("consume published response");
+        });
+
+        assert!(publish_trusted_failure(
+            &state,
+            directory.path(),
+            request_id,
+            &"a".repeat(64),
+            TerminalSnapshotReasonCode::InvalidRequest,
+        )
+        .is_ok());
+        assert!(path_is_absent(&destination));
     }
 
     #[test]

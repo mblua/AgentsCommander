@@ -657,37 +657,14 @@ async fn submit_host_request(
     scanner.begin_cycle();
     scanner.scan_root(fixture.app.handle(), root);
     scanner.finish_cycle();
+    scanner.join_pending_tasks_for_test().await;
     let response_path = response_directory.join(format!("{}.json", request.request_id));
-    for _ in 0..250 {
-        if response_path.exists() {
-            let bytes = std::fs::read(&response_path).expect("host response bytes");
-            let identity = crate::path_identity::verify_regular_file(&response_path)
-                .expect("host response identity");
-            std::fs::remove_file(&response_path).expect("remove consumed host response");
-            fixture.snapshot_state.untrack_artifact(&identity);
-            return bytes;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    let request_entries = std::fs::read_dir(&request_directory)
-        .map(|entries| {
-            entries
-                .filter_map(Result::ok)
-                .map(|entry| entry.file_name().to_string_lossy().to_string())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let response_entries = std::fs::read_dir(&response_directory)
-        .map(|entries| {
-            entries
-                .filter_map(Result::ok)
-                .map(|entry| entry.file_name().to_string_lossy().to_string())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    panic!(
-        "host snapshot response was not published; request_entries={request_entries:?}; response_entries={response_entries:?}"
-    );
+    let bytes = std::fs::read(&response_path).expect("host response bytes after task completion");
+    let identity = crate::path_identity::verify_regular_file(&response_path)
+        .expect("host response identity after task completion");
+    std::fs::remove_file(&response_path).expect("remove consumed host response");
+    fixture.snapshot_state.untrack_artifact(&identity);
+    bytes
 }
 
 fn write_host_request_bytes(
@@ -731,16 +708,13 @@ async fn submit_uncorrelated_host_bytes(
     scanner.begin_cycle();
     scanner.scan_root(fixture.app.handle(), root);
     scanner.finish_cycle();
-    for _ in 0..250 {
-        if !request_path.exists()
-            && audit_contains_request(&fixture.settings_path, filename_request_id)
-        {
-            assert!(!response_path.exists());
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    panic!("uncorrelated host request did not complete safely");
+    scanner.join_pending_tasks_for_test().await;
+    assert!(!request_path.exists());
+    assert!(audit_contains_request(
+        &fixture.settings_path,
+        filename_request_id
+    ));
+    assert!(!response_path.exists());
 }
 
 async fn post_api_snapshot(
