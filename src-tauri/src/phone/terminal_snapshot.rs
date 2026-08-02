@@ -844,25 +844,12 @@ fn publish_response_bytes(
         &temporary,
         &destination,
     );
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
-        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    }
-    let mut file = options
-        .open(&temporary)
+    let mut file = retained_directory
+        .create_new_private_file(&temporary)
         .map_err(|_| TerminalSnapshotReasonCode::ResponseUnavailable)?;
-    let temporary_identity =
-        crate::path_identity::verify_opened_regular_file(&temporary, &file, true)
-            .map_err(|_| TerminalSnapshotReasonCode::ResponseUnavailable)?;
+    let temporary_identity = retained_directory
+        .verify_opened_regular_file(&temporary, &file, true)
+        .map_err(|_| TerminalSnapshotReasonCode::ResponseUnavailable)?;
     #[cfg(test)]
     state.run_response_publication_hook(
         crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage::BeforeTemporaryCommit,
@@ -873,7 +860,7 @@ fn publish_response_bytes(
         .commit(temporary.clone(), temporary_identity.clone())
         .is_err()
     {
-        safe_remove(&temporary, &temporary_identity);
+        retained_directory.remove_regular_file_if_same(&temporary, &temporary_identity);
         return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
     }
     #[cfg(test)]
@@ -882,6 +869,10 @@ fn publish_response_bytes(
         &temporary,
         &destination,
     );
+    if retained_directory.verify_current().is_err() {
+        cleanup_tracked_artifact(state, &temporary, &temporary_identity);
+        return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -917,29 +908,31 @@ fn publish_response_bytes(
         &temporary,
         &destination,
     );
-    let written_identity =
-        match crate::path_identity::verify_opened_regular_file(&temporary, &file, false) {
-            Ok(identity)
-                if crate::path_identity::same_object(&identity, &temporary_identity)
-                    && crate::path_identity::is_verified_descendant(
-                        &identity,
-                        &directory_identity,
-                    ) =>
-            {
-                identity
-            }
-            _ => {
-                cleanup_tracked_artifact(state, &temporary, &temporary_identity);
-                return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
-            }
-        };
+    let written_identity = match retained_directory
+        .verify_current()
+        .and_then(|_| retained_directory.verify_opened_regular_file(&temporary, &file, false))
+    {
+        Ok(identity)
+            if crate::path_identity::same_object(&identity, &temporary_identity)
+                && crate::path_identity::is_verified_descendant(&identity, &directory_identity) =>
+        {
+            identity
+        }
+        _ => {
+            cleanup_tracked_artifact(state, &temporary, &temporary_identity);
+            return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
+        }
+    };
     #[cfg(test)]
     state.run_response_publication_hook(
         crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage::BeforeAtomicRename,
         &temporary,
         &destination,
     );
-    if crate::path_identity::publish_new_file_atomic(&temporary, &destination).is_err() {
+    if retained_directory
+        .publish_new_file_atomic(&temporary, &destination)
+        .is_err()
+    {
         cleanup_tracked_artifact(state, &temporary, &written_identity);
         return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
     }
@@ -951,6 +944,7 @@ fn publish_response_bytes(
     );
     let mut published = reconcile_published_response(
         state,
+        &retained_directory,
         &destination,
         &file,
         &written_identity,
@@ -965,6 +959,7 @@ fn publish_response_bytes(
     if published.is_some() {
         published = reconcile_published_response(
             state,
+            &retained_directory,
             &destination,
             &file,
             &written_identity,
@@ -989,6 +984,7 @@ fn publish_response_bytes(
     if published.is_some() {
         published = reconcile_published_response(
             state,
+            &retained_directory,
             &destination,
             &file,
             &written_identity,
@@ -1013,6 +1009,7 @@ fn publish_response_bytes(
     if published.is_some() {
         let _ = reconcile_published_response(
             state,
+            &retained_directory,
             &destination,
             &file,
             &written_identity,
@@ -1024,12 +1021,16 @@ fn publish_response_bytes(
 
 fn reconcile_published_response(
     state: &crate::pty::terminal_snapshot::TerminalSnapshotState,
+    retained_directory: &crate::path_identity::RetainedDirectory,
     destination: &Path,
     file: &std::fs::File,
     expected: &crate::path_identity::VerifiedPathIdentity,
     directory: &crate::path_identity::VerifiedPathIdentity,
 ) -> Result<Option<crate::path_identity::VerifiedPathIdentity>, TerminalSnapshotReasonCode> {
-    match crate::path_identity::verify_opened_regular_file(destination, file, false) {
+    match retained_directory
+        .verify_current()
+        .and_then(|_| retained_directory.verify_opened_regular_file(destination, file, false))
+    {
         Ok(identity)
             if crate::path_identity::same_object(expected, &identity)
                 && crate::path_identity::is_verified_descendant(&identity, directory) =>
@@ -1037,7 +1038,7 @@ fn reconcile_published_response(
             Ok(Some(identity))
         }
         Err(_)
-            if path_is_absent(destination)
+            if retained_directory.child_is_absent(destination)
                 || crate::path_identity::opened_file_is_delete_pending(file) =>
         {
             state.untrack_artifact(expected);
@@ -1063,19 +1064,10 @@ fn cleanup_tracked_artifact(
     path: &Path,
     expected: &crate::path_identity::VerifiedPathIdentity,
 ) -> bool {
-    if safe_remove(path, expected) {
-        state.untrack_artifact(expected);
-        return true;
-    }
-    match crate::path_identity::verify_regular_file(path) {
-        Ok(current) if crate::path_identity::same_object(expected, &current) => false,
-        _ => {
-            state.untrack_artifact(expected);
-            false
-        }
-    }
+    state.cleanup_artifact(path, expected)
 }
 
+#[cfg(test)]
 fn path_is_absent(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
 }
@@ -1095,12 +1087,15 @@ fn sweep_directory(
     if !crate::path_identity::same_object(retained_directory.identity(), expected_directory) {
         return;
     }
-    let Ok(entries) = std::fs::read_dir(directory) else {
+    let Ok((names, exceeded)) = retained_directory.read_child_names(MAX_DIRECTORY_ENTRIES) else {
         return;
     };
-    for entry in entries.take(MAX_DIRECTORY_ENTRIES).filter_map(Result::ok) {
-        let path = entry.path();
-        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+    if exceeded {
+        return;
+    }
+    for name in names {
+        let path = directory.join(&name);
+        let Some(name) = name.to_str() else {
             continue;
         };
         if !protocol_cleanup_name(name, response_directory) {
@@ -1115,10 +1110,10 @@ fn sweep_directory(
         if !old {
             continue;
         }
-        let Ok(identity) = crate::path_identity::verify_regular_file(&path) else {
+        let Ok(identity) = retained_directory.verify_regular_file(&path) else {
             continue;
         };
-        safe_remove(&path, &identity);
+        retained_directory.remove_regular_file_if_same(&path, &identity);
     }
     let _ = retained_directory.verify_current();
 }
@@ -1292,6 +1287,96 @@ mod tests {
             assert_eq!(state.test_artifact_counts(), (0, 0, 0));
             std::fs::rename(&parent, &retired).unwrap();
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn response_parent_replacement_before_temporary_create_is_confined_on_unix() {
+        use crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage as Stage;
+
+        let state = crate::pty::terminal_snapshot::TerminalSnapshotState::new(
+            crate::shutdown::ShutdownSignal::new(),
+        );
+        let directory = tempfile::TempDir::new().unwrap();
+        let parent = directory.path().join("responses");
+        let retired = directory.path().join("retired-responses");
+        std::fs::create_dir(&parent).unwrap();
+        let parent_for_hook = parent.clone();
+        let retired_for_hook = retired.clone();
+        state.install_response_publication_hook(Stage::BeforeTemporaryCreate, move |_, _| {
+            std::fs::rename(&parent_for_hook, &retired_for_hook).unwrap();
+            std::fs::create_dir(&parent_for_hook).unwrap();
+        });
+
+        let request_id = Uuid::new_v4();
+        let result = publish_response_bytes(&state, &parent, request_id, b"secret-response");
+
+        assert_eq!(result, Err(TerminalSnapshotReasonCode::ResponseUnavailable));
+        assert!(std::fs::read_dir(&parent).unwrap().next().is_none());
+        assert!(std::fs::read_dir(&retired).unwrap().next().is_none());
+        assert_eq!(state.test_artifact_counts(), (0, 0, 0));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn response_parent_replacement_after_write_cleans_retained_object_on_unix() {
+        use crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationStage as Stage;
+
+        let state = crate::pty::terminal_snapshot::TerminalSnapshotState::new(
+            crate::shutdown::ShutdownSignal::new(),
+        );
+        let directory = tempfile::TempDir::new().unwrap();
+        let parent = directory.path().join("responses");
+        let retired = directory.path().join("retired-responses");
+        std::fs::create_dir(&parent).unwrap();
+        let parent_for_hook = parent.clone();
+        let retired_for_hook = retired.clone();
+        state.install_response_publication_hook(Stage::AfterTemporaryWrite, move |_, _| {
+            std::fs::rename(&parent_for_hook, &retired_for_hook).unwrap();
+            std::fs::create_dir(&parent_for_hook).unwrap();
+            std::fs::write(parent_for_hook.join("replacement-marker"), b"keep").unwrap();
+        });
+
+        let request_id = Uuid::new_v4();
+        let result = publish_response_bytes(&state, &parent, request_id, b"secret-response");
+
+        assert_eq!(result, Err(TerminalSnapshotReasonCode::ResponseUnavailable));
+        assert_eq!(
+            std::fs::read(parent.join("replacement-marker")).unwrap(),
+            b"keep"
+        );
+        assert!(std::fs::read_dir(&retired).unwrap().next().is_none());
+        assert_eq!(state.test_artifact_counts(), (0, 0, 0));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tracked_cleanup_uses_original_parent_after_same_spelling_replacement_on_unix() {
+        let state = crate::pty::terminal_snapshot::TerminalSnapshotState::new(
+            crate::shutdown::ShutdownSignal::new(),
+        );
+        let directory = tempfile::TempDir::new().unwrap();
+        let parent = directory.path().join("responses");
+        let retired = directory.path().join("retired-responses");
+        std::fs::create_dir(&parent).unwrap();
+        let response = parent.join("response.json");
+        std::fs::write(&response, b"owned response").unwrap();
+        let directory_identity = crate::path_identity::verify_directory(&parent).unwrap();
+        let identity = crate::path_identity::verify_regular_file(&response).unwrap();
+        state
+            .reserve_existing_artifact(&parent, &directory_identity, identity.object_id)
+            .unwrap()
+            .commit_with_ttl(response.clone(), identity, std::time::Duration::ZERO)
+            .unwrap();
+
+        std::fs::rename(&parent, &retired).unwrap();
+        std::fs::create_dir(&parent).unwrap();
+        std::fs::write(&response, b"replacement response").unwrap();
+        state.sweep_artifacts_for_test(true);
+
+        assert!(!retired.join("response.json").exists());
+        assert_eq!(std::fs::read(response).unwrap(), b"replacement response");
+        assert_eq!(state.test_artifact_counts(), (0, 0, 0));
     }
 
     #[test]

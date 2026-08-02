@@ -39,8 +39,8 @@ pub struct VerifiedPathIdentity {
     pub content_sha256: Option<[u8; 32]>,
 }
 
-/// A verified directory whose live handle prevents Windows pathname replacement
-/// while a privileged filesystem operation is in progress.
+/// A verified directory retained by filesystem-object handle while a privileged
+/// child operation is in progress.
 #[derive(Clone)]
 pub struct RetainedDirectory {
     identity: VerifiedPathIdentity,
@@ -74,6 +74,347 @@ impl RetainedDirectory {
 
     pub fn sync_best_effort(&self) {
         let _ = self.handle.sync_all();
+    }
+
+    pub fn create_new_private_file(&self, path: &Path) -> Result<File, String> {
+        self.create_new_file(path, false)
+    }
+
+    pub fn create_new_output_file(&self, path: &Path) -> Result<File, String> {
+        self.create_new_file(path, true)
+    }
+
+    fn create_new_file(&self, path: &Path, lock_output_leaf: bool) -> Result<File, String> {
+        self.verify_current()?;
+        #[cfg(unix)]
+        {
+            let _ = lock_output_leaf;
+            return self.open_unix_child(
+                path,
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0o600,
+            );
+        }
+        #[cfg(not(unix))]
+        {
+            #[cfg(not(windows))]
+            let _ = lock_output_leaf;
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::OpenOptionsExt;
+                use windows_sys::Win32::Storage::FileSystem::{
+                    FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+                };
+                if lock_output_leaf {
+                    options.share_mode(FILE_SHARE_READ);
+                }
+                options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+            }
+            options.open(path).map_err(|_| "unsafe_path".to_string())
+        }
+    }
+
+    pub fn verify_opened_regular_file(
+        &self,
+        path: &Path,
+        file: &File,
+        require_empty: bool,
+    ) -> Result<VerifiedPathIdentity, String> {
+        #[cfg(unix)]
+        {
+            let metadata = file.metadata().map_err(|_| "unsafe_path".to_string())?;
+            let (opened_id, links) = handle_identity(file)?;
+            if !metadata.is_file()
+                || is_link_or_reparse(&metadata)
+                || links != 1
+                || (require_empty && metadata.len() != 0)
+            {
+                return Err("unsafe_path".to_string());
+            }
+            let reopened = self.open_unix_child(
+                path,
+                libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0,
+            )?;
+            let (reopened_id, reopened_links) = handle_identity(&reopened)?;
+            if reopened_id != opened_id || reopened_links != 1 {
+                return Err("unsafe_path".to_string());
+            }
+            return Ok(VerifiedPathIdentity {
+                canonical_path: self.canonical_child_path(path)?,
+                object_id: opened_id,
+                metadata: snapshot(&metadata, links),
+                content_sha256: None,
+            });
+        }
+        #[cfg(not(unix))]
+        {
+            self.verify_current()?;
+            verify_opened_regular_file(path, file, require_empty)
+        }
+    }
+
+    pub fn verify_regular_file(&self, path: &Path) -> Result<VerifiedPathIdentity, String> {
+        #[cfg(unix)]
+        {
+            let file = self.open_unix_child(
+                path,
+                libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0,
+            )?;
+            return self.verify_opened_regular_file(path, &file, false);
+        }
+        #[cfg(not(unix))]
+        {
+            self.verify_current()?;
+            verify_regular_file(path)
+        }
+    }
+
+    pub fn child_is_absent(&self, path: &Path) -> bool {
+        #[cfg(unix)]
+        {
+            return match self.open_unix_child(
+                path,
+                libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0,
+            ) {
+                Ok(_) => false,
+                Err(_) => std::io::Error::last_os_error().kind() == std::io::ErrorKind::NotFound,
+            };
+        }
+        #[cfg(not(unix))]
+        {
+            self.verify_current().is_ok()
+                && std::fs::symlink_metadata(path)
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+        }
+    }
+
+    pub fn publish_new_file_atomic(&self, source: &Path, destination: &Path) -> Result<(), String> {
+        self.verify_current()
+            .map_err(|_| "atomic_publish_failed".to_string())?;
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            let source = self.unix_child_cstring(source)?;
+            let destination = self.unix_child_cstring(destination)?;
+            unsafe extern "C" {
+                fn renameat2(
+                    old_dir_fd: i32,
+                    old_path: *const std::ffi::c_char,
+                    new_dir_fd: i32,
+                    new_path: *const std::ffi::c_char,
+                    flags: u32,
+                ) -> i32;
+            }
+            use std::os::fd::AsRawFd;
+            let directory = self.handle.as_raw_fd();
+            let result = unsafe {
+                renameat2(
+                    directory,
+                    source.as_ptr(),
+                    directory,
+                    destination.as_ptr(),
+                    1,
+                )
+            };
+            return if result == 0 {
+                Ok(())
+            } else {
+                Err("atomic_publish_failed".to_string())
+            };
+        }
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        {
+            let source = self.unix_child_cstring(source)?;
+            let destination = self.unix_child_cstring(destination)?;
+            unsafe extern "C" {
+                fn renameatx_np(
+                    old_dir_fd: i32,
+                    old_path: *const std::ffi::c_char,
+                    new_dir_fd: i32,
+                    new_path: *const std::ffi::c_char,
+                    flags: u32,
+                ) -> i32;
+            }
+            use std::os::fd::AsRawFd;
+            let directory = self.handle.as_raw_fd();
+            let result = unsafe {
+                renameatx_np(
+                    directory,
+                    source.as_ptr(),
+                    directory,
+                    destination.as_ptr(),
+                    0x0000_0004,
+                )
+            };
+            return if result == 0 {
+                Ok(())
+            } else {
+                Err("atomic_publish_failed".to_string())
+            };
+        }
+        #[cfg(windows)]
+        {
+            publish_new_file_atomic(source, destination)
+        }
+        #[cfg(not(any(
+            windows,
+            target_os = "linux",
+            target_os = "android",
+            target_os = "macos",
+            target_os = "ios"
+        )))]
+        {
+            let _ = (source, destination);
+            Err("atomic_publish_unsupported".to_string())
+        }
+    }
+
+    pub fn remove_regular_file_if_same(
+        &self,
+        path: &Path,
+        expected: &VerifiedPathIdentity,
+    ) -> bool {
+        #[cfg(unix)]
+        {
+            let Ok(current) = self.verify_regular_file(path) else {
+                return self.child_is_absent(path);
+            };
+            if !same_object(expected, &current) {
+                return false;
+            }
+            let Ok(name) = self.unix_child_cstring(path) else {
+                return false;
+            };
+            use std::os::fd::AsRawFd;
+            let result = unsafe { libc::unlinkat(self.handle.as_raw_fd(), name.as_ptr(), 0) };
+            return result == 0
+                || std::io::Error::last_os_error().kind() == std::io::ErrorKind::NotFound;
+        }
+        #[cfg(windows)]
+        {
+            remove_windows_regular_file_by_handle(path, expected)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let Ok(current) = verify_regular_file(path) else {
+                return std::fs::symlink_metadata(path)
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound);
+            };
+            same_object(expected, &current) && std::fs::remove_file(path).is_ok()
+        }
+    }
+
+    pub fn read_child_names(
+        &self,
+        maximum: usize,
+    ) -> Result<(Vec<std::ffi::OsString>, bool), String> {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            use std::os::unix::ffi::OsStringExt;
+
+            let current = std::ffi::CString::new(".").map_err(|_| "unsafe_path".to_string())?;
+            let descriptor = unsafe {
+                libc::openat(
+                    self.handle.as_raw_fd(),
+                    current.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            };
+            if descriptor < 0 {
+                return Err("unsafe_path".to_string());
+            }
+            let directory = unsafe { libc::fdopendir(descriptor) };
+            if directory.is_null() {
+                unsafe {
+                    libc::close(descriptor);
+                }
+                return Err("unsafe_path".to_string());
+            }
+            struct DirectoryGuard(*mut libc::DIR);
+            impl Drop for DirectoryGuard {
+                fn drop(&mut self) {
+                    unsafe {
+                        libc::closedir(self.0);
+                    }
+                }
+            }
+            let guard = DirectoryGuard(directory);
+            let mut names = Vec::new();
+            loop {
+                let entry = unsafe { libc::readdir(guard.0) };
+                if entry.is_null() {
+                    return Ok((names, false));
+                }
+                let name =
+                    unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr().cast()) }.to_bytes();
+                if matches!(name, b"." | b"..") {
+                    continue;
+                }
+                if names.len() >= maximum {
+                    return Ok((names, true));
+                }
+                names.push(std::ffi::OsString::from_vec(name.to_vec()));
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            self.verify_current()?;
+            let mut names = Vec::new();
+            let entries = std::fs::read_dir(&self.identity.canonical_path)
+                .map_err(|_| "unsafe_path".to_string())?;
+            for entry in entries {
+                let entry = entry.map_err(|_| "unsafe_path".to_string())?;
+                if names.len() >= maximum {
+                    return Ok((names, true));
+                }
+                names.push(entry.file_name());
+            }
+            self.verify_current()?;
+            Ok((names, false))
+        }
+    }
+
+    #[cfg(unix)]
+    fn canonical_child_path(&self, path: &Path) -> Result<PathBuf, String> {
+        let name = path
+            .file_name()
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| "unsafe_path".to_string())?;
+        Ok(self.identity.canonical_path.join(name))
+    }
+
+    #[cfg(unix)]
+    fn unix_child_cstring(&self, path: &Path) -> Result<std::ffi::CString, String> {
+        use std::os::unix::ffi::OsStrExt;
+        let name = path
+            .file_name()
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| "unsafe_path".to_string())?;
+        std::ffi::CString::new(name.as_bytes()).map_err(|_| "unsafe_path".to_string())
+    }
+
+    #[cfg(unix)]
+    fn open_unix_child(&self, path: &Path, flags: i32, mode: u32) -> Result<File, String> {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        let name = self.unix_child_cstring(path)?;
+        let descriptor = unsafe {
+            libc::openat(
+                self.handle.as_raw_fd(),
+                name.as_ptr(),
+                flags,
+                mode as libc::mode_t,
+            )
+        };
+        if descriptor < 0 {
+            Err("unsafe_path".to_string())
+        } else {
+            Ok(unsafe { File::from_raw_fd(descriptor) })
+        }
     }
 }
 
@@ -508,24 +849,7 @@ fn remove_regular_file_if_same_inner(
         return false;
     }
 
-    #[cfg(windows)]
-    {
-        remove_windows_regular_file_by_handle(path, expected)
-    }
-    #[cfg(not(windows))]
-    {
-        let Ok(current) = verify_regular_file(path) else {
-            return std::fs::symlink_metadata(path)
-                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound);
-        };
-        if !same_object(expected, &current) {
-            return false;
-        }
-        match std::fs::remove_file(path) {
-            Ok(()) => true,
-            Err(error) => error.kind() == std::io::ErrorKind::NotFound,
-        }
-    }
+    parent.remove_regular_file_if_same(path, expected)
 }
 
 #[cfg(windows)]
@@ -1085,7 +1409,12 @@ impl VerifiedNewFile {
         self.parent
             .verify_current()
             .map_err(|_| "output_failed".to_string())?;
-        let opened = verify_opened_regular_file(&self.path, &self.file, false)
+        let opened = self
+            .parent
+            .verify_opened_regular_file(&self.path, &self.file, false)
+            .map_err(|_| "output_failed".to_string())?;
+        self.parent
+            .verify_current()
             .map_err(|_| "output_failed".to_string())?;
         if opened.metadata.links != 1 || opened.metadata.len != bytes.len() as u64 {
             return Err("output_failed".to_string());
@@ -1119,25 +1448,8 @@ fn create_terminal_snapshot_output_with_hooks(
         return Err("output_failed".to_string());
     }
     before_open();
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(UNIX_O_NOFOLLOW);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        use windows_sys::Win32::Storage::FileSystem::{
-            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
-        };
-        options
-            .share_mode(FILE_SHARE_READ)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    }
-    let file = options
-        .open(path)
+    let file = parent
+        .create_new_output_file(path)
         .map_err(|_| "output_failed".to_string())?;
     #[cfg(unix)]
     {
@@ -1155,7 +1467,9 @@ fn create_terminal_snapshot_output_with_hooks(
             return Err("output_failed".to_string());
         }
     }
-    verify_opened_regular_file(path, &file, true).map_err(|_| "output_failed".to_string())?;
+    parent
+        .verify_opened_regular_file(path, &file, true)
+        .map_err(|_| "output_failed".to_string())?;
     parent
         .verify_current()
         .map_err(|_| "output_failed".to_string())?;
@@ -1502,6 +1816,125 @@ mod tests {
             !retired.join("snapshot.png").exists(),
             "retained parent received an output leaf after identity loss"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_snapshot_unix_parent_replacement_before_open_is_confined() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let parent = directory.path().join("parent");
+        let retired = directory.path().join("retired");
+        std::fs::create_dir(&parent).unwrap();
+        let output = parent.join("snapshot.png");
+        let parent_for_race = parent.clone();
+        let retired_for_race = retired.clone();
+
+        let error = create_terminal_snapshot_output_with_hooks(
+            &output,
+            || {},
+            move || {
+                std::fs::rename(&parent_for_race, &retired_for_race).unwrap();
+                std::fs::create_dir(&parent_for_race).unwrap();
+            },
+        )
+        .err()
+        .unwrap();
+
+        assert_eq!(error, "output_failed");
+        assert!(
+            !output.exists(),
+            "replacement parent received an output leaf"
+        );
+        assert!(
+            !retired.join("snapshot.png").exists(),
+            "retained parent received a leaf after detected identity loss"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_snapshot_unix_write_stays_with_retained_parent_object() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let parent = directory.path().join("parent");
+        let retired = directory.path().join("retired");
+        std::fs::create_dir(&parent).unwrap();
+        let output = parent.join("snapshot.png");
+        let file = create_terminal_snapshot_output(&output).unwrap();
+        let parent_for_race = parent.clone();
+        let retired_for_race = retired.clone();
+        let replacement_output = output.clone();
+
+        let error = file
+            .write_all_and_sync_inner(
+                b"owned bytes",
+                move || {
+                    std::fs::rename(&parent_for_race, &retired_for_race).unwrap();
+                    std::fs::create_dir(&parent_for_race).unwrap();
+                    std::fs::write(&replacement_output, b"replacement bytes").unwrap();
+                },
+                || {},
+            )
+            .unwrap_err();
+
+        assert_eq!(error, "output_failed");
+        assert_eq!(std::fs::read(&output).unwrap(), b"replacement bytes");
+        assert_eq!(
+            std::fs::read(retired.join("snapshot.png")).unwrap(),
+            b"owned bytes"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_snapshot_unix_cleanup_uses_retained_parent_object() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let parent = directory.path().join("parent");
+        let retired = directory.path().join("retired");
+        std::fs::create_dir(&parent).unwrap();
+        let output = parent.join("response.json");
+        std::fs::write(&output, b"owned response").unwrap();
+        let retained = retain_directory(&parent).unwrap();
+        let expected = retained.verify_regular_file(&output).unwrap();
+
+        std::fs::rename(&parent, &retired).unwrap();
+        std::fs::create_dir(&parent).unwrap();
+        std::fs::write(&output, b"replacement response").unwrap();
+
+        assert!(retained.remove_regular_file_if_same(&output, &expected));
+        assert!(!retired.join("response.json").exists());
+        assert_eq!(std::fs::read(output).unwrap(), b"replacement response");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_snapshot_unix_non_utf8_leaf_remains_supported() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let directory = tempfile::TempDir::new().unwrap();
+        let leaf = std::ffi::OsString::from_vec(b"snapshot-\xff.png".to_vec());
+        let output = directory.path().join(leaf);
+        create_terminal_snapshot_output(&output)
+            .unwrap()
+            .write_all_and_sync(b"portable bytes")
+            .unwrap();
+        assert_eq!(std::fs::read(output).unwrap(), b"portable bytes");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_snapshot_unix_symlink_parent_is_rejected() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let real = directory.path().join("real");
+        let linked = directory.path().join("linked");
+        std::fs::create_dir(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &linked).unwrap();
+        let output = linked.join("snapshot.png");
+
+        assert_eq!(
+            validate_terminal_snapshot_output_path(&output).unwrap_err(),
+            "unsafe_path"
+        );
+        assert!(!real.join("snapshot.png").exists());
     }
 
     #[cfg(windows)]

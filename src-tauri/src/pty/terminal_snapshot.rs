@@ -779,7 +779,10 @@ impl TerminalSnapshotArtifactReservation {
             .retained
             .verify_current()
             .map_err(|_| TerminalSnapshotReasonCode::ResponseUnavailable)?;
-        let current_file = crate::path_identity::verify_regular_file(&path)
+        let current_file = self
+            .directory
+            .retained
+            .verify_regular_file(&path)
             .map_err(|_| TerminalSnapshotReasonCode::ResponseUnavailable)?;
         if !crate::path_identity::same_object(&current_file, &identity)
             || !crate::path_identity::is_verified_descendant(
@@ -1322,48 +1325,82 @@ impl TerminalSnapshotState {
         }
     }
 
+    pub(crate) fn cleanup_artifact(
+        &self,
+        path: &Path,
+        expected: &crate::path_identity::VerifiedPathIdentity,
+    ) -> bool {
+        let retained = match self.artifacts.lock() {
+            Ok(registry) => registry
+                .files
+                .get(&expected.object_id)
+                .and_then(|tracked| registry.directories.get(&tracked.directory))
+                .map(|directory| directory.retained.clone()),
+            Err(_) => None,
+        };
+        let Some(retained) = retained else {
+            return false;
+        };
+        if retained.remove_regular_file_if_same(path, expected) {
+            self.untrack_artifact(expected);
+            return true;
+        }
+        match retained.verify_regular_file(path) {
+            Ok(current) if crate::path_identity::same_object(expected, &current) => false,
+            _ => {
+                self.untrack_artifact(expected);
+                false
+            }
+        }
+    }
+
     pub(crate) fn relocate_artifact(
         &self,
         expected: &crate::path_identity::VerifiedPathIdentity,
         path: &Path,
     ) -> Result<Option<crate::path_identity::VerifiedPathIdentity>, TerminalSnapshotReasonCode>
     {
-        let current = match crate::path_identity::verify_regular_file(path) {
+        let directory = {
+            let registry = self
+                .artifacts
+                .lock()
+                .map_err(|_| TerminalSnapshotReasonCode::ServiceUnavailable)?;
+            let directory_object = registry
+                .files
+                .get(&expected.object_id)
+                .map(|tracked| tracked.directory)
+                .ok_or(TerminalSnapshotReasonCode::ResponseUnavailable)?;
+            registry
+                .directories
+                .get(&directory_object)
+                .cloned()
+                .ok_or(TerminalSnapshotReasonCode::ResponseUnavailable)?
+        };
+        directory
+            .retained
+            .verify_current()
+            .map_err(|_| TerminalSnapshotReasonCode::ResponseUnavailable)?;
+        let current = match directory.retained.verify_regular_file(path) {
             Ok(current) if crate::path_identity::same_object(expected, &current) => current,
-            Err(_)
-                if std::fs::symlink_metadata(path)
-                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
-            {
+            Err(_) if directory.retained.child_is_absent(path) => {
                 self.untrack_artifact(expected);
                 return Ok(None);
             }
-            _ => {
-                self.untrack_artifact(expected);
-                return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
-            }
+            _ => return Err(TerminalSnapshotReasonCode::ResponseUnavailable),
         };
+        if !crate::path_identity::is_verified_descendant(&current, &directory.identity) {
+            return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
+        }
         let mut registry = self
             .artifacts
             .lock()
             .map_err(|_| TerminalSnapshotReasonCode::ServiceUnavailable)?;
-        let Some(directory_object) = registry
-            .files
-            .get(&expected.object_id)
-            .map(|tracked| tracked.directory)
-        else {
-            return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
-        };
-        let Some(directory) = registry.directories.get(&directory_object) else {
-            registry.files.remove(&expected.object_id);
-            return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
-        };
-        if !crate::path_identity::is_verified_descendant(&current, &directory.identity) {
-            registry.files.remove(&expected.object_id);
-            return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
-        }
         let Some(tracked) = registry.files.get_mut(&expected.object_id) else {
             return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
         };
+        if tracked.directory != directory.identity.object_id {
+            return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
+        }
         tracked.path = path.to_path_buf();
         tracked.identity = current.clone();
         Ok(Some(current))
@@ -1383,12 +1420,19 @@ impl TerminalSnapshotState {
             if !force && now < tracked.expires_at {
                 continue;
             }
-            match crate::path_identity::verify_regular_file(&tracked.path) {
+            let Some(directory) = directories
+                .iter()
+                .find(|directory| directory.identity.object_id == tracked.directory)
+            else {
+                absent_files.push(tracked.identity.object_id);
+                continue;
+            };
+            match directory.retained.verify_regular_file(&tracked.path) {
                 Ok(current) if crate::path_identity::same_object(&current, &tracked.identity) => {
-                    if crate::path_identity::remove_regular_file_if_same(
-                        &tracked.path,
-                        &tracked.identity,
-                    ) {
+                    if directory
+                        .retained
+                        .remove_regular_file_if_same(&tracked.path, &tracked.identity)
+                    {
                         absent_files.push(tracked.identity.object_id);
                     }
                 }
@@ -1397,10 +1441,7 @@ impl TerminalSnapshotState {
                     // replacement untouched and release only the stale record.
                     absent_files.push(tracked.identity.object_id);
                 }
-                Err(_)
-                    if std::fs::symlink_metadata(&tracked.path)
-                        .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
-                {
+                Err(_) if directory.retained.child_is_absent(&tracked.path) => {
                     absent_files.push(tracked.identity.object_id);
                 }
                 _ => {}
