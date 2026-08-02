@@ -304,7 +304,7 @@ pub fn decode_canonical_base64_png(text: &str) -> Result<Vec<u8>, ProtocolError>
         return Err(ProtocolError::TooLarge);
     }
     let bytes = text.as_bytes();
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return Err(ProtocolError::Invalid);
     }
     let padding = bytes.iter().rev().take_while(|byte| **byte == b'=').count();

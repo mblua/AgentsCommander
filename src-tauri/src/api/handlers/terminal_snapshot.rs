@@ -162,6 +162,8 @@ async fn post_inner(
     let (payload, finalization) = prepared.into_parts();
     let response_bytes = finalization.build_api_response(payload).await?;
     let disclosure = finalization.revalidate_api().await?;
+    #[cfg(test)]
+    snapshot_state.run_api_final_handoff_hook();
 
     // Every source-plane byte and awaited authority check is complete. The
     // fresh registry guard, synchronous runtime proof, immutable response

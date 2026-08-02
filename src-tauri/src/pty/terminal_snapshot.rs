@@ -34,6 +34,25 @@ pub(crate) const SNAPSHOT_ARTIFACT_DIRECTORY_CAP: usize = 4_096;
 pub(crate) const SNAPSHOT_ARTIFACT_FILE_CAP: usize = 8_192;
 pub(crate) const SNAPSHOT_ARTIFACT_TTL: Duration = Duration::from_secs(60);
 
+#[cfg(test)]
+type TerminalSnapshotTestHook = Box<dyn FnOnce() + Send + 'static>;
+
+#[cfg(test)]
+#[derive(Default)]
+struct TerminalSnapshotTestState {
+    target_session_lookups: std::sync::atomic::AtomicUsize,
+    target_route_lookups: std::sync::atomic::AtomicUsize,
+    host_before_final_revalidation: Mutex<Option<TerminalSnapshotTestHook>>,
+    api_before_final_binding: Mutex<Option<TerminalSnapshotTestHook>>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TerminalSnapshotTestLookupCounts {
+    pub target_session_lookups: usize,
+    pub target_route_lookups: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TerminalSnapshotSourcePlane {
     HostCli,
@@ -363,6 +382,8 @@ pub(crate) struct TerminalSnapshotState {
     limiter: Arc<Mutex<RollingState>>,
     artifacts: Arc<Mutex<ArtifactRegistry>>,
     shutdown: crate::shutdown::ShutdownSignal,
+    #[cfg(test)]
+    test_state: TerminalSnapshotTestState,
 }
 
 impl TerminalSnapshotState {
@@ -372,7 +393,74 @@ impl TerminalSnapshotState {
             limiter: Arc::new(Mutex::new(RollingState::default())),
             artifacts: Arc::new(Mutex::new(ArtifactRegistry::default())),
             shutdown,
+            #[cfg(test)]
+            test_state: TerminalSnapshotTestState::default(),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_test_target_lookup_counts(&self) {
+        self.test_state
+            .target_session_lookups
+            .store(0, Ordering::SeqCst);
+        self.test_state
+            .target_route_lookups
+            .store(0, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_target_lookup_counts(&self) -> TerminalSnapshotTestLookupCounts {
+        TerminalSnapshotTestLookupCounts {
+            target_session_lookups: self
+                .test_state
+                .target_session_lookups
+                .load(Ordering::SeqCst),
+            target_route_lookups: self.test_state.target_route_lookups.load(Ordering::SeqCst),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_host_final_handoff_hook(&self, hook: impl FnOnce() + Send + 'static) {
+        *self
+            .test_state
+            .host_before_final_revalidation
+            .lock()
+            .expect("host final-handoff test hook lock") = Some(Box::new(hook));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_api_final_handoff_hook(&self, hook: impl FnOnce() + Send + 'static) {
+        *self
+            .test_state
+            .api_before_final_binding
+            .lock()
+            .expect("API final-handoff test hook lock") = Some(Box::new(hook));
+    }
+
+    #[cfg(test)]
+    fn run_host_final_handoff_hook(&self) {
+        let hook = self
+            .test_state
+            .host_before_final_revalidation
+            .lock()
+            .expect("host final-handoff test hook lock")
+            .take();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn run_api_final_handoff_hook(&self) {
+        let hook = self
+            .test_state
+            .api_before_final_binding
+            .lock()
+            .expect("API final-handoff test hook lock")
+            .take();
+        if let Some(hook) = hook {
+            hook();
+        }
     }
 
     pub(crate) fn start_artifact_cleanup(self: &Arc<Self>) {
@@ -721,9 +809,17 @@ impl TerminalSnapshotState {
             return Err(TerminalSnapshotReasonCode::SnapshotUnavailable);
         }
 
+        #[cfg(test)]
+        self.test_state
+            .target_session_lookups
+            .fetch_add(1, Ordering::SeqCst);
         let facts = await_deadline(deadline, manager.terminal_snapshot_session_facts()).await??;
         let ids: Vec<Uuid> = facts.iter().map(|fact| fact.id).collect();
         let pty_manager = Arc::clone(&context.pty_manager);
+        #[cfg(test)]
+        self.test_state
+            .target_route_lookups
+            .fetch_add(1, Ordering::SeqCst);
         let proofs = run_blocking_with_deadline(deadline, &permit, &audit, move || {
             PtyManager::snapshot_route_proofs(&pty_manager, &ids)
         })
@@ -1140,6 +1236,8 @@ impl TerminalSnapshotFinalization {
             Result<Vec<u8>, TerminalSnapshotReasonCode>,
         ) -> Result<(), TerminalSnapshotReasonCode>,
     {
+        #[cfg(test)]
+        self.state.run_host_final_handoff_hook();
         let result =
             finalize_host_publication(success_bytes, final_revalidate_blocking(&self), publish);
         match result {
@@ -1592,6 +1690,9 @@ impl From<crate::errors::AppError> for TerminalSnapshotReasonCode {
         TerminalSnapshotReasonCode::SnapshotUnavailable
     }
 }
+
+#[cfg(test)]
+mod acceptance_tests;
 
 #[cfg(test)]
 mod tests {

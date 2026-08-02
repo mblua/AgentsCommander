@@ -438,6 +438,7 @@ fn protocol_request_name(name: &str) -> Option<&str> {
     Some(id)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn process_claimed<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     snapshot_state: Arc<crate::pty::terminal_snapshot::TerminalSnapshotState>,
@@ -581,7 +582,7 @@ async fn process_claimed<R: tauri::Runtime>(
                 claimed_from: request.from.clone(),
             },
             crate::pty::terminal_snapshot::TerminalSnapshotSourcePlane::HostCli,
-            service_request.host_authorization_deadline.clone(),
+            service_request.host_authorization_deadline,
             audit.clone(),
         )
         .await;

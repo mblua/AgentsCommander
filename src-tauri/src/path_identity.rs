@@ -361,11 +361,28 @@ pub fn sync_parent_best_effort(path: &Path) {
 pub fn publish_new_file_atomic(source: &Path, destination: &Path) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
 
+    fn canonical_leaf(path: &Path) -> Result<PathBuf, String> {
+        let leaf = path
+            .file_name()
+            .ok_or_else(|| "atomic_publish_failed".to_string())?;
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let parent =
+            std::fs::canonicalize(parent).map_err(|_| "atomic_publish_failed".to_string())?;
+        Ok(parent.join(leaf))
+    }
+
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
     }
     const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
+    // Canonicalizing only each existing parent supplies the Windows verbatim
+    // prefix needed beyond MAX_PATH while preserving the un-followed leaf name.
+    let source = canonical_leaf(source)?;
+    let destination = canonical_leaf(destination)?;
     let existing: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
     let new: Vec<u16> = destination
         .as_os_str()
