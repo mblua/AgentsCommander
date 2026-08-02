@@ -173,9 +173,11 @@ async fn post_inner(
         .await?;
     let (payload, finalization) = prepared.into_parts();
     let response_bytes = finalization.build_api_response(payload).await?;
+    #[cfg(test)]
+    snapshot_state.run_api_after_response_bytes_hook().await;
     let disclosure = finalization.revalidate_api().await?;
     #[cfg(test)]
-    snapshot_state.run_api_final_handoff_hook();
+    snapshot_state.run_api_final_handoff_hook().await;
 
     // Every source-plane byte and awaited authority check is complete. The
     // fresh registry guard, synchronous runtime proof, immutable response
@@ -223,6 +225,8 @@ async fn post_inner(
     };
     drop(final_guard);
     if authorized {
+        #[cfg(test)]
+        snapshot_state.record_api_success_handoff();
         disclosure.finalize_success();
     } else {
         disclosure.finalize_failure(TerminalSnapshotReasonCode::AuthorityChanged);

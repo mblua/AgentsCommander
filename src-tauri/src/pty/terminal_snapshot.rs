@@ -43,7 +43,10 @@ type TerminalSnapshotTestHook = Box<dyn FnOnce() + Send + 'static>;
 struct TerminalSnapshotTestState {
     target_session_lookups: std::sync::atomic::AtomicUsize,
     target_route_lookups: std::sync::atomic::AtomicUsize,
+    api_success_handoffs: std::sync::atomic::AtomicUsize,
     host_before_final_revalidation: Mutex<Option<TerminalSnapshotTestHook>>,
+    api_before_capture: Mutex<Option<TerminalSnapshotTestHook>>,
+    api_after_response_bytes: Mutex<Option<TerminalSnapshotTestHook>>,
     api_before_final_binding: Mutex<Option<TerminalSnapshotTestHook>>,
     response_after_publish: Mutex<Option<TerminalSnapshotTestHook>>,
 }
@@ -535,12 +538,45 @@ impl TerminalSnapshotState {
     }
 
     #[cfg(test)]
+    pub(crate) fn install_api_before_capture_hook(&self, hook: impl FnOnce() + Send + 'static) {
+        *self
+            .test_state
+            .api_before_capture
+            .lock()
+            .expect("API before-capture test hook lock") = Some(Box::new(hook));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_api_after_response_bytes_hook(
+        &self,
+        hook: impl FnOnce() + Send + 'static,
+    ) {
+        *self
+            .test_state
+            .api_after_response_bytes
+            .lock()
+            .expect("API response-bytes test hook lock") = Some(Box::new(hook));
+    }
+
+    #[cfg(test)]
     pub(crate) fn install_api_final_handoff_hook(&self, hook: impl FnOnce() + Send + 'static) {
         *self
             .test_state
             .api_before_final_binding
             .lock()
             .expect("API final-handoff test hook lock") = Some(Box::new(hook));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_api_success_handoffs(&self) -> usize {
+        self.test_state.api_success_handoffs.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_api_success_handoff(&self) {
+        self.test_state
+            .api_success_handoffs
+            .fetch_add(1, Ordering::SeqCst);
     }
 
     #[cfg(test)]
@@ -566,7 +602,35 @@ impl TerminalSnapshotState {
     }
 
     #[cfg(test)]
-    pub(crate) fn run_api_final_handoff_hook(&self) {
+    async fn run_api_before_capture_hook(&self) {
+        let hook = self
+            .test_state
+            .api_before_capture
+            .lock()
+            .expect("API before-capture test hook lock")
+            .take();
+        if let Some(hook) = hook {
+            hook();
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn run_api_after_response_bytes_hook(&self) {
+        let hook = self
+            .test_state
+            .api_after_response_bytes
+            .lock()
+            .expect("API response-bytes test hook lock")
+            .take();
+        if let Some(hook) = hook {
+            hook();
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn run_api_final_handoff_hook(&self) {
         let hook = self
             .test_state
             .api_before_final_binding
@@ -575,6 +639,7 @@ impl TerminalSnapshotState {
             .take();
         if let Some(hook) = hook {
             hook();
+            tokio::task::yield_now().await;
         }
     }
 
@@ -962,6 +1027,10 @@ impl TerminalSnapshotState {
             return Err(TerminalSnapshotReasonCode::SnapshotUnavailable);
         }
         audit.accept_selected(&selected.fact);
+        #[cfg(test)]
+        if source_plane == TerminalSnapshotSourcePlane::ContainerApi {
+            self.run_api_before_capture_hook().await;
+        }
 
         let capture_kind = selected.fact.backend_kind;
         let capture_cwd = selected.cwd_identity.clone();

@@ -33,6 +33,10 @@ const LEAKAGE_TEST_NAME: &str = "pty::terminal_snapshot::acceptance_tests::real_
 const PANIC_CHILD_ENV: &str = "AC_TERMINAL_SNAPSHOT_PANIC_CHILD";
 const PANIC_CANARY_FILE_ENV: &str = "AC_TERMINAL_SNAPSHOT_PANIC_CANARY_FILE";
 const PANIC_TEST_NAME: &str = "pty::terminal_snapshot::acceptance_tests::snapshot_production_panic_boundaries_are_payload_free";
+const API_CANCELLATION_CHILD_ENV: &str = "AC_TERMINAL_SNAPSHOT_API_CANCELLATION_CHILD";
+const API_CANCELLATION_CANARY_FILE_ENV: &str = "AC_TERMINAL_SNAPSHOT_API_CANCELLATION_CANARY_FILE";
+const API_CANCELLATION_TEST_NAME: &str = "pty::terminal_snapshot::acceptance_tests::api_async_cancellation_reclaims_authority_without_disclosure";
+const BODY_DISCONNECT_SENTINEL: &str = "ACSNAP_BODY_DISCONNECT_1173_C6Q4";
 const SCREEN_SENTINEL: &str = "ACSNAP_CELL_CANARY_1173_Z9Q7";
 const OSC_TITLE_SENTINEL: &str = "ACSNAP_OSC_TITLE_CANARY_1173_Z9Q7";
 const OSC_HYPERLINK_SENTINEL: &str = "ACSNAP_OSC_HYPERLINK_CANARY_1173_Z9Q7";
@@ -278,6 +282,7 @@ struct AcceptanceFixture {
     settings: crate::config::settings::SettingsState,
     settings_path: PathBuf,
     registry_path: PathBuf,
+    message_store: Arc<crate::api::message_store::MessageStore>,
     session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
     pty_manager: Arc<std::sync::Mutex<PtyManager>>,
     local_backend: Arc<FixtureBackend>,
@@ -470,7 +475,7 @@ impl AcceptanceFixture {
             .manage(restore)
             .manage(purge)
             .manage(crate::api::message_store::MessageStoreState::ready(
-                message_store,
+                Arc::clone(&message_store),
             ))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("terminal snapshot acceptance app");
@@ -482,6 +487,7 @@ impl AcceptanceFixture {
             settings,
             settings_path,
             registry_path,
+            message_store,
             session_manager,
             pty_manager,
             local_backend,
@@ -789,6 +795,214 @@ async fn post_api_bytes(
     let headers = response.headers().clone();
     let bytes = response.bytes().await.expect("snapshot API bytes").to_vec();
     (status, headers, bytes)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ApiLifecycleCounts {
+    ingress_available: usize,
+    requester_in_flight: usize,
+    target_in_flight: usize,
+    global_in_flight: usize,
+}
+
+fn api_lifecycle_counts(state: &TerminalSnapshotState) -> ApiLifecycleCounts {
+    let limiter = state.limiter.lock().expect("snapshot limiter state");
+    ApiLifecycleCounts {
+        ingress_available: state.ingress.available_permits(),
+        requester_in_flight: limiter.requester_in_flight.values().copied().sum(),
+        target_in_flight: limiter.target_in_flight.values().copied().sum(),
+        global_in_flight: limiter.global_in_flight,
+    }
+}
+
+fn assert_api_lifecycle_active(counts: ApiLifecycleCounts, target_promoted: bool) {
+    assert_eq!(counts.ingress_available, SNAPSHOT_INGRESS_LIMIT);
+    assert_eq!(counts.requester_in_flight, 1);
+    assert_eq!(counts.target_in_flight, usize::from(target_promoted));
+    assert_eq!(counts.global_in_flight, 1);
+}
+
+fn assert_api_lifecycle_idle(state: &TerminalSnapshotState) {
+    assert_eq!(
+        api_lifecycle_counts(state),
+        ApiLifecycleCounts {
+            ingress_available: SNAPSHOT_INGRESS_LIMIT,
+            requester_in_flight: 0,
+            target_in_flight: 0,
+            global_in_flight: 0,
+        }
+    );
+}
+
+fn assert_no_api_test_hooks(state: &TerminalSnapshotState) {
+    assert!(state
+        .test_state
+        .api_before_capture
+        .lock()
+        .expect("API before-capture hook state")
+        .is_none());
+    assert!(state
+        .test_state
+        .api_after_response_bytes
+        .lock()
+        .expect("API response-bytes hook state")
+        .is_none());
+    assert!(state
+        .test_state
+        .api_before_final_binding
+        .lock()
+        .expect("API final-binding hook state")
+        .is_none());
+}
+
+fn direct_api_state(fixture: &AcceptanceFixture) -> crate::api::ApiState {
+    crate::api::ApiState {
+        store: Arc::new(crate::api::auth::ApiClientStore::new(
+            fixture.registry_path.clone(),
+        )),
+        message_store: Arc::clone(&fixture.message_store),
+        lockout: Arc::new(crate::api::auth::FailedAuthLockout::default()),
+        app_handle: fixture.app.handle().clone(),
+        session_mgr: Arc::clone(&fixture.session_manager),
+        pty_mgr: Arc::clone(&fixture.pty_manager),
+    }
+}
+
+fn direct_api_body(request_id: &str, target: &str) -> axum::body::Body {
+    axum::body::Body::from(
+        serde_json::to_vec(&serde_json::json!({
+            "apiVersion": "1",
+            "requestId": request_id,
+            "to": target,
+            "format": "json"
+        }))
+        .expect("direct API body"),
+    )
+}
+
+async fn run_direct_api_request(
+    state: crate::api::ApiState,
+    token: String,
+    body: axum::body::Body,
+) -> axum::response::Response {
+    let uri: axum::http::Uri = "/api/v1/terminal-snapshot"
+        .parse()
+        .expect("terminal snapshot URI");
+    let request = axum::http::Request::builder()
+        .method(axum::http::Method::POST)
+        .uri(uri.clone())
+        .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(body)
+        .expect("direct terminal snapshot request");
+    crate::api::handlers::terminal_snapshot::post(
+        axum::extract::State(state),
+        axum::extract::ConnectInfo("127.0.0.1:1173".parse().expect("direct API peer address")),
+        axum::extract::OriginalUri(uri),
+        request,
+    )
+    .await
+}
+
+async fn await_api_barrier<T>(
+    receiver: tokio::sync::oneshot::Receiver<T>,
+    label: &'static str,
+) -> T {
+    tokio::time::timeout(Duration::from_secs(10), receiver)
+        .await
+        .expect(label)
+        .expect(label)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ApiAbortPoint {
+    BeforeCapture,
+    AfterResponseBytes,
+    FinalHandoff,
+}
+
+async fn abort_direct_api_request_at(
+    fixture: &AcceptanceFixture,
+    point: ApiAbortPoint,
+    request_id: &str,
+    target: &str,
+) -> ApiLifecycleCounts {
+    let state = direct_api_state(fixture);
+    let token = fixture.api_coordinator_token.secret.clone();
+    let body = direct_api_body(request_id, target);
+    let (start_tx, start_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        start_rx.await.expect("start direct API cancellation");
+        run_direct_api_request(state, token, body).await
+    });
+    let abort = task.abort_handle();
+    let state_for_hook = Arc::clone(&fixture.snapshot_state);
+    let (arrived_tx, arrived_rx) = tokio::sync::oneshot::channel();
+    let hook = move || {
+        let counts = api_lifecycle_counts(&state_for_hook);
+        let _ = arrived_tx.send(counts);
+        abort.abort();
+    };
+    match point {
+        ApiAbortPoint::BeforeCapture => {
+            fixture.snapshot_state.install_api_before_capture_hook(hook)
+        }
+        ApiAbortPoint::AfterResponseBytes => fixture
+            .snapshot_state
+            .install_api_after_response_bytes_hook(hook),
+        ApiAbortPoint::FinalHandoff => fixture.snapshot_state.install_api_final_handoff_hook(hook),
+    }
+    start_tx.send(()).expect("release direct API start gate");
+    let counts = await_api_barrier(arrived_rx, "API cancellation hook was not reached").await;
+    let joined = tokio::time::timeout(Duration::from_secs(10), task)
+        .await
+        .expect("aborted API handler did not finish");
+    match joined {
+        Err(error) => assert!(error.is_cancelled()),
+        Ok(_) => panic!("aborted API handler returned a response"),
+    }
+    counts
+}
+
+fn assert_api_audit_row(
+    config: &Path,
+    canaries: &[String],
+    expected_total: usize,
+    expected_status: &str,
+    expected_reason: Option<TerminalSnapshotReasonCode>,
+    expected_request_id: Option<&str>,
+) {
+    let rows = snapshot_audit_rows(config, canaries);
+    assert_eq!(rows.len(), expected_total);
+    let row = rows.last().expect("latest API cancellation audit row");
+    assert_eq!(
+        row.get("sourcePlane").and_then(serde_json::Value::as_str),
+        Some(TerminalSnapshotSourcePlane::ContainerApi.as_str())
+    );
+    assert_eq!(
+        row.get("status").and_then(serde_json::Value::as_str),
+        Some(expected_status)
+    );
+    assert_eq!(
+        row.get("reasonCode").and_then(serde_json::Value::as_str),
+        expected_reason.map(TerminalSnapshotReasonCode::as_str)
+    );
+    assert_eq!(
+        row.get("requestId").and_then(serde_json::Value::as_str),
+        expected_request_id
+    );
+    assert!(row.get("acceptedAt").is_some());
+    assert!(row.get("completedAt").is_some());
+}
+
+struct BodyStreamDropProbe(Option<tokio::sync::oneshot::Sender<()>>);
+
+impl Drop for BodyStreamDropProbe {
+    fn drop(&mut self) {
+        if let Some(sender) = self.0.take() {
+            let _ = sender.send(());
+        }
+    }
 }
 
 fn available_loopback_port() -> u16 {
@@ -1235,6 +1449,328 @@ fn real_host_and_api_daemon_paths_enforce_no_oracle_and_final_handoff() {
             .await
             .expect("API shutdown deadline")
             .expect("API server task");
+    });
+}
+
+#[test]
+fn api_async_cancellation_reclaims_authority_without_disclosure() {
+    if std::env::var_os(API_CANCELLATION_CHILD_ENV).is_none() {
+        let temporary_root = std::env::current_dir()
+            .expect("API cancellation parent current directory")
+            .join("target")
+            .join("terminal-snapshot-acceptance-temp");
+        std::fs::create_dir_all(&temporary_root).expect("API cancellation parent temporary root");
+        let evidence = tempfile::Builder::new()
+            .prefix("api-cancellation-evidence-")
+            .tempdir_in(temporary_root)
+            .expect("API cancellation evidence directory");
+        let canary_file = evidence.path().join("canaries.json");
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("API cancellation test executable"),
+        )
+        .args([
+            "--exact",
+            API_CANCELLATION_TEST_NAME,
+            "--test-threads=1",
+            "--nocapture",
+        ])
+        .env(API_CANCELLATION_CHILD_ENV, "1")
+        .env(API_CANCELLATION_CANARY_FILE_ENV, &canary_file)
+        .output()
+        .expect("spawn isolated API cancellation test");
+        let canaries: Vec<String> = std::fs::read(&canary_file)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_else(|| {
+                [
+                    SCREEN_SENTINEL,
+                    OSC_TITLE_SENTINEL,
+                    OSC_HYPERLINK_SENTINEL,
+                    OSC_CLIPBOARD_SENTINEL,
+                    BODY_DISCONNECT_SENTINEL,
+                ]
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+            });
+        assert_canaries_absent_except(&output.stdout, &canaries, &[], "cancellation child stdout");
+        assert_canaries_absent_except(&output.stderr, &canaries, &[], "cancellation child stderr");
+        if !output.status.success() {
+            let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let mut stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            for canary in &canaries {
+                stdout = stdout.replace(canary, "<redacted-canary>");
+                stderr = stderr.replace(canary, "<redacted-canary>");
+            }
+            panic!("isolated API cancellation test failed; stdout={stdout:?}; stderr={stderr:?}");
+        }
+        return;
+    }
+
+    let temporary_root = std::env::current_dir()
+        .expect("API cancellation current directory")
+        .join("target")
+        .join("terminal-snapshot-acceptance-temp");
+    std::fs::create_dir_all(&temporary_root).expect("API cancellation temporary root");
+    let temporary = tempfile::Builder::new()
+        .prefix("api-cancellation-")
+        .tempdir_in(temporary_root)
+        .expect("API cancellation temporary directory");
+    let config = temporary.path().join("config");
+    std::fs::create_dir_all(&config).expect("API cancellation config directory");
+    let _env = ConfigEnvGuard::set(&config);
+    std::env::set_var("RUST_LOG", "vt100=trace,agentscommander=trace");
+    crate::logging::init_logger();
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .expect("API cancellation runtime");
+    runtime.block_on(async move {
+        let fixture = AcceptanceFixture::new(temporary).await;
+        let target = format!("{PROJECT}:{WORKGROUP}/member-live");
+        let mut canaries = vec![
+            SCREEN_SENTINEL.to_string(),
+            OSC_TITLE_SENTINEL.to_string(),
+            OSC_HYPERLINK_SENTINEL.to_string(),
+            OSC_CLIPBOARD_SENTINEL.to_string(),
+            BODY_DISCONNECT_SENTINEL.to_string(),
+            fixture.api_coordinator_token.secret.clone(),
+        ];
+        canaries.sort();
+        canaries.dedup();
+        let canary_file = PathBuf::from(
+            std::env::var_os(API_CANCELLATION_CANARY_FILE_ENV)
+                .expect("API cancellation canary file path"),
+        );
+        std::fs::write(
+            canary_file,
+            serde_json::to_vec(&canaries).expect("API cancellation canary manifest"),
+        )
+        .expect("write API cancellation canary manifest");
+
+        assert_api_lifecycle_idle(&fixture.snapshot_state);
+        assert_eq!(fixture.snapshot_state.test_api_success_handoffs(), 0);
+        assert_eq!(fixture.local_backend.mutations(), 0);
+        assert_eq!(
+            fixture.local_backend.counts(fixture.live_member.id).copies,
+            0
+        );
+
+        let state_for_disconnect = Arc::clone(&fixture.snapshot_state);
+        let (disconnect_polled_tx, disconnect_polled_rx) = tokio::sync::oneshot::channel();
+        let disconnect_stream = futures_util::stream::once(async move {
+            let _ = disconnect_polled_tx.send(api_lifecycle_counts(&state_for_disconnect));
+            Err::<axum::body::Bytes, _>(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                BODY_DISCONNECT_SENTINEL,
+            ))
+        });
+        let disconnect_response = tokio::time::timeout(
+            Duration::from_secs(10),
+            run_direct_api_request(
+                direct_api_state(&fixture),
+                fixture.api_coordinator_token.secret.clone(),
+                axum::body::Body::from_stream(disconnect_stream),
+            ),
+        )
+        .await
+        .expect("disconnected API body handler did not finish");
+        assert_api_lifecycle_active(
+            await_api_barrier(
+                disconnect_polled_rx,
+                "authenticated disconnected body was not polled",
+            )
+            .await,
+            false,
+        );
+        let disconnect_status = disconnect_response.status();
+        let disconnect_bytes = axum::body::to_bytes(
+            disconnect_response.into_body(),
+            terminal_snapshot_renderer::MAX_ERROR_BYTES,
+        )
+        .await
+        .expect("fixed disconnected-body response");
+        assert_eq!(disconnect_status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            decode_api_error(&disconnect_bytes, disconnect_status.as_u16())
+                .expect("strict disconnected-body error")
+                .error,
+            TerminalSnapshotReasonCode::InvalidRequest
+        );
+        assert_api_lifecycle_idle(&fixture.snapshot_state);
+        assert_api_audit_row(
+            &config,
+            &canaries,
+            1,
+            "rejected",
+            Some(TerminalSnapshotReasonCode::InvalidRequest),
+            None,
+        );
+        assert_eq!(fixture.snapshot_state.test_api_success_handoffs(), 0);
+
+        let state_for_pending_body = Arc::clone(&fixture.snapshot_state);
+        let (pending_polled_tx, pending_polled_rx) = tokio::sync::oneshot::channel();
+        let (pending_dropped_tx, pending_dropped_rx) = tokio::sync::oneshot::channel();
+        let mut pending_polled_tx = Some(pending_polled_tx);
+        let pending_drop_probe = BodyStreamDropProbe(Some(pending_dropped_tx));
+        let pending_stream = futures_util::stream::poll_fn(move |_context| {
+            let _retain_probe = &pending_drop_probe;
+            if let Some(sender) = pending_polled_tx.take() {
+                let _ = sender.send(api_lifecycle_counts(&state_for_pending_body));
+            }
+            std::task::Poll::<Option<Result<axum::body::Bytes, std::io::Error>>>::Pending
+        });
+        let mut pending_handler = Box::pin(run_direct_api_request(
+            direct_api_state(&fixture),
+            fixture.api_coordinator_token.secret.clone(),
+            axum::body::Body::from_stream(pending_stream),
+        ));
+        let pending_counts = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::select! {
+                counts = pending_polled_rx => counts.expect("pending body poll counts"),
+                response = &mut pending_handler => {
+                    panic!("pending body returned status {}", response.status())
+                }
+            }
+        })
+        .await
+        .expect("pending authenticated body was not polled");
+        assert_api_lifecycle_active(pending_counts, false);
+        drop(pending_handler);
+        await_api_barrier(
+            pending_dropped_rx,
+            "dropped API future retained its pending body stream",
+        )
+        .await;
+        assert_api_lifecycle_idle(&fixture.snapshot_state);
+        assert_api_audit_row(
+            &config,
+            &canaries,
+            2,
+            "failed",
+            Some(TerminalSnapshotReasonCode::Internal),
+            None,
+        );
+        assert_eq!(fixture.snapshot_state.test_api_success_handoffs(), 0);
+        assert_eq!(
+            fixture.local_backend.counts(fixture.live_member.id).copies,
+            0
+        );
+
+        let before_capture_id = Uuid::new_v4().to_string();
+        let before_capture_counts = abort_direct_api_request_at(
+            &fixture,
+            ApiAbortPoint::BeforeCapture,
+            &before_capture_id,
+            &target,
+        )
+        .await;
+        assert_api_lifecycle_active(before_capture_counts, true);
+        assert_api_lifecycle_idle(&fixture.snapshot_state);
+        assert_api_audit_row(
+            &config,
+            &canaries,
+            3,
+            "failed",
+            Some(TerminalSnapshotReasonCode::Internal),
+            Some(&before_capture_id),
+        );
+        assert_eq!(
+            fixture.local_backend.counts(fixture.live_member.id).copies,
+            0
+        );
+        assert_eq!(fixture.snapshot_state.test_api_success_handoffs(), 0);
+
+        let after_bytes_id = Uuid::new_v4().to_string();
+        let after_bytes_counts = abort_direct_api_request_at(
+            &fixture,
+            ApiAbortPoint::AfterResponseBytes,
+            &after_bytes_id,
+            &target,
+        )
+        .await;
+        assert_api_lifecycle_active(after_bytes_counts, true);
+        assert_api_lifecycle_idle(&fixture.snapshot_state);
+        assert_api_audit_row(
+            &config,
+            &canaries,
+            4,
+            "failed",
+            Some(TerminalSnapshotReasonCode::Internal),
+            Some(&after_bytes_id),
+        );
+        assert_eq!(
+            fixture.local_backend.counts(fixture.live_member.id).copies,
+            1
+        );
+        assert_eq!(fixture.snapshot_state.test_api_success_handoffs(), 0);
+
+        let final_handoff_id = Uuid::new_v4().to_string();
+        let final_handoff_counts = abort_direct_api_request_at(
+            &fixture,
+            ApiAbortPoint::FinalHandoff,
+            &final_handoff_id,
+            &target,
+        )
+        .await;
+        assert_api_lifecycle_active(final_handoff_counts, true);
+        assert_api_lifecycle_idle(&fixture.snapshot_state);
+        assert_api_audit_row(
+            &config,
+            &canaries,
+            5,
+            "failed",
+            Some(TerminalSnapshotReasonCode::Internal),
+            Some(&final_handoff_id),
+        );
+        assert_eq!(
+            fixture.local_backend.counts(fixture.live_member.id).copies,
+            2
+        );
+        assert_eq!(fixture.snapshot_state.test_api_success_handoffs(), 0);
+
+        let success_id = Uuid::new_v4().to_string();
+        let success_response = tokio::time::timeout(
+            Duration::from_secs(10),
+            run_direct_api_request(
+                direct_api_state(&fixture),
+                fixture.api_coordinator_token.secret.clone(),
+                direct_api_body(&success_id, &target),
+            ),
+        )
+        .await
+        .expect("capacity-reuse API request did not finish");
+        let success_status = success_response.status();
+        let success_bytes = axum::body::to_bytes(
+            success_response.into_body(),
+            terminal_snapshot_renderer::MAX_TRANSPORT_BYTES,
+        )
+        .await
+        .expect("capacity-reuse API response");
+        assert_eq!(success_status, StatusCode::OK);
+        let success = decode_api_success(
+            &success_bytes,
+            &success_id,
+            &target,
+            TerminalSnapshotFormat::Json,
+        )
+        .expect("strict capacity-reuse API success");
+        assert!(payload_has_sentinel(&success.result));
+        drop(success);
+        drop(success_bytes);
+        assert_api_lifecycle_idle(&fixture.snapshot_state);
+        assert_eq!(fixture.snapshot_state.test_api_success_handoffs(), 1);
+        assert_api_audit_row(&config, &canaries, 6, "succeeded", None, Some(&success_id));
+        assert_eq!(
+            fixture.local_backend.counts(fixture.live_member.id).copies,
+            3
+        );
+        assert_eq!(fixture.local_backend.mutations(), 0);
+        assert_no_api_test_hooks(&fixture.snapshot_state);
+        assert_cleanup_and_secondary_surfaces(&fixture, &config, &canaries);
+        log::logger().flush();
     });
 }
 
