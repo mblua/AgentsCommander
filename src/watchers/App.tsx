@@ -70,6 +70,36 @@ export const POLL_TIMEOUT_MS = 8_000;
 export const POLL_TIMEOUT_MESSAGE =
   "Activity refresh timed out. The list may be out of date; retrying.";
 
+/** How long the whole mount chain may take before what is left of it is abandoned.
+ *
+ *  #1196: shared across all eight startup awaits, not per await. A per-await deadline on a
+ *  sequential chain multiplies, and a backend that has stopped answering makes every
+ *  remaining await time out in turn, so eight awaits at one deadline each is the expected
+ *  case rather than the pathological one. Expressed as an absolute expiry taken once, so the
+ *  worst case from mount to arming is this value plus change rather than eight times it,
+ *  under a responsive event loop. It is a service target, not a hard bound: `setTimeout`
+ *  gives a minimum delay, and `Date.now()` is wall-clock.
+ *
+ *  It is NOT a per-call allowance. Step #1 can consume nearly all of it. 10s over eight
+ *  sequential operations fires once their TOTAL passes it, i.e. an average above 1250ms if
+ *  the eight account for the whole elapsed budget. It exceeds POLL_TIMEOUT_MS because eight
+ *  calls need more than the one call a poll round makes, and it does not exceed
+ *  POLL_FOCUSED_MS because a window that is not polling by the time its first period would
+ *  have elapsed has stopped being a live view. Exported for the invariant test. */
+export const MOUNT_TIMEOUT_MS = 10_000;
+
+/** What `withDeadline` rejects with when the mount budget runs out. Logged, never painted:
+ *  the per-step context is in the log prefix and the user-facing statement is
+ *  STARTUP_DEGRADED_MESSAGE. */
+export const MOUNT_TIMEOUT_MESSAGE = "The window did not finish starting up in time.";
+
+/** What the window says when any startup step did not complete. Persistent, because the
+ *  window cannot tell which of the losses will repair themselves and which will not, and
+ *  reopening is the only reliable retry. Exported so the regression test asserts the exact
+ *  string the window paints. */
+export const STARTUP_DEGRADED_MESSAGE =
+  "This window did not finish starting up, so some updates may be missing. Close it and open it again to retry.";
+
 /** How long a move or resize settles before the rect is persisted. */
 const GEOMETRY_SAVE_DEBOUNCE_MS = 500;
 
@@ -190,6 +220,23 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
     listeners.push(unlisten);
   };
 
+  /** At most one `get_settings` in flight from this window at a time.
+   *
+   *  #1196: arming the poll means `runPollRound` refreshes the settings every period, and
+   *  nothing on that path is bounded (`stores/settings.ts:28-32` -> `invoke("get_settings")`,
+   *  `transport-tauri.ts:23-26`). Without this, a `get_settings` that never answers collects
+   *  one abandoned call per period for the life of the window. The flag is cleared by
+   *  `finally`, so a call that eventually lands frees the next refresh; a call that never
+   *  lands correctly stops this window from asking again. */
+  let settingsLoadInFlight = false;
+  const loadSettingsOnce = (): Promise<void> => {
+    if (settingsLoadInFlight) return Promise.resolve();
+    settingsLoadInFlight = true;
+    return settingsStore.load().finally(() => {
+      settingsLoadInFlight = false;
+    });
+  };
+
   // `null` is the "All sessions" scope. The query parameter is the INITIAL value only, so the
   // first paint has a scope without waiting for a round trip; the pull below is authoritative.
   const [scopeSessionId, setScopeSessionId] = createSignal<string | null>(
@@ -199,6 +246,9 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
   const [rows, setRows] = createSignal<ActivityRow[]>([]);
   const [snapshots, setSnapshots] = createSignal<WatcherActivitySnapshot[]>([]);
   const [loadError, setLoadError] = createSignal("");
+  /** True once any startup step failed or was abandoned. Never cleared: see
+   *  STARTUP_DEGRADED_MESSAGE. */
+  const [startupDegraded, setStartupDegraded] = createSignal(false);
   /** False until the mount has settled the scope. Nothing may be fetched before it. */
   const [scopeSettled, setScopeSettled] = createSignal(false);
 
@@ -377,14 +427,35 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
    */
   let sessionsRequestCounter = 0;
 
-  const reloadSessions = async () => {
+  /**
+   * List the sessions and adopt the answer, REJECTING if the call fails.
+   *
+   * #1196: split from `reloadSessions` because the mount has to see a failure in order to
+   * report it, while the three session listeners want it swallowed. One function that catches
+   * internally cannot serve both, and the version that did is exactly how a rejecting
+   * `list_sessions` reached the user as a blank window with no banner at all.
+   *
+   * The stale guard is applied to the failure as well as to the success: an answer that is no
+   * longer the newest is not this window's problem, whichever way it went.
+   */
+  const loadSessions = async (): Promise<void> => {
     const request = (sessionsRequestCounter += 1);
+    let listed: Session[];
     try {
-      const listed = await SessionAPI.list();
-      if (disposed || request !== sessionsRequestCounter) return;
-      setSessions(listed);
+      listed = await SessionAPI.list();
     } catch (err) {
       if (disposed || request !== sessionsRequestCounter) return;
+      throw err;
+    }
+    if (disposed || request !== sessionsRequestCounter) return;
+    setSessions(listed);
+  };
+
+  /** Best-effort for the three session listeners, which must not fail an event handler. */
+  const reloadSessions = async (): Promise<void> => {
+    try {
+      await loadSessions();
+    } catch (err) {
       console.error("[watchers] failed to list sessions:", err);
     }
   };
@@ -457,7 +528,11 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
         // The poll also refreshes the settings store, so a watcher saved from the modal turns
         // the "no watcher reaches this agent" state into "configured and waiting" without the
         // user reopening the window. There is no cross-window settings event to use instead.
-        settingsStore.refresh();
+        // #1196: single-flighted, because arming the poll would otherwise collect one
+        // abandoned `get_settings` per period while the command is not answering.
+        void loadSettingsOnce().catch((err) =>
+          console.error("[watchers] settings refresh:", err)
+        );
       }
     }
   };
@@ -475,59 +550,119 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
   };
 
   onMount(async () => {
-    try {
-      // The store does not autoload, and both the live agent-label fallback and the theme
-      // need it. A failure here costs labels and the theme, not the window.
-      await settingsStore
-        .load()
-        .catch((err) => console.error("[watchers] settings load:", err));
-      if (disposed) return;
+    // #1196: ONE budget for the whole startup chain, taken once and expressed as an absolute
+    // expiry, so each step races what is LEFT of it. A per-await deadline would multiply on a
+    // sequential chain, and a backend that has stopped answering makes every remaining await
+    // time out in turn, so the multiplication is the expected case rather than the corner one.
+    const budgetEndsAt = Date.now() + MOUNT_TIMEOUT_MS;
 
-      // Subscribe BEFORE fetching: a match landing between the two would otherwise be lost.
-      // The overlap it creates is exact rather than heuristic, because the merge keys on
-      // `(sessionId, seq)`.
-      await register(
-        onWatcherMatches((batch) => {
-          if (!scopeIds().includes(batch.sessionId)) return;
-          const session = sessionById(batch.sessionId);
-          const incoming = batch.matches.map((match) => freezeRow(match, session));
-          setRows((prev) => capPerSession(mergeRows(prev, incoming), scopeLimit()));
-          if (pinnedTop() && scrollEl) scrollEl.scrollTop = 0;
-        })
-      );
-      await register(
-        onWatchersScopeRequest(({ sessionId }) => {
-          scopeEventGeneration += 1;
-          setScopeSessionId(sessionId);
-          // No fetch is issued here. Every fetch is issued by the scope effect, keyed on the
-          // fetch scope itself.
-        })
-      );
-      await register(onSessionCreated(() => void reloadSessions()));
-      await register(onSessionDestroyed(() => void reloadSessions()));
-      await register(onSessionRenamed(() => void reloadSessions()));
-
-      await reloadSessions();
-      if (disposed) return;
-
-      // The pull, issued AFTER the subscribe and adopted unless an event has been handled
-      // since. The window label exists the moment the builder returns while this listener
-      // exists only now, and Tauri queues nothing for a listener that did not exist yet, so an
-      // emit that raced the subscribe is recovered exactly here. A failure leaves the query
-      // parameter standing, which is the scope the window was opened with.
-      const generationAtIssue = scopeEventGeneration;
+    /**
+     * One step of the mount: bounded by the shared budget, and survivable.
+     *
+     * #1196: the deadline is what turns "never settles" into "settles as a failure", and
+     * swallowing that failure is what lets the chain reach its arming point. The two are one
+     * decision: a bound whose rejection still ends the mount only converts a silent dead window
+     * into a loud one.
+     *
+     * `disposed` is the one thing that is NOT a degradation. `register` throws `mountDisposed`
+     * when the window closed under it, and that has to keep ending the mount, so it is rethrown
+     * rather than reported.
+     *
+     * `work` is evaluated BEFORE this is entered, which is the point: the IPC call is issued
+     * regardless, and only the WAIT is bounded. A step that inherits an exhausted budget still
+     * issues its call.
+     */
+    const step = async <T,>(work: Promise<T>, what: string): Promise<T | undefined> => {
       try {
-        const pulled = await WindowAPI.getWatchersScope();
+        return await withDeadline(
+          work,
+          Math.max(0, budgetEndsAt - Date.now()),
+          MOUNT_TIMEOUT_MESSAGE
+        );
+      } catch (err) {
+        if (err === mountDisposed || disposed) throw err;
+        console.error(`[watchers] mount step "${what}" did not complete:`, err);
+        setStartupDegraded(true);
+        return undefined;
+      }
+    };
+
+    try {
+      try {
+        // The store does not autoload, and both the live agent-label fallback and the theme
+        // need it. A failure here costs labels and the theme, not the window.
+        await step(loadSettingsOnce(), "load settings");
+        if (disposed) return;
+
+        // Subscribe BEFORE fetching: a match landing between the two would otherwise be lost.
+        // The overlap it creates is exact rather than heuristic, because the merge keys on
+        // `(sessionId, seq)`.
+        await step(
+          register(
+            onWatcherMatches((batch) => {
+              if (!scopeIds().includes(batch.sessionId)) return;
+              const session = sessionById(batch.sessionId);
+              const incoming = batch.matches.map((match) => freezeRow(match, session));
+              setRows((prev) => capPerSession(mergeRows(prev, incoming), scopeLimit()));
+              if (pinnedTop() && scrollEl) scrollEl.scrollTop = 0;
+            })
+          ),
+          "subscribe to watcher matches"
+        );
+        await step(
+          register(
+            onWatchersScopeRequest(({ sessionId }) => {
+              scopeEventGeneration += 1;
+              setScopeSessionId(sessionId);
+              // No fetch is issued here. Every fetch is issued by the scope effect, keyed on
+              // the fetch scope itself.
+            })
+          ),
+          "subscribe to scope requests"
+        );
+        await step(
+          register(onSessionCreated(() => void reloadSessions())),
+          "subscribe to session created"
+        );
+        await step(
+          register(onSessionDestroyed(() => void reloadSessions())),
+          "subscribe to session destroyed"
+        );
+        await step(
+          register(onSessionRenamed(() => void reloadSessions())),
+          "subscribe to session renamed"
+        );
+
+        // `loadSessions`, not `reloadSessions`: the best-effort wrapper catches internally and
+        // therefore FULFILS, so `step()` could not see a rejecting `list_sessions` and the
+        // notice would be absent in exactly the case that reproduces #1196's symptom.
+        await step(loadSessions(), "list sessions");
+        if (disposed) return;
+
+        // The pull, issued AFTER the subscribe and adopted unless an event has been handled
+        // since. The window label exists the moment the builder returns while this listener
+        // exists only now, and Tauri queues nothing for a listener that did not exist yet, so an
+        // emit that raced the subscribe is recovered exactly here. A failure leaves the query
+        // parameter standing, which is the scope the window was opened with.
+        const generationAtIssue = scopeEventGeneration;
+        const pulled = await step(WindowAPI.getWatchersScope(), "pull the requested scope");
         if (disposed) return;
         if (pulled && scopeEventGeneration === generationAtIssue) setScopeSessionId(pulled);
-      } catch (err) {
-        if (disposed) return;
-        console.error("[watchers] failed to pull the requested scope:", err);
+      } finally {
+        // #1196: arming runs on EVERY path out of the chain -- a step that failed, a step
+        // abandoned at the budget, or a `disposed` return above. The guarantee is two-part and
+        // half of it is not enough: a `finally` does not run for a promise that never settles,
+        // so it holds only because every await inside this `try` goes through `step()`. A ninth
+        // UNWRAPPED await added in here would reintroduce #1196 at a new position.
+        //
+        // It wraps only the chain, never the geometry block below: `trackGeometry()` awaits a
+        // dynamic import outside its own `try`, and arming behind that would recreate this
+        // exact defect one statement later.
+        if (!disposed) {
+          setScopeSettled(true);
+          schedulePoll();
+        }
       }
-
-      // Only now may anything be fetched.
-      setScopeSettled(true);
-      schedulePoll();
 
       if (isTauri) {
         // Held in a variable that the SYNCHRONOUS `onCleanup` below runs. Calling `onCleanup`
@@ -758,6 +893,14 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
       <Show when={loadError()}>
         <div class="watchers-banner watchers-banner-error" data-ac-testid="watchers.error">
           {loadError()}
+        </div>
+      </Show>
+
+      {/* Startup, not the last round: this one is written once and never cleared, because the
+          window cannot tell which of the losses it is reporting will repair themselves. */}
+      <Show when={startupDegraded()}>
+        <div class="watchers-banner" data-ac-testid="watchers.startupDegraded">
+          {STARTUP_DEGRADED_MESSAGE}
         </div>
       </Show>
 
