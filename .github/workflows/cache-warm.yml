@@ -1,0 +1,164 @@
+name: Cache warm
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: cache-warm-main
+  cancel-in-progress: false
+
+jobs:
+  warm-debug:
+    name: warm-debug
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Pin npm version
+        run: npm install -g npm@11.6.2
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend assets for Tauri config validation
+        run: npm run build
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Record toolchain identity
+        run: rustc -vV
+
+      - name: Rust cache
+        id: cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+          shared-key: 'gate-debug'
+          env-vars: 'ImageOS ImageVersion'
+
+      - name: cargo check
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: src-tauri
+        run: cargo check --all-targets
+
+      - name: cargo clippy
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test (compile only)
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: src-tauri
+        run: cargo test --lib --bins --tests --no-run
+
+  warm-release:
+    name: warm-release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Pin npm version
+        run: npm install -g npm@11.6.2
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Record toolchain identity
+        run: rustc -vV
+
+      - name: Rust cache
+        id: cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+          shared-key: 'gate-release'
+          env-vars: 'ImageOS ImageVersion'
+
+      - name: Build Windows release binary
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: npm run build:prod:no-bundle
+
+  verify-debug-cache:
+    name: verify-debug-cache
+    needs: warm-debug
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Probe debug cache
+        id: probe
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+          shared-key: 'gate-debug'
+          env-vars: 'ImageOS ImageVersion'
+          save-if: 'false'
+          lookup-only: 'true'
+
+      - name: Fail if the debug cache is not present
+        if: steps.probe.outputs.cache-hit != 'true'
+        run: |
+          Write-Error "No exact gate-debug cache entry exists after the warm job. The warm job's save step failed silently or the key diverged. PR gates will run cold until this is fixed."
+          exit 1
+
+  verify-release-cache:
+    name: verify-release-cache
+    needs: warm-release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Probe release cache
+        id: probe
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+          shared-key: 'gate-release'
+          env-vars: 'ImageOS ImageVersion'
+          save-if: 'false'
+          lookup-only: 'true'
+
+      - name: Fail if the release cache is not present
+        if: steps.probe.outputs.cache-hit != 'true'
+        run: |
+          Write-Error "No exact gate-release cache entry exists after the warm job. The warm job's save step failed silently or the key diverged. PR gates will run cold until this is fixed."
+          exit 1
