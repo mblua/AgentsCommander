@@ -504,12 +504,39 @@ export function installDeterministicAnimationFrames(): DeterministicAnimationFra
     );
   };
 
+  // Cleanup after a failed install, per property and best effort. `restore()`
+  // stops at its first failing `define`, which on a partial install would leave
+  // the other global in place; each property is attempted on its own here so
+  // whatever can be undone is undone.
+  const restoreAfterFailedInstall = (): void => {
+    queued = [];
+    running = [];
+
+    for (const [name, previous] of [
+      ["requestAnimationFrame", previousRequestAnimationFrame],
+      ["cancelAnimationFrame", previousCancelAnimationFrame],
+    ] as const) {
+      try {
+        define(name, previous);
+      } catch {
+        // Swallowed on purpose: a cleanup failure must not become the reported
+        // cause. See the rethrow below.
+      }
+    }
+  };
+
   try {
     define("requestAnimationFrame", requestFrame);
     define("cancelAnimationFrame", cancelFrame);
   } catch (error) {
-    // Undo a partial install without masking what went wrong.
-    restore();
+    // 5.4: cleanup "must not mask an error thrown during install". The call is
+    // guarded as well as best effort, so `throw error` is reached even if this
+    // cleanup path is ever changed into one that can throw again.
+    try {
+      restoreAfterFailedInstall();
+    } catch {
+      // Swallowed on purpose: the install error is the one that must surface.
+    }
     throw error;
   }
 
