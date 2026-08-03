@@ -2194,10 +2194,28 @@ function selfTest(out) {
 
   // ---- YAML (6.5) ----
   run('36', (root) => {
-    assertSelf(hasCode(fm(root, '---\n---\n'), 'E-YAML-NOT-MAPPING'), 'empty frontmatter is not a mapping');
+    // Three of 6.5.3's rows all emit E-YAML-NOT-MAPPING, so a bare hasCode() here is
+    // satisfied by whichever row happens to fire: disable the empty-body row and the
+    // zero-entries row at the bottom of parseMiniYaml produces the same code. The
+    // message is what distinguishes which rule actually ran.
+    const report = fm(root, '---\n---\n');
+    const finding = report.findings.find((f) => f.code === 'E-YAML-NOT-MAPPING');
+    assertSelf(finding !== undefined, 'empty frontmatter is not a mapping');
+    assertSelf(
+      finding.message.includes('empty or contains only blank'),
+      'and it must be reported as an EMPTY body, not as a scalar root',
+    );
   });
   run('37', (root) => {
-    assertSelf(hasCode(fm(root, '---\n- a\n- b\n---\n'), 'E-YAML-NOT-MAPPING'), 'a sequence root is not a mapping');
+    // Same trap as case 36: disable the sequence-root row and the colon-free lines fall
+    // through to the zero-entries row, which emits the identical code.
+    const report = fm(root, '---\n- a\n- b\n---\n');
+    const finding = report.findings.find((f) => f.code === 'E-YAML-NOT-MAPPING');
+    assertSelf(finding !== undefined, 'a sequence root is not a mapping');
+    assertSelf(
+      finding.message.includes('sequence'),
+      'and it must be reported as a SEQUENCE root, not as a scalar root',
+    );
   });
   run('38', (root) => {
     assertSelf(hasCode(fm(root, '---\nname: ok-name\n\tdescription: x\n---\n'), 'E-YAML-PARSE'), 'a tab in indentation');
@@ -2301,7 +2319,21 @@ function selfTest(out) {
       try {
         writeFixture(inner, '_agent_x/skills/x/SKILL.md', `---\nname: ok-name\ndescription: ${header}\n  text\n---\n`);
         const report = runCheck(inner);
-        assertSelf(hasCode(report, 'W-YAML-UNDECIDABLE'), `\`${header}\` is outside the subset, not a block scalar`);
+        // A bare hasCode('W-YAML-UNDECIDABLE') pins NOTHING here: the orphaned `  text`
+        // line is undecidable whether or not the header was rejected, so the assertion
+        // is satisfied by the wrong finding. Both assertions below discriminate.
+        // Rejected header: the header AND the orphan are undecidable, and `description`
+        // resolves to `undecidable`, which asserts no W-DESC-*.
+        // Accepted header: `|0` yields an empty block scalar, so `description` trims to
+        // empty and W-DESC-MISSING fires, leaving only ONE undecidable.
+        assertSelf(
+          countCode(report, 'W-YAML-UNDECIDABLE') === 2,
+          `\`${header}\` itself must be undecidable, not only the orphaned content line`,
+        );
+        assertSelf(
+          !hasCode(report, 'W-DESC-MISSING'),
+          `\`${header}\` must not resolve to an empty block scalar`,
+        );
       } finally {
         removeRoot(inner);
       }
