@@ -8,6 +8,7 @@ export default defineConfig({
     __BUILD_PROFILE__: JSON.stringify("test"),
   },
   test: {
+    includeTaskLocation: true,
     environment: 'node',
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
   },
