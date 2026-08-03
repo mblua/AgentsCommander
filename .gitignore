@@ -24,3 +24,8 @@ AGENTS.md
 
 # npm wrapper downloaded binaries
 npm/bin/
+
+# #480 guard run artifacts
+npm-test.log
+npm-test.normalized.log
+npm-test-results.json

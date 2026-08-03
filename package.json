@@ -24,7 +24,9 @@
     "test:watch": "vitest",
     "smoke:cli-release-windows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/smoke-cli-release-windows.ps1",
     "smoke:profile-matrix": "node scripts/smoke-profile-matrix-preview.mjs",
-    "smoke:current-app": "node scripts/smoke-current-app-mockup.mjs"
+    "smoke:current-app": "node scripts/smoke-current-app-mockup.mjs",
+    "test:classify:self": "node scripts/classify-test-run.mjs --self-test",
+    "test:report:self": "node scripts/report-failed-tests.mjs --self-test"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
