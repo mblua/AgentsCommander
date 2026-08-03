@@ -1498,14 +1498,20 @@ struct SnapshotOutputFile {
 }
 
 struct SnapshotDirectoryProof {
+    path: std::path::PathBuf,
     file: std::fs::File,
-    identity: SnapshotFileIdentity,
+    identity: SnapshotFileObjectId,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SnapshotFileObjectId {
+    volume: u64,
+    file: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct SnapshotFileIdentity {
-    volume: u64,
-    file: u64,
+    object_id: SnapshotFileObjectId,
     links: u64,
 }
 
@@ -1542,8 +1548,9 @@ impl SnapshotOutputFile {
         self.file.sync_all().map_err(|_| C::OutputFailed)?;
         after_sync();
         let current_parent = snapshot_directory_identity(parent_path, C::OutputFailed)?;
-        let retained_parent =
-            snapshot_handle_identity(&self.parent.file, true).map_err(|_| C::OutputFailed)?;
+        let retained_parent = snapshot_handle_identity(&self.parent.file, true)
+            .map_err(|_| C::OutputFailed)?
+            .object_id;
         let current_handle = snapshot_file_identity(&self.file).map_err(|_| C::OutputFailed)?;
         let current_path =
             open_snapshot_leaf_in_parent(&self.parent, &self.path).map_err(|_| C::OutputFailed)?;
@@ -1572,7 +1579,7 @@ fn validate_snapshot_output_path(
 fn validate_snapshot_output_path_inner(
     path: &std::path::Path,
     before_filesystem: impl FnOnce(),
-) -> Result<SnapshotFileIdentity, terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
+) -> Result<SnapshotFileObjectId, terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
     use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
 
     if !path.is_absolute()
@@ -1722,8 +1729,14 @@ fn snapshot_directory_identity(
         return Err(reason);
     }
     let file = open_snapshot_directory(path).map_err(|_| reason)?;
-    let identity = snapshot_handle_identity(&file, true).map_err(|_| reason)?;
-    Ok(SnapshotDirectoryProof { file, identity })
+    let identity = snapshot_handle_identity(&file, true)
+        .map_err(|_| reason)?
+        .object_id;
+    Ok(SnapshotDirectoryProof {
+        path: path.to_path_buf(),
+        file,
+        identity,
+    })
 }
 
 fn open_snapshot_directory(path: &std::path::Path) -> std::io::Result<std::fs::File> {
@@ -1760,22 +1773,66 @@ fn open_snapshot_leaf(path: &std::path::Path) -> std::io::Result<std::fs::File> 
     options.open(path)
 }
 
+struct SnapshotChildName<'a>(&'a std::ffi::OsStr);
+
+impl SnapshotChildName<'_> {
+    fn as_os_str(&self) -> &std::ffi::OsStr {
+        self.0
+    }
+}
+
+fn snapshot_child_name<'a>(
+    parent: &SnapshotDirectoryProof,
+    path: &'a std::path::Path,
+) -> std::io::Result<SnapshotChildName<'a>> {
+    use std::path::Component;
+
+    if path.parent() != Some(parent.path.as_path()) {
+        return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+    }
+    let relative = path
+        .strip_prefix(&parent.path)
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    let mut components = relative.components();
+    let name = match (components.next(), components.next()) {
+        (Some(Component::Normal(name)), None) if !name.is_empty() => name,
+        _ => return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput)),
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        if name.as_bytes().contains(&0) {
+            return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        if name.encode_wide().any(|unit| unit == 0)
+            || validate_windows_snapshot_path(&parent.path.join(name)).is_err()
+        {
+            return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+        }
+    }
+    Ok(SnapshotChildName(name))
+}
+
 fn create_snapshot_leaf_in_parent(
     parent: &SnapshotDirectoryProof,
     path: &std::path::Path,
 ) -> std::io::Result<std::fs::File> {
+    let name = snapshot_child_name(parent, path)?;
     #[cfg(unix)]
     {
         return open_snapshot_leaf_at(
             parent,
-            path,
+            &name,
             libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
             0o600,
         );
     }
     #[cfg(not(unix))]
     {
-        let _ = parent;
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(windows)]
@@ -1788,7 +1845,7 @@ fn create_snapshot_leaf_in_parent(
                 .share_mode(FILE_SHARE_READ)
                 .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
         }
-        options.open(path)
+        options.open(parent.path.join(name.as_os_str()))
     }
 }
 
@@ -1796,37 +1853,33 @@ fn open_snapshot_leaf_in_parent(
     parent: &SnapshotDirectoryProof,
     path: &std::path::Path,
 ) -> std::io::Result<std::fs::File> {
+    let name = snapshot_child_name(parent, path)?;
     #[cfg(unix)]
     {
         open_snapshot_leaf_at(
             parent,
-            path,
+            &name,
             libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC,
             0,
         )
     }
     #[cfg(not(unix))]
     {
-        let _ = parent;
-        open_snapshot_leaf(path)
+        open_snapshot_leaf(&parent.path.join(name.as_os_str()))
     }
 }
 
 #[cfg(unix)]
 fn open_snapshot_leaf_at(
     parent: &SnapshotDirectoryProof,
-    path: &std::path::Path,
+    name: &SnapshotChildName<'_>,
     flags: i32,
     mode: u32,
 ) -> std::io::Result<std::fs::File> {
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::ffi::OsStrExt;
 
-    let name = path
-        .file_name()
-        .filter(|name| !name.is_empty())
-        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
-    let name = std::ffi::CString::new(name.as_bytes())
+    let name = std::ffi::CString::new(name.as_os_str().as_bytes())
         .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
     let descriptor = unsafe {
         libc::openat(
@@ -1858,8 +1911,10 @@ fn snapshot_handle_identity(
         return Err(std::io::Error::other("unexpected filesystem object"));
     }
     Ok(SnapshotFileIdentity {
-        volume: metadata.dev(),
-        file: metadata.ino(),
+        object_id: SnapshotFileObjectId {
+            volume: metadata.dev(),
+            file: metadata.ino(),
+        },
         links: metadata.nlink(),
     })
 }
@@ -1887,8 +1942,11 @@ fn snapshot_handle_identity(
     }
     let information = unsafe { information.assume_init() };
     Ok(SnapshotFileIdentity {
-        volume: u64::from(information.dwVolumeSerialNumber),
-        file: (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow),
+        object_id: SnapshotFileObjectId {
+            volume: u64::from(information.dwVolumeSerialNumber),
+            file: (u64::from(information.nFileIndexHigh) << 32)
+                | u64::from(information.nFileIndexLow),
+        },
         links: u64::from(information.nNumberOfLinks),
     })
 }
@@ -2820,6 +2878,44 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn terminal_snapshot_unix_helper_parent_link_churn_preserves_object_proof() {
+        use std::os::unix::fs::MetadataExt;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let output = temporary.path().join("snapshot.png");
+        let unrelated = temporary.path().join("unrelated");
+        let unrelated_after_write = unrelated.clone();
+        let unrelated_after_sync = unrelated.clone();
+        let parent_after_write = temporary.path().to_path_buf();
+        let parent_after_sync = parent_after_write.clone();
+        let initial_links = std::fs::metadata(temporary.path()).unwrap().nlink();
+        let file = create_snapshot_output(&output).unwrap();
+
+        file.write_and_verify_inner(
+            b"portable bytes",
+            move || {
+                std::fs::create_dir(&unrelated_after_write).unwrap();
+                assert_ne!(
+                    std::fs::metadata(&parent_after_write).unwrap().nlink(),
+                    initial_links
+                );
+            },
+            move || {
+                std::fs::remove_dir(&unrelated_after_sync).unwrap();
+                assert_eq!(
+                    std::fs::metadata(&parent_after_sync).unwrap().nlink(),
+                    initial_links
+                );
+            },
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read(output).unwrap(), b"portable bytes");
+        assert!(!unrelated.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn terminal_snapshot_unix_helper_leaf_substitution_is_detected() {
         use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
 
@@ -2844,6 +2940,89 @@ mod tests {
         assert_eq!(error, C::OutputFailed);
         assert_eq!(std::fs::read(output).unwrap(), b"replacement bytes");
         assert_eq!(std::fs::read(displaced).unwrap(), b"owned bytes");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_snapshot_unix_helper_rejects_invalid_child_paths_before_open() {
+        use std::os::unix::ffi::OsStringExt;
+        use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let parent = temporary.path().join("parent");
+        let wrong_parent = temporary.path().join("wrong-parent");
+        std::fs::create_dir(&parent).unwrap();
+        std::fs::create_dir(&wrong_parent).unwrap();
+        let outside = wrong_parent.join("snapshot.png");
+        std::fs::write(&outside, b"outside bytes").unwrap();
+        let proof = snapshot_directory_identity(&parent, C::OutputFailed).unwrap();
+
+        for invalid in [
+            parent.clone(),
+            outside.clone(),
+            parent.join("."),
+            parent.join(".."),
+            parent.join("nested/snapshot.png"),
+        ] {
+            assert_eq!(
+                snapshot_child_name(&proof, &invalid).err().unwrap().kind(),
+                std::io::ErrorKind::InvalidInput
+            );
+            assert_eq!(
+                open_snapshot_leaf_in_parent(&proof, &invalid)
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::InvalidInput
+            );
+        }
+
+        let nul_leaf = std::ffi::OsString::from_vec(b"nul\0snapshot.png".to_vec());
+        let nul_path = parent.join(nul_leaf);
+        assert_eq!(
+            snapshot_child_name(&proof, &nul_path).err().unwrap().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert_eq!(std::fs::read(outside).unwrap(), b"outside bytes");
+        assert!(!parent.join("snapshot.png").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_snapshot_unix_helper_linked_leaves_fail_closed() {
+        use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let parent = temporary.path();
+        let proof = snapshot_directory_identity(parent, C::OutputFailed).unwrap();
+        let target = parent.join("target");
+        let symlink = parent.join("symlink.png");
+        std::fs::write(&target, b"target bytes").unwrap();
+        std::os::unix::fs::symlink(&target, &symlink).unwrap();
+
+        let symlink_error = open_snapshot_leaf_in_parent(&proof, &symlink).unwrap_err();
+        assert_eq!(symlink_error.raw_os_error(), Some(libc::ELOOP));
+        assert!(matches!(
+            create_snapshot_output(&symlink),
+            Err(C::UnsafePath)
+        ));
+
+        let hard_leaf = parent.join("hard.png");
+        let hard_alias = parent.join("hard-alias.png");
+        let hard_leaf_for_hook = hard_leaf.clone();
+        let hard_alias_for_hook = hard_alias.clone();
+        let hard_error = create_snapshot_output(&hard_leaf)
+            .unwrap()
+            .write_and_verify_inner(
+                b"hard bytes",
+                move || {
+                    std::fs::hard_link(&hard_leaf_for_hook, &hard_alias_for_hook).unwrap();
+                },
+                || {},
+            )
+            .unwrap_err();
+        assert_eq!(hard_error, C::OutputFailed);
+        assert_eq!(std::fs::read(&hard_leaf).unwrap(), b"hard bytes");
+        assert_eq!(std::fs::read(&hard_alias).unwrap(), b"hard bytes");
     }
 
     #[cfg(unix)]
@@ -2903,7 +3082,12 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(file.parent.identity == snapshot_handle_identity(&file.parent.file, true).unwrap());
+        assert!(
+            file.parent.identity
+                == snapshot_handle_identity(&file.parent.file, true)
+                    .unwrap()
+                    .object_id
+        );
         let output_after_write = output.clone();
         let displaced_after_write = displaced_leaf.clone();
         let output_for_link = output.clone();

@@ -17,6 +17,11 @@ const UNIX_O_NOFOLLOW: i32 = 0x0002_0000;
 #[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
 const UNIX_O_NOFOLLOW: i32 = 0x0000_0100;
 
+#[cfg(unix)]
+fn unix_child_open_error_is_absent(error: &std::io::Error) -> bool {
+    error.raw_os_error() == Some(libc::ENOENT)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FileObjectId {
     pub volume: u64,
@@ -44,6 +49,8 @@ pub struct VerifiedPathIdentity {
 #[derive(Clone)]
 pub struct RetainedDirectory {
     identity: VerifiedPathIdentity,
+    #[cfg(unix)]
+    retained_path: PathBuf,
     handle: std::sync::Arc<File>,
 }
 
@@ -149,15 +156,23 @@ impl RetainedDirectory {
     }
 
     fn create_new_file(&self, path: &Path, lock_output_leaf: bool) -> Result<File, String> {
+        #[cfg(unix)]
+        let _ = self.checked_unix_child_name(path)?;
         self.verify_current()?;
         #[cfg(unix)]
         {
             let _ = lock_output_leaf;
-            return self.open_unix_child(
-                path,
-                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                0o600,
-            );
+            return self
+                .open_unix_child(
+                    path,
+                    libc::O_WRONLY
+                        | libc::O_CREAT
+                        | libc::O_EXCL
+                        | libc::O_NOFOLLOW
+                        | libc::O_CLOEXEC,
+                    0o600,
+                )
+                .map_err(|_| "unsafe_path".to_string());
         }
         #[cfg(not(unix))]
         {
@@ -188,6 +203,7 @@ impl RetainedDirectory {
     ) -> Result<VerifiedPathIdentity, String> {
         #[cfg(unix)]
         {
+            let _ = self.checked_unix_child_name(path)?;
             let metadata = file.metadata().map_err(|_| "unsafe_path".to_string())?;
             let (opened_id, links) = handle_identity(file)?;
             if !metadata.is_file()
@@ -197,11 +213,13 @@ impl RetainedDirectory {
             {
                 return Err("unsafe_path".to_string());
             }
-            let reopened = self.open_unix_child(
-                path,
-                libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                0,
-            )?;
+            let reopened = self
+                .open_unix_child(
+                    path,
+                    libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                    0,
+                )
+                .map_err(|_| "unsafe_path".to_string())?;
             let (reopened_id, reopened_links) = handle_identity(&reopened)?;
             if reopened_id != opened_id || reopened_links != 1 {
                 return Err("unsafe_path".to_string());
@@ -223,11 +241,13 @@ impl RetainedDirectory {
     pub fn verify_regular_file(&self, path: &Path) -> Result<VerifiedPathIdentity, String> {
         #[cfg(unix)]
         {
-            let file = self.open_unix_child(
-                path,
-                libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                0,
-            )?;
+            let file = self
+                .open_unix_child(
+                    path,
+                    libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                    0,
+                )
+                .map_err(|_| "unsafe_path".to_string())?;
             return self.verify_opened_regular_file(path, &file, false);
         }
         #[cfg(not(unix))]
@@ -281,6 +301,9 @@ impl RetainedDirectory {
         claim_leaf: Option<&std::ffi::OsStr>,
         mut hook: impl FnMut(UnixTrackedCleanupStage, &Path, &Path),
     ) -> UnixTrackedCleanupOutcome {
+        if self.checked_unix_child_name(path).is_err() {
+            return UnixTrackedCleanupOutcome::Uncertain;
+        }
         if witness.state(expected) == UnixFileWitnessState::Unlinked {
             return UnixTrackedCleanupOutcome::AlreadyAbsent;
         }
@@ -401,7 +424,7 @@ impl RetainedDirectory {
                 0,
             ) {
                 Ok(_) => false,
-                Err(_) => std::io::Error::last_os_error().kind() == std::io::ErrorKind::NotFound,
+                Err(error) => unix_child_open_error_is_absent(&error),
             };
         }
         #[cfg(not(unix))]
@@ -413,6 +436,11 @@ impl RetainedDirectory {
     }
 
     pub fn publish_new_file_atomic(&self, source: &Path, destination: &Path) -> Result<(), String> {
+        #[cfg(unix)]
+        {
+            let _ = self.checked_unix_child_name(source)?;
+            let _ = self.checked_unix_child_name(destination)?;
+        }
         self.verify_current()
             .map_err(|_| "atomic_publish_failed".to_string())?;
         #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -526,11 +554,13 @@ impl RetainedDirectory {
         &self,
         path: &Path,
     ) -> Result<(RetainedUnixFileWitness, VerifiedPathIdentity), String> {
-        let file = self.open_unix_child(
-            path,
-            libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            0,
-        )?;
+        let file = self
+            .open_unix_child(
+                path,
+                libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0,
+            )
+            .map_err(|_| "unsafe_path".to_string())?;
         let identity = self.verify_opened_regular_file(path, &file, false)?;
         Ok((
             RetainedUnixFileWitness {
@@ -548,6 +578,7 @@ impl RetainedDirectory {
     ) -> Result<PathBuf, String> {
         use std::os::unix::ffi::OsStrExt;
 
+        let _ = self.checked_unix_child_name(source)?;
         if claim_leaf.is_empty() || source.file_name() == Some(claim_leaf) {
             return Err("unsafe_path".to_string());
         }
@@ -627,28 +658,49 @@ impl RetainedDirectory {
     }
 
     #[cfg(unix)]
+    fn checked_unix_child_name<'a>(&self, path: &'a Path) -> Result<&'a std::ffi::OsStr, String> {
+        let parent = path.parent().ok_or_else(|| "unsafe_path".to_string())?;
+        let retained_parent = if parent == self.retained_path {
+            self.retained_path.as_path()
+        } else if parent == self.identity.canonical_path {
+            self.identity.canonical_path.as_path()
+        } else {
+            return Err("unsafe_path".to_string());
+        };
+        let relative = path
+            .strip_prefix(retained_parent)
+            .map_err(|_| "unsafe_path".to_string())?;
+        let mut components = relative.components();
+        let name = match (components.next(), components.next()) {
+            (Some(Component::Normal(name)), None) if !name.is_empty() => name,
+            _ => return Err("unsafe_path".to_string()),
+        };
+        use std::os::unix::ffi::OsStrExt;
+        if name.as_bytes().contains(&0) {
+            return Err("unsafe_path".to_string());
+        }
+        Ok(name)
+    }
+
+    #[cfg(unix)]
     fn canonical_child_path(&self, path: &Path) -> Result<PathBuf, String> {
-        let name = path
-            .file_name()
-            .filter(|name| !name.is_empty())
-            .ok_or_else(|| "unsafe_path".to_string())?;
+        let name = self.checked_unix_child_name(path)?;
         Ok(self.identity.canonical_path.join(name))
     }
 
     #[cfg(unix)]
     fn unix_child_cstring(&self, path: &Path) -> Result<std::ffi::CString, String> {
         use std::os::unix::ffi::OsStrExt;
-        let name = path
-            .file_name()
-            .filter(|name| !name.is_empty())
-            .ok_or_else(|| "unsafe_path".to_string())?;
+        let name = self.checked_unix_child_name(path)?;
         std::ffi::CString::new(name.as_bytes()).map_err(|_| "unsafe_path".to_string())
     }
 
     #[cfg(unix)]
-    fn open_unix_child(&self, path: &Path, flags: i32, mode: u32) -> Result<File, String> {
+    fn open_unix_child(&self, path: &Path, flags: i32, mode: u32) -> std::io::Result<File> {
         use std::os::fd::{AsRawFd, FromRawFd};
-        let name = self.unix_child_cstring(path)?;
+        let name = self
+            .unix_child_cstring(path)
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
         let descriptor = unsafe {
             libc::openat(
                 self.handle.as_raw_fd(),
@@ -658,7 +710,7 @@ impl RetainedDirectory {
             )
         };
         if descriptor < 0 {
-            Err("unsafe_path".to_string())
+            Err(std::io::Error::last_os_error())
         } else {
             Ok(unsafe { File::from_raw_fd(descriptor) })
         }
@@ -868,6 +920,8 @@ fn retain_directory_inner(path: &Path, share_write: bool) -> Result<RetainedDire
     }
     Ok(RetainedDirectory {
         identity: current,
+        #[cfg(unix)]
+        retained_path: path.to_path_buf(),
         handle: std::sync::Arc::new(handle),
     })
 }
@@ -2334,6 +2388,71 @@ mod tests {
         assert!(retained.remove_regular_file_if_same(&output, &expected));
         assert!(!retired.join("response.json").exists());
         assert_eq!(std::fs::read(output).unwrap(), b"replacement response");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_snapshot_unix_child_api_rejects_invalid_paths_and_linked_leaves() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let directory = tempfile::TempDir::new().unwrap();
+        let parent = directory.path().join("parent");
+        let wrong_parent = directory.path().join("wrong-parent");
+        std::fs::create_dir(&parent).unwrap();
+        std::fs::create_dir(&wrong_parent).unwrap();
+        let retained = retain_directory(&parent).unwrap();
+        let outside = wrong_parent.join("response.json");
+        std::fs::write(&outside, b"outside bytes").unwrap();
+
+        for invalid in [
+            parent.clone(),
+            outside.clone(),
+            parent.join("."),
+            parent.join(".."),
+            parent.join("nested/response.json"),
+        ] {
+            assert!(retained.checked_unix_child_name(&invalid).is_err());
+            assert!(retained.create_new_private_file(&invalid).is_err());
+            assert!(!retained.child_is_absent(&invalid));
+        }
+
+        let nul_leaf = std::ffi::OsString::from_vec(b"nul\0response.json".to_vec());
+        let nul_path = parent.join(nul_leaf);
+        assert!(retained.checked_unix_child_name(&nul_path).is_err());
+        assert!(!retained.child_is_absent(&nul_path));
+        assert_eq!(std::fs::read(outside).unwrap(), b"outside bytes");
+
+        let target = parent.join("target");
+        let symlink = parent.join("symlink.json");
+        std::fs::write(&target, b"target bytes").unwrap();
+        std::os::unix::fs::symlink(&target, &symlink).unwrap();
+        assert!(retained.verify_regular_file(&symlink).is_err());
+        assert!(!retained.child_is_absent(&symlink));
+
+        let hard_source = parent.join("hard-source");
+        let hard_leaf = parent.join("hard.json");
+        std::fs::write(&hard_source, b"hard bytes").unwrap();
+        std::fs::hard_link(&hard_source, &hard_leaf).unwrap();
+        assert!(retained.verify_regular_file(&hard_leaf).is_err());
+        assert!(!retained.child_is_absent(&hard_leaf));
+        assert!(retained.child_is_absent(&parent.join("missing.json")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_snapshot_unix_absence_classification_uses_originating_error() {
+        assert!(unix_child_open_error_is_absent(
+            &std::io::Error::from_raw_os_error(libc::ENOENT)
+        ));
+        for code in [libc::ELOOP, libc::EACCES, libc::EIO, libc::EINVAL] {
+            assert!(!unix_child_open_error_is_absent(
+                &std::io::Error::from_raw_os_error(code)
+            ));
+        }
+        assert!(!unix_child_open_error_is_absent(&std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "synthetic not-found without errno",
+        )));
     }
 
     #[cfg(unix)]
