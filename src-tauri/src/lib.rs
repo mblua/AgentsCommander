@@ -44,17 +44,49 @@ use voice::tracker::{VoiceTracker, VoiceTrackingState};
 use web::auth::WebAccessToken;
 use web::broadcast::WsBroadcaster;
 
+#[cfg(test)]
 pub(crate) fn shutdown_persistence_allowed(
     selection_persistence_safe: bool,
     container_cleanup_terminal: bool,
 ) -> bool {
-    selection_persistence_safe && container_cleanup_terminal
+    shutdown_persistence_allowed_with_scanner(
+        true,
+        selection_persistence_safe,
+        container_cleanup_terminal,
+    )
 }
 
+pub(crate) fn shutdown_persistence_allowed_with_scanner(
+    scanner_terminal: bool,
+    selection_persistence_safe: bool,
+    container_cleanup_terminal: bool,
+) -> bool {
+    scanner_terminal && selection_persistence_safe && container_cleanup_terminal
+}
+
+#[cfg(test)]
 pub(crate) fn combined_shutdown_retained_diagnostics(
     selection_retained: Vec<String>,
     container_retained: Vec<String>,
 ) -> Vec<String> {
+    combined_shutdown_retained_diagnostics_with_scanner(
+        Vec::new(),
+        selection_retained,
+        container_retained,
+    )
+}
+
+pub(crate) fn combined_shutdown_retained_diagnostics_with_scanner(
+    scanner_retained: Vec<String>,
+    selection_retained: Vec<String>,
+    container_retained: Vec<String>,
+) -> Vec<String> {
+    let scanner = scanner_retained.into_iter().map(|context| {
+        crate::pty::container_runtime::normalize_retained_owner_diagnostic(
+            "terminalSnapshotScanner",
+            context,
+        )
+    });
     let selection = selection_retained.into_iter().map(|context| {
         crate::pty::container_runtime::normalize_retained_owner_diagnostic("selection", context)
     });
@@ -64,7 +96,9 @@ pub(crate) fn combined_shutdown_retained_diagnostics(
             context,
         )
     });
-    crate::pty::container_runtime::cap_retained_owner_diagnostics(selection.chain(container))
+    crate::pty::container_runtime::cap_retained_owner_diagnostics(
+        scanner.chain(selection).chain(container),
+    )
 }
 
 fn remove_container_route_until(
@@ -2554,8 +2588,29 @@ pub fn run(
                     // (An already-dispatched spawn_blocking kill_group still runs;
                     // safety there rests on B2b's bounded set + kill_group's
                     // Terminating/Terminated idempotency guard, not on trigger().)
+                    let snapshot_scanner_shutdown = phone::mailbox::MailboxPoller::
+                        active_terminal_snapshot_shutdown_owner();
+                    if let Some(owner) = &snapshot_scanner_shutdown {
+                        owner.seal();
+                    }
                     log::info!("[shutdown] Triggering background task shutdown (async, not awaited)...");
                     shutdown_for_exit.trigger();
+                    let scanner_shutdown = match snapshot_scanner_shutdown {
+                        Some(owner) => tauri::async_runtime::block_on(owner.seal_and_drain_until(
+                            tokio::time::Instant::now()
+                                + std::time::Duration::from_secs(SHUTDOWN_CLEANUP_BUDGET_SECS),
+                        )),
+                        None => phone::terminal_snapshot::SnapshotScannerDrainResult {
+                            terminal: true,
+                            ..Default::default()
+                        },
+                    };
+                    log::info!(
+                        "[shutdown] terminal snapshot scanner drained joined={} aborted={} terminal={}",
+                        scanner_shutdown.joined,
+                        scanner_shutdown.aborted,
+                        scanner_shutdown.terminal
+                    );
 
                     let context_alert_monitor = app_handle
                         .try_state::<Arc<crate::session::context_alerts::ContextAlertMonitor>>()
@@ -2690,7 +2745,8 @@ pub fn run(
                         );
                     }
 
-                    if shutdown_persistence_allowed(
+                    if shutdown_persistence_allowed_with_scanner(
+                        scanner_shutdown.terminal,
                         selection_shutdown.persistence_safe,
                         container_shutdown.terminal,
                     ) {
@@ -2702,7 +2758,8 @@ pub fn run(
                         });
                         log::info!("[shutdown] Session state persisted, process exiting");
                     } else {
-                        let retained = combined_shutdown_retained_diagnostics(
+                        let retained = combined_shutdown_retained_diagnostics_with_scanner(
+                            scanner_shutdown.retained,
                             selection_shutdown.retained,
                             container_shutdown.retained,
                         );
@@ -2794,6 +2851,37 @@ mod tests {
             combined.iter().all(|entry| !entry.is_empty()),
             "retained diagnostics are non-empty"
         );
+    }
+
+    #[test]
+    fn scanner_terminality_is_required_for_shutdown_persistence() {
+        assert!(super::shutdown_persistence_allowed_with_scanner(
+            true, true, true
+        ));
+        assert!(!super::shutdown_persistence_allowed_with_scanner(
+            false, true, true
+        ));
+        assert!(!super::shutdown_persistence_allowed_with_scanner(
+            true, false, true
+        ));
+        assert!(!super::shutdown_persistence_allowed_with_scanner(
+            true, true, false
+        ));
+    }
+
+    #[test]
+    fn scanner_retained_owner_is_merged_without_request_content_or_paths() {
+        let combined = super::combined_shutdown_retained_diagnostics_with_scanner(
+            vec!["reason=terminal-snapshot-finalizer state=retained".to_string()],
+            vec!["reason=selection-worker state=retained".to_string()],
+            vec!["reason=container-stop state=retained".to_string()],
+        );
+        assert_eq!(combined.len(), 3);
+        assert!(combined
+            .iter()
+            .any(|entry| entry.contains("owner=terminalSnapshotScanner")));
+        assert!(combined.iter().all(|entry| !entry.contains('\\')));
+        assert!(combined.iter().all(|entry| !entry.contains('/')));
     }
 
     fn settings_with_agent() -> AppSettings {

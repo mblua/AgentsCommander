@@ -125,8 +125,380 @@ pub(crate) fn confirmation_tag(request: &HostTerminalSnapshotRequest) -> String 
     format!("{:x}", digest.finalize())
 }
 
+const SCANNER_TASK_ABORTABLE: u8 = 0;
+const SCANNER_TASK_OWNED: u8 = 1;
+const SCANNER_TASK_ABORTING: u8 = 2;
+const SCANNER_TASK_TERMINAL: u8 = 3;
+const SCANNER_TASK_FINALIZER: u8 = 4;
+const SCANNER_TASK_CAP: usize = 8_192;
+const SCANNER_ABORT_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
+
+type ScannerTaskCleanup = std::sync::Arc<dyn Fn() + Send + Sync + 'static>;
+
+#[derive(Clone)]
+struct ScannerTaskOwnership {
+    phase: std::sync::Arc<std::sync::atomic::AtomicU8>,
+}
+
+impl ScannerTaskOwnership {
+    fn new() -> Self {
+        Self {
+            phase: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(SCANNER_TASK_ABORTABLE)),
+        }
+    }
+
+    fn mark_owned(&self) -> bool {
+        self.phase
+            .compare_exchange(
+                SCANNER_TASK_ABORTABLE,
+                SCANNER_TASK_OWNED,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    fn mark_finalizer(&self) {
+        self.phase
+            .store(SCANNER_TASK_FINALIZER, std::sync::atomic::Ordering::Release);
+    }
+}
+
+struct ScannerTaskRecord {
+    audit_request_id: Option<String>,
+    phase: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    handle: tauri::async_runtime::JoinHandle<()>,
+    cleanup: ScannerTaskCleanup,
+}
+
+#[derive(Default)]
+struct ScannerShutdownState {
+    sealed: bool,
+    tasks: HashMap<Uuid, ScannerTaskRecord>,
+}
+
+#[derive(Clone)]
+pub(crate) struct SnapshotScannerShutdownOwner {
+    inner: std::sync::Arc<std::sync::Mutex<ScannerShutdownState>>,
+}
+
+static ACTIVE_SCANNER_SHUTDOWN_OWNER: std::sync::OnceLock<
+    std::sync::Mutex<Option<SnapshotScannerShutdownOwner>>,
+> = std::sync::OnceLock::new();
+
+impl Default for SnapshotScannerShutdownOwner {
+    fn default() -> Self {
+        let owner = Self {
+            inner: std::sync::Arc::new(std::sync::Mutex::new(ScannerShutdownState::default())),
+        };
+        let active = ACTIVE_SCANNER_SHUTDOWN_OWNER.get_or_init(|| std::sync::Mutex::new(None));
+        match active.lock() {
+            Ok(mut slot) => *slot = Some(owner.clone()),
+            Err(poisoned) => *poisoned.into_inner() = Some(owner.clone()),
+        }
+        owner
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct SnapshotScannerDrainResult {
+    pub(crate) terminal: bool,
+    pub(crate) joined: usize,
+    pub(crate) aborted: usize,
+    pub(crate) retained: Vec<String>,
+}
+
+impl SnapshotScannerShutdownOwner {
+    pub(crate) fn active() -> Option<Self> {
+        let active = ACTIVE_SCANNER_SHUTDOWN_OWNER.get()?;
+        match active.lock() {
+            Ok(slot) => slot.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, ScannerShutdownState> {
+        match self.inner.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    pub(crate) fn seal(&self) {
+        self.lock_state().sealed = true;
+    }
+
+    pub(crate) fn is_sealed(&self) -> bool {
+        self.lock_state().sealed
+    }
+
+    #[cfg(test)]
+    pub(crate) fn task_count(&self) -> usize {
+        self.lock_state().tasks.len()
+    }
+
+    fn spawn_tracked<F>(
+        &self,
+        audit_request_id: Option<String>,
+        phase: std::sync::Arc<std::sync::atomic::AtomicU8>,
+        cleanup: ScannerTaskCleanup,
+        future: F,
+    ) -> bool
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let mut state = self.lock_state();
+        if state.sealed || state.tasks.len() >= SCANNER_TASK_CAP {
+            return false;
+        }
+        let task_phase = phase.clone();
+        let handle = tauri::async_runtime::spawn(async move {
+            future.await;
+            task_phase.store(SCANNER_TASK_TERMINAL, std::sync::atomic::Ordering::Release);
+        });
+        state.tasks.insert(
+            Uuid::new_v4(),
+            ScannerTaskRecord {
+                audit_request_id,
+                phase,
+                handle,
+                cleanup,
+            },
+        );
+        true
+    }
+
+    pub(crate) async fn seal_and_drain_until(
+        &self,
+        deadline: tokio::time::Instant,
+    ) -> SnapshotScannerDrainResult {
+        self.seal();
+        let tasks = {
+            let mut state = self.lock_state();
+            std::mem::take(&mut state.tasks)
+        };
+        let mut result = SnapshotScannerDrainResult::default();
+        let mut retained = HashMap::new();
+
+        for (task_id, mut task) in tasks {
+            let grace_deadline =
+                std::cmp::min(deadline, tokio::time::Instant::now() + SCANNER_ABORT_GRACE);
+            match tokio::time::timeout_at(grace_deadline, &mut task.handle).await {
+                Ok(joined) => {
+                    if joined.is_err() {
+                        log::error!("[terminal-snapshot] stage=host_task code=internal");
+                    }
+                    (task.cleanup)();
+                    result.joined += 1;
+                    continue;
+                }
+                Err(_) => {}
+            }
+
+            if task
+                .phase
+                .compare_exchange(
+                    SCANNER_TASK_ABORTABLE,
+                    SCANNER_TASK_ABORTING,
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                if let Some(request_id) = &task.audit_request_id {
+                    record_host_ingress_failure(
+                        Some(request_id.clone()),
+                        None,
+                        TerminalSnapshotReasonCode::AuthorityChanged,
+                    );
+                }
+                task.handle.abort();
+                result.aborted += 1;
+                match tokio::time::timeout_at(deadline, &mut task.handle).await {
+                    Ok(_) => {
+                        task.phase
+                            .store(SCANNER_TASK_TERMINAL, std::sync::atomic::Ordering::Release);
+                        (task.cleanup)();
+                        result.joined += 1;
+                    }
+                    Err(_) => {
+                        result
+                            .retained
+                            .push("reason=terminal-snapshot-aborting state=retained".to_string());
+                        retained.insert(task_id, task);
+                    }
+                }
+                continue;
+            }
+
+            match tokio::time::timeout_at(deadline, &mut task.handle).await {
+                Ok(joined) => {
+                    if joined.is_err() {
+                        log::error!("[terminal-snapshot] stage=host_task code=internal");
+                    }
+                    (task.cleanup)();
+                    result.joined += 1;
+                }
+                Err(_) => {
+                    let reason = if task.phase.load(std::sync::atomic::Ordering::Acquire)
+                        == SCANNER_TASK_FINALIZER
+                    {
+                        "terminal-snapshot-finalizer"
+                    } else {
+                        "terminal-snapshot-service"
+                    };
+                    result
+                        .retained
+                        .push(format!("reason={reason} state=retained"));
+                    retained.insert(task_id, task);
+                }
+            }
+        }
+
+        result.terminal = retained.is_empty();
+        if !retained.is_empty() {
+            self.lock_state().tasks.extend(retained);
+        }
+        result
+    }
+}
+
+#[cfg(test)]
+mod scanner_shutdown_tests {
+    use super::{
+        ScannerTaskCleanup, ScannerTaskOwnership, SnapshotScannerShutdownOwner,
+        SCANNER_TASK_ABORTABLE,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    fn cleanup_counter(counter: Arc<AtomicUsize>) -> ScannerTaskCleanup {
+        Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        })
+    }
+
+    #[test]
+    fn admission_seal_rejects_every_later_task() {
+        let owner = SnapshotScannerShutdownOwner::default();
+        owner.seal();
+        let ran = Arc::new(AtomicUsize::new(0));
+        let ran_in_task = Arc::clone(&ran);
+        let phase = Arc::new(std::sync::atomic::AtomicU8::new(SCANNER_TASK_ABORTABLE));
+        let admitted = owner.spawn_tracked(
+            None,
+            phase,
+            cleanup_counter(Arc::new(AtomicUsize::new(0))),
+            async move {
+                ran_in_task.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        assert!(!admitted);
+        assert_eq!(ran.load(Ordering::SeqCst), 0);
+        assert_eq!(owner.task_count(), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn drain_abort_joins_work_before_service_ownership() {
+        let owner = SnapshotScannerShutdownOwner::default();
+        let cleanup = Arc::new(AtomicUsize::new(0));
+        let ownership = ScannerTaskOwnership::new();
+        assert!(owner.spawn_tracked(
+            None,
+            ownership.phase,
+            cleanup_counter(Arc::clone(&cleanup)),
+            std::future::pending(),
+        ));
+
+        let result = owner
+            .seal_and_drain_until(tokio::time::Instant::now() + Duration::from_secs(1))
+            .await;
+        assert!(result.terminal);
+        assert_eq!(result.joined, 1);
+        assert_eq!(result.aborted, 1);
+        assert!(result.retained.is_empty());
+        assert_eq!(owner.task_count(), 0);
+        assert_eq!(cleanup.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn blocking_service_owner_is_retained_then_joined_and_cleaned() {
+        let owner = SnapshotScannerShutdownOwner::default();
+        let cleanup = Arc::new(AtomicUsize::new(0));
+        let ownership = ScannerTaskOwnership::new();
+        assert!(ownership.mark_owned());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let release_task = Arc::clone(&release);
+        assert!(owner.spawn_tracked(
+            None,
+            ownership.phase,
+            cleanup_counter(Arc::clone(&cleanup)),
+            async move { release_task.notified().await },
+        ));
+
+        let retained = owner
+            .seal_and_drain_until(tokio::time::Instant::now() + Duration::from_millis(30))
+            .await;
+        assert!(!retained.terminal);
+        assert_eq!(retained.aborted, 0);
+        assert_eq!(retained.retained.len(), 1);
+        assert_eq!(owner.task_count(), 1);
+        assert_eq!(cleanup.load(Ordering::SeqCst), 0);
+
+        release.notify_waiters();
+        let terminal = owner
+            .seal_and_drain_until(tokio::time::Instant::now() + Duration::from_secs(1))
+            .await;
+        assert!(terminal.terminal);
+        assert_eq!(terminal.joined, 1);
+        assert_eq!(terminal.aborted, 0);
+        assert_eq!(owner.task_count(), 0);
+        assert_eq!(cleanup.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn finalizer_owner_is_never_aborted_and_is_reported_explicitly() {
+        let owner = SnapshotScannerShutdownOwner::default();
+        let cleanup = Arc::new(AtomicUsize::new(0));
+        let ownership = ScannerTaskOwnership::new();
+        assert!(ownership.mark_owned());
+        ownership.mark_finalizer();
+        let release = Arc::new(tokio::sync::Notify::new());
+        let release_task = Arc::clone(&release);
+        assert!(owner.spawn_tracked(
+            None,
+            ownership.phase,
+            cleanup_counter(Arc::clone(&cleanup)),
+            async move { release_task.notified().await },
+        ));
+
+        let retained = owner
+            .seal_and_drain_until(tokio::time::Instant::now() + Duration::from_millis(30))
+            .await;
+        assert!(!retained.terminal);
+        assert_eq!(retained.aborted, 0);
+        assert_eq!(
+            retained.retained,
+            vec!["reason=terminal-snapshot-finalizer state=retained"]
+        );
+        assert_eq!(owner.task_count(), 1);
+        assert_eq!(cleanup.load(Ordering::SeqCst), 0);
+
+        release.notify_waiters();
+        let terminal = owner
+            .seal_and_drain_until(tokio::time::Instant::now() + Duration::from_secs(1))
+            .await;
+        assert!(terminal.terminal);
+        assert_eq!(terminal.joined, 1);
+        assert_eq!(owner.task_count(), 0);
+        assert_eq!(cleanup.load(Ordering::SeqCst), 1);
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct SnapshotMailboxScanner {
+    shutdown_owner: SnapshotScannerShutdownOwner,
     cursors: HashMap<crate::path_identity::FileObjectId, String>,
     observed: std::collections::HashSet<crate::path_identity::FileObjectId>,
     startup_sweep_complete: bool,
@@ -237,6 +609,11 @@ impl SnapshotMailboxScanner {
 
     #[cfg(test)]
     pub(crate) async fn join_pending_tasks_for_test(&mut self) {
+        let result = self
+            .shutdown_owner
+            .seal_and_drain_until(tokio::time::Instant::now() + std::time::Duration::from_secs(30))
+            .await;
+        assert!(result.terminal, "terminal snapshot mailbox tasks retained");
         for task in std::mem::take(&mut self.pending_tasks) {
             task.await.expect("terminal snapshot mailbox task");
         }
@@ -346,6 +723,9 @@ impl SnapshotMailboxScanner {
             return;
         };
         for name in selected {
+            if self.shutdown_owner.is_sealed() {
+                break;
+            }
             let source_key = format!(
                 "host:{:016x}:{:016x}",
                 request_directory_identity.object_id.volume,
@@ -390,12 +770,31 @@ impl SnapshotMailboxScanner {
                 safe_remove(&processing, &claimed);
                 continue;
             }
+            let cleanup_processing = processing.clone();
+            let cleanup_claimed = claimed.clone();
+            let cleanup_request_directory = request_directory.clone();
+            let cleanup_request_identity = request_directory_identity.clone();
+            let cleanup_response_directory = response_directory.clone();
+            let cleanup_response_identity = response_directory_identity.clone();
+            let cleanup: ScannerTaskCleanup = std::sync::Arc::new(move || {
+                safe_remove(&cleanup_processing, &cleanup_claimed);
+                sweep_directory(&cleanup_request_directory, &cleanup_request_identity, false);
+                sweep_directory(
+                    &cleanup_response_directory,
+                    &cleanup_response_identity,
+                    true,
+                );
+            });
             let app = app.clone();
             let response_directory = response_directory.clone();
             let expected_root = root_identity.clone();
             let snapshot_state = snapshot_state.inner().clone();
-            let task = tauri::async_runtime::spawn(async move {
+            let ownership = ScannerTaskOwnership::new();
+            let phase = ownership.phase.clone();
+            let audit_request_id = request_id.clone();
+            let future = async move {
                 let processed = crate::logging::catch_payload_future(process_claimed(
+                    ownership,
                     &app,
                     snapshot_state,
                     processing,
@@ -409,11 +808,22 @@ impl SnapshotMailboxScanner {
                 if processed.is_err() {
                     log::error!("[terminal-snapshot] stage=host_task code=internal");
                 }
-            });
-            #[cfg(test)]
-            self.pending_tasks.push(task);
-            #[cfg(not(test))]
-            drop(task);
+            };
+            if !self.shutdown_owner.spawn_tracked(
+                Some(audit_request_id.clone()),
+                phase,
+                cleanup.clone(),
+                future,
+            ) {
+                let reason = if self.shutdown_owner.is_sealed() {
+                    TerminalSnapshotReasonCode::AuthorityChanged
+                } else {
+                    TerminalSnapshotReasonCode::RateLimited
+                };
+                record_host_ingress_failure(Some(audit_request_id), None, reason);
+                cleanup();
+                break;
+            }
         }
     }
 }
@@ -456,6 +866,7 @@ fn protocol_request_name(name: &str) -> Option<&str> {
 
 #[allow(clippy::too_many_arguments)]
 async fn process_claimed<R: tauri::Runtime>(
+    scanner_ownership: ScannerTaskOwnership,
     app: &tauri::AppHandle<R>,
     snapshot_state: Arc<crate::pty::terminal_snapshot::TerminalSnapshotState>,
     processing: PathBuf,
@@ -465,6 +876,9 @@ async fn process_claimed<R: tauri::Runtime>(
     filename_request_id: String,
     ingress: tokio::sync::OwnedSemaphorePermit,
 ) {
+    if !scanner_ownership.mark_owned() {
+        return;
+    }
     #[cfg(test)]
     snapshot_state.run_host_cancellation_hook(
         crate::pty::terminal_snapshot::TerminalSnapshotHostCancellationStage::Processing,
@@ -665,6 +1079,7 @@ async fn process_claimed<R: tauri::Runtime>(
     let response_directory_for_publish = response_directory.clone();
     let state_for_publish = Arc::clone(&snapshot_state);
     let confirmation_tag = request.confirmation_tag.clone();
+    scanner_ownership.mark_finalizer();
     let task = match success_bytes {
         Ok(success_bytes) => tokio::task::spawn_blocking(move || {
             crate::logging::catch_payload_unwind(|| {

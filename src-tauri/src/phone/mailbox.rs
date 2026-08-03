@@ -2441,6 +2441,13 @@ enum MailboxTestEvent {
     },
 }
 
+impl MailboxPoller {
+    pub(crate) fn active_terminal_snapshot_shutdown_owner(
+    ) -> Option<crate::phone::terminal_snapshot::SnapshotScannerShutdownOwner> {
+        crate::phone::terminal_snapshot::SnapshotScannerShutdownOwner::active()
+    }
+}
+
 pub struct MailboxPoller {
     poll_interval: std::time::Duration,
     retry_tracker: HashMap<PathBuf, RetryState>,
