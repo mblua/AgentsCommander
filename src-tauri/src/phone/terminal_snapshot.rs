@@ -970,6 +970,7 @@ fn publish_response_bytes(
         published = match state.relocate_artifact(&written_identity, &destination) {
             Ok(published) => published,
             Err(_) => {
+                #[cfg(not(unix))]
                 cleanup_tracked_artifact(state, &destination, &written_identity);
                 return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
             }
@@ -1037,6 +1038,17 @@ fn reconcile_published_response(
         {
             Ok(Some(identity))
         }
+        #[cfg(unix)]
+        Err(_) => {
+            if cleanup_tracked_artifact(state, destination, expected)
+                == crate::pty::terminal_snapshot::TerminalSnapshotArtifactCleanupOutcome::AlreadyAbsent
+            {
+                Ok(None)
+            } else {
+                Err(TerminalSnapshotReasonCode::ResponseUnavailable)
+            }
+        }
+        #[cfg(not(unix))]
         Err(_)
             if retained_directory.child_is_absent(destination)
                 || crate::path_identity::opened_file_is_delete_pending(file) =>
@@ -1063,7 +1075,7 @@ fn cleanup_tracked_artifact(
     state: &crate::pty::terminal_snapshot::TerminalSnapshotState,
     path: &Path,
     expected: &crate::path_identity::VerifiedPathIdentity,
-) -> bool {
+) -> crate::pty::terminal_snapshot::TerminalSnapshotArtifactCleanupOutcome {
     state.cleanup_artifact(path, expected)
 }
 
@@ -1581,9 +1593,14 @@ mod tests {
         );
         assert!(std::fs::metadata(&displaced).unwrap().len() > 0);
         assert!(!directory.path().join(format!("{request_id}.json")).exists());
+        #[cfg(unix)]
+        assert_eq!(state.test_artifact_counts(), (1, 1, 0));
+        #[cfg(not(unix))]
         assert_eq!(state.test_artifact_counts(), (0, 0, 0));
         std::fs::remove_file(replacement).unwrap();
         std::fs::remove_file(displaced).unwrap();
+        #[cfg(unix)]
+        state.sweep_artifacts_for_test(true);
         assert_registry_reclaimed(&state);
     }
 
@@ -1666,9 +1683,14 @@ mod tests {
                 b"mismatched final replacement"
             );
             assert!(std::fs::metadata(&displaced).unwrap().len() > 0);
+            #[cfg(unix)]
+            assert_eq!(state.test_artifact_counts(), (1, 1, 0));
+            #[cfg(not(unix))]
             assert_eq!(state.test_artifact_counts(), (0, 0, 0));
             std::fs::remove_file(destination).unwrap();
             std::fs::remove_file(displaced).unwrap();
+            #[cfg(unix)]
+            state.sweep_artifacts_for_test(true);
             assert_registry_reclaimed(&state);
         }
     }
@@ -1717,6 +1739,45 @@ mod tests {
         assert_eq!(state.test_artifact_counts(), (0, 0, 0));
         let identity = crate::path_identity::verify_directory(directory.path()).unwrap();
         assert!(state.reserve_artifact(directory.path(), &identity).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn committed_response_cleanup_uses_final_barrier_and_preserves_replacement() {
+        use crate::pty::terminal_snapshot::TerminalSnapshotResponsePublicationFailure as Failure;
+
+        let directory = response_directory();
+        let state = crate::pty::terminal_snapshot::TerminalSnapshotState::new(
+            crate::shutdown::ShutdownSignal::new(),
+        );
+        let replacement = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let replacement_for_hook = std::sync::Arc::clone(&replacement);
+        state.install_unix_cleanup_hook(None, move |stage, source, _| {
+            if stage == crate::path_identity::UnixTrackedCleanupStage::BeforeClaimUnlink {
+                std::fs::write(source, b"foreign temporary replacement").unwrap();
+                *replacement_for_hook.lock().unwrap() = Some(source.to_path_buf());
+            }
+        });
+        state.install_response_publication_failure(Failure::FileSync);
+
+        assert!(matches!(
+            publish_trusted_failure(
+                &state,
+                directory.path(),
+                Uuid::new_v4(),
+                &"a".repeat(64),
+                TerminalSnapshotReasonCode::InvalidRequest,
+            ),
+            Err(TerminalSnapshotReasonCode::ResponseUnavailable)
+        ));
+        let replacement = replacement.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            std::fs::read(&replacement).unwrap(),
+            b"foreign temporary replacement"
+        );
+        assert_eq!(state.test_artifact_counts(), (0, 0, 0));
+        std::fs::remove_file(replacement).unwrap();
+        assert_registry_reclaimed(&state);
     }
 
     #[test]
@@ -1900,8 +1961,19 @@ mod tests {
             Err(TerminalSnapshotReasonCode::ResponseUnavailable)
         ));
         let destination = directory.path().join(format!("{request_id}.json"));
-        assert_eq!(std::fs::read(destination).unwrap(), b"attacker replacement");
+        assert_eq!(
+            std::fs::read(&destination).unwrap(),
+            b"attacker replacement"
+        );
+        #[cfg(unix)]
+        assert_eq!(state.test_artifact_counts(), (1, 1, 0));
+        #[cfg(not(unix))]
         assert_eq!(state.test_artifact_counts(), (0, 0, 0));
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(directory.path().join("client-consumed-response")).unwrap();
+            state.sweep_artifacts_for_test(true);
+        }
         state.sweep_artifacts_for_test(false);
         assert_eq!(state.test_artifact_counts(), (0, 0, 0));
     }

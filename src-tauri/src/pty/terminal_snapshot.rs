@@ -56,6 +56,16 @@ type TerminalSnapshotTestHook = Box<dyn FnOnce() + Send + 'static>;
 #[cfg(test)]
 type TerminalSnapshotResponsePublicationHook = Box<dyn FnOnce(&Path, &Path) + Send + 'static>;
 
+#[cfg(all(test, unix))]
+type TerminalSnapshotUnixCleanupHook =
+    Box<dyn FnMut(crate::path_identity::UnixTrackedCleanupStage, &Path, &Path) + Send + 'static>;
+
+#[cfg(all(test, unix))]
+struct TerminalSnapshotUnixCleanupControl {
+    claim_leaf: Option<std::ffi::OsString>,
+    hook: TerminalSnapshotUnixCleanupHook,
+}
+
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum TerminalSnapshotResponsePublicationStage {
@@ -379,6 +389,8 @@ struct TerminalSnapshotTestState {
         >,
     >,
     response_publication_failures: Mutex<VecDeque<TerminalSnapshotResponsePublicationFailure>>,
+    #[cfg(unix)]
+    unix_cleanup_controls: Mutex<VecDeque<TerminalSnapshotUnixCleanupControl>>,
     blocking_controls: Mutex<
         HashMap<TerminalSnapshotBlockingStage, VecDeque<Arc<TerminalSnapshotBlockingControl>>>,
     >,
@@ -744,6 +756,43 @@ struct TrackedArtifactFile {
     path: PathBuf,
     identity: crate::path_identity::VerifiedPathIdentity,
     expires_at: Instant,
+    #[cfg(unix)]
+    witness: crate::path_identity::RetainedUnixFileWitness,
+    #[cfg(unix)]
+    operation_generation: u64,
+    #[cfg(unix)]
+    operation_owner: Option<u64>,
+}
+
+#[cfg(unix)]
+struct UnixArtifactOperation {
+    object: crate::path_identity::FileObjectId,
+    token: u64,
+    directory: TrackedArtifactDirectory,
+    path: PathBuf,
+    identity: crate::path_identity::VerifiedPathIdentity,
+    witness: crate::path_identity::RetainedUnixFileWitness,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TerminalSnapshotArtifactCleanupOutcome {
+    Removed,
+    AlreadyAbsent,
+    SourceRetained,
+    #[cfg(unix)]
+    PrivateClaimRetained,
+    #[cfg(unix)]
+    Busy,
+    Conflict,
+    #[cfg(unix)]
+    Uncertain,
+}
+
+impl TerminalSnapshotArtifactCleanupOutcome {
+    #[cfg(unix)]
+    pub(crate) fn confirmed_absent(self) -> bool {
+        matches!(self, Self::Removed | Self::AlreadyAbsent)
+    }
 }
 
 #[derive(Default)]
@@ -792,6 +841,12 @@ impl TerminalSnapshotArtifactReservation {
         {
             return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
         }
+        #[cfg(unix)]
+        let witness = self
+            .directory
+            .retained
+            .retain_unix_file_witness(&path, &identity)
+            .map_err(|_| TerminalSnapshotReasonCode::ResponseUnavailable)?;
         let mut registry = self
             .registry
             .lock()
@@ -800,10 +855,24 @@ impl TerminalSnapshotArtifactReservation {
             .checked_add(ttl)
             .ok_or(TerminalSnapshotReasonCode::Internal)?;
         if let Some(existing) = registry.files.get_mut(&identity.object_id) {
+            #[cfg(unix)]
+            if existing.operation_owner.is_some() {
+                return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
+            }
+            #[cfg(unix)]
+            let next_generation = existing
+                .operation_generation
+                .checked_add(1)
+                .ok_or(TerminalSnapshotReasonCode::Internal)?;
             existing.directory = self.directory.identity.object_id;
             existing.path = path;
             existing.identity = identity;
             existing.expires_at = expires_at;
+            #[cfg(unix)]
+            {
+                existing.witness = witness;
+                existing.operation_generation = next_generation;
+            }
         } else {
             registry.files.insert(
                 identity.object_id,
@@ -812,6 +881,12 @@ impl TerminalSnapshotArtifactReservation {
                     path,
                     identity,
                     expires_at,
+                    #[cfg(unix)]
+                    witness,
+                    #[cfg(unix)]
+                    operation_generation: 0,
+                    #[cfg(unix)]
+                    operation_owner: None,
                 },
             );
         }
@@ -1085,6 +1160,31 @@ impl TerminalSnapshotState {
             .push_back(Box::new(hook));
     }
 
+    #[cfg(all(test, unix))]
+    pub(crate) fn install_unix_cleanup_hook(
+        &self,
+        claim_leaf: Option<std::ffi::OsString>,
+        hook: impl FnMut(crate::path_identity::UnixTrackedCleanupStage, &Path, &Path) + Send + 'static,
+    ) {
+        self.test_state
+            .unix_cleanup_controls
+            .lock()
+            .expect("Unix cleanup control queue")
+            .push_back(TerminalSnapshotUnixCleanupControl {
+                claim_leaf,
+                hook: Box::new(hook),
+            });
+    }
+
+    #[cfg(all(test, unix))]
+    fn take_unix_cleanup_control(&self) -> Option<TerminalSnapshotUnixCleanupControl> {
+        self.test_state
+            .unix_cleanup_controls
+            .lock()
+            .expect("Unix cleanup control queue")
+            .pop_front()
+    }
+
     #[cfg(test)]
     pub(crate) fn install_response_after_publish_hook(&self, hook: impl FnOnce() + Send + 'static) {
         self.install_response_publication_hook(
@@ -1317,6 +1417,7 @@ impl TerminalSnapshotState {
         })
     }
 
+    #[cfg(not(unix))]
     pub(crate) fn untrack_artifact(&self, identity: &crate::path_identity::VerifiedPathIdentity) {
         if let Ok(mut registry) = self.artifacts.lock() {
             if let Some(removed) = registry.files.remove(&identity.object_id) {
@@ -1325,33 +1426,310 @@ impl TerminalSnapshotState {
         }
     }
 
+    #[cfg(unix)]
+    fn begin_unix_artifact_operation(
+        &self,
+        expected: &crate::path_identity::VerifiedPathIdentity,
+    ) -> Result<UnixArtifactOperation, TerminalSnapshotArtifactCleanupOutcome> {
+        let mut registry = self
+            .artifacts
+            .lock()
+            .map_err(|_| TerminalSnapshotArtifactCleanupOutcome::Uncertain)?;
+        let tracked = registry
+            .files
+            .get(&expected.object_id)
+            .ok_or(TerminalSnapshotArtifactCleanupOutcome::Conflict)?;
+        if tracked.identity.object_id != expected.object_id {
+            return Err(TerminalSnapshotArtifactCleanupOutcome::Conflict);
+        }
+        if tracked.operation_owner.is_some() {
+            return Err(TerminalSnapshotArtifactCleanupOutcome::Busy);
+        }
+        let token = tracked
+            .operation_generation
+            .checked_add(1)
+            .ok_or(TerminalSnapshotArtifactCleanupOutcome::Uncertain)?;
+        let directory = registry
+            .directories
+            .get(&tracked.directory)
+            .cloned()
+            .ok_or(TerminalSnapshotArtifactCleanupOutcome::Conflict)?;
+        let operation = UnixArtifactOperation {
+            object: expected.object_id,
+            token,
+            directory,
+            path: tracked.path.clone(),
+            identity: tracked.identity.clone(),
+            witness: tracked.witness.clone(),
+        };
+        let tracked = registry
+            .files
+            .get_mut(&expected.object_id)
+            .ok_or(TerminalSnapshotArtifactCleanupOutcome::Conflict)?;
+        tracked.operation_generation = token;
+        tracked.operation_owner = Some(token);
+        Ok(operation)
+    }
+
+    #[cfg(unix)]
+    fn clear_unix_artifact_operation(
+        &self,
+        operation: &UnixArtifactOperation,
+        outcome: TerminalSnapshotArtifactCleanupOutcome,
+    ) -> TerminalSnapshotArtifactCleanupOutcome {
+        let Ok(mut registry) = self.artifacts.lock() else {
+            return TerminalSnapshotArtifactCleanupOutcome::Uncertain;
+        };
+        let Some(tracked) = registry.files.get_mut(&operation.object) else {
+            return TerminalSnapshotArtifactCleanupOutcome::Conflict;
+        };
+        if tracked.operation_generation != operation.token
+            || tracked.operation_owner != Some(operation.token)
+        {
+            return TerminalSnapshotArtifactCleanupOutcome::Conflict;
+        }
+        tracked.operation_owner = None;
+        outcome
+    }
+
+    #[cfg(unix)]
+    fn finish_unix_artifact_cleanup(
+        &self,
+        operation: UnixArtifactOperation,
+        outcome: crate::path_identity::UnixTrackedCleanupOutcome,
+    ) -> TerminalSnapshotArtifactCleanupOutcome {
+        match outcome {
+            crate::path_identity::UnixTrackedCleanupOutcome::Removed
+            | crate::path_identity::UnixTrackedCleanupOutcome::AlreadyAbsent => {
+                let public_outcome = if matches!(
+                    outcome,
+                    crate::path_identity::UnixTrackedCleanupOutcome::Removed
+                ) {
+                    TerminalSnapshotArtifactCleanupOutcome::Removed
+                } else {
+                    TerminalSnapshotArtifactCleanupOutcome::AlreadyAbsent
+                };
+                let Ok(mut registry) = self.artifacts.lock() else {
+                    return TerminalSnapshotArtifactCleanupOutcome::Uncertain;
+                };
+                let valid_owner = registry
+                    .files
+                    .get(&operation.object)
+                    .is_some_and(|tracked| {
+                        tracked.operation_generation == operation.token
+                            && tracked.operation_owner == Some(operation.token)
+                    });
+                if !valid_owner {
+                    return TerminalSnapshotArtifactCleanupOutcome::Uncertain;
+                }
+                let Some(removed) = registry.files.remove(&operation.object) else {
+                    return TerminalSnapshotArtifactCleanupOutcome::Uncertain;
+                };
+                remove_idle_artifact_directory(&mut registry, removed.directory);
+                public_outcome
+            }
+            crate::path_identity::UnixTrackedCleanupOutcome::ClaimRetained { path, identity } => {
+                if !operation.witness.matches(&operation.identity, &identity)
+                    || !crate::path_identity::is_verified_descendant(
+                        &identity,
+                        &operation.directory.identity,
+                    )
+                {
+                    return self.clear_unix_artifact_operation(
+                        &operation,
+                        TerminalSnapshotArtifactCleanupOutcome::Uncertain,
+                    );
+                }
+                let Ok(mut registry) = self.artifacts.lock() else {
+                    return TerminalSnapshotArtifactCleanupOutcome::Uncertain;
+                };
+                let Some(tracked) = registry.files.get_mut(&operation.object) else {
+                    return TerminalSnapshotArtifactCleanupOutcome::Conflict;
+                };
+                if tracked.operation_generation != operation.token
+                    || tracked.operation_owner != Some(operation.token)
+                    || tracked.directory != operation.directory.identity.object_id
+                {
+                    return TerminalSnapshotArtifactCleanupOutcome::Conflict;
+                }
+                tracked.path = path;
+                tracked.identity = identity;
+                tracked.operation_owner = None;
+                TerminalSnapshotArtifactCleanupOutcome::PrivateClaimRetained
+            }
+            crate::path_identity::UnixTrackedCleanupOutcome::SourceRetained => self
+                .clear_unix_artifact_operation(
+                    &operation,
+                    TerminalSnapshotArtifactCleanupOutcome::SourceRetained,
+                ),
+            crate::path_identity::UnixTrackedCleanupOutcome::Uncertain => self
+                .clear_unix_artifact_operation(
+                    &operation,
+                    TerminalSnapshotArtifactCleanupOutcome::Uncertain,
+                ),
+        }
+    }
+
+    #[cfg(unix)]
+    fn cleanup_artifact_unix(
+        &self,
+        expected: &crate::path_identity::VerifiedPathIdentity,
+    ) -> TerminalSnapshotArtifactCleanupOutcome {
+        let operation = match self.begin_unix_artifact_operation(expected) {
+            Ok(operation) => operation,
+            Err(outcome) => return outcome,
+        };
+        #[cfg(test)]
+        let outcome = if let Some(control) = self.take_unix_cleanup_control() {
+            let TerminalSnapshotUnixCleanupControl {
+                claim_leaf,
+                mut hook,
+            } = control;
+            operation
+                .directory
+                .retained
+                .cleanup_unix_tracked_file_with_hook(
+                    &operation.path,
+                    &operation.identity,
+                    &operation.witness,
+                    claim_leaf.as_deref(),
+                    move |stage, source, claim| hook(stage, source, claim),
+                )
+        } else {
+            operation.directory.retained.cleanup_unix_tracked_file(
+                &operation.path,
+                &operation.identity,
+                &operation.witness,
+            )
+        };
+        #[cfg(not(test))]
+        let outcome = operation.directory.retained.cleanup_unix_tracked_file(
+            &operation.path,
+            &operation.identity,
+            &operation.witness,
+        );
+        self.finish_unix_artifact_cleanup(operation, outcome)
+    }
+
     pub(crate) fn cleanup_artifact(
         &self,
         path: &Path,
         expected: &crate::path_identity::VerifiedPathIdentity,
-    ) -> bool {
-        let retained = match self.artifacts.lock() {
-            Ok(registry) => registry
-                .files
-                .get(&expected.object_id)
-                .and_then(|tracked| registry.directories.get(&tracked.directory))
-                .map(|directory| directory.retained.clone()),
-            Err(_) => None,
-        };
-        let Some(retained) = retained else {
-            return false;
-        };
-        if retained.remove_regular_file_if_same(path, expected) {
-            self.untrack_artifact(expected);
-            return true;
+    ) -> TerminalSnapshotArtifactCleanupOutcome {
+        #[cfg(unix)]
+        {
+            let _ = path;
+            return self.cleanup_artifact_unix(expected);
         }
-        match retained.verify_regular_file(path) {
-            Ok(current) if crate::path_identity::same_object(expected, &current) => false,
-            _ => {
+        #[cfg(not(unix))]
+        {
+            let retained = match self.artifacts.lock() {
+                Ok(registry) => registry
+                    .files
+                    .get(&expected.object_id)
+                    .and_then(|tracked| registry.directories.get(&tracked.directory))
+                    .map(|directory| directory.retained.clone()),
+                Err(_) => None,
+            };
+            let Some(retained) = retained else {
+                return TerminalSnapshotArtifactCleanupOutcome::Conflict;
+            };
+            if retained.remove_regular_file_if_same(path, expected) {
                 self.untrack_artifact(expected);
-                false
+                return TerminalSnapshotArtifactCleanupOutcome::Removed;
+            }
+            match retained.verify_regular_file(path) {
+                Ok(current) if crate::path_identity::same_object(expected, &current) => {
+                    TerminalSnapshotArtifactCleanupOutcome::SourceRetained
+                }
+                _ => {
+                    self.untrack_artifact(expected);
+                    TerminalSnapshotArtifactCleanupOutcome::AlreadyAbsent
+                }
             }
         }
+    }
+
+    #[cfg(unix)]
+    fn relocate_artifact_unix(
+        &self,
+        expected: &crate::path_identity::VerifiedPathIdentity,
+        path: &Path,
+    ) -> Result<Option<crate::path_identity::VerifiedPathIdentity>, TerminalSnapshotReasonCode>
+    {
+        let operation = self
+            .begin_unix_artifact_operation(expected)
+            .map_err(|_| TerminalSnapshotReasonCode::ResponseUnavailable)?;
+        if operation.witness.state(&operation.identity)
+            == crate::path_identity::UnixFileWitnessState::Unlinked
+        {
+            let outcome = self.finish_unix_artifact_cleanup(
+                operation,
+                crate::path_identity::UnixTrackedCleanupOutcome::AlreadyAbsent,
+            );
+            return if outcome.confirmed_absent() {
+                Ok(None)
+            } else {
+                Err(TerminalSnapshotReasonCode::ResponseUnavailable)
+            };
+        }
+        if operation.witness.state(&operation.identity)
+            != crate::path_identity::UnixFileWitnessState::Linked
+        {
+            self.clear_unix_artifact_operation(
+                &operation,
+                TerminalSnapshotArtifactCleanupOutcome::Uncertain,
+            );
+            return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
+        }
+        let current = match operation.directory.retained.verify_regular_file(path) {
+            Ok(current)
+                if operation.witness.matches(&operation.identity, &current)
+                    && crate::path_identity::is_verified_descendant(
+                        &current,
+                        &operation.directory.identity,
+                    ) =>
+            {
+                current
+            }
+            _ => {
+                if operation.witness.state(&operation.identity)
+                    == crate::path_identity::UnixFileWitnessState::Unlinked
+                {
+                    let outcome = self.finish_unix_artifact_cleanup(
+                        operation,
+                        crate::path_identity::UnixTrackedCleanupOutcome::AlreadyAbsent,
+                    );
+                    return if outcome.confirmed_absent() {
+                        Ok(None)
+                    } else {
+                        Err(TerminalSnapshotReasonCode::ResponseUnavailable)
+                    };
+                }
+                self.clear_unix_artifact_operation(
+                    &operation,
+                    TerminalSnapshotArtifactCleanupOutcome::SourceRetained,
+                );
+                return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
+            }
+        };
+        let mut registry = self
+            .artifacts
+            .lock()
+            .map_err(|_| TerminalSnapshotReasonCode::ServiceUnavailable)?;
+        let Some(tracked) = registry.files.get_mut(&operation.object) else {
+            return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
+        };
+        if tracked.operation_generation != operation.token
+            || tracked.operation_owner != Some(operation.token)
+            || tracked.directory != operation.directory.identity.object_id
+        {
+            return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
+        }
+        tracked.path = path.to_path_buf();
+        tracked.identity = current.clone();
+        tracked.operation_owner = None;
+        Ok(Some(current))
     }
 
     pub(crate) fn relocate_artifact(
@@ -1360,109 +1738,135 @@ impl TerminalSnapshotState {
         path: &Path,
     ) -> Result<Option<crate::path_identity::VerifiedPathIdentity>, TerminalSnapshotReasonCode>
     {
-        let directory = {
-            let registry = self
+        #[cfg(unix)]
+        {
+            return self.relocate_artifact_unix(expected, path);
+        }
+        #[cfg(not(unix))]
+        {
+            let directory = {
+                let registry = self
+                    .artifacts
+                    .lock()
+                    .map_err(|_| TerminalSnapshotReasonCode::ServiceUnavailable)?;
+                let directory_object = registry
+                    .files
+                    .get(&expected.object_id)
+                    .map(|tracked| tracked.directory)
+                    .ok_or(TerminalSnapshotReasonCode::ResponseUnavailable)?;
+                registry
+                    .directories
+                    .get(&directory_object)
+                    .cloned()
+                    .ok_or(TerminalSnapshotReasonCode::ResponseUnavailable)?
+            };
+            directory
+                .retained
+                .verify_current()
+                .map_err(|_| TerminalSnapshotReasonCode::ResponseUnavailable)?;
+            let current = match directory.retained.verify_regular_file(path) {
+                Ok(current) if crate::path_identity::same_object(expected, &current) => current,
+                Err(_) if directory.retained.child_is_absent(path) => {
+                    self.untrack_artifact(expected);
+                    return Ok(None);
+                }
+                _ => return Err(TerminalSnapshotReasonCode::ResponseUnavailable),
+            };
+            if !crate::path_identity::is_verified_descendant(&current, &directory.identity) {
+                return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
+            }
+            let mut registry = self
                 .artifacts
                 .lock()
                 .map_err(|_| TerminalSnapshotReasonCode::ServiceUnavailable)?;
-            let directory_object = registry
-                .files
-                .get(&expected.object_id)
-                .map(|tracked| tracked.directory)
-                .ok_or(TerminalSnapshotReasonCode::ResponseUnavailable)?;
-            registry
-                .directories
-                .get(&directory_object)
-                .cloned()
-                .ok_or(TerminalSnapshotReasonCode::ResponseUnavailable)?
-        };
-        directory
-            .retained
-            .verify_current()
-            .map_err(|_| TerminalSnapshotReasonCode::ResponseUnavailable)?;
-        let current = match directory.retained.verify_regular_file(path) {
-            Ok(current) if crate::path_identity::same_object(expected, &current) => current,
-            Err(_) if directory.retained.child_is_absent(path) => {
-                self.untrack_artifact(expected);
-                return Ok(None);
+            let Some(tracked) = registry.files.get_mut(&expected.object_id) else {
+                return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
+            };
+            if tracked.directory != directory.identity.object_id {
+                return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
             }
-            _ => return Err(TerminalSnapshotReasonCode::ResponseUnavailable),
-        };
-        if !crate::path_identity::is_verified_descendant(&current, &directory.identity) {
-            return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
+            tracked.path = path.to_path_buf();
+            tracked.identity = current.clone();
+            Ok(Some(current))
         }
-        let mut registry = self
-            .artifacts
-            .lock()
-            .map_err(|_| TerminalSnapshotReasonCode::ServiceUnavailable)?;
-        let Some(tracked) = registry.files.get_mut(&expected.object_id) else {
-            return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
-        };
-        if tracked.directory != directory.identity.object_id {
-            return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
-        }
-        tracked.path = path.to_path_buf();
-        tracked.identity = current.clone();
-        Ok(Some(current))
     }
 
     fn sweep_artifacts(&self, force: bool) {
-        let (files, directories) = match self.artifacts.lock() {
-            Ok(registry) => (
-                registry.files.values().cloned().collect::<Vec<_>>(),
-                registry.directories.values().cloned().collect::<Vec<_>>(),
-            ),
-            Err(_) => return,
-        };
-        let now = Instant::now();
-        let mut absent_files = Vec::new();
-        for tracked in files {
-            if !force && now < tracked.expires_at {
-                continue;
-            }
-            let Some(directory) = directories
-                .iter()
-                .find(|directory| directory.identity.object_id == tracked.directory)
-            else {
-                absent_files.push(tracked.identity.object_id);
-                continue;
+        #[cfg(unix)]
+        {
+            let files = match self.artifacts.lock() {
+                Ok(registry) => registry
+                    .files
+                    .values()
+                    .filter(|tracked| force || Instant::now() >= tracked.expires_at)
+                    .map(|tracked| (tracked.path.clone(), tracked.identity.clone()))
+                    .collect::<Vec<_>>(),
+                Err(_) => return,
             };
-            match directory.retained.verify_regular_file(&tracked.path) {
-                Ok(current) if crate::path_identity::same_object(&current, &tracked.identity) => {
-                    if directory
-                        .retained
-                        .remove_regular_file_if_same(&tracked.path, &tracked.identity)
+            for (path, identity) in files {
+                let _ = self.cleanup_artifact(&path, &identity);
+            }
+            return;
+        }
+        #[cfg(not(unix))]
+        {
+            let (files, directories) = match self.artifacts.lock() {
+                Ok(registry) => (
+                    registry.files.values().cloned().collect::<Vec<_>>(),
+                    registry.directories.values().cloned().collect::<Vec<_>>(),
+                ),
+                Err(_) => return,
+            };
+            let now = Instant::now();
+            let mut absent_files = Vec::new();
+            for tracked in files {
+                if !force && now < tracked.expires_at {
+                    continue;
+                }
+                let Some(directory) = directories
+                    .iter()
+                    .find(|directory| directory.identity.object_id == tracked.directory)
+                else {
+                    absent_files.push(tracked.identity.object_id);
+                    continue;
+                };
+                match directory.retained.verify_regular_file(&tracked.path) {
+                    Ok(current)
+                        if crate::path_identity::same_object(&current, &tracked.identity) =>
                     {
+                        if directory
+                            .retained
+                            .remove_regular_file_if_same(&tracked.path, &tracked.identity)
+                        {
+                            absent_files.push(tracked.identity.object_id);
+                        }
+                    }
+                    Ok(_) => {
                         absent_files.push(tracked.identity.object_id);
                     }
+                    Err(_) if directory.retained.child_is_absent(&tracked.path) => {
+                        absent_files.push(tracked.identity.object_id);
+                    }
+                    _ => {}
                 }
-                Ok(_) => {
-                    // The tracked object no longer owns this name. Leave the
-                    // replacement untouched and release only the stale record.
-                    absent_files.push(tracked.identity.object_id);
-                }
-                Err(_) if directory.retained.child_is_absent(&tracked.path) => {
-                    absent_files.push(tracked.identity.object_id);
-                }
-                _ => {}
             }
-        }
-        let mut registry = match self.artifacts.lock() {
-            Ok(registry) => registry,
-            Err(_) => return,
-        };
-        for object in absent_files {
-            registry.files.remove(&object);
-        }
-        let live_directories: std::collections::HashSet<_> = registry
-            .files
-            .values()
-            .map(|file| file.directory)
-            .chain(registry.directory_reservations.keys().copied())
-            .collect();
-        for directory in directories {
-            if !live_directories.contains(&directory.identity.object_id) {
-                registry.directories.remove(&directory.identity.object_id);
+            let mut registry = match self.artifacts.lock() {
+                Ok(registry) => registry,
+                Err(_) => return,
+            };
+            for object in absent_files {
+                registry.files.remove(&object);
+            }
+            let live_directories: std::collections::HashSet<_> = registry
+                .files
+                .values()
+                .map(|file| file.directory)
+                .chain(registry.directory_reservations.keys().copied())
+                .collect();
+            for directory in directories {
+                if !live_directories.contains(&directory.identity.object_id) {
+                    registry.directories.remove(&directory.identity.object_id);
+                }
             }
         }
     }
@@ -2878,6 +3282,7 @@ mod tests {
             .contains_key(&identity.object_id));
     }
 
+    #[cfg(not(unix))]
     #[test]
     fn artifact_registry_releases_a_displaced_object_without_removing_its_replacement() {
         let state = TerminalSnapshotState::new(crate::shutdown::ShutdownSignal::new());
@@ -2908,6 +3313,193 @@ mod tests {
         let registry = state.artifacts.lock().unwrap();
         assert!(!registry.files.contains_key(&identity.object_id));
         assert!(registry.directories.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn artifact_registry_retains_displaced_object_until_witness_proves_absence() {
+        let state = TerminalSnapshotState::new(crate::shutdown::ShutdownSignal::new());
+        let directory = tempfile::TempDir::new().unwrap();
+        let directory_identity = crate::path_identity::verify_directory(directory.path()).unwrap();
+        let reservation = state
+            .reserve_artifact(directory.path(), &directory_identity)
+            .unwrap();
+        let path = directory.path().join(format!("{}.json", Uuid::new_v4()));
+        let displaced = directory.path().join("displaced-tracked-response");
+        std::fs::write(&path, b"tracked response").unwrap();
+        let identity = crate::path_identity::verify_regular_file(&path).unwrap();
+        reservation.commit(path.clone(), identity.clone()).unwrap();
+        std::fs::rename(&path, &displaced).unwrap();
+        std::fs::write(&path, b"replacement response").unwrap();
+
+        state.sweep_artifacts(true);
+        assert_eq!(std::fs::read(&path).unwrap(), b"replacement response");
+        assert_eq!(std::fs::read(&displaced).unwrap(), b"tracked response");
+        assert_eq!(state.test_artifact_counts(), (1, 1, 0));
+
+        std::fs::remove_file(&displaced).unwrap();
+        state.sweep_artifacts(true);
+        assert_eq!(std::fs::read(path).unwrap(), b"replacement response");
+        assert_eq!(state.test_artifact_counts(), (0, 0, 0));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn artifact_cleanup_reclaims_once_only_after_witness_confirmed_removal() {
+        let state = TerminalSnapshotState::new(crate::shutdown::ShutdownSignal::new());
+        let directory = tempfile::TempDir::new().unwrap();
+        let directory_identity = crate::path_identity::verify_directory(directory.path()).unwrap();
+        let reservation = state
+            .reserve_artifact(directory.path(), &directory_identity)
+            .unwrap();
+        let path = directory.path().join("tracked.json");
+        std::fs::write(&path, b"tracked response").unwrap();
+        let identity = crate::path_identity::verify_regular_file(&path).unwrap();
+        reservation.commit(path.clone(), identity.clone()).unwrap();
+
+        assert_eq!(
+            state.cleanup_artifact(&path, &identity),
+            TerminalSnapshotArtifactCleanupOutcome::Removed
+        );
+        assert!(!path.exists());
+        assert_eq!(state.test_artifact_counts(), (0, 0, 0));
+        assert_eq!(
+            state.cleanup_artifact(&path, &identity),
+            TerminalSnapshotArtifactCleanupOutcome::Conflict
+        );
+        assert_eq!(state.test_artifact_counts(), (0, 0, 0));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn artifact_cleanup_claim_collision_retains_entry_and_capacity() {
+        let state = TerminalSnapshotState::new(crate::shutdown::ShutdownSignal::new());
+        let directory = tempfile::TempDir::new().unwrap();
+        let directory_identity = crate::path_identity::verify_directory(directory.path()).unwrap();
+        let reservation = state
+            .reserve_artifact(directory.path(), &directory_identity)
+            .unwrap();
+        let path = directory.path().join("tracked.json");
+        let claim = directory.path().join(".registry-claim-collision");
+        std::fs::write(&path, b"tracked response").unwrap();
+        std::fs::write(&claim, b"collision response").unwrap();
+        let identity = crate::path_identity::verify_regular_file(&path).unwrap();
+        reservation.commit(path.clone(), identity.clone()).unwrap();
+        state.install_unix_cleanup_hook(
+            claim.file_name().map(std::ffi::OsStr::to_os_string),
+            |_, _, _| {},
+        );
+
+        assert_eq!(
+            state.cleanup_artifact(&path, &identity),
+            TerminalSnapshotArtifactCleanupOutcome::SourceRetained
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"tracked response");
+        assert_eq!(std::fs::read(&claim).unwrap(), b"collision response");
+        assert_eq!(state.test_artifact_counts(), (1, 1, 0));
+
+        std::fs::remove_file(claim).unwrap();
+        assert_eq!(
+            state.cleanup_artifact(&path, &identity),
+            TerminalSnapshotArtifactCleanupOutcome::Removed
+        );
+        assert_eq!(state.test_artifact_counts(), (0, 0, 0));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn artifact_cleanup_token_serializes_relocation_and_second_cleanup() {
+        let state = TerminalSnapshotState::new(crate::shutdown::ShutdownSignal::new());
+        let directory = tempfile::TempDir::new().unwrap();
+        let directory_identity = crate::path_identity::verify_directory(directory.path()).unwrap();
+        let reservation = state
+            .reserve_artifact(directory.path(), &directory_identity)
+            .unwrap();
+        let path = directory.path().join("tracked.json");
+        std::fs::write(&path, b"tracked response").unwrap();
+        let identity = crate::path_identity::verify_regular_file(&path).unwrap();
+        reservation.commit(path.clone(), identity.clone()).unwrap();
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let entered_hook = Arc::clone(&entered);
+        let release_hook = Arc::clone(&release);
+        state.install_unix_cleanup_hook(None, move |stage, _, _| {
+            if stage == crate::path_identity::UnixTrackedCleanupStage::BeforeClaimUnlink {
+                entered_hook.wait();
+                release_hook.wait();
+            }
+        });
+        let cleanup_state = Arc::clone(&state);
+        let cleanup_path = path.clone();
+        let cleanup_identity = identity.clone();
+        let cleanup = std::thread::spawn(move || {
+            cleanup_state.cleanup_artifact(&cleanup_path, &cleanup_identity)
+        });
+
+        entered.wait();
+        assert_eq!(state.test_artifact_counts(), (1, 1, 0));
+        assert_eq!(
+            state.cleanup_artifact(&path, &identity),
+            TerminalSnapshotArtifactCleanupOutcome::Busy
+        );
+        assert!(state.relocate_artifact(&identity, &path).is_err());
+        release.wait();
+        assert_eq!(
+            cleanup.join().unwrap(),
+            TerminalSnapshotArtifactCleanupOutcome::Removed
+        );
+        assert_eq!(state.test_artifact_counts(), (0, 0, 0));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn artifact_relocation_finds_namespace_move_that_wins_cleanup_race() {
+        let state = TerminalSnapshotState::new(crate::shutdown::ShutdownSignal::new());
+        let directory = tempfile::TempDir::new().unwrap();
+        let directory_identity = crate::path_identity::verify_directory(directory.path()).unwrap();
+        let reservation = state
+            .reserve_artifact(directory.path(), &directory_identity)
+            .unwrap();
+        let path = directory.path().join("temporary.json");
+        let destination = directory.path().join("published.json");
+        std::fs::write(&path, b"tracked response").unwrap();
+        let identity = crate::path_identity::verify_regular_file(&path).unwrap();
+        reservation.commit(path.clone(), identity.clone()).unwrap();
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let entered_hook = Arc::clone(&entered);
+        let release_hook = Arc::clone(&release);
+        state.install_unix_cleanup_hook(None, move |stage, _, _| {
+            if stage == crate::path_identity::UnixTrackedCleanupStage::BeforeClaimRename {
+                entered_hook.wait();
+                release_hook.wait();
+            }
+        });
+        let cleanup_state = Arc::clone(&state);
+        let cleanup_path = path.clone();
+        let cleanup_identity = identity.clone();
+        let cleanup = std::thread::spawn(move || {
+            cleanup_state.cleanup_artifact(&cleanup_path, &cleanup_identity)
+        });
+
+        entered.wait();
+        std::fs::rename(&path, &destination).unwrap();
+        assert!(state.relocate_artifact(&identity, &destination).is_err());
+        release.wait();
+        assert_eq!(
+            cleanup.join().unwrap(),
+            TerminalSnapshotArtifactCleanupOutcome::Uncertain
+        );
+        assert!(state
+            .relocate_artifact(&identity, &destination)
+            .unwrap()
+            .is_some());
+        assert_eq!(state.test_artifact_counts(), (1, 1, 0));
+        assert_eq!(
+            state.cleanup_artifact(&destination, &identity),
+            TerminalSnapshotArtifactCleanupOutcome::Removed
+        );
+        assert_eq!(state.test_artifact_counts(), (0, 0, 0));
     }
 
     #[test]

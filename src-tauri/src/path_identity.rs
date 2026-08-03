@@ -47,6 +47,70 @@ pub struct RetainedDirectory {
     handle: std::sync::Arc<File>,
 }
 
+#[cfg(unix)]
+#[derive(Clone)]
+pub(crate) struct RetainedUnixFileWitness {
+    handle: std::sync::Arc<File>,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnixFileWitnessState {
+    Linked,
+    Unlinked,
+    Uncertain,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnixTrackedCleanupStage {
+    BeforeClaimRename,
+    BeforeRestore,
+    BeforeClaimUnlink,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum UnixTrackedCleanupOutcome {
+    Removed,
+    AlreadyAbsent,
+    SourceRetained,
+    ClaimRetained {
+        path: PathBuf,
+        identity: VerifiedPathIdentity,
+    },
+    Uncertain,
+}
+
+#[cfg(unix)]
+impl RetainedUnixFileWitness {
+    pub(crate) fn state(&self, expected: &VerifiedPathIdentity) -> UnixFileWitnessState {
+        let Ok(metadata) = self.handle.metadata() else {
+            return UnixFileWitnessState::Uncertain;
+        };
+        let Ok((object_id, links)) = handle_identity(&self.handle) else {
+            return UnixFileWitnessState::Uncertain;
+        };
+        if !metadata.is_file() || is_link_or_reparse(&metadata) || object_id != expected.object_id {
+            return UnixFileWitnessState::Uncertain;
+        }
+        match links {
+            0 => UnixFileWitnessState::Unlinked,
+            1 => UnixFileWitnessState::Linked,
+            _ => UnixFileWitnessState::Uncertain,
+        }
+    }
+
+    pub(crate) fn matches(
+        &self,
+        expected: &VerifiedPathIdentity,
+        observed: &VerifiedPathIdentity,
+    ) -> bool {
+        self.state(expected) == UnixFileWitnessState::Linked
+            && observed.object_id == expected.object_id
+    }
+}
+
 impl RetainedDirectory {
     pub fn identity(&self) -> &VerifiedPathIdentity {
         &self.identity
@@ -173,6 +237,161 @@ impl RetainedDirectory {
         }
     }
 
+    #[cfg(unix)]
+    pub(crate) fn retain_unix_file_witness(
+        &self,
+        path: &Path,
+        expected: &VerifiedPathIdentity,
+    ) -> Result<RetainedUnixFileWitness, String> {
+        let (witness, observed) = self.open_unix_file_witness(path)?;
+        if !witness.matches(expected, &observed) {
+            return Err("unsafe_path".to_string());
+        }
+        Ok(witness)
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn cleanup_unix_tracked_file(
+        &self,
+        path: &Path,
+        expected: &VerifiedPathIdentity,
+        witness: &RetainedUnixFileWitness,
+    ) -> UnixTrackedCleanupOutcome {
+        self.cleanup_unix_tracked_file_inner(path, expected, witness, None, |_, _, _| {})
+    }
+
+    #[cfg(all(unix, test))]
+    pub(crate) fn cleanup_unix_tracked_file_with_hook(
+        &self,
+        path: &Path,
+        expected: &VerifiedPathIdentity,
+        witness: &RetainedUnixFileWitness,
+        claim_leaf: Option<&std::ffi::OsStr>,
+        hook: impl FnMut(UnixTrackedCleanupStage, &Path, &Path),
+    ) -> UnixTrackedCleanupOutcome {
+        self.cleanup_unix_tracked_file_inner(path, expected, witness, claim_leaf, hook)
+    }
+
+    #[cfg(unix)]
+    fn cleanup_unix_tracked_file_inner(
+        &self,
+        path: &Path,
+        expected: &VerifiedPathIdentity,
+        witness: &RetainedUnixFileWitness,
+        claim_leaf: Option<&std::ffi::OsStr>,
+        mut hook: impl FnMut(UnixTrackedCleanupStage, &Path, &Path),
+    ) -> UnixTrackedCleanupOutcome {
+        if witness.state(expected) == UnixFileWitnessState::Unlinked {
+            return UnixTrackedCleanupOutcome::AlreadyAbsent;
+        }
+        if witness.state(expected) != UnixFileWitnessState::Linked {
+            return UnixTrackedCleanupOutcome::Uncertain;
+        }
+        let Ok(source) = self.verify_regular_file(path) else {
+            return if witness.state(expected) == UnixFileWitnessState::Unlinked {
+                UnixTrackedCleanupOutcome::AlreadyAbsent
+            } else {
+                UnixTrackedCleanupOutcome::Uncertain
+            };
+        };
+        if !witness.matches(expected, &source) {
+            return UnixTrackedCleanupOutcome::Uncertain;
+        }
+
+        let generated_claim = format!(
+            ".{}.terminal-snapshot-private-cleanup",
+            uuid::Uuid::new_v4()
+        );
+        let claim_leaf = claim_leaf.unwrap_or_else(|| std::ffi::OsStr::new(&generated_claim));
+        let Ok(claim_path) = self.unix_cleanup_claim_path(path, claim_leaf) else {
+            return UnixTrackedCleanupOutcome::Uncertain;
+        };
+
+        hook(
+            UnixTrackedCleanupStage::BeforeClaimRename,
+            path,
+            &claim_path,
+        );
+        if !self.rename_unix_child_no_clobber(path, &claim_path) {
+            return match witness.state(expected) {
+                UnixFileWitnessState::Unlinked => UnixTrackedCleanupOutcome::AlreadyAbsent,
+                UnixFileWitnessState::Linked => match self.verify_regular_file(path) {
+                    Ok(current) if witness.matches(expected, &current) => {
+                        UnixTrackedCleanupOutcome::SourceRetained
+                    }
+                    _ => UnixTrackedCleanupOutcome::Uncertain,
+                },
+                UnixFileWitnessState::Uncertain => UnixTrackedCleanupOutcome::Uncertain,
+            };
+        }
+
+        let claimed = self.verify_regular_file(&claim_path);
+        if !claimed
+            .as_ref()
+            .is_ok_and(|current| witness.matches(expected, current))
+        {
+            if witness.state(expected) == UnixFileWitnessState::Unlinked {
+                return UnixTrackedCleanupOutcome::AlreadyAbsent;
+            }
+            if let Ok((unexpected_witness, unexpected_identity)) =
+                self.open_unix_file_witness(&claim_path)
+            {
+                if unexpected_identity.object_id != expected.object_id {
+                    hook(UnixTrackedCleanupStage::BeforeRestore, path, &claim_path);
+                    let claim_is_continuous =
+                        self.verify_regular_file(&claim_path).is_ok_and(|current| {
+                            unexpected_witness.matches(&unexpected_identity, &current)
+                        });
+                    if claim_is_continuous && self.rename_unix_child_no_clobber(&claim_path, path) {
+                        let _ = self.verify_regular_file(path).is_ok_and(|current| {
+                            unexpected_witness.matches(&unexpected_identity, &current)
+                        });
+                    }
+                }
+            }
+            return UnixTrackedCleanupOutcome::Uncertain;
+        }
+
+        hook(
+            UnixTrackedCleanupStage::BeforeClaimUnlink,
+            path,
+            &claim_path,
+        );
+        let final_claim = match self.verify_regular_file(&claim_path) {
+            Ok(current) if witness.matches(expected, &current) => current,
+            _ => {
+                return if witness.state(expected) == UnixFileWitnessState::Unlinked {
+                    UnixTrackedCleanupOutcome::AlreadyAbsent
+                } else {
+                    UnixTrackedCleanupOutcome::Uncertain
+                };
+            }
+        };
+        let Ok(claim_name) = self.unix_child_cstring(&claim_path) else {
+            return UnixTrackedCleanupOutcome::Uncertain;
+        };
+        use std::os::fd::AsRawFd;
+        let removed =
+            unsafe { libc::unlinkat(self.handle.as_raw_fd(), claim_name.as_ptr(), 0) } == 0;
+        match witness.state(expected) {
+            UnixFileWitnessState::Unlinked if removed => UnixTrackedCleanupOutcome::Removed,
+            UnixFileWitnessState::Unlinked => UnixTrackedCleanupOutcome::AlreadyAbsent,
+            UnixFileWitnessState::Linked => match self.verify_regular_file(&claim_path) {
+                Ok(current) if witness.matches(expected, &current) => {
+                    UnixTrackedCleanupOutcome::ClaimRetained {
+                        path: claim_path,
+                        identity: current,
+                    }
+                }
+                _ => {
+                    let _ = final_claim;
+                    UnixTrackedCleanupOutcome::Uncertain
+                }
+            },
+            UnixFileWitnessState::Uncertain => UnixTrackedCleanupOutcome::Uncertain,
+        }
+    }
+
     pub fn child_is_absent(&self, path: &Path) -> bool {
         #[cfg(unix)]
         {
@@ -280,19 +499,13 @@ impl RetainedDirectory {
     ) -> bool {
         #[cfg(unix)]
         {
-            let Ok(current) = self.verify_regular_file(path) else {
-                return self.child_is_absent(path);
-            };
-            if !same_object(expected, &current) {
-                return false;
-            }
-            let Ok(name) = self.unix_child_cstring(path) else {
+            let Ok(witness) = self.retain_unix_file_witness(path, expected) else {
                 return false;
             };
-            use std::os::fd::AsRawFd;
-            let result = unsafe { libc::unlinkat(self.handle.as_raw_fd(), name.as_ptr(), 0) };
-            return result == 0
-                || std::io::Error::last_os_error().kind() == std::io::ErrorKind::NotFound;
+            return matches!(
+                self.cleanup_unix_tracked_file(path, expected, &witness),
+                UnixTrackedCleanupOutcome::Removed | UnixTrackedCleanupOutcome::AlreadyAbsent
+            );
         }
         #[cfg(windows)]
         {
@@ -305,6 +518,111 @@ impl RetainedDirectory {
                     .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound);
             };
             same_object(expected, &current) && std::fs::remove_file(path).is_ok()
+        }
+    }
+
+    #[cfg(unix)]
+    fn open_unix_file_witness(
+        &self,
+        path: &Path,
+    ) -> Result<(RetainedUnixFileWitness, VerifiedPathIdentity), String> {
+        let file = self.open_unix_child(
+            path,
+            libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0,
+        )?;
+        let identity = self.verify_opened_regular_file(path, &file, false)?;
+        Ok((
+            RetainedUnixFileWitness {
+                handle: std::sync::Arc::new(file),
+            },
+            identity,
+        ))
+    }
+
+    #[cfg(unix)]
+    fn unix_cleanup_claim_path(
+        &self,
+        source: &Path,
+        claim_leaf: &std::ffi::OsStr,
+    ) -> Result<PathBuf, String> {
+        use std::os::unix::ffi::OsStrExt;
+
+        if claim_leaf.is_empty() || source.file_name() == Some(claim_leaf) {
+            return Err("unsafe_path".to_string());
+        }
+        let mut components = Path::new(claim_leaf).components();
+        if !matches!(components.next(), Some(Component::Normal(name)) if name == claim_leaf)
+            || components.next().is_some()
+            || std::ffi::CString::new(claim_leaf.as_bytes()).is_err()
+        {
+            return Err("unsafe_path".to_string());
+        }
+        Ok(source.with_file_name(claim_leaf))
+    }
+
+    #[cfg(unix)]
+    fn rename_unix_child_no_clobber(&self, source: &Path, destination: &Path) -> bool {
+        let Ok(source) = self.unix_child_cstring(source) else {
+            return false;
+        };
+        let Ok(destination) = self.unix_child_cstring(destination) else {
+            return false;
+        };
+        use std::os::fd::AsRawFd;
+        let directory = self.handle.as_raw_fd();
+
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            unsafe extern "C" {
+                fn renameat2(
+                    old_dir_fd: i32,
+                    old_path: *const std::ffi::c_char,
+                    new_dir_fd: i32,
+                    new_path: *const std::ffi::c_char,
+                    flags: u32,
+                ) -> i32;
+            }
+            return unsafe {
+                renameat2(
+                    directory,
+                    source.as_ptr(),
+                    directory,
+                    destination.as_ptr(),
+                    1,
+                ) == 0
+            };
+        }
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        {
+            unsafe extern "C" {
+                fn renameatx_np(
+                    old_dir_fd: i32,
+                    old_path: *const std::ffi::c_char,
+                    new_dir_fd: i32,
+                    new_path: *const std::ffi::c_char,
+                    flags: u32,
+                ) -> i32;
+            }
+            return unsafe {
+                renameatx_np(
+                    directory,
+                    source.as_ptr(),
+                    directory,
+                    destination.as_ptr(),
+                    0x0000_0004,
+                ) == 0
+            };
+        }
+        #[cfg(not(any(
+            target_os = "linux",
+            target_os = "android",
+            target_os = "macos",
+            target_os = "ios"
+        )))]
+        {
+            let _ = (directory, source, destination);
+            false
         }
     }
 
@@ -1828,6 +2146,173 @@ mod tests {
             std::fs::read(retired.join("snapshot.png")).unwrap(),
             b"owned bytes"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_snapshot_unix_cleanup_final_barrier_preserves_public_replacement() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let path = directory.path().join("response.json");
+        std::fs::write(&path, b"tracked response").unwrap();
+        let retained = retain_directory(directory.path()).unwrap();
+        let expected = retained.verify_regular_file(&path).unwrap();
+        let witness = retained.retain_unix_file_witness(&path, &expected).unwrap();
+
+        let outcome = retained.cleanup_unix_tracked_file_with_hook(
+            &path,
+            &expected,
+            &witness,
+            Some(std::ffi::OsStr::new(".public-replacement-claim")),
+            |stage, source, _| {
+                if stage == UnixTrackedCleanupStage::BeforeClaimUnlink {
+                    std::fs::write(source, b"replacement response").unwrap();
+                }
+            },
+        );
+
+        assert_eq!(outcome, UnixTrackedCleanupOutcome::Removed);
+        assert_eq!(std::fs::read(&path).unwrap(), b"replacement response");
+        assert_eq!(witness.state(&expected), UnixFileWitnessState::Unlinked);
+        let second = retained.cleanup_unix_tracked_file_with_hook(
+            &path,
+            &expected,
+            &witness,
+            Some(std::ffi::OsStr::new(".unused-second-claim")),
+            |_, _, _| {},
+        );
+        assert_eq!(second, UnixTrackedCleanupOutcome::AlreadyAbsent);
+        assert_eq!(std::fs::read(path).unwrap(), b"replacement response");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_snapshot_unix_cleanup_reverifies_private_claim_at_final_barrier() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let path = directory.path().join("response.json");
+        let displaced = directory.path().join("displaced-tracked-response");
+        std::fs::write(&path, b"tracked response").unwrap();
+        let retained = retain_directory(directory.path()).unwrap();
+        let expected = retained.verify_regular_file(&path).unwrap();
+        let witness = retained.retain_unix_file_witness(&path, &expected).unwrap();
+        let displaced_for_hook = displaced.clone();
+
+        let outcome = retained.cleanup_unix_tracked_file_with_hook(
+            &path,
+            &expected,
+            &witness,
+            Some(std::ffi::OsStr::new(".substituted-private-claim")),
+            move |stage, _, claim| {
+                if stage == UnixTrackedCleanupStage::BeforeClaimUnlink {
+                    std::fs::rename(claim, &displaced_for_hook).unwrap();
+                    std::fs::write(claim, b"foreign claim").unwrap();
+                }
+            },
+        );
+
+        assert_eq!(outcome, UnixTrackedCleanupOutcome::Uncertain);
+        assert_eq!(
+            std::fs::read(directory.path().join(".substituted-private-claim")).unwrap(),
+            b"foreign claim"
+        );
+        assert_eq!(std::fs::read(displaced).unwrap(), b"tracked response");
+        assert_eq!(witness.state(&expected), UnixFileWitnessState::Linked);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_snapshot_unix_cleanup_claim_collision_retains_source_and_collision() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let path = directory.path().join("response.json");
+        let claim = directory.path().join(".collided-private-claim");
+        std::fs::write(&path, b"tracked response").unwrap();
+        std::fs::write(&claim, b"claim collision").unwrap();
+        let retained = retain_directory(directory.path()).unwrap();
+        let expected = retained.verify_regular_file(&path).unwrap();
+        let witness = retained.retain_unix_file_witness(&path, &expected).unwrap();
+
+        let outcome = retained.cleanup_unix_tracked_file_with_hook(
+            &path,
+            &expected,
+            &witness,
+            claim.file_name(),
+            |_, _, _| {},
+        );
+
+        assert_eq!(outcome, UnixTrackedCleanupOutcome::SourceRetained);
+        assert_eq!(std::fs::read(path).unwrap(), b"tracked response");
+        assert_eq!(std::fs::read(claim).unwrap(), b"claim collision");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_snapshot_unix_cleanup_restores_source_substitution_without_deleting_it() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let path = directory.path().join("response.json");
+        let displaced = directory.path().join("displaced-tracked-response");
+        std::fs::write(&path, b"tracked response").unwrap();
+        let retained = retain_directory(directory.path()).unwrap();
+        let expected = retained.verify_regular_file(&path).unwrap();
+        let witness = retained.retain_unix_file_witness(&path, &expected).unwrap();
+        let path_for_hook = path.clone();
+        let displaced_for_hook = displaced.clone();
+
+        let outcome = retained.cleanup_unix_tracked_file_with_hook(
+            &path,
+            &expected,
+            &witness,
+            Some(std::ffi::OsStr::new(".captured-substitution-claim")),
+            move |stage, _, _| {
+                if stage == UnixTrackedCleanupStage::BeforeClaimRename {
+                    std::fs::rename(&path_for_hook, &displaced_for_hook).unwrap();
+                    std::fs::write(&path_for_hook, b"replacement response").unwrap();
+                }
+            },
+        );
+
+        assert_eq!(outcome, UnixTrackedCleanupOutcome::Uncertain);
+        assert_eq!(std::fs::read(path).unwrap(), b"replacement response");
+        assert_eq!(std::fs::read(displaced).unwrap(), b"tracked response");
+        assert!(!directory
+            .path()
+            .join(".captured-substitution-claim")
+            .exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_snapshot_unix_cleanup_restore_collision_preserves_every_name() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let path = directory.path().join("response.json");
+        let displaced = directory.path().join("displaced-tracked-response");
+        let claim = directory.path().join(".restore-collision-claim");
+        std::fs::write(&path, b"tracked response").unwrap();
+        let retained = retain_directory(directory.path()).unwrap();
+        let expected = retained.verify_regular_file(&path).unwrap();
+        let witness = retained.retain_unix_file_witness(&path, &expected).unwrap();
+        let path_for_hook = path.clone();
+        let displaced_for_hook = displaced.clone();
+
+        let outcome = retained.cleanup_unix_tracked_file_with_hook(
+            &path,
+            &expected,
+            &witness,
+            claim.file_name(),
+            move |stage, source, _| match stage {
+                UnixTrackedCleanupStage::BeforeClaimRename => {
+                    std::fs::rename(&path_for_hook, &displaced_for_hook).unwrap();
+                    std::fs::write(&path_for_hook, b"captured replacement").unwrap();
+                }
+                UnixTrackedCleanupStage::BeforeRestore => {
+                    std::fs::write(source, b"restoration collision").unwrap();
+                }
+                UnixTrackedCleanupStage::BeforeClaimUnlink => {}
+            },
+        );
+
+        assert_eq!(outcome, UnixTrackedCleanupOutcome::Uncertain);
+        assert_eq!(std::fs::read(path).unwrap(), b"restoration collision");
+        assert_eq!(std::fs::read(claim).unwrap(), b"captured replacement");
+        assert_eq!(std::fs::read(displaced).unwrap(), b"tracked response");
     }
 
     #[cfg(unix)]
