@@ -3689,11 +3689,11 @@ mod tests {
             "retained cleanup must identify runtime-backed ownership separately from non-runtime residue: {retained_contexts:?}"
         );
         if capped {
-            // The bounded close abandons ownership at its absolute deadline and
-            // reports it, so the canceled-start cleanup can still be owned for a
-            // moment after the join. Wait for that bounded work instead of racing
-            // it; the close-latency assertion above already pins that the capped
-            // budget itself was honored.
+            // The bounded close may abandon ownership at its absolute deadline,
+            // and reports it when it does, so the canceled-start cleanup can
+            // still be owned for a moment after the join. Wait for that bounded
+            // work instead of racing it; the close-latency assertion above
+            // already pins that the capped budget itself was honored.
             tokio::time::timeout(Duration::from_secs(5), async {
                 while container_backend.shutdown_work_state_for_test() != (true, 0, 0) {
                     tokio::time::sleep(Duration::from_millis(5)).await;
