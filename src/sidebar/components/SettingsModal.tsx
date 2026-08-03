@@ -1096,6 +1096,13 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           setTerminalSnapshotsOpeningValue(authoritative.terminalSnapshotsEnabled);
           setDraftDirty(false);
           setSaveError(TERMINAL_SNAPSHOT_CONFLICT_MESSAGE);
+          // #1173 — the draft above already persisted the new bind/port, so the
+          // conflict must not skip the restart the success path runs; otherwise the
+          // modal reports the new endpoint as running while the server still
+          // listens on the old one, and the advanced seed hides the delta on retry.
+          if (wasApiServerRunning && apiServerEndpointChanged(reloadedSettings, seedBeforeSave)) {
+            await restartApiServerAfterEndpointSave(reloadedSettings);
+          }
           setSaving(false);
           return;
         }
