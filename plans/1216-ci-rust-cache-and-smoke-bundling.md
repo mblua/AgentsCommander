@@ -2,13 +2,15 @@
 
 Status: READY_FOR_IMPLEMENTATION
 
-Full path. Written by the architect at Step 4, enriched by `dev-rust` (Step 5) and `dev-rust-grinch` (Step 6), certified by the architect at Step 7 consensus round 1, and **amended by the architect at Step 7 consensus round 2 after the round-1 certification was invalidated by a defect found in production.** Round 1's `Plan-SHA256` is superseded.
+Full path. Written by the architect at Step 4, enriched by `dev-rust` (Step 5) and `dev-rust-grinch` (Step 6), certified by the architect at Step 7 consensus round 1, amended at Step 7 consensus round 2 after the round-1 certification was invalidated by a defect found in production, and **amended again at Step 7 consensus round 3 after `dev-rust-grinch` passed the round-2 implementation but failed the round-2 plan on three defects in its acceptance gate.** The `Plan-SHA256` of rounds 1 and 2 are both superseded.
 
-**Read Section 15 first if you are implementing this.** It is the record of the round-2 amendment and is the authoritative reading wherever it contradicts anything earlier, including Section 14. As in round 1, every section the amendment changed was rewritten in place rather than merely annotated, so the sections and the record agree.
+**Read Section 16 first if you are implementing this.** It is the record of the round-3 amendment and is the authoritative reading wherever it contradicts anything earlier, Sections 14 and 15 included. As in the previous rounds, every section the amendment changed was rewritten in place rather than merely annotated, so the sections and the record agree.
 
-**Section 14 remains the record of the round-1 resolution** and is authoritative over Sections 1 through 13 except where Section 15 overrides it. Sections 12 and 13 are the enrichers' own records; **read them for evidence, not for instructions**, because five of their round-1 recommendations were resolved differently from what they proposed, and one round-1 resolution has since been reversed.
+**The round-2 code change is not touched by round 3.** `env-vars: 'ImageOS'` on all seven `swatinem/rust-cache@v2` steps is correct, was verified exhaustively at commit `93e20674a83eebcafb0a569470dc6a3315b6523b`, and passed review. Round 3 changes only how the change is proved and accepted: Sections 8, 9.2, 9.2.1, 9.4, 9.5, 9.6, 10.7 and 16.
 
-Every implementation decision is closed. There is no `TBD`, no competing alternative and nothing left to the implementer, who is expected to start cold with no knowledge of the discussion that produced this. **One risk is explicitly open and accepted rather than closed**, with its trade-off and its lever recorded in Section 10.6; that is a decision, not an unfinished item.
+**Section 15 remains the record of the round-2 resolution** and **Section 14 the record of round 1**, each authoritative over the sections before it except where a later section overrides it. Sections 12 and 13 are the enrichers' own records; **read them for evidence, not for instructions**, because five of their round-1 recommendations were resolved differently from what they proposed, and one round-1 resolution has since been reversed.
+
+Every implementation decision is closed. There is no `TBD`, no competing alternative and nothing left to the implementer, who is expected to start cold with no knowledge of the discussion that produced this. **Two risks are explicitly open and accepted rather than closed**, each with its trade-off and its lever recorded: the runner-image residual in Section 10.6 and the floating `swatinem/rust-cache@v2` tag in Section 10.7. Those are decisions, not unfinished items.
 
 ## 1. Issue, baseline and objective
 
@@ -617,10 +619,10 @@ Nothing else is edited. Specifically not `src-tauri/tauri.conf.json`, `src-tauri
 4. Edit `pr-regression-gates.yml` surfaces 1, 2 and 3.
 5. Add `.github/workflows/cache-warm.yml`.
 6. Add `.github/workflows/bundle-validation.yml`.
-7. Open the PR. Record measurement **M1** (Section 9.2). Note that this PR touches `package.json`, so `bundle-validation` will fire on it, which is the intended first exercise of that workflow.
-8. Merge to `main`.
+7. Open the PR. **Run K1 on it and record its verdict** (Section 9.2.1), and record measurement **M1** from the same run (Section 9.2). K1-S is a desk check and can be done before the run finishes. Note that this PR touches `.github/workflows/bundle-validation.yml`, which is in that workflow's `paths:` filter, so `bundle-validation` fires on it; that is both the intended exercise of the workflow and the second live `gate-release` member K1-L1 compares against.
+8. **Merge to `main` only if K1 is PASS.** A FAIL blocks the merge; there is nothing to cancel or unwind, because nothing has been written to `main`.
 9. **Immediately after the merge**, purge stale cache entries (Section 9.3). This is deliberately after the merge, not before: open PRs on branches without the fix keep writing caches, so purging first would let them refill the quota before the warm runs.
-10. The warm workflow runs for the first time. Record **M2**, including both verify jobs passing.
+10. The warm workflow runs, queued automatically by the landing push and possibly also by the daily cron. **That is expected and requires no intervention** (Section 9.2). Record **M2** from the first such run whose checkout contains the amendment and whose four jobs are all green; the two green verify jobs are K1-L2 (Section 9.2.1).
 11. Cut `test/1216-cache-hit-measurement` from the new `main`, touching no `Cargo.lock`, open a PR, record **M3**.
 12. Push one more commit to that branch, record **M4**.
 13. Record **M5** (durability) and **M6** (recovery) per Section 9.2.
@@ -645,18 +647,22 @@ The protocol below fixes that by making the primary cache evidence a set of coun
 
 ### 9.2 The sequence of real runs
 
-The cache cannot exist until the fix is on `main`, so certification spans a landing, which the user has explicitly authorised.
+The cache cannot exist until the fix is on `main`, so certification spans a landing, which the user has explicitly authorised. **K1 is the one step that does not span it: it runs before the landing, on the PR of the fix branch.** Round 3 moved it there because the post-land placement was unenforceable, and the reasoning is in Section 16.3.
 
 | ID | When | What it establishes |
 |---|---|---|
 | **M0** | captured | Pre-fix baseline, run `30780031337`, Section 2.5 and 2.6 |
-| **M1** | PR of `fix/1216-...`, before merge | **The cold control.** Same code as M3, same absent bundling, same suppressed save, but no `main` cache. This is what M3 is measured against for cache value |
-| **K1** | any ordinary PR run after the Section 4.1 amendment is on `main` | **The key-stability gate. New, and it blocks everything after it.** Section 9.2.1 |
-| **M2** | first `cache-warm` run on `main` **after K1 passes** | A `main`-scoped cache exists and is provably restorable: both warm jobs green **and** both verify jobs green. Entry sizes recorded |
+| **K1** | **the PR of `fix/1216-cache-key-imageversion`, before merge**, plus the static proof, which needs no run at all | **The key-determinism gate. It blocks the merge and everything after it.** Section 9.2.1 |
+| **M1** | the same PR run as K1 | **The cold control.** Same code as M3, same absent bundling, same suppressed save, and no reachable `main` cache under the new key. This is what M3 is measured against for cache value |
+| **M2** | first `cache-warm` run on `main` whose checkout contains the amendment | A `main`-scoped cache exists and is provably restorable: both warm jobs green **and** both verify jobs green. Entry sizes recorded. **The two verify jobs are themselves the live within-cohort complete-key check** (Section 9.2.1, K1-L2) |
 | **M3** | PR from `test/1216-cache-hit-measurement`, cut from new `main`, touching no `Cargo.lock` | **The deciding measurement** |
 | **M4** | second push to that branch | The hit reproduces. Satisfies #1216's first acceptance criterion literally |
 | **M5** | after at least 3 further merges to `main` and 5 unrelated PRs | **Durability under real churn**, not a purged lab state: quota, entry presence, and a gate run still hitting |
 | **M6** | deliberate recovery drill | Delete the `gate-debug` entry via the API, run `workflow_dispatch` on `cache-warm`, confirm it compiles and saves and both verify jobs pass; dispatch again and confirm `cache-hit == 'true'` with all compile steps skipped |
+
+**Why K1 before the merge, in one line.** `cache-warm.yml:3-9` fires on `push` to `main` and on a daily `cron`, so the landing push queues a warm in the same act and no post-land check can be made to precede it. A same-repo PR runs the branch's own workflow definitions, so the gate jobs on that PR already emit keys built with `env-vars: 'ImageOS'` while `main` is untouched and no warm can fire. The ordering problem is removed rather than managed.
+
+**Automatic warms after the merge are expected and are not a failure.** Once the amendment lands, the landing push queues a `cache-warm` run and the daily cron may queue another. `concurrency: cache-warm-main` with `cancel-in-progress: false` lets the in-flight one finish and keeps only the newest pending one. **M2 is the first of those runs whose checkout contains the amendment and whose four jobs are all green**; a second warm that follows it is a cheap restore-only run and is not a second M2. Nothing needs to be cancelled, quarantined or discarded, and a maintainer is not asked to win a race. If a warm run fires from a push to `main` that lands *before* the fix, it writes old-generation entries; those are stranded exactly like the two in Section 9.3 and are left to LRU by the same decision.
 
 **The measurement branch must be named `test/1216-cache-hit-measurement` or another `<type>/<issue>-<slug>` form referencing an open issue.** `validate-branch-name` is the only required check on `main` (`strict: true`) and `scripts/validate-branch-name.mjs:15` enforces that shape with `--check-issue` verifying the issue is open, so a free-form name such as `measurement/m3` is rejected outright.
 
@@ -664,26 +670,96 @@ M2 is slow on its first run because nothing exists to restore. That is expected 
 
 **M5 additionally records the changed-`Cargo.lock` scenario** identified in Section 4.1: if any of the observed PRs changes `Cargo.lock`, capture its `Downloaded` count and compile-step durations against an unchanged-lock PR in the same window. This measures the accepted trade-off in Section 10.5 rather than assuming it.
 
-**The first certification cycle's M1 and M2 are superseded and must not be reused.** They were taken against `env-vars: 'ImageOS ImageVersion'`, so their keys were drawn rather than derived (Section 2.8). **M2 must be re-run after the amendment lands**, and its `verify-release-cache` pass from the first cycle must be recorded as luck rather than validation (Section 6.6). M1's Group A results are unaffected by the amendment, because Group A tests the deterministic changes and touches no cache key; M1's value as the cold control for Group B is what the re-run restores.
+**Every cache-key-dependent reading from the first certification cycle's M1 and M2 is superseded and must not be reused.** They were taken against `env-vars: 'ImageOS ImageVersion'`, so their keys were drawn rather than derived (Section 2.8). **M2 must be re-run after the amendment lands**, and its `verify-release-cache` pass from the first cycle must be recorded as luck rather than validation (Section 6.6). **The readings that do not depend on the key survive**, which is Group A at M1 and the recorded step durations and cargo counters of a run that hit nothing; the paragraph below states exactly which.
 
-### 9.2.1 K1, the key-stability gate
+**Where the replacement M1 comes from, stated so the implementer is not left to choose.** Group A tests the deterministic changes and touches no cache key, so **the first cycle's M1 already satisfies A1 through A4 and that result stands.** What the first cycle's M1 cannot supply is a cold control for Group B under the new key. The PR run of `fix/1216-cache-key-imageversion` supplies it: the only `gate-*` entries on `main` at that moment are the two stranded old-generation entries of Section 9.3, which cannot be an exact match for a key built with `env-vars: 'ImageOS'`, so both gate jobs on that PR run cold. **That run is therefore K1 and M1 at once, at no extra cost**, and the same four Group A criteria are re-observable on it for free because the same jobs execute. Take Group A from it as well and record both readings; if they disagree, the newer one governs and the disagreement is itself a finding.
 
-This check is `dev-rust`'s, adopted because it is stronger than anything the plan previously contained and costs nothing to run.
+### 9.2.1 K1, the key-determinism gate
 
-`rust-cache` prints a `Cache Key:` line within seconds on every job, hit or miss, `lookup-only` or not. So the key can be compared across jobs without any cache existing and without waiting for a warm cycle.
+**Round 3 rewrote this section.** Round 2's version had two defects that `dev-rust-grinch` found and the tech lead verified. It could be made permanently impossible to satisfy, because its only pass verdict required two sampled jobs to draw *different* runner images and GitHub is free to finish its rollout at any moment; and its pass verdict was named PROVEN STABLE while it compared only the environment-hash component between two jobs that deliberately carry **different** `shared-key` values, so it could not see the rest of the key at all. Section 16.1 and 16.2 carry the reasoning. The gate below is deterministic, terminating, compares complete keys within a cohort, and claims exactly what it proves.
 
-**Procedure.** On any ordinary PR run after the amendment is on `main`, read two things from **both** gate jobs, `rust-regression` and `windows-release-cli-smoke`:
+**K1 has two parts. The static part is the proof and it is sufficient. The live part is corroboration and a standing regression check, and it can never withhold the verdict.**
 
-1. the `Image Release:` URL from the `Runner Image` log group, which is the only reliable source of the image version (see the warning in Section 2.8 about the two `Version:` lines), and
-2. the emitted `Cache Key:` line, from which the environment hash is taken.
+#### The invariant K1 establishes, stated conditionally
 
-**Verdicts, and the middle one is the point of the whole check.**
+> Given (i) the same repository content under the `workspaces` roots, (ii) the resolved `swatinem/rust-cache@v2` implementation at revision `e18b497796c12c097a38f9edb9d0641fb99eee32`, (iii) the same rustc identity, (iv) the same `ImageOS` value, and (v) no `env:` block in the three workflow files setting a variable the action hashes, **every job in a `shared-key` cohort computes the same complete cache key, and that key is a function of repository content and toolchain identity alone.**
 
-- **PROVEN STABLE.** The two gate jobs drew **different** image versions and still emitted the **same** environment hash. The key no longer depends on the draw. No cache needs to exist for this proof to hold.
-- **INCONCLUSIVE.** The two gate jobs drew the **same** image version. This is **not** a pass. Two jobs that drew alike would have agreed under the defective configuration too, so the run distinguishes nothing. Record it as inconclusive and check the next PR run.
-- **FAIL.** Different hashes from any cause. The amendment did not take effect, or another per-job-varying input is present. Do not proceed; diagnose by comparing the full `Cache Key:` lines.
+Every one of the five conditions is checkable, and each is listed so that a future editor knows what would void the proof rather than having to rediscover it. Nothing here asserts that the key never changes; rotating on rustc, on repository content, and on a deliberate `prefix-key` bump is the intended behaviour.
 
-**K1 blocks the next warm cycle and M3.** Do not trigger `cache-warm` for M2 and **do not take M3 until K1 returns PROVEN STABLE.** The reason is Section 4.1's consequence 2: with a nondeterministic key, Group B can report `cache-hit == 'true'` and single-digit units worked purely because the M3 gate happened to draw the same generation as its writer, which is a false pass on precisely the criterion Section 9 was rewritten to protect. Treating INCONCLUSIVE as a pass reintroduces that hole, so the distinction between "proven stable" and "we got lucky" is an explicit acceptance criterion here rather than a note.
+#### K1-S, the static proof. Deterministic, terminating, and available today
+
+`dev-rust` read `src/config.ts` at the revision resolved in every observed job log (`e18b497796c12c097a38f9edb9d0641fb99eee32`) and enumerated the key inputs. The complete list, with what each one varies with:
+
+| # | Key component | Source | Varies with |
+|---|---|---|---|
+| K-1 | `prefix-key`, default `v0` | workflow input | a deliberate manual bump (Section 10.6's lever) |
+| K-2 | the literal `rust` and the key layout itself | the action implementation | the resolved `@v2` revision (Section 10.7) |
+| K-3 | `shared-key`, or the GitHub job id when it is absent | workflow input | the workflow text |
+| K-4 | the environment hash: the sorted rustc release, host and commit triples, plus every environment variable whose name begins with `CARGO`, `CC`, `CFLAGS`, `CXX`, `CMAKE`, `RUST` or with any prefix named in `env-vars`, each hashed as `` `${key}=${value}` `` | toolchain and process environment | rustc identity, the runner image, any `env:` the repository sets |
+| K-5 | the lockfile and manifest hash over the `workspaces` roots | repository content at the checked-out commit | `Cargo.lock`, `Cargo.toml`, toolchain files |
+
+`save-if` and `lookup-only` are **not** key inputs. They select behaviour once the key exists, which is why a `lookup-only` probe still has to match its writer's key exactly.
+
+**The two cohorts, read from the repository at `93e20674a83eebcafb0a569470dc6a3315b6523b`.** Every field that feeds K-1, K-3, K-4 or K-5 is textually identical within each cohort:
+
+| Cohort | Member | `env-vars` at | `workspaces` | `prefix-key` | Toolchain step |
+|---|---|---|---|---|---|
+| `gate-debug` | `rust-regression` | `pr-regression-gates.yml:75` | `. -> target` | unset | `dtolnay/rust-toolchain@stable`, `components: clippy` |
+| `gate-debug` | `warm-debug` | `cache-warm.yml:55` | `. -> target` | unset | same |
+| `gate-debug` | `verify-debug-cache` | `cache-warm.yml:128` | `. -> target` | unset | same |
+| `gate-release` | `windows-release-cli-smoke` | `pr-regression-gates.yml:120` | `. -> target` | unset | `dtolnay/rust-toolchain@stable`, `targets: x86_64-pc-windows-msvc` |
+| `gate-release` | `warm-release` | `cache-warm.yml:104` | `. -> target` | unset | same |
+| `gate-release` | `verify-release-cache` | `cache-warm.yml:156` | `. -> target` | unset | same |
+| `gate-release` | `bundle-validation` | `bundle-validation.yml:51` | `. -> target` | unset | same |
+
+All seven carry `env-vars: 'ImageOS'` and all seven run on `runs-on: windows-latest`.
+
+**The argument, component by component.**
+
+- **K-1 is identical.** `prefix-key` appears nowhere in `.github/workflows/`, so all seven steps take the same default. Verified by search, not by inspection of the seven blocks alone.
+- **K-2 is fixed by whatever `@v2` resolves to at job start**, which was `e18b497796c12c097a38f9edb9d0641fb99eee32` in every observed job log. It is the one component the repository does not control, and strictly it is a per-job resolution rather than a per-run one, so the claim is stated as condition (ii) rather than asserted. Section 10.7 records it as an accepted risk with its levers rather than leaving it unstated.
+- **K-3 is a literal** in every one of the seven blocks, per the table above.
+- **K-5 is identical across jobs of a single run by construction**, because they check out the same `GITHUB_SHA`. Across runs it moves only with repository content, which is the behaviour the cache key exists to have.
+- **K-4 splits in two.**
+  - *rustc identity.* All seven use `dtolnay/rust-toolchain@stable`. Within a cohort the `with:` blocks differ only in `components` and `targets`, and neither appears in the release, host or commit triple that the hasher consumes. The genuine exposure is a stable release landing between a write and a read, which rotates the key deliberately and is already made attributable by recording `rustc -vV` (Section 9.4).
+  - *environment variables.* **The repository contributes none.** Verified exhaustively: `.github/workflows/pr-regression-gates.yml`, `.github/workflows/cache-warm.yml` and `.github/workflows/bundle-validation.yml` contain **no `env:` block at any level**, workflow, job or step, and no `CARGO`, `RUSTUP`, `RUSTC`, `RUSTFLAGS`, `CMAKE`, `CFLAGS`, `CXX` or `CC` token anywhere. The hashed set is therefore entirely supplied by the runner image and by the actions in the job. That is condition (v), and it is the one a future editor is most likely to break by accident.
+- **Different pre-cache step sequences do not perturb K-4, and that is measured rather than assumed.** In M2, `warm-release` runs `setup-node`, the npm pin and `npm ci` before its cache step while `verify-release-cache` runs only checkout and the toolchain. They drew the same image `20260728.188` and emitted the same environment hash `3d5bdf05` (Section 2.8). The extra Node steps contribute nothing to the hashed set.
+- **The runner-supplied values are equal across the concurrently served generations once `ImageVersion` is gone.** `dev-rust`'s `Environment considered` block was byte-identical on all six jobs of Section 2.8, so the matched *names* agree; its offline reimplementation reproduced the observed six-job partition exactly with `ImageVersion` as the only differing *value*, and in the same model removing `ImageVersion` collapses both generations to a single digest.
+
+**Therefore, under conditions (i) through (v), every member of a cohort computes the same complete key.** K1-S is a desk check over the seven blocks and the five conditions. It terminates on the first reading, needs no CI run, and cannot be blocked by what GitHub does with its image fleet. **This is the path B0 depends on.**
+
+**The honest limit of K1-S.** The value-equality of the runner-supplied names is established over six observed jobs and two concurrently served generations of `win25-vs2026`. It is not established over every future image, and a major `windows-latest` migration is exactly the event that could move `ImageOS` itself and, with it, other hashed values. That is why the invariant is stated conditionally and why the live part below is a **standing** regression check rather than a one-off.
+
+#### K1-L, the live corroboration. Two legs, neither of which can block
+
+`rust-cache` prints a `Cache Key:` line within seconds on every job, hit or miss, `lookup-only` or not. Keys can therefore be compared without any cache existing. **Compare complete `Cache Key:` lines, never the environment-hash component alone**, and compare only **within** a `shared-key` cohort, because two jobs in different cohorts are supposed to differ.
+
+**K1-L1, pre-land, on the PR of `fix/1216-cache-key-imageversion`.**
+
+- The `gate-release` cohort has **two members live on that PR run**: `windows-release-cli-smoke` and `bundle-validation`. `bundle-validation` fires because its `paths:` filter lists `.github/workflows/bundle-validation.yml` (`bundle-validation.yml:13`) and the fix changes that file. Both carry `save-if: 'false'`, so this writes nothing and costs nothing beyond a run that has to happen anyway.
+- They are two jobs of the **same** `pull_request` run, so `GITHUB_SHA` is shared and K-5 is identical by construction. **Their complete `Cache Key:` lines must be byte-identical.**
+- The `gate-debug` cohort has only one member per run on a PR. Its cross-check uses the double trigger at `pr-regression-gates.yml:3-12`: one commit produces a `push`-event run and a `pull_request`-event run, each with its own `rust-regression`, and their complete keys must match. **This leg is valid only while the PR base is an ancestor of the head**, in which case the merge ref's tree equals the head's tree and K-5 agrees. If `main` has moved, either rebase or record this leg as not applicable and rely on K1-S and K1-L2.
+- Record the `Image Release:` URL for every compared job, taken from that URL only and never from the first `Version:` line of the `Runner Image` group (Section 2.8). If a compared pair drew **different** image versions, record it: that is the strongest available corroboration, since it is the exact configuration that exposed the original defect. **It is never required.**
+
+**K1-L2, at M2, automatic and free.** `verify-debug-cache` and `verify-release-cache` are `lookup-only` probes whose pass condition is an **exact** key match against their own cohort's writer entry, saved minutes earlier. **A green probe therefore is a within-cohort complete-key equality result**, covering every component including the ones a `Cache Key:` line comparison would also cover. Both green at M2 confirms the invariant live in both cohorts at once. This is precisely the guarantee that was unobtainable while `ImageVersion` was in the key (Section 6.6), and it needs no procedure of its own because the workflow already fails red when it does not hold.
+
+#### Verdicts
+
+- **K1-S: COMPLETE** or **DEFECTIVE.** There is no third outcome and no waiting. DEFECTIVE means an enumerated component is not identical within a cohort, or a condition (i) through (v) does not hold at the commit under test.
+- **K1-L: CONSISTENT**, **CONTRADICTED**, or **NOT YET OBSERVED**, per leg.
+- **K1 = PASS** iff K1-S is COMPLETE and no K1-L leg is CONTRADICTED.
+- **K1 = FAIL** if K1-S is DEFECTIVE or any K1-L leg is CONTRADICTED. Do not merge, and diagnose by comparing the complete `Cache Key:` lines of the disagreeing cohort members.
+- **NOT YET OBSERVED never blocks.** Round 2's INCONCLUSIVE is gone as a terminal state. A same-image draw now means only that one corroboration was unavailable on that run, and the verdict does not rest on the draw.
+
+**K1 blocks the merge, not a warm cycle.** Round 2 required K1 to precede the next `cache-warm` run, which is unenforceable: the landing push queues the warm in the same act and a daily cron races independently (Section 16.3). K1 now runs before the merge, so the requirement is satisfied by construction and needs no cancellation, quarantine or manual timing.
+
+#### What K1 does not prove, stated because the name invites the mistake
+
+**K1 is a precondition and a regression check. It is never proof that a cache hit will occur.** A perfectly deterministic key can still miss: the measurement branch may carry a `Cargo.lock` that `main` does not, so K-5 legitimately differs; the entry may have been evicted; cache ref visibility may not reach the run. The exact-hit questions are the M2 probes and B1 at M3 and M4, not K1. A green K1 with a red B1 is a coherent outcome and routes to Section 9.6, which is why B0 is written as a precondition on Group B rather than as a substitute for any of its members.
+
+**Why the round-2 name was withdrawn.** PROVEN STABLE claimed universal key stability from a comparison of one component between two jobs that carry different `shared-key` values by design. It could not see K-1, K-2, K-3 or K-5, so the non-`ImageVersion` form of the same "B1 through B6 passed by luck" hole that B0 exists to close remained logically open. The gate above compares complete keys within a cohort and states its invariant conditionally, so what it now claims is key **determinism under stated conditions**, which is what it delivers.
+
+**When K1-S must be re-run.** Whenever any of the five conditions could have moved: a change to any of the seven `with:` blocks, an `env:` block added to any of the three workflow files, a `prefix-key` bump, a change in what `@v2` resolves to (Section 10.7), or a `windows-latest` major image migration.
 
 ### 9.3 Cache hygiene, required immediately after the merge
 
@@ -719,7 +795,7 @@ $clean = [regex]::Replace($log, "\x1b\[[0-9;?]*[ -/]*[@-~]", "")
 - Bundling removed: the build step contains `Built application at:` and none of `Running light to produce`, `Running makensis to produce`, `Info Verifying wix package`, `Info Verifying NSIS package`.
 - Save suppressed: `Post Rust cache` completes in under 5 s.
 - `rustc -vV` from the warm jobs, recorded for M1 through M6 so key rotations are attributable.
-- **The `Cache Key:` line and the `Image Release:` URL, recorded from every job of every measurement**, not only at K1. `Cache Key:` is emitted within seconds on every job regardless of hit, miss or `lookup-only`, so this costs nothing. Recording the image alongside the key is what makes a later "did the key depend on the draw" question answerable from the record instead of requiring a fresh run, which is the gap that let the first cycle reach certification. Take the image version from the `Image Release:` URL only, never from the first `Version:` line of the `Runner Image` group, which is the Image Provisioner version and is identical across generations (Section 2.8).
+- **The complete `Cache Key:` line and the `Image Release:` URL, recorded from every job of every measurement**, not only at K1. **Record the whole line, not the environment-hash component alone**, because the cohort comparison in Section 9.2.1 is over complete keys and a record that kept only the suffix could not answer it later. `Cache Key:` is emitted within seconds on every job regardless of hit, miss or `lookup-only`, so this costs nothing. Recording the image alongside the key is what makes a later "did the key depend on the draw" question answerable from the record instead of requiring a fresh run, which is the gap that let the first cycle reach certification. Take the image version from the `Image Release:` URL only, never from the first `Version:` line of the `Runner Image` group, which is the Image Provisioner version and is identical across generations (Section 2.8).
 
 **API evidence:** `steps[]` durations from `/actions/runs/<id>/jobs`; entries, `ref`, `key` and `size_in_bytes` from `/actions/caches`; `active_caches_size_in_bytes` and `active_caches_count` from `/actions/cache/usage`.
 
@@ -734,7 +810,7 @@ $clean = [regex]::Replace($log, "\x1b\[[0-9;?]*[ -/]*[@-~]", "")
 
 **Group B: the cache actually accelerated compilation. Evaluated as M3 and M4 against M1. All must hold. These are the criteria immune to runner variance.**
 
-- **B0. K1 returned PROVEN STABLE before M2 was re-run and before M3 was taken** (Section 9.2.1). This is a precondition, not a measurement, and **Group B cannot be evaluated at all without it.** B1 through B6 are all satisfiable by luck when the key depends on which image generation a job drew, so without B0 a green Group B carries no information.
+- **B0. K1 returned PASS before the merge** (Section 9.2.1), which requires K1-S COMPLETE and no K1-L leg CONTRADICTED. This is a precondition, not a measurement, and **Group B cannot be evaluated at all without it.** B1 through B6 are all satisfiable by luck when the key depends on which image generation a job drew, so without B0 a green Group B carries no information. **B0 is satisfiable by a desk check alone and therefore always terminates**: K1-S needs no CI run, no mixed image fleet and no scheduler luck. A NOT YET OBSERVED corroboration leg does not withhold B0. Round 2's version of B0 could be made permanently unsatisfiable and is superseded (Section 16.1).
 - B1. `cache-hit == 'true'` in both gate jobs. A restore-key hit does not satisfy this.
 - B2. **Units worked** (`Compiling` + `Checking`, cargo lines only) in `rust-regression` at M3 is **at most 10 % of M1's**. M0's value is 858, so the expected M3 value is single or low double digits, dominated by the three unavoidable rebuilds of the workspace crate.
 - B3. `Downloaded` count in `rust-regression` at M3 is at most 5. M0's value is 483.
@@ -767,7 +843,7 @@ $clean = [regex]::Replace($log, "\x1b\[[0-9;?]*[ -/]*[@-~]", "")
 If Group B fails, the change is not certified and must not be treated as done. Four distinguishable causes, each with a defined next action:
 
 1. `No cache found.` in M3 → the key does not match. Compare the `Cache Key` line from M2's warm log against M3's. Likely a `shared-key`, `env-vars`, `workspaces` or toolchain divergence between the files. **Do not re-run the Section 9.3 purge as a first move**; the corrected filter now protects the `gate-*` entries, but the diagnosis is a key comparison, not a purge.
-2. Restore occurred but `cache-hit` is `false` → a restore-key hit. Confirm the measurement branch did not touch `Cargo.lock`, and confirm the toolchain did not rotate between M2 and M3 by comparing the recorded `rustc -vV`. **Do not compare `ImageVersion`: it is deliberately not a key input** (Section 4.1), so an image difference between M2 and M3 is expected, is not a cause, and diagnosing from it sends the investigation to the wrong place. If the toolchain matches and the lock file is untouched, re-run K1 (Section 9.2.1): a `false` here with both of those held constant is evidence that some other per-job-varying input has entered the key.
+2. Restore occurred but `cache-hit` is `false` → a restore-key hit. Confirm the measurement branch did not touch `Cargo.lock`, and confirm the toolchain did not rotate between M2 and M3 by comparing the recorded `rustc -vV`. **Do not compare `ImageVersion`: it is deliberately not a key input** (Section 4.1), so an image difference between M2 and M3 is expected, is not a cause, and diagnosing from it sends the investigation to the wrong place. If the toolchain matches and the lock file is untouched, **re-run K1-S** (Section 9.2.1) rather than waiting for a live run: a `false` here with both of those held constant is evidence that some other per-job-varying input has entered the key, and the five conditions are where to look. Check condition (v) first, an `env:` block added to one of the three workflow files, and condition (ii) second, a moved `@v2` (Section 10.7). **A green K1 with a `false` here is a coherent outcome, not a contradiction**: K1 proves key determinism, never cache reachability.
 3. Exact hit but B2 fails, so units worked barely moved → the restored artefacts are not being reused. Check whether the workspace-crate rebuild is dragging dependents with it, and whether `build.rs`'s `dist/` rerun paths (Section 9.7) are invalidating more than the workspace crate.
 4. Group B passes but Group C fails → the cache works and total time still did not drop by more than variance. Report that as the measured finding on #1216. It is a legitimate outcome and would mean the recoverable share is smaller than the fixed overhead of the gate, which must be reported rather than buried.
 
@@ -851,6 +927,30 @@ The decision is lopsided enough that the tech lead ruled it directly, and the ar
 **The lever, so that it is actionable rather than theoretical.** If a link failure against restored native artefacts is ever observed, add or increment a `prefix-key` input on all seven `swatinem/rust-cache@v2` steps at once. It must be all seven, because the steps sharing a `shared-key` must agree on every key input or the cache becomes unreachable, which is the same failure this amendment exists to remove. That rotates both entries deterministically, the Section 4.2 recovery path regenerates them without waiting for a `main` push, and the event is attributable because both warm jobs record `rustc -vV`.
 
 **What would make this worth revisiting**, recorded so a future editor has a threshold rather than an instinct: a first observed occurrence of the link failure, or GitHub publishing a stable per-image toolset identity that does not vary between concurrently served generations of the same image. Neither holds today.
+
+### 10.7 The floating `swatinem/rust-cache@v2` tag. Open and accepted, with two levers
+
+**Added in round 3**, because `dev-rust-grinch` was right that the key constructor is load-bearing and round 2 left it unmentioned. It is recorded as a decision rather than fixed here.
+
+**What is exposed.** All seven steps use the floating tag `@v2`, so the implementation that *builds* the key is chosen at run time. Every observed job resolved `e18b497796c12c097a38f9edb9d0641fb99eee32`, which is the revision `dev-rust` read and the revision condition (ii) of Section 9.2.1 names. If the `v2` tag moves and the new revision changes the key layout, a writer and a reader that resolve different revisions compute different keys and the cache goes unreachable. This is component K-2 in Section 9.2.1's enumeration.
+
+**Position: do not pin in this plan.** The reasoning, so it is not re-litigated:
+
+| | Cost of leaving `@v2` floating | Cost of pinning to a SHA |
+|---|---|---|
+| Failure mode | A key-layout change makes the caches unreachable | None from the key, but security and correctness fixes stop arriving until someone bumps it |
+| Blast radius | **Bounded and self-healing.** One cold cycle. The next warm, from the landing push or from the daily cron, rewrites both entries under the new layout and the readers converge | Bounded, but a stale action can persist indefinitely because nothing forces a review |
+| Detection | **Loud and immediate.** `verify-debug-cache` or `verify-release-cache` turns the workflow red the first time the layout diverges, which is K1-L2 | Not applicable |
+| Scope | Zero. The change is already a one-token edit across seven steps | Seven more edits, on a branch whose whole content is one token, widening a fix that reviewed cleanly |
+
+The exposure is the same class and roughly the same magnitude as a rustc rotation, which this plan already accepts and already makes attributable. It is caught by machinery that exists and runs daily, and it costs one warm cycle when it fires.
+
+**The levers, so this is actionable rather than theoretical.**
+
+1. **Passive, already in place.** The daily `schedule` in `cache-warm.yml:7-8` regenerates both entries under whatever layout is current, so a layout change heals within one day without anyone acting.
+2. **Active, if a layout change ever costs more than that.** Replace `@v2` with `@e18b497796c12c097a38f9edb9d0641fb99eee32` on **all seven steps at once**, for the same reason all seven carry the same `env-vars`: cohort members that disagree on the resolved implementation can disagree on the key. Pinning does not by itself rotate the key, because the action revision is not hashed into it, so the pin can be applied without forcing a cold cycle.
+
+**What would make this worth revisiting**, as a threshold rather than an instinct: a first observed occurrence of a `@v2` layout change breaking a cohort, or a repository-wide policy decision to pin third-party actions, which would cover `actions/checkout@v5`, `actions/setup-node@v5` and `dtolnay/rust-toolchain@stable` in the same act and does not belong to #1216.
 
 ## 11. Adjacent findings, reported and not acted on
 
@@ -981,7 +1081,7 @@ The reasoning the architect verified rather than merely accepted: the cost of ke
 
 ### 15.4 Effect on the certification sequence
 
-- **K1, a new key-stability gate, is added as Section 9.2.1** and adopted from `dev-rust`. It blocks the next warm cycle and M3, and it admits a third verdict, INCONCLUSIVE, which is explicitly not a pass. Group B gains **B0** making K1 a precondition of the whole group.
+- **K1, a new key-stability gate, is added as Section 9.2.1** and adopted from `dev-rust`. Group B gains **B0**, making K1 a precondition of the whole group. **Corrected in round 3:** as round 2 wrote it, K1 blocked the next warm cycle and M3 and admitted a third verdict, INCONCLUSIVE. Both were defective. The warm ordering is unenforceable and K1 now blocks the merge instead; INCONCLUSIVE could be permanent and is replaced by a static proof plus non-blocking corroboration. Section 9.2.1 as it now stands is the gate; Sections 16.1 and 16.3 carry the reasoning. B0 survives round 3 with its role intact and its satisfiability repaired.
 - **M2 must be re-run after this amendment lands.** The first cycle's M2 is superseded.
 - **M1's Group A results survive**; Group A touches no cache key. M1's role as the cold control for Group B is restored by the re-run.
 - **The two stranded cache entries are left to LRU and the seven-day rule**, recorded in Section 9.3 as a decision of the tech lead's, not an open item. The purge filter already excludes `gate-*` keys and must not be changed to catch them.
@@ -1001,3 +1101,82 @@ The corresponding trap, which cost real time this round: the `Runner Image` log 
 Facts were taken from the tech lead's dispatch, which states the evidence is complete and instructs that no further `dev-rust` or `dev-rust-grinch` round be spent re-establishing it. The architect independently verified, in the repository at `main` = `fd90894136c5096b087ed8b32eed53f76df83112`: the seven `env-vars` occurrences and their exact file and line coordinates, that `release.yml:74` still carries the untouched `workspaces: src-tauri -> target` and remains out of scope, and that the round-1 `Plan-SHA256` reproduces from the committed plan blob. The concurrent-rollout observations and the offline reproduction of the hash partition were not re-derived, by instruction, and are attributed in Section 2.8 to their sources with `dev-rust`'s own UNVERIFIED label preserved on the absolute digest values.
 
 **Codebase Memory was not used for this amendment, under explicit authorization from the tech lead.** Its full gate returns `ready` but every subsequent graph query fails with `Repository changed; rerun the full gate`, reproduced back to back in a single process and attributed to a query-layer defect (`cbm.ps1:2022-2042` against `:2317`) rather than a stale index. Direct reads were authorized and the 80-line fallback limit was waived.
+
+## 16. Architect's amendment, Step 7 consensus round 3
+
+**Verdict: READY_FOR_IMPLEMENTATION.** This section is authoritative wherever it contradicts anything earlier in this plan, Sections 14 and 15 included.
+
+**Why this round exists.** `dev-rust-grinch` reviewed commit `93e20674a83eebcafb0a569470dc6a3315b6523b` on branch `fix/1216-cache-key-imageversion` and **passed the implementation**: exactly three workflow files, seven insertions and seven deletions, seven `env-vars: 'ImageOS'` in the intended files, `ImageVersion` absent from `.github/workflows`, and a byte-level revert proof that substituting the old token back makes all three blobs identical to their `fd90894` originals. **The code is correct and round 3 does not touch it.** What failed review was the acceptance gate round 2 had added: three blocking defects in K1 and B0, two of them independently verified by the tech lead. All three are accepted here. None is disputed.
+
+### 16.1 Finding 1, CRITICAL: B0 could be permanently impossible. Accepted and repaired
+
+**The defect.** Round 2's K1 granted PROVEN STABLE only when two sampled gate jobs drew **different** runner image versions. Every same-version draw was INCONCLUSIVE with no bound and no alternate path. If GitHub finishes the `win25-vs2026` rollout, every ordinary PR draws one generation forever, K1 can never pass, and B0 permanently prohibits M2, M3 and all of Group B for a fix that is statically correct. **An acceptance gate must not depend on a vendor retaining a mixed fleet or on scheduler luck.**
+
+**The repair.** K1 is split. **K1-S is a static proof**: it enumerates every key component from the reviewed action revision `e18b497796c12c097a38f9edb9d0641fb99eee32`, checks each against the seven `with:` blocks and five stated conditions, and terminates on a single desk reading with no CI run at all. It is now the sufficient path for B0. **The mixed-image observation is demoted to corroboration** under K1-L, where it is recorded when it happens and required never. Round 2's INCONCLUSIVE is removed as a terminal state and replaced by NOT YET OBSERVED, which cannot withhold a verdict.
+
+**No new evidence was needed and none was requested.** The material was already gathered: `dev-rust`'s read of `src/config.ts` at the resolved revision, its enumeration of the hashed inputs, and its offline reimplementation that reproduces the observed six-job partition exactly. The architect added what the repository itself proves, which is set out in Section 9.2.1 and summarised in 16.6.
+
+### 16.2 Finding 2, HIGH: PROVEN STABLE overclaimed. Accepted, renamed, and expanded
+
+**The defect.** Round 2 compared only the environment-hash component, between two jobs that carry **different `shared-key` values by design**. Matching suffixes across two point releases showed only that one sampled image difference did not move one component. Left open: the rustc component, the floating `@v2` key constructor, and `ImageOS` in a future `windows-latest` migration. Because complete keys were never compared within the real writer, probe and reader cohorts, the non-`ImageVersion` form of the same "passed by luck" hole B0 exists to close remained logically possible.
+
+**The repair, on all four points the finding raised.**
+
+1. **Renamed.** The gate is the **key-determinism gate**; the verdict PROVEN STABLE is withdrawn. What it now claims is key determinism **under five stated conditions**, and Section 9.2.1 states them as a conditional invariant rather than an assertion.
+2. **Every component enumerated**, K-1 through K-5, from the reviewed and resolved action revision, each with what it varies with and each argued against the repository text.
+3. **Complete key-input signatures compared within each `shared-key` cohort**, never across cohorts and never on the suffix alone. Section 9.4 now requires the whole `Cache Key:` line to be recorded for exactly this reason.
+4. **The floating `@v2` is no longer unmentioned.** It is component K-2, it is condition (ii) of the invariant, and Section 10.7 records the decision not to pin it as an accepted risk with two named levers.
+
+**The two building blocks the finding pointed at were used rather than re-derived.** `dev-rust`'s check 7 collapses each cohort to one key-input signature, three `gate-debug` and four `gate-release`, and `grinch` reproduced that collapse independently at this HEAD. Section 9.2.1's cohort table is that result, recorded with the file and line of each member's `env-vars`.
+
+**Two additions the architect brought, both checkable from the repository and neither requiring a run.**
+
+- **The repository contributes no hashed environment variable at all.** None of `pr-regression-gates.yml`, `cache-warm.yml` or `bundle-validation.yml` contains an `env:` block at workflow, job or step level, and none contains a `CARGO`, `RUSTUP`, `RUSTC`, `RUSTFLAGS`, `CMAKE`, `CFLAGS`, `CXX` or `CC` token anywhere. `prefix-key` likewise appears nowhere in `.github/workflows/`. The hashed set is therefore entirely runner-supplied, which is what makes the static argument close. It is also the condition a future editor is most likely to break by accident, so it is written as condition (v) rather than left implicit.
+- **Different pre-cache step sequences are already measured not to perturb the hash.** At M2, `warm-release` ran `setup-node`, the npm pin and `npm ci` before its cache step while `verify-release-cache` ran only checkout and the toolchain; they drew the same image and emitted the same environment hash `3d5bdf05` (Section 2.8). This closes the obvious objection that the writer and probe jobs are not comparable, using evidence already in the plan.
+
+### 16.3 Finding 3, HIGH: the K1-before-warm order was unenforceable. Accepted, and the tech lead's design input adopted
+
+**The defect.** `cache-warm.yml:3-9` runs on `push` to `main` and on a daily `cron`. The landing push queues the warm in the same act, so a post-land K1 cannot precede it. There was no gate, no cancellation path and no quarantine, and manual cancellation is itself a race. The sequence round 2 specified could not happen. **Verified independently by the architect at the file.**
+
+**The repair: K1 runs pre-land, on the PR of `fix/1216-cache-key-imageversion`.** The tech lead's design input is adopted without modification, and the architect's position is that it is the correct resolution rather than merely an acceptable one: it removes the race instead of managing it, and a race that has been removed cannot be lost. For a same-repo PR the gate jobs execute the branch's own workflow definitions, so they emit keys built with `env-vars: 'ImageOS'` while `main` is untouched and no warm can fire.
+
+**Three consequences the architect verified, which make the pre-land placement strictly better than post-land rather than merely equivalent.**
+
+1. **The `gate-release` cohort has two live members on that PR run.** `bundle-validation` fires because its `paths:` filter lists `.github/workflows/bundle-validation.yml` (`bundle-validation.yml:13`) and the fix changes that file. So `windows-release-cli-smoke` and `bundle-validation` run as two jobs of one `pull_request` run, sharing `GITHUB_SHA`, both `save-if: 'false'` readers. **Their complete keys must be byte-identical, and that is a within-cohort full-key comparison available before anything lands.** No post-land ordinary PR run offers this, because it compares two jobs in different cohorts.
+2. **The `gate-debug` cohort gets a comparison too**, from the double trigger at `pr-regression-gates.yml:3-12`: the same commit produces a `push`-event run and a `pull_request`-event run, each with its own `rust-regression`. Its precondition is stated rather than assumed, since the merge ref's tree equals the head's tree only while the base is an ancestor of the head.
+3. **The same run is also the replacement cold control.** The only `gate-*` entries on `main` at that moment are the two stranded old-generation entries, which cannot exact-match a key built with `env-vars: 'ImageOS'`, so both gate jobs run cold. K1 and M1 are one run and one cost.
+
+**The "block the next warm cycle" requirement is replaced, not weakened.** K1 blocks the **merge**, which is enforceable by the person merging and needs no timing. Section 9.2 now states explicitly that automatic warms after the merge are expected, that `concurrency: cache-warm-main` with `cancel-in-progress: false` makes overlapping warms harmless, that M2 is the first such run whose checkout contains the amendment and whose four jobs are green, and that **nothing needs to be re-run, cancelled or discarded.** A warm fired by an unrelated merge landing before the fix writes old-generation entries, which are stranded exactly like the two in Section 9.3 and are left to LRU by that same decision.
+
+### 16.4 The advisory, folded in
+
+K1 can pass while the cache still misses for an unrelated reason: a `main`-versus-PR `Cargo.lock` difference, a writer and reader `shared-key` mismatch, or cache ref visibility. **K1 is a precondition and a regression check, never proof of cache reachability.** This is now stated in three places rather than one: in Section 9.2.1's closing subsection, in B0 itself, and in Section 9.6 case 2, where a green K1 alongside a `cache-hit == 'false'` is explicitly named a coherent outcome rather than a contradiction. The exact-hit questions remain M2's probes and B1 at M3 and M4.
+
+### 16.5 Judgement calls: closed, no action
+
+All three round-2 judgement calls were disclosed by the architect and accepted by `dev-rust-grinch` with reasoning. **They are recorded here as closed and are not to be re-opened.**
+
+1. **YAML parse instead of `actionlint`.** A scalar-only diff cannot create an Actions-schema shape change.
+2. **Omitting `cargo check` and `cargo clippy` from local validation.** Zero Rust paths changed; running them would overwrite `dist/` and generate a multi-gigabyte `target/` in the shared replica for no information.
+3. **Leaving the two stranded cache entries to LRU.** Their old full keys cannot exact-match the new generation, 1.51 GB is inside the recorded budget, and keeping the purge exclusion avoids risking deletion of current `gate-*` entries.
+
+### 16.6 Sections changed by this amendment
+
+Header and status block; **8** steps 7, 8 and 10 (K1 pre-land, merge conditioned on it, automatic warms expected); **9.2** (K1 moved before the merge, the M1 replacement named, automatic warms stated as expected); **9.2.1** (rewritten in full: conditional invariant, K-1 through K-5 enumeration, cohort table, K1-S static proof, K1-L1 and K1-L2 corroboration legs, new verdict set, what K1 does not prove, when to re-run); **9.4** (record the complete `Cache Key:` line, not the suffix); **9.5** B0 (PASS instead of PROVEN STABLE, and satisfiable by desk check); **9.6** case 2 (re-run K1-S, check conditions (v) and (ii) first, green K1 with a miss is coherent); **10.7** (new, the floating `@v2` as an accepted risk with two levers); **15.4** first bullet (round-2 record corrected where round 3 reversed it); **16** (this section).
+
+### 16.7 What round 3 deliberately does not change
+
+- **The implementation.** `93e2067` stands as reviewed. No workflow file, job, step, trigger, command, permission, concurrency group, `shared-key` or `workspaces` value moves.
+- **The `ImageVersion` removal and Section 10.6's accepted residual risk.** Settled in round 2, not re-opened.
+- **Scope.** #1217, #1218 and #1219 stay out. Section 10.7 records a position on pinning `@v2` rather than pinning it, and explicitly routes any broader action-pinning policy away from #1216.
+- **Groups A, C and D, and B1 through B6.** Only B0 changes, and only in how it is satisfied.
+
+### 16.8 Verification conditions for this amendment
+
+Facts were taken from the tech lead's dispatch, which states the evidence is complete and instructs that no further `dev-rust` or `dev-rust-grinch` round be spent re-establishing it. **The architect independently verified in the repository at `93e20674a83eebcafb0a569470dc6a3315b6523b`:** the `cache-warm.yml:3-9` trigger block quoted in Finding 3; all seven `env-vars: 'ImageOS'` occurrences with their files and lines; that all seven steps carry `workspaces: '. -> target'` and that `prefix-key` appears nowhere in `.github/workflows/`; that `save-if` and `lookup-only` are the only other differing inputs and that neither feeds the key; that the two cohorts have three and four members and that each member's toolchain step matches the others in its cohort; that all seven run on `windows-latest`; that none of the three workflow files contains an `env:` block or any `CARGO`, `RUSTUP`, `RUSTC`, `RUSTFLAGS`, `CMAKE`, `CFLAGS`, `CXX` or `CC` token; that no `.cargo/config.toml` exists; that `pr-regression-gates.yml:3-12` produces the double trigger K1-L1 relies on; and that `bundle-validation.yml:13` lists `.github/workflows/bundle-validation.yml` in its `paths:` filter, which is what makes `bundle-validation` fire on the fix PR.
+
+**Not re-derived, by instruction, and attributed rather than claimed:** the read of `src/config.ts` at revision `e18b497796c12c097a38f9edb9d0641fb99eee32` and the enumeration of hashed inputs (`dev-rust`); the offline reimplementation reproducing the six-job partition, with `dev-rust`'s own UNVERIFIED label preserved on the absolute digest values (Section 2.8); the cohort-signature collapse of check 7 (`dev-rust`, reproduced by `dev-rust-grinch`); and the implementation verification of `93e2067` (`dev-rust-grinch`).
+
+**One observation recorded rather than acted on.** Section 9.4 states that the jobs run with `CARGO_TERM_COLOR: always`. That variable is set nowhere in the three workflow files nor anywhere else in the repository, so the plan does not evidence its own claim. Nothing follows from it for this amendment: stripping ANSI escapes from a log that has none is a no-op, so the instruction is harmless either way, and `CARGO_TERM_COLOR` is not set by the repository and therefore cannot divide a cohort. It is noted so that a future editor who tries to confirm it is not sent looking for a setting that does not exist.
+
+**Codebase Memory was not used for this amendment, under explicit authorization from the tech lead.** The query layer is defective: the full gate returns `ready` and every subsequent query fails with `Repository changed`. Additionally, this branch has no upstream, because it was deliberately not pushed, so the gate can also fail with `status.git.base_sha must be a string`. **Direct reads were authorized and the 80-line fallback limit was waived.** The branch was not pushed to satisfy the gate.
