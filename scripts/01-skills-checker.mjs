@@ -542,11 +542,15 @@ function parseKeyValueLine(body) {
   if (body[0] === "'" || body[0] === '"') {
     const quoted = readQuotedScalar(body, 0);
     if (!quoted.ok) return { ok: false, reason: quoted.reason };
-    if (body[quoted.end] !== ':') {
+    // Whitespace may sit between the key and the `:` here for the same reason it may in
+    // the unquoted branch below: YAML treats it as separation, not as part of the key.
+    let after = quoted.end;
+    while (body[after] === ' ' || body[after] === '\t') after += 1;
+    if (body[after] !== ':') {
       return { ok: false, reason: 'a quoted scalar at column 0 that is not a mapping key' };
     }
     key = quoted.value;
-    rest = body.slice(quoted.end + 1);
+    rest = body.slice(after + 1);
   } else {
     let separator = -1;
     for (let i = 0; i < body.length; i += 1) {
@@ -558,7 +562,13 @@ function parseKeyValueLine(body) {
       }
     }
     if (separator === -1) return { ok: false, reason: 'a line that is not a `key:` mapping entry' };
-    key = body.slice(0, separator);
+    // YAML strips trailing white space from a plain scalar, so `name :` and `name<TAB>:`
+    // are both the key `name`. 6.5.4 defines key identity as the unquoted key text, and
+    // the unquoted key text of `name :` is `name`. Keeping the space here made the whole
+    // line look like an ordinary entry for a key nothing reads, so a plain typo produced
+    // a run with no finding at all, not even W-YAML-UNDECIDABLE. Leading whitespace is
+    // already routed to W-YAML-UNDECIDABLE by the `indent > 0` branch of parseMiniYaml.
+    key = body.slice(0, separator).replace(/[ \t]+$/, '');
     rest = body.slice(separator + 1);
   }
 
@@ -566,14 +576,21 @@ function parseKeyValueLine(body) {
   const header = /^([|>])([0-9]*)([-+]?)([0-9]*)[ \t]*(?:#.*)?$/.exec(value);
   if (header) {
     const explicit = header[2] || header[4];
-    return {
-      ok: true,
-      key,
-      value,
-      blockScalar: true,
-      blockStyle: header[1],
-      blockIndent: explicit === '' ? null : Number(explicit),
-    };
+    const blockIndent = explicit === '' ? null : Number(explicit);
+    // serde_yaml rejects a zero indentation indicator outright ("found an indentation
+    // indicator equal to 0"), so `|0` and `>0` are outside the subset rather than block
+    // scalars. Falling through leaves the value starting with `|` or `>`, which
+    // resolveScalar reports as W-YAML-UNDECIDABLE.
+    if (blockIndent !== 0) {
+      return {
+        ok: true,
+        key,
+        value,
+        blockScalar: true,
+        blockStyle: header[1],
+        blockIndent,
+      };
+    }
   }
   return { ok: true, key, value, blockScalar: false };
 }
@@ -1074,6 +1091,10 @@ function validateFields(candidate, mapping, collector, lineOffset) {
       message: 'The `name:` value is not a YAML string. `yaml_field_string` accepts only Value::String (:448-462).',
       indexerMessage: skippedSkill(folder, 'name must be a string'),
     });
+    // 6.6.1 step 2: STOP. :641-650 is `Err(e) => { push; continue }`, so `description`
+    // (:674) and `when_to_use` (:687) are never reached and any finding about them would
+    // carry an indexerMessage the startup log will never print.
+    return { resolvedName: null, nameLine: null };
   } else {
     // :453 trims with Rust str::trim; Y5 maps an empty result to absent (:452-459).
     const trimmed = trimYamlValue(nameEntry.value);
@@ -1111,7 +1132,10 @@ function validateFields(candidate, mapping, collector, lineOffset) {
           `invalid skill name \`${sanitizeForReport(resolvedName)}\`; expected 1-64 lowercase ASCII letters, digits, or hyphens`,
         ),
       });
-      nameResolved = false;
+      // Same stop, for the same reason: :653-660 also `continue`s past the field layer.
+      // The plan states the stop only for the type failure at step 2, so this half is a
+      // tech-lead decision recorded in the Step 9 dispatch rather than plan text.
+      return { resolvedName: null, nameLine };
     }
   }
 
@@ -2191,8 +2215,21 @@ function selfTest(out) {
     for (const value of ['42', 'true', 'null', '']) {
       const inner = tempRoot();
       try {
-        writeFixture(inner, '_agent_x/skills/x/SKILL.md', `---\nname:${value === '' ? '' : ` ${value}`}\ndescription: x\n---\n`);
-        assertSelf(hasCode(runCheck(inner), 'E-NAME-NOT-STRING'), `name: ${value} must be E-NAME-NOT-STRING`);
+        // No `description` and a non-string `when_to_use`, so both field-layer findings
+        // WOULD fire if validation did not stop at the name failure.
+        writeFixture(
+          inner,
+          '_agent_x/skills/x/SKILL.md',
+          `---\nname:${value === '' ? '' : ` ${value}`}\nwhen_to_use: 9\n---\n`,
+        );
+        const report = runCheck(inner);
+        assertSelf(hasCode(report, 'E-NAME-NOT-STRING'), `name: ${value} must be E-NAME-NOT-STRING`);
+        // 6.6.1 step 2 says Stop, and :641-650 continues past the field layer, so an
+        // indexerMessage about description or when_to_use would name a startup-log line
+        // that is never printed.
+        assertSelf(!hasCode(report, 'W-DESC-MISSING'), 'field validation must stop at the name failure');
+        assertSelf(!hasCode(report, 'W-WHEN-NOT-STRING'), 'and it must not reach when_to_use either');
+        assertSelf(report.findings.length === 1, 'the name failure is the only finding');
       } finally {
         removeRoot(inner);
       }
@@ -2255,6 +2292,25 @@ function selfTest(out) {
       }
     }
   });
+  run('42g', (root) => {
+    // serde_yaml rejects a zero indentation indicator outright, so `|0` is a hard parse
+    // error there. Treating it as a block scalar made the checker exit 0 on a file the
+    // indexer refuses to parse.
+    for (const header of ['|0', '>0']) {
+      const inner = tempRoot();
+      try {
+        writeFixture(inner, '_agent_x/skills/x/SKILL.md', `---\nname: ok-name\ndescription: ${header}\n  text\n---\n`);
+        const report = runCheck(inner);
+        assertSelf(hasCode(report, 'W-YAML-UNDECIDABLE'), `\`${header}\` is outside the subset, not a block scalar`);
+      } finally {
+        removeRoot(inner);
+      }
+    }
+    // A non-zero indicator is still an ordinary block scalar.
+    const report = fm(root, '---\nname: ok-name\ndescription: |2\n  text\n---\n');
+    assertSelf(!hasCode(report, 'W-YAML-UNDECIDABLE'), '`|2` stays inside the subset');
+    assertSelf(report.findings.length === 0, 'and resolves to a non-empty string');
+  });
   run('43', (root) => {
     const report = fm(root, '---\nname: ok-name\nnested:\n  a: 1\ndescription: x\n---\n');
     assertSelf(hasCode(report, 'W-YAML-UNDECIDABLE'), 'a nested mapping is undecidable');
@@ -2281,6 +2337,19 @@ function selfTest(out) {
   run('46c', (root) => {
     const report = fm(root, "---\nname: ok-name\n'name': other\n---\n");
     assertSelf(hasCode(report, 'E-YAML-DUPLICATE-KEY'), '`name` and `\'name\'` are the same key after unquoting');
+    // Whitespace before the `:` is separation, not part of the key, so these collide too.
+    for (const second of ['name : other', 'name\t: other', "'name' : other"]) {
+      const inner = tempRoot();
+      try {
+        writeFixture(inner, '_agent_x/skills/x/SKILL.md', `---\nname: ok-name\n${second}\n---\n`);
+        assertSelf(
+          hasCode(runCheck(inner), 'E-YAML-DUPLICATE-KEY'),
+          `\`${second}\` must collide with \`name\`: YAML strips the trailing space from the key`,
+        );
+      } finally {
+        removeRoot(inner);
+      }
+    }
   });
   run('46d', (root) => {
     const report = fm(root, '---\nname: ok-name\nName: other\ndescription: x\n---\n');
@@ -2307,12 +2376,51 @@ function selfTest(out) {
     const report = runCheck(root);
     assertSelf(report.summary.errors === 0, 'the folder fallback resolves a valid name');
   });
+  run('50a', (root) => {
+    // A space or tab before the `:` is separation whitespace; the key is still `name`.
+    // Keeping it made the parser record a key nothing reads, so `name` resolved from the
+    // folder instead and the run came back with NO finding at all.
+    writeFixture(root, '_agent_x/skills/ok-folder/SKILL.md', '---\nname : Bad_Name\ndescription: x\n---\n');
+    const report = runCheck(root);
+    assertSelf(hasCode(report, 'E-NAME-INVALID'), '`name : Bad_Name` must resolve through the key, not the folder');
+    assertSelf(report.exitCode === 1, 'and it must fail the run');
+
+    const tabbed = tempRoot();
+    try {
+      writeFixture(tabbed, '_agent_x/skills/ok-folder/SKILL.md', '---\nname\t: Bad_Name\ndescription: x\n---\n');
+      assertSelf(hasCode(runCheck(tabbed), 'E-NAME-INVALID'), 'a tab before the `:` behaves the same');
+    } finally {
+      removeRoot(tabbed);
+    }
+
+    // The mirror image: the key resolves, so the bad FOLDER name is never consulted and
+    // the skill is clean. Keeping the space here produced a spurious E-NAME-INVALID.
+    const mirrored = tempRoot();
+    try {
+      writeFixture(mirrored, '_agent_x/skills/Bad_Folder/SKILL.md', '---\nname : ok-name\ndescription: x\n---\n');
+      const clean = runCheck(mirrored);
+      assertSelf(clean.findings.length === 0, '`name : ok-name` in a bad folder is indexed cleanly');
+      assertSelf(clean.exitCode === 0, 'and must not fail the run');
+    } finally {
+      removeRoot(mirrored);
+    }
+  });
   run('51', (root) => {
     writeFixture(root, '_agent_x/skills/My_Skill/SKILL.md', '---\ndescription: x\n---\n');
     const report = runCheck(root);
     assertSelf(hasCode(report, 'E-NAME-INVALID'), 'the folder fallback is charset-checked too');
     const finding = report.findings.find((f) => f.code === 'E-NAME-INVALID');
     assertSelf(finding.message.includes('containing directory name'), 'the message must name the folder fallback');
+  });
+  run('51a', (root) => {
+    // :653-660 also continues past the field layer, so the charset failure stops
+    // validation exactly like the type failure in case 41 does.
+    writeFixture(root, '_agent_x/skills/x/SKILL.md', '---\nname: Bad_Name\nwhen_to_use: 9\n---\n');
+    const report = runCheck(root);
+    assertSelf(hasCode(report, 'E-NAME-INVALID'), 'the charset failure is reported');
+    assertSelf(!hasCode(report, 'W-DESC-MISSING'), 'and validation stops before description');
+    assertSelf(!hasCode(report, 'W-WHEN-NOT-STRING'), 'and before when_to_use');
+    assertSelf(report.findings.length === 1, 'the name failure is the only finding');
   });
   run('52', (root) => {
     writeFixture(root, '_agent_x/skills/ok-name/SKILL.md', "---\nname: ''\ndescription: x\n---\n");
