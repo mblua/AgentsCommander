@@ -1983,11 +1983,14 @@ async fn run_composed_scanner_shutdown_phase(temporary_root: &Path, phase: Scann
         assert_eq!(first.joined, 0);
         assert_eq!(first.retained.len(), 1);
         assert_eq!(owner.task_count(), 1);
-        assert!(!crate::shutdown_persistence_allowed_with_scanner(
-            first.terminal,
-            true,
-            true,
-        ));
+        // A retained scanner is still reported in the shutdown diagnostics
+        // below, but it must not suppress session persistence: its only
+        // SessionManager access is a read-lock clone, so it cannot leave session
+        // state inconsistent.
+        assert!(
+            crate::shutdown_persistence_allowed(true, true),
+            "a retained snapshot scanner must not suppress session persistence"
+        );
         let diagnostics = crate::combined_shutdown_retained_diagnostics_with_scanner(
             first.retained.clone(),
             Vec::new(),
@@ -2046,11 +2049,7 @@ async fn run_composed_scanner_shutdown_phase(temporary_root: &Path, phase: Scann
         .await;
     assert!(terminal.terminal);
     assert_eq!(owner.task_count(), 0);
-    assert!(crate::shutdown_persistence_allowed_with_scanner(
-        terminal.terminal,
-        true,
-        true,
-    ));
+    assert!(crate::shutdown_persistence_allowed(true, true));
     assert_api_lifecycle_idle(&fixture.snapshot_state);
 
     let mut response_reason = None;

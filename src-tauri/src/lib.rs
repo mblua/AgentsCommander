@@ -44,24 +44,22 @@ use voice::tracker::{VoiceTracker, VoiceTrackingState};
 use web::auth::WebAccessToken;
 use web::broadcast::WsBroadcaster;
 
-#[cfg(test)]
+/// Snapshot scanner terminality is deliberately not an input here.
+///
+/// A retained scanner task publishes a response file; its only `SessionManager`
+/// access is a read-lock clone, so it cannot leave session state inconsistent
+/// and cannot make a session snapshot wrong. Gating persistence on it was not a
+/// rare edge either: `SNAPSHOT_SERVER_TIMEOUT` is twice
+/// `SHUTDOWN_CLEANUP_BUDGET_SECS`, and the drain correctly refuses to abort
+/// owned or finalizer tasks, so any snapshot admitted inside the shutdown window
+/// and running near its own legitimate deadline suppressed persistence and cost
+/// the user their session list. Retained scanner work is still reported in the
+/// shutdown diagnostics.
 pub(crate) fn shutdown_persistence_allowed(
     selection_persistence_safe: bool,
     container_cleanup_terminal: bool,
 ) -> bool {
-    shutdown_persistence_allowed_with_scanner(
-        true,
-        selection_persistence_safe,
-        container_cleanup_terminal,
-    )
-}
-
-pub(crate) fn shutdown_persistence_allowed_with_scanner(
-    scanner_terminal: bool,
-    selection_persistence_safe: bool,
-    container_cleanup_terminal: bool,
-) -> bool {
-    scanner_terminal && selection_persistence_safe && container_cleanup_terminal
+    selection_persistence_safe && container_cleanup_terminal
 }
 
 #[cfg(test)]
@@ -2745,8 +2743,7 @@ pub fn run(
                         );
                     }
 
-                    if shutdown_persistence_allowed_with_scanner(
-                        scanner_shutdown.terminal,
+                    if shutdown_persistence_allowed(
                         selection_shutdown.persistence_safe,
                         container_shutdown.terminal,
                     ) {
@@ -2851,22 +2848,6 @@ mod tests {
             combined.iter().all(|entry| !entry.is_empty()),
             "retained diagnostics are non-empty"
         );
-    }
-
-    #[test]
-    fn scanner_terminality_is_required_for_shutdown_persistence() {
-        assert!(super::shutdown_persistence_allowed_with_scanner(
-            true, true, true
-        ));
-        assert!(!super::shutdown_persistence_allowed_with_scanner(
-            false, true, true
-        ));
-        assert!(!super::shutdown_persistence_allowed_with_scanner(
-            true, false, true
-        ));
-        assert!(!super::shutdown_persistence_allowed_with_scanner(
-            true, true, false
-        ));
     }
 
     #[test]
