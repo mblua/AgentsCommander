@@ -3099,6 +3099,13 @@ impl TerminalSnapshotAuditGuard {
         self.update(|metadata| metadata.payload_bytes = Some(payload_bytes));
     }
 
+    pub(crate) async fn wait_for_retained_owners(&self, expected_owners: usize) {
+        debug_assert!(expected_owners > 0);
+        while Arc::strong_count(&self.inner) > expected_owners {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
     pub(crate) fn finalize_failure(&self, reason: TerminalSnapshotReasonCode) {
         let status = match reason {
             TerminalSnapshotReasonCode::TerminalSnapshotsDisabled

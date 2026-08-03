@@ -135,6 +135,60 @@ const SCANNER_ABORT_GRACE: std::time::Duration = std::time::Duration::from_milli
 
 type ScannerTaskCleanup = std::sync::Arc<dyn Fn() + Send + Sync + 'static>;
 
+#[cfg(test)]
+pub(crate) struct SnapshotScannerTaskStartControl {
+    entered: std::sync::Mutex<bool>,
+    changed: std::sync::Condvar,
+    release: tokio::sync::Semaphore,
+}
+
+#[cfg(test)]
+impl SnapshotScannerTaskStartControl {
+    pub(crate) fn new() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            entered: std::sync::Mutex::new(false),
+            changed: std::sync::Condvar::new(),
+            release: tokio::sync::Semaphore::new(0),
+        })
+    }
+
+    pub(crate) fn wait_until_entered(&self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let mut entered = self.entered.lock().expect("scanner start control state");
+        while !*entered {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "scanner task did not reach its pre-service barrier"
+            );
+            let (next, timeout) = self
+                .changed
+                .wait_timeout(entered, remaining)
+                .expect("scanner start control wait");
+            entered = next;
+            assert!(
+                !timeout.timed_out() || *entered,
+                "scanner task did not reach its pre-service barrier"
+            );
+        }
+    }
+
+    pub(crate) fn release(&self) {
+        self.release.add_permits(1);
+    }
+
+    async fn enter(&self) {
+        {
+            let mut entered = self.entered.lock().expect("scanner start control state");
+            *entered = true;
+            self.changed.notify_all();
+        }
+        if let Ok(permit) = self.release.acquire().await {
+            permit.forget();
+        }
+    }
+}
+
 #[derive(Clone)]
 struct ScannerTaskOwnership {
     phase: std::sync::Arc<std::sync::atomic::AtomicU8>,
@@ -175,6 +229,9 @@ struct ScannerTaskRecord {
 struct ScannerShutdownState {
     sealed: bool,
     tasks: HashMap<Uuid, ScannerTaskRecord>,
+    #[cfg(test)]
+    task_start_controls:
+        std::collections::VecDeque<std::sync::Arc<SnapshotScannerTaskStartControl>>,
 }
 
 #[derive(Clone)]
@@ -237,6 +294,33 @@ impl SnapshotScannerShutdownOwner {
         self.lock_state().tasks.len()
     }
 
+    #[cfg(test)]
+    pub(crate) fn install_next_task_start_control(
+        &self,
+        control: std::sync::Arc<SnapshotScannerTaskStartControl>,
+    ) {
+        self.lock_state().task_start_controls.push_back(control);
+    }
+
+    #[cfg(test)]
+    fn take_next_task_start_control(
+        &self,
+    ) -> Option<std::sync::Arc<SnapshotScannerTaskStartControl>> {
+        self.lock_state().task_start_controls.pop_front()
+    }
+
+    #[cfg(test)]
+    async fn join_all_for_test(&self) {
+        let tasks = {
+            let mut state = self.lock_state();
+            std::mem::take(&mut state.tasks)
+        };
+        for (_, task) in tasks {
+            task.handle.await.expect("terminal snapshot mailbox task");
+            (task.cleanup)();
+        }
+    }
+
     fn spawn_tracked<F>(
         &self,
         audit_request_id: Option<String>,
@@ -283,16 +367,13 @@ impl SnapshotScannerShutdownOwner {
         for (task_id, mut task) in tasks {
             let grace_deadline =
                 std::cmp::min(deadline, tokio::time::Instant::now() + SCANNER_ABORT_GRACE);
-            match tokio::time::timeout_at(grace_deadline, &mut task.handle).await {
-                Ok(joined) => {
-                    if joined.is_err() {
-                        log::error!("[terminal-snapshot] stage=host_task code=internal");
-                    }
-                    (task.cleanup)();
-                    result.joined += 1;
-                    continue;
+            if let Ok(joined) = tokio::time::timeout_at(grace_deadline, &mut task.handle).await {
+                if joined.is_err() {
+                    log::error!("[terminal-snapshot] stage=host_task code=internal");
                 }
-                Err(_) => {}
+                (task.cleanup)();
+                result.joined += 1;
+                continue;
             }
 
             if task
@@ -608,12 +689,13 @@ impl SnapshotMailboxScanner {
     }
 
     #[cfg(test)]
+    pub(crate) fn shutdown_owner_for_test(&self) -> SnapshotScannerShutdownOwner {
+        self.shutdown_owner.clone()
+    }
+
+    #[cfg(test)]
     pub(crate) async fn join_pending_tasks_for_test(&mut self) {
-        let result = self
-            .shutdown_owner
-            .seal_and_drain_until(tokio::time::Instant::now() + std::time::Duration::from_secs(30))
-            .await;
-        assert!(result.terminal, "terminal snapshot mailbox tasks retained");
+        self.shutdown_owner.join_all_for_test().await;
         for task in std::mem::take(&mut self.pending_tasks) {
             task.await.expect("terminal snapshot mailbox task");
         }
@@ -770,6 +852,8 @@ impl SnapshotMailboxScanner {
                 safe_remove(&processing, &claimed);
                 continue;
             }
+            let snapshot_state = snapshot_state.inner().clone();
+            let cleanup_state = Arc::clone(&snapshot_state);
             let cleanup_processing = processing.clone();
             let cleanup_claimed = claimed.clone();
             let cleanup_request_directory = request_directory.clone();
@@ -777,7 +861,7 @@ impl SnapshotMailboxScanner {
             let cleanup_response_directory = response_directory.clone();
             let cleanup_response_identity = response_directory_identity.clone();
             let cleanup: ScannerTaskCleanup = std::sync::Arc::new(move || {
-                safe_remove(&cleanup_processing, &cleanup_claimed);
+                cleanup_tracked_artifact(&cleanup_state, &cleanup_processing, &cleanup_claimed);
                 sweep_directory(&cleanup_request_directory, &cleanup_request_identity, false);
                 sweep_directory(
                     &cleanup_response_directory,
@@ -788,11 +872,16 @@ impl SnapshotMailboxScanner {
             let app = app.clone();
             let response_directory = response_directory.clone();
             let expected_root = root_identity.clone();
-            let snapshot_state = snapshot_state.inner().clone();
             let ownership = ScannerTaskOwnership::new();
             let phase = ownership.phase.clone();
             let audit_request_id = request_id.clone();
+            #[cfg(test)]
+            let task_start_control = self.shutdown_owner.take_next_task_start_control();
             let future = async move {
+                #[cfg(test)]
+                if let Some(control) = task_start_control {
+                    control.enter().await;
+                }
                 let processed = crate::logging::catch_payload_future(process_claimed(
                     ownership,
                     &app,
@@ -1024,6 +1113,7 @@ async fn process_claimed<R: tauri::Runtime>(
         Ok(admission) => admission,
         Err(reason) => {
             drop(ingress);
+            audit.wait_for_retained_owners(1).await;
             let published = publish_trusted_failure(
                 &snapshot_state,
                 &response_directory,
@@ -1046,6 +1136,7 @@ async fn process_claimed<R: tauri::Runtime>(
     let prepared = match prepared {
         Ok(prepared) => prepared,
         Err(reason) => {
+            audit.wait_for_retained_owners(1).await;
             let published = publish_trusted_failure(
                 &snapshot_state,
                 &response_directory,
@@ -1072,6 +1163,7 @@ async fn process_claimed<R: tauri::Runtime>(
             response_expires_at,
         )
         .await;
+    audit.wait_for_retained_owners(2).await;
     #[cfg(test)]
     snapshot_state.run_host_cancellation_hook(
         crate::pty::terminal_snapshot::TerminalSnapshotHostCancellationStage::ResponseBytesReady,
