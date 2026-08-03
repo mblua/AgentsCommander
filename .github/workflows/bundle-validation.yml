@@ -48,7 +48,7 @@ jobs:
         with:
           workspaces: '. -> target'
           shared-key: 'gate-release'
-          env-vars: 'ImageOS ImageVersion'
+          env-vars: 'ImageOS'
           save-if: 'false'
 
       - name: Build installers (MSI and NSIS)
