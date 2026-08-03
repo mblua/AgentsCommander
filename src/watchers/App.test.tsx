@@ -1,6 +1,14 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import WatchersApp, { logicalGeometry, registerAll } from "./App";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import WatchersApp, {
+  logicalGeometry,
+  POLL_FOCUSED_MS,
+  POLL_TIMEOUT_MESSAGE,
+  POLL_TIMEOUT_MS,
+  POLL_UNFOCUSED_MS,
+  registerAll,
+  withDeadline,
+} from "./App";
 import { ALL_SESSIONS_LIMIT } from "./activity";
 import { FakeTransport } from "../shared/testing/fake-transport";
 import {
@@ -962,5 +970,260 @@ describe("persisting the activity window's geometry (#1171)", () => {
   it("treats an impossible scale factor as 1 rather than producing Infinity", () => {
     const rect = { x: 1, y: 2, width: 3, height: 4 };
     expect(logicalGeometry(rect, 0)).toEqual(rect);
+  });
+});
+
+/**
+ * #1188 - the bound that turns "never settles" into "settles as a failure".
+ *
+ * The failure `withDeadline` exists for needs a promise that never settles, which no real IPC
+ * call produces on demand, so it is tested here in isolation rather than through the window.
+ */
+describe("bounding one activity round (#1188)", () => {
+  // Fake timers are required even where nothing is advanced: `vi.getTimerCount()` goes through
+  // Vitest's `_checkFakeTimers()`, which throws outright when the timer APIs are not mocked.
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("resolves with the work's value and leaves no timer armed (T4)", async () => {
+    expect(await withDeadline(Promise.resolve(7), 1_000, "m")).toBe(7);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("rejects with the message at the deadline and leaves no timer armed (T5)", async () => {
+    const message = "the reply is not coming";
+    const promise = withDeadline(new Promise<never>(() => {}), 1_000, message);
+    // Attach the expectation BEFORE advancing the clock. Advancing first leaves the promise
+    // rejected with nothing attached for a turn, which Vitest can report as an unhandled
+    // rejection and turn into a flake in an otherwise correct test.
+    const assertion = expect(promise).rejects.toThrow(new Error(message));
+    await vi.advanceTimersByTimeAsync(1_000);
+    await assertion;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("reports a hung round within one period (T7)", () => {
+    // The service level, and nothing more: a deadline at or above the period means a hung
+    // round is reported later than one period after it hangs, which is the silence this issue
+    // exists to end. It is NOT what stops rounds overlapping. Nothing can overlap here at any
+    // value, because the chain arms the next round only inside `runPollRound`'s `finally`.
+    expect(POLL_TIMEOUT_MS).toBeLessThan(POLL_FOCUSED_MS);
+    // Not strict: this says only that an unfocused window must not poll MORE often than a
+    // focused one. Equal cadences would be legitimate.
+    expect(POLL_FOCUSED_MS).toBeLessThanOrEqual(POLL_UNFOCUSED_MS);
+  });
+});
+
+/**
+ * #1188 - the poll chain that could die, and the window that never said so.
+ *
+ * The only re-arm of `pollTimer` lived inside the `.then()` of the fetch the poll had just
+ * issued, so a `get_watcher_activity` that never settled ended the chain for the life of the
+ * window. It was silent twice over: push events kept painting, so the table was stale rather
+ * than blank, and `loadError` is only ever written from a `catch`, which a promise that never
+ * settles never reaches.
+ */
+describe("the activity poll chain (#1188)", () => {
+  let cleanupDom: (() => void) | null = null;
+
+  beforeEach(() => {
+    cleanupDom = installBrowserDomStubs();
+    resetUiStoresForTests();
+  });
+
+  afterEach(() => {
+    cleanupDom?.();
+    cleanupDom = null;
+    resetUiStoresForTests();
+    document.body.replaceChildren();
+  });
+
+  /**
+   * Drive the mount with microtask turns, never `waitFor`.
+   *
+   * `waitFor` polls on `Date.now()` and a real `setTimeout` (`ui-harness.tsx:71-92`), both of
+   * which `vi.useFakeTimers()` replaces, so under fake timers it does not even time out: it
+   * hangs until Vitest kills the test. Every mount await here resolves through `FakeTransport`,
+   * which is `async` but never timer-based, so microtasks alone settle it.
+   *
+   * 50 is a margin, not a measurement. The precondition assertion at every call site is what
+   * makes an undercount safe: it fails loudly instead of passing vacuously. Do not delete it,
+   * and if a future change outgrows the count, raise the count rather than reaching for
+   * `waitFor`. This also relies on nothing on the watchers mount path waiting on a frame --
+   * `installBrowserDomStubs` stubs `requestAnimationFrame` with a real `setTimeout`, which
+   * under fake timers would never run. There is no `requestAnimationFrame` in `src/watchers/`.
+   */
+  const flushMount = async (): Promise<void> => {
+    for (let i = 0; i < 50; i += 1) await Promise.resolve();
+  };
+
+  const errorBanner = (root: HTMLElement): HTMLElement | null =>
+    root.querySelector<HTMLElement>('[data-ac-testid="watchers.error"]');
+
+  /**
+   * Fake timers must be installed BEFORE the render.
+   *
+   * `vi.useFakeTimers()` replaces the global timer functions; it does not convert timers that
+   * are already armed. This window arms `pollTimer` during its own mount, so installing them
+   * afterwards would leave the first period running on real time. The precedent this repo
+   * already has, `ProjectPanel.restart-toast.test.tsx:211-251`, does the opposite for the same
+   * underlying rule -- install fake timers before the timer under test is armed -- because
+   * there the timer is armed by a click after the mount, so there is an interval to swap the
+   * clock in. Here there is none. Copy the rule, not either ordering.
+   *
+   * `initialSessionId="s1"` is mandatory: `transportWith` registers two agent sessions, so a
+   * render without it lands in "All sessions" and every round issues two calls instead of one,
+   * which makes every exact call count below wrong.
+   */
+  const renderWithFakeClock = (fake: FakeTransport) => {
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    vi.useFakeTimers();
+    return renderWithFakeTransport(() => <WatchersApp initialSessionId="s1" />, fake);
+  };
+
+  /** Round 1 and rounds 3+ answer; round 2 is whatever the failure under test is. */
+  function transportWithSecondRound(
+    snap: WatcherActivitySnapshot,
+    secondRound: () => unknown
+  ): FakeTransport {
+    const fake = transportWith(snap);
+    let round = 0;
+    fake.onInvoke("get_watcher_activity", () => {
+      round += 1;
+      return round === 2 ? secondRound() : snap;
+    });
+    return fake;
+  }
+
+  it("keeps polling after a fetch that never settles, and says the round failed (T1)", async () => {
+    const snap = snapshot({ matches: [match()] });
+    const fake = transportWithSecondRound(snap, () => new Promise<never>(() => {}));
+    const rendered = renderWithFakeClock(fake);
+    try {
+      // 1. The mount settles. This first call is the SCOPE EFFECT's, not the poll's:
+      //    `schedulePoll()` only arms a timer and issues nothing.
+      await flushMount();
+      expect(fake.callsFor("get_watcher_activity")).toHaveLength(1);
+      expect(errorBanner(rendered.root)).toBeNull();
+
+      // 2. One period later round 2 has fired and is hung. Nothing on screen says so yet,
+      //    which is exactly the state this issue reports.
+      await vi.advanceTimersByTimeAsync(POLL_FOCUSED_MS);
+      expect(fake.callsFor("get_watcher_activity")).toHaveLength(2);
+      expect(errorBanner(rendered.root)).toBeNull();
+
+      // 3. The deadline was armed when round 2 was ISSUED, so it expires at
+      //    POLL_FOCUSED_MS + POLL_TIMEOUT_MS, which is where this lands. That arithmetic holds
+      //    for any positive timeout: while round 2 is pending, the chained design has no next
+      //    poll timer armed at all. It does not depend on 8s being under 10s.
+      await vi.advanceTimersByTimeAsync(POLL_TIMEOUT_MS);
+      expect(errorBanner(rendered.root)?.textContent).toBe(POLL_TIMEOUT_MESSAGE);
+      expect(fake.callsFor("get_watcher_activity")).toHaveLength(2);
+
+      // 4. And the chain survived it. On `f08b8241` the test never reaches this line: it
+      //    fails at step 3 on the absent banner.
+      await vi.advanceTimersByTimeAsync(POLL_FOCUSED_MS);
+      expect(fake.callsFor("get_watcher_activity")).toHaveLength(3);
+
+      // 5. A good round leaves no trace of the bad one.
+      await flushMount();
+      expect(errorBanner(rendered.root)).toBeNull();
+    } finally {
+      rendered.cleanup();
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("keeps the rows it already has while a round is timing out (T2)", async () => {
+    const snap = snapshot({ matches: [match()] });
+    const fake = transportWithSecondRound(snap, () => new Promise<never>(() => {}));
+    const rendered = renderWithFakeClock(fake);
+    try {
+      await flushMount();
+      expect(fake.callsFor("get_watcher_activity")).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(POLL_FOCUSED_MS);
+      await vi.advanceTimersByTimeAsync(POLL_TIMEOUT_MS);
+      expect(errorBanner(rendered.root)?.textContent).toBe(POLL_TIMEOUT_MESSAGE);
+
+      // The banner says the list MAY be out of date, so blanking the table would destroy
+      // information the user still wants. Guards against a future "clear on error".
+      expect(
+        rendered.root.querySelector('[data-ac-testid="watchers.row.s1:1"]')
+      ).toBeTruthy();
+    } finally {
+      rendered.cleanup();
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("cannot paint a round that was abandoned at the deadline (T3)", async () => {
+    const snap = snapshot({ matches: [match()] });
+    const late = deferred<WatcherActivitySnapshot>();
+    const fake = transportWithSecondRound(snap, () => late.promise);
+    const rendered = renderWithFakeClock(fake);
+    try {
+      await flushMount();
+      expect(fake.callsFor("get_watcher_activity")).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(POLL_FOCUSED_MS);
+      await vi.advanceTimersByTimeAsync(POLL_TIMEOUT_MS);
+      expect(errorBanner(rendered.root)?.textContent).toBe(POLL_TIMEOUT_MESSAGE);
+
+      // The ordering IS the test. Resolve while round 2 is still the newest request, so
+      // `requestCounter` cannot supply the answer: a later round would have advanced it and
+      // the commit guard would discard this response even if the continuation wrongly resumed.
+      // With the counter unmoved, the only thing left standing between this snapshot and the
+      // table is that `refresh()`'s await already threw at the deadline.
+      late.resolve(snapshot({ matches: [match({ seq: 999 })] }));
+      await flushMount();
+      expect(rendered.root.querySelector('[data-ac-testid="watchers.row.s1:999"]')).toBeNull();
+
+      // And the chain recovered regardless.
+      await vi.advanceTimersByTimeAsync(POLL_FOCUSED_MS);
+      expect(fake.callsFor("get_watcher_activity")).toHaveLength(3);
+    } finally {
+      rendered.cleanup();
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  });
+
+  /**
+   * A fixation test, not a regression one: a REJECTED round already re-armed on `f08b8241`,
+   * because `refresh()` catches the rejection itself and therefore fulfils, so the old
+   * `.then()` ran. Expect it to pass against the baseline. Its job is to pin that behaviour so
+   * the move from `.then()` to `finally` demonstrably does not lose it.
+   */
+  it("re-arms after a round the backend rejects, and shows its message (T6)", async () => {
+    const snap = snapshot({ matches: [match()] });
+    const fake = transportWithSecondRound(snap, () => {
+      throw new Error("the ring buffer is gone");
+    });
+    const rendered = renderWithFakeClock(fake);
+    try {
+      await flushMount();
+      expect(fake.callsFor("get_watcher_activity")).toHaveLength(1);
+      expect(errorBanner(rendered.root)).toBeNull();
+
+      await vi.advanceTimersByTimeAsync(POLL_FOCUSED_MS);
+      await flushMount();
+      expect(fake.callsFor("get_watcher_activity")).toHaveLength(2);
+      expect(errorBanner(rendered.root)?.textContent).toBe("the ring buffer is gone");
+
+      await vi.advanceTimersByTimeAsync(POLL_FOCUSED_MS);
+      expect(fake.callsFor("get_watcher_activity")).toHaveLength(3);
+    } finally {
+      rendered.cleanup();
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
   });
 });
