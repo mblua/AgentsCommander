@@ -2311,6 +2311,37 @@ function selfTest(out) {
     assertSelf(!hasCode(report, 'W-YAML-UNDECIDABLE'), '`|2` stays inside the subset');
     assertSelf(report.findings.length === 0, 'and resolves to a non-empty string');
   });
+  run('42h', () => {
+    // The negative half of the quoted-key branch. Allowing whitespace between a quoted
+    // key and its `:` widened what that branch accepts, so this pins the boundary from
+    // the other side: a quoted scalar at column 0 that is NOT a mapping key must never
+    // become one. Each body is a single line, so the root really is a scalar and 6.5.3
+    // row 4 fires; `findings.length === 1` also proves the certain error is terminal and
+    // no W-YAML-UNDECIDABLE leaks past it.
+    const notKeys = [
+      "'just a quoted doc'",
+      "'quoted' trailing text",
+      "'quoted'   ",
+      "'quoted' # comment",
+      "'a' 'b': c",
+      '"double quoted doc"',
+    ];
+    for (const body of notKeys) {
+      const inner = tempRoot();
+      try {
+        writeFixture(inner, '_agent_x/skills/x/SKILL.md', `---\n${body}\n---\n`);
+        const report = runCheck(inner);
+        assertSelf(
+          hasCode(report, 'E-YAML-NOT-MAPPING'),
+          `\`${body}\` must not become a mapping key`,
+        );
+        assertSelf(report.exitCode === 1, `\`${body}\` must fail the run`);
+        assertSelf(report.findings.length === 1, `\`${body}\` must yield exactly one finding`);
+      } finally {
+        removeRoot(inner);
+      }
+    }
+  });
   run('43', (root) => {
     const report = fm(root, '---\nname: ok-name\nnested:\n  a: 1\ndescription: x\n---\n');
     assertSelf(hasCode(report, 'W-YAML-UNDECIDABLE'), 'a nested mapping is undecidable');
@@ -2349,6 +2380,20 @@ function selfTest(out) {
       } finally {
         removeRoot(inner);
       }
+    }
+    // The line the strip must not cross. A space INSIDE the quotes is part of the key, so
+    // `'name '` is a different key from `name` and the two must not merge. The folder is
+    // deliberately invalid: if `name` had been mis-resolved, the fallback would fire and
+    // this would exit 1 on E-NAME-INVALID instead of staying clean.
+    const distinct = tempRoot();
+    try {
+      writeFixture(distinct, '_agent_x/skills/Bad_Folder/SKILL.md', "---\nname: ok-name\n'name ': other\ndescription: x\n---\n");
+      const report = runCheck(distinct);
+      assertSelf(!hasCode(report, 'E-YAML-DUPLICATE-KEY'), "`'name '` and `name` are two distinct keys");
+      assertSelf(!hasCode(report, 'E-NAME-INVALID'), '`name` still resolves through the key, not the folder');
+      assertSelf(report.findings.length === 0, 'and the file is otherwise clean');
+    } finally {
+      removeRoot(distinct);
     }
   });
   run('46d', (root) => {
