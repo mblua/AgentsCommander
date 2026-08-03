@@ -1817,12 +1817,17 @@ fn snapshot_child_name<'a>(
     Ok(SnapshotChildName(name))
 }
 
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn unsupported_snapshot_output_error() -> std::io::Error {
+    std::io::Error::from(std::io::ErrorKind::Unsupported)
+}
+
 fn create_snapshot_leaf_in_parent(
     parent: &SnapshotDirectoryProof,
     path: &std::path::Path,
 ) -> std::io::Result<std::fs::File> {
     let name = snapshot_child_name(parent, path)?;
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         return open_snapshot_leaf_at(
             parent,
@@ -1830,6 +1835,11 @@ fn create_snapshot_leaf_in_parent(
             libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
             0o600,
         );
+    }
+    #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+    {
+        let _ = (parent, name);
+        Err(unsupported_snapshot_output_error())
     }
     #[cfg(not(unix))]
     {
@@ -1854,7 +1864,7 @@ fn open_snapshot_leaf_in_parent(
     path: &std::path::Path,
 ) -> std::io::Result<std::fs::File> {
     let name = snapshot_child_name(parent, path)?;
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         open_snapshot_leaf_at(
             parent,
@@ -1863,13 +1873,18 @@ fn open_snapshot_leaf_in_parent(
             0,
         )
     }
+    #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+    {
+        let _ = (parent, name);
+        Err(unsupported_snapshot_output_error())
+    }
     #[cfg(not(unix))]
     {
         open_snapshot_leaf(&parent.path.join(name.as_os_str()))
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn open_snapshot_leaf_at(
     parent: &SnapshotDirectoryProof,
     name: &SnapshotChildName<'_>,
@@ -3280,4 +3295,13 @@ mod tests {
             }
         }
     }
+}
+
+#[cfg(all(test, unix, not(any(target_os = "linux", target_os = "macos"))))]
+#[test]
+fn terminal_snapshot_output_is_stably_unsupported_on_other_unix() {
+    assert_eq!(
+        unsupported_snapshot_output_error().kind(),
+        std::io::ErrorKind::Unsupported
+    );
 }

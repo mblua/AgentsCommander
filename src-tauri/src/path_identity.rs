@@ -443,28 +443,21 @@ impl RetainedDirectory {
         }
         self.verify_current()
             .map_err(|_| "atomic_publish_failed".to_string())?;
-        #[cfg(any(target_os = "linux", target_os = "android"))]
+        #[cfg(target_os = "linux")]
         {
+            const RENAME_NOREPLACE: libc::c_uint = libc::RENAME_NOREPLACE;
             let source = self.unix_child_cstring(source)?;
             let destination = self.unix_child_cstring(destination)?;
-            unsafe extern "C" {
-                fn renameat2(
-                    old_dir_fd: i32,
-                    old_path: *const std::ffi::c_char,
-                    new_dir_fd: i32,
-                    new_path: *const std::ffi::c_char,
-                    flags: u32,
-                ) -> i32;
-            }
             use std::os::fd::AsRawFd;
             let directory = self.handle.as_raw_fd();
             let result = unsafe {
-                renameat2(
+                libc::syscall(
+                    libc::SYS_renameat2,
                     directory,
                     source.as_ptr(),
                     directory,
                     destination.as_ptr(),
-                    1,
+                    RENAME_NOREPLACE,
                 )
             };
             return if result == 0 {
@@ -473,8 +466,9 @@ impl RetainedDirectory {
                 Err("atomic_publish_failed".to_string())
             };
         }
-        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        #[cfg(target_os = "macos")]
         {
+            const RENAME_EXCL: libc::c_uint = libc::RENAME_EXCL;
             let source = self.unix_child_cstring(source)?;
             let destination = self.unix_child_cstring(destination)?;
             unsafe extern "C" {
@@ -494,7 +488,7 @@ impl RetainedDirectory {
                     source.as_ptr(),
                     directory,
                     destination.as_ptr(),
-                    0x0000_0004,
+                    RENAME_EXCL,
                 )
             };
             return if result == 0 {
@@ -507,13 +501,7 @@ impl RetainedDirectory {
         {
             publish_new_file_atomic(source, destination)
         }
-        #[cfg(not(any(
-            windows,
-            target_os = "linux",
-            target_os = "android",
-            target_os = "macos",
-            target_os = "ios"
-        )))]
+        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
         {
             let _ = (source, destination);
             Err("atomic_publish_unsupported".to_string())
@@ -603,29 +591,23 @@ impl RetainedDirectory {
         use std::os::fd::AsRawFd;
         let directory = self.handle.as_raw_fd();
 
-        #[cfg(any(target_os = "linux", target_os = "android"))]
+        #[cfg(target_os = "linux")]
         {
-            unsafe extern "C" {
-                fn renameat2(
-                    old_dir_fd: i32,
-                    old_path: *const std::ffi::c_char,
-                    new_dir_fd: i32,
-                    new_path: *const std::ffi::c_char,
-                    flags: u32,
-                ) -> i32;
-            }
+            const RENAME_NOREPLACE: libc::c_uint = libc::RENAME_NOREPLACE;
             return unsafe {
-                renameat2(
+                libc::syscall(
+                    libc::SYS_renameat2,
                     directory,
                     source.as_ptr(),
                     directory,
                     destination.as_ptr(),
-                    1,
+                    RENAME_NOREPLACE,
                 ) == 0
             };
         }
-        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        #[cfg(target_os = "macos")]
         {
+            const RENAME_EXCL: libc::c_uint = libc::RENAME_EXCL;
             unsafe extern "C" {
                 fn renameatx_np(
                     old_dir_fd: i32,
@@ -641,16 +623,11 @@ impl RetainedDirectory {
                     source.as_ptr(),
                     directory,
                     destination.as_ptr(),
-                    0x0000_0004,
+                    RENAME_EXCL,
                 ) == 0
             };
         }
-        #[cfg(not(any(
-            target_os = "linux",
-            target_os = "android",
-            target_os = "macos",
-            target_os = "ios"
-        )))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             let _ = (directory, source, destination);
             false
@@ -1263,28 +1240,20 @@ pub fn publish_new_file_atomic(source: &Path, destination: &Path) -> Result<(), 
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(target_os = "linux")]
 pub fn publish_new_file_atomic(source: &Path, destination: &Path) -> Result<(), String> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
 
-    unsafe extern "C" {
-        fn renameat2(
-            old_dir_fd: i32,
-            old_path: *const std::ffi::c_char,
-            new_dir_fd: i32,
-            new_path: *const std::ffi::c_char,
-            flags: u32,
-        ) -> i32;
-    }
-    const AT_FDCWD: i32 = -100;
-    const RENAME_NOREPLACE: u32 = 1;
+    const AT_FDCWD: libc::c_int = libc::AT_FDCWD;
+    const RENAME_NOREPLACE: libc::c_uint = libc::RENAME_NOREPLACE;
     let source = CString::new(source.as_os_str().as_bytes())
         .map_err(|_| "atomic_publish_failed".to_string())?;
     let destination = CString::new(destination.as_os_str().as_bytes())
         .map_err(|_| "atomic_publish_failed".to_string())?;
     let result = unsafe {
-        renameat2(
+        libc::syscall(
+            libc::SYS_renameat2,
             AT_FDCWD,
             source.as_ptr(),
             AT_FDCWD,
@@ -1299,7 +1268,7 @@ pub fn publish_new_file_atomic(source: &Path, destination: &Path) -> Result<(), 
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(target_os = "macos")]
 pub fn publish_new_file_atomic(source: &Path, destination: &Path) -> Result<(), String> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
@@ -1311,7 +1280,7 @@ pub fn publish_new_file_atomic(source: &Path, destination: &Path) -> Result<(), 
             flags: u32,
         ) -> i32;
     }
-    const RENAME_EXCL: u32 = 0x0000_0004;
+    const RENAME_EXCL: libc::c_uint = libc::RENAME_EXCL;
     let source = CString::new(source.as_os_str().as_bytes())
         .map_err(|_| "atomic_publish_failed".to_string())?;
     let destination = CString::new(destination.as_os_str().as_bytes())
@@ -1324,13 +1293,7 @@ pub fn publish_new_file_atomic(source: &Path, destination: &Path) -> Result<(), 
     }
 }
 
-#[cfg(not(any(
-    windows,
-    target_os = "linux",
-    target_os = "android",
-    target_os = "macos",
-    target_os = "ios"
-)))]
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 pub fn publish_new_file_atomic(_source: &Path, _destination: &Path) -> Result<(), String> {
     Err("atomic_publish_unsupported".to_string())
 }
@@ -2713,4 +2676,51 @@ mod tests {
             validate_terminal_snapshot_output_path(&directory.path().join("wrong.txt")).is_err()
         );
     }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+#[test]
+fn terminal_snapshot_atomic_publish_preserves_collision_missing_source_and_raw_names() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory
+        .path()
+        .join(OsString::from_vec(b"source-\xff".to_vec()));
+    let destination = directory
+        .path()
+        .join(OsString::from_vec(b"destination-\xfe".to_vec()));
+    std::fs::write(&source, b"source bytes").unwrap();
+    std::fs::write(&destination, b"destination bytes").unwrap();
+
+    assert_eq!(
+        publish_new_file_atomic(&source, &destination),
+        Err("atomic_publish_failed".to_string())
+    );
+    assert_eq!(std::fs::read(&source).unwrap(), b"source bytes");
+    assert_eq!(std::fs::read(&destination).unwrap(), b"destination bytes");
+
+    std::fs::remove_file(&destination).unwrap();
+    assert_eq!(publish_new_file_atomic(&source, &destination), Ok(()));
+    assert!(!source.exists());
+    assert_eq!(std::fs::read(&destination).unwrap(), b"source bytes");
+
+    let missing_source = directory.path().join("missing-source");
+    let missing_destination = directory.path().join("missing-destination");
+    assert_eq!(
+        publish_new_file_atomic(&missing_source, &missing_destination),
+        Err("atomic_publish_failed".to_string())
+    );
+    assert!(!missing_destination.exists());
+}
+
+#[cfg(all(test, unix, not(any(target_os = "linux", target_os = "macos"))))]
+#[test]
+fn terminal_snapshot_atomic_publish_is_stably_unsupported_on_other_unix() {
+    let result = publish_new_file_atomic(
+        std::path::Path::new("source"),
+        std::path::Path::new("destination"),
+    );
+    assert_eq!(result, Err("atomic_publish_unsupported".to_string()));
 }
