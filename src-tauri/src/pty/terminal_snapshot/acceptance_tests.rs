@@ -393,15 +393,20 @@ impl AcceptanceFixture {
         let token_manager = crate::pty::container_tokens::ContainerApiTokenManager::new_for_path(
             registry_path.clone(),
         );
-        let api_coordinator_token = token_manager
-            .mint_for_session(
-                api_coordinator.id,
-                paths.coordinator.to_string_lossy().as_ref(),
-            )
-            .expect("coordinator API token");
-        let api_worker_token = token_manager
-            .mint_for_session(api_worker.id, paths.worker.to_string_lossy().as_ref())
-            .expect("worker API token");
+        let api_coordinator_token = mint_fixture_token(
+            &token_manager,
+            api_coordinator.id,
+            paths.coordinator.to_string_lossy().as_ref(),
+            "coordinator",
+        )
+        .await;
+        let api_worker_token = mint_fixture_token(
+            &token_manager,
+            api_worker.id,
+            paths.worker.to_string_lossy().as_ref(),
+            "worker",
+        )
+        .await;
         let coordinator_binding = binding_for(
             &api_coordinator_token,
             &crate::path_identity::verify_directory(&paths.coordinator)
@@ -536,6 +541,39 @@ async fn create_session(
         )
         .await
         .expect("fixture session")
+}
+
+const FIXTURE_MINT_ATTEMPTS: u32 = 6;
+const FIXTURE_MINT_RETRY_DELAY: Duration = Duration::from_millis(25);
+
+/// Mint a fixture API token, absorbing a transient registry write failure.
+///
+/// `auth::write_registry` carries no retry of its own, so on Windows every mint
+/// after the first replaces an existing registry through `ReplaceFileW` and a
+/// single transient failure there is terminal. That primitive is pre-existing
+/// and out of scope here, but treating it as infallible made the fixture panic
+/// during construction, before any snapshot request was issued. A fixture that
+/// cannot construct itself is not evidence of anything, so retry a small fixed
+/// number of times and name the underlying error if every attempt fails.
+async fn mint_fixture_token(
+    token_manager: &crate::pty::container_tokens::ContainerApiTokenManager,
+    session_id: Uuid,
+    bound_root: &str,
+    label: &str,
+) -> crate::pty::container_tokens::ContainerApiToken {
+    let mut last_error = String::new();
+    for attempt in 1..=FIXTURE_MINT_ATTEMPTS {
+        match token_manager.mint_for_session(session_id, bound_root) {
+            Ok(token) => return token,
+            Err(error) => {
+                last_error = error.to_string();
+                if attempt < FIXTURE_MINT_ATTEMPTS {
+                    tokio::time::sleep(FIXTURE_MINT_RETRY_DELAY * attempt).await;
+                }
+            }
+        }
+    }
+    panic!("{label} API token failed {FIXTURE_MINT_ATTEMPTS} attempts: {last_error}");
 }
 
 fn binding_for(
