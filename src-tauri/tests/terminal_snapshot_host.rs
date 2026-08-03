@@ -653,6 +653,86 @@ fn terminal_snapshot_host_process_surfaces_every_fixed_server_failure() {
     scan_regular_files(&layout.bundle, &[layout.binary.as_path()], &dynamic_refs);
 }
 
+// Targeted harness for the closed-stdout PNG sub-case, the one that
+// intermittently reported `response_unavailable` where the contract says
+// `output_failed`. The event is rare enough (measured 0.107%) that the full gate
+// is a useless instrument for it: seeing zero failures in a few dozen gate runs
+// says nothing. This drives thousands of iterations of only that sub-case
+// instead, and pairs with AC_TERMINAL_SNAPSHOT_STAGE_FILE to record which stage
+// produced whatever code was emitted.
+//
+// Inert unless AC_D2_ITERATIONS is set, so it costs a normal run nothing.
+// `assert_fixed_failure` stays byte-for-byte strict; it is only wrapped so one
+// recurrence does not truncate the sample before it is complete.
+#[test]
+fn d2_targeted_closed_stdout_harness() {
+    let Ok(iterations) = std::env::var("AC_D2_ITERATIONS") else {
+        return;
+    };
+    let iterations: usize = iterations.parse().expect("AC_D2_ITERATIONS must be a count");
+    let _guard = host_process_guard();
+    let temporary = TempDirectory::new();
+    let layout = HostLayout::new(&temporary);
+    let output_parent = layout.bundle.join("d2-harness-outputs");
+    std::fs::create_dir(&output_parent).unwrap();
+    let expected_png = render_png(&host_model()).unwrap().bytes;
+
+    let mut mismatches: Vec<String> = Vec::new();
+    for iteration in 0..iterations {
+        let path = output_parent.join(format!("d2-{iteration}.png"));
+        let responder = spawn_responder(&layout, host_success_response);
+        let output =
+            run_host_with_closed_stdout(&layout, TerminalSnapshotFormat::Png, Some(&path), 5);
+        // The responder panics if the client never published a request. Record
+        // that instead of ending the run, so one recurrence does not truncate
+        // the sample.
+        if responder.join().is_err() {
+            mismatches.push(format!("iteration={iteration} responder-saw-no-request"));
+        }
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            assert_fixed_failure(&output, "output_failed");
+        }))
+        .is_err()
+        {
+            mismatches.push(format!(
+                "iteration={iteration} stderr={:?}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        match std::fs::read(&path) {
+            Ok(bytes) if bytes == expected_png => {}
+            other => mismatches.push(format!(
+                "iteration={iteration} png-not-complete ok={}",
+                other.is_ok()
+            )),
+        }
+        let _ = std::fs::remove_file(&path);
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            assert_empty_protocol_directories(&layout);
+        }))
+        .is_err()
+        {
+            mismatches.push(format!("iteration={iteration} protocol-directories-dirty"));
+            for directory in [&layout.request_directory, &layout.response_directory] {
+                if let Ok(entries) = std::fs::read_dir(directory) {
+                    for entry in entries.filter_map(Result::ok) {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "D2HARNESS iterations={iterations} mismatches={}",
+        mismatches.len()
+    );
+    assert!(
+        mismatches.is_empty(),
+        "D2 recurred in {} of {iterations} iterations: {mismatches:?}",
+        mismatches.len()
+    );
+}
+
 #[test]
 fn terminal_snapshot_host_process_transport_deadline_collision_and_output_failure_are_safe() {
     let _guard = host_process_guard();
