@@ -72,7 +72,7 @@ jobs:
         with:
           workspaces: '. -> target'
           shared-key: 'gate-debug'
-          env-vars: 'ImageOS ImageVersion'
+          env-vars: 'ImageOS'
           save-if: 'false'
 
       - name: cargo check
@@ -117,7 +117,7 @@ jobs:
         with:
           workspaces: '. -> target'
           shared-key: 'gate-release'
-          env-vars: 'ImageOS ImageVersion'
+          env-vars: 'ImageOS'
           save-if: 'false'
 
       - name: Build Windows release binary

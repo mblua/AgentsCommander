@@ -52,7 +52,7 @@ jobs:
         with:
           workspaces: '. -> target'
           shared-key: 'gate-debug'
-          env-vars: 'ImageOS ImageVersion'
+          env-vars: 'ImageOS'
 
       - name: cargo check
         if: steps.cache.outputs.cache-hit != 'true'
@@ -101,7 +101,7 @@ jobs:
         with:
           workspaces: '. -> target'
           shared-key: 'gate-release'
-          env-vars: 'ImageOS ImageVersion'
+          env-vars: 'ImageOS'
 
       - name: Build Windows release binary
         if: steps.cache.outputs.cache-hit != 'true'
@@ -125,7 +125,7 @@ jobs:
         with:
           workspaces: '. -> target'
           shared-key: 'gate-debug'
-          env-vars: 'ImageOS ImageVersion'
+          env-vars: 'ImageOS'
           save-if: 'false'
           lookup-only: 'true'
 
@@ -153,7 +153,7 @@ jobs:
         with:
           workspaces: '. -> target'
           shared-key: 'gate-release'
-          env-vars: 'ImageOS ImageVersion'
+          env-vars: 'ImageOS'
           save-if: 'false'
           lookup-only: 'true'
 
