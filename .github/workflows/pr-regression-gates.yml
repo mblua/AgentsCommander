@@ -70,7 +70,10 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri -> target
+          workspaces: '. -> target'
+          shared-key: 'gate-debug'
+          env-vars: 'ImageOS ImageVersion'
+          save-if: 'false'
 
       - name: cargo check
         working-directory: src-tauri
@@ -112,10 +115,13 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri -> target
+          workspaces: '. -> target'
+          shared-key: 'gate-release'
+          env-vars: 'ImageOS ImageVersion'
+          save-if: 'false'
 
       - name: Build Windows release binary
-        run: npm run build:prod
+        run: npm run build:prod:no-bundle
 
       - name: Run Windows release CLI smoke
         run: npm run smoke:cli-release-windows

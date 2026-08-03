@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "build:prod": "cross-env BUILD_PROFILE=prod tauri build --config src-tauri/tauri.prod.conf.json && node scripts/copy-testable-binary.mjs",
+    "build:prod:no-bundle": "cross-env BUILD_PROFILE=prod tauri build --no-bundle --config src-tauri/tauri.prod.conf.json && node scripts/copy-testable-binary.mjs",
     "build:testable": "node scripts/copy-testable-binary.mjs",
     "build:stage": "cross-env BUILD_PROFILE=stage tauri build --config src-tauri/tauri.stage.conf.json",
     "kill-dev": "powershell.exe -ExecutionPolicy Bypass -File ./scripts/kill-dev.ps1",

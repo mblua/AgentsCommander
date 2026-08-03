@@ -24,3 +24,5 @@ AGENTS.md
 
 # npm wrapper downloaded binaries
 npm/bin/
+
+artifacts/
