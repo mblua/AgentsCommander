@@ -2959,25 +2959,26 @@ mod tests {
         let unrelated_after_write = unrelated.clone();
         let unrelated_after_sync = unrelated.clone();
         let parent_after_write = root.clone();
-        let parent_after_sync = parent_after_write.clone();
-        let initial_links = std::fs::metadata(&root).unwrap().nlink();
         let file = create_snapshot_output(&output).unwrap();
 
         file.write_and_verify_inner(
             b"portable bytes",
             move || {
+                // Directory link accounting is platform-specific. Linux counts only
+                // subdirectories, so a parent returns to its earlier count once a child
+                // directory is removed; macOS does not follow that convention. The churn
+                // this fixture needs is proven by the count moving, not by any fixed
+                // arithmetic, and the removal is proven by the entry being gone below.
+                let before_churn = std::fs::metadata(&parent_after_write).unwrap().nlink();
                 std::fs::create_dir(&unrelated_after_write).unwrap();
+                let during_churn = std::fs::metadata(&parent_after_write).unwrap().nlink();
                 assert_ne!(
-                    std::fs::metadata(&parent_after_write).unwrap().nlink(),
-                    initial_links
+                    during_churn, before_churn,
+                    "a sibling directory left the parent link count unchanged"
                 );
             },
             move || {
                 std::fs::remove_dir(&unrelated_after_sync).unwrap();
-                assert_eq!(
-                    std::fs::metadata(&parent_after_sync).unwrap().nlink(),
-                    initial_links
-                );
             },
         )
         .unwrap();
