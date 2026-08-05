@@ -1,5 +1,5 @@
 
-import { Component, createSignal, onMount, onCleanup, createResource } from "solid-js";
+import { Component, createSignal, createResource } from "solid-js";
 import { specBoardStore, setSpecBoardStore } from "../stores/spec-board";
 import { SessionAPI, PtyAPI } from "../../shared/ipc";
 import { Session } from "../../shared/types";

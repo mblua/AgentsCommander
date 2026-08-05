@@ -828,7 +828,6 @@ pub(crate) enum TeamConfigReadError {
 
 impl TeamConfigReadError {
     // Consumed by the Phase 2 runtime; Phase 1 pins the stable classification contract.
-    #[allow(dead_code)]
     pub(crate) fn class(&self) -> &'static str {
         match self {
             Self::NotFound { .. } => "not_found",
@@ -890,17 +889,6 @@ fn normalized_team_config_bytes(
     let normalized = normalize_team_config_for_project(workspace_dir, config)?;
     serde_json::to_vec_pretty(&normalized)
         .map_err(|e| format!("Failed to serialize config.json: {}", e))
-}
-
-// Standalone synchronous wrapper for non-compound callers and focused writer tests.
-#[allow(dead_code)]
-pub(crate) fn write_team_config(
-    workspace_dir: &Path,
-    team_name: &str,
-    config: &TeamConfigResult,
-) -> Result<PathBuf, String> {
-    let guard = TeamConfigMutationGuard::acquire(workspace_dir)?;
-    write_team_config_guarded(workspace_dir, team_name, config, &guard)
 }
 
 pub(crate) fn write_team_config_guarded(
@@ -3673,39 +3661,6 @@ async fn sync_workgroup_repos_inner(
     Ok(result)
 }
 
-/// Sync repo assignments and context tokens from team config to all existing workgroup replicas.
-#[tauri::command]
-pub async fn sync_workgroup_repos(
-    app: AppHandle,
-    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
-    git_watcher: State<'_, Arc<GitWatcher>>,
-    discovery_watcher: State<'_, Arc<DiscoveryBranchWatcher>>,
-    project_path: String,
-    team_name: String,
-) -> Result<SyncResult, String> {
-    validate_existing_name(&team_name, "Team")?;
-
-    let base = selected_workspace_dir(Path::new(&project_path))?;
-
-    let team_dir = base.join(format!("_team_{}", team_name));
-    if !team_dir.exists() {
-        return Err(format!("Team '{}' not found", team_name));
-    }
-
-    let repos = read_team_config(&base, &team_name)?.repos;
-
-    sync_workgroup_repos_inner(
-        &base,
-        &team_name,
-        &repos,
-        session_mgr.inner(),
-        git_watcher.inner(),
-        discovery_watcher.inner(),
-        &app,
-    )
-    .await
-}
-
 /// Refresh `is_coordinator` on every live session and emit `session_coordinator_changed`
 /// for those whose flag flipped. Called by team-CRUD commands (§2).
 pub(crate) async fn emit_coordinator_refresh(
@@ -4386,8 +4341,6 @@ async fn git_clone_async(url: &str, target: &Path) -> Result<(), String> {
 
     #[cfg(windows)]
     {
-        #[allow(unused_imports)]
-        use std::os::windows::process::CommandExt;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
@@ -4424,8 +4377,6 @@ async fn git_clone_async(url: &str, target: &Path) -> Result<(), String> {
         reset_cmd.kill_on_drop(true);
         #[cfg(windows)]
         {
-            #[allow(unused_imports)]
-            use std::os::windows::process::CommandExt;
             reset_cmd.creation_flags(CREATE_NO_WINDOW);
         }
         match tokio::time::timeout(GIT_RESET_TIMEOUT, reset_cmd.output()).await {
@@ -4476,6 +4427,17 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering as TestOrdering};
+
+    // Test-only synchronous wrapper: acquires the mutation guard around
+    // write_team_config_guarded.
+    pub(crate) fn write_team_config(
+        workspace_dir: &Path,
+        team_name: &str,
+        config: &TeamConfigResult,
+    ) -> Result<PathBuf, String> {
+        let guard = TeamConfigMutationGuard::acquire(workspace_dir)?;
+        write_team_config_guarded(workspace_dir, team_name, config, &guard)
+    }
 
     #[test]
     #[cfg(windows)]

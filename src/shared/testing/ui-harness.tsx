@@ -387,3 +387,159 @@ export function installBrowserDomStubs(): () => void {
     HTMLCanvasElement.prototype.getContext = previousCanvasGetContext;
   };
 }
+
+interface PendingAnimationFrame {
+  handle: number;
+  callback: FrameRequestCallback;
+  cancelled: boolean;
+}
+
+export interface DeterministicAnimationFrames {
+  /** Runs exactly one frame: the callbacks queued right now, and nothing they
+   *  queue in turn. Returns whether any callback actually ran, so a caller can
+   *  drive frames until an observable appears without guessing a count. A
+   *  session switch landing between the two frames of a double
+   *  `requestAnimationFrame` cannot be expressed without this. */
+  flushFrame: () => Promise<boolean>;
+  /** Runs frames until none is left queued. Drains a nested double rAF. */
+  flush: () => Promise<void>;
+  restore: () => void;
+}
+
+/** Ceiling for any loop that drives frames, so an invariant violation fails
+ *  bounded instead of hanging. Exported so a caller driving `flushFrame()`
+ *  itself uses the same bound rather than inventing one. */
+export const MAX_ANIMATION_FRAME_PASSES = 50;
+const ANIMATION_FRAME_INTERVAL_MS = 16;
+
+/**
+ * Replaces `requestAnimationFrame` with a queue the test drains itself.
+ *
+ * Opt-in: `installBrowserDomStubs` does not call it and no existing caller
+ * changes. Install it AFTER the browser stubs so it is restored BEFORE them —
+ * their cleanup reinstalls whatever `requestAnimationFrame` is current, so
+ * tearing them down first would leak this one globally.
+ *
+ * A drained queue means the animation-frame queue is empty. It is NOT viewport
+ * quiescence: the 120/240/360 ms `pty_resize` retries and the 500 ms snapshot
+ * settle timer are unaffected and still need `waitFor`. And a drained queue is
+ * not proof that work happened — a callback that returns at a guard is consumed
+ * and does nothing, so a test that needs the work must flush where the guard
+ * still passes, or assert the observable result.
+ */
+export function installDeterministicAnimationFrames(): DeterministicAnimationFrames {
+  const previousRequestAnimationFrame = globalThis.requestAnimationFrame;
+  const previousCancelAnimationFrame = globalThis.cancelAnimationFrame;
+
+  let queued: PendingAnimationFrame[] = [];
+  let running: PendingAnimationFrame[] = [];
+  let nextHandle = 1;
+  let timestamp = 0;
+
+  const define = (name: string, value: unknown): void => {
+    Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+  };
+
+  const restore = (): void => {
+    queued = [];
+    running = [];
+    define("requestAnimationFrame", previousRequestAnimationFrame);
+    define("cancelAnimationFrame", previousCancelAnimationFrame);
+  };
+
+  const requestFrame = (callback: FrameRequestCallback): number => {
+    const handle = nextHandle;
+    nextHandle += 1;
+    queued.push({ handle, callback, cancelled: false });
+    return handle;
+  };
+
+  // Cancelling has to reach the batch currently being invoked as well: if the
+  // first callback of a frame cancels the second, the second must not run.
+  const cancelFrame = (handle: number): void => {
+    for (const frame of queued) {
+      if (frame.handle === handle) frame.cancelled = true;
+    }
+    for (const frame of running) {
+      if (frame.handle === handle) frame.cancelled = true;
+    }
+  };
+
+  const flushFrame = async (): Promise<boolean> => {
+    running = queued;
+    queued = [];
+
+    // One shared timestamp per frame, as a browser gives every callback in a
+    // frame; a per-callback step models no real scheduler.
+    const frameTimestamp = timestamp;
+    timestamp += ANIMATION_FRAME_INTERVAL_MS;
+
+    let ran = false;
+    try {
+      for (const frame of running) {
+        if (frame.cancelled) continue;
+        ran = true;
+        frame.callback(frameTimestamp);
+      }
+    } finally {
+      running = [];
+    }
+
+    // Yield to both queues so the promises the callbacks started — transport
+    // calls in particular — have resolved before the caller asserts.
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    return ran;
+  };
+
+  const flush = async (): Promise<void> => {
+    for (let pass = 0; pass < MAX_ANIMATION_FRAME_PASSES; pass += 1) {
+      await flushFrame();
+      if (queued.length === 0) return;
+    }
+
+    throw new Error(
+      `installDeterministicAnimationFrames: flush() did not settle in ` +
+        `${MAX_ANIMATION_FRAME_PASSES} passes, ${queued.length} frame(s) still queued`
+    );
+  };
+
+  // Cleanup after a failed install, per property and best effort. `restore()`
+  // stops at its first failing `define`, which on a partial install would leave
+  // the other global in place; each property is attempted on its own here so
+  // whatever can be undone is undone.
+  const restoreAfterFailedInstall = (): void => {
+    queued = [];
+    running = [];
+
+    for (const [name, previous] of [
+      ["requestAnimationFrame", previousRequestAnimationFrame],
+      ["cancelAnimationFrame", previousCancelAnimationFrame],
+    ] as const) {
+      try {
+        define(name, previous);
+      } catch {
+        // Swallowed on purpose: a cleanup failure must not become the reported
+        // cause. See the rethrow below.
+      }
+    }
+  };
+
+  try {
+    define("requestAnimationFrame", requestFrame);
+    define("cancelAnimationFrame", cancelFrame);
+  } catch (error) {
+    // 5.4: cleanup "must not mask an error thrown during install". The call is
+    // guarded as well as best effort, so `throw error` is reached even if this
+    // cleanup path is ever changed into one that can throw again.
+    try {
+      restoreAfterFailedInstall();
+    } catch {
+      // Swallowed on purpose: the install error is the one that must surface.
+    }
+    throw error;
+  }
+
+  return { flushFrame, flush, restore };
+}

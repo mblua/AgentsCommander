@@ -2034,7 +2034,10 @@ pub fn get_instance_label() -> String {
     crate::config::profile::instance_label().to_string()
 }
 
-async fn persist_narrow_settings_update(
+/// `pub(crate)` since #1171: `set_watchers_geometry` lives in `commands/window.rs` beside the
+/// window it belongs to, and must write its one field through this same candidate-save-publish
+/// path rather than a second one of its own.
+pub(crate) async fn persist_narrow_settings_update(
     settings: &SettingsState,
     mutate_candidate: impl FnOnce(&mut AppSettings),
 ) -> Result<(), String> {

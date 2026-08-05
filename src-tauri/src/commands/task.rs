@@ -171,25 +171,6 @@ fn emit_task_updated(
     );
 }
 
-/// Read TASK.md once and return both the trimmed full body and the parsed
-/// YAML `title:` value. Returning both from one read avoids torn results when
-/// an external writer races us between two reads. Caller emits both fields so
-/// the sidebar can update its title without waiting for the next 15s poll.
-#[allow(dead_code)]
-fn read_task_fields_at(wg_root: &Path) -> (Option<String>, Option<String>) {
-    let Ok(content) = std::fs::read_to_string(wg_root.join("TASK.md")) else {
-        return (None, None);
-    };
-    let task_title = crate::commands::entity_creation::parse_task_title(&content);
-    let trimmed = content.trim();
-    let task = if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    };
-    (task, task_title)
-}
-
 /// Read the current YAML-frontmatter `title:` value of the workgroup
 /// TASK.md for the given session. Returns `None` when there is no
 /// frontmatter or no `title:` line.
@@ -342,12 +323,33 @@ pub async fn task_clean_at(
 
 #[cfg(test)]
 mod tests {
-    //! Covers the helper that issue #301 turns on: read_task_fields_at must
-    //! return BOTH the trimmed body and the parsed YAML title from a single
-    //! read of TASK.md, so the immediate emit on save/clean carries the title
-    //! and the sidebar does not flicker until the next 15s poll.
-    use super::{read_task_fields_at, validate_wg_root};
+    //! Covers `cli::task_ops::perform` and `validate_wg_root` through the
+    //! local `read_task_fields_at` reader: a single read of TASK.md must
+    //! return BOTH the trimmed body and the parsed YAML `title:`. The reader
+    //! is test-only (#1177); #301 shipped without a production caller, and the
+    //! assertions it backs still cover the live save and clean paths.
+    use std::path::Path;
+
+    use super::validate_wg_root;
     use crate::cli::task_ops::{perform, EditOutcome, TaskOp};
+
+    /// Read TASK.md once and return both the trimmed full body and the parsed
+    /// YAML `title:` value. Returning both from one read avoids torn results when
+    /// an external writer races us between two reads. Caller emits both fields so
+    /// the sidebar can update its title without waiting for the next 15s poll.
+    fn read_task_fields_at(wg_root: &Path) -> (Option<String>, Option<String>) {
+        let Ok(content) = std::fs::read_to_string(wg_root.join("TASK.md")) else {
+            return (None, None);
+        };
+        let task_title = crate::commands::entity_creation::parse_task_title(&content);
+        let trimmed = content.trim();
+        let task = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        };
+        (task, task_title)
+    }
 
     #[test]
     fn read_task_fields_at_missing_file_returns_none_pair() {

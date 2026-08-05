@@ -1,0 +1,416 @@
+@import "../../sidebar/styles/variables.css";
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  font-family: var(--font-ui);
+  font-size: var(--font-size-md);
+  color: var(--sidebar-fg);
+  background: var(--sidebar-bg);
+}
+
+.watchers-window {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  /* Regions are separated by background shift and opacity rather than borders. */
+  background: var(--sidebar-bg);
+}
+
+/* ── Titlebar ─────────────────────────────────────────────────────────────── */
+
+.watchers-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  padding-left: var(--spacing-md);
+  background: var(--titlebar-bg);
+  color: var(--titlebar-fg);
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.watchers-titlebar-title {
+  font-size: var(--font-size-sm);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.watchers-titlebar-controls {
+  display: flex;
+  height: 100%;
+}
+
+.watchers-titlebar-controls button {
+  width: 42px;
+  border: none;
+  background: transparent;
+  color: var(--titlebar-fg);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.watchers-titlebar-controls button:hover {
+  background: var(--titlebar-btn-hover);
+  color: var(--sidebar-fg);
+}
+
+.watchers-titlebar-controls button:last-child:hover {
+  background: var(--titlebar-btn-close-hover);
+  color: #fff;
+}
+
+/* ── Filter bar ───────────────────────────────────────────────────────────── */
+
+.watchers-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: var(--toolbar-bg);
+  flex-shrink: 0;
+}
+
+.watchers-filter-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+.watchers-filter-label {
+  font-size: var(--font-size-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--sidebar-fg-dim);
+}
+
+.watchers-select,
+.watchers-search {
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-sm);
+  background: var(--sidebar-surface);
+  color: var(--sidebar-fg);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+}
+
+.watchers-search {
+  min-width: 160px;
+  flex: 1 1 160px;
+}
+
+.watchers-select:focus,
+.watchers-search:focus {
+  outline: none;
+  border-color: var(--sidebar-accent);
+}
+
+.watchers-chip {
+  padding: 2px var(--spacing-sm);
+  border: 1px solid var(--sidebar-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--sidebar-fg-dim);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), color var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.watchers-chip:hover {
+  color: var(--sidebar-fg);
+  border-color: var(--sidebar-accent);
+}
+
+.watchers-chip.is-active {
+  background: var(--toolbar-btn-bg);
+  border-color: var(--sidebar-accent);
+  color: var(--toolbar-btn-fg);
+}
+
+/* A row's watcher chip is a label, not a control: same shape, no pointer. */
+.watchers-chip.is-static {
+  cursor: default;
+  color: hsl(var(--watcher-hue, 0deg) 70% 70%);
+  border-color: hsl(var(--watcher-hue, 0deg) 70% 70% / 0.35);
+}
+
+.watchers-clear {
+  padding: 2px var(--spacing-sm);
+  border: none;
+  background: transparent;
+  color: var(--sidebar-accent);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+/* ── Banners ──────────────────────────────────────────────────────────────── */
+
+.watchers-banner {
+  padding: var(--spacing-xs) var(--spacing-md);
+  background: rgba(234, 179, 8, 0.12);
+  color: var(--status-pending);
+  font-size: var(--font-size-sm);
+  flex-shrink: 0;
+}
+
+.watchers-banner-error {
+  background: rgba(255, 59, 92, 0.12);
+  color: var(--status-exited);
+}
+
+/* Weaker than the banner on purpose: uncertainty is not the same claim as loss. */
+.watchers-note {
+  padding: var(--spacing-xs) var(--spacing-md);
+  color: var(--sidebar-fg-dim);
+  font-size: var(--font-size-sm);
+  flex-shrink: 0;
+}
+
+/* Louder than the sampling note and quieter than the loss banner: a degraded watcher IS
+   dropping activations, but only while it stays saturated. */
+.watchers-note-degraded {
+  color: var(--status-pending);
+}
+
+/* ── Table ────────────────────────────────────────────────────────────────── */
+
+.watchers-body {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.watchers-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.watchers-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: var(--spacing-xs) var(--spacing-md);
+  background: var(--sidebar-bg);
+  color: var(--sidebar-fg-dim);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  text-align: left;
+}
+
+.watchers-col-time {
+  width: 78px;
+}
+
+.watchers-col-watcher {
+  width: 190px;
+}
+
+.watchers-col-session {
+  width: 200px;
+}
+
+.watchers-row {
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  animation: watchers-row-in var(--transition-normal) ease-out;
+}
+
+@keyframes watchers-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.watchers-row:hover {
+  background: var(--sidebar-hover);
+}
+
+.watchers-row.is-expanded {
+  background: var(--sidebar-active);
+}
+
+.watchers-row td {
+  padding: var(--spacing-xs) var(--spacing-md);
+  vertical-align: top;
+}
+
+.watchers-col-time {
+  font-family: "Cascadia Code", "JetBrains Mono", monospace;
+  font-size: var(--font-size-sm);
+  color: var(--sidebar-fg-dim);
+  white-space: nowrap;
+}
+
+.watchers-mode {
+  margin-left: var(--spacing-xs);
+  font-size: var(--font-size-sm);
+  color: var(--sidebar-fg-dim);
+  opacity: 0.75;
+}
+
+.watchers-session-name {
+  font-size: var(--font-size-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.watchers-session-meta {
+  font-size: var(--font-size-sm);
+  color: var(--sidebar-fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.watchers-col-captures {
+  position: relative;
+}
+
+/* `dir="rtl"` in the markup puts the ellipsis on the LEFT, so a path keeps its tail --
+   the file name -- visible, which is the part worth reading. */
+.watchers-capture {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Cascadia Code", "JetBrains Mono", monospace;
+  font-size: var(--font-size-sm);
+  text-align: left;
+}
+
+.watchers-capture-extra {
+  display: inline-block;
+  margin-right: var(--spacing-xs);
+  padding: 0 var(--spacing-xs);
+  border-radius: var(--radius-sm);
+  background: var(--sidebar-surface);
+  color: var(--sidebar-fg-dim);
+  font-family: "Cascadia Code", "JetBrains Mono", monospace;
+  font-size: var(--font-size-sm);
+}
+
+.watchers-copy {
+  position: absolute;
+  top: var(--spacing-xs);
+  right: var(--spacing-xs);
+  border: none;
+  background: transparent;
+  color: var(--sidebar-fg-dim);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--transition-fast), color var(--transition-fast);
+}
+
+.watchers-row:hover .watchers-copy {
+  opacity: 1;
+}
+
+.watchers-copy:hover {
+  color: var(--sidebar-accent);
+}
+
+.watchers-raw-row td {
+  padding: 0 var(--spacing-md) var(--spacing-sm);
+  background: var(--sidebar-active);
+}
+
+.watchers-raw {
+  padding: var(--spacing-sm);
+  border-radius: var(--radius-sm);
+  background: var(--sidebar-bg);
+  font-family: "Cascadia Code", "JetBrains Mono", monospace;
+  font-size: var(--font-size-sm);
+  /* Wrapped rather than scrolled: a nested horizontal scroller inside a vertically
+     scrolling table is worse for a row already capped at 256 bytes. */
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── Empty states ─────────────────────────────────────────────────────────── */
+
+.watchers-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-sm);
+  min-height: 180px;
+  padding: var(--spacing-lg);
+  color: var(--sidebar-fg-dim);
+  font-size: var(--font-size-sm);
+  text-align: center;
+}
+
+.watchers-cta {
+  padding: var(--spacing-xs) var(--spacing-md);
+  border: 1px solid var(--sidebar-accent);
+  border-radius: var(--radius-sm);
+  background: var(--toolbar-btn-bg);
+  color: var(--toolbar-btn-fg);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.watchers-cta:hover {
+  background: var(--toolbar-btn-hover);
+}
+
+.watchers-waiting-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.watchers-waiting-list li {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.watchers-count {
+  font-family: "Cascadia Code", "JetBrains Mono", monospace;
+}
+
+.watchers-degraded {
+  color: var(--status-pending);
+}
+
+/* ── Footer ───────────────────────────────────────────────────────────────── */
+
+.watchers-footer {
+  padding: var(--spacing-xs) var(--spacing-md);
+  background: var(--toolbar-bg);
+  color: var(--sidebar-fg-dim);
+  font-size: var(--font-size-sm);
+  flex-shrink: 0;
+}

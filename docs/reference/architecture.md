@@ -89,7 +89,6 @@ graph LR
         C_REPOS["repos.rs<br/>search_repos"]
         C_VOICE["voice.rs<br/>voice_transcribe"]
         C_DF["dark_factory.rs<br/>get/save_dark_factory"]
-        C_PHONE["phone.rs<br/>send, inbox, list, ack"]
     end
 
     subgraph "session/"
@@ -111,8 +110,7 @@ graph LR
     end
 
     subgraph "phone/"
-        PH_MGR["manager.rs<br/>can_communicate()<br/>send, inbox, ack"]
-        PH_TYPES["types.rs<br/>PhoneMessage<br/>Conversation, AgentInfo"]
+        PH_TYPES["types.rs<br/>PTY-input protocol<br/>OutboxMessage"]
     end
 
     subgraph "config/"
@@ -130,7 +128,6 @@ graph LR
     BOOTSTRAP --> C_REPOS
     BOOTSTRAP --> C_VOICE
     BOOTSTRAP --> C_DF
-    BOOTSTRAP --> C_PHONE
 
     C_SESSION --> S_MGR
     C_SESSION --> P_MGR
@@ -141,8 +138,6 @@ graph LR
     C_TELEGRAM --> T_MGR
     C_WINDOW --> S_MGR
     C_DF --> CFG_DF
-    C_PHONE --> PH_MGR
-    C_PHONE --> CFG_DF
     C_REPOS --> CFG_SET
 
     T_MGR --> T_BRIDGE
@@ -159,7 +154,6 @@ graph LR
     style C_REPOS fill:#0f3460,stroke:#53a8b6,color:#fff
     style C_VOICE fill:#0f3460,stroke:#53a8b6,color:#fff
     style C_DF fill:#0f3460,stroke:#53a8b6,color:#fff
-    style C_PHONE fill:#0f3460,stroke:#53a8b6,color:#fff
 ```
 
 ---
@@ -173,13 +167,13 @@ graph TD
     SA["sidebar/App.tsx<br/>Root: shortcuts, events,<br/>settings, bridge subs"]
 
     SA --> TB["Titlebar.tsx<br/>Drag region, icon, version<br/>DEV badge, minimize, close"]
-    SA --> SL["SessionList.tsx<br/>For each session → SessionItem"]
-    SA --> TL["Toolbar.tsx<br/>Open Agent + New Session + Settings"]
+    SA --> PP["ProjectPanel.tsx<br/>Projects, workgroups, replicas → SessionItem"]
+    SA --> AB["ActionBar.tsx<br/>Project creation + Settings gear"]
 
-    SL --> SI["SessionItem.tsx<br/>Status dot, name (inline rename)<br/>git branch, shell path<br/>mic button, detach, telegram, close"]
+    PP --> SI["SessionItem.tsx<br/>Status dot, name (inline rename)<br/>git branch, shell path<br/>mic button, detach, telegram, close"]
 
-    TL --> SM["SettingsModal.tsx<br/>4 tabs: General, Agents,<br/>Integrations, Dark Factory"]
-    TL --> OA["OpenAgentModal.tsx<br/>Repo search → Agent picker<br/>git pull option → launch"]
+    AB --> SM["SettingsModal.tsx<br/>4 tabs: General, Agents,<br/>Integrations, Dark Factory"]
+    SI --> OA["OpenAgentModal.tsx<br/>Repo search → Agent picker<br/>git pull option → launch"]
 
     subgraph "Stores"
         SS["sessions.ts<br/>createStore: sessions[], activeId"]
@@ -225,9 +219,9 @@ graph TD
 ```mermaid
 graph LR
     subgraph "shared/"
-        TYPES["types.ts<br/>Session, AppSettings,<br/>AgentConfig, Team,<br/>PhoneMessage, BridgeInfo..."]
+        TYPES["types.ts<br/>Session, AppSettings,<br/>AgentConfig, Team,<br/>BridgeInfo..."]
 
-        IPC["ipc.ts<br/>SessionAPI, PtyAPI,<br/>SettingsAPI, ReposAPI,<br/>TelegramAPI, VoiceAPI,<br/>DarkFactoryAPI, PhoneAPI,<br/>DebugAPI, WindowAPI<br/>+ event listeners"]
+        IPC["ipc.ts<br/>SessionAPI, PtyAPI,<br/>SettingsAPI, ReposAPI,<br/>TelegramAPI, VoiceAPI,<br/>DarkFactoryAPI,<br/>DebugAPI, WindowAPI<br/>+ event listeners"]
 
         VOICE["voice-recorder.ts<br/>MediaRecorder → Gemini<br/>→ PTY write"]
 
@@ -266,7 +260,6 @@ graph LR
         A7["VoiceAPI<br/>transcribe"]
         A8["DebugAPI<br/>saveLogs"]
         A9["DarkFactoryAPI<br/>get, save"]
-        A10["PhoneAPI<br/>sendMessage, getInbox<br/>listAgents, ackMessages"]
     end
 
     subgraph "Rust Commands"
@@ -279,7 +272,6 @@ graph LR
         R6["commands/window.rs"]
         R7["commands/voice.rs"]
         R8["commands/dark_factory.rs"]
-        R9["commands/phone.rs"]
     end
 
     A1 -->|invoke| R1
@@ -291,7 +283,6 @@ graph LR
     A6 -->|invoke| R6
     A7 -->|invoke| R7
     A9 -->|invoke| R8
-    A10 -->|invoke| R9
 ```
 
 ---
@@ -608,7 +599,6 @@ graph TD
         SETTINGS["settings.json<br/>Shell, agents, bots,<br/>voice config, window prefs"]
         SESSIONS["sessions.json<br/>Persisted sessions<br/>for restore on startup"]
         TEAMS["teams.json<br/>Dark Factory teams<br/>+ coordinators"]
-        CONVDIR["conversations/<br/>NNNN-from_to.json<br/>Phone messages"]
         DEBUG["debug-logs.txt<br/>Console capture export"]
     end
 
@@ -620,7 +610,6 @@ graph TD
 
     style SETTINGS fill:#0f3460,stroke:#53a8b6,color:#fff
     style TEAMS fill:#e94560,stroke:#fff,color:#fff
-    style CONVDIR fill:#e94560,stroke:#fff,color:#fff
     style AGENTCFG fill:#533483,stroke:#fff,color:#fff
 ```
 
@@ -683,8 +672,7 @@ graph TD
 | `telegram/api.rs` | `send_message()`, `get_updates()` |
 | `telegram/manager.rs` | `TelegramBridgeManager`, `OutputSenderMap` |
 | `telegram/bridge.rs` | vt100 pipeline, `RowTracker`, `ClaudeCodeFilter`, output/poll tasks |
-| `phone/types.rs` | `PhoneMessage`, `Conversation`, `AgentInfo` |
-| `phone/manager.rs` | `can_communicate()`, `send_message()`, `get_inbox()`, `ack_messages()` |
+| `phone/types.rs` | PTY-input protocol types, `OutboxMessage` |
 | `config/mod.rs` | `config_dir()`: `-dev` suffix in debug |
 | `config/settings.rs` | `AppSettings`, `AgentConfig`, load/save JSON |
 | `config/dark_factory.rs` | `DarkFactoryConfig`, `Team`, `TeamMember`, `sync_agent_configs()` |
@@ -697,7 +685,6 @@ graph TD
 | `commands/repos.rs` | search_repos (agent detection) |
 | `commands/voice.rs` | voice_transcribe (Gemini API) |
 | `commands/dark_factory.rs` | get/save_dark_factory |
-| `commands/phone.rs` | send, inbox, list, ack |
 
 ### Frontend (`src/`)
 
@@ -716,9 +703,9 @@ graph TD
 | `sidebar/stores/sessions.ts` | Session rows plus authoritative selection epoch, revision, mode, and highlight |
 | `sidebar/stores/bridges.ts` | `bridges[]` reactive store |
 | `sidebar/components/Titlebar.tsx` | Drag region, icon, version, controls |
-| `sidebar/components/SessionList.tsx` | `<For>` over sessions → `SessionItem` |
+| `sidebar/components/ProjectPanel.tsx` | Projects, workgroups and replicas → `SessionItem` |
 | `sidebar/components/SessionItem.tsx` | Status dot, name, git branch, mic, telegram, detach, close |
-| `sidebar/components/Toolbar.tsx` | Open Agent + New Session + Settings gear |
+| `sidebar/components/ActionBar.tsx` | Project creation + Settings gear |
 | `sidebar/components/SettingsModal.tsx` | 4-tab settings: General, Agents, Integrations, Dark Factory |
 | `sidebar/components/OpenAgentModal.tsx` | Repo search → agent picker → launch |
 | `terminal/App.tsx` | Terminal root: authoritative selection reconciliation and detached mode |

@@ -30,11 +30,14 @@ import { terminalStore } from "../stores/terminal";
 import {
   baseSettings,
   installBrowserDomStubs,
+  installDeterministicAnimationFrames,
+  MAX_ANIMATION_FRAME_PASSES,
   renderWithFakeTransport,
   resetUiStoresForTests,
   session,
   waitFor,
 } from "../../shared/testing/ui-harness";
+import type { DeterministicAnimationFrames } from "../../shared/testing/ui-harness";
 import { liveSelection, SESSION_A, SESSION_B } from "../../shared/testing/session-selection";
 
 interface FakeTerminalInstance {
@@ -202,11 +205,53 @@ async function attachSpawnedSession() {
   return xterm.instances[1];
 }
 
+/** The tile a session is drawn into. `hidden` on it is the only observable the
+ *  view exposes for "this session is off screen". */
+function containerFor(sessionId: string): HTMLElement {
+  const container = document.querySelector<HTMLElement>(`[data-ac-session-id="${sessionId}"]`);
+  if (!container) {
+    throw new Error(`no terminal container for ${sessionId}`);
+  }
+  return container;
+}
+
+/** Drives one frame at a time until `condition` holds, and stops there, leaving
+ *  whatever that frame queued still pending.
+ *
+ *  Deliberately not `waitFor`: this advances frames, it does not wait for wall
+ *  clock. And deliberately not a fixed count — requiring the result in frame N
+ *  pins the current scheduling shape, so any finite number of preparatory frames
+ *  is allowed. Bounded by the helper's own ceiling so a real violation fails
+ *  bounded instead of hanging. */
+async function driveFramesUntil(
+  frames: DeterministicAnimationFrames,
+  what: string,
+  condition: () => boolean
+): Promise<void> {
+  for (let pass = 0; pass < MAX_ANIMATION_FRAME_PASSES; pass += 1) {
+    if (condition()) return;
+    await frames.flushFrame();
+  }
+
+  if (condition()) return;
+  throw new Error(
+    `driveFramesUntil: ${what} did not happen within ${MAX_ANIMATION_FRAME_PASSES} frames`
+  );
+}
+
 describe("TerminalView PTY spawn size (#973)", () => {
   let cleanupDom: (() => void) | null = null;
+  // Installed in beforeEach, so every test in this file drives the animation
+  // frame queue itself. Definite assignment, with a null-safe restore below in
+  // case installBrowserDomStubs throws before this is assigned.
+  let frames!: DeterministicAnimationFrames;
 
   beforeEach(() => {
     cleanupDom = installBrowserDomStubs();
+    // After the browser stubs, so it is restored before them: their cleanup
+    // reinstalls whatever requestAnimationFrame is current, which would leak
+    // this one past the test.
+    frames = installDeterministicAnimationFrames();
     resetUiStoresForTests();
     resetPtyViewportForTests();
     xterm.instances.length = 0;
@@ -215,6 +260,7 @@ describe("TerminalView PTY spawn size (#973)", () => {
   });
 
   afterEach(() => {
+    frames?.restore();
     cleanupDom?.();
     cleanupDom = null;
     resetUiStoresForTests();
@@ -248,11 +294,17 @@ describe("TerminalView PTY spawn size (#973)", () => {
 
     try {
       await createWhileOnScreen(fake);
+      // ON_SCREEN syncs while it is still the active session. After the switch
+      // its queued frame returns at the activeSessionId guard, so draining it
+      // then would consume the frame and do no work — the resize at line 264 is
+      // not late, it is cancelled.
+      await frames.flush();
       await attachSpawnedSession();
 
       // Let every resize path have its turn: the double requestAnimationFrame in
-      // scheduleViewportSync, the ResizeObserver, and xterm's own onResize.
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // scheduleViewportSync and xterm's own onResize. (The ResizeObserver never
+      // fires here: jsdom does not implement it.)
+      await frames.flush();
 
       // The session that was opened at the fitted size is never resized. This is
       // the whole fix: no resize reaches the child while it is starting up.
@@ -275,7 +327,7 @@ describe("TerminalView PTY spawn size (#973)", () => {
     try {
       await createWhileOnScreen(fake);
       const spawned = await attachSpawnedSession();
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await frames.flush();
 
       // Started at 74x23, not at xterm's 80x24 default...
       expect({ cols: spawned.cols, rows: spawned.rows }).toEqual({ cols: 74, rows: 23 });
@@ -302,7 +354,7 @@ describe("TerminalView PTY spawn size (#973)", () => {
       fitViewport.rows = 24;
 
       await attachSpawnedSession();
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await frames.flush();
 
       // Correctness first: the PTY is told the truth. But exactly once — the
       // burst of identical resizes is gone.
@@ -326,6 +378,10 @@ describe("TerminalView PTY spawn size (#973)", () => {
 
     try {
       await waitFor(() => expect(xterm.instances).toHaveLength(1));
+      // Nothing else drains the queue in this test: waitFor polls on real
+      // setTimeout and never runs a frame, so the waitFor below would sit out its
+      // whole budget waiting for work that only a flush can do.
+      await frames.flush();
 
       // No size was ever handed over for this one (startup restore, the delivery
       // loop, a session from a previous run). It must behave exactly as it always
@@ -373,7 +429,7 @@ describe("TerminalView PTY spawn size (#973)", () => {
       expect(args.rows).toBeNull();
 
       const spawned = await attachSpawnedSession();
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await frames.flush();
 
       // Nothing recorded, so the terminal starts at xterm's default, fits to the
       // collapsed 2x1, and TELLS the PTY. The corrective resize goes out normally:
@@ -421,7 +477,7 @@ describe("TerminalView PTY spawn size (#973)", () => {
     try {
       await createWhileOnScreen(fake);
       const spawned = await attachSpawnedSession();
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await frames.flush();
 
       // Opened at the size the tile was already fitted to, so the attach sent
       // nothing at all. There is no burst.
@@ -464,7 +520,7 @@ describe("TerminalView PTY spawn size (#973)", () => {
     try {
       await createWhileOnScreen(fake);
       const spawned = await attachSpawnedSession();
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await frames.flush();
 
       spawned.emitResize(74, 24);
 
@@ -481,6 +537,85 @@ describe("TerminalView PTY spawn size (#973)", () => {
       // And the budget is a budget: the first attempt plus a fixed number of
       // re-sends, not an endless loop against a backend that is gone.
       expect(resizesFor(fake, SPAWNED).length).toBeLessThanOrEqual(4);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // #973 through the other door.
+  //
+  // `syncViewport` fits the container, and `fit()` measures a layout box. A
+  // hidden container has none, so xterm clamps the proposal to its own
+  // MINIMUM_COLS = 2 / MINIMUM_ROWS = 1: measuring a hidden session does not
+  // produce a stale size, it produces a WRONG one, and sending it is a 2x1
+  // resize into a live PTY — #973 in its worst form. That is why both callbacks
+  // in `scheduleViewportSync` are guarded on the session still being active
+  // (`TerminalView.tsx:191-193` and `:198`), and it is intended behaviour, not
+  // an oversight: a hidden session keeps its geometry until it is shown again.
+  //
+  // The invariant is "never measure a hidden session; eventually fit once
+  // visible" — and "eventually" is not "in the next frame". Requiring the
+  // visible resize after exactly one frame would pin the current scheduling
+  // shape instead: wrapping the same guarded double-rAF in one more rAF
+  // preserves the invariant and would still fail. Hence the bounded loop.
+  //
+  // A switch can strand EITHER frame of the double rAF on the wrong side of the
+  // handover, so this drives both, one at a time.
+  it("never measures a hidden session, whichever queued frame straddles the switch", async () => {
+    // The leaked sync would report spawn-size drift on the way out.
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const fake = new FakeTransport();
+    setupTerminalTransport(fake);
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+
+    try {
+      await createWhileOnScreen(fake);
+
+      // --- The OUTER frame straddles the switch (the guard at :191).
+      // ON_SCREEN's sync is queued and no frame has run when the switch lands.
+      await attachSpawnedSession();
+      expect(containerFor(ON_SCREEN).hidden).toBe(true);
+
+      await frames.flush();
+
+      // The frame was consumed and did nothing. No measurement of a hidden
+      // container reached the PTY. Asserted on payloads, not counts, so a
+      // regression names the size it wrongly sent.
+      expect(resizesFor(fake, ON_SCREEN).map((call) => call.args)).toEqual([]);
+
+      // --- Shown again, it is measured: the guard defers the sync, it does not
+      // cancel the session's right to one. However many frames the scheduler
+      // takes to get there, the loop stops at the first one, so the second frame
+      // of that double rAF is still queued.
+      terminalStore.setActiveSessionForTests(ON_SCREEN);
+      await waitFor(() => expect(containerFor(ON_SCREEN).hidden).toBe(false));
+
+      await driveFramesUntil(
+        frames,
+        "the visible ON_SCREEN session was fitted",
+        () => resizesFor(fake, ON_SCREEN).length > 0
+      );
+
+      expect(resizesFor(fake, ON_SCREEN).map((call) => call.args)).toEqual([
+        { sessionId: ON_SCREEN, cols: 74, rows: 23 },
+      ]);
+
+      // --- The INNER frame straddles the switch (the guard at :198).
+      terminalStore.setActiveSessionForTests(SPAWNED);
+      await waitFor(() => expect(containerFor(ON_SCREEN).hidden).toBe(true));
+
+      // What the hidden container now fits to. Without moving it, a leaked sync
+      // would re-send the size `sendPtyResize` already has and be deduped away,
+      // so the defect would be invisible rather than absent.
+      fitViewport.cols = 2;
+      fitViewport.rows = 1;
+
+      await frames.flush();
+
+      // Still the one resize it got while it was on screen: no 2x1 was sent.
+      expect(resizesFor(fake, ON_SCREEN).map((call) => call.args)).toEqual([
+        { sessionId: ON_SCREEN, cols: 74, rows: 23 },
+      ]);
     } finally {
       rendered.cleanup();
     }

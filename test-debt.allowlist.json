@@ -256,6 +256,14 @@
       "issue": 1064,
       "reason": "#1064 Stage E cross-process lock-order PARENT: spawns Stage D's landed cli_workgroup child helper via current_exe --exact --ignored and proves the project-only deletion holds the project gate across processes (plan section 10.4 item 22, acceptance items 43/44). It launches a child test process and must run under --test-threads=1, so it stays out of the standard debug cargo test lane.",
       "resolution": "Run as Stage F acceptance or manually with cargo test --lib -- --ignored --test-threads=1 --exact commands::entity_creation::stage_e_cross_process::cli_workgroup_deletion_takes_project_gate_only_cross_process."
+    },
+    {
+      "id": "rust:src-tauri/src/pty/watchers/mod.rs::read_seam_tests::read_seam_timing",
+      "category": "ignored-rust-test",
+      "owner": "dev-rust",
+      "issue": 1171,
+      "reason": "#1171 reference measurement for the watcher read seam, not a behavior test. It prints the three numbers recorded in the module doc comment (the full read, the unchanged read and the changed read) via println and asserts nothing, so as a standard cargo test lane member it would be a timing gate with no pass criterion and would go flaky under parallel load. The behavior these numbers exist to justify is pinned by the type instead, in an_unchanged_frame_returns_unchanged_and_carries_no_rows (plan section 7.3, acceptance criterion A10).",
+      "resolution": "Stays ignored by design as a measurement. Re-take the numbers by hand with cargo test --config profile.dev.opt-level=2 --lib read_seam_timing -- --ignored --nocapture and update the module doc comment when the read seam changes."
     }
   ]
 }

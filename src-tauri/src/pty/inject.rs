@@ -43,6 +43,32 @@ impl fmt::Display for PtyInputTextError {
 
 impl std::error::Error for PtyInputTextError {}
 
+/// #1157 - the forbidden-scalar set of [`validate_pty_input_text`], extracted so
+/// the injected-message sanitizer (`config::injected_messages::sanitize`) strips
+/// exactly what this validator rejects. Deriving both from one predicate is what
+/// keeps the two from drifting; there must be no second copy of this list.
+///
+/// Covers C0 except `\t` and `\n`, DEL and C1, and the whole bidi and separator
+/// class (U+061C, U+200E, U+200F, U+2028, U+2029, U+202A-U+202E, U+2066-U+2069).
+pub(crate) fn is_forbidden_pty_scalar(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{0000}'..='\u{0008}'
+            | '\u{000b}'
+            | '\u{000c}'
+            | '\u{000d}'
+            | '\u{000e}'..='\u{001f}'
+            | '\u{007f}'..='\u{009f}'
+            | '\u{061c}'
+            | '\u{200e}'
+            | '\u{200f}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2066}'..='\u{2069}'
+    )
+}
+
 /// The single authoritative in-process exact-text validator.
 ///
 /// Accepted text is returned unchanged by callers. This function performs no
@@ -69,23 +95,7 @@ pub fn validate_pty_input_text(text: &str) -> Result<(), PtyInputTextError> {
     }
 
     for (scalar_offset, (byte_offset, ch)) in text.char_indices().enumerate() {
-        let forbidden = matches!(
-            ch,
-            '\u{0000}'..='\u{0008}'
-                | '\u{000b}'
-                | '\u{000c}'
-                | '\u{000d}'
-                | '\u{000e}'..='\u{001f}'
-                | '\u{007f}'..='\u{009f}'
-                | '\u{061c}'
-                | '\u{200e}'
-                | '\u{200f}'
-                | '\u{2028}'
-                | '\u{2029}'
-                | '\u{202a}'..='\u{202e}'
-                | '\u{2066}'..='\u{2069}'
-        );
-        if forbidden {
+        if is_forbidden_pty_scalar(ch) {
             return Err(PtyInputTextError {
                 kind: PtyInputTextErrorKind::ForbiddenScalar,
                 byte_offset,

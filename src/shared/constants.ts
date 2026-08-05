@@ -1,7 +1,6 @@
 export const NO_TEAM = "__no_team__";
 
 export const AC_WORKSPACE_DIR = ".ac";
-export const AC_WORKSPACE_DIRS = [AC_WORKSPACE_DIR] as const;
 
 export const WINDOW_TYPE = (() => {
   const search = typeof window === "undefined" ? "" : window.location.search;

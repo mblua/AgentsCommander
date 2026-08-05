@@ -126,10 +126,6 @@ Conversational `--get-output` is reserved for future modes. Today, after `send`,
 
 Build your turn-by-turn loop around that: send a message, wait for a notification, read the reply, repeat.
 
-## Conversation files
-
-Beyond `messaging/`, AC also persists a per-peer conversation snapshot at `<config-dir>/conversations/<NNNN>-<from>_<to>.json`. This is a structured copy of the back-and-forth, useful for offline analysis. It is **not** the canonical source — the messaging files are.
-
 ## Remote logical PTY actions
 
 `send --command` carries a logical action, not literal slash-command text:

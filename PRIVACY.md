@@ -26,9 +26,9 @@ When the user activates voice recording:
 - **When**: Only when the user explicitly presses the record button and stops recording
 - **Credentials**: The Gemini API key is configured by the user and stored locally in `~/.agentscommander/settings.json`
 
-### Inter-Agent Messaging (Phone)
+### Inter-Agent Messaging
 
-The internal messaging system between agents is **entirely local**. Messages are stored as JSON files in `~/.agentscommander/conversations/`. No external network calls are made.
+The internal messaging system between agents is **local by default**: the file-based path writes Markdown files into `messaging/` directories inside each workgroup and inside the Root Agent directory, and other delivery paths keep message content in queues of their own. AC sends message content to no service of its own. A destination you select yourself, such as `send --outbox`, can place a message outside those locations, including on another machine.
 
 ### Terminal Snapshots
 
