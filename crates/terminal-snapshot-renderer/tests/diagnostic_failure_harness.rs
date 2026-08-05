@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read};
@@ -145,6 +146,95 @@ impl Drop for ScratchDirectory {
 struct ScanStats {
     files: usize,
     bytes: u64,
+}
+
+/// The fixture declares an empty `[workspace]`, so it carries its own `Cargo.lock`, and
+/// `deliberately_failing_cargo_harness_diagnostics_are_payload_free` runs it with `--locked`
+/// and `CARGO_NET_OFFLINE=true`. CI populates `~/.cargo/registry` from the **workspace** lock
+/// alone, so any version the fixture pins that the workspace does not is a version CI cannot
+/// supply: the nested cargo then fails to resolve before a single child test runs.
+///
+/// That failure is invisible locally, because a developer's registry accumulates both sets
+/// over time. So this asserts the property CI actually needs rather than the one a warm
+/// machine can demonstrate, and it fails with the offending list instead of leaving the next
+/// reader to decode `failed to download` from a nested cargo.
+///
+/// If this fails, realign the fixture lock with
+/// `cargo update --manifest-path <fixture> -p <name>@<pinned> --precise <workspace-version>`
+/// rather than widening what CI caches.
+#[test]
+fn diagnostic_fixture_lock_versions_are_a_workspace_subset() {
+    let manifest_directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace_lock = manifest_directory
+        .parent()
+        .and_then(Path::parent)
+        .expect("renderer crate sits two directories below the workspace root")
+        .join("Cargo.lock");
+    let fixture_lock = manifest_directory
+        .join("tests")
+        .join("fixtures")
+        .join("diagnostic-failure-harness")
+        .join("Cargo.lock");
+
+    let workspace: HashSet<(String, String)> =
+        locked_packages(&workspace_lock).into_iter().collect();
+    let missing: Vec<String> = locked_packages(&fixture_lock)
+        .into_iter()
+        // The fixture crate itself is a path package that is never fetched from the
+        // registry, so it is the one entry that cannot and need not be cached.
+        .filter(|(name, _)| name != "terminal-snapshot-diagnostic-failure-harness")
+        .filter(|package| !workspace.contains(package))
+        .map(|(name, version)| format!("{name} {version}"))
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "the diagnostic fixture lock pins {} package version(s) absent from {}, which CI's \
+         registry cache cannot supply to the fixture's offline `--locked` run: {}",
+        missing.len(),
+        workspace_lock.display(),
+        missing.join(", ")
+    );
+}
+
+/// Minimal `Cargo.lock` reader: every `[[package]]` block's `name` and `version`. Hand-rolled
+/// so this guard needs no TOML dependency of its own.
+fn locked_packages(lock: &Path) -> Vec<(String, String)> {
+    let text = fs::read_to_string(lock)
+        .unwrap_or_else(|error| panic!("read lockfile {}: {error}", lock.display()));
+    let mut packages = Vec::new();
+    let mut name: Option<String> = None;
+    let mut in_package = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line == "[[package]]" {
+            in_package = true;
+            name = None;
+        } else if line.starts_with('[') {
+            in_package = false;
+        } else if in_package {
+            if let Some(value) = quoted_field(line, "name") {
+                name = Some(value);
+            } else if let Some(version) = quoted_field(line, "version") {
+                if let Some(name) = name.take() {
+                    packages.push((name, version));
+                }
+            }
+        }
+    }
+    packages
+}
+
+fn quoted_field(line: &str, key: &str) -> Option<String> {
+    let value = line
+        .strip_prefix(key)?
+        .trim_start()
+        .strip_prefix('=')?
+        .trim();
+    value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .map(str::to_string)
 }
 
 #[test]
