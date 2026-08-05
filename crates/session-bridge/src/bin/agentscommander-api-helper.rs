@@ -2807,6 +2807,38 @@ mod tests {
         }
     }
 
+    /// Plan line 157 in the code: `--output` travels from the raw `OsString` into a
+    /// `PathBuf` with no conversion, so a non-UTF-8 Unix leaf must survive the parser
+    /// byte for byte. Parsing and validation create nothing, which is why this holds on
+    /// every Unix, macOS included.
+    #[cfg(unix)]
+    #[test]
+    fn terminal_snapshot_parser_preserves_non_utf8_output_bytes() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+        let (_temporary, root) = snapshot_temp_root();
+        let leaf = std::ffi::OsString::from_vec(b"snapshot-\xff.png".to_vec());
+        let output = root.join(leaf);
+        let options = parse_terminal_snapshot_options(vec![
+            "--to".into(),
+            "project:wg-1-team/member".into(),
+            "--format".into(),
+            "png".into(),
+            "--output".into(),
+            output.clone().into_os_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            options
+                .output
+                .as_deref()
+                .map(|path| path.as_os_str().as_bytes()),
+            Some(output.as_os_str().as_bytes())
+        );
+        assert!(!output.exists(), "parsing created the output leaf");
+    }
+
     #[test]
     fn terminal_snapshot_option_debug_omits_target_and_path_canaries() {
         const AUTH_CANARY: &str = "AUTH_1173_HELPER_B7W4";
@@ -3098,19 +3130,60 @@ mod tests {
         assert_eq!(std::fs::read(&hard_alias).unwrap(), b"hard bytes");
     }
 
+    /// The creation-level contract for a non-UTF-8 leaf, which is not the same on every
+    /// Unix. Established by the macOS evidence at `a06a3cf6`: the filesystem refused to
+    /// create an entry with these bytes, and the refusal came from creation rather than
+    /// from confinement, because the reason code was `OutputFailed` and not
+    /// `UnsafePath`. Inferred, unconfirmed, and deliberately asserted nowhere below:
+    /// that the refusal is APFS enforcing UTF-8 filenames and reporting `EILSEQ`.
+    ///
+    /// Both arms compile everywhere `cfg(unix)` applies and only the expected outcome
+    /// differs. Neither arm tolerates the other's outcome, so a platform that changes
+    /// behaviour fails here instead of passing quietly.
     #[cfg(unix)]
     #[test]
-    fn terminal_snapshot_unix_helper_supports_non_utf8_output_leaf() {
-        use std::os::unix::ffi::OsStringExt;
+    fn terminal_snapshot_unix_helper_non_utf8_output_leaf_matches_platform_contract() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
 
         let (_temporary, root) = snapshot_temp_root();
         let leaf = std::ffi::OsString::from_vec(b"snapshot-\xff.png".to_vec());
-        let output = root.join(leaf);
-        create_snapshot_output(&output)
-            .unwrap()
-            .write_and_verify(b"portable bytes")
-            .unwrap();
-        assert_eq!(std::fs::read(output).unwrap(), b"portable bytes");
+        let output = root.join(&leaf);
+        let entries_before = std::fs::read_dir(&root).unwrap().count();
+        assert_eq!(entries_before, 0, "the temporary root did not start empty");
+        let created = create_snapshot_output(&output);
+
+        if cfg!(target_os = "macos") {
+            let error = created
+                .err()
+                .expect("macOS accepted a non-UTF-8 output leaf");
+            assert_eq!(error, C::OutputFailed);
+            // Stated separately although the equality above already implies it: this is
+            // the assertion carrying the claim that confinement accepted the name and
+            // the refusal came from creation.
+            assert_ne!(error, C::UnsafePath);
+            assert_eq!(
+                std::fs::symlink_metadata(&output).unwrap_err().kind(),
+                std::io::ErrorKind::NotFound
+            );
+            assert_eq!(
+                std::fs::read_dir(&root).unwrap().count(),
+                entries_before,
+                "a refused creation left an entry behind"
+            );
+        } else {
+            created
+                .unwrap()
+                .write_and_verify(b"portable bytes")
+                .unwrap();
+            assert_eq!(std::fs::read(&output).unwrap(), b"portable bytes");
+            let names: Vec<std::ffi::OsString> = std::fs::read_dir(&root)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            assert_eq!(names.len(), entries_before + 1);
+            assert_eq!(names[0].as_bytes(), leaf.as_bytes());
+        }
     }
 
     #[cfg(unix)]
