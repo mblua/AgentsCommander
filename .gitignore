@@ -29,3 +29,5 @@ npm/bin/
 npm-test.log
 npm-test.normalized.log
 npm-test-results.json
+
+artifacts/
