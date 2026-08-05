@@ -4439,6 +4439,61 @@ mod tests {
         write_team_config_guarded(workspace_dir, team_name, config, &guard)
     }
 
+    /// #1245: the writer and `config::teams::team_members` enforced mutually
+    /// exclusive invariants over the same `agents` array, so every team config
+    /// the application was able to write was rejected by the privileged
+    /// validator. The two assertions below cannot both hold unless the writer
+    /// and the validator agree on where the coordinator belongs, which is what
+    /// stops them drifting apart again.
+    #[test]
+    fn team_config_written_by_the_app_passes_the_privileged_validator() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = tmp.path().join("proj-a").join(".ac");
+        let team_dir = workspace_dir.join("_team_dev-team");
+        let wg_dir = workspace_dir.join("wg-1-dev-team");
+        std::fs::create_dir_all(&team_dir).expect("team directory");
+        for agent in ["tech-lead", "dev-rust"] {
+            // `resolve_agent_ref` requires the matrix directory to exist already.
+            std::fs::create_dir_all(workspace_dir.join(format!("_agent_{agent}")))
+                .expect("matrix directory");
+            let replica = wg_dir.join(format!("__agent_{agent}"));
+            std::fs::create_dir_all(&replica).expect("replica directory");
+            std::fs::write(
+                replica.join("config.json"),
+                format!(r#"{{"identity":"../../_agent_{agent}"}}"#),
+            )
+            .expect("replica config");
+        }
+
+        let config = TeamConfigResult {
+            agents: vec!["_agent_tech-lead".into(), "_agent_dev-rust".into()],
+            coordinator: "_agent_tech-lead".into(),
+            repos: vec![],
+            context_alert_percentages: vec![],
+        };
+        let bytes = normalized_team_config_bytes(&workspace_dir, &config)
+            .expect("the writer requires the coordinator inside `agents`");
+        std::fs::write(team_dir.join("config.json"), &bytes).expect("team config");
+
+        let project_paths = vec![tmp.path().to_string_lossy().to_string()];
+        crate::config::teams::verify_pty_input_route(
+            &wg_dir.join("__agent_tech-lead"),
+            false,
+            "proj-a:wg-1-dev-team/dev-rust",
+            &project_paths,
+        )
+        .expect("the privileged validator must accept the bytes the writer produced");
+
+        let without_coordinator = TeamConfigResult {
+            agents: vec!["_agent_dev-rust".into()],
+            ..config
+        };
+        assert_eq!(
+            normalized_team_config_bytes(&workspace_dir, &without_coordinator).unwrap_err(),
+            "Coordinator must be one of the selected agents"
+        );
+    }
+
     #[test]
     #[cfg(windows)]
     fn git_cli_path_strips_windows_verbatim_prefix() {
