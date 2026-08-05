@@ -107,6 +107,73 @@ function Invoke-PSNonInteractiveDirect {
     }
 }
 
+# Start the binary with no shell in between, so the exit code read here is the binary's own.
+#
+# Why this exists separately from Invoke-PSNonInteractiveDirect: release builds carry
+# `windows_subsystem = "windows"` (src-tauri/src/main.rs:1), so they are GUI-subsystem
+# executables. PowerShell's `&` call operator does not wait for one; it returns 0 immediately
+# while the child keeps writing to the inherited handles. That is why the wrapped case still
+# sees correct stdout and stderr but can never observe a non-zero exit code, and why adding
+# `exit $LASTEXITCODE` inside the wrapper does not help either: PowerShell never waited, so
+# $LASTEXITCODE was never set from the child. Verified against a release build under both
+# powershell.exe and pwsh.exe.
+#
+# Forcing a wait with a pipeline would work, but it routes stdout through PowerShell's
+# formatter, which is exactly the raw passthrough the issue #129 cases exist to check. So the
+# exit code is asserted here instead, and the shell-wrapped case keeps its stream assertions
+# untouched. Do not move this back inside the wrapper.
+function Invoke-BinaryDirect {
+    param(
+        [Parameter(Mandatory=$true)] [string]$CaseName,
+        [Parameter(Mandatory=$true)] [string]$Exe,
+        [Parameter(Mandatory=$true)] [string[]]$ExeArgs
+    )
+    $paths = New-CasePaths -CaseName $CaseName
+
+    # `Arguments`, not `ArgumentList`: this script also runs under Windows PowerShell 5.1 on
+    # .NET Framework, where ProcessStartInfo.ArgumentList does not exist.
+    $quotedArgs = ($ExeArgs | ForEach-Object { '"' + ($_ -replace '"', '\"') + '"' }) -join ' '
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $Exe
+    $psi.Arguments = $quotedArgs
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+    $stderrTask = $proc.StandardError.ReadToEndAsync()
+    $proc.WaitForExit()
+
+    $stdout = if ($null -eq $stdoutTask.Result) { '' } else { $stdoutTask.Result }
+    $stderr = if ($null -eq $stderrTask.Result) { '' } else { $stderrTask.Result }
+    $commandText = "$Exe $quotedArgs"
+    Write-CaseLogs -Paths $paths -Command $commandText -Stdout $stdout -Stderr $stderr
+
+    $case = [pscustomobject]@{
+        name = $CaseName
+        shellPath = $null
+        binaryPath = $Exe
+        commandPath = $paths.CommandPath
+        stdoutPath = $paths.StdoutPath
+        stderrPath = $paths.StderrPath
+        exitCode = $proc.ExitCode
+    }
+    $summary.Add($case) | Out-Null
+
+    [pscustomobject]@{
+        CaseName = $CaseName
+        Stdout = $stdout
+        Stderr = $stderr
+        ExitCode = $proc.ExitCode
+        StdoutPath = $paths.StdoutPath
+        StderrPath = $paths.StderrPath
+        CommandPath = $paths.CommandPath
+    }
+}
+
 function New-FailureDetail {
     param(
         [Parameter(Mandatory=$true)] [string]$CaseName,
@@ -155,11 +222,17 @@ $snapshotTargetCanary = 'project:wg-1-team/acsnap-ps-target-p5q1'
 $r0SnapshotFailure = Invoke-PSNonInteractiveDirect -ShellPath $ShellPath -CaseName "00-terminal-snapshot-fixed-failure-direct" -Exe $BinaryPath -ExeArgs @('terminal-snapshot', '--token', $snapshotTokenCanary, '--root', $snapshotRootCanary, '--to', $snapshotTargetCanary, '--timeout', '4')
 $normalizedSnapshotStderr = $r0SnapshotFailure.Stderr -replace "`r`n", "`n"
 $expectedSnapshotStderr = "terminal_snapshot_error code=invalid_request detail=The terminal snapshot request is invalid.`n"
-Assert-True "terminal-snapshot semantic failure exits one" ($r0SnapshotFailure.ExitCode -eq 1) "exit code was $($r0SnapshotFailure.ExitCode), expected 1" $r0SnapshotFailure.CaseName $r0SnapshotFailure
 Assert-True "terminal-snapshot semantic failure stdout empty" ($r0SnapshotFailure.Stdout.Length -eq 0) "stdout was not byte-empty" $r0SnapshotFailure.CaseName $r0SnapshotFailure
 Assert-True "terminal-snapshot semantic failure stderr exact" ($normalizedSnapshotStderr -ceq $expectedSnapshotStderr) "stderr did not match the fixed one-line contract" $r0SnapshotFailure.CaseName $r0SnapshotFailure
 Assert-True "terminal-snapshot semantic failure hides token" (-not $r0SnapshotFailure.Stderr.Contains($snapshotTokenCanary)) "stderr reflected the token canary" $r0SnapshotFailure.CaseName $r0SnapshotFailure
 Assert-True "terminal-snapshot semantic failure hides path and target" (-not $r0SnapshotFailure.Stderr.Contains($snapshotRootCanary) -and -not $r0SnapshotFailure.Stderr.Contains($snapshotTargetCanary)) "stderr reflected caller input" $r0SnapshotFailure.CaseName $r0SnapshotFailure
+
+# Same invocation, no shell in between, because the exit code is a property of the binary and
+# a GUI-subsystem release build cannot report one through PowerShell's `&`. See
+# Invoke-BinaryDirect above for why this is not folded back into the wrapped case.
+$r0SnapshotExit = Invoke-BinaryDirect -CaseName "00-terminal-snapshot-fixed-failure-exit-code" -Exe $BinaryPath -ExeArgs @('terminal-snapshot', '--token', $snapshotTokenCanary, '--root', $snapshotRootCanary, '--to', $snapshotTargetCanary, '--timeout', '4')
+Assert-True "terminal-snapshot semantic failure exits one" ($r0SnapshotExit.ExitCode -eq 1) "exit code was $($r0SnapshotExit.ExitCode), expected 1" $r0SnapshotExit.CaseName $r0SnapshotExit
+Assert-True "terminal-snapshot semantic failure stderr exact without a shell" ((($r0SnapshotExit.Stderr -replace "`r`n", "`n")) -ceq $expectedSnapshotStderr) "stderr did not match the fixed one-line contract" $r0SnapshotExit.CaseName $r0SnapshotExit
 
 # Test 1: list-peers stdout must contain JSON, and stderr must be empty.
 $r1 = Invoke-PSNonInteractiveDirect -ShellPath $ShellPath -CaseName "01-list-peers-direct" -Exe $BinaryPath -ExeArgs @('list-peers', '--token', $Token, '--root', $Root)
