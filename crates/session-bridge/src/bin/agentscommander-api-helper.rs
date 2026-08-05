@@ -2691,6 +2691,59 @@ mod tests {
         assert!(validate_snapshot_api_url("https://example.test/").is_ok());
     }
 
+    /// Confinement rejects every symlinked ancestor, and macOS reaches its temporary
+    /// directory through one: `$TMPDIR` lives under `/var -> private/var`, and the
+    /// `/tmp` fallback is itself a link. Canonicalise the root once so these fixtures
+    /// exercise confinement instead of the platform's temporary-directory layout.
+    fn snapshot_temp_root() -> (tempfile::TempDir, std::path::PathBuf) {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temporary.path()).unwrap();
+        (temporary, root)
+    }
+
+    /// Deliberately keeps the raw `tempfile` root so it can compare it against the
+    /// canonical one. Every other fixture must use `snapshot_temp_root`.
+    #[test]
+    fn terminal_snapshot_temp_root_confinement_diagnostic() {
+        let temporary = tempfile::tempdir().unwrap();
+        let raw = temporary.path().to_path_buf();
+        let canonical = std::fs::canonicalize(&raw).unwrap();
+
+        let mut report = format!("raw={raw:?}\ncanonical={canonical:?}\n");
+        let mut current = std::path::PathBuf::new();
+        for component in raw.components() {
+            current.push(component.as_os_str());
+            if matches!(
+                component,
+                std::path::Component::Prefix(_) | std::path::Component::RootDir
+            ) {
+                continue;
+            }
+            let line = match std::fs::symlink_metadata(&current) {
+                Ok(metadata) => format!(
+                    "{current:?} dir={} symlink={}\n",
+                    metadata.is_dir(),
+                    metadata.file_type().is_symlink()
+                ),
+                Err(error) => format!("{current:?} lstat_error={:?}\n", error.kind()),
+            };
+            report.push_str(&line);
+        }
+        report.push_str(&format!(
+            "raw_chain={:?}\ncanonical_chain={:?}\nraw_output={:?}\ncanonical_output={:?}",
+            verify_snapshot_directory_chain(&raw),
+            verify_snapshot_directory_chain(&canonical),
+            validate_snapshot_output_path(&raw.join("diagnostic.png")),
+            validate_snapshot_output_path(&canonical.join("diagnostic.png")),
+        ));
+        eprintln!("{report}");
+        assert_eq!(
+            validate_snapshot_output_path(&canonical.join("diagnostic.png")),
+            Ok(()),
+            "{report}"
+        );
+    }
+
     #[test]
     fn terminal_snapshot_parser_enforces_format_output_and_duplicates() {
         use terminal_snapshot_renderer::{
@@ -2704,8 +2757,8 @@ mod tests {
         assert_eq!(json.timeout, 15);
         assert!(json.output.is_none());
 
-        let temporary = tempfile::tempdir().unwrap();
-        let output = temporary.path().join("snapshot.png");
+        let (_temporary, root) = snapshot_temp_root();
+        let output = root.join("snapshot.png");
         let png = parse_terminal_snapshot_options(vec![
             "--to".into(),
             "project:wg-1-team/member".into(),
@@ -2778,8 +2831,8 @@ mod tests {
     fn terminal_snapshot_output_is_create_new_and_identity_stable() {
         use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
 
-        let temporary = tempfile::tempdir().unwrap();
-        let output = temporary.path().join("snapshot.png");
+        let (_temporary, root) = snapshot_temp_root();
+        let output = root.join("snapshot.png");
         let file = create_snapshot_output(&output).unwrap();
         file.write_and_verify(b"not-yet-a-png").unwrap();
         assert_eq!(std::fs::read(&output).unwrap(), b"not-yet-a-png");
@@ -2788,7 +2841,7 @@ mod tests {
             Err(C::UnsafePath)
         ));
         assert_eq!(
-            validate_snapshot_output_path(&temporary.path().join("snapshot.txt")).unwrap_err(),
+            validate_snapshot_output_path(&root.join("snapshot.txt")).unwrap_err(),
             C::UnsafePath
         );
         assert_eq!(
@@ -2801,9 +2854,9 @@ mod tests {
     fn terminal_snapshot_output_rejects_same_spelling_parent_replacement() {
         use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
 
-        let temporary = tempfile::tempdir().unwrap();
-        let parent = temporary.path().join("parent");
-        let retired = temporary.path().join("retired");
+        let (_temporary, root) = snapshot_temp_root();
+        let parent = root.join("parent");
+        let retired = root.join("retired");
         std::fs::create_dir(&parent).unwrap();
         let output = parent.join("snapshot.png");
         let parent_for_race = parent.clone();
@@ -2830,9 +2883,9 @@ mod tests {
     fn terminal_snapshot_unix_helper_parent_replacement_before_open_is_confined() {
         use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
 
-        let temporary = tempfile::tempdir().unwrap();
-        let parent = temporary.path().join("parent");
-        let retired = temporary.path().join("retired");
+        let (_temporary, root) = snapshot_temp_root();
+        let parent = root.join("parent");
+        let retired = root.join("retired");
         std::fs::create_dir(&parent).unwrap();
         let output = parent.join("snapshot.png");
         let parent_for_race = parent.clone();
@@ -2865,9 +2918,9 @@ mod tests {
     fn terminal_snapshot_unix_helper_write_stays_with_retained_parent_object() {
         use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
 
-        let temporary = tempfile::tempdir().unwrap();
-        let parent = temporary.path().join("parent");
-        let retired = temporary.path().join("retired");
+        let (_temporary, root) = snapshot_temp_root();
+        let parent = root.join("parent");
+        let retired = root.join("retired");
         std::fs::create_dir(&parent).unwrap();
         let output = parent.join("snapshot.png");
         let file = create_snapshot_output(&output).unwrap();
@@ -2900,14 +2953,14 @@ mod tests {
     fn terminal_snapshot_unix_helper_parent_link_churn_preserves_object_proof() {
         use std::os::unix::fs::MetadataExt;
 
-        let temporary = tempfile::tempdir().unwrap();
-        let output = temporary.path().join("snapshot.png");
-        let unrelated = temporary.path().join("unrelated");
+        let (_temporary, root) = snapshot_temp_root();
+        let output = root.join("snapshot.png");
+        let unrelated = root.join("unrelated");
         let unrelated_after_write = unrelated.clone();
         let unrelated_after_sync = unrelated.clone();
-        let parent_after_write = temporary.path().to_path_buf();
+        let parent_after_write = root.clone();
         let parent_after_sync = parent_after_write.clone();
-        let initial_links = std::fs::metadata(temporary.path()).unwrap().nlink();
+        let initial_links = std::fs::metadata(&root).unwrap().nlink();
         let file = create_snapshot_output(&output).unwrap();
 
         file.write_and_verify_inner(
@@ -2938,9 +2991,9 @@ mod tests {
     fn terminal_snapshot_unix_helper_leaf_substitution_is_detected() {
         use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
 
-        let temporary = tempfile::tempdir().unwrap();
-        let output = temporary.path().join("snapshot.png");
-        let displaced = temporary.path().join("displaced.png");
+        let (_temporary, root) = snapshot_temp_root();
+        let output = root.join("snapshot.png");
+        let displaced = root.join("displaced.png");
         let file = create_snapshot_output(&output).unwrap();
         let output_for_race = output.clone();
         let displaced_for_race = displaced.clone();
@@ -2967,9 +3020,9 @@ mod tests {
         use std::os::unix::ffi::OsStringExt;
         use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
 
-        let temporary = tempfile::tempdir().unwrap();
-        let parent = temporary.path().join("parent");
-        let wrong_parent = temporary.path().join("wrong-parent");
+        let (_temporary, root) = snapshot_temp_root();
+        let parent = root.join("parent");
+        let wrong_parent = root.join("wrong-parent");
         std::fs::create_dir(&parent).unwrap();
         std::fs::create_dir(&wrong_parent).unwrap();
         let outside = wrong_parent.join("snapshot.png");
@@ -3010,8 +3063,8 @@ mod tests {
     fn terminal_snapshot_unix_helper_linked_leaves_fail_closed() {
         use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
 
-        let temporary = tempfile::tempdir().unwrap();
-        let parent = temporary.path();
+        let (_temporary, root) = snapshot_temp_root();
+        let parent = root.as_path();
         let proof = snapshot_directory_identity(parent, C::OutputFailed).unwrap();
         let target = parent.join("target");
         let symlink = parent.join("symlink.png");
@@ -3049,9 +3102,9 @@ mod tests {
     fn terminal_snapshot_unix_helper_supports_non_utf8_output_leaf() {
         use std::os::unix::ffi::OsStringExt;
 
-        let temporary = tempfile::tempdir().unwrap();
+        let (_temporary, root) = snapshot_temp_root();
         let leaf = std::ffi::OsString::from_vec(b"snapshot-\xff.png".to_vec());
-        let output = temporary.path().join(leaf);
+        let output = root.join(leaf);
         create_snapshot_output(&output)
             .unwrap()
             .write_and_verify(b"portable bytes")
@@ -3064,9 +3117,9 @@ mod tests {
     fn terminal_snapshot_unix_helper_rejects_symlink_parent() {
         use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
 
-        let temporary = tempfile::tempdir().unwrap();
-        let real = temporary.path().join("real");
-        let linked = temporary.path().join("linked");
+        let (_temporary, root) = snapshot_temp_root();
+        let real = root.join("real");
+        let linked = root.join("linked");
         std::fs::create_dir(&real).unwrap();
         std::os::unix::fs::symlink(&real, &linked).unwrap();
         let output = linked.join("snapshot.png");
@@ -3081,11 +3134,11 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn terminal_snapshot_helper_retains_real_parent_and_leaf_through_output() {
-        let temporary = tempfile::tempdir().unwrap();
-        let ancestor = temporary.path().join("ancestor");
+        let (_temporary, root) = snapshot_temp_root();
+        let ancestor = root.join("ancestor");
         let parent = ancestor.join("parent");
         let retired_parent = ancestor.join("retired-parent");
-        let retired_ancestor = temporary.path().join("retired-ancestor");
+        let retired_ancestor = root.join("retired-ancestor");
         let displaced_leaf = parent.join("displaced.png");
         let hard_link_leaf = parent.join("hard-link.png");
         std::fs::create_dir(&ancestor).unwrap();
@@ -3183,9 +3236,9 @@ mod tests {
     fn terminal_snapshot_helper_rejects_junction_and_symlink_parents() {
         use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
 
-        let temporary = tempfile::tempdir().unwrap();
-        let real = temporary.path().join("real");
-        let junction = temporary.path().join("junction");
+        let (_temporary, root) = snapshot_temp_root();
+        let real = root.join("real");
+        let junction = root.join("junction");
         std::fs::create_dir(&real).unwrap();
         let status = std::process::Command::new("cmd.exe")
             .args(["/D", "/C", "mklink", "/J"])
@@ -3205,7 +3258,7 @@ mod tests {
         assert!(!real.join("snapshot.png").exists());
         std::fs::remove_dir(&junction).unwrap();
 
-        let symlink = temporary.path().join("symlink");
+        let symlink = root.join("symlink");
         if std::os::windows::fs::symlink_dir(&real, &symlink).is_ok() {
             let symlink_output = symlink.join("snapshot.png");
             assert_eq!(
@@ -3222,8 +3275,8 @@ mod tests {
     fn terminal_snapshot_helper_supports_long_verbatim_and_distinct_normalized_names() {
         use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
 
-        let temporary = tempfile::tempdir().unwrap();
-        let case_parent = temporary.path().join("CaseParent");
+        let (_temporary, root) = snapshot_temp_root();
+        let case_parent = root.join("CaseParent");
         std::fs::create_dir(&case_parent).unwrap();
         let upper_parent = std::path::PathBuf::from(case_parent.to_string_lossy().to_uppercase());
         assert!(
@@ -3235,8 +3288,8 @@ mod tests {
                     .identity
         );
 
-        let composed = temporary.path().join("\u{e9}");
-        let decomposed = temporary.path().join("e\u{301}");
+        let composed = root.join("\u{e9}");
+        let decomposed = root.join("e\u{301}");
         std::fs::create_dir(&composed).unwrap();
         std::fs::create_dir(&decomposed).unwrap();
         assert!(
@@ -3248,7 +3301,7 @@ mod tests {
                     .identity
         );
 
-        let mut long_parent = std::fs::canonicalize(temporary.path()).unwrap();
+        let mut long_parent = root.clone();
         while long_parent.as_os_str().len() < 300 {
             long_parent.push("terminal-snapshot-helper-long-segment");
             std::fs::create_dir(&long_parent).unwrap();
