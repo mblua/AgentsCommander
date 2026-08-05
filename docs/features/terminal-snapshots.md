@@ -79,11 +79,13 @@ agentscommander terminal-snapshot \
   --output "/absolute/new/snapshot.png"
 ```
 
-PNG requires an absolute path to a new `.png` file. AgentsCommander validates the response and complete PNG before it opens the output. It never overwrites an existing file. On Unix, it creates the file with mode `0600`. On every platform, it rejects linked or replaced path objects and unsafe Windows device, stream, and alias forms.
+PNG requires an absolute path to a new `.png` file. AgentsCommander validates the response and complete PNG before it opens the output. It never overwrites an existing file. On Unix, it creates the file with mode `0600`. On every platform, it rejects linked or replaced path objects, including a link anywhere in the output path's ancestor chain, and unsafe Windows device, stream, and alias forms.
 
 Success writes metadata JSON followed by LF to stdout. It never writes PNG bytes or base64 to stdout.
 
 A write, sync, or final identity failure returns `output_failed` and can leave an incomplete caller-owned file. AgentsCommander does not delete that path because another process could have replaced the name. If the PNG completed but the later stdout receipt fails, the completed file also remains.
+
+On macOS, `--output` with a non-UTF-8 leaf name exits 1 with `output_failed` and creates nothing, where the identical command succeeds on Linux. The filesystem refuses to create an entry with those bytes. AgentsCommander imposes no encoding constraint of its own and passes the path through unchanged.
 
 ### Timeout
 
@@ -392,7 +394,7 @@ Standard host Clap help and syntax errors keep normal Clap output and exit behav
 | `snapshot_timeout` | 504 | `The terminal snapshot did not complete before its deadline.` | Check daemon health, then issue a new point-in-time request if needed. |
 | `service_unavailable` | 503 | `A terminal snapshot security dependency is temporarily unavailable.` | Retry after settings, registry, lock, or daemon contention clears. |
 | `render_failed` | 500 | `The deterministic terminal renderer failed.` | Retry once; report a reproducible screen and renderer version without sharing secret content. |
-| `unsafe_path` | 403 | `A terminal snapshot path failed confinement checks.` | Choose an absolute new `.png` path under an existing non-linked parent. |
+| `unsafe_path` | 403 | `A terminal snapshot path failed confinement checks.` | Choose an absolute new `.png` path under an existing parent, with no link anywhere in its ancestor chain. |
 | `output_failed` | Not emitted | `The requested terminal snapshot output could not be completed safely.` | Inspect the requested path for an incomplete file; choose a new path for any retry. |
 | `response_unavailable` | 500 | `The terminal snapshot response could not be published or validated.` | Check transport and protocol compatibility; do not trust or persist the rejected bytes. |
 | `internal` | 500 | `An internal terminal snapshot invariant failed.` | Preserve metadata-only diagnostics and report the failure. |
