@@ -7450,7 +7450,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         }
         std::fs::write(
             team.join("config.json"),
-            r#"{"coordinator":"../_agent_tech-lead","agents":["../_agent_dev-rust"]}"#,
+            r#"{"coordinator":"../_agent_tech-lead","agents":["../_agent_dev-rust","../_agent_tech-lead"]}"#,
         )
         .expect("write team config");
         std::fs::write(

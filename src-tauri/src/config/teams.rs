@@ -2094,7 +2094,7 @@ mod tests {
 
         std::fs::write(
             team_dir.join("config.json"),
-            r#"{"agents":["../_agent_dev-rust"],"coordinator":"../_agent_tech-lead"}"#,
+            r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead"],"coordinator":"../_agent_tech-lead"}"#,
         )
         .unwrap();
         let tech_lead_identity = if spoofed_coordinator_identity {
@@ -2249,7 +2249,7 @@ mod tests {
 
         std::fs::write(
             workspace.join("_team_dev-team").join("config.json"),
-            r#"{"agents":["../_agent_dev-rust"],"agents":[],"coordinator":"../_agent_tech-lead"}"#,
+            r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead"],"agents":[],"coordinator":"../_agent_tech-lead"}"#,
         )
         .unwrap();
         assert!(verify_pty_input_route(
@@ -2277,7 +2277,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             workspace.join("_team_dev-team").join("config.json"),
-            r#"{"agents":["../_agent_dev-rust"],"coordinator":"../_agent_tech-lead","benign":"changed"}"#,
+            r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead"],"coordinator":"../_agent_tech-lead","benign":"changed"}"#,
         )
         .unwrap();
         let second =

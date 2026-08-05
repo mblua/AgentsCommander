@@ -265,7 +265,7 @@ impl ReplicaPaths {
         }
         std::fs::write(
             team.join("config.json"),
-            r#"{"agents":["../_agent_worker","../_agent_member-live","../_agent_member-exited","../_agent_member-tampered"],"coordinator":"../_agent_coordinator"}"#,
+            r#"{"agents":["../_agent_worker","../_agent_member-live","../_agent_member-exited","../_agent_member-tampered","../_agent_coordinator"],"coordinator":"../_agent_coordinator"}"#,
         )
         .expect("team config");
         for name in ["coordinator", "worker", "member-live", "member-exited"] {

@@ -11834,7 +11834,7 @@ mod tests {
 
         std::fs::write(
             team_dir.join("config.json"),
-            r#"{"agents":["../_agent_dev-rust"],"coordinator":"../_agent_tech-lead"}"#,
+            r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead"],"coordinator":"../_agent_tech-lead"}"#,
         )
         .unwrap();
         let tech_lead_identity = if spoofed_coordinator_identity {
@@ -11993,7 +11993,7 @@ mod tests {
 
         std::fs::write(
             team_dir.join("config.json"),
-            r#"{"agents":["../_agent_dev-rust"],"coordinator":"../_agent_tech-lead"}"#,
+            r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead"],"coordinator":"../_agent_tech-lead"}"#,
         )
         .unwrap();
         std::fs::write(

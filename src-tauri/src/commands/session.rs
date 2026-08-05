@@ -5918,7 +5918,7 @@ mod tests {
         }
         std::fs::write(
             team.join("config.json"),
-            r#"{"agents":["../_agent_dev-one","../_agent_dev-two"],"coordinator":"../_agent_lead"}"#,
+            r#"{"agents":["../_agent_dev-one","../_agent_dev-two","../_agent_lead"],"coordinator":"../_agent_lead"}"#,
         )
         .unwrap();
         for (replica, identity) in [
