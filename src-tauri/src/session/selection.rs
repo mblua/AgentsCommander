@@ -3588,9 +3588,9 @@ mod tests {
             let coordinator = coordinator.clone();
             tokio::spawn(async move {
                 if capped {
-                    coordinator.close_and_join_with_budget(close_budget).await;
+                    coordinator.close_and_join_with_budget(close_budget).await
                 } else {
-                    coordinator.close_and_join().await;
+                    coordinator.close_and_join().await
                 }
             })
         };
@@ -3643,11 +3643,14 @@ mod tests {
             .expect("late runtime handle stop starts")
             .expect("late runtime handle stop witness is delivered");
         assert_eq!(runtime.stop_calls.load(Ordering::SeqCst), 1);
-        tokio::time::timeout(Duration::from_secs(2), close)
+        let close_report = tokio::time::timeout(Duration::from_secs(2), close)
             .await
             .expect("real pending-container close obeys the shared deadline")
             .expect("join real pending-container close task");
         let close_elapsed = close_started.elapsed();
+        // Sampled before the bounded drain wait below, so it can still witness
+        // work the close gave up on.
+        let work_state_at_close = container_backend.shutdown_work_state_for_test();
         let close_bound = if capped {
             close_budget + Duration::from_millis(550)
         } else {
@@ -3657,6 +3660,34 @@ mod tests {
             close_elapsed <= close_bound,
             "real container close elapsed {close_elapsed:?}, bound {close_bound:?}"
         );
+        if capped {
+            // Only the abandoned side is asserted. A capped close may retain work
+            // without ever reaching its absolute deadline: the
+            // `container-shutdown-signal` and `coordinator-worker-handle` reasons are
+            // raised immediately on a `try_lock` failure, `critical-key-clear` is not
+            // deadline-driven at all, and `blocking-seed-transaction-await` is raised
+            // at the worker deadline, one finalization reserve before the absolute
+            // one. A close that returns under budget is therefore free to retain, so
+            // asserting an empty retained set there would fail runs the production
+            // contract permits.
+            if close_elapsed >= close_budget && work_state_at_close != (true, 0, 0) {
+                // The registry only drains, never refills, so work outstanding
+                // here was outstanding at the close's deadline too. The predicate
+                // couples the report to something observed independently of it, so
+                // it does not restate `persistence_safe == retained.is_empty()`.
+                assert!(
+                    !close_report.persistence_safe,
+                    "a capped close that gave up on {work_state_at_close:?} must report abandoned ownership: {close_report:?}"
+                );
+                assert!(
+                    !close_report.retained.is_empty(),
+                    "a capped close that gave up on {work_state_at_close:?} must name what it abandoned: {close_report:?}"
+                );
+            }
+            // The remaining cases, a close that returned under budget and a close
+            // that reached its deadline against a registry that then drained before
+            // this sample, are undecidable from outside and are left unasserted.
+        }
         if let Some(guard) = restore_guard.take() {
             guard.finish();
         }
@@ -3688,6 +3719,27 @@ mod tests {
             }),
             "retained cleanup must identify runtime-backed ownership separately from non-runtime residue: {retained_contexts:?}"
         );
+        if capped {
+            // The bounded close may abandon ownership at its absolute deadline,
+            // and reports it when it does, so the canceled-start cleanup can
+            // still be owned for a moment after the join. Wait for that bounded
+            // work instead of racing it; the close-latency assertion above
+            // already pins that the capped budget itself was honored.
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while container_backend.shutdown_work_state_for_test() != (true, 0, 0) {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "capped shutdown work did not drain after the bounded close: state={:?} workers={} retained={:?}",
+                    container_backend.shutdown_work_state_for_test(),
+                    container_backend.shutdown_worker_count_for_test(),
+                    container_backend.retained_cleanup_contexts_for_test()
+                )
+            });
+        }
         assert_eq!(
             container_backend.shutdown_work_state_for_test(),
             (true, 0, 0)

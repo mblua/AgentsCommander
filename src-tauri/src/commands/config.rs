@@ -572,6 +572,31 @@ pub async fn save_settings_draft(
     Ok(())
 }
 
+#[tauri::command]
+pub async fn set_terminal_snapshots_enabled(
+    settings: State<'_, SettingsState>,
+    expected: bool,
+    enabled: bool,
+) -> Result<(), String> {
+    set_terminal_snapshots_enabled_inner(settings.inner(), expected, enabled).await
+}
+
+/// Shared #1173 owner used by native Tauri and browser WebSocket transports.
+/// Whole-settings writers preserve this field and cannot call this owner
+/// without an explicit expected value.
+pub(crate) async fn set_terminal_snapshots_enabled_inner(
+    settings: &SettingsState,
+    expected: bool,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut guard = settings.write().await;
+    let written = crate::config::settings::compare_and_set_terminal_snapshots_enabled(
+        &guard, expected, enabled,
+    )?;
+    *guard = written;
+    Ok(())
+}
+
 pub(crate) async fn persist_protected_settings_update(
     settings: &SettingsState,
     new_settings: AppSettings,
@@ -622,6 +647,8 @@ fn build_protected_settings_candidate(
     // above; this is not the prohibited disk re-read.
     candidate.rail_collapsed_projects = current.rail_collapsed_projects.clone();
     candidate.rail_favorites_collapsed = current.rail_favorites_collapsed;
+    // #1173: terminal snapshot disclosure is owned only by its dedicated CAS.
+    candidate.terminal_snapshots_enabled = current.terminal_snapshots_enabled;
     validate_and_repair_settings(&mut candidate)?;
     Ok(candidate)
 }
@@ -656,6 +683,8 @@ async fn persist_settings_draft_update_with_saver(
     // collapse is owned by `set_rail_collapse`; restore it from live memory.
     draft.rail_collapsed_projects = current.rail_collapsed_projects.clone();
     draft.rail_favorites_collapsed = current.rail_favorites_collapsed;
+    // #1173: a stale whole-settings draft has no disclosure-gate authority.
+    draft.terminal_snapshots_enabled = current.terminal_snapshots_enabled;
     validate_and_repair_settings(&mut draft)?;
     let events = settings_draft_update_events(&current, &draft);
     let written = save(&draft)?;

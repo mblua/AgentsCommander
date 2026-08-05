@@ -23,6 +23,7 @@ pub mod task_ops;
 pub mod task_set_title;
 pub mod team;
 pub mod telegram_send_image;
+pub mod terminal_snapshot;
 pub mod workgroup;
 
 use clap::{Parser, Subcommand};
@@ -180,6 +181,9 @@ pub enum Commands {
     InjectedMessages(injected_messages::InjectedMessagesArgs),
     /// Manage control-plane API client tokens (mint / revoke / list; host authority required)
     ApiClient(api_client::ApiClientArgs),
+    /// Capture an authorized backend terminal snapshot as JSON or deterministic PNG
+    #[command(name = "terminal-snapshot")]
+    TerminalSnapshot(terminal_snapshot::TerminalSnapshotArgs),
     /// Delete only the disposable testable app state
     #[command(hide = true)]
     TestReset(crate::testability::reset::TestResetArgs),
@@ -340,6 +344,7 @@ pub fn handle_cli(cmd: Commands) -> i32 {
         Commands::CodingAgent(args) => coding_agent::execute(args),
         Commands::InjectedMessages(args) => injected_messages::execute(args),
         Commands::ApiClient(args) => api_client::execute(args),
+        Commands::TerminalSnapshot(args) => terminal_snapshot::execute(args),
         Commands::TestReset(args) => crate::testability::reset::execute(args),
         Commands::WindowInfo(args) => crate::testability::window_info::execute(args),
         Commands::UiQuery(args) => crate::testability::ui_automation::execute_query(args),

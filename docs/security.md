@@ -73,6 +73,47 @@ Terminal rows, permanent idempotency tombstones, transition audit, API audit, ev
 
 Residual boundaries remain explicit. A local administrator or fully compromised same-OS-user account that can inspect another process's memory or environment is outside this operation's defense. Ordinary messaging defects tracked under #139 do not widen PTY-input authority, but they remain relevant to the separate standard message plane. Model-consumption proof remains outside this feature.
 
+## Authorized terminal snapshots
+
+Terminal snapshots are a distinct read capability. They do not reuse ordinary message authorization, PTY-input actuation authority, or the interactive screenshot feature.
+
+The allowed matrix is intentionally narrow:
+
+- A live, physically verified canonical Root Agent may read a verified workgroup Coordinator or member in an active registered project. Root uses the host mailbox only.
+- A live, physically verified workgroup Coordinator may read one verified non-Coordinator member in the same exact project and workgroup.
+- An automatically bound live container Coordinator requires the separate `terminal-snapshot` API scope and may read the same same-workgroup member set through HTTP.
+- Workers, origin agents, origin Coordinators, manual API clients, stale sessions, static Root or master credentials, and cross-scope routes have no snapshot authority.
+
+Target names must be exact canonical FQNs. Aliases, wildcards, filesystem directory names, Root and origin targets, self, session IDs, Coordinator-to-Coordinator, cross-workgroup, and cross-project routes fail. `list-peers-lean --snapshot-targets` is identity-only discovery and grants no authority.
+
+### No-liveness ordering
+
+AgentsCommander first proves the live requester and the physical requester-to-target identity route. It does not query the target SessionManager, PTY route, backend, parser, or liveness before that route is authorized. A shape-valid missing, exited, live, or tampered unauthorized target therefore returns the same `not_authorized` status and body. This is a response, data, and lookup no-oracle property. Local filesystem and path-cache timing is not claimed to be constant-time.
+
+Only after authorization can `target_unavailable` report that the verified target has no eligible persistent live session, or `snapshot_unavailable` report a temporary parser, route, liveness, restore, or purge condition.
+
+### Point-in-time and TOCTOU checks
+
+Capture copies one bounded active backend viewport under the parser lock at one output-sequence and timestamp boundary. It copies no inactive grid, title, icon name, raw ANSI stream, or parser escape buffer. Cell strings, serialization, rendering, file operations, and network work happen after parser and route locks are released.
+
+Before disclosure, AgentsCommander rechecks both privacy gates, requester role and liveness, physical identities, team and project membership, selected session identity and backend, PTY route generation, restore and purge state, credential generation and binding on the API plane, and daemon shutdown. Any relevant change discards content as `authority_changed`. Normal terminal output or resize after capture does not invalidate the retained point-in-time model.
+
+This design detects changes at the initial and final checks. It does not claim to detect an authority value that changes away and back entirely between those checks, or to make mutable authorization atomic with the final socket transmission after Axum accepts already-authorized bytes.
+
+### Content confinement
+
+Snapshots read the backend `vt100` 0.15.2 active viewport. They work when the frontend is hidden, minimized, detached, or never mounted. They never focus, select, wake, spawn, resize, repaint, or write to the target. They never call the Windows interactive screenshot path or any OS window, monitor, or desktop capture API.
+
+JSON is compact ASCII-only and escapes terminal controls and non-ASCII text. PNG uses a bundled fixed font, fixed palette and metrics, bounded pure-Rust rasterization, and a strict RGB8 PNG validator. Neither format claims frontend scrollback, selection, theme, overlays, images, exact WebView pixels, or an application-frame boundary. See [Terminal snapshots](features/terminal-snapshots.md#what-the-snapshot-represents) for the complete fidelity contract.
+
+There is no content redaction. The screen can contain credentials, source, prompts, and personal data. The disclosure setting is false by default, and both strict on-disk state and managed in-memory state must be true initially and finally. Missing, malformed, duplicated, linked, or unreadable security settings fail closed.
+
+Host request and response content uses dedicated bounded transient directories, not workgroup messaging, conversations, ordinary durable message artifacts, or PTY-input SQLite state. The daemon sweeps identity-stable protocol files after 60 seconds while they remain discoverable. A crash followed by removal of the only project registration can leave a file outside startup discovery. Operators must inspect only the exact requester-side snapshot request and response directories documented in [Output lifetime and cleanup](features/terminal-snapshots.md#output-lifetime-and-cleanup).
+
+A caller-selected final PNG intentionally persists and can contain secrets. A failed post-create write can leave an incomplete file. The client never overwrites or path-deletes it because a replacement race cannot be cleaned safely. Unix private modes and Windows inherited same-user ACLs reduce casual exposure but are not a boundary against a compromised same-OS-user account. Memory is not locked or zeroized, and file deletion is not forensic secure erasure.
+
+Snapshot audit is metadata-only and fail-soft. It is operational diagnostics, not compliance-grade fail-closed audit. It excludes cell text, JSON, PNG/base64, ANSI, title, credentials, nonce, output path, arbitrary parser or OS errors, and content hashes.
+
 ## Container coding agents: copied host credentials
 
 **Status: in progress. On by default** (`containerCredentialsFromHost`). The full feature and its limitations are in [Container coding agents](features/container-coding-agents.md).
@@ -115,6 +156,7 @@ Linux and macOS builds are not signed today.
 - **API keys live in plaintext** at `~/.agentscommander/settings.json`. Protect your user account; if your account is compromised, the keys are.
 - **Copied container credentials get no owner-only ACL on Windows** ([#933](https://github.com/mblua/AgentsCommander/issues/933)). The copy inherits the workspace tree's ACL, which for a user-chosen repo path can be broader than `~/.claude` (shared drives, `Everyone:R`). Unix gets `0o600`.
 - **An unclean host crash can leave a copied container credential on disk** ([#933](https://github.com/mblua/AgentsCommander/issues/933)). Teardown deletes it and the next same-agent launch overwrites it, but there is no boot-time sweep, so a replica you never relaunch keeps a live refresh token indefinitely.
+- **Snapshot transient cleanup is best-effort after crash and unregistration.** A compatible daemon normally removes dedicated protocol files after use or 60 seconds, but a crash followed by removal of the only active or archived project registration can leave an undiscoverable requester-side file. See [Output lifetime and cleanup](features/terminal-snapshots.md#output-lifetime-and-cleanup).
 
 ## Reporting vulnerabilities
 

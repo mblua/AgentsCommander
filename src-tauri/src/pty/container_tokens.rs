@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 use crate::api::auth::{
     self, MintRequest, SCOPE_LIST_PEERS, SCOPE_PTY_INPUT, SCOPE_SEND, SCOPE_SESSION_TRANSPORT,
+    SCOPE_TERMINAL_SNAPSHOT,
 };
 use crate::errors::AppError;
 
@@ -76,6 +77,7 @@ impl ContainerApiTokenManager {
         ];
         if crate::config::teams::verify_pty_input_coordinator_root(Path::new(bound_root)).is_ok() {
             scopes.push(SCOPE_PTY_INPUT.to_string());
+            scopes.push(SCOPE_TERMINAL_SNAPSHOT.to_string());
         }
         let outcome = auth::mint(
             &self.registry_path,

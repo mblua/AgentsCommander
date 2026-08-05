@@ -47,6 +47,17 @@ use voice::tracker::{VoiceTracker, VoiceTrackingState};
 use web::auth::WebAccessToken;
 use web::broadcast::WsBroadcaster;
 
+/// Snapshot scanner terminality is deliberately not an input here.
+///
+/// A retained scanner task publishes a response file; its only `SessionManager`
+/// access is a read-lock clone, so it cannot leave session state inconsistent
+/// and cannot make a session snapshot wrong. Gating persistence on it was not a
+/// rare edge either: `SNAPSHOT_SERVER_TIMEOUT` is twice
+/// `SHUTDOWN_CLEANUP_BUDGET_SECS`, and the drain correctly refuses to abort
+/// owned or finalizer tasks, so any snapshot admitted inside the shutdown window
+/// and running near its own legitimate deadline suppressed persistence and cost
+/// the user their session list. Retained scanner work is still reported in the
+/// shutdown diagnostics.
 pub(crate) fn shutdown_persistence_allowed(
     selection_persistence_safe: bool,
     container_cleanup_terminal: bool,
@@ -54,10 +65,29 @@ pub(crate) fn shutdown_persistence_allowed(
     selection_persistence_safe && container_cleanup_terminal
 }
 
+#[cfg(test)]
 pub(crate) fn combined_shutdown_retained_diagnostics(
     selection_retained: Vec<String>,
     container_retained: Vec<String>,
 ) -> Vec<String> {
+    combined_shutdown_retained_diagnostics_with_scanner(
+        Vec::new(),
+        selection_retained,
+        container_retained,
+    )
+}
+
+pub(crate) fn combined_shutdown_retained_diagnostics_with_scanner(
+    scanner_retained: Vec<String>,
+    selection_retained: Vec<String>,
+    container_retained: Vec<String>,
+) -> Vec<String> {
+    let scanner = scanner_retained.into_iter().map(|context| {
+        crate::pty::container_runtime::normalize_retained_owner_diagnostic(
+            "terminalSnapshotScanner",
+            context,
+        )
+    });
     let selection = selection_retained.into_iter().map(|context| {
         crate::pty::container_runtime::normalize_retained_owner_diagnostic("selection", context)
     });
@@ -67,7 +97,9 @@ pub(crate) fn combined_shutdown_retained_diagnostics(
             context,
         )
     });
-    crate::pty::container_runtime::cap_retained_owner_diagnostics(selection.chain(container))
+    crate::pty::container_runtime::cap_retained_owner_diagnostics(
+        scanner.chain(selection).chain(container),
+    )
 }
 
 fn remove_container_route_until(
@@ -1030,6 +1062,8 @@ pub fn run(
 
     let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let shutdown_signal = ShutdownSignal::new();
+    let terminal_snapshot_state =
+        crate::pty::terminal_snapshot::TerminalSnapshotState::new(shutdown_signal.clone());
     let selection_coordinator = crate::session::selection::SelectionCoordinator::new(
         Arc::clone(&session_mgr),
         shutdown_signal.token().clone(),
@@ -1218,6 +1252,7 @@ pub fn run(
         .manage(config_seed_lock)
         .manage(update_check_state)
         .manage(ui_automation_state)
+        .manage(terminal_snapshot_state)
         .manage(shutdown_signal)
         .manage(Arc::new(RestoreInProgress(AtomicBool::new(false))))
         .manage(Arc::new(PendingSelfClear::default()))
@@ -2520,6 +2555,8 @@ pub fn run(
                 .unwrap()
                 .start_container_pending_reaper(shutdown_for_setup.clone());
 
+            app.state::<Arc<crate::pty::terminal_snapshot::TerminalSnapshotState>>()
+                .start_artifact_cleanup();
             let mailbox_poller = phone::mailbox::MailboxPoller::new();
             mailbox_poller.start(app.handle().clone(), shutdown_for_setup.clone());
             loop_scheduler_for_setup
@@ -2578,6 +2615,7 @@ pub fn run(
             commands::resource_monitor::get_resource_snapshot,
             commands::resource_monitor::kill_resource_group,
             commands::config::save_settings_draft,
+            commands::config::set_terminal_snapshots_enabled,
             commands::config::update_coding_agent_profiles,
             commands::config::update_coding_agent_env_settings,
             commands::config::set_agent_default_profile,
@@ -2848,8 +2886,29 @@ pub fn run(
                     // (An already-dispatched spawn_blocking kill_group still runs;
                     // safety there rests on B2b's bounded set + kill_group's
                     // Terminating/Terminated idempotency guard, not on trigger().)
+                    let snapshot_scanner_shutdown = phone::mailbox::MailboxPoller::
+                        active_terminal_snapshot_shutdown_owner();
+                    if let Some(owner) = &snapshot_scanner_shutdown {
+                        owner.seal();
+                    }
                     log::info!("[shutdown] Triggering background task shutdown (async, not awaited)...");
                     shutdown_for_exit.trigger();
+                    let scanner_shutdown = match snapshot_scanner_shutdown {
+                        Some(owner) => tauri::async_runtime::block_on(owner.seal_and_drain_until(
+                            tokio::time::Instant::now()
+                                + std::time::Duration::from_secs(SHUTDOWN_CLEANUP_BUDGET_SECS),
+                        )),
+                        None => phone::terminal_snapshot::SnapshotScannerDrainResult {
+                            terminal: true,
+                            ..Default::default()
+                        },
+                    };
+                    log::info!(
+                        "[shutdown] terminal snapshot scanner drained joined={} aborted={} terminal={}",
+                        scanner_shutdown.joined,
+                        scanner_shutdown.aborted,
+                        scanner_shutdown.terminal
+                    );
 
                     let context_alert_monitor = app_handle
                         .try_state::<Arc<crate::session::context_alerts::ContextAlertMonitor>>()
@@ -2996,7 +3055,8 @@ pub fn run(
                         });
                         log::info!("[shutdown] Session state persisted, process exiting");
                     } else {
-                        let retained = combined_shutdown_retained_diagnostics(
+                        let retained = combined_shutdown_retained_diagnostics_with_scanner(
+                            scanner_shutdown.retained,
                             selection_shutdown.retained,
                             container_shutdown.retained,
                         );
@@ -3088,6 +3148,21 @@ mod tests {
             combined.iter().all(|entry| !entry.is_empty()),
             "retained diagnostics are non-empty"
         );
+    }
+
+    #[test]
+    fn scanner_retained_owner_is_merged_without_request_content_or_paths() {
+        let combined = super::combined_shutdown_retained_diagnostics_with_scanner(
+            vec!["reason=terminal-snapshot-finalizer state=retained".to_string()],
+            vec!["reason=selection-worker state=retained".to_string()],
+            vec!["reason=container-stop state=retained".to_string()],
+        );
+        assert_eq!(combined.len(), 3);
+        assert!(combined
+            .iter()
+            .any(|entry| entry.contains("owner=terminalSnapshotScanner")));
+        assert!(combined.iter().all(|entry| !entry.contains('\\')));
+        assert!(combined.iter().all(|entry| !entry.contains('/')));
     }
 
     fn settings_with_agent() -> AppSettings {

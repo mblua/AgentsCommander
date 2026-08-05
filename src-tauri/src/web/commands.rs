@@ -411,6 +411,18 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             Ok(json!(null))
         }
 
+        "set_terminal_snapshots_enabled" => {
+            let expected: bool = require_json(args, "expected")?;
+            let enabled: bool = require_json(args, "enabled")?;
+            crate::commands::config::set_terminal_snapshots_enabled_inner(
+                &state.settings,
+                expected,
+                enabled,
+            )
+            .await?;
+            Ok(json!(null))
+        }
+
         // #965 - the rail is live in the browser client (`src/browser/App.tsx`
         // mounts `<SidebarApp embedded>`), so its collapse setter must be routed
         // or every rail header click hits the `Unknown command` fallback at the

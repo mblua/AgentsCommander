@@ -18,6 +18,8 @@ If token validation keeps failing, restart or respawn the session — live token
 
 `list-peers`, `list-peers-lean`, `open-project`, `new-project`, and `telegram-send-image` read disk state directly and do not authorize per token at the CLI. `list-sessions` does not require a token at all.
 
+`terminal-snapshot` is a privileged exception. The host CLI requires a canonical UUID-v4 live-session token, rejects persisted Root or master credentials, and leaves final authorization to the daemon's live physical-identity checks. `list-peers-lean --snapshot-targets` remains shape-only, identity-only discovery and grants no snapshot authority.
+
 ## Exit codes
 
 All subcommands return:
@@ -191,15 +193,87 @@ For automation in scripts, prefer `list-peers-lean` (smaller, stable shape).
 
 ## `list-peers-lean`
 
-Compact JSON list of peers — ideal for in-session discovery.
+Compact JSON list of peers, ideal for in-session discovery.
 
 ```bash
 agentscommander list-peers-lean --token "$AGENTSCOMMANDER_TOKEN" --root "$AGENTSCOMMANDER_ROOT"
 ```
 
-Each entry contains: `name`, `working`, `sessionStatus`, `waitingForInput`, `reachable`, `teams`, `roleSummary` (one-line, ≤80 chars).
+Each default entry contains: `name`, `working`, `sessionStatus`, `waitingForInput`, `reachable`, `teams`, `roleSummary` (one line, at most 80 characters).
 
-Same peer set and `--peer` filter as `list-peers`. The `name` field is the canonical FQN — pass it verbatim to `send --to`.
+The default peer set and `--peer` filter match `list-peers`. The `name` field is the canonical FQN. Pass it verbatim to `send --to`.
+
+For terminal snapshot target discovery only, add `--snapshot-targets`:
+
+```bash
+agentscommander list-peers-lean \
+  --token "$AGENTSCOMMANDER_TOKEN" \
+  --root "$AGENTSCOMMANDER_ROOT" \
+  --snapshot-targets
+```
+
+This capability view returns every verified workgroup Coordinator and member in active registered projects for canonical Root, or same-workgroup non-Coordinator members for a verified Coordinator. Workers and origin agents receive `[]`. It reads no session index, reports fixed identity-only runtime fields, creates no peer directories, and grants no authority. `reachable` still means ordinary-message reachability. `--peer` applies its existing exact-FQN filter. Full `list-peers` does not accept `--snapshot-targets`.
+
+---
+
+## `terminal-snapshot`
+
+Read one authorized live backend terminal viewport as versioned JSON or a deterministic PNG. The operation is read-only and never wakes, spawns, focuses, selects, resizes, writes to, or captures OS pixels from the target.
+
+```bash
+# JSON, the default
+agentscommander terminal-snapshot \
+  --token "$AGENTSCOMMANDER_TOKEN" \
+  --root "$AGENTSCOMMANDER_ROOT" \
+  --to "project:wg-1-team/member"
+
+# PNG
+agentscommander terminal-snapshot \
+  --token "$AGENTSCOMMANDER_TOKEN" \
+  --root "$AGENTSCOMMANDER_ROOT" \
+  --to "project:wg-1-team/member" \
+  --format png \
+  --output "/absolute/new/snapshot.png" \
+  --timeout 15
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--token` | Yes | Canonical live-session UUID v4. A persisted Root or master token is rejected. |
+| `--root` | Yes | Exact verified requester replica root or canonical Root Agent directory, not a descendant. |
+| `--to` | Yes | Exact canonical target FQN from `list-peers-lean --snapshot-targets`. |
+| `--format` | No | `json` or `png`. Default `json`. |
+| `--output` | PNG only | Absolute path to a new `.png` file. JSON forbids it. Existing, linked, unsafe, or non-PNG paths are rejected. |
+| `--timeout` | No | Whole seconds from 5 through 60. Default 15. |
+
+JSON success writes exactly one compact ASCII-only `TerminalSnapshotDocument` plus LF to stdout. PNG success fully validates and creates the output first, then writes exactly one compact ASCII-only metadata receipt plus LF. PNG bytes and base64 never appear on stdout. The command never overwrites an existing output. A failed write or final identity check can leave an incomplete caller-owned file.
+
+After Clap parses the command, success exits 0. Every semantic, authorization, unavailable, rate, timeout, transport, or output failure exits 1, writes no normal stdout, and writes one fixed line:
+
+```text
+terminal_snapshot_error code=<code> detail=<fixed-detail>
+```
+
+Standard `--help` and pre-dispatch Clap syntax failures keep normal Clap output and exit behavior. If an OS failure occurs after a stdout write begins, safe partial ASCII bytes cannot be retracted; the command reports `output_failed` without attempting a second document. See [Terminal snapshots](../features/terminal-snapshots.md#stable-errors) for every stable code, exact detail, and recovery step.
+
+Authorized host routes are canonical live Root to verified workgroup Coordinators or members in active registered projects, and a live workgroup Coordinator to a verified non-Coordinator member in the same exact project and workgroup. Root is host-only. The feature must also be enabled by `terminalSnapshotsEnabled`.
+
+A container Coordinator uses the API helper instead of the host mailbox:
+
+```bash
+agentscommander-api-helper terminal-snapshot \
+  --to "project:wg-1-team/member"
+
+agentscommander-api-helper terminal-snapshot \
+  --to "project:wg-1-team/member" \
+  --format png \
+  --output "/workspace/evidence/snapshot.png" \
+  --timeout 15
+```
+
+The helper reads authority only from `AGENTSCOMMANDER_API_URL` and `AGENTSCOMMANDER_API_TOKEN`. It has the same format, timeout, stdout, output, and post-parse error contract. It rejects `--token`, `--root`, duplicate flags, JSON output paths, and PNG without an output path. A manual API token cannot gain this live capability merely by listing the `terminal-snapshot` scope.
+
+See [Terminal snapshots](../features/terminal-snapshots.md) for schema, renderer, fidelity, privacy, authorization, limits, and cleanup.
 
 ---
 
@@ -729,4 +803,5 @@ If you discover a regression, file an issue with the exact command, the output, 
 - [Settings reference](settings.md)
 - [Log filtering](log-filtering.md)
 - [Inter-agent messaging](../agents/inter-agent-messaging.md)
+- [Terminal snapshots](../features/terminal-snapshots.md)
 - [Teams and workgroups](../agents/teams-and-workgroups.md)

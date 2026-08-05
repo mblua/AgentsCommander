@@ -2993,6 +2993,44 @@ impl ContainerTransportBackend {
     }
 
     #[cfg(test)]
+    pub(crate) fn install_protocol_snapshot_session_for_test(
+        &self,
+        session_id: Uuid,
+        binding: ContainerCredentialBinding,
+        rows: u16,
+        cols: u16,
+        output: Vec<u8>,
+    ) -> mpsc::Receiver<HostToBridgeFrame> {
+        let (sender, receiver) = mpsc::channel(8);
+        self.sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(
+                session_id,
+                ContainerSessionState::Active(ActiveSession {
+                    output_target: PtyOutputTarget::noop(),
+                    sender,
+                    rows,
+                    cols,
+                    runtime_handle: None,
+                    api_client_id: Some(binding.client_id.clone()),
+                    credential_binding: Some(binding),
+                    logical_resource_slot: None,
+                    container_credential_path: None,
+                }),
+            );
+        self.fanout.register_session(
+            session_id,
+            crate::session::profile::IdleTuning::DEFAULT,
+            rows,
+            cols,
+        );
+        self.handle_bridge_output(session_id, output)
+            .expect("protocol snapshot test output");
+        receiver
+    }
+
+    #[cfg(test)]
     pub(crate) fn contains_transport_state_for_test(&self, session_id: Uuid) -> bool {
         self.sessions
             .lock()
@@ -3163,6 +3201,11 @@ impl PtyBackend for ContainerTransportBackend {
 
     fn get_screen_snapshot(&self, id: Uuid) -> Option<PtyScreenSnapshot> {
         self.fanout.get_screen_snapshot(id)
+    }
+
+    #[allow(private_interfaces)]
+    fn copy_terminal_screen(&self, id: Uuid) -> crate::pty::backend::TerminalScreenCopyRead {
+        self.fanout.copy_terminal_screen(id)
     }
 
     fn get_pty_size(&self, id: Uuid) -> Option<(u16, u16)> {

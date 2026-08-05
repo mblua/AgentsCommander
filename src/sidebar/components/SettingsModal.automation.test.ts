@@ -24,6 +24,7 @@ vi.mock("../../shared/ipc", async () => {
       get: vi.fn(() => Promise.resolve(settings())),
       update: vi.fn(() => Promise.resolve()),
       saveDraft: vi.fn(() => Promise.resolve()),
+      setTerminalSnapshotsEnabled: vi.fn(() => Promise.resolve()),
       updateCodingAgentProfiles: vi.fn(() => Promise.resolve()),
       updateCodingAgentEnvSettings: vi.fn(() => Promise.resolve()),
       getWebServerStatus: vi.fn(() => Promise.resolve(false)),
@@ -94,6 +95,7 @@ function settings(overrides: Partial<AppSettings> = {}): SettingsSnapshot {
     apiServerEnabled: false,
     apiServerPort: 8766,
     apiServerBind: "127.0.0.1",
+    terminalSnapshotsEnabled: false,
     voiceToTextEnabled: false,
     voiceAutoExecute: false,
     voiceAutoExecuteDelay: 15,
@@ -1604,6 +1606,255 @@ describe("SettingsModal automation hooks", () => {
 
     const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
     expect(saved?.agents[0]).not.toHaveProperty("instructionsFilename");
+
+    dispose();
+  });
+
+  it("shows terminal snapshots unchecked with the complete secret-exposure warning", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    const checkbox = byTestId<HTMLInputElement>(
+      "settings.general.terminalSnapshotsEnabled",
+    );
+    const section = checkbox.closest(".settings-section");
+    const warning = byTestId("settings.general.terminalSnapshotsEnabled.warning")
+      .textContent ?? "";
+
+    expect(checkbox.checked).toBe(false);
+    expect(checkbox.getAttribute("data-ac-state")).toBe("unchecked");
+    expect(section?.querySelector(".settings-section-title")?.textContent).toBe(
+      "Terminal snapshots",
+    );
+    expect(warning).toContain("authorized Root Agents and same-workgroup Coordinators");
+    expect(warning).toContain("JSON or PNG");
+    expect(warning).toContain("passwords, tokens, source code, prompts, and personal data");
+    expect(warning).toContain("Disabled by default");
+
+    dispose();
+  });
+
+  it("opts terminal snapshots in and out through the dedicated CAS across reopen", async () => {
+    const firstRoot = document.createElement("div");
+    document.body.append(firstRoot);
+    const firstDispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      firstRoot,
+    );
+    await settle();
+
+    const optIn = byTestId<HTMLInputElement>(
+      "settings.general.terminalSnapshotsEnabled",
+    );
+    optIn.checked = true;
+    optIn.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+    await settle();
+
+    expect(SettingsAPI.setTerminalSnapshotsEnabled).toHaveBeenNthCalledWith(
+      1,
+      false,
+      true,
+    );
+    expect(vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0]
+      ?.terminalSnapshotsEnabled).toBe(false);
+    firstDispose();
+    firstRoot.remove();
+
+    vi.mocked(SettingsAPI.get)
+      .mockResolvedValueOnce(settings({ terminalSnapshotsEnabled: true }))
+      .mockResolvedValueOnce(settings({ terminalSnapshotsEnabled: true }));
+    const reopenedRoot = document.createElement("div");
+    document.body.append(reopenedRoot);
+    const reopenedDispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      reopenedRoot,
+    );
+    await settle();
+
+    const optOut = byTestId<HTMLInputElement>(
+      "settings.general.terminalSnapshotsEnabled",
+    );
+    expect(optOut.checked).toBe(true);
+    optOut.checked = false;
+    optOut.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+    await settle();
+
+    expect(SettingsAPI.setTerminalSnapshotsEnabled).toHaveBeenNthCalledWith(
+      2,
+      true,
+      false,
+    );
+    expect(vi.mocked(SettingsAPI.saveDraft).mock.calls[1]?.[0]
+      ?.terminalSnapshotsEnabled).toBe(true);
+
+    reopenedDispose();
+    reopenedRoot.remove();
+  });
+
+  it("does not let an unchanged stale enabled modal re-enable a concurrent disable", async () => {
+    vi.mocked(SettingsAPI.get)
+      .mockResolvedValueOnce(settings({ terminalSnapshotsEnabled: true }))
+      .mockResolvedValueOnce(settings({ terminalSnapshotsEnabled: false }));
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    const terminalSnapshots = byTestId<HTMLInputElement>(
+      "settings.general.terminalSnapshotsEnabled",
+    );
+    expect(terminalSnapshots.checked).toBe(true);
+
+    const unrelated = byTestId<HTMLInputElement>(
+      "settings.general.npmUpdateNotificationsEnabled",
+    );
+    unrelated.checked = false;
+    unrelated.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+    await settle();
+
+    expect(SettingsAPI.setTerminalSnapshotsEnabled).not.toHaveBeenCalled();
+    expect(vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0]).toMatchObject({
+      npmUpdateNotificationsEnabled: false,
+      terminalSnapshotsEnabled: false,
+    });
+
+    dispose();
+  });
+
+  it("visibly reloads the authoritative terminal snapshot value on CAS conflict", async () => {
+    vi.mocked(SettingsAPI.setTerminalSnapshotsEnabled).mockRejectedValueOnce(
+      "terminal_snapshot_setting_conflict",
+    );
+    const onClose = vi.fn();
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose }),
+      root,
+    );
+    await settle();
+
+    const checkbox = byTestId<HTMLInputElement>(
+      "settings.general.terminalSnapshotsEnabled",
+    );
+    checkbox.checked = true;
+    checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+    await settle();
+
+    expect(SettingsAPI.setTerminalSnapshotsEnabled).toHaveBeenCalledWith(false, true);
+    expect(SettingsAPI.get).toHaveBeenCalledTimes(3);
+    expect(checkbox.checked).toBe(false);
+    expect(document.querySelector(".modal-save-error")?.textContent).toContain(
+      "current value was reloaded",
+    );
+    expect(byTestId<HTMLButtonElement>("settings.save").disabled).toBe(false);
+    expect(onClose).not.toHaveBeenCalled();
+
+    dispose();
+  });
+
+  // #1173 — the CAS-conflict branch returns early, so an endpoint change riding
+  // along in the same Save used to lose its restart. The draft (including the new
+  // bind) is already persisted at that point, so skipping the restart leaves the
+  // modal reporting loopback as running while the server still listens on 0.0.0.0.
+  it("still restarts the API server when an endpoint change rides along with a snapshot CAS conflict (#1173)", async () => {
+    const runningSettings = settings({
+      apiServerEnabled: true,
+      apiServerBind: "0.0.0.0",
+      apiServerPort: 8766,
+      terminalSnapshotsEnabled: false,
+    });
+    vi.mocked(SettingsAPI.get)
+      .mockResolvedValueOnce(runningSettings)
+      .mockResolvedValueOnce(runningSettings)
+      .mockResolvedValueOnce(runningSettings);
+    vi.mocked(SettingsAPI.apiServerStatus)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true);
+    vi.mocked(SettingsAPI.stopApiServer).mockResolvedValueOnce(true);
+    vi.mocked(SettingsAPI.startApiServer).mockResolvedValueOnce(true);
+    vi.mocked(SettingsAPI.setTerminalSnapshotsEnabled).mockRejectedValueOnce(
+      "terminal_snapshot_setting_conflict",
+    );
+
+    const onClose = vi.fn();
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose }),
+      root,
+    );
+    await settle();
+
+    expect(byTestId("settings.general.apiServerStatus").textContent).toContain(
+      "0.0.0.0:8766",
+    );
+
+    // Narrow the live bind to loopback...
+    const bind = byTestId<HTMLInputElement>("settings.general.apiServerBind");
+    bind.value = "127.0.0.1";
+    bind.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+
+    // ...and lose the snapshot CAS race in the very same Save.
+    const checkbox = byTestId<HTMLInputElement>(
+      "settings.general.terminalSnapshotsEnabled",
+    );
+    checkbox.checked = true;
+    checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+    await settle();
+    await settle();
+    await settle();
+
+    // Half one: the restart fired, so the running server actually moved to the
+    // endpoint the draft persisted.
+    expect(vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0]?.apiServerBind).toBe(
+      "127.0.0.1",
+    );
+    expect(SettingsAPI.stopApiServer).toHaveBeenCalledTimes(1);
+    expect(SettingsAPI.startApiServer).toHaveBeenCalledTimes(1);
+    const saveOrder = vi.mocked(SettingsAPI.saveDraft).mock.invocationCallOrder[0];
+    const stopOrder = vi.mocked(SettingsAPI.stopApiServer).mock.invocationCallOrder[0];
+    const startOrder = vi.mocked(SettingsAPI.startApiServer).mock.invocationCallOrder[0];
+    expect(saveOrder).toBeLessThan(stopOrder);
+    expect(stopOrder).toBeLessThan(startOrder);
+
+    // Half two: the address reported as running is one the server was restarted
+    // onto (asserted above), never a bind the modal merely persisted.
+    const status = byTestId("settings.general.apiServerStatus");
+    expect(status.getAttribute("data-ac-state")).toBe("running");
+    expect(status.textContent).toContain("127.0.0.1:8766");
+
+    // The conflict surface itself must not regress.
+    expect(checkbox.checked).toBe(false);
+    expect(document.querySelector(".modal-save-error")?.textContent).toContain(
+      "current value was reloaded",
+    );
+    expect(onClose).not.toHaveBeenCalled();
 
     dispose();
   });

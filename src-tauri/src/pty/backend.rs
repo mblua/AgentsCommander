@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::pty::context_scrape::{ContextSessionLiveness, ScreenRowsRead};
-use crate::pty::output::{PtyOutputTarget, PtyScreenSnapshot};
+use crate::pty::output::{CapturedVtScreen, PtyOutputTarget, PtyScreenSnapshot};
 use crate::pty::watchers::{FrameStamp, ScreenRowsSince};
 use crate::resource_monitor::{ResourceLaunchRegistration, ResourceLogicalAgentSlot};
 use crate::session::profile::{CodingAgentKind, IdleTuning};
@@ -17,6 +17,44 @@ use crate::session::profile::{CodingAgentKind, IdleTuning};
 /// The payload is handed to a backend in one call. It is never split into
 /// chunks, appended with Enter, or interpreted as a command line.
 pub const PTY_INPUT_MAX_BYTES: usize = 65_536;
+
+pub(crate) enum TerminalScreenCopyRead {
+    Copied(CapturedVtScreen),
+    Unavailable,
+    TooLarge,
+}
+
+impl std::fmt::Debug for TerminalScreenCopyRead {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Copied(captured) => formatter
+                .debug_tuple("TerminalScreenCopyRead::Copied")
+                .field(captured)
+                .finish(),
+            Self::Unavailable => formatter.write_str("TerminalScreenCopyRead::Unavailable"),
+            Self::TooLarge => formatter.write_str("TerminalScreenCopyRead::TooLarge"),
+        }
+    }
+}
+
+pub(crate) enum TerminalScreenRead {
+    Captured(std::sync::Arc<terminal_snapshot_renderer::TerminalScreenModel>),
+    Unavailable,
+    TooLarge,
+}
+
+impl std::fmt::Debug for TerminalScreenRead {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Captured(model) => formatter
+                .debug_tuple("TerminalScreenRead::Captured")
+                .field(model)
+                .finish(),
+            Self::Unavailable => formatter.write_str("TerminalScreenRead::Unavailable"),
+            Self::TooLarge => formatter.write_str("TerminalScreenRead::TooLarge"),
+        }
+    }
+}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -155,6 +193,13 @@ pub trait PtyBackend: Any + Send + Sync {
     }
 
     fn get_screen_snapshot(&self, id: Uuid) -> Option<PtyScreenSnapshot>;
+
+    /// Read-only fixed-cell viewport copy. Backends unrelated to the two live
+    /// production fanouts remain source-compatible and report unavailable.
+    #[allow(private_interfaces)]
+    fn copy_terminal_screen(&self, _id: Uuid) -> TerminalScreenCopyRead {
+        TerminalScreenCopyRead::Unavailable
+    }
 
     fn get_pty_size(&self, id: Uuid) -> Option<(u16, u16)>;
 

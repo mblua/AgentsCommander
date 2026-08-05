@@ -29,6 +29,7 @@ function settings(overrides: Partial<AppSettings>): AppSettings {
     apiServerEnabled: false,
     apiServerPort: 8766,
     apiServerBind: "127.0.0.1",
+    terminalSnapshotsEnabled: false,
     voiceToTextEnabled: false,
     voiceAutoExecute: false,
     voiceAutoExecuteDelay: 15,
@@ -101,6 +102,22 @@ describe("mergeSettingsForSavePreservingProjects", () => {
       soundsEnabled: false,
       projectPaths: ["C:\\Fresh", "D:\\Other"],
       projectPath: "C:\\Fresh",
+    });
+  });
+
+  it("keeps terminal snapshots under the dedicated setting owner", () => {
+    const draft = settings({
+      soundsEnabled: false,
+      terminalSnapshotsEnabled: true,
+    });
+    const fresh = settings({
+      soundsEnabled: true,
+      terminalSnapshotsEnabled: false,
+    });
+
+    expect(mergeSettingsForSavePreservingProjects(draft, fresh)).toMatchObject({
+      soundsEnabled: false,
+      terminalSnapshotsEnabled: false,
     });
   });
 });

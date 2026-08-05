@@ -3,7 +3,10 @@ use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::time::{Duration, Instant};
 
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{
+    ACCEPT_ENCODING, AUTHORIZATION, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE,
+    PRAGMA,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::{Uuid, Version};
@@ -49,6 +52,11 @@ async fn run() -> HelperResult<i32> {
         }
         "send" => send(rest).await,
         "pty-input-status" => pty_input_status(rest).await,
+        "terminal-snapshot" if is_help_request(&rest) => {
+            print_terminal_snapshot_help();
+            Ok(0)
+        }
+        "terminal-snapshot" => Ok(terminal_snapshot_command(rest).await),
         _ => Err("unknown_command".to_string()),
     }
 }
@@ -59,7 +67,13 @@ fn is_help_request(args: &[OsString]) -> bool {
 
 fn print_help() {
     println!(
-        "agentscommander-api-helper <list-peers-lean|send|pty-input-status>\nRun 'agentscommander-api-helper send --help' for exact PTY-input usage."
+        "agentscommander-api-helper <list-peers-lean|send|pty-input-status|terminal-snapshot>\nRun 'agentscommander-api-helper send --help' for exact PTY-input usage."
+    );
+}
+
+fn print_terminal_snapshot_help() {
+    println!(
+        "Usage: agentscommander-api-helper terminal-snapshot --to <exact-canonical-fqn> [--format json] [--timeout 15]\n       agentscommander-api-helper terminal-snapshot --to <exact-canonical-fqn> --format png --output <absolute-new-file.png> [--timeout 15]"
     );
 }
 
@@ -1138,6 +1152,940 @@ async fn pty_input_status(args: Vec<OsString>) -> HelperResult<i32> {
     Ok(0)
 }
 
+struct TerminalSnapshotOptions {
+    to: Option<String>,
+    format: terminal_snapshot_renderer::TerminalSnapshotFormat,
+    output: Option<std::path::PathBuf>,
+    timeout: u64,
+    saw_format: bool,
+    saw_timeout: bool,
+}
+
+impl std::fmt::Debug for TerminalSnapshotOptions {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TerminalSnapshotOptions")
+            .field("has_target", &self.to.is_some())
+            .field("format", &self.format)
+            .field("has_output", &self.output.is_some())
+            .field("timeout", &self.timeout)
+            .finish_non_exhaustive()
+    }
+}
+
+fn parse_terminal_snapshot_options(
+    args: Vec<OsString>,
+) -> Result<TerminalSnapshotOptions, terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
+    use terminal_snapshot_renderer::{
+        TerminalSnapshotFormat as F, TerminalSnapshotReasonCode as C,
+    };
+
+    let mut options = TerminalSnapshotOptions {
+        to: None,
+        format: F::Json,
+        output: None,
+        timeout: 15,
+        saw_format: false,
+        saw_timeout: false,
+    };
+    let mut iter = args.into_iter();
+    while let Some(argument) = iter.next() {
+        let argument = argument.into_string().map_err(|_| C::InvalidRequest)?;
+        match argument.as_str() {
+            "--to" if options.to.is_none() => {
+                options.to =
+                    Some(next_utf8(&mut iter, "invalid_request").map_err(|_| C::InvalidRequest)?);
+            }
+            "--format" if !options.saw_format => {
+                let value =
+                    next_utf8(&mut iter, "invalid_request").map_err(|_| C::InvalidRequest)?;
+                options.format = value.parse().map_err(|_| C::InvalidRequest)?;
+                options.saw_format = true;
+            }
+            "--output" if options.output.is_none() => {
+                options.output = Some(std::path::PathBuf::from(
+                    iter.next().ok_or(C::InvalidRequest)?,
+                ));
+            }
+            "--timeout" if !options.saw_timeout => {
+                let value =
+                    next_utf8(&mut iter, "invalid_request").map_err(|_| C::InvalidRequest)?;
+                options.timeout = value
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|value| (5..=60).contains(value))
+                    .ok_or(C::InvalidRequest)?;
+                options.saw_timeout = true;
+            }
+            "--token" | "--root" | "--session-id" | "--pretty" | "--force" | "--wake" => {
+                return Err(C::InvalidRequest);
+            }
+            _ => return Err(C::InvalidRequest),
+        }
+    }
+    let to = options.to.as_deref().ok_or(C::InvalidRequest)?;
+    terminal_snapshot_renderer::validate_target_syntax(to).map_err(|_| C::InvalidRequest)?;
+    match (options.format, options.output.as_deref()) {
+        (F::Json, None) => {}
+        (F::Png, Some(path)) => validate_snapshot_output_path(path)?,
+        _ => return Err(C::InvalidRequest),
+    }
+    Ok(options)
+}
+
+async fn terminal_snapshot_command(args: Vec<OsString>) -> i32 {
+    use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
+
+    let result = match parse_terminal_snapshot_options(args) {
+        Ok(options) => execute_terminal_snapshot(options).await,
+        Err(error) => Err(error),
+    };
+    match result {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!(
+                "terminal_snapshot_error code={} detail={}",
+                error.as_str(),
+                error.detail()
+            );
+            if error == C::OutputFailed {
+                let _ = std::io::stderr().flush();
+            }
+            1
+        }
+    }
+}
+
+async fn execute_terminal_snapshot(
+    options: TerminalSnapshotOptions,
+) -> Result<(), terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
+    use terminal_snapshot_renderer::{
+        decode_api_error, decode_api_success, to_ascii_json, TerminalSnapshotApiRequest,
+        TerminalSnapshotFormat as F, TerminalSnapshotPayload, TerminalSnapshotReasonCode as C,
+        API_VERSION, MAX_ERROR_BYTES, MAX_REQUEST_BYTES, MAX_TRANSPORT_BYTES,
+    };
+
+    let base = validated_snapshot_api_url()?;
+    let endpoint = base
+        .join("api/v1/terminal-snapshot")
+        .map_err(|_| C::ResponseUnavailable)?;
+    let request_id = Uuid::new_v4().to_string();
+    let request = TerminalSnapshotApiRequest {
+        api_version: API_VERSION.to_string(),
+        request_id: request_id.clone(),
+        to: options.to.clone().ok_or(C::InvalidRequest)?,
+        format: options.format,
+    };
+    request.validate().map_err(|_| C::InvalidRequest)?;
+    let body = to_ascii_json(&request, MAX_REQUEST_BYTES).map_err(|_| C::InvalidRequest)?;
+    let deadline = Instant::now() + Duration::from_secs(options.timeout);
+    let client = snapshot_http_client()?;
+    let remaining = deadline
+        .checked_duration_since(Instant::now())
+        .ok_or(C::SnapshotTimeout)?;
+    let response = tokio::time::timeout(
+        remaining,
+        client
+            .post(endpoint)
+            .header(
+                AUTHORIZATION,
+                authorization_value().map_err(|_| C::ResponseUnavailable)?,
+            )
+            .header(CONTENT_TYPE, "application/json")
+            .header(ACCEPT_ENCODING, "identity")
+            .body(body)
+            .send(),
+    )
+    .await
+    .map_err(|_| C::SnapshotTimeout)?
+    .map_err(|_| C::ResponseUnavailable)?;
+    validate_snapshot_response_headers(&response)?;
+    let status = response.status().as_u16();
+    let cap = if status == 200 {
+        MAX_TRANSPORT_BYTES
+    } else {
+        MAX_ERROR_BYTES
+    };
+    let bytes = read_snapshot_response_body(response, cap, deadline).await?;
+    if status != 200 {
+        return Err(decode_api_error(&bytes, status)
+            .map_err(|_| C::ResponseUnavailable)?
+            .error);
+    }
+    let success = decode_api_success(&bytes, &request_id, &request.to, request.format)
+        .map_err(|_| C::ResponseUnavailable)?;
+    drop(bytes);
+    if Instant::now() >= deadline {
+        return Err(C::SnapshotTimeout);
+    }
+    match (request.format, success.result) {
+        (F::Json, TerminalSnapshotPayload::Json { snapshot }) => {
+            let line = to_ascii_json(&snapshot, MAX_TRANSPORT_BYTES)
+                .map_err(|_| C::ResponseUnavailable)?;
+            if Instant::now() >= deadline {
+                return Err(C::SnapshotTimeout);
+            }
+            write_snapshot_stdout(&line)
+        }
+        (F::Png, TerminalSnapshotPayload::Png { metadata, png }) => {
+            if Instant::now() >= deadline {
+                return Err(C::SnapshotTimeout);
+            }
+            let output = options.output.as_deref().ok_or(C::InvalidRequest)?;
+            let file = create_snapshot_output(output)?;
+            file.write_and_verify(&png)?;
+            let line = to_ascii_json(&metadata, MAX_REQUEST_BYTES).map_err(|_| C::OutputFailed)?;
+            if Instant::now() >= deadline {
+                return Err(C::SnapshotTimeout);
+            }
+            write_snapshot_stdout(&line)
+        }
+        _ => Err(C::ResponseUnavailable),
+    }
+}
+
+fn snapshot_http_client(
+) -> Result<reqwest::Client, terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
+    use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
+
+    reqwest::Client::builder()
+        .no_proxy()
+        .retry(reqwest::retry::never())
+        .redirect(reqwest::redirect::Policy::none())
+        .referer(false)
+        .build()
+        .map_err(|_| C::ResponseUnavailable)
+}
+
+fn validated_snapshot_api_url(
+) -> Result<reqwest::Url, terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
+    let raw = api_url()
+        .map_err(|_| terminal_snapshot_renderer::TerminalSnapshotReasonCode::ResponseUnavailable)?;
+    validate_snapshot_api_url(&raw)
+}
+
+fn validate_snapshot_api_url(
+    raw: &str,
+) -> Result<reqwest::Url, terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
+    use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
+
+    let url = reqwest::Url::parse(raw).map_err(|_| C::ResponseUnavailable)?;
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.path() != "/"
+    {
+        return Err(C::ResponseUnavailable);
+    }
+    Ok(url)
+}
+
+fn validate_snapshot_response_headers(
+    response: &reqwest::Response,
+) -> Result<(), terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
+    use terminal_snapshot_renderer::{
+        TerminalSnapshotReasonCode as C, MAX_ERROR_BYTES, MAX_TRANSPORT_BYTES,
+    };
+
+    let headers = response.headers();
+    if !one_header_equals(headers, CONTENT_TYPE, "application/json; charset=utf-8")
+        || !one_header_equals(headers, CACHE_CONTROL, "no-store")
+        || !one_header_equals(headers, PRAGMA, "no-cache")
+    {
+        return Err(C::ResponseUnavailable);
+    }
+    let encodings: Vec<_> = headers.get_all(CONTENT_ENCODING).iter().collect();
+    if encodings.len() > 1
+        || encodings
+            .first()
+            .is_some_and(|value| !value.as_bytes().eq_ignore_ascii_case(b"identity"))
+    {
+        return Err(C::ResponseUnavailable);
+    }
+    let lengths: Vec<_> = headers.get_all(CONTENT_LENGTH).iter().collect();
+    if lengths.len() > 1 {
+        return Err(C::ResponseUnavailable);
+    }
+    if let Some(length) = lengths.first() {
+        let length = length
+            .to_str()
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .ok_or(C::ResponseUnavailable)?;
+        let cap = if response.status().as_u16() == 200 {
+            MAX_TRANSPORT_BYTES
+        } else {
+            MAX_ERROR_BYTES
+        };
+        if length > cap {
+            return Err(C::ResponseUnavailable);
+        }
+    }
+    Ok(())
+}
+
+fn one_header_equals(
+    headers: &reqwest::header::HeaderMap,
+    name: reqwest::header::HeaderName,
+    expected: &str,
+) -> bool {
+    let values: Vec<_> = headers.get_all(name).iter().collect();
+    values.len() == 1
+        && values[0]
+            .to_str()
+            .is_ok_and(|actual| actual.eq_ignore_ascii_case(expected))
+}
+
+async fn read_snapshot_response_body(
+    mut response: reqwest::Response,
+    cap: usize,
+    deadline: Instant,
+) -> Result<Vec<u8>, terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
+    use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
+
+    let claimed = response
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok());
+    let mut bytes = Vec::with_capacity(claimed.unwrap_or(0).min(cap));
+    loop {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or(C::SnapshotTimeout)?;
+        let chunk = tokio::time::timeout(remaining, response.chunk())
+            .await
+            .map_err(|_| C::SnapshotTimeout)?
+            .map_err(|_| C::ResponseUnavailable)?;
+        let Some(chunk) = chunk else {
+            break;
+        };
+        if bytes
+            .len()
+            .checked_add(chunk.len())
+            .is_none_or(|size| size > cap)
+        {
+            return Err(C::ResponseUnavailable);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    if claimed.is_some_and(|claimed| claimed != bytes.len()) {
+        return Err(C::ResponseUnavailable);
+    }
+    Ok(bytes)
+}
+
+fn write_snapshot_stdout(
+    bytes: &[u8],
+) -> Result<(), terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
+    use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
+
+    let mut stdout = std::io::stdout().lock();
+    stdout
+        .write_all(bytes)
+        .and_then(|_| stdout.write_all(b"\n"))
+        .and_then(|_| stdout.flush())
+        .map_err(|_| C::OutputFailed)
+}
+
+struct SnapshotOutputFile {
+    path: std::path::PathBuf,
+    file: std::fs::File,
+    parent: SnapshotDirectoryProof,
+    file_identity: SnapshotFileIdentity,
+}
+
+struct SnapshotDirectoryProof {
+    path: std::path::PathBuf,
+    file: std::fs::File,
+    identity: SnapshotFileObjectId,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SnapshotFileObjectId {
+    volume: u64,
+    file: u64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SnapshotFileIdentity {
+    object_id: SnapshotFileObjectId,
+    links: u64,
+}
+
+impl SnapshotOutputFile {
+    fn write_and_verify(
+        self,
+        bytes: &[u8],
+    ) -> Result<(), terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
+        self.write_and_verify_inner(bytes, || {}, || {})
+    }
+
+    fn write_and_verify_inner(
+        mut self,
+        bytes: &[u8],
+        after_write: impl FnOnce(),
+        after_sync: impl FnOnce(),
+    ) -> Result<(), terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
+        use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
+
+        let parent_path = self.path.parent().ok_or(C::OutputFailed)?;
+        let current_parent = snapshot_directory_identity(parent_path, C::OutputFailed)?;
+        if current_parent.identity != self.parent.identity {
+            return Err(C::OutputFailed);
+        }
+        self.file
+            .write_all(bytes)
+            .and_then(|_| self.file.flush())
+            .map_err(|_| C::OutputFailed)?;
+        after_write();
+        let current_parent = snapshot_directory_identity(parent_path, C::OutputFailed)?;
+        if current_parent.identity != self.parent.identity {
+            return Err(C::OutputFailed);
+        }
+        self.file.sync_all().map_err(|_| C::OutputFailed)?;
+        after_sync();
+        let current_parent = snapshot_directory_identity(parent_path, C::OutputFailed)?;
+        let retained_parent = snapshot_handle_identity(&self.parent.file, true)
+            .map_err(|_| C::OutputFailed)?
+            .object_id;
+        let current_handle = snapshot_file_identity(&self.file).map_err(|_| C::OutputFailed)?;
+        let current_path =
+            open_snapshot_leaf_in_parent(&self.parent, &self.path).map_err(|_| C::OutputFailed)?;
+        let current_path_identity =
+            snapshot_file_identity(&current_path).map_err(|_| C::OutputFailed)?;
+        let length = self.file.metadata().map_err(|_| C::OutputFailed)?.len();
+        if retained_parent != self.parent.identity
+            || current_parent.identity != self.parent.identity
+            || current_handle != self.file_identity
+            || current_path_identity != self.file_identity
+            || current_handle.links != 1
+            || length != bytes.len() as u64
+        {
+            return Err(C::OutputFailed);
+        }
+        Ok(())
+    }
+}
+
+fn validate_snapshot_output_path(
+    path: &std::path::Path,
+) -> Result<(), terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
+    validate_snapshot_output_path_inner(path, || {}).map(|_| ())
+}
+
+fn validate_snapshot_output_path_inner(
+    path: &std::path::Path,
+    before_filesystem: impl FnOnce(),
+) -> Result<SnapshotFileObjectId, terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
+    use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
+
+    if !path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        })
+    {
+        return Err(C::UnsafePath);
+    }
+    let extension = path.extension().ok_or(C::UnsafePath)?;
+    #[cfg(unix)]
+    let extension_is_png = {
+        use std::os::unix::ffi::OsStrExt;
+        extension
+            .as_bytes()
+            .iter()
+            .copied()
+            .map(|byte| byte.to_ascii_lowercase())
+            .eq(b"png".iter().copied())
+    };
+    #[cfg(windows)]
+    let extension_is_png = extension
+        .to_str()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("png"));
+    if !extension_is_png {
+        return Err(C::UnsafePath);
+    }
+    #[cfg(windows)]
+    validate_windows_snapshot_path(path)?;
+    before_filesystem();
+    let parent = path.parent().ok_or(C::UnsafePath)?;
+    verify_snapshot_directory_chain(parent)?;
+    let parent_proof = snapshot_directory_identity(parent, C::UnsafePath)?;
+    let parent_identity = parent_proof.identity;
+    drop(parent_proof);
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(parent_identity),
+        _ => Err(C::UnsafePath),
+    }
+}
+
+fn create_snapshot_output(
+    path: &std::path::Path,
+) -> Result<SnapshotOutputFile, terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
+    create_snapshot_output_inner(path, || {})
+}
+
+fn create_snapshot_output_inner(
+    path: &std::path::Path,
+    before_retention: impl FnOnce(),
+) -> Result<SnapshotOutputFile, terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
+    create_snapshot_output_with_hooks(path, before_retention, || {})
+}
+
+fn create_snapshot_output_with_hooks(
+    path: &std::path::Path,
+    before_retention: impl FnOnce(),
+    before_open: impl FnOnce(),
+) -> Result<SnapshotOutputFile, terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
+    use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
+
+    let validated_parent_identity = validate_snapshot_output_path_inner(path, || {})?;
+    let parent = path.parent().ok_or(C::UnsafePath)?;
+    before_retention();
+    let parent_proof = snapshot_directory_identity(parent, C::OutputFailed)?;
+    if parent_proof.identity != validated_parent_identity {
+        return Err(C::OutputFailed);
+    }
+    before_open();
+    let current_parent = snapshot_directory_identity(parent, C::OutputFailed)?;
+    if current_parent.identity != parent_proof.identity {
+        return Err(C::OutputFailed);
+    }
+    let file = create_snapshot_leaf_in_parent(&parent_proof, path).map_err(|_| C::OutputFailed)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|_| C::OutputFailed)?;
+        if file
+            .metadata()
+            .map_err(|_| C::OutputFailed)?
+            .permissions()
+            .mode()
+            & 0o777
+            != 0o600
+        {
+            return Err(C::OutputFailed);
+        }
+    }
+    let file_identity = snapshot_file_identity(&file).map_err(|_| C::OutputFailed)?;
+    let path_file =
+        open_snapshot_leaf_in_parent(&parent_proof, path).map_err(|_| C::OutputFailed)?;
+    let path_identity = snapshot_file_identity(&path_file).map_err(|_| C::OutputFailed)?;
+    let current_parent = snapshot_directory_identity(parent, C::OutputFailed)?;
+    if file_identity != path_identity
+        || file_identity.links != 1
+        || current_parent.identity != parent_proof.identity
+    {
+        return Err(C::OutputFailed);
+    }
+    Ok(SnapshotOutputFile {
+        path: path.to_path_buf(),
+        file,
+        parent: parent_proof,
+        file_identity,
+    })
+}
+
+fn verify_snapshot_directory_chain(
+    directory: &std::path::Path,
+) -> Result<(), terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
+    use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
+
+    let mut current = std::path::PathBuf::new();
+    for component in directory.components() {
+        current.push(component.as_os_str());
+        if matches!(
+            component,
+            std::path::Component::Prefix(_) | std::path::Component::RootDir
+        ) {
+            continue;
+        }
+        let metadata = std::fs::symlink_metadata(&current).map_err(|_| C::UnsafePath)?;
+        if !metadata.is_dir()
+            || metadata.file_type().is_symlink()
+            || snapshot_metadata_reparse(&metadata)
+        {
+            return Err(C::UnsafePath);
+        }
+    }
+    snapshot_directory_identity(directory, C::UnsafePath).map(|_| ())
+}
+
+fn snapshot_directory_identity(
+    path: &std::path::Path,
+    reason: terminal_snapshot_renderer::TerminalSnapshotReasonCode,
+) -> Result<SnapshotDirectoryProof, terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| reason)?;
+    if !metadata.is_dir()
+        || metadata.file_type().is_symlink()
+        || snapshot_metadata_reparse(&metadata)
+    {
+        return Err(reason);
+    }
+    let file = open_snapshot_directory(path).map_err(|_| reason)?;
+    let identity = snapshot_handle_identity(&file, true)
+        .map_err(|_| reason)?
+        .object_id;
+    Ok(SnapshotDirectoryProof {
+        path: path.to_path_buf(),
+        file,
+        identity,
+    })
+}
+
+fn open_snapshot_directory(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+        };
+        options
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    options.open(path)
+}
+
+#[cfg(not(unix))]
+fn open_snapshot_leaf(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    options.open(path)
+}
+
+struct SnapshotChildName<'a>(&'a std::ffi::OsStr);
+
+impl SnapshotChildName<'_> {
+    fn as_os_str(&self) -> &std::ffi::OsStr {
+        self.0
+    }
+}
+
+fn snapshot_child_name<'a>(
+    parent: &SnapshotDirectoryProof,
+    path: &'a std::path::Path,
+) -> std::io::Result<SnapshotChildName<'a>> {
+    use std::path::Component;
+
+    if path.parent() != Some(parent.path.as_path()) {
+        return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+    }
+    let relative = path
+        .strip_prefix(&parent.path)
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    let mut components = relative.components();
+    let name = match (components.next(), components.next()) {
+        (Some(Component::Normal(name)), None) if !name.is_empty() => name,
+        _ => return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput)),
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        if name.as_bytes().contains(&0) {
+            return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        if name.encode_wide().any(|unit| unit == 0)
+            || validate_windows_snapshot_path(&parent.path.join(name)).is_err()
+        {
+            return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+        }
+    }
+    Ok(SnapshotChildName(name))
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn unsupported_snapshot_output_error() -> std::io::Error {
+    std::io::Error::from(std::io::ErrorKind::Unsupported)
+}
+
+fn create_snapshot_leaf_in_parent(
+    parent: &SnapshotDirectoryProof,
+    path: &std::path::Path,
+) -> std::io::Result<std::fs::File> {
+    let name = snapshot_child_name(parent, path)?;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        return open_snapshot_leaf_at(
+            parent,
+            &name,
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        );
+    }
+    #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+    {
+        let _ = (parent, name);
+        Err(unsupported_snapshot_output_error())
+    }
+    #[cfg(not(unix))]
+    {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::{
+                FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+            };
+            options
+                .share_mode(FILE_SHARE_READ)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        }
+        options.open(parent.path.join(name.as_os_str()))
+    }
+}
+
+fn open_snapshot_leaf_in_parent(
+    parent: &SnapshotDirectoryProof,
+    path: &std::path::Path,
+) -> std::io::Result<std::fs::File> {
+    let name = snapshot_child_name(parent, path)?;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        open_snapshot_leaf_at(
+            parent,
+            &name,
+            libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0,
+        )
+    }
+    #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+    {
+        let _ = (parent, name);
+        Err(unsupported_snapshot_output_error())
+    }
+    #[cfg(not(unix))]
+    {
+        open_snapshot_leaf(&parent.path.join(name.as_os_str()))
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn open_snapshot_leaf_at(
+    parent: &SnapshotDirectoryProof,
+    name: &SnapshotChildName<'_>,
+    flags: i32,
+    mode: u32,
+) -> std::io::Result<std::fs::File> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+
+    let name = std::ffi::CString::new(name.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    let descriptor = unsafe {
+        // `openat` is variadic, so the mode must arrive default-promoted to at least
+        // `c_int`/`c_uint`. `libc::mode_t` is `u32` on Linux but `u16` on macOS, where passing
+        // it unpromoted is a hard compile error (E0617). Casting straight to `c_uint` is
+        // identity on Linux and avoids narrowing to `u16` and widening back on macOS.
+        libc::openat(
+            parent.file.as_raw_fd(),
+            name.as_ptr(),
+            flags,
+            mode as libc::c_uint,
+        )
+    };
+    if descriptor < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(unsafe { std::fs::File::from_raw_fd(descriptor) })
+    }
+}
+
+fn snapshot_file_identity(file: &std::fs::File) -> std::io::Result<SnapshotFileIdentity> {
+    snapshot_handle_identity(file, false)
+}
+
+#[cfg(unix)]
+fn snapshot_handle_identity(
+    file: &std::fs::File,
+    require_directory: bool,
+) -> std::io::Result<SnapshotFileIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata()?;
+    if metadata.is_dir() != require_directory || metadata.is_file() == require_directory {
+        return Err(std::io::Error::other("unexpected filesystem object"));
+    }
+    Ok(SnapshotFileIdentity {
+        object_id: SnapshotFileObjectId {
+            volume: metadata.dev(),
+            file: metadata.ino(),
+        },
+        links: metadata.nlink(),
+    })
+}
+
+#[cfg(windows)]
+fn snapshot_handle_identity(
+    file: &std::fs::File,
+    require_directory: bool,
+) -> std::io::Result<SnapshotFileIdentity> {
+    use std::mem::MaybeUninit;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+
+    let metadata = file.metadata()?;
+    if metadata.is_dir() != require_directory || metadata.is_file() == require_directory {
+        return Err(std::io::Error::other("unexpected filesystem object"));
+    }
+    let mut information = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+    let ok =
+        unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, information.as_mut_ptr()) };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let information = unsafe { information.assume_init() };
+    Ok(SnapshotFileIdentity {
+        object_id: SnapshotFileObjectId {
+            volume: u64::from(information.dwVolumeSerialNumber),
+            file: (u64::from(information.nFileIndexHigh) << 32)
+                | u64::from(information.nFileIndexLow),
+        },
+        links: u64::from(information.nNumberOfLinks),
+    })
+}
+
+#[cfg(unix)]
+fn snapshot_metadata_reparse(_metadata: &std::fs::Metadata) -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn snapshot_metadata_reparse(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(windows)]
+fn validate_windows_snapshot_path(
+    path: &std::path::Path,
+) -> Result<(), terminal_snapshot_renderer::TerminalSnapshotReasonCode> {
+    use std::path::{Component, Prefix};
+    use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
+
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    {
+        return Err(C::UnsafePath);
+    }
+    let raw = path.as_os_str().to_str().ok_or(C::UnsafePath)?;
+    if raw
+        .split(['\\', '/'])
+        .any(|component| matches!(component, "." | ".."))
+    {
+        return Err(C::UnsafePath);
+    }
+    let mut components = path.components();
+    let allowed_drive_colon = match components.next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::Disk(_) => Some(1),
+            Prefix::VerbatimDisk(_) => {
+                raw.char_indices().find_map(
+                    |(index, value)| {
+                        if value == ':' {
+                            Some(index)
+                        } else {
+                            None
+                        }
+                    },
+                )
+            }
+            Prefix::UNC(_, _) | Prefix::VerbatimUNC(_, _) => None,
+            _ => return Err(C::UnsafePath),
+        },
+        _ => return Err(C::UnsafePath),
+    };
+    if raw
+        .char_indices()
+        .any(|(index, value)| value == ':' && Some(index) != allowed_drive_colon)
+    {
+        return Err(C::UnsafePath);
+    }
+    for component in path.components() {
+        let Component::Normal(value) = component else {
+            continue;
+        };
+        let value = value.to_str().ok_or(C::UnsafePath)?;
+        if value.ends_with([' ', '.']) {
+            return Err(C::UnsafePath);
+        }
+        let stem = value
+            .split('.')
+            .next()
+            .unwrap_or(value)
+            .trim_end_matches([' ', '.']);
+        let reserved = matches!(
+            stem.to_ascii_uppercase().as_str(),
+            "CON"
+                | "PRN"
+                | "AUX"
+                | "NUL"
+                | "CONIN$"
+                | "CONOUT$"
+                | "COM1"
+                | "COM2"
+                | "COM3"
+                | "COM4"
+                | "COM5"
+                | "COM6"
+                | "COM7"
+                | "COM8"
+                | "COM9"
+                | "COM¹"
+                | "COM²"
+                | "COM³"
+                | "LPT1"
+                | "LPT2"
+                | "LPT3"
+                | "LPT4"
+                | "LPT5"
+                | "LPT6"
+                | "LPT7"
+                | "LPT8"
+                | "LPT9"
+                | "LPT¹"
+                | "LPT²"
+                | "LPT³"
+        );
+        if reserved
+            || value.chars().any(|character| {
+                character <= '\u{1f}' || matches!(character, '<' | '>' | '"' | '|' | '?' | '*')
+            })
+        {
+            return Err(C::UnsafePath);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1152,12 +2100,20 @@ mod tests {
     enum ScriptedReply {
         DropConnection,
         Http(u16, Vec<u8>),
+        Raw(Vec<u8>),
+        Trickle {
+            head: Vec<u8>,
+            first: Vec<u8>,
+            delay: Duration,
+            rest: Vec<u8>,
+        },
     }
 
     #[derive(Clone)]
     struct CapturedRequest {
         method: String,
         path: String,
+        headers: String,
         body: Vec<u8>,
     }
 
@@ -1179,6 +2135,7 @@ mod tests {
             );
         };
         let headers = std::str::from_utf8(&bytes[..header_end]).unwrap();
+        let captured_headers = headers.to_ascii_lowercase();
         let mut lines = headers.split("\r\n");
         let request_line = lines.next().unwrap();
         let mut request_parts = request_line.split_whitespace();
@@ -1201,6 +2158,7 @@ mod tests {
         CapturedRequest {
             method,
             path,
+            headers: captured_headers,
             body: bytes[header_end..header_end + content_length].to_vec(),
         }
     }
@@ -1239,6 +2197,22 @@ mod tests {
                         );
                         let _ = stream.write_all(headers.as_bytes()).await;
                         let _ = stream.write_all(&body).await;
+                        let _ = stream.shutdown().await;
+                    }
+                    ScriptedReply::Raw(response) => {
+                        let _ = stream.write_all(&response).await;
+                        let _ = stream.shutdown().await;
+                    }
+                    ScriptedReply::Trickle {
+                        head,
+                        first,
+                        delay,
+                        rest,
+                    } => {
+                        let _ = stream.write_all(&head).await;
+                        let _ = stream.write_all(&first).await;
+                        tokio::time::sleep(delay).await;
+                        let _ = stream.write_all(&rest).await;
                         let _ = stream.shutdown().await;
                     }
                 }
@@ -1624,6 +2598,796 @@ mod tests {
         assert!(captured[0].body.is_empty());
     }
 
+    fn strict_snapshot_response(status: u16, body: &[u8], extra_headers: &str) -> Vec<u8> {
+        let reason = if status == 200 { "OK" } else { "Response" };
+        format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nPragma: no-cache\r\nContent-Length: {}\r\n{extra_headers}Connection: close\r\n\r\n{}",
+            body.len(),
+            String::from_utf8_lossy(body),
+        )
+        .into_bytes()
+    }
+
+    #[tokio::test]
+    async fn terminal_snapshot_client_never_follows_redirects_or_retries_protocol_status() {
+        for (status, extra) in [
+            (302, "Location: http://127.0.0.1:9/forwarded\r\n"),
+            (421, ""),
+        ] {
+            let scripted = strict_snapshot_response(status, b"", extra);
+            let (base, captured, task) = scripted_server(vec![ScriptedReply::Raw(scripted)]).await;
+            let client = snapshot_http_client().unwrap();
+            let response = client
+                .post(format!("{base}/api/v1/terminal-snapshot"))
+                .header(ACCEPT_ENCODING, "identity")
+                .body("{}")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status().as_u16(), status);
+            task.await.unwrap();
+            let captured = captured.lock().unwrap();
+            assert_eq!(captured.len(), 1);
+            assert!(captured[0]
+                .headers
+                .contains("accept-encoding: identity\r\n"));
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_snapshot_response_rejects_compression_and_duplicate_security_headers() {
+        for extra in ["Content-Encoding: gzip\r\n", "Cache-Control: no-store\r\n"] {
+            let response = strict_snapshot_response(200, b"{}", extra);
+            let (base, _, task) = scripted_server(vec![ScriptedReply::Raw(response)]).await;
+            let client = snapshot_http_client().unwrap();
+            let response = client.get(base).send().await.unwrap();
+            assert_eq!(
+                validate_snapshot_response_headers(&response).unwrap_err(),
+                terminal_snapshot_renderer::TerminalSnapshotReasonCode::ResponseUnavailable
+            );
+            task.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_snapshot_streamed_body_uses_one_absolute_deadline() {
+        let head = b"HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nPragma: no-cache\r\nContent-Length: 4\r\nConnection: close\r\n\r\n".to_vec();
+        let (base, _, task) = scripted_server(vec![ScriptedReply::Trickle {
+            head,
+            first: b"{".to_vec(),
+            delay: Duration::from_millis(100),
+            rest: b"}\n\n".to_vec(),
+        }])
+        .await;
+        let client = snapshot_http_client().unwrap();
+        let response = client.get(base).send().await.unwrap();
+        validate_snapshot_response_headers(&response).unwrap();
+        let error = read_snapshot_response_body(
+            response,
+            terminal_snapshot_renderer::MAX_TRANSPORT_BYTES,
+            Instant::now() + Duration::from_millis(20),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error,
+            terminal_snapshot_renderer::TerminalSnapshotReasonCode::SnapshotTimeout
+        );
+        task.await.unwrap();
+    }
+
+    #[test]
+    fn terminal_snapshot_base_url_rejects_credentials_query_fragment_and_suffix() {
+        for invalid in [
+            "ftp://example.test/",
+            "http://user@example.test/",
+            "http://example.test/?query=1",
+            "http://example.test/#fragment",
+            "http://example.test/api/v1/",
+        ] {
+            assert!(validate_snapshot_api_url(invalid).is_err(), "{invalid}");
+        }
+        assert!(validate_snapshot_api_url("http://example.test/").is_ok());
+        assert!(validate_snapshot_api_url("https://example.test/").is_ok());
+    }
+
+    /// Confinement rejects every symlinked ancestor, and macOS reaches its temporary
+    /// directory through one: `$TMPDIR` lives under `/var -> private/var`, and the
+    /// `/tmp` fallback is itself a link. Canonicalise the root once so these fixtures
+    /// exercise confinement instead of the platform's temporary-directory layout.
+    fn snapshot_temp_root() -> (tempfile::TempDir, std::path::PathBuf) {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temporary.path()).unwrap();
+        (temporary, root)
+    }
+
+    /// Deliberately keeps the raw `tempfile` root so it can compare it against the
+    /// canonical one. Every other fixture must use `snapshot_temp_root`.
+    #[test]
+    fn terminal_snapshot_temp_root_confinement_diagnostic() {
+        let temporary = tempfile::tempdir().unwrap();
+        let raw = temporary.path().to_path_buf();
+        let canonical = std::fs::canonicalize(&raw).unwrap();
+
+        let mut report = format!("raw={raw:?}\ncanonical={canonical:?}\n");
+        let mut current = std::path::PathBuf::new();
+        for component in raw.components() {
+            current.push(component.as_os_str());
+            if matches!(
+                component,
+                std::path::Component::Prefix(_) | std::path::Component::RootDir
+            ) {
+                continue;
+            }
+            let line = match std::fs::symlink_metadata(&current) {
+                Ok(metadata) => format!(
+                    "{current:?} dir={} symlink={}\n",
+                    metadata.is_dir(),
+                    metadata.file_type().is_symlink()
+                ),
+                Err(error) => format!("{current:?} lstat_error={:?}\n", error.kind()),
+            };
+            report.push_str(&line);
+        }
+        report.push_str(&format!(
+            "raw_chain={:?}\ncanonical_chain={:?}\nraw_output={:?}\ncanonical_output={:?}",
+            verify_snapshot_directory_chain(&raw),
+            verify_snapshot_directory_chain(&canonical),
+            validate_snapshot_output_path(&raw.join("diagnostic.png")),
+            validate_snapshot_output_path(&canonical.join("diagnostic.png")),
+        ));
+        eprintln!("{report}");
+        assert_eq!(
+            validate_snapshot_output_path(&canonical.join("diagnostic.png")),
+            Ok(()),
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn terminal_snapshot_parser_enforces_format_output_and_duplicates() {
+        use terminal_snapshot_renderer::{
+            TerminalSnapshotFormat as F, TerminalSnapshotReasonCode as C,
+        };
+
+        let json =
+            parse_terminal_snapshot_options(vec!["--to".into(), "project:wg-1-team/member".into()])
+                .unwrap();
+        assert_eq!(json.format, F::Json);
+        assert_eq!(json.timeout, 15);
+        assert!(json.output.is_none());
+
+        let (_temporary, root) = snapshot_temp_root();
+        let output = root.join("snapshot.png");
+        let png = parse_terminal_snapshot_options(vec![
+            "--to".into(),
+            "project:wg-1-team/member".into(),
+            "--format".into(),
+            "png".into(),
+            "--output".into(),
+            output.clone().into_os_string(),
+            "--timeout".into(),
+            "60".into(),
+        ])
+        .unwrap();
+        assert_eq!(png.format, F::Png);
+        assert_eq!(png.output.as_deref(), Some(output.as_path()));
+        assert_eq!(png.timeout, 60);
+
+        for invalid in [
+            vec![
+                "--to".into(),
+                "project:wg-1-team/member".into(),
+                "--output".into(),
+                output.clone().into_os_string(),
+            ],
+            vec![
+                "--to".into(),
+                "project:wg-1-team/member".into(),
+                "--timeout".into(),
+                "4".into(),
+            ],
+            vec![
+                "--to".into(),
+                "project:wg-1-team/member".into(),
+                "--to".into(),
+                "project:wg-1-team/other".into(),
+            ],
+            vec![
+                "--token".into(),
+                "secret".into(),
+                "--to".into(),
+                "project:wg-1-team/member".into(),
+            ],
+        ] {
+            assert!(matches!(
+                parse_terminal_snapshot_options(invalid),
+                Err(C::InvalidRequest)
+            ));
+        }
+    }
+
+    /// Plan line 157 in the code: `--output` travels from the raw `OsString` into a
+    /// `PathBuf` with no conversion, so a non-UTF-8 Unix leaf must survive the parser
+    /// byte for byte. Parsing and validation create nothing, which is why this holds on
+    /// every Unix, macOS included.
+    #[cfg(unix)]
+    #[test]
+    fn terminal_snapshot_parser_preserves_non_utf8_output_bytes() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+        let (_temporary, root) = snapshot_temp_root();
+        let leaf = std::ffi::OsString::from_vec(b"snapshot-\xff.png".to_vec());
+        let output = root.join(leaf);
+        let options = parse_terminal_snapshot_options(vec![
+            "--to".into(),
+            "project:wg-1-team/member".into(),
+            "--format".into(),
+            "png".into(),
+            "--output".into(),
+            output.clone().into_os_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            options
+                .output
+                .as_deref()
+                .map(|path| path.as_os_str().as_bytes()),
+            Some(output.as_os_str().as_bytes())
+        );
+        assert!(!output.exists(), "parsing created the output leaf");
+    }
+
+    #[test]
+    fn terminal_snapshot_option_debug_omits_target_and_path_canaries() {
+        const AUTH_CANARY: &str = "AUTH_1173_HELPER_B7W4";
+        const PATH_CANARY: &str = r"C:\PATH_1173_HELPER_B7W4\snapshot.png";
+        let options = TerminalSnapshotOptions {
+            to: Some(AUTH_CANARY.to_string()),
+            format: terminal_snapshot_renderer::TerminalSnapshotFormat::Png,
+            output: Some(std::path::PathBuf::from(PATH_CANARY)),
+            timeout: 15,
+            saw_format: true,
+            saw_timeout: true,
+        };
+        let diagnostic = format!("{options:?}");
+        assert!(!diagnostic.contains(AUTH_CANARY));
+        assert!(!diagnostic.contains(PATH_CANARY));
+        assert!(diagnostic.contains("has_target: true"));
+        assert!(diagnostic.contains("format: Png"));
+        assert!(diagnostic.contains("has_output: true"));
+    }
+
+    #[test]
+    fn terminal_snapshot_output_is_create_new_and_identity_stable() {
+        use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
+
+        let (_temporary, root) = snapshot_temp_root();
+        let output = root.join("snapshot.png");
+        let file = create_snapshot_output(&output).unwrap();
+        file.write_and_verify(b"not-yet-a-png").unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), b"not-yet-a-png");
+        assert!(matches!(
+            create_snapshot_output(&output),
+            Err(C::UnsafePath)
+        ));
+        assert_eq!(
+            validate_snapshot_output_path(&root.join("snapshot.txt")).unwrap_err(),
+            C::UnsafePath
+        );
+        assert_eq!(
+            validate_snapshot_output_path(std::path::Path::new("relative.png")).unwrap_err(),
+            C::UnsafePath
+        );
+    }
+
+    #[test]
+    fn terminal_snapshot_output_rejects_same_spelling_parent_replacement() {
+        use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
+
+        let (_temporary, root) = snapshot_temp_root();
+        let parent = root.join("parent");
+        let retired = root.join("retired");
+        std::fs::create_dir(&parent).unwrap();
+        let output = parent.join("snapshot.png");
+        let parent_for_race = parent.clone();
+        let retired_for_race = retired.clone();
+        let error = create_snapshot_output_inner(&output, move || {
+            std::fs::rename(&parent_for_race, &retired_for_race).unwrap();
+            std::fs::create_dir(&parent_for_race).unwrap();
+        })
+        .err()
+        .unwrap();
+        assert_eq!(error, C::OutputFailed);
+        assert!(
+            !output.exists(),
+            "replacement parent received an output leaf"
+        );
+        assert!(
+            !retired.join("snapshot.png").exists(),
+            "retained parent received an output leaf after identity loss"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_snapshot_unix_helper_parent_replacement_before_open_is_confined() {
+        use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
+
+        let (_temporary, root) = snapshot_temp_root();
+        let parent = root.join("parent");
+        let retired = root.join("retired");
+        std::fs::create_dir(&parent).unwrap();
+        let output = parent.join("snapshot.png");
+        let parent_for_race = parent.clone();
+        let retired_for_race = retired.clone();
+
+        let error = create_snapshot_output_with_hooks(
+            &output,
+            || {},
+            move || {
+                std::fs::rename(&parent_for_race, &retired_for_race).unwrap();
+                std::fs::create_dir(&parent_for_race).unwrap();
+            },
+        )
+        .err()
+        .unwrap();
+
+        assert_eq!(error, C::OutputFailed);
+        assert!(
+            !output.exists(),
+            "replacement parent received an output leaf"
+        );
+        assert!(
+            !retired.join("snapshot.png").exists(),
+            "retained parent received a leaf after detected identity loss"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_snapshot_unix_helper_write_stays_with_retained_parent_object() {
+        use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
+
+        let (_temporary, root) = snapshot_temp_root();
+        let parent = root.join("parent");
+        let retired = root.join("retired");
+        std::fs::create_dir(&parent).unwrap();
+        let output = parent.join("snapshot.png");
+        let file = create_snapshot_output(&output).unwrap();
+        let parent_for_race = parent.clone();
+        let retired_for_race = retired.clone();
+        let replacement_output = output.clone();
+
+        let error = file
+            .write_and_verify_inner(
+                b"owned bytes",
+                move || {
+                    std::fs::rename(&parent_for_race, &retired_for_race).unwrap();
+                    std::fs::create_dir(&parent_for_race).unwrap();
+                    std::fs::write(&replacement_output, b"replacement bytes").unwrap();
+                },
+                || {},
+            )
+            .unwrap_err();
+
+        assert_eq!(error, C::OutputFailed);
+        assert_eq!(std::fs::read(&output).unwrap(), b"replacement bytes");
+        assert_eq!(
+            std::fs::read(retired.join("snapshot.png")).unwrap(),
+            b"owned bytes"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_snapshot_unix_helper_parent_link_churn_preserves_object_proof() {
+        use std::os::unix::fs::MetadataExt;
+
+        let (_temporary, root) = snapshot_temp_root();
+        let output = root.join("snapshot.png");
+        let unrelated = root.join("unrelated");
+        let unrelated_after_write = unrelated.clone();
+        let unrelated_after_sync = unrelated.clone();
+        let parent_after_write = root.clone();
+        let file = create_snapshot_output(&output).unwrap();
+
+        file.write_and_verify_inner(
+            b"portable bytes",
+            move || {
+                // Directory link accounting is platform-specific. Linux counts only
+                // subdirectories, so a parent returns to its earlier count once a child
+                // directory is removed; macOS does not follow that convention. The churn
+                // this fixture needs is proven by the count moving, not by any fixed
+                // arithmetic, and the removal is proven by the entry being gone below.
+                let before_churn = std::fs::metadata(&parent_after_write).unwrap().nlink();
+                std::fs::create_dir(&unrelated_after_write).unwrap();
+                let during_churn = std::fs::metadata(&parent_after_write).unwrap().nlink();
+                assert_ne!(
+                    during_churn, before_churn,
+                    "a sibling directory left the parent link count unchanged"
+                );
+            },
+            move || {
+                std::fs::remove_dir(&unrelated_after_sync).unwrap();
+            },
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read(output).unwrap(), b"portable bytes");
+        assert!(!unrelated.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_snapshot_unix_helper_leaf_substitution_is_detected() {
+        use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
+
+        let (_temporary, root) = snapshot_temp_root();
+        let output = root.join("snapshot.png");
+        let displaced = root.join("displaced.png");
+        let file = create_snapshot_output(&output).unwrap();
+        let output_for_race = output.clone();
+        let displaced_for_race = displaced.clone();
+
+        let error = file
+            .write_and_verify_inner(
+                b"owned bytes",
+                move || {
+                    std::fs::rename(&output_for_race, &displaced_for_race).unwrap();
+                    std::fs::write(&output_for_race, b"replacement bytes").unwrap();
+                },
+                || {},
+            )
+            .unwrap_err();
+
+        assert_eq!(error, C::OutputFailed);
+        assert_eq!(std::fs::read(output).unwrap(), b"replacement bytes");
+        assert_eq!(std::fs::read(displaced).unwrap(), b"owned bytes");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_snapshot_unix_helper_rejects_invalid_child_paths_before_open() {
+        use std::os::unix::ffi::OsStringExt;
+        use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
+
+        let (_temporary, root) = snapshot_temp_root();
+        let parent = root.join("parent");
+        let wrong_parent = root.join("wrong-parent");
+        std::fs::create_dir(&parent).unwrap();
+        std::fs::create_dir(&wrong_parent).unwrap();
+        let outside = wrong_parent.join("snapshot.png");
+        std::fs::write(&outside, b"outside bytes").unwrap();
+        let proof = snapshot_directory_identity(&parent, C::OutputFailed).unwrap();
+
+        for invalid in [
+            parent.clone(),
+            outside.clone(),
+            parent.join("."),
+            parent.join(".."),
+            parent.join("nested/snapshot.png"),
+        ] {
+            assert_eq!(
+                snapshot_child_name(&proof, &invalid).err().unwrap().kind(),
+                std::io::ErrorKind::InvalidInput
+            );
+            assert_eq!(
+                open_snapshot_leaf_in_parent(&proof, &invalid)
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::InvalidInput
+            );
+        }
+
+        let nul_leaf = std::ffi::OsString::from_vec(b"nul\0snapshot.png".to_vec());
+        let nul_path = parent.join(nul_leaf);
+        assert_eq!(
+            snapshot_child_name(&proof, &nul_path).err().unwrap().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert_eq!(std::fs::read(outside).unwrap(), b"outside bytes");
+        assert!(!parent.join("snapshot.png").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_snapshot_unix_helper_linked_leaves_fail_closed() {
+        use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
+
+        let (_temporary, root) = snapshot_temp_root();
+        let parent = root.as_path();
+        let proof = snapshot_directory_identity(parent, C::OutputFailed).unwrap();
+        let target = parent.join("target");
+        let symlink = parent.join("symlink.png");
+        std::fs::write(&target, b"target bytes").unwrap();
+        std::os::unix::fs::symlink(&target, &symlink).unwrap();
+
+        let symlink_error = open_snapshot_leaf_in_parent(&proof, &symlink).unwrap_err();
+        assert_eq!(symlink_error.raw_os_error(), Some(libc::ELOOP));
+        assert!(matches!(
+            create_snapshot_output(&symlink),
+            Err(C::UnsafePath)
+        ));
+
+        let hard_leaf = parent.join("hard.png");
+        let hard_alias = parent.join("hard-alias.png");
+        let hard_leaf_for_hook = hard_leaf.clone();
+        let hard_alias_for_hook = hard_alias.clone();
+        let hard_error = create_snapshot_output(&hard_leaf)
+            .unwrap()
+            .write_and_verify_inner(
+                b"hard bytes",
+                move || {
+                    std::fs::hard_link(&hard_leaf_for_hook, &hard_alias_for_hook).unwrap();
+                },
+                || {},
+            )
+            .unwrap_err();
+        assert_eq!(hard_error, C::OutputFailed);
+        assert_eq!(std::fs::read(&hard_leaf).unwrap(), b"hard bytes");
+        assert_eq!(std::fs::read(&hard_alias).unwrap(), b"hard bytes");
+    }
+
+    /// The creation-level contract for a non-UTF-8 leaf, which is not the same on every
+    /// Unix. Established by the macOS evidence at `a06a3cf6`: the filesystem refused to
+    /// create an entry with these bytes, and the refusal came from creation rather than
+    /// from confinement, because the reason code was `OutputFailed` and not
+    /// `UnsafePath`. Inferred, unconfirmed, and deliberately asserted nowhere below:
+    /// that the refusal is APFS enforcing UTF-8 filenames and reporting `EILSEQ`.
+    ///
+    /// Both arms compile everywhere `cfg(unix)` applies and only the expected outcome
+    /// differs. Neither arm tolerates the other's outcome, so a platform that changes
+    /// behaviour fails here instead of passing quietly.
+    #[cfg(unix)]
+    #[test]
+    fn terminal_snapshot_unix_helper_non_utf8_output_leaf_matches_platform_contract() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
+
+        let (_temporary, root) = snapshot_temp_root();
+        let leaf = std::ffi::OsString::from_vec(b"snapshot-\xff.png".to_vec());
+        let output = root.join(&leaf);
+        let entries_before = std::fs::read_dir(&root).unwrap().count();
+        assert_eq!(entries_before, 0, "the temporary root did not start empty");
+        let created = create_snapshot_output(&output);
+
+        if cfg!(target_os = "macos") {
+            let error = created
+                .err()
+                .expect("macOS accepted a non-UTF-8 output leaf");
+            assert_eq!(error, C::OutputFailed);
+            // Stated separately although the equality above already implies it: this is
+            // the assertion carrying the claim that confinement accepted the name and
+            // the refusal came from creation.
+            assert_ne!(error, C::UnsafePath);
+            assert_eq!(
+                std::fs::symlink_metadata(&output).unwrap_err().kind(),
+                std::io::ErrorKind::NotFound
+            );
+            assert_eq!(
+                std::fs::read_dir(&root).unwrap().count(),
+                entries_before,
+                "a refused creation left an entry behind"
+            );
+        } else {
+            created
+                .unwrap()
+                .write_and_verify(b"portable bytes")
+                .unwrap();
+            assert_eq!(std::fs::read(&output).unwrap(), b"portable bytes");
+            let names: Vec<std::ffi::OsString> = std::fs::read_dir(&root)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            assert_eq!(names.len(), entries_before + 1);
+            assert_eq!(names[0].as_bytes(), leaf.as_bytes());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_snapshot_unix_helper_rejects_symlink_parent() {
+        use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
+
+        let (_temporary, root) = snapshot_temp_root();
+        let real = root.join("real");
+        let linked = root.join("linked");
+        std::fs::create_dir(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &linked).unwrap();
+        let output = linked.join("snapshot.png");
+
+        assert_eq!(
+            validate_snapshot_output_path(&output).unwrap_err(),
+            C::UnsafePath
+        );
+        assert!(!real.join("snapshot.png").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_snapshot_helper_retains_real_parent_and_leaf_through_output() {
+        let (_temporary, root) = snapshot_temp_root();
+        let ancestor = root.join("ancestor");
+        let parent = ancestor.join("parent");
+        let retired_parent = ancestor.join("retired-parent");
+        let retired_ancestor = root.join("retired-ancestor");
+        let displaced_leaf = parent.join("displaced.png");
+        let hard_link_leaf = parent.join("hard-link.png");
+        std::fs::create_dir(&ancestor).unwrap();
+        std::fs::create_dir(&parent).unwrap();
+        let output = parent.join("snapshot.png");
+        let parent_before_open = parent.clone();
+        let retired_before_open = retired_parent.clone();
+        let file = create_snapshot_output_with_hooks(
+            &output,
+            || {},
+            move || {
+                assert!(std::fs::rename(&parent_before_open, &retired_before_open).is_err());
+            },
+        )
+        .unwrap();
+        assert!(
+            file.parent.identity
+                == snapshot_handle_identity(&file.parent.file, true)
+                    .unwrap()
+                    .object_id
+        );
+        let output_after_write = output.clone();
+        let displaced_after_write = displaced_leaf.clone();
+        let output_for_link = output.clone();
+        let hard_link_after_write = hard_link_leaf.clone();
+        let ancestor_after_sync = ancestor.clone();
+        let retired_after_sync = retired_ancestor.clone();
+        file.write_and_verify_inner(
+            b"owned bytes",
+            move || {
+                assert!(
+                    std::fs::rename(&output_after_write, &displaced_after_write).is_err(),
+                    "helper output leaf was replaceable after write"
+                );
+                assert!(
+                    std::fs::hard_link(&output_for_link, &hard_link_after_write).is_err(),
+                    "helper output leaf allowed a hard-link alias"
+                );
+            },
+            move || {
+                assert!(
+                    std::fs::rename(&ancestor_after_sync, &retired_after_sync).is_err(),
+                    "helper output ancestor was replaceable after sync"
+                );
+            },
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), b"owned bytes");
+        assert!(!displaced_leaf.exists());
+        assert!(!hard_link_leaf.exists());
+        assert!(!retired_parent.exists());
+        assert!(!retired_ancestor.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_snapshot_helper_rejects_windows_aliases_before_filesystem_work() {
+        for path in [
+            r"\\.\C:\snapshot.png",
+            r"\\?\GLOBALROOT\Device\HarddiskVolume1\snapshot.png",
+            r"\\?\Volume{00000000-0000-0000-0000-000000000000}\snapshot.png",
+            r"\\?\PIPE\snapshot.png",
+            r"C:\safe\snapshot.png:stream",
+            r"C:\safe\CON .png",
+            r"C:\safe\CONOUT$.png",
+            r"C:\safe\COM¹.png",
+            r"C:\safe\LPT³.txt.png",
+            r"C:\safe\trailing.\snapshot.png",
+            r"C:\safe\..\escape.png",
+            r"C:\safe\.\snapshot.png",
+        ] {
+            assert!(
+                validate_snapshot_output_path_inner(std::path::Path::new(path), || {
+                    panic!("lexically rejected helper path reached filesystem validation")
+                })
+                .is_err(),
+                "accepted unsafe helper Windows spelling: {path}"
+            );
+        }
+        for path in [
+            r"C:\safe\snapshot.png",
+            r"\\server\share\snapshot.PNG",
+            r"\\?\C:\safe\snapshot.png",
+            r"\\?\UNC\server\share\snapshot.png",
+        ] {
+            assert!(
+                validate_windows_snapshot_path(std::path::Path::new(path)).is_ok(),
+                "rejected allowed helper Windows spelling: {path}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_snapshot_helper_rejects_junction_and_symlink_parents() {
+        use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
+
+        let (_temporary, root) = snapshot_temp_root();
+        let real = root.join("real");
+        let junction = root.join("junction");
+        std::fs::create_dir(&real).unwrap();
+        let status = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&real)
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "failed to create the helper junction fixture"
+        );
+        let junction_output = junction.join("snapshot.png");
+        assert_eq!(
+            validate_snapshot_output_path(&junction_output).unwrap_err(),
+            C::UnsafePath
+        );
+        assert!(!real.join("snapshot.png").exists());
+        std::fs::remove_dir(&junction).unwrap();
+
+        let symlink = root.join("symlink");
+        if std::os::windows::fs::symlink_dir(&real, &symlink).is_ok() {
+            let symlink_output = symlink.join("snapshot.png");
+            assert_eq!(
+                validate_snapshot_output_path(&symlink_output).unwrap_err(),
+                C::UnsafePath
+            );
+            assert!(!real.join("snapshot.png").exists());
+            std::fs::remove_dir(&symlink).unwrap();
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_snapshot_helper_supports_long_verbatim_and_distinct_normalized_names() {
+        use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
+
+        let (_temporary, root) = snapshot_temp_root();
+        let case_parent = root.join("CaseParent");
+        std::fs::create_dir(&case_parent).unwrap();
+        let upper_parent = std::path::PathBuf::from(case_parent.to_string_lossy().to_uppercase());
+        assert!(
+            snapshot_directory_identity(&case_parent, C::UnsafePath)
+                .unwrap()
+                .identity
+                == snapshot_directory_identity(&upper_parent, C::UnsafePath)
+                    .unwrap()
+                    .identity
+        );
+
+        let composed = root.join("\u{e9}");
+        let decomposed = root.join("e\u{301}");
+        std::fs::create_dir(&composed).unwrap();
+        std::fs::create_dir(&decomposed).unwrap();
+        assert!(
+            snapshot_directory_identity(&composed, C::UnsafePath)
+                .unwrap()
+                .identity
+                != snapshot_directory_identity(&decomposed, C::UnsafePath)
+                    .unwrap()
+                    .identity
+        );
+
+        let mut long_parent = root.clone();
+        while long_parent.as_os_str().len() < 300 {
+            long_parent.push("terminal-snapshot-helper-long-segment");
+            std::fs::create_dir(&long_parent).unwrap();
+        }
+        let output = long_parent.join("snapshot.png");
+        create_snapshot_output(&output)
+            .unwrap()
+            .write_and_verify(b"long path")
+            .unwrap();
+        assert_eq!(std::fs::read(output).unwrap(), b"long path");
+    }
+
     #[test]
     fn send_parser_rejects_zero_and_every_payload_pair() {
         assert!(parse_send_options(vec!["--to".into(), "p:wg-1-t/a".into()])
@@ -1662,4 +3426,13 @@ mod tests {
             }
         }
     }
+}
+
+#[cfg(all(test, unix, not(any(target_os = "linux", target_os = "macos"))))]
+#[test]
+fn terminal_snapshot_output_is_stably_unsupported_on_other_unix() {
+    assert_eq!(
+        unsupported_snapshot_output_error().kind(),
+        std::io::ErrorKind::Unsupported
+    );
 }

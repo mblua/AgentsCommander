@@ -68,6 +68,80 @@ pub fn record_pty_input(metadata: &PtyInputAuditMetadata) {
     }
 }
 
+#[derive(Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalSnapshotAuditMetadata {
+    pub event: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requester_fqn: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_fqn: Option<String>,
+    pub source_plane: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_backend: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub columns: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub captured_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accepted_at: Option<String>,
+    pub completed_at: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason_code: Option<String>,
+}
+
+impl std::fmt::Debug for TerminalSnapshotAuditMetadata {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TerminalSnapshotAuditMetadata")
+            .field("has_request_id", &self.request_id.is_some())
+            .field("has_requester", &self.requester_fqn.is_some())
+            .field("has_target", &self.target_fqn.is_some())
+            .field("has_format", &self.format.is_some())
+            .field("has_selected_session", &self.selected_session_id.is_some())
+            .field("has_selected_backend", &self.selected_backend.is_some())
+            .field("rows", &self.rows)
+            .field("columns", &self.columns)
+            .field("sequence", &self.sequence)
+            .field("has_captured_at", &self.captured_at.is_some())
+            .field("payload_bytes", &self.payload_bytes)
+            .field("has_accepted_at", &self.accepted_at.is_some())
+            .field("has_reason_code", &self.reason_code.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+pub fn record_terminal_snapshot(metadata: &TerminalSnapshotAuditMetadata) {
+    let Some(path) = audit_path() else {
+        return;
+    };
+    rotate_if_needed(&path);
+    let mut line = match serde_json::to_string(metadata) {
+        Ok(line) => line,
+        Err(_) => {
+            log::warn!("[api-audit] snapshot metadata serialization failed");
+            return;
+        }
+    };
+    line.push('\n');
+    if append(&path, &line).is_err() {
+        log::warn!("[api-audit] snapshot metadata write failed");
+    }
+}
+
 pub fn record_pty_input_result(event: &str, result: &crate::phone::types::PtyInputResult) {
     let source_plane = result.source_plane.map(|source| match source {
         crate::phone::types::PtyInputSourcePlane::HostCli => "host_cli".to_string(),
@@ -180,6 +254,63 @@ mod tests {
         assert!(value.get("text").is_none());
         assert!(value.get("token").is_none());
         assert_eq!(value["payloadBytes"], 12);
+    }
+
+    #[test]
+    fn snapshot_metadata_has_no_content_secret_or_path_fields() {
+        let metadata = TerminalSnapshotAuditMetadata {
+            event: "terminal_snapshot".into(),
+            request_id: Some(uuid::Uuid::new_v4().to_string()),
+            requester_fqn: Some("project:wg-1-team/lead".into()),
+            target_fqn: Some("project:wg-1-team/dev".into()),
+            source_plane: "host_cli".into(),
+            format: Some("json".into()),
+            selected_session_id: Some(uuid::Uuid::new_v4().to_string()),
+            selected_backend: Some("localProcess".into()),
+            rows: Some(30),
+            columns: Some(120),
+            sequence: Some(7),
+            captured_at: Some("2026-01-01T00:00:00.000Z".into()),
+            payload_bytes: Some(123),
+            accepted_at: Some("2026-01-01T00:00:00.000Z".into()),
+            completed_at: "2026-01-01T00:00:01.000Z".into(),
+            status: "succeeded".into(),
+            reason_code: None,
+        };
+        let diagnostic = format!("{metadata:?}");
+        for forbidden in [
+            metadata.request_id.as_deref().unwrap(),
+            metadata.requester_fqn.as_deref().unwrap(),
+            metadata.target_fqn.as_deref().unwrap(),
+            metadata.selected_session_id.as_deref().unwrap(),
+            metadata.captured_at.as_deref().unwrap(),
+            metadata.accepted_at.as_deref().unwrap(),
+            metadata.completed_at.as_str(),
+            metadata.status.as_str(),
+        ] {
+            assert!(!diagnostic.contains(forbidden));
+        }
+        assert!(diagnostic.contains("rows: Some(30)"));
+        assert!(diagnostic.contains("payload_bytes: Some(123)"));
+
+        let value = serde_json::to_value(metadata).unwrap();
+        for forbidden in [
+            "token",
+            "nonce",
+            "confirmationTag",
+            "text",
+            "cells",
+            "lines",
+            "pngBase64",
+            "output",
+            "path",
+            "workingDirectory",
+        ] {
+            assert!(
+                value.get(forbidden).is_none(),
+                "forbidden audit field {forbidden}"
+            );
+        }
     }
 
     #[test]

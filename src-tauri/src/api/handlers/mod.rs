@@ -4,6 +4,7 @@ pub mod list_peers;
 pub mod pty_input;
 pub mod send;
 pub mod session_transport;
+pub mod terminal_snapshot;
 
 use std::net::IpAddr;
 

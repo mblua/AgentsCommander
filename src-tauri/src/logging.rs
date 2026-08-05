@@ -19,6 +19,100 @@ use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 static INIT: OnceLock<()> = OnceLock::new();
+static PAYLOAD_PANIC_HOOK: OnceLock<()> = OnceLock::new();
+
+thread_local! {
+    static PAYLOAD_WORKER_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+struct PayloadWorkerGuard;
+
+impl PayloadWorkerGuard {
+    fn enter() -> Self {
+        PAYLOAD_PANIC_HOOK.get_or_init(|| {
+            let previous = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |information| {
+                let suppressed = PAYLOAD_WORKER_DEPTH.with(|depth| depth.get() > 0);
+                if !suppressed {
+                    previous(information);
+                }
+            }));
+        });
+        PAYLOAD_WORKER_DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
+        Self
+    }
+}
+
+impl Drop for PayloadWorkerGuard {
+    fn drop(&mut self) {
+        PAYLOAD_WORKER_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
+/// Structural marker returned after a terminal-payload panic. The original
+/// panic object is dropped while hook suppression is still active and never
+/// crosses a snapshot task boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PayloadPanic;
+
+/// Catch a panic in a terminal-payload worker without allowing the default
+/// panic hook to print attacker-controlled parser or renderer data. Unrelated
+/// panics continue through the process hook unchanged.
+pub(crate) fn catch_payload_unwind<F, T>(operation: F) -> Result<T, PayloadPanic>
+where
+    F: FnOnce() -> T,
+{
+    let _guard = PayloadWorkerGuard::enter();
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation)) {
+        Ok(value) => Ok(value),
+        Err(payload) => {
+            drop(payload);
+            Err(PayloadPanic)
+        }
+    }
+}
+
+/// Poll a payload-bearing future with panic-hook suppression active only for
+/// each synchronous poll. This remains correct when Tokio moves the future
+/// between worker threads and converts a panic to one structural marker.
+pub(crate) async fn catch_payload_future<F>(future: F) -> Result<F::Output, PayloadPanic>
+where
+    F: std::future::Future,
+{
+    let mut future = Some(Box::pin(future));
+    std::future::poll_fn(move |context| {
+        let Some(pending) = future.as_mut() else {
+            return std::task::Poll::Ready(Err(PayloadPanic));
+        };
+        match catch_payload_unwind(|| pending.as_mut().poll(context)) {
+            Ok(std::task::Poll::Pending) => std::task::Poll::Pending,
+            Ok(std::task::Poll::Ready(output)) => {
+                let completed = future.take();
+                match catch_payload_unwind(|| drop(completed)) {
+                    Ok(()) => std::task::Poll::Ready(Ok(output)),
+                    Err(panic) => std::task::Poll::Ready(Err(panic)),
+                }
+            }
+            Err(panic) => {
+                let failed = future.take();
+                let drop_panic = catch_payload_unwind(|| drop(failed)).err();
+                std::task::Poll::Ready(Err(drop_panic.unwrap_or(panic)))
+            }
+        }
+    })
+    .await
+}
+
+/// Collapse both a guarded worker panic and a Tokio task failure without ever
+/// invoking `JoinError` formatting, which includes string panic payloads.
+pub(crate) fn collapse_payload_task<T>(
+    joined: Result<Result<T, PayloadPanic>, tokio::task::JoinError>,
+) -> Result<T, PayloadPanic> {
+    match joined {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(_)) | Err(_) => Err(PayloadPanic),
+    }
+}
 
 /// #612 runtime-adjustable verbosity for our own targets (`agentscommander*`),
 /// stored as `log::Level as u8` (Error=1 .. Trace=5). Installed ONLY on the
@@ -91,6 +185,30 @@ impl log::Log for LevelGateLogger {
         // Re-check per the log::Log contract: the global max_level may admit
         // records this gate rejects. Delegating to inner reuses the existing
         // format closure unchanged (scrub + #264 sink + rotation).
+        if self.enabled(record.metadata()) {
+            self.inner.log(record);
+        }
+    }
+
+    fn flush(&self) {
+        self.inner.flush();
+    }
+}
+
+struct PrivacyFilterLogger<L> {
+    inner: L,
+}
+
+fn is_payload_logging_target(target: &str) -> bool {
+    target == "vt100" || target.starts_with("vt100::")
+}
+
+impl<L: log::Log> log::Log for PrivacyFilterLogger<L> {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        !is_payload_logging_target(metadata.target()) && self.inner.enabled(metadata)
+    }
+
+    fn log(&self, record: &log::Record) {
         if self.enabled(record.metadata()) {
             self.inner.log(record);
         }
@@ -361,7 +479,9 @@ fn install_format(builder: &mut env_logger::Builder, log_state: Arc<Option<Arc<A
 
 fn init_logger_inner() {
     if let Err(error) = crate::config::instance_gitignore::ensure_instance_gitignore() {
-        eprintln!("[instance-gitignore] warning: {error}");
+        if !machine_output_enabled() {
+            eprintln!("[instance-gitignore] warning: {error}");
+        }
     }
 
     let log_state: Option<Arc<AppLogFile>> = crate::config::config_dir().and_then(|dir| {
@@ -408,7 +528,12 @@ fn init_logger_inner() {
         let mut builder = env_logger::Builder::from_env(env_logger::Env::default());
         builder.parse_filters(&rust_log);
         install_format(&mut builder, Arc::clone(&log_state));
-        builder.init();
+        let inner = builder.build();
+        let max_level = inner.filter();
+        let logger = PrivacyFilterLogger { inner };
+        if log::set_boxed_logger(Box::new(logger)).is_ok() {
+            log::set_max_level(max_level);
+        }
         return;
     }
 
@@ -436,7 +561,8 @@ fn init_logger_inner() {
         inner,
         level: atomic,
     };
-    if log::set_boxed_logger(Box::new(gate)).is_ok() {
+    let logger = PrivacyFilterLogger { inner: gate };
+    if log::set_boxed_logger(Box::new(logger)).is_ok() {
         log::set_max_level(max_filter_for(initial));
     }
 }
@@ -604,6 +730,36 @@ mod tests {
                 .args(format_args!("synthetic message"))
                 .build(),
         )
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn payload_panic_and_join_failures_collapse_without_payload_formatting() {
+        const UNWIND_CANARY: &str = "PANIC_UNWIND_1173_C6R9";
+        const FUTURE_CANARY: &str = "PANIC_FUTURE_1173_N4H7";
+        const JOIN_CANARY: &str = "PANIC_JOIN_1173_W8K3";
+
+        let unwind: Result<(), PayloadPanic> =
+            catch_payload_unwind(|| std::panic::panic_any(UNWIND_CANARY));
+        let future: Result<(), PayloadPanic> = catch_payload_future(async {
+            std::panic::panic_any(FUTURE_CANARY);
+        })
+        .await;
+
+        let handle: tokio::task::JoinHandle<()> = tokio::spawn(async {
+            let _guard = PayloadWorkerGuard::enter();
+            std::panic::panic_any(JOIN_CANARY);
+        });
+        let joined = handle.await.map(Ok::<(), PayloadPanic>);
+        let collapsed = collapse_payload_task(joined);
+
+        assert_eq!(unwind, Err(PayloadPanic));
+        assert_eq!(future, Err(PayloadPanic));
+        assert_eq!(collapsed, Err(PayloadPanic));
+        let diagnostics = format!("{unwind:?}\n{future:?}\n{collapsed:?}");
+        for canary in [UNWIND_CANARY, FUTURE_CANARY, JOIN_CANARY] {
+            assert!(!diagnostics.contains(canary));
+        }
+        assert_eq!(diagnostics.matches("PayloadPanic").count(), 3);
     }
 
     #[test]

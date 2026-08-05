@@ -8,6 +8,11 @@
 
 use serde::{Deserialize, Serialize};
 
+pub use terminal_snapshot_renderer::{
+    TerminalSnapshotApiError, TerminalSnapshotApiRequest, TerminalSnapshotApiSuccess,
+    TerminalSnapshotPayload,
+};
+
 /// Contract version. URL-versioned (`/api/v1`); this echo is a redundant,
 /// explicit assertion field for clients.
 pub const API_VERSION: &str = "1";

@@ -4,7 +4,9 @@ use std::sync::{Arc, Mutex, TryLockError};
 use uuid::Uuid;
 
 use crate::errors::AppError;
-use crate::pty::backend::{BackendSpawnSpec, PtyBackend, SessionBackendKind};
+use crate::pty::backend::{
+    BackendSpawnSpec, PtyBackend, SessionBackendKind, TerminalScreenCopyRead, TerminalScreenRead,
+};
 use crate::pty::container_backend::ContainerTransportBackend;
 use crate::pty::container_tokens::ContainerApiTokenManager;
 use crate::pty::context_scrape::{ContextSessionLiveness, ScreenRowsRead};
@@ -81,6 +83,19 @@ pub(crate) struct PtyAuthorityRouteProof {
     route_generation: u64,
     route_registry: Arc<std::sync::Mutex<SpawnRegistry>>,
     route_lifecycle: Arc<std::sync::Mutex<()>>,
+}
+
+/// Non-writing proof for one frozen PTY route generation. It carries no input
+/// gate and cannot mint a backend write authority.
+pub(crate) struct PtySnapshotRouteProof {
+    session_id: Uuid,
+    route_generation: u64,
+    route_kind: SessionBackendKind,
+    route_registry: Arc<std::sync::Mutex<SpawnRegistry>>,
+    route_lifecycle: Arc<std::sync::Mutex<()>>,
+    backend: Arc<dyn PtyBackend>,
+    saved_cwd: crate::path_identity::VerifiedPathIdentity,
+    saved_replica: Option<crate::path_identity::VerifiedPathIdentity>,
 }
 
 /// A short-lived route lifecycle guard for one synchronous backend write.
@@ -630,6 +645,46 @@ impl PtyManager {
         authority_route_proof(manager, session_id)
     }
 
+    pub(crate) fn snapshot_route_proof(
+        manager: &Arc<std::sync::Mutex<PtyManager>>,
+        session_id: Uuid,
+    ) -> Result<PtySnapshotRouteProof, AppError> {
+        snapshot_route_proof(manager, session_id)
+    }
+
+    pub(crate) fn snapshot_route_proofs(
+        manager: &Arc<std::sync::Mutex<PtyManager>>,
+        session_ids: &[Uuid],
+    ) -> Result<Vec<Option<PtySnapshotRouteProof>>, AppError> {
+        let manager_guard = manager
+            .lock()
+            .map_err(|_| AppError::PtyError("pty_manager_poisoned".to_string()))?;
+        let registry = manager_guard
+            .registry
+            .lock()
+            .map_err(|_| AppError::PtyError("route_registry_poisoned".to_string()))?;
+        let mut proofs = Vec::new();
+        proofs
+            .try_reserve_exact(session_ids.len())
+            .map_err(|_| AppError::PtyError("snapshot_route_capacity".to_string()))?;
+        for session_id in session_ids {
+            let proof = registry.routes.get(session_id).and_then(|entry| {
+                Some(PtySnapshotRouteProof {
+                    session_id: *session_id,
+                    route_generation: entry.generation,
+                    route_kind: entry.kind,
+                    route_registry: Arc::clone(&manager_guard.registry),
+                    route_lifecycle: Arc::clone(&entry.lifecycle_gate),
+                    backend: manager_guard.backend_for_kind(entry.kind),
+                    saved_cwd: entry.canonical_cwd_identity.clone()?,
+                    saved_replica: entry.verified_replica_anchor.clone(),
+                })
+            });
+            proofs.push(proof);
+        }
+        Ok(proofs)
+    }
+
     pub fn lock_route_for_write(
         permit: &PtyInputPermit,
     ) -> Result<PtyRouteWriteGuard<'_>, AppError> {
@@ -648,6 +703,38 @@ impl PtyManager {
     pub fn write_with_permit(permit: &PtyInputPermit, bytes: &[u8]) -> Result<(), AppError> {
         write_with_permit(permit, bytes)
     }
+}
+
+fn snapshot_route_proof(
+    manager: &Arc<std::sync::Mutex<PtyManager>>,
+    session_id: Uuid,
+) -> Result<PtySnapshotRouteProof, AppError> {
+    let manager_guard = manager
+        .lock()
+        .map_err(|_| AppError::PtyError("pty_manager_poisoned".to_string()))?;
+    let registry = manager_guard
+        .registry
+        .lock()
+        .map_err(|_| AppError::PtyError("route_registry_poisoned".to_string()))?;
+    let entry = registry
+        .routes
+        .get(&session_id)
+        .ok_or_else(|| AppError::SessionNotFound(session_id.to_string()))?;
+    let saved_cwd = entry
+        .canonical_cwd_identity
+        .clone()
+        .ok_or_else(|| AppError::PtyError("unsafe_route_cwd".to_string()))?;
+    let saved_replica = entry.verified_replica_anchor.clone();
+    Ok(PtySnapshotRouteProof {
+        session_id,
+        route_generation: entry.generation,
+        route_kind: entry.kind,
+        route_registry: Arc::clone(&manager_guard.registry),
+        route_lifecycle: Arc::clone(&entry.lifecycle_gate),
+        backend: manager_guard.backend_for_kind(entry.kind),
+        saved_cwd,
+        saved_replica,
+    })
 }
 
 fn authority_route_proof(
@@ -739,6 +826,154 @@ fn acquire_route_lifecycle(
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
         }
+    }
+}
+
+impl PtySnapshotRouteProof {
+    pub(crate) fn backend_kind(&self) -> SessionBackendKind {
+        self.route_kind
+    }
+
+    pub(crate) fn liveness(&self) -> ContextSessionLiveness {
+        self.backend.context_session_liveness(self.session_id)
+    }
+
+    pub(crate) fn saved_cwd(&self) -> &crate::path_identity::VerifiedPathIdentity {
+        &self.saved_cwd
+    }
+
+    pub(crate) fn saved_replica(&self) -> Option<&crate::path_identity::VerifiedPathIdentity> {
+        self.saved_replica.as_ref()
+    }
+
+    pub(crate) fn matches_requester_route(
+        &self,
+        expected_kind: SessionBackendKind,
+        expected_cwd: &crate::path_identity::VerifiedPathIdentity,
+        expected_replica: Option<&crate::path_identity::VerifiedPathIdentity>,
+    ) -> bool {
+        let Ok(registry) = self.route_registry.lock() else {
+            return false;
+        };
+        registry
+            .routes
+            .get(&self.session_id)
+            .is_some_and(|current| {
+                let replica_matches = match (
+                    current.verified_replica_anchor.as_ref(),
+                    self.saved_replica.as_ref(),
+                    expected_replica,
+                ) {
+                    (Some(current), Some(saved), Some(expected)) => {
+                        crate::path_identity::same_object(current, saved)
+                            && crate::path_identity::same_object(current, expected)
+                    }
+                    (None, None, None) => true,
+                    _ => false,
+                };
+                current.generation == self.route_generation
+                    && current.kind == self.route_kind
+                    && current.kind == expected_kind
+                    && current
+                        .canonical_cwd_identity
+                        .as_ref()
+                        .is_some_and(|identity| {
+                            crate::path_identity::same_object(identity, expected_cwd)
+                                && crate::path_identity::same_object(identity, &self.saved_cwd)
+                        })
+                    && replica_matches
+            })
+    }
+
+    pub(crate) fn capture_verified(
+        &self,
+        expected_kind: SessionBackendKind,
+        expected_cwd: &crate::path_identity::VerifiedPathIdentity,
+        expected_replica: &crate::path_identity::VerifiedPathIdentity,
+    ) -> TerminalScreenRead {
+        let lifecycle_guard = match acquire_route_lifecycle(&self.route_lifecycle) {
+            Ok(guard) => guard,
+            Err(_) => return TerminalScreenRead::Unavailable,
+        };
+        {
+            let registry = match self.route_registry.lock() {
+                Ok(registry) => registry,
+                Err(_) => return TerminalScreenRead::Unavailable,
+            };
+            let Some(current) = registry.routes.get(&self.session_id) else {
+                return TerminalScreenRead::Unavailable;
+            };
+            let cwd_matches = current
+                .canonical_cwd_identity
+                .as_ref()
+                .is_some_and(|identity| {
+                    crate::path_identity::same_object(identity, expected_cwd)
+                        && crate::path_identity::same_object(identity, &self.saved_cwd)
+                });
+            let replica_matches =
+                current
+                    .verified_replica_anchor
+                    .as_ref()
+                    .is_some_and(|identity| {
+                        crate::path_identity::same_object(identity, expected_replica)
+                            && self.saved_replica.as_ref().is_some_and(|saved| {
+                                crate::path_identity::same_object(identity, saved)
+                            })
+                    });
+            if current.generation != self.route_generation
+                || current.kind != self.route_kind
+                || current.kind != expected_kind
+                || !cwd_matches
+                || !replica_matches
+            {
+                return TerminalScreenRead::Unavailable;
+            }
+        }
+        let copied = self.backend.copy_terminal_screen(self.session_id);
+        drop(lifecycle_guard);
+        match copied {
+            TerminalScreenCopyRead::Copied(captured) => captured
+                .into_model(self.session_id, self.route_kind)
+                .map(TerminalScreenRead::Captured)
+                .unwrap_or(TerminalScreenRead::Unavailable),
+            TerminalScreenCopyRead::Unavailable => TerminalScreenRead::Unavailable,
+            TerminalScreenCopyRead::TooLarge => TerminalScreenRead::TooLarge,
+        }
+    }
+
+    pub(crate) fn matches_current(
+        &self,
+        expected_kind: SessionBackendKind,
+        expected_cwd: &crate::path_identity::VerifiedPathIdentity,
+        expected_replica: &crate::path_identity::VerifiedPathIdentity,
+    ) -> bool {
+        let Ok(registry) = self.route_registry.lock() else {
+            return false;
+        };
+        registry
+            .routes
+            .get(&self.session_id)
+            .is_some_and(|current| {
+                current.generation == self.route_generation
+                    && current.kind == self.route_kind
+                    && current.kind == expected_kind
+                    && current
+                        .canonical_cwd_identity
+                        .as_ref()
+                        .is_some_and(|identity| {
+                            crate::path_identity::same_object(identity, expected_cwd)
+                                && crate::path_identity::same_object(identity, &self.saved_cwd)
+                        })
+                    && current
+                        .verified_replica_anchor
+                        .as_ref()
+                        .is_some_and(|identity| {
+                            crate::path_identity::same_object(identity, expected_replica)
+                                && self.saved_replica.as_ref().is_some_and(|saved| {
+                                    crate::path_identity::same_object(identity, saved)
+                                })
+                        })
+            })
     }
 }
 

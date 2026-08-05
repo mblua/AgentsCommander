@@ -19,6 +19,7 @@ See [Portable instances](../features/portable-instances.md) for the rule.
 - The file is **JSON** (not JSONC, not YAML). Comments are not allowed.
 - AC reads at startup and on `update_settings` IPC calls.
 - If you edit `settings.json` **while the app is running**, your changes may be clobbered by the next in-memory save. For manual-only fields such as `specBoardEnabled`, edit while AC is closed, or reload settings before using any Settings save path.
+- `terminalSnapshotsEnabled` is security-sensitive. AgentsCommander's own writers serialize through a file lock and only the dedicated Settings compare-and-set action can change it. An out-of-process editor that ignores that lock remains last-writer authority.
 - AC tolerates unknown fields (`serde` skips them) so adding a field will not break an older binary, but the older binary will not honor it.
 
 ## Example
@@ -57,7 +58,8 @@ A minimal `settings.json`:
   "voiceAutoExecute": true,
   "voiceAutoExecuteDelay": 15,
   "themeLight": false,
-  "specBoardEnabled": false
+  "specBoardEnabled": false,
+  "terminalSnapshotsEnabled": false
 }
 ```
 
@@ -135,6 +137,22 @@ Host login reuse for coding agents running under the Container runtime. **This f
 | `containerCredentialsFromHost` | bool | `true` | When a coding agent runs under the Container runtime, copy the host user's credential file for that agent (Claude: `~/.claude/.credentials.json`) into the replica config dir at spawn, set `CLAUDE_CONFIG_DIR` to it, stamp the container's first-run state (onboarding complete, `/workspace` trusted), and delete the copy on teardown. When false, AC copies, injects, and stamps nothing, and you supply credentials yourself (for example a `CLAUDE_CODE_OAUTH_TOKEN` env row). Claude Code only today. |
 
 The copied file is a full-account credential (access token plus long-lived refresh token) in plaintext. Read [Security model → Container coding agents](../security.md#container-coding-agents-copied-host-credentials) before you leave this on.
+
+### Terminal snapshots
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `terminalSnapshotsEnabled` | bool | `false` | Permit identity-authorized Root Agents and same-workgroup Coordinators to read a live backend terminal viewport as JSON or PNG. |
+
+This is a disclosure gate, not a display preference. Terminal screens can contain passwords, tokens, source code, prompts, and personal data. AgentsCommander performs no automatic redaction.
+
+Use **Settings > General > Terminal snapshots > Allow authorized terminal snapshots** to change it. The UI calls a dedicated idempotent compare-and-set operation with the value that was current when the modal opened. If another window or process changed the gate, a stale save conflicts and reloads the authoritative value instead of re-enabling it.
+
+Every whole-settings writer preserves the current gate and cannot opt in. Old settings files deserialize the absent field as `false`, but the snapshot service is stricter: the on-disk key and managed in-memory value must both be exactly `true` at initial and final authorization. A missing key, duplicate key, malformed JSON, wrong type, unreadable file, or linked file fails closed as `terminal_snapshots_disabled`.
+
+Direct out-of-process edits that ignore AgentsCommander's settings lock remain last-writer authority. If you edit this field by hand, stop the app first and keep the value a JSON boolean.
+
+See [Terminal snapshots](../features/terminal-snapshots.md) for authorization, content, output, and cleanup behavior.
 
 ### Projects
 
@@ -287,4 +305,5 @@ Use any JSON validator. AC will refuse to start if the file is not valid JSON an
 
 - [Portable instances](../features/portable-instances.md) — per-instance config rules
 - [CLI reference](cli.md) — verbs that read/write this file
+- [Terminal snapshots](../features/terminal-snapshots.md) - the default-off screen-content read capability
 - [`PRIVACY.md`](../../PRIVACY.md) — what credentials live here and how they are transmitted

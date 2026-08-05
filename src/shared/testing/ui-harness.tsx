@@ -144,6 +144,7 @@ export function baseSettings(overrides: Partial<AppSettings> = {}): AppSettings 
     apiServerEnabled: false,
     apiServerPort: 8766,
     apiServerBind: "127.0.0.1",
+    terminalSnapshotsEnabled: false,
     projectPath: null,
     projectPaths: [],
     archivedProjectPaths: [],

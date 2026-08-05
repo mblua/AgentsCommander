@@ -1,9 +1,17 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use chrono::{DateTime, Utc};
 use tauri::{AppHandle, Emitter};
+use terminal_snapshot_renderer::{
+    canonical_timestamp, TerminalActiveBuffer, TerminalBackendKind, TerminalCell,
+    TerminalCellStyle, TerminalCellWidth, TerminalColor, TerminalCursor, TerminalDimensions,
+    TerminalLine, TerminalScreen, TerminalScreenModel, TerminalSnapshotFidelity,
+    TerminalSnapshotSession, MAX_CELLS, MAX_COLUMNS, MAX_ROWS,
+};
 use uuid::Uuid;
 
+use crate::pty::backend::SessionBackendKind;
 use crate::pty::idle_detector::IdleDetector;
 use crate::session::profile::IdleTuning;
 use crate::telegram::manager::OutputSenderMap;
@@ -38,6 +46,149 @@ pub struct PtyScreenSnapshot {
 struct ScreenReplayState {
     parser: vt100::Parser,
     output_sequence: u64,
+}
+
+enum CaptureFailure {
+    TooLarge,
+    Unavailable,
+}
+
+pub(crate) struct CapturedVtScreen {
+    rows: u16,
+    columns: u16,
+    output_sequence: u64,
+    captured_at_millis: i64,
+    active_buffer: TerminalActiveBuffer,
+    cursor_row: u16,
+    cursor_column: u16,
+    cursor_visible: bool,
+    parser_errors: u64,
+    wraps: Vec<bool>,
+    cells: Vec<vt100::Cell>,
+}
+
+impl std::fmt::Debug for CapturedVtScreen {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CapturedVtScreen")
+            .field("rows", &self.rows)
+            .field("columns", &self.columns)
+            .field("output_sequence", &self.output_sequence)
+            .field("active_buffer", &self.active_buffer)
+            .field("cursor_row", &self.cursor_row)
+            .field("cursor_column", &self.cursor_column)
+            .field("cursor_visible", &self.cursor_visible)
+            .field("parser_errors", &self.parser_errors)
+            .field("wraps", &self.wraps.len())
+            .field("cells", &self.cells.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl CapturedVtScreen {
+    pub(crate) fn into_model(
+        self,
+        session_id: Uuid,
+        backend_kind: SessionBackendKind,
+    ) -> Result<Arc<TerminalScreenModel>, ()> {
+        let captured_at = DateTime::<Utc>::from_timestamp_millis(self.captured_at_millis)
+            .map(canonical_timestamp)
+            .ok_or(())?;
+        if self.wraps.len() != usize::from(self.rows)
+            || self.cells.len()
+                != usize::from(self.rows)
+                    .checked_mul(usize::from(self.columns))
+                    .ok_or(())?
+        {
+            return Err(());
+        }
+        let mut lines = Vec::new();
+        lines
+            .try_reserve_exact(usize::from(self.rows))
+            .map_err(|_| ())?;
+        let mut cells = self.cells.into_iter();
+        for row in 0..self.rows {
+            let mut line_cells = Vec::new();
+            line_cells
+                .try_reserve_exact(usize::from(self.columns))
+                .map_err(|_| ())?;
+            for _column in 0..self.columns {
+                let cell = cells.next().ok_or(())?;
+                let is_wide = cell.is_wide();
+                let is_continuation = cell.is_wide_continuation();
+                if is_wide && is_continuation {
+                    return Err(());
+                }
+                let width = if is_wide {
+                    TerminalCellWidth::WideLead
+                } else if is_continuation {
+                    TerminalCellWidth::WideContinuation
+                } else {
+                    TerminalCellWidth::Narrow
+                };
+                let text = cell.contents();
+                line_cells.push(TerminalCell {
+                    text,
+                    width,
+                    foreground: convert_color(cell.fgcolor()),
+                    background: convert_color(cell.bgcolor()),
+                    style: TerminalCellStyle {
+                        bold: cell.bold(),
+                        italic: cell.italic(),
+                        underline: cell.underline(),
+                        inverse: cell.inverse(),
+                    },
+                });
+            }
+            lines.push(TerminalLine {
+                wrapped: *self.wraps.get(usize::from(row)).ok_or(())?,
+                cells: line_cells,
+            });
+        }
+        if cells.next().is_some() {
+            return Err(());
+        }
+        let backend = match backend_kind {
+            SessionBackendKind::LocalProcess => TerminalBackendKind::LocalProcess,
+            SessionBackendKind::ContainerTransport => TerminalBackendKind::ContainerTransport,
+        };
+        let dimensions = TerminalDimensions {
+            rows: self.rows,
+            columns: self.columns,
+        };
+        let cursor = TerminalCursor {
+            row: self.cursor_row,
+            column: self.cursor_column,
+            visible: self.cursor_visible,
+            in_bounds: self.cursor_row < self.rows && self.cursor_column < self.columns,
+        };
+        let model = TerminalScreenModel {
+            captured_at,
+            session: TerminalSnapshotSession {
+                id: session_id.to_string(),
+                backend,
+            },
+            screen: TerminalScreen {
+                dimensions,
+                sequence: self.output_sequence,
+                active_buffer: self.active_buffer,
+                cursor,
+                parser_errors: self.parser_errors,
+                lines,
+            },
+            fidelity: TerminalSnapshotFidelity::version_one(self.parser_errors != 0),
+        };
+        model.validate().map_err(|_| ())?;
+        Ok(Arc::new(model))
+    }
+}
+
+fn convert_color(color: vt100::Color) -> TerminalColor {
+    match color {
+        vt100::Color::Default => TerminalColor::Default,
+        vt100::Color::Idx(index) => TerminalColor::Indexed { index },
+        vt100::Color::Rgb(red, green, blue) => TerminalColor::Rgb { red, green, blue },
+    }
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -112,7 +263,11 @@ impl SessionIoFanout {
             parser: vt100::Parser::new(rows, cols, 0),
             output_sequence: 0,
         };
-        self.screen_parsers.lock().unwrap().insert(id, replay);
+        if let Ok(mut parsers) = self.screen_parsers.lock() {
+            parsers.insert(id, replay);
+        } else {
+            log::error!("[terminal-snapshot] stage=parser_register code=internal session={id}");
+        }
     }
 
     pub fn handle_output(
@@ -155,12 +310,21 @@ impl SessionIoFanout {
         }
 
         let sequence = if let Ok(mut parsers) = self.screen_parsers.lock() {
-            if let Some(state) = parsers.get_mut(&id) {
-                state.parser.process(&data);
-                state.output_sequence = state.output_sequence.saturating_add(1);
-                Some(state.output_sequence)
-            } else {
-                None
+            let processed = parsers.get_mut(&id).map(|state| {
+                crate::logging::catch_payload_unwind(|| {
+                    state.parser.process(&data);
+                    state.output_sequence = state.output_sequence.saturating_add(1);
+                    state.output_sequence
+                })
+            });
+            match processed {
+                Some(Ok(sequence)) => Some(sequence),
+                Some(Err(_)) => {
+                    parsers.remove(&id);
+                    log::error!("[terminal-snapshot] stage=parser_fault session={id}");
+                    None
+                }
+                None => None,
             }
         } else {
             None
@@ -206,8 +370,13 @@ impl SessionIoFanout {
         }
 
         if let Ok(mut parsers) = self.screen_parsers.lock() {
-            if let Some(state) = parsers.get_mut(&id) {
-                state.parser.set_size(rows, cols);
+            let resized = parsers.get_mut(&id).map(|state| {
+                crate::logging::catch_payload_unwind(|| state.parser.set_size(rows, cols))
+            });
+            if resized.is_some_and(|result| result.is_err()) {
+                parsers.remove(&id);
+                log::error!("[terminal-snapshot] stage=parser_fault session={id}");
+                return;
             }
         }
 
@@ -282,6 +451,85 @@ impl SessionIoFanout {
             cols,
             sequence: state.output_sequence,
         })
+    }
+
+    pub(crate) fn copy_terminal_screen(
+        &self,
+        id: Uuid,
+    ) -> crate::pty::backend::TerminalScreenCopyRead {
+        use crate::pty::backend::TerminalScreenCopyRead;
+
+        let Ok(mut parsers) = self.screen_parsers.lock() else {
+            return TerminalScreenCopyRead::Unavailable;
+        };
+        let Some(state) = parsers.get(&id) else {
+            return TerminalScreenCopyRead::Unavailable;
+        };
+        let copied = crate::logging::catch_payload_unwind(|| {
+            let screen = state.parser.screen();
+            let (rows, columns) = screen.size();
+            let cell_count = usize::from(rows)
+                .checked_mul(usize::from(columns))
+                .ok_or(CaptureFailure::TooLarge)?;
+            if rows == 0
+                || columns == 0
+                || rows > MAX_ROWS
+                || columns > MAX_COLUMNS
+                || cell_count > MAX_CELLS
+            {
+                return Err(CaptureFailure::TooLarge);
+            }
+            let mut wraps = Vec::new();
+            wraps
+                .try_reserve_exact(usize::from(rows))
+                .map_err(|_| CaptureFailure::Unavailable)?;
+            let mut cells = Vec::new();
+            cells
+                .try_reserve_exact(cell_count)
+                .map_err(|_| CaptureFailure::Unavailable)?;
+            let captured_at_millis = Utc::now().timestamp_millis();
+            let (cursor_row, cursor_column) = screen.cursor_position();
+            let parser_errors =
+                u64::try_from(screen.errors()).map_err(|_| CaptureFailure::Unavailable)?;
+            for row in 0..rows {
+                wraps.push(screen.row_wrapped(row));
+                for column in 0..columns {
+                    cells.push(
+                        screen
+                            .cell(row, column)
+                            .ok_or(CaptureFailure::Unavailable)?
+                            .clone(),
+                    );
+                }
+            }
+            Ok(CapturedVtScreen {
+                rows,
+                columns,
+                output_sequence: state.output_sequence,
+                captured_at_millis,
+                active_buffer: if screen.alternate_screen() {
+                    TerminalActiveBuffer::Alternate
+                } else {
+                    TerminalActiveBuffer::Normal
+                },
+                cursor_row,
+                cursor_column,
+                cursor_visible: !screen.hide_cursor(),
+                parser_errors,
+                wraps,
+                cells,
+            })
+        });
+        match copied {
+            Ok(Ok(captured)) => TerminalScreenCopyRead::Copied(captured),
+            Ok(Err(CaptureFailure::TooLarge)) => TerminalScreenCopyRead::TooLarge,
+            Ok(Err(CaptureFailure::Unavailable)) => TerminalScreenCopyRead::Unavailable,
+            Err(_) => {
+                parsers.remove(&id);
+                log::error!("[terminal-snapshot] stage=parser_fault session={id}");
+                TerminalScreenCopyRead::Unavailable
+            }
+        }
     }
 
     /// #1032 - the live grid's rows, plain text, for the context scrape.
@@ -938,5 +1186,198 @@ mod tests {
             .get_screen_rows(id)
             .expect("a never-mounted session still reads");
         assert_eq!(rows[0], "  Context 5%");
+    }
+
+    #[test]
+    fn terminal_screen_copy_preserves_cells_styles_colors_and_wide_pairs() {
+        let fanout = fanout();
+        let id = Uuid::new_v4();
+        fanout.register_session(id, IdleTuning::DEFAULT, 2, 4);
+        feed(
+            &fanout,
+            id,
+            &["\x1b[?1049h\x1b[31;44;1;3;4;7mA界".as_bytes()],
+        );
+
+        let copied = match fanout.copy_terminal_screen(id) {
+            crate::pty::backend::TerminalScreenCopyRead::Copied(copied) => copied,
+            _ => panic!("expected compact viewport copy"),
+        };
+        let model = copied
+            .into_model(id, SessionBackendKind::LocalProcess)
+            .expect("valid owned model");
+        assert_eq!(model.screen.sequence, 1);
+        assert_eq!(model.screen.active_buffer, TerminalActiveBuffer::Alternate);
+        assert_eq!(model.screen.lines.len(), 2);
+        assert_eq!(model.screen.lines[0].cells.len(), 4);
+        let first = &model.screen.lines[0].cells[0];
+        assert_eq!(first.text, "A");
+        assert_eq!(first.foreground, TerminalColor::Indexed { index: 1 });
+        assert_eq!(first.background, TerminalColor::Indexed { index: 4 });
+        assert!(first.style.bold && first.style.italic && first.style.underline);
+        assert!(first.style.inverse);
+        assert_eq!(
+            model.screen.lines[0].cells[1].width,
+            TerminalCellWidth::WideLead
+        );
+        assert_eq!(
+            model.screen.lines[0].cells[2].width,
+            TerminalCellWidth::WideContinuation
+        );
+        assert!(model.screen.lines[0].cells[2].text.is_empty());
+    }
+
+    #[test]
+    fn capture_and_model_result_debug_omit_cell_osc_and_session_canaries() {
+        const CELL_CANARY: &str = "CELL_1173_VT_Q8L5";
+        const OSC_CANARY: &str = "OSC_1173_VT_Q8L5";
+        let fanout = fanout();
+        let id = Uuid::parse_str("11730000-0000-4000-8000-00000000a815").unwrap();
+        fanout.register_session(id, IdleTuning::DEFAULT, 2, 40);
+        let output = format!("{CELL_CANARY}\x1b]0;{OSC_CANARY}\x07");
+        feed(&fanout, id, &[output.as_bytes()]);
+
+        let copied = fanout.copy_terminal_screen(id);
+        let copied_diagnostic = format!("{copied:?}");
+        let captured = match copied {
+            crate::pty::backend::TerminalScreenCopyRead::Copied(captured) => captured,
+            _ => panic!("expected compact viewport copy"),
+        };
+        let model = captured
+            .into_model(id, SessionBackendKind::LocalProcess)
+            .expect("valid owned model");
+        let read = crate::pty::backend::TerminalScreenRead::Captured(model);
+        let diagnostic = format!(
+            "{copied_diagnostic}\n{read:?}\n{:?}\n{:?}",
+            crate::pty::backend::TerminalScreenCopyRead::Unavailable,
+            crate::pty::backend::TerminalScreenRead::TooLarge,
+        );
+        let id_text = id.to_string();
+        for forbidden in [CELL_CANARY, OSC_CANARY, id_text.as_str()] {
+            assert!(!diagnostic.contains(forbidden));
+        }
+        for structural in [
+            "rows: 2",
+            "columns: 40",
+            "cells: 80",
+            "TerminalScreenRead::Captured",
+            "TerminalScreenCopyRead::Unavailable",
+            "TerminalScreenRead::TooLarge",
+        ] {
+            assert!(diagnostic.contains(structural));
+        }
+    }
+
+    #[test]
+    fn output_and_capture_race_is_wholly_before_or_after_one_chunk() {
+        let fanout = fanout();
+        for _ in 0..64 {
+            let id = Uuid::new_v4();
+            fanout.register_session(id, IdleTuning::DEFAULT, 1, 2);
+            let writer = fanout.clone();
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let writer_barrier = Arc::clone(&barrier);
+            let thread = std::thread::spawn(move || {
+                writer_barrier.wait();
+                feed(&writer, id, &[b"A"]);
+            });
+            barrier.wait();
+            let copied = fanout.copy_terminal_screen(id);
+            thread.join().unwrap();
+            let model = match copied {
+                crate::pty::backend::TerminalScreenCopyRead::Copied(copied) => copied
+                    .into_model(id, SessionBackendKind::LocalProcess)
+                    .unwrap(),
+                _ => panic!("expected coherent capture"),
+            };
+            let first = &model.screen.lines[0].cells[0].text;
+            assert!(
+                (model.screen.sequence == 0 && first.is_empty())
+                    || (model.screen.sequence == 1 && first == "A")
+            );
+            fanout.remove_session(id);
+        }
+    }
+
+    #[test]
+    fn resize_and_capture_race_returns_one_complete_dimension_set() {
+        let fanout = fanout();
+        for _ in 0..64 {
+            let id = Uuid::new_v4();
+            fanout.register_session(id, IdleTuning::DEFAULT, 2, 2);
+            let writer = fanout.clone();
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let writer_barrier = Arc::clone(&barrier);
+            let thread = std::thread::spawn(move || {
+                writer_barrier.wait();
+                writer.resize_screen_and_broadcast(id, 4, 3);
+            });
+            barrier.wait();
+            let copied = fanout.copy_terminal_screen(id);
+            thread.join().unwrap();
+            let model = match copied {
+                crate::pty::backend::TerminalScreenCopyRead::Copied(copied) => copied
+                    .into_model(id, SessionBackendKind::LocalProcess)
+                    .unwrap(),
+                _ => panic!("expected coherent capture"),
+            };
+            let dimensions = model.screen.dimensions;
+            assert!(
+                (dimensions.rows == 2 && dimensions.columns == 2)
+                    || (dimensions.rows == 3 && dimensions.columns == 4)
+            );
+            assert_eq!(model.screen.lines.len(), usize::from(dimensions.rows));
+            assert!(model
+                .screen
+                .lines
+                .iter()
+                .all(|line| line.cells.len() == usize::from(dimensions.columns)));
+            assert_eq!(model.screen.sequence, 0);
+            fanout.remove_session(id);
+        }
+    }
+
+    #[test]
+    fn large_and_partial_osc_state_is_excluded_from_the_viewport_copy() {
+        let fanout = fanout();
+        let id = Uuid::new_v4();
+        fanout.register_session(id, IdleTuning::DEFAULT, 1, 4);
+        let sentinel = "snapshot-osc-sentinel".repeat(8_192);
+        let first = format!("\x1b]0;{sentinel}");
+        feed(&fanout, id, &[first.as_bytes()]);
+        let copied = match fanout.copy_terminal_screen(id) {
+            crate::pty::backend::TerminalScreenCopyRead::Copied(copied) => copied,
+            _ => panic!("partial OSC must not break capture"),
+        };
+        let model = copied
+            .into_model(id, SessionBackendKind::LocalProcess)
+            .unwrap();
+        assert!(model
+            .screen
+            .lines
+            .iter()
+            .flat_map(|line| &line.cells)
+            .all(|cell| !cell.text.contains("snapshot-osc-sentinel")));
+    }
+
+    #[test]
+    fn hostile_one_column_wide_input_removes_only_its_parser() {
+        let fanout = fanout();
+        let faulty = Uuid::new_v4();
+        let healthy = Uuid::new_v4();
+        fanout.register_session(faulty, IdleTuning::DEFAULT, 1, 1);
+        fanout.register_session(healthy, IdleTuning::DEFAULT, 2, 4);
+
+        feed(&fanout, faulty, &["界".as_bytes()]);
+        feed(&fanout, healthy, &[b"ok"]);
+
+        assert!(matches!(
+            fanout.copy_terminal_screen(faulty),
+            crate::pty::backend::TerminalScreenCopyRead::Unavailable
+        ));
+        assert!(matches!(
+            fanout.copy_terminal_screen(healthy),
+            crate::pty::backend::TerminalScreenCopyRead::Copied(_)
+        ));
     }
 }

@@ -117,6 +117,10 @@ const API_CLIENT_EXPIRY_MS: Record<Exclude<ApiClientExpiryOption, "default">, nu
 const errorMessage = (err: unknown): string =>
   err instanceof Error ? err.message : String(err);
 
+const TERMINAL_SNAPSHOT_SETTING_CONFLICT = "terminal_snapshot_setting_conflict";
+const TERMINAL_SNAPSHOT_CONFLICT_MESSAGE =
+  "Terminal snapshots changed in another settings window. The current value was reloaded.";
+
 type SettingsTab = "general" | "agents" | "resources" | "integrations" | "watchers";
 
 const TABS: { key: SettingsTab; label: string }[] = [
@@ -177,7 +181,13 @@ const apiServerEndpointChanged = (
 
 const cloneSettings = (value: AppSettings | null): AppSettings | null => {
   if (!value) return null;
-  if (typeof structuredClone === "function") return structuredClone(value);
+  if (typeof structuredClone === "function") {
+    try {
+      return structuredClone(value);
+    } catch {
+      // Solid store values can contain proxies that structuredClone rejects.
+    }
+  }
   return JSON.parse(JSON.stringify(value)) as AppSettings;
 };
 
@@ -627,6 +637,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const [modalSeed, setModalSeed] = createSignal<AppSettings | null>(
     cloneSettings(seededSettings),
   );
+  const [terminalSnapshotsOpeningValue, setTerminalSnapshotsOpeningValue] =
+    createSignal(seededSettings?.terminalSnapshotsEnabled ?? false);
   const [draftDirty, setDraftDirty] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [testingBot, setTestingBot] = createSignal<string | null>(null);
@@ -678,15 +690,21 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
   const saveCurrentSettingsDraft = async (): Promise<AppSettings> => {
     if (!settings.data) throw new Error("Settings are not loaded.");
+    const terminalSnapshotsDraft = settings.data.terminalSnapshotsEnabled;
     const nextSettings = mergeSettingsForSavePreservingProjects(
       settings.data,
       await SettingsAPI.get(),
       modalSeed(),
     );
     await SettingsAPI.saveDraft(nextSettings);
-    setSettings("data", nextSettings);
-    setModalSeed(cloneSettings(nextSettings));
-    setDraftDirty(false);
+    const nextModalSeed = cloneSettings(nextSettings);
+    const nextDraft = cloneSettings({
+      ...nextSettings,
+      terminalSnapshotsEnabled: terminalSnapshotsDraft,
+    });
+    setSettings("data", nextDraft);
+    setModalSeed(nextModalSeed);
+    setDraftDirty(terminalSnapshotsDraft !== terminalSnapshotsOpeningValue());
     return nextSettings;
   };
 
@@ -985,6 +1003,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       setSettings("data", nextSettings);
       const loadedSeed = cloneSettings(loaded);
       setModalSeed(loadedSeed);
+      setTerminalSnapshotsOpeningValue(loaded.terminalSnapshotsEnabled);
       if (leftRailId() === null && loaded.agents[0]) setLeftRailId(loaded.agents[0].id);
     }
   });
@@ -1646,12 +1665,54 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       setSaveError(validationError);
       return;
     }
+    const terminalSnapshotsEnabled = settings.data.terminalSnapshotsEnabled;
+    const terminalSnapshotsExpected = terminalSnapshotsOpeningValue();
+    const terminalSnapshotsChanged =
+      terminalSnapshotsEnabled !== terminalSnapshotsExpected;
     setSaveError("");
     setSaving(true);
     try {
       const seedBeforeSave = modalSeed();
       const wasApiServerRunning = apiServerRunning();
-      const nextSettings = await saveCurrentSettingsDraft();
+      const draftSettings = await saveCurrentSettingsDraft();
+      if (terminalSnapshotsChanged) {
+        try {
+          await SettingsAPI.setTerminalSnapshotsEnabled(
+            terminalSnapshotsExpected,
+            terminalSnapshotsEnabled,
+          );
+        } catch (err: unknown) {
+          if (errorMessage(err) !== TERMINAL_SNAPSHOT_SETTING_CONFLICT) throw err;
+          const authoritative = await SettingsAPI.get();
+          const reloadedSettings = {
+            ...draftSettings,
+            terminalSnapshotsEnabled: authoritative.terminalSnapshotsEnabled,
+          };
+          const reloadedSeed = cloneSettings(reloadedSettings);
+          setSettings("data", cloneSettings(reloadedSettings));
+          setModalSeed(reloadedSeed);
+          setTerminalSnapshotsOpeningValue(authoritative.terminalSnapshotsEnabled);
+          setDraftDirty(false);
+          setSaveError(TERMINAL_SNAPSHOT_CONFLICT_MESSAGE);
+          // #1173 — the draft above already persisted the new bind/port, so the
+          // conflict must not skip the restart the success path runs; otherwise the
+          // modal reports the new endpoint as running while the server still
+          // listens on the old one, and the advanced seed hides the delta on retry.
+          if (wasApiServerRunning && apiServerEndpointChanged(reloadedSettings, seedBeforeSave)) {
+            await restartApiServerAfterEndpointSave(reloadedSettings);
+          }
+          setSaving(false);
+          return;
+        }
+      }
+      const nextSettings = terminalSnapshotsChanged
+        ? { ...draftSettings, terminalSnapshotsEnabled }
+        : draftSettings;
+      const nextModalSeed = cloneSettings(nextSettings);
+      setSettings("data", cloneSettings(nextSettings));
+      setModalSeed(nextModalSeed);
+      setTerminalSnapshotsOpeningValue(nextSettings.terminalSnapshotsEnabled);
+      setDraftDirty(false);
       if (wasApiServerRunning && apiServerEndpointChanged(nextSettings, seedBeforeSave)) {
         await restartApiServerAfterEndpointSave(nextSettings);
       }
@@ -1668,7 +1729,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       setSaving(false);
       closeSettings();
     } catch (err: unknown) {
-      setSaveError(err instanceof Error ? err.message : String(err));
+      setSaveError(errorMessage(err));
       setSaving(false);
     }
   };
@@ -1943,6 +2004,35 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           CLAUDE_CODE_OAUTH_TOKEN env row); then nothing is copied and nothing is marked. Host
           and containers share one login, so a token refresh in one place can require re-login in
           another.
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">Terminal snapshots</div>
+        <label class="settings-checkbox-field">
+          <input
+            type="checkbox"
+            class="settings-checkbox"
+            checked={settings.data!.terminalSnapshotsEnabled}
+            disabled={saving()}
+            onChange={(e) =>
+              updateField("terminalSnapshotsEnabled", e.currentTarget.checked)
+            }
+            data-ac-testid="settings.general.terminalSnapshotsEnabled"
+            data-ac-role="checkbox"
+            data-ac-state={
+              settings.data!.terminalSnapshotsEnabled ? "checked" : "unchecked"
+            }
+          />
+          <span>Allow authorized terminal snapshots</span>
+        </label>
+        <div
+          class="settings-hint settings-hint-warning"
+          data-ac-testid="settings.general.terminalSnapshotsEnabled.warning"
+        >
+          Allow authorized Root Agents and same-workgroup Coordinators to capture live terminal
+          contents as JSON or PNG. Terminal screens can contain passwords, tokens, source code,
+          prompts, and personal data. Disabled by default.
         </div>
       </div>
 

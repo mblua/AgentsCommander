@@ -107,6 +107,73 @@ function Invoke-PSNonInteractiveDirect {
     }
 }
 
+# Start the binary with no shell in between, so the exit code read here is the binary's own.
+#
+# Why this exists separately from Invoke-PSNonInteractiveDirect: release builds carry
+# `windows_subsystem = "windows"` (src-tauri/src/main.rs:1), so they are GUI-subsystem
+# executables. PowerShell's `&` call operator does not wait for one; it returns 0 immediately
+# while the child keeps writing to the inherited handles. That is why the wrapped case still
+# sees correct stdout and stderr but can never observe a non-zero exit code, and why adding
+# `exit $LASTEXITCODE` inside the wrapper does not help either: PowerShell never waited, so
+# $LASTEXITCODE was never set from the child. Verified against a release build under both
+# powershell.exe and pwsh.exe.
+#
+# Forcing a wait with a pipeline would work, but it routes stdout through PowerShell's
+# formatter, which is exactly the raw passthrough the issue #129 cases exist to check. So the
+# exit code is asserted here instead, and the shell-wrapped case keeps its stream assertions
+# untouched. Do not move this back inside the wrapper.
+function Invoke-BinaryDirect {
+    param(
+        [Parameter(Mandatory=$true)] [string]$CaseName,
+        [Parameter(Mandatory=$true)] [string]$Exe,
+        [Parameter(Mandatory=$true)] [string[]]$ExeArgs
+    )
+    $paths = New-CasePaths -CaseName $CaseName
+
+    # `Arguments`, not `ArgumentList`: this script also runs under Windows PowerShell 5.1 on
+    # .NET Framework, where ProcessStartInfo.ArgumentList does not exist.
+    $quotedArgs = ($ExeArgs | ForEach-Object { '"' + ($_ -replace '"', '\"') + '"' }) -join ' '
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $Exe
+    $psi.Arguments = $quotedArgs
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+    $stderrTask = $proc.StandardError.ReadToEndAsync()
+    $proc.WaitForExit()
+
+    $stdout = if ($null -eq $stdoutTask.Result) { '' } else { $stdoutTask.Result }
+    $stderr = if ($null -eq $stderrTask.Result) { '' } else { $stderrTask.Result }
+    $commandText = "$Exe $quotedArgs"
+    Write-CaseLogs -Paths $paths -Command $commandText -Stdout $stdout -Stderr $stderr
+
+    $case = [pscustomobject]@{
+        name = $CaseName
+        shellPath = $null
+        binaryPath = $Exe
+        commandPath = $paths.CommandPath
+        stdoutPath = $paths.StdoutPath
+        stderrPath = $paths.StderrPath
+        exitCode = $proc.ExitCode
+    }
+    $summary.Add($case) | Out-Null
+
+    [pscustomobject]@{
+        CaseName = $CaseName
+        Stdout = $stdout
+        Stderr = $stderr
+        ExitCode = $proc.ExitCode
+        StdoutPath = $paths.StdoutPath
+        StderrPath = $paths.StderrPath
+        CommandPath = $paths.CommandPath
+    }
+}
+
 function New-FailureDetail {
     param(
         [Parameter(Mandatory=$true)] [string]$CaseName,
@@ -132,6 +199,41 @@ function Assert-True {
     }
 }
 
+# Root help: direct, noninteractive, and machine-clean for every wrapper binary/shell pair.
+$r0 = Invoke-PSNonInteractiveDirect -ShellPath $ShellPath -CaseName "00-root-help-direct" -Exe $BinaryPath -ExeArgs @('--help')
+Assert-True "root --help exits zero" ($r0.ExitCode -eq 0) "exit code was $($r0.ExitCode), expected 0" $r0.CaseName $r0
+Assert-True "root --help stdout non-empty" (-not [string]::IsNullOrWhiteSpace($r0.Stdout)) "stdout was empty" $r0.CaseName $r0
+Assert-True "root --help lists terminal-snapshot" ($r0.Stdout -match 'terminal-snapshot') "stdout missing terminal-snapshot command" $r0.CaseName $r0
+Assert-True "root --help stderr empty" ([string]::IsNullOrWhiteSpace($r0.Stderr)) "stderr leaked content; inspect stderr log" $r0.CaseName $r0
+
+# Terminal snapshot help must exercise only Clap discovery, never a live capture.
+$r0Snapshot = Invoke-PSNonInteractiveDirect -ShellPath $ShellPath -CaseName "00-terminal-snapshot-help-direct" -Exe $BinaryPath -ExeArgs @('terminal-snapshot', '--help')
+Assert-True "terminal-snapshot --help exits zero" ($r0Snapshot.ExitCode -eq 0) "exit code was $($r0Snapshot.ExitCode), expected 0" $r0Snapshot.CaseName $r0Snapshot
+Assert-True "terminal-snapshot --help stdout non-empty" (-not [string]::IsNullOrWhiteSpace($r0Snapshot.Stdout)) "stdout was empty" $r0Snapshot.CaseName $r0Snapshot
+Assert-True "terminal-snapshot --help shows required syntax" ($r0Snapshot.Stdout -match '--token' -and $r0Snapshot.Stdout -match '--root' -and $r0Snapshot.Stdout -match '--to') "stdout missing required --token/--root/--to syntax" $r0Snapshot.CaseName $r0Snapshot
+Assert-True "terminal-snapshot --help shows format and output syntax" ($r0Snapshot.Stdout -match '--format' -and $r0Snapshot.Stdout -match '--output' -and $r0Snapshot.Stdout -match '--timeout') "stdout missing --format/--output/--timeout syntax" $r0Snapshot.CaseName $r0Snapshot
+Assert-True "terminal-snapshot --help shows discovery command" ($r0Snapshot.Stdout -match 'list-peers-lean' -and $r0Snapshot.Stdout -match '--snapshot-targets') "stdout missing snapshot target discovery syntax" $r0Snapshot.CaseName $r0Snapshot
+Assert-True "terminal-snapshot --help stderr empty" ([string]::IsNullOrWhiteSpace($r0Snapshot.Stderr)) "stderr leaked content; inspect stderr log" $r0Snapshot.CaseName $r0Snapshot
+
+# Post-parse semantic failures must remain one fixed machine line in either shell.
+$snapshotTokenCanary = 'ACSNAP_PS_TOKEN_1173_P5Q1'
+$snapshotRootCanary = Join-Path $Root 'ACSNAP_PS_CALLER_PATH_1173_P5Q1'
+$snapshotTargetCanary = 'project:wg-1-team/acsnap-ps-target-p5q1'
+$r0SnapshotFailure = Invoke-PSNonInteractiveDirect -ShellPath $ShellPath -CaseName "00-terminal-snapshot-fixed-failure-direct" -Exe $BinaryPath -ExeArgs @('terminal-snapshot', '--token', $snapshotTokenCanary, '--root', $snapshotRootCanary, '--to', $snapshotTargetCanary, '--timeout', '4')
+$normalizedSnapshotStderr = $r0SnapshotFailure.Stderr -replace "`r`n", "`n"
+$expectedSnapshotStderr = "terminal_snapshot_error code=invalid_request detail=The terminal snapshot request is invalid.`n"
+Assert-True "terminal-snapshot semantic failure stdout empty" ($r0SnapshotFailure.Stdout.Length -eq 0) "stdout was not byte-empty" $r0SnapshotFailure.CaseName $r0SnapshotFailure
+Assert-True "terminal-snapshot semantic failure stderr exact" ($normalizedSnapshotStderr -ceq $expectedSnapshotStderr) "stderr did not match the fixed one-line contract" $r0SnapshotFailure.CaseName $r0SnapshotFailure
+Assert-True "terminal-snapshot semantic failure hides token" (-not $r0SnapshotFailure.Stderr.Contains($snapshotTokenCanary)) "stderr reflected the token canary" $r0SnapshotFailure.CaseName $r0SnapshotFailure
+Assert-True "terminal-snapshot semantic failure hides path and target" (-not $r0SnapshotFailure.Stderr.Contains($snapshotRootCanary) -and -not $r0SnapshotFailure.Stderr.Contains($snapshotTargetCanary)) "stderr reflected caller input" $r0SnapshotFailure.CaseName $r0SnapshotFailure
+
+# Same invocation, no shell in between, because the exit code is a property of the binary and
+# a GUI-subsystem release build cannot report one through PowerShell's `&`. See
+# Invoke-BinaryDirect above for why this is not folded back into the wrapped case.
+$r0SnapshotExit = Invoke-BinaryDirect -CaseName "00-terminal-snapshot-fixed-failure-exit-code" -Exe $BinaryPath -ExeArgs @('terminal-snapshot', '--token', $snapshotTokenCanary, '--root', $snapshotRootCanary, '--to', $snapshotTargetCanary, '--timeout', '4')
+Assert-True "terminal-snapshot semantic failure exits one" ($r0SnapshotExit.ExitCode -eq 1) "exit code was $($r0SnapshotExit.ExitCode), expected 1" $r0SnapshotExit.CaseName $r0SnapshotExit
+Assert-True "terminal-snapshot semantic failure stderr exact without a shell" ((($r0SnapshotExit.Stderr -replace "`r`n", "`n")) -ceq $expectedSnapshotStderr) "stderr did not match the fixed one-line contract" $r0SnapshotExit.CaseName $r0SnapshotExit
+
 # Test 1: list-peers stdout must contain JSON, and stderr must be empty.
 $r1 = Invoke-PSNonInteractiveDirect -ShellPath $ShellPath -CaseName "01-list-peers-direct" -Exe $BinaryPath -ExeArgs @('list-peers', '--token', $Token, '--root', $Root)
 Assert-True "list-peers stdout non-empty" (-not [string]::IsNullOrWhiteSpace($r1.Stdout)) "stdout was empty (issue #129 not fixed)" $r1.CaseName $r1
@@ -139,8 +241,10 @@ Assert-True "list-peers stderr empty" ([string]::IsNullOrWhiteSpace($r1.Stderr))
 if (-not [string]::IsNullOrWhiteSpace($r1.Stdout)) {
     try {
         $parsed = $r1.Stdout | ConvertFrom-Json -ErrorAction Stop
-        if ($null -eq $parsed) {
-            Write-Host "FAIL: list-peers ConvertFrom-Json returned null -- $(New-FailureDetail -CaseName $r1.CaseName -Detail 'non-empty stdout parsed to null' -Result $r1)" -ForegroundColor Red
+        $trimmedJson = $r1.Stdout.Trim()
+        # PowerShell 7 writes no pipeline object for a valid empty JSON array.
+        if ($null -eq $parsed -and $trimmedJson -ne '[]') {
+            Write-Host "FAIL: list-peers ConvertFrom-Json returned null -- $(New-FailureDetail -CaseName $r1.CaseName -Detail 'non-empty non-array stdout parsed to null' -Result $r1)" -ForegroundColor Red
             $failed++
         } else {
             Write-Host "PASS: list-peers stdout parses as JSON" -ForegroundColor Green
@@ -206,8 +310,10 @@ if ([string]::IsNullOrWhiteSpace($mergedOut)) {
 } else {
     try {
         $parsed = $mergedOut | ConvertFrom-Json -ErrorAction Stop
-        if ($null -eq $parsed) {
-            Write-Host "FAIL: Test 4 ConvertFrom-Json returned null -- $(New-FailureDetail -CaseName $r4.CaseName -Detail 'non-empty merged output parsed to null' -Result $r4)" -ForegroundColor Red
+        $trimmedMergedJson = $mergedOut.Trim()
+        # PowerShell 7 writes no pipeline object for a valid empty JSON array.
+        if ($null -eq $parsed -and $trimmedMergedJson -ne '[]') {
+            Write-Host "FAIL: Test 4 ConvertFrom-Json returned null -- $(New-FailureDetail -CaseName $r4.CaseName -Detail 'non-empty non-array merged output parsed to null' -Result $r4)" -ForegroundColor Red
             $failed++
         } else {
             Write-Host "PASS: 2>&1 | ConvertFrom-Json continues to work" -ForegroundColor Green

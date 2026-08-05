@@ -23,8 +23,10 @@ thiserror = "2"
 dirs = "6"
 reqwest = { version = "0.12", features = ["json", "blocking", "multipart"] }
 base64 = "0.22"
+getrandom = "=0.3.4"
+terminal-snapshot-renderer = { path = "../crates/terminal-snapshot-renderer", features = ["render"] }
 tokio-util = "0.7"
-vt100 = "0.15"
+vt100 = "=0.15.2"
 regex = "1"
 toml = "0.8"
 open = "5"

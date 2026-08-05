@@ -44,6 +44,55 @@ pub enum UniqueLiveTokenError {
     Ambiguous,
 }
 
+#[derive(Clone, PartialEq)]
+pub(crate) struct TerminalSnapshotRequesterFact {
+    pub id: Uuid,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub working_directory: String,
+    pub backend_kind: SessionBackendKind,
+    pub is_coordinator: bool,
+    pub is_root_agent: bool,
+}
+
+impl std::fmt::Debug for TerminalSnapshotRequesterFact {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TerminalSnapshotRequesterFact")
+            .field("working_directory_bytes", &self.working_directory.len())
+            .field("backend_kind", &self.backend_kind)
+            .field("is_coordinator", &self.is_coordinator)
+            .field("is_root_agent", &self.is_root_agent)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, PartialEq)]
+pub(crate) struct TerminalSnapshotSessionFact {
+    pub id: Uuid,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub name: String,
+    pub status: SessionStatus,
+    pub working_directory: String,
+    pub backend_kind: SessionBackendKind,
+}
+
+impl std::fmt::Debug for TerminalSnapshotSessionFact {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TerminalSnapshotSessionFact")
+            .field("name_bytes", &self.name.len())
+            .field("status", &self.status)
+            .field("working_directory_bytes", &self.working_directory.len())
+            .field("backend_kind", &self.backend_kind)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TerminalSnapshotFactsError {
+    TooMany,
+}
+
 struct SessionManagerState {
     sessions: HashMap<Uuid, Session>,
     order: Vec<Uuid>,
@@ -130,6 +179,47 @@ pub(crate) struct CommitResult {
     /// than appended in place because the guard is a local of
     /// `commit_selection_transition` and no append may hold it.
     pub activity: Vec<crate::config::activity_log::ActivityRecord>,
+}
+
+const TERMINAL_SNAPSHOT_MAX_ROWS: usize = 4_096;
+const TERMINAL_SNAPSHOT_MAX_CWD_BYTES: usize = 32_768;
+const TERMINAL_SNAPSHOT_MAX_NAME_BYTES: usize = 1_024;
+const TERMINAL_SNAPSHOT_MAX_AGGREGATE_BYTES: usize = 4 * 1024 * 1024;
+
+fn requester_fact(session: &Session) -> Option<TerminalSnapshotRequesterFact> {
+    if session.working_directory.len() > TERMINAL_SNAPSHOT_MAX_CWD_BYTES {
+        return None;
+    }
+    Some(TerminalSnapshotRequesterFact {
+        id: session.id,
+        created_at: session.created_at,
+        working_directory: session.working_directory.clone(),
+        backend_kind: session.backend_kind,
+        is_coordinator: session.is_coordinator,
+        is_root_agent: session.is_root_agent,
+    })
+}
+
+fn snapshot_session_fact_by_id(
+    state: &SessionManagerState,
+    id: Uuid,
+) -> Option<TerminalSnapshotSessionFact> {
+    state
+        .sessions
+        .get(&id)
+        .filter(|session| !state.pending_create.contains_key(&session.id))
+        .filter(|session| {
+            session.working_directory.len() <= TERMINAL_SNAPSHOT_MAX_CWD_BYTES
+                && session.name.len() <= TERMINAL_SNAPSHOT_MAX_NAME_BYTES
+        })
+        .map(|session| TerminalSnapshotSessionFact {
+            id: session.id,
+            created_at: session.created_at,
+            name: session.name.clone(),
+            status: session.status.clone(),
+            working_directory: session.working_directory.clone(),
+            backend_kind: session.backend_kind,
+        })
 }
 
 impl Default for SessionManager {
@@ -1366,6 +1456,135 @@ impl SessionManager {
         Ok(SessionInfo::from(first))
     }
 
+    /// Secret-free projection for the terminal snapshot requester boundary.
+    /// No `SessionInfo`, token, shell, prompt, task file, or repository state
+    /// leaves the manager guard.
+    pub(crate) async fn find_unique_live_snapshot_requester_by_token(
+        &self,
+        token: Uuid,
+    ) -> Result<TerminalSnapshotRequesterFact, UniqueLiveTokenError> {
+        let state = self.state.read().await;
+        let mut matches = state
+            .sessions
+            .values()
+            .filter(|session| !state.pending_create.contains_key(&session.id))
+            .filter(|session| session.token == token)
+            .filter(|session| !matches!(session.status, SessionStatus::Exited(_)));
+        let first = matches.next().ok_or(UniqueLiveTokenError::NotFound)?;
+        if matches.next().is_some() {
+            return Err(UniqueLiveTokenError::Ambiguous);
+        }
+        requester_fact(first).ok_or(UniqueLiveTokenError::NotFound)
+    }
+
+    pub(crate) async fn live_snapshot_requester_by_id(
+        &self,
+        id: Uuid,
+    ) -> Option<TerminalSnapshotRequesterFact> {
+        let state = self.state.read().await;
+        state
+            .sessions
+            .get(&id)
+            .filter(|session| !state.pending_create.contains_key(&session.id))
+            .filter(|session| !matches!(session.status, SessionStatus::Exited(_)))
+            .and_then(requester_fact)
+    }
+
+    /// Blocking projection used only by the dedicated host snapshot finalizer.
+    pub(crate) fn find_unique_live_snapshot_requester_by_token_blocking(
+        &self,
+        token: Uuid,
+    ) -> Result<TerminalSnapshotRequesterFact, UniqueLiveTokenError> {
+        let state = self.state.blocking_read();
+        let mut matches = state
+            .sessions
+            .values()
+            .filter(|session| !state.pending_create.contains_key(&session.id))
+            .filter(|session| session.token == token)
+            .filter(|session| !matches!(session.status, SessionStatus::Exited(_)));
+        let first = matches.next().ok_or(UniqueLiveTokenError::NotFound)?;
+        if matches.next().is_some() {
+            return Err(UniqueLiveTokenError::Ambiguous);
+        }
+        requester_fact(first).ok_or(UniqueLiveTokenError::NotFound)
+    }
+
+    /// Blocking projection used only by the dedicated host snapshot finalizer.
+    pub(crate) fn live_snapshot_requester_by_id_blocking(
+        &self,
+        id: Uuid,
+    ) -> Option<TerminalSnapshotRequesterFact> {
+        let state = self.state.blocking_read();
+        state
+            .sessions
+            .get(&id)
+            .filter(|session| !state.pending_create.contains_key(&session.id))
+            .filter(|session| !matches!(session.status, SessionStatus::Exited(_)))
+            .and_then(requester_fact)
+    }
+
+    /// One capped, typed selection boundary for terminal snapshots. This takes
+    /// one manager guard and performs no filesystem work.
+    pub(crate) async fn terminal_snapshot_session_facts(
+        &self,
+    ) -> Result<Vec<TerminalSnapshotSessionFact>, TerminalSnapshotFactsError> {
+        let state = self.state.read().await;
+        let row_count = state
+            .sessions
+            .values()
+            .filter(|session| !state.pending_create.contains_key(&session.id))
+            .count();
+        if row_count > TERMINAL_SNAPSHOT_MAX_ROWS {
+            return Err(TerminalSnapshotFactsError::TooMany);
+        }
+        let mut facts = Vec::new();
+        facts
+            .try_reserve_exact(row_count)
+            .map_err(|_| TerminalSnapshotFactsError::TooMany)?;
+        let mut aggregate_bytes = 0usize;
+        for session in state.sessions.values() {
+            if state.pending_create.contains_key(&session.id) {
+                continue;
+            }
+            if session.working_directory.len() > TERMINAL_SNAPSHOT_MAX_CWD_BYTES
+                || session.name.len() > TERMINAL_SNAPSHOT_MAX_NAME_BYTES
+            {
+                return Err(TerminalSnapshotFactsError::TooMany);
+            }
+            aggregate_bytes = aggregate_bytes
+                .checked_add(session.working_directory.len())
+                .and_then(|bytes| bytes.checked_add(session.name.len()))
+                .filter(|bytes| *bytes <= TERMINAL_SNAPSHOT_MAX_AGGREGATE_BYTES)
+                .ok_or(TerminalSnapshotFactsError::TooMany)?;
+            facts.push(TerminalSnapshotSessionFact {
+                id: session.id,
+                created_at: session.created_at,
+                name: session.name.clone(),
+                status: session.status.clone(),
+                working_directory: session.working_directory.clone(),
+                backend_kind: session.backend_kind,
+            });
+        }
+        Ok(facts)
+    }
+
+    pub(crate) async fn terminal_snapshot_session_fact_by_id(
+        &self,
+        id: Uuid,
+    ) -> Option<TerminalSnapshotSessionFact> {
+        let state = self.state.read().await;
+        snapshot_session_fact_by_id(&state, id)
+    }
+
+    /// Blocking projection used only by the dedicated host snapshot finalizer.
+    pub(crate) fn terminal_snapshot_session_fact_by_id_blocking(
+        &self,
+        id: Uuid,
+    ) -> Option<TerminalSnapshotSessionFact> {
+        let state = self.state.blocking_read();
+        snapshot_session_fact_by_id(&state, id)
+    }
+
     pub(crate) async fn selection_payload(&self) -> SessionSelection {
         self.state.read().await.selection.clone()
     }
@@ -2074,6 +2293,42 @@ impl SessionManager {
 mod tests {
     use super::*;
     use crate::session::selection::TrustedCreateIntent;
+
+    #[test]
+    fn terminal_snapshot_fact_debug_uses_only_structural_fields() {
+        const NAME_CANARY: &str = "NAME_1173_S2K9";
+        const PATH_CANARY: &str = r"C:\PATH_1173_S2K9\replica";
+        let id = Uuid::parse_str("11730000-0000-4000-8000-00000000c229").unwrap();
+        let requester = TerminalSnapshotRequesterFact {
+            id,
+            created_at: chrono::Utc::now(),
+            working_directory: PATH_CANARY.to_string(),
+            backend_kind: SessionBackendKind::ContainerTransport,
+            is_coordinator: true,
+            is_root_agent: false,
+        };
+        let session = TerminalSnapshotSessionFact {
+            id,
+            created_at: chrono::Utc::now(),
+            name: NAME_CANARY.to_string(),
+            status: SessionStatus::Running,
+            working_directory: PATH_CANARY.to_string(),
+            backend_kind: SessionBackendKind::LocalProcess,
+        };
+        let diagnostic = format!("{requester:?}\n{session:?}");
+        let id_text = id.to_string();
+        for forbidden in [NAME_CANARY, PATH_CANARY, id_text.as_str()] {
+            assert!(!diagnostic.contains(forbidden));
+        }
+        for structural in [
+            "working_directory_bytes",
+            "name_bytes",
+            "status: Running",
+            "backend_kind: ContainerTransport",
+        ] {
+            assert!(diagnostic.contains(structural));
+        }
+    }
 
     #[tokio::test]
     async fn set_effective_shell_args_writes_field() {

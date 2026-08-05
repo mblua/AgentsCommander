@@ -103,6 +103,13 @@ PEER SET: identical to `list-peers` for the same --root. The two verbs\n\
 share a single discovery function (see issue #252). For canonical Root Agent\n\
 roots this set contains verified WG coordinator replicas only; origin\n\
 coordinators and non-coordinator WG replicas are omitted in #277.\n\n\
+SNAPSHOT TARGETS: `--snapshot-targets` switches only this lean verb to the\n\
+identity-only terminal snapshot capability view. Canonical Root lists every\n\
+verified WG Coordinator and member in registered projectPaths. A verified WG\n\
+Coordinator lists non-Coordinator members of its own workgroup. Workers and\n\
+origin agents receive `[]`. This view reads no sessions.json, creates no peer\n\
+directories, and grants no authority. Use the returned exact name with\n\
+`terminal-snapshot --to`.\n\n\
 PEER FILTER (--peer):\n  \
   Repeat `--peer <FQN>` to return only the named peers. Matching is by\n  \
   exact canonical FQN (no substring, no case-folding). Duplicate values\n  \
@@ -146,9 +153,15 @@ pub struct ListPeersLeanArgs {
     /// exits non-zero and writes a clear error to stderr. See `--help` PEER FILTER.
     #[arg(long = "peer")]
     pub peer: Vec<String>,
+
+    /// Capability-specific, identity-only terminal snapshot target discovery.
+    /// This view is side-effect-free, reads no session index, and does not
+    /// change ordinary messaging discovery or grant snapshot authority.
+    #[arg(long = "snapshot-targets")]
+    pub snapshot_targets: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 /// Lean peer projection emitted by `list-peers-lean`. Made `pub` (#791 §8.2)
 /// so the in-daemon API can reuse the exact projection via `lean_peers`; only
@@ -1211,10 +1224,132 @@ pub fn execute(args: ListPeersArgs) -> i32 {
     }
 }
 
+fn snapshot_target_projection(
+    target: crate::config::teams::TerminalSnapshotTargetIdentity,
+    reachable: bool,
+) -> LeanPeerInfo {
+    LeanPeerInfo {
+        name: target.canonical_fqn,
+        working: false,
+        session_status: "unknown".to_string(),
+        waiting_for_input: false,
+        reachable,
+        teams: vec![target.team],
+        role_summary: String::new(),
+        context_percent: None,
+    }
+}
+
+fn discover_snapshot_targets(root: &str) -> Result<Vec<LeanPeerInfo>, String> {
+    let root_path = Path::new(root);
+    if crate::config::root_agent::is_root_agent_path(root) {
+        let expected = crate::config::root_agent::verify_live_root_agent_path(root_path)?;
+        let supplied = crate::path_identity::verify_directory(root_path)?;
+        if !crate::path_identity::same_object(&expected, &supplied) {
+            return Err("invalid snapshot discovery root".to_string());
+        }
+        let project_paths = crate::config::settings::read_terminal_snapshot_project_paths_strict()?;
+        let targets =
+            crate::config::teams::discover_verified_terminal_snapshot_targets(&project_paths)?;
+        return Ok(targets
+            .into_iter()
+            .map(|target| {
+                let reachable = target.is_coordinator;
+                snapshot_target_projection(target, reachable)
+            })
+            .collect());
+    }
+
+    let Some(wg) = detect_wg_replica(root)? else {
+        return Ok(Vec::new());
+    };
+    let requester = crate::config::teams::verify_pty_input_replica_cwd(root_path)?;
+    let supplied = crate::path_identity::verify_directory(root_path)?;
+    if !crate::path_identity::same_object(&requester.replica_identity, &supplied) {
+        return Err("invalid snapshot discovery root".to_string());
+    }
+    if !requester.is_coordinator {
+        return Ok(Vec::new());
+    }
+    let project_dir = wg
+        .workspace_dir
+        .parent()
+        .ok_or_else(|| "snapshot project path unavailable".to_string())?
+        .to_string_lossy()
+        .to_string();
+    let targets =
+        crate::config::teams::discover_verified_terminal_snapshot_targets(&[project_dir])?;
+    Ok(targets
+        .into_iter()
+        .filter(|target| {
+            target.project == requester.project
+                && target.workgroup == requester.workgroup
+                && !target.is_coordinator
+        })
+        .map(|target| snapshot_target_projection(target, true))
+        .collect())
+}
+
+fn apply_snapshot_target_filter(
+    peers: Vec<LeanPeerInfo>,
+    requested: &[String],
+) -> Result<Vec<LeanPeerInfo>, Vec<String>> {
+    if requested.is_empty() {
+        return Ok(peers);
+    }
+    let mut by_name: HashMap<String, LeanPeerInfo> = peers
+        .into_iter()
+        .map(|peer| (peer.name.clone(), peer))
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut filtered = Vec::new();
+    let mut unknown = Vec::new();
+    for name in requested {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        match by_name.remove(name) {
+            Some(peer) => filtered.push(peer),
+            None => unknown.push(name.clone()),
+        }
+    }
+    if unknown.is_empty() {
+        Ok(filtered)
+    } else {
+        Err(unknown)
+    }
+}
+
+fn serialize_snapshot_targets(peers: &[LeanPeerInfo]) -> i32 {
+    match serde_json::to_string_pretty(peers) {
+        Ok(json) => {
+            crate::cli_println!("{}", json);
+            0
+        }
+        Err(_) => {
+            eprintln!("Error: failed to serialize terminal snapshot targets");
+            1
+        }
+    }
+}
+
 pub fn execute_lean(args: ListPeersLeanArgs) -> i32 {
-    // Validate token before any discovery
-    if let Err(msg) = crate::cli::validate_cli_token(&args.token) {
-        eprintln!("{}", msg);
+    // Snapshot target discovery is shape-only and side-effect-free. In
+    // particular, it must not load or repair settings merely to inspect a
+    // persisted static token. Default discovery retains its existing model.
+    let token_validation = if args.snapshot_targets {
+        args.token
+            .as_deref()
+            .filter(|token| uuid::Uuid::parse_str(token).is_ok())
+            .map(|_| ())
+            .ok_or_else(|| {
+                "Error: --token is required and must be a UUID-shaped session token.".to_string()
+            })
+    } else {
+        crate::cli::validate_cli_token(&args.token).map(|_| ())
+    };
+    if let Err(message) = token_validation {
+        eprintln!("{}", message);
         return 1;
     }
 
@@ -1225,6 +1360,21 @@ pub fn execute_lean(args: ListPeersLeanArgs) -> i32 {
             return 1;
         }
     };
+
+    if args.snapshot_targets {
+        let peers = match discover_snapshot_targets(&root) {
+            Ok(peers) => peers,
+            Err(error) => {
+                eprintln!("Error: {}", error);
+                return 1;
+            }
+        };
+        let available: Vec<String> = peers.iter().map(|peer| peer.name.clone()).collect();
+        return match apply_snapshot_target_filter(peers, &args.peer) {
+            Ok(filtered) => serialize_snapshot_targets(&filtered),
+            Err(unknown) => report_unknown_peers(&unknown, &available),
+        };
+    }
 
     let peers = match discover_peers(&root) {
         Ok(peers) => peers,
@@ -2177,6 +2327,7 @@ mod tests {
             token: None,
             root: Some("anything".into()),
             peer: Vec::new(),
+            snapshot_targets: false,
         };
         assert_eq!(execute_lean(args), 1);
     }
@@ -2187,6 +2338,7 @@ mod tests {
             token: Some("11111111-1111-1111-1111-111111111111".into()),
             root: None,
             peer: Vec::new(),
+            snapshot_targets: false,
         };
         assert_eq!(execute_lean(args), 1);
     }

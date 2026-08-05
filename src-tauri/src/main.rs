@@ -44,6 +44,7 @@ fn main() {
                                 | agentscommander_lib::cli::Commands::UiWait(_)
                                 | agentscommander_lib::cli::Commands::TaskSetTitle(_)
                                 | agentscommander_lib::cli::Commands::CodingAgent(_)
+                                | agentscommander_lib::cli::Commands::TerminalSnapshot(_)
                         ) {
                             std::env::set_var("AC_MACHINE_OUTPUT", "1");
                         }
@@ -68,7 +69,9 @@ fn main() {
                         // not a tty) stay silent.
                         {
                             use std::io::IsTerminal;
-                            if std::io::stderr().is_terminal() {
+                            if std::io::stderr().is_terminal()
+                                && std::env::var_os("AC_MACHINE_OUTPUT").is_none()
+                            {
                                 if let Some(notice) =
                                     agentscommander_lib::update_check::read_cached_notice()
                                 {

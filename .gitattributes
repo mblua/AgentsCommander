@@ -3,3 +3,5 @@
 *.toml    text eol=lf
 *.json    text eol=lf
 *.rs      text eol=lf
+crates/terminal-snapshot-renderer/assets/LICENSE-DejaVu.txt binary
+crates/terminal-snapshot-renderer/tests/fixtures/*.png binary

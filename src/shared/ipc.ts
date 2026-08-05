@@ -333,6 +333,8 @@ export const SettingsAPI = {
     transport.invoke<WebServerOwnedStatus>("get_web_server_owned_status"),
   setSoundsEnabled: (value: boolean) =>
     transport.invoke<void>("set_sounds_enabled", { value }),
+  setTerminalSnapshotsEnabled: (expected: boolean, enabled: boolean) =>
+    transport.invoke<void>("set_terminal_snapshots_enabled", { expected, enabled }),
   setThemeLight: (value: boolean) =>
     transport.invoke<void>("set_theme_light", { value }),
   setMainResourceMonitorAttached: (value: boolean) =>
