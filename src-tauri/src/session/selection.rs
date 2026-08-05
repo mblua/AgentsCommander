@@ -3661,27 +3661,20 @@ mod tests {
             "real container close elapsed {close_elapsed:?}, bound {close_bound:?}"
         );
         if capped {
-            // Whether a capped close abandons ownership depends on load, so
-            // assert the declared outcome for whichever case this run took.
-            // Both predicates couple the report to something observed
-            // independently of it, so neither restates
-            // `persistence_safe == retained.is_empty()`.
-            if close_elapsed < close_budget {
-                // `close_elapsed` spans from before the spawn to after the join,
-                // so it overestimates the close's own duration. An overestimate
-                // still under budget means the close never reached its absolute
-                // deadline, so it had nothing to abandon there.
-                assert!(
-                    close_report.persistence_safe,
-                    "a capped close that finished in {close_elapsed:?} of its {close_budget:?} budget must report persistence-safe: {close_report:?}"
-                );
-                assert!(
-                    close_report.retained.is_empty(),
-                    "a capped close that finished in {close_elapsed:?} of its {close_budget:?} budget must retain nothing: {close_report:?}"
-                );
-            } else if work_state_at_close != (true, 0, 0) {
+            // Only the abandoned side is asserted. A capped close may retain work
+            // without ever reaching its absolute deadline: the
+            // `container-shutdown-signal` and `coordinator-worker-handle` reasons are
+            // raised immediately on a `try_lock` failure, `critical-key-clear` is not
+            // deadline-driven at all, and `blocking-seed-transaction-await` is raised
+            // at the worker deadline, one finalization reserve before the absolute
+            // one. A close that returns under budget is therefore free to retain, so
+            // asserting an empty retained set there would fail runs the production
+            // contract permits.
+            if close_elapsed >= close_budget && work_state_at_close != (true, 0, 0) {
                 // The registry only drains, never refills, so work outstanding
-                // here was outstanding at the close's deadline too.
+                // here was outstanding at the close's deadline too. The predicate
+                // couples the report to something observed independently of it, so
+                // it does not restate `persistence_safe == retained.is_empty()`.
                 assert!(
                     !close_report.persistence_safe,
                     "a capped close that gave up on {work_state_at_close:?} must report abandoned ownership: {close_report:?}"
@@ -3691,9 +3684,9 @@ mod tests {
                     "a capped close that gave up on {work_state_at_close:?} must name what it abandoned: {close_report:?}"
                 );
             }
-            // The remaining case, a close that reached its deadline against a
-            // registry that then drained before this sample, is undecidable from
-            // outside and is deliberately left unasserted.
+            // The remaining cases, a close that returned under budget and a close
+            // that reached its deadline against a registry that then drained before
+            // this sample, are undecidable from outside and are left unasserted.
         }
         if let Some(guard) = restore_guard.take() {
             guard.finish();
