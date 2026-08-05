@@ -793,21 +793,31 @@ fn team_members(
         .filter(|values| values.len() <= 1_024)
         .ok_or_else(|| "sender_identity_invalid".to_string())?;
     let mut members: Vec<String> = Vec::with_capacity(values.len());
+    let mut seen: Vec<String> = Vec::with_capacity(values.len());
     for value in values {
         let raw = value
             .as_str()
             .ok_or_else(|| "sender_identity_invalid".to_string())?;
         let member =
             agent_bare_name_from_ref(raw).map_err(|_| "sender_identity_invalid".to_string())?;
-        if identity_name_eq(&member, &coordinator)
-            || members
-                .iter()
-                .any(|existing| identity_name_eq(existing, &member))
+        if seen
+            .iter()
+            .any(|existing| identity_name_eq(existing, &member))
         {
             return Err("sender_identity_invalid".to_string());
         }
         crate::path_identity::verify_directory(&workspace.join(format!("_agent_{member}")))?;
-        members.push(member);
+        seen.push(member.clone());
+        // #1245: the application's team-config writer requires the coordinator
+        // to appear in `agents` (commands/entity_creation.rs::
+        // normalize_team_config_for_project, and rule 4 of
+        // docs/agent-matrix-conventions.md). The coordinator is returned
+        // separately and must not also be counted as an ordinary member, so its
+        // entry is consumed here instead of rejecting the whole config. `seen`
+        // still covers it, so a repeated coordinator entry stays rejected.
+        if !identity_name_eq(&member, &coordinator) {
+            members.push(member);
+        }
     }
     crate::path_identity::verify_directory(&workspace.join(format!("_agent_{coordinator}")))?;
     Ok((coordinator, members, config_identity))
@@ -2094,7 +2104,7 @@ mod tests {
 
         std::fs::write(
             team_dir.join("config.json"),
-            r#"{"agents":["../_agent_dev-rust"],"coordinator":"../_agent_tech-lead"}"#,
+            r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead"],"coordinator":"../_agent_tech-lead"}"#,
         )
         .unwrap();
         let tech_lead_identity = if spoofed_coordinator_identity {
@@ -2115,6 +2125,114 @@ mod tests {
 
         let paths = vec![tmp.path().to_string_lossy().to_string()];
         (tmp, paths)
+    }
+
+    /// #1245: the team-config shape the application's writer actually produces,
+    /// with the coordinator listed inside `agents`. A third member exists so the
+    /// surviving member order can be pinned once the coordinator entry is
+    /// consumed; `make_coordinator_fixture` has only one ordinary member.
+    fn make_writer_shaped_team_fixture() -> (FixtureRoot, Vec<String>) {
+        let tmp = FixtureRoot::new("teams-writer-shape-fixture");
+        let workspace_dir = tmp.path().join("proj-a").join(".ac");
+        let team_dir = workspace_dir.join("_team_dev-team");
+        let wg_dir = workspace_dir.join("wg-1-dev-team");
+
+        std::fs::create_dir_all(&team_dir).unwrap();
+        for agent in ["tech-lead", "dev-rust", "dev-ts"] {
+            std::fs::create_dir_all(workspace_dir.join(format!("_agent_{agent}"))).unwrap();
+            let replica = wg_dir.join(format!("__agent_{agent}"));
+            std::fs::create_dir_all(&replica).unwrap();
+            std::fs::write(
+                replica.join("config.json"),
+                format!(r#"{{"identity":"../../_agent_{agent}"}}"#),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            team_dir.join("config.json"),
+            r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead","../_agent_dev-ts"],"coordinator":"../_agent_tech-lead"}"#,
+        )
+        .unwrap();
+
+        let paths = vec![tmp.path().to_string_lossy().to_string()];
+        (tmp, paths)
+    }
+
+    #[test]
+    fn team_config_with_coordinator_in_agents_verifies_and_excludes_the_coordinator_from_members() {
+        let (fixture, paths) = make_writer_shaped_team_fixture();
+        let workspace = fixture.path().join("proj-a").join(".ac");
+        let wg_dir = workspace.join("wg-1-dev-team");
+        let tech_lead = wg_dir.join("__agent_tech-lead");
+        let dev_rust = wg_dir.join("__agent_dev-rust");
+
+        let route =
+            verify_pty_input_route(&tech_lead, false, "proj-a:wg-1-dev-team/dev-rust", &paths)
+                .unwrap();
+        assert_eq!(route.sender.canonical_fqn, "proj-a:wg-1-dev-team/tech-lead");
+        assert!(route.sender.is_coordinator);
+
+        assert!(
+            verify_pty_input_route(&dev_rust, false, "proj-a:wg-1-dev-team/dev-ts", &paths)
+                .is_err(),
+            "a worker sender must still be rejected"
+        );
+
+        let snapshot = verify_terminal_snapshot_route(
+            &tech_lead,
+            false,
+            "proj-a:wg-1-dev-team/dev-ts",
+            &paths,
+        )
+        .unwrap();
+        assert_eq!(snapshot.kind, TerminalSnapshotAuthorityKind::Coordinator);
+
+        // The coordinator is still not a valid capture target even though it now
+        // appears in `agents`. This guards the authorization matrix. It cannot
+        // observe the member exclusion: `verify_replica` derives
+        // `is_coordinator` from the `coordinator` key and short-circuits the
+        // `target_not_member` gate, so it holds for any `members` content.
+        assert!(verify_terminal_snapshot_route(
+            &tech_lead,
+            false,
+            "proj-a:wg-1-dev-team/tech-lead",
+            &paths,
+        )
+        .is_err());
+
+        // Only a direct call can pin the exclusion. Asserting the whole vector
+        // also pins that consuming the coordinator entry leaves the order and
+        // the count of the remaining members untouched.
+        let (coordinator, members, _) = team_members(&workspace, "dev-team").unwrap();
+        assert_eq!(coordinator, "tech-lead");
+        assert_eq!(members, vec!["dev-rust".to_string(), "dev-ts".to_string()]);
+    }
+
+    #[test]
+    fn team_config_rejects_repeated_agent_and_repeated_coordinator_entries() {
+        let (fixture, paths) = make_writer_shaped_team_fixture();
+        let workspace = fixture.path().join("proj-a").join(".ac");
+        let team_config = workspace.join("_team_dev-team").join("config.json");
+        let tech_lead = workspace.join("wg-1-dev-team").join("__agent_tech-lead");
+
+        for agents in [
+            r#"["../_agent_dev-rust","../_agent_dev-rust","../_agent_tech-lead"]"#,
+            r#"["../_agent_tech-lead","../_agent_tech-lead","../_agent_dev-rust"]"#,
+            // Equivalent spellings collapse in `agent_bare_name_from_ref`, so a
+            // repeated coordinator is caught whichever way it is written.
+            r#"["../_agent_tech-lead","_agent_tech-lead","../_agent_dev-rust"]"#,
+        ] {
+            std::fs::write(
+                &team_config,
+                format!(r#"{{"agents":{agents},"coordinator":"../_agent_tech-lead"}}"#),
+            )
+            .unwrap();
+            assert!(
+                verify_pty_input_route(&tech_lead, false, "proj-a:wg-1-dev-team/dev-rust", &paths)
+                    .is_err(),
+                "duplicate detection must not weaken for agents {agents}"
+            );
+        }
     }
 
     #[test]
@@ -2249,7 +2367,7 @@ mod tests {
 
         std::fs::write(
             workspace.join("_team_dev-team").join("config.json"),
-            r#"{"agents":["../_agent_dev-rust"],"agents":[],"coordinator":"../_agent_tech-lead"}"#,
+            r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead"],"agents":[],"coordinator":"../_agent_tech-lead"}"#,
         )
         .unwrap();
         assert!(verify_pty_input_route(
@@ -2277,7 +2395,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             workspace.join("_team_dev-team").join("config.json"),
-            r#"{"agents":["../_agent_dev-rust"],"coordinator":"../_agent_tech-lead","benign":"changed"}"#,
+            r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead"],"coordinator":"../_agent_tech-lead","benign":"changed"}"#,
         )
         .unwrap();
         let second =
