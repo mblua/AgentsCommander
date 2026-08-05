@@ -669,7 +669,9 @@ fn d2_targeted_closed_stdout_harness() {
     let Ok(iterations) = std::env::var("AC_D2_ITERATIONS") else {
         return;
     };
-    let iterations: usize = iterations.parse().expect("AC_D2_ITERATIONS must be a count");
+    let iterations: usize = iterations
+        .parse()
+        .expect("AC_D2_ITERATIONS must be a count");
     let _guard = host_process_guard();
     let temporary = TempDirectory::new();
     let layout = HostLayout::new(&temporary);
