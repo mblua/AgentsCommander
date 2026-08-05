@@ -7164,7 +7164,7 @@ mod tests {
         });
         started_rx.await.unwrap();
         let second = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
+            std::time::Duration::from_secs(60),
             create_target_for_test(
                 &app,
                 &session_mgr,

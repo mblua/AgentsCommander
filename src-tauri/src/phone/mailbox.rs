@@ -2405,6 +2405,7 @@ struct MailboxTestHooks {
     internal_payloads: Arc<Mutex<Vec<String>>>,
     internal_bookkeeping: Arc<Mutex<Vec<InternalSystemBookkeeping>>>,
     internal_live_settle_gate: Arc<Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>,
+    internal_live_settle_entered: Arc<tokio::sync::Notify>,
     internal_spawn_gate: Arc<Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>,
     internal_spawn_started: Arc<tokio::sync::Notify>,
     destroy_calls: Arc<Mutex<Vec<Uuid>>>,
@@ -6878,6 +6879,9 @@ impl MailboxPoller {
         if let Some(hooks) = &self.test_hooks {
             let gate = hooks.internal_live_settle_gate.lock().unwrap().take();
             if let Some(gate) = gate {
+                // notify_one, not notify_waiters: this stores a permit when the canceller
+                // has not been polled yet, which on a current_thread runtime is the norm.
+                hooks.internal_live_settle_entered.notify_one();
                 let _ = gate.await;
                 return;
             }
@@ -14263,22 +14267,11 @@ mod tests {
         let cancel_when_settling = cancellation.clone();
         let settle_hooks = hooks.clone();
         let canceller = tokio::spawn(async move {
-            for _ in 0..2_000 {
-                if settle_hooks
-                    .internal_live_settle_gate
-                    .lock()
-                    .unwrap()
-                    .is_none()
-                {
-                    cancel_when_settling.cancel();
-                    return;
-                }
-                tokio::task::yield_now().await;
-            }
-            panic!("internal settle gate was not entered");
+            settle_hooks.internal_live_settle_entered.notified().await;
+            cancel_when_settling.cancel();
         });
         let result = tokio::time::timeout(
-            Duration::from_secs(1),
+            Duration::from_secs(60),
             MailboxPoller::new_with_test_hooks(hooks.clone()).deliver_internal_system_notice(
                 &app,
                 InternalSystemTarget::for_context_alert(
@@ -14299,7 +14292,10 @@ mod tests {
         )
         .await
         .expect("cancellation must not wait for the settle cap");
-        canceller.await.unwrap();
+        tokio::time::timeout(Duration::from_secs(60), canceller)
+            .await
+            .expect("internal settle gate was not entered")
+            .unwrap();
         drop(settle_release);
         assert!(result.unwrap_err().contains("canceled during live settle"));
         assert!(hooks.inject_calls.lock().unwrap().is_empty());

@@ -38,6 +38,10 @@ jobs:
 
       - name: Check ignored and placeholder test debt
         run: npm run test:debt
+      - name: "Check #480 guard controls"
+        run: |
+          npm run test:classify:self
+          npm run test:report:self
 
   rust-regression:
     name: rust-regression
@@ -157,12 +161,39 @@ jobs:
       - name: TypeScript type check
         run: npm run typecheck
 
-      - name: npm test with #480 known-debt guard
+      - name: "npm test with #480 known-debt guard"
         run: |
+          # The three classifier inputs are removed first and the removal is
+          # checked. After this line each of them exists only if this run wrote it,
+          # which is what makes the tolerate decision's inputs this run's (#1206).
+          if ! rm -f npm-test-results.json npm-test.log npm-test.normalized.log; then
+            echo "::error::#480 guard: a stale classifier input could not be removed, so this run's inputs cannot be established. Not classifying."
+            exit 1
+          fi
+
+          # Nothing may be added to this region. It is the only place in the step
+          # where a failure is not caught, and every command in it has its status
+          # captured on the next line.
           set +e
-          npm test 2>&1 | tee npm-test.log
-          status=${PIPESTATUS[0]}
+          npm test -- --reporter=default --reporter=json --outputFile.json=npm-test-results.json 2>&1 | tee npm-test.log
+          pipe_status=("${PIPESTATUS[@]}")
           set -e
+
+          # The whole array is captured in one assignment because PIPESTATUS holds
+          # only the most recent pipeline and the next command replaces it, a plain
+          # assignment included. Reading PIPESTATUS[1] after `status=` would read
+          # the assignment's own status and never fire.
+          status=${pipe_status[0]}
+
+          if [ "${#pipe_status[@]}" -ne 2 ]; then
+            echo "::error::#480 guard: the test pipeline no longer has exactly two stages, so these are not the statuses this check was written against. Not classifying."
+            exit 1
+          fi
+
+          if [ "${pipe_status[1]}" -ne 0 ]; then
+            echo "::error::#480 guard: tee failed, so npm-test.log is not this run's output. Not classifying."
+            exit 1
+          fi
 
           if [ "$status" -eq 0 ]; then
             exit 0
@@ -170,16 +201,38 @@ jobs:
 
           perl -pe 's/\x1b\[[0-9;?]*[ -\/]*[@-~]//g' npm-test.log > npm-test.normalized.log
 
+          # Classification and reporting are two steps and the order is
+          # load-bearing: classify first, annotate only a failure that was not
+          # tolerated. A reporter cannot do this, because it emits during the run
+          # and would annotate a run this guard later tolerates (#1206).
+          #
+          # The classifier is a whitelist: it tolerates only the one known-good
+          # state and fails closed on everything else, including any error it
+          # raises while deciding. It is an `if` condition, so `set -e` does not
+          # abort the step when it says no.
+          #
           # Temporary #480 guard: remove this block when the unhandled WebSocket rejection is fixed.
-          if grep -q "Unhandled Rejection" npm-test.normalized.log \
-            && grep -q "ws does not work in the browser" npm-test.normalized.log \
-            && grep -Eq "Test Files +[0-9]+ passed" npm-test.normalized.log \
-            && grep -Eq "Tests +[0-9]+ passed" npm-test.normalized.log \
-            && ! grep -Eq "(FAIL|failed)" npm-test.normalized.log \
-            && ! grep -E "^(Error|TypeError|ReferenceError|SyntaxError|RangeError|URIError|EvalError): " npm-test.normalized.log | grep -Fv "Error: ws does not work in the browser. Browser clients must use the native WebSocket object"; then
+          if node scripts/classify-test-run.mjs npm-test-results.json npm-test.normalized.log; then
             echo "::warning::npm test is temporarily tolerated only for the known #480 unhandled WebSocket rejection signature. Remove this guard when #480 is fixed."
             exit 0
           fi
 
-          echo "::error::npm test failed for a reason outside the known #480 signature."
+          # `|| true` is load-bearing: `set -e` is on again, and without it a throw
+          # in the reporter would abort the step before `exit "$status"`, making the
+          # reported cause the reporting defect instead of the failing test.
+          node scripts/report-failed-tests.mjs npm-test-results.json || true
+
+          # Deliberately does not promise annotations: an unusable report
+          # legitimately produces none, and this line must be true in every branch.
+          echo "::error::npm test failed and was not tolerated by the #480 guard. See any annotations above and the uploaded npm-test.log."
           exit "$status"
+
+      - name: "Upload npm test diagnostics"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-npm-test-diagnostics
+          path: |
+            npm-test.log
+            npm-test-results.json
+          if-no-files-found: ignore
