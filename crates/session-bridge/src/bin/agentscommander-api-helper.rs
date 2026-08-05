@@ -1897,11 +1897,15 @@ fn open_snapshot_leaf_at(
     let name = std::ffi::CString::new(name.as_os_str().as_bytes())
         .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
     let descriptor = unsafe {
+        // `openat` is variadic, so the mode must arrive default-promoted to at least
+        // `c_int`/`c_uint`. `libc::mode_t` is `u32` on Linux but `u16` on macOS, where passing
+        // it unpromoted is a hard compile error (E0617). Casting straight to `c_uint` is
+        // identity on Linux and avoids narrowing to `u16` and widening back on macOS.
         libc::openat(
             parent.file.as_raw_fd(),
             name.as_ptr(),
             flags,
-            mode as libc::mode_t,
+            mode as libc::c_uint,
         )
     };
     if descriptor < 0 {

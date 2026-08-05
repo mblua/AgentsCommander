@@ -679,11 +679,16 @@ impl RetainedDirectory {
             .unix_child_cstring(path)
             .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
         let descriptor = unsafe {
+            // Same variadic promotion rule as the helper's `open_snapshot_leaf_at`: `mode_t` is
+            // `u16` on macOS, and an unpromoted `u16` to a variadic function is E0617. This site
+            // has never been compiled on macOS because the portable job builds only
+            // `session-bridge` and `terminal-snapshot-renderer`, so it would have failed the
+            // first time anything built `src-tauri` there.
             libc::openat(
                 self.handle.as_raw_fd(),
                 name.as_ptr(),
                 flags,
-                mode as libc::mode_t,
+                mode as libc::c_uint,
             )
         };
         if descriptor < 0 {
