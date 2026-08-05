@@ -328,22 +328,18 @@ fn publish_request(
         return Err("response_unavailable".to_string());
     }
     enter_stage("publish_request.verify_published");
-    let published =
-        match crate::path_identity::verify_opened_regular_file(destination, &file, false) {
-            Ok(identity) => identity,
-            Err(_)
-                if std::fs::symlink_metadata(destination)
-                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
-            {
-                // A compatible daemon may claim the published final before this
-                // post-publication path check. The retained handle/object proof
-                // remains the cancellation identity; an absent final is already
-                // non-cancellable and must not turn accepted work into a local
-                // publication failure.
-                temporary_identity
-            }
-            Err(_) => return Err("response_unavailable".to_string()),
-        };
+    // The request is already published, so this is a best-effort observation of a
+    // name a compatible daemon may legitimately claim at any moment, not a
+    // confinement gate. Confinement was established before publication by the
+    // create_new no-follow open and the verify on the retained handle, and that
+    // retained handle/object proof is what cancellation matches on. Failing here
+    // would abandon a token-bearing request the daemon may still serve, leaving
+    // its response unconsumed until the TTL sweep. Fall back to the retained proof
+    // so the poll loop either consumes the response or cancels the request at the
+    // deadline; cancellation is identity-gated, so a final that is no longer our
+    // object is left untouched.
+    let published = crate::path_identity::verify_opened_regular_file(destination, &file, false)
+        .unwrap_or(temporary_identity);
     drop(file);
     crate::path_identity::sync_parent_best_effort(destination);
     Ok(published)
