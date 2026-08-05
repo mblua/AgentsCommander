@@ -7,9 +7,13 @@ autotests = false
 
 [workspace]
 
+# Deliberately nothing but the crate under test. The nested Cargo run is offline and
+# --locked, and the cache it runs against is populated only by the portable job's own
+# `cargo test -p terminal-snapshot-renderer` step, so every dependency added here must
+# already be inside that closure. Keeping this list at exactly the path dependency makes
+# that true by construction rather than by matching pinned versions.
 [dependencies]
 terminal-snapshot-renderer = { path = "../../.." }
-tokio = { version = "=1.51.0", features = ["macros", "rt-multi-thread"] }
 
 [[test]]
 name = "diagnostic_failures"

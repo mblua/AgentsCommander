@@ -234,24 +234,33 @@ fn result_returning_protocol_error_failure() -> Result<(), ProtocolError> {
     Err(error)
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn tokio_assert_render_failure() {
+#[test]
+fn assert_eq_rendered_failure() {
     let canaries = Canaries::load();
     let left = rendered(&canaries, &canaries.cell_left);
     let right = rendered(&canaries, &canaries.cell_right);
-    persist("tokio_assert_render_failure", (&left, &right));
+    persist("assert_eq_rendered_failure", (&left, &right));
     assert_eq!(left, right);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn tokio_task_wire_failure() {
+/// The one case that is not a plain in-test failure: the payload is Debug-formatted into a
+/// panic raised on a **non-test thread**, so it is printed by the process panic hook rather
+/// than by libtest's own handler, and the join failure then produces a second diagnostic.
+/// Both are surfaces production can reach, since snapshot work runs on spawned tasks.
+///
+/// This used `tokio::spawn` until the fixture's dependency on Tokio proved to be what CI could
+/// not satisfy. `std::thread` reaches the same panic hook by the same route with no dependency
+/// at all. What it no longer covers is `tokio::task::JoinError`'s own formatting, which is the
+/// one narrow surface this construction gives up.
+#[test]
+fn spawned_thread_wire_failure() {
     let canaries = Canaries::load();
     let success = api_success(&canaries);
-    persist("tokio_task_wire_failure", &success);
-    let task = tokio::spawn(async move {
-        panic!("tokio task snapshot result: {success:?}");
+    persist("spawned_thread_wire_failure", &success);
+    let task = std::thread::spawn(move || {
+        panic!("spawned task snapshot result: {success:?}");
     });
-    task.await.expect("fixed Tokio snapshot task expectation");
+    task.join().expect("fixed spawned snapshot task expectation");
 }
 
 #[test]

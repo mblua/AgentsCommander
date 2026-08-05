@@ -28,11 +28,11 @@ const CHILD_CASES: [(&str, &[&str]); 8] = [
         &["Invalid", "source=none"],
     ),
     (
-        "tokio_assert_render_failure",
+        "assert_eq_rendered_failure",
         &["RenderedTerminalPng", "fallback_glyph_count"],
     ),
     (
-        "tokio_task_wire_failure",
+        "spawned_thread_wire_failure",
         &["TerminalSnapshotApiSuccess", "result"],
     ),
     (
@@ -321,7 +321,7 @@ fn deliberately_failing_cargo_harness_diagnostics_are_payload_free() {
         "called `Result::unwrap()` on an `Err` value",
         "fixed renderer expectation: Invariant",
         "Error: Invalid",
-        "tokio task snapshot result: TerminalSnapshotApiSuccess",
+        "spawned task snapshot result: TerminalSnapshotApiSuccess",
         "failures:",
         "test result: FAILED. 0 passed; 8 failed",
     ] {
