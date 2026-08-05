@@ -187,6 +187,29 @@ fn execute_inner(args: TerminalSnapshotArgs) -> Result<(), String> {
     }
 }
 
+/// #1245: fixed, path-free diagnostic for a local requester-identity failure.
+/// The stable CLI error stays `requester_unavailable`; this text only reaches
+/// `app.log`, never stdout or stderr. Every reason in this chain is a fixed
+/// literal except the five `config::workspace::ensure_authoritative_workspace_dir`
+/// messages, which format absolute paths, so anything outside the known set is
+/// reported as `unexpected`.
+fn requester_identity_diagnostic(stage: &'static str, reason: &str) -> String {
+    const KNOWN: [&str; 6] = [
+        "sender_identity_invalid",
+        "target_not_member",
+        "invalid_target",
+        "unsafe_path",
+        "invalid_envelope",
+        "capacity_exceeded",
+    ];
+    let safe = if KNOWN.contains(&reason) {
+        reason
+    } else {
+        "unexpected"
+    };
+    format!("[terminal-snapshot] requester identity failed stage={stage} reason={safe}")
+}
+
 fn verify_requester_root(
     root: &Path,
 ) -> Result<(crate::path_identity::VerifiedPathIdentity, String), String> {
@@ -196,10 +219,20 @@ fn verify_requester_root(
             crate::config::root_agent::ROOT_AGENT_SENDER.to_string(),
         ));
     }
-    let identity = crate::config::teams::verify_pty_input_replica_cwd(root)
-        .map_err(|_| "requester_unavailable".to_string())?;
-    let supplied = crate::path_identity::verify_directory(root)
-        .map_err(|_| "requester_unavailable".to_string())?;
+    let identity = crate::config::teams::verify_pty_input_replica_cwd(root).map_err(|reason| {
+        log::warn!(
+            "{}",
+            requester_identity_diagnostic("replica_identity", &reason)
+        );
+        "requester_unavailable".to_string()
+    })?;
+    let supplied = crate::path_identity::verify_directory(root).map_err(|reason| {
+        log::warn!(
+            "{}",
+            requester_identity_diagnostic("root_directory", &reason)
+        );
+        "requester_unavailable".to_string()
+    })?;
     if !identity.is_coordinator
         || !crate::path_identity::same_object(&supplied, &identity.replica_identity)
     {
@@ -683,6 +716,56 @@ fn reason_code(value: &str) -> Option<TerminalSnapshotReasonCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn requester_identity_diagnostic_filters_unknown_and_path_bearing_reasons() {
+        for reason in [
+            "sender_identity_invalid",
+            "target_not_member",
+            "invalid_target",
+            "unsafe_path",
+            "invalid_envelope",
+            "capacity_exceeded",
+        ] {
+            let text = requester_identity_diagnostic("replica_identity", reason);
+            assert!(
+                text.starts_with("[terminal-snapshot] requester identity failed stage="),
+                "unexpected prefix: {text}"
+            );
+            assert!(text.contains("stage=replica_identity"), "got {text}");
+            assert!(text.ends_with(&format!("reason={reason}")), "got {text}");
+        }
+
+        // The five `config::workspace::ensure_authoritative_workspace_dir`
+        // messages are the only non-literal reasons reachable here, and each
+        // formats at least one absolute path. All five must collapse to
+        // `unexpected`, so no path text can reach `app.log`. One sample proves
+        // the fallback exists; five prove no message shape collides with an
+        // allowlisted literal.
+        const CALLER: &str = r"C:\Users\someone\proj\.ac";
+        const PROJECT: &str = r"C:\Users\someone\proj";
+        const AUTHORITATIVE: &str = r"C:\Users\someone\proj\.agentscommander";
+        for reason in [
+            format!("Project AC Root path '{CALLER}' has no valid directory name"),
+            format!("Project AC Root path '{CALLER}' is not a Project AC Root directory"),
+            format!("Project AC Root path '{CALLER}' has no parent project directory"),
+            format!("project '{PROJECT}' has no Project AC Root directory"),
+            format!(
+                "Project AC Root '{CALLER}' rejected because authoritative Project AC Root '{AUTHORITATIVE}' exists"
+            ),
+            String::new(),
+        ] {
+            let text = requester_identity_diagnostic("root_directory", &reason);
+            assert!(text.ends_with("reason=unexpected"), "got {text}");
+            assert!(text.contains("stage=root_directory"), "got {text}");
+            for forbidden in [r"C:\", "someone", ".ac"] {
+                assert!(
+                    !text.contains(forbidden),
+                    "diagnostic leaked {forbidden}: {text}"
+                );
+            }
+        }
+    }
 
     fn write_private_response(path: &Path, bytes: &[u8]) {
         std::fs::write(path, bytes).unwrap();
