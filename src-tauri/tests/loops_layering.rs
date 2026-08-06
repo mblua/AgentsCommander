@@ -68,6 +68,18 @@ use std::path::{Path, PathBuf};
 /// surface that this guard could not see, written in ordinary rustfmt-clean and
 /// clippy-clean Rust. The same union hid a reference moving out of
 /// `delivery.rs` into another file.
+///
+/// One asymmetry to know about before trusting this table. The scan reads whole
+/// files, `#[cfg(test)]` regions included; the detector is run with
+/// `includeTests: false` and ignores them. Everywhere else that makes this guard
+/// stricter than the detector, which is the safe direction. Here it makes it
+/// laxer: a reference inside a `#[cfg(test)]` region of `delivery.rs` would hold
+/// its pair up on its own, so deleting the production reference would leave the
+/// set unmoved and the membership assertion silent about a reference the module
+/// graph no longer has. It does not apply today, because all four references in
+/// `delivery.rs` are production code, and it is written here because the
+/// membership check is the thing somebody will be trusting on the day it stops
+/// being true.
 const ALLOWED_COMMAND_REFERENCES: [(&str, &str); 2] = [
     ("src/loops/delivery.rs", "pty"),
     ("src/loops/delivery.rs", "session"),
@@ -366,13 +378,32 @@ fn command_children(body: &str) -> Result<Vec<String>, &'static str> {
     Ok(children)
 }
 
+/// Every file under `root`, sorted, filtered by nothing.
+///
+/// **Do not add an extension filter here.** `rustc` decides what to compile from
+/// the module tree; a filter decides from the name, and production code lives in
+/// the gap between the two. The obvious filter, `extension == "rs"`, was measured
+/// letting the module that caused #1252 out of the scan in two ways. On a
+/// case-insensitive filesystem `mod scheduler;` resolves `scheduler.RS` while
+/// `"RS" == "rs"` is false, so renaming that one file removed it from the scan
+/// and the cycle came back whole with this guard green. And
+/// `#[path = "reentry.inc"]` compiles a file sitting right here in this directory
+/// under a name no extension filter matches. Reading every file closes both, is
+/// still a pure text scan, and costs nothing: there are five files.
+///
+/// Case-insensitive matching would close only the first of those two, so it is
+/// not the fix.
+///
+/// `#[path]` pointing *outside* this directory, and `include!`, are a different
+/// problem: reaching them needs the module tree resolved, which no filter can do.
+/// They stay in KNOWN UNCOVERED SPELLINGS.
 fn rust_sources(root: &Path) -> Vec<PathBuf> {
     fn visit(directory: &Path, files: &mut Vec<PathBuf>) {
         for entry in std::fs::read_dir(directory).expect("read source directory") {
             let path = entry.expect("source directory entry").path();
             if path.is_dir() {
                 visit(&path, files);
-            } else if path.extension().is_some_and(|extension| extension == "rs") {
+            } else {
                 files.push(path);
             }
         }
