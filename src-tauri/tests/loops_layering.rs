@@ -48,7 +48,13 @@
 //!   6. `concat!` and friends. `concat!("crate::commands", "::loops")` builds
 //!      the path text out of fragments none of which contains the anchor, and
 //!      the bodies of those literals are removed before the scan in any case.
-//!   7. (append here: one entry per spelling a reviewer proves still passes)
+//!   7. NTFS alternate data streams. `#[path = "carrier.rs:evil"]` compiles from
+//!      a stream that `read_dir` does not list, so the scan reads the carrier
+//!      file and never the stream holding the code. Enumerating streams needs a
+//!      platform API, so a portable text scan cannot close it. It is not a way
+//!      into `main`: git stores only the main stream, so a clone has no `:evil`
+//!      and the build fails instead of hiding anything.
+//!   8. (append here: one entry per spelling a reviewer proves still passes)
 
 use std::path::{Path, PathBuf};
 
@@ -456,7 +462,8 @@ fn no_loops_source_reaches_into_the_command_surface() {
 
     for path in &files {
         let relative = relative_of(path);
-        let source = std::fs::read_to_string(path).expect("read Rust source");
+        let source = std::fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("{relative}: cannot be read as UTF-8 text: {error}"));
         let code = code_only(&source).unwrap_or_else(|reason| panic!("{relative}: {reason}"));
         let body = normalized(&code);
         let children =
