@@ -272,7 +272,13 @@ fn aliases_the_command_group(body: &str) -> bool {
 /// The leading identifier of a use-tree item: `loops` from `loops::{a, b}`, from
 /// `loops as l` and from `loops`. A non-identifier item such as `*` is returned
 /// as itself, so a glob is reported rather than silently dropped.
+///
+/// A leading `r#` is dropped first. `r#loops` is the raw-identifier spelling of
+/// `loops` and names the same module, but reading it literally stopped at the
+/// `#` and reported the child as `r`, so the reference was caught by the
+/// membership assertion instead of by the #1252 message that explains it.
 fn leading_segment(item: &str) -> String {
+    let item = item.strip_prefix("r#").unwrap_or(item);
     let mut segment: String = item
         .chars()
         .take_while(|character| character.is_alphanumeric() || *character == '_')
