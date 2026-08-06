@@ -31,3 +31,4 @@ npm-test.normalized.log
 npm-test-results.json
 
 artifacts/
+/graph.json
