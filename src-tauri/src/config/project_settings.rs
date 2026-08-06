@@ -98,6 +98,14 @@ pub struct NonStopGroupConfig {
     pub telegram: NonStopTelegramConfig,
     #[serde(default)]
     pub sound: NonStopSoundConfig,
+    /// (#1257) Pinned into the rail's cross-project `Favorites` section, mirroring
+    /// the group flag added by #965. Absent on legacy configs => false. Lives on
+    /// the record, so it dies with it: `save_workgroup_groups` removes the whole
+    /// `nonStop` key when `non_stop` is `None`, which makes an orphan favorite
+    /// impossible. No `skip_serializing_if`: a non-favorite must still emit an
+    /// explicit `false`, same convention as `WorkgroupGroup::favorite`.
+    #[serde(default)]
+    pub favorite: bool,
 }
 impl Default for NonStopGroupConfig {
     fn default() -> Self {
@@ -108,6 +116,7 @@ impl Default for NonStopGroupConfig {
             tolerance_seconds: default_tolerance_seconds(),
             telegram: NonStopTelegramConfig::default(),
             sound: NonStopSoundConfig::default(),
+            favorite: false,
         }
     }
 }
@@ -349,6 +358,10 @@ mod tests {
                 enabled: true,
                 seconds: 5,
             },
+            // (#1257) Deliberately `true`, not `false`: `false` here would be
+            // indistinguishable from the serde default, so the existing round trips
+            // would not actually exercise the new field.
+            favorite: true,
         }
     }
 
@@ -731,6 +744,58 @@ mod tests {
         let reloaded = load_workgroup_groups(project.path()).expect("reload");
 
         assert_eq!(reloaded, config);
+    }
+
+    #[test]
+    fn legacy_non_stop_json_defaults_favorite_false() {
+        let legacy = r#"{"groups":[],"nonStop":{"show":true,"name":"Watchers","regex":"^(wg-1)$","toleranceSeconds":30,"telegram":{"enabled":false},"sound":{"enabled":false,"seconds":3}}}"#;
+        let config: WorkgroupGroupsConfig = serde_json::from_str(legacy).expect("parse legacy");
+        assert!(!config.non_stop.expect("nonStop present").favorite);
+    }
+
+    #[test]
+    fn non_stop_favorite_round_trips_and_emits_false_when_unset() {
+        let project = project_with_workspace();
+        let config = WorkgroupGroupsConfig {
+            groups: Vec::new(),
+            show_all: true,
+            show_ungrouped: true,
+            non_stop: Some(populated_non_stop()), // favorite: true
+        };
+
+        save_workgroup_groups(project.path(), config.clone()).expect("save");
+        let reloaded = load_workgroup_groups(project.path()).expect("reload");
+        assert_eq!(reloaded, config);
+        let persisted: Value = serde_json::from_str(
+            &std::fs::read_to_string(settings_path(project.path())).expect("read"),
+        )
+        .expect("parse");
+        assert_eq!(persisted["nonStop"]["favorite"], true);
+
+        // (#965 convention, #1257) A NON-favorited Non-stop must still emit an
+        // explicit `false` on disk, or a later `skip_serializing_if` would hand the
+        // frontend `undefined` where it expects a concrete boolean.
+        let mut off = config;
+        off.non_stop.as_mut().expect("nonStop").favorite = false;
+        save_workgroup_groups(project.path(), off).expect("save non-favorite");
+        let persisted: Value = serde_json::from_str(
+            &std::fs::read_to_string(settings_path(project.path())).expect("read"),
+        )
+        .expect("parse");
+        assert_eq!(persisted["nonStop"]["favorite"], false);
+    }
+
+    #[test]
+    fn non_stop_favorite_survives_deserialization_from_frontend_json() {
+        let project = project_with_workspace();
+        // The shape `update_project_groups` receives from the store, favorite included.
+        let incoming = r#"{"groups":[],"showAll":true,"showUngrouped":true,"nonStop":{"show":true,"name":"Watchers","regex":"^(wg-1)$","toleranceSeconds":30,"telegram":{"enabled":false},"sound":{"enabled":false,"seconds":3},"favorite":true}}"#;
+        let config: WorkgroupGroupsConfig = serde_json::from_str(incoming).expect("parse incoming");
+        assert!(config.non_stop.as_ref().expect("nonStop present").favorite);
+
+        save_workgroup_groups(project.path(), config).expect("save");
+        let reloaded = load_workgroup_groups(project.path()).expect("reload");
+        assert!(reloaded.non_stop.expect("nonStop present").favorite);
     }
 
     #[test]

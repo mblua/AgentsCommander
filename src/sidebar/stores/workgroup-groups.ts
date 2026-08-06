@@ -75,6 +75,7 @@ export function defaultNonStop(): NonStopGroupConfig {
     toleranceSeconds: DEFAULT_TOLERANCE_SECONDS,
     telegram: { enabled: false, botId: null },
     sound: { enabled: false, seconds: DEFAULT_BEEP_SECONDS },
+    favorite: false,
   };
 }
 
@@ -103,6 +104,11 @@ export function normalizeNonStop(
   }
   return {
     show: !!nonStop.show,
+    // (#1257) DO NOT DROP THIS LINE. This function rebuilds the object field by
+    // field and `setConfig` (:391) runs it on EVERY load and EVERY save, so a field
+    // omitted here is dropped silently on the first unrelated save and the favorite
+    // appears to revert on its own.
+    favorite: !!nonStop.favorite,
     name,
     regex: regexOk ? regex : MATCH_NONE_REGEX,
     toleranceSeconds: clampInt(
@@ -566,6 +572,14 @@ export const workgroupGroupsStore = {
         candidate.id === groupId ? { ...candidate, favorite } : candidate
       ),
     });
+  },
+
+  async setNonStopFavorite(projectPath: string, favorite: boolean): Promise<void> {
+    const config = this.config(projectPath);
+    const current = config.nonStop;
+    if (!current) throw new Error("Alert me! is no longer configured.");
+    if (!!current.favorite === favorite) return;
+    await this.save(projectPath, { ...config, nonStop: { ...current, favorite } });
   },
 
   async addWorkgroupToGroup(projectPath: string, groupId: string, wgName: string): Promise<void> {

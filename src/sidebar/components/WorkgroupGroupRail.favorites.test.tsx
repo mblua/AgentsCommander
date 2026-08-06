@@ -18,6 +18,7 @@ import {
   defaultGroupsConfig,
   defaultNonStop,
   exactGroupRegexForWorkgroup,
+  workgroupGroupsStore,
 } from "../stores/workgroup-groups";
 import WorkgroupGroupRail from "./WorkgroupGroupRail";
 
@@ -101,6 +102,29 @@ function favoriteButtonKeys(): string[] {
   return Array.from(
     document.querySelectorAll<HTMLElement>('[data-ac-testid^="workgroupGroups.favoriteButton."]')
   ).map((button) => button.dataset.acTestid!.replace("workgroupGroups.favoriteButton.", ""));
+}
+
+function nonStopFavoriteKeys(): string[] {
+  return Array.from(
+    document.querySelectorAll<HTMLElement>(
+      '[data-ac-testid^="workgroupGroups.favoriteNonStopButton."]'
+    )
+  ).map((button) =>
+    button.dataset.acTestid!.replace("workgroupGroups.favoriteNonStopButton.", "")
+  );
+}
+
+/** (#1257 C7) The obvious `[data-ac-testid^="workgroupGroups.favorite"]` is WRONG:
+ *  it also matches `workgroupGroups.favorites.header`, which renders first and
+ *  breaks the order assertion against a correct implementation. Use the
+ *  prefix-exact union of the two BUTTON prefixes; the trailing dots are what make
+ *  the match exact. `querySelectorAll` returns document order, so no sort. */
+function favoriteRowKeys(): string[] {
+  return Array.from(
+    document.querySelectorAll<HTMLElement>(
+      '[data-ac-testid^="workgroupGroups.favoriteButton."], [data-ac-testid^="workgroupGroups.favoriteNonStopButton."]'
+    )
+  ).map((button) => button.dataset.acTestid!);
 }
 
 function lastUpdatedGroupIds(fake: FakeTransport): string[] | undefined {
@@ -384,13 +408,17 @@ describe("WorkgroupGroupRail favorites + collapsible rail (#965)", () => {
       }
     });
 
-    it("exposes no favorite option on the pseudo-entries (All / Ungrouped / Alert me!)", async () => {
+    it("exposes no favorite option on All / Ungrouped or the project header", async () => {
       const fake = railFake(groupsConfig({ nonStop: { ...defaultNonStop(), show: true } }));
       const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
       try {
         await waitFor(() => expect(target("workgroupGroups.button.nonstop")).toBeTruthy());
 
-        for (const key of ["all", "ungrouped", "nonstop"]) {
+        // (#1257) `nonstop` left this list deliberately: it IS favoritable now, and
+        // C2/C3 pin that. All and Ungrouped stay out permanently because they have
+        // no persisted record to hold the flag (they are the showAll/showUngrouped
+        // booleans), so this assertion keeps its value for them.
+        for (const key of ["all", "ungrouped"]) {
           await openMenuOn(target(`workgroupGroups.button.${key}`));
           expect(target("workgroupGroups.contextMenu.edit")).toBeTruthy();
           expect(maybeTarget("workgroupGroups.contextMenu.favorite")).toBeNull();
@@ -399,6 +427,220 @@ describe("WorkgroupGroupRail favorites + collapsible rail (#965)", () => {
         // ...and the project header is a project target too: Edit only.
         await openMenuOn(target("workgroupGroups.projectLabel.Project"));
         expect(maybeTarget("workgroupGroups.contextMenu.favorite")).toBeNull();
+      } finally {
+        rendered.cleanup();
+      }
+    });
+  });
+
+  describe("the Non-stop pseudo-group is favoritable (#1257)", () => {
+    it("offers Favorite on the Non-stop entry, renders it in Favorites, and KEEPS it in its project section", async () => {
+      const fake = railFake(groupsConfig({ nonStop: { ...defaultNonStop(), show: true } }));
+      const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+      try {
+        await waitFor(() => expect(target("workgroupGroups.button.nonstop")).toBeTruthy());
+        expect(maybeTarget("workgroupGroups.favorites")).toBeNull();
+
+        await openMenuOn(target("workgroupGroups.button.nonstop"));
+        expect(target("workgroupGroups.contextMenu.favorite").textContent).toContain("Favorite");
+
+        click(target("workgroupGroups.contextMenu.favorite"));
+
+        await waitFor(() => expect(nonStopFavoriteKeys()).toEqual(["Project"]));
+        // Same duplication rule as a favorited group: it shows in BOTH places.
+        expect(target("workgroupGroups.button.nonstop")).toBeTruthy();
+        const saved = fake.lastCall("update_project_groups")?.args.config as WorkgroupGroupsConfig;
+        expect(saved.nonStop?.favorite).toBe(true);
+        expect(lastUpdatedGroupIds(fake)).toEqual(["ui", "rust", "docs"]);
+
+        // (#1257 D13) The Favorites entry renders BOLD, because `RailButton` applies
+        // `workgroup-group-rail-title-system` to every non-"group" selection and
+        // `nonStopButtonFor` must keep `selection: {kind:"nonstop"}`. Accepted
+        // decision, pinned here so a later reviewer does not file it as a defect.
+        expect(
+          target<HTMLElement>("workgroupGroups.favoriteNonStopButton.Project")
+            .querySelector(".workgroup-group-rail-title")
+            ?.classList.contains("workgroup-group-rail-title-system")
+        ).toBe(true);
+      } finally {
+        rendered.cleanup();
+      }
+    });
+
+    it("offers Unfavorite from the Favorites entry itself and removes it", async () => {
+      const fake = railFake(
+        groupsConfig({ nonStop: { ...defaultNonStop(), show: true, favorite: true } })
+      );
+      const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+      try {
+        await waitFor(() => expect(nonStopFavoriteKeys()).toEqual(["Project"]));
+
+        await openMenuOn(target("workgroupGroups.favoriteNonStopButton.Project"));
+        expect(target("workgroupGroups.contextMenu.favorite").textContent).toContain("Unfavorite");
+
+        click(target("workgroupGroups.contextMenu.favorite"));
+
+        await waitFor(() => expect(maybeTarget("workgroupGroups.favorites")).toBeNull());
+        const saved = fake.lastCall("update_project_groups")?.args.config as WorkgroupGroupsConfig;
+        expect(saved.nonStop?.favorite).toBe(false);
+      } finally {
+        rendered.cleanup();
+      }
+    });
+
+    it("hides a favorited Non-stop from Favorites when it is switched off, without clearing the flag", async () => {
+      const fake = railFake(
+        groupsConfig({ nonStop: { ...defaultNonStop(), show: false, favorite: true } })
+      );
+      const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+      try {
+        await waitFor(() => expect(target("workgroupGroups.button.ui")).toBeTruthy());
+
+        // (#1257 D3) Hidden, not cleared: a visible favorite while Non-stop is off
+        // would be a ghost button that `normalizeSelection` bounces to All on click.
+        expect(maybeTarget("workgroupGroups.favorites")).toBeNull();
+        expect(maybeTarget("workgroupGroups.button.nonstop")).toBeNull();
+        expect(fake.callsFor("update_project_groups")).toEqual([]);
+      } finally {
+        rendered.cleanup();
+      }
+    });
+
+    it("auto-closes the Non-stop context menu when Non-stop is switched off underneath it", async () => {
+      const fake = railFake(groupsConfig({ nonStop: { ...defaultNonStop(), show: true } }));
+      const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+      try {
+        await waitFor(() => expect(target("workgroupGroups.button.nonstop")).toBeTruthy());
+        await openMenuOn(target("workgroupGroups.button.nonstop"));
+        expect(target("workgroupGroups.contextMenu")).toBeTruthy();
+
+        const config = workgroupGroupsStore.config(projectPath);
+        workgroupGroupsStore.applyExternalUpdate(projectPath, {
+          ...config,
+          nonStop: { ...config.nonStop!, show: false },
+        });
+
+        await waitFor(() => expect(maybeTarget("workgroupGroups.contextMenu")).toBeNull());
+      } finally {
+        rendered.cleanup();
+      }
+    });
+
+    it("keeps the FAVORITES test-id namespaces disjoint when a group is literally named `nonstop`", async () => {
+      const fake = railFake(
+        groupsConfig({
+          groups: [
+            {
+              id: "nonstop",
+              name: "Nonstop",
+              regex: exactGroupRegexForWorkgroup("wg-1-dev-team"),
+              favorite: true,
+            },
+          ],
+          nonStop: { ...defaultNonStop(), show: true, favorite: true },
+        })
+      );
+      const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+      try {
+        await waitFor(() => expect(nonStopFavoriteKeys()).toEqual(["Project"]));
+
+        // (#1257) SCOPE: this pins the FAVORITES ids only. The project section in this
+        // same DOM emits `workgroupGroups.button.nonstop` TWICE - once for the group
+        // whose id is literally "nonstop" (`key: group.id`, :139) and once for the
+        // pseudo-button (`key: "nonstop"`, :343), both through
+        // `projectRailTestIds(button.key)` (:592). That collision predates #1257, is
+        // reproducible on `main` with no favorites involved, and is deliberately NOT
+        // asserted here. Do not "fix" it as part of this issue.
+        expect(favoriteButtonKeys()).toEqual(["Project.nonstop"]);
+        expect(
+          document.querySelectorAll('[data-ac-testid="workgroupGroups.favoriteButton.Project.nonstop"]')
+        ).toHaveLength(1);
+        expect(
+          document.querySelectorAll('[data-ac-testid="workgroupGroups.favoriteNonStopButton.Project"]')
+        ).toHaveLength(1);
+      } finally {
+        rendered.cleanup();
+      }
+    });
+
+    it("orders the Non-stop favorite before the group favorites of its own project", async () => {
+      const fake = railFake(
+        groupsConfig({
+          groups: [
+            {
+              id: "ui",
+              name: "UI",
+              regex: exactGroupRegexForWorkgroup("wg-1-dev-team"),
+              favorite: true,
+            },
+            {
+              id: "rust",
+              name: "Rust",
+              regex: exactGroupRegexForWorkgroup("wg-2-rust-team"),
+              favorite: true,
+            },
+          ],
+          nonStop: { ...defaultNonStop(), show: true, favorite: true },
+        })
+      );
+      const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+      try {
+        // (#1257 D4) First within its own project's block, mirroring the project
+        // section's own order (All, Ungrouped, Non-stop, then groups).
+        await waitFor(() =>
+          expect(favoriteRowKeys()).toEqual([
+            "workgroupGroups.favoriteNonStopButton.Project",
+            "workgroupGroups.favoriteButton.Project.ui",
+            "workgroupGroups.favoriteButton.Project.rust",
+          ])
+        );
+      } finally {
+        rendered.cleanup();
+      }
+    });
+
+    it("marks BOTH renderings pressed when the Non-stop entry is selected", async () => {
+      const fake = railFake(
+        groupsConfig({ nonStop: { ...defaultNonStop(), show: true, favorite: true } })
+      );
+      const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+      try {
+        await waitFor(() => expect(nonStopFavoriteKeys()).toEqual(["Project"]));
+
+        click(target("workgroupGroups.favoriteNonStopButton.Project"));
+
+        // Both carry the same `selection`, which is exactly what a non-verbatim
+        // extraction of `nonStopButtonFor` (D10) would break.
+        await waitFor(() =>
+          expect(
+            target("workgroupGroups.favoriteNonStopButton.Project").getAttribute("aria-pressed")
+          ).toBe("true")
+        );
+        expect(target("workgroupGroups.button.nonstop").getAttribute("aria-pressed")).toBe("true");
+      } finally {
+        rendered.cleanup();
+      }
+    });
+
+    it("restores the hidden favorite when Non-stop is switched back on, with no save in between", async () => {
+      const fake = railFake(
+        groupsConfig({ nonStop: { ...defaultNonStop(), show: false, favorite: true } })
+      );
+      const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+      try {
+        await waitFor(() => expect(target("workgroupGroups.button.ui")).toBeTruthy());
+        expect(maybeTarget("workgroupGroups.favorites")).toBeNull();
+
+        // (#1257 D3) The other half of D3: an implementation that CLEARS the flag on
+        // hide would pass the "hidden" test above and still violate the decision.
+        const config = workgroupGroupsStore.config(projectPath);
+        workgroupGroupsStore.applyExternalUpdate(projectPath, {
+          ...config,
+          nonStop: { ...config.nonStop!, show: true },
+        });
+
+        await waitFor(() => expect(nonStopFavoriteKeys()).toEqual(["Project"]));
+        expect(fake.callsFor("update_project_groups")).toEqual([]);
       } finally {
         rendered.cleanup();
       }
