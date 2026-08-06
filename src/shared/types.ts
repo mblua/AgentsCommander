@@ -1047,6 +1047,7 @@ export interface NonStopGroupConfig {
   toleranceSeconds: number;
   telegram: NonStopTelegramConfig;
   sound: NonStopSoundConfig;
+  favorite?: boolean;
 }
 
 export interface WorkgroupGroupsConfig {
